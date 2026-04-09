@@ -3926,48 +3926,62 @@ def create_tab(ctx):
             return True
 
         if cmd.startswith("/recalc ") and not cmd.startswith("/recalc check"):
-            folder = text[len("/recalc"):].strip()
-            if folder == "auto":
+            raw_arg = text[len("/recalc"):].strip()
+            if raw_arg == "auto":
                 pass  # handled above
             else:
-                target = _resolve_calc_path(folder)
-                if not target.is_dir():
-                    _append_system_message(f"Not a directory: {folder}")
+                # Support multiple folders: /recalc folder1 folder2 folder3
+                folder_names = raw_arg.split()
+                targets: list[Path] = []
+                for fname in folder_names:
+                    t = _resolve_calc_path(fname)
+                    if not t.is_dir():
+                        _append_system_message(f"Not a directory: {fname}")
+                        continue
+                    control = t / "CONTROL.txt"
+                    if not control.exists():
+                        _append_system_message(f"No CONTROL.txt in {fname}")
+                        continue
+                    targets.append(t)
+                if not targets:
                     return True
-                control = target / "CONTROL.txt"
-                if not control.exists():
-                    _append_system_message(f"No CONTROL.txt in {folder}")
-                    return True
-                def _do_recalc(job_dir=target):
-                    try:
-                        result = ctx.backend.submit_delfin(
-                            job_dir=job_dir, job_name=job_dir.name,
-                            mode="delfin-recalc-classic",
-                        )
-                        if result.returncode == 0:
-                            _append_system_message(f"Recalc submitted for {job_dir.name}.")
-                        else:
-                            _append_system_message(f"Recalc failed: {result.stderr[:300]}")
-                        refresh = ctx.recalc_refs.get("refresh_recalc_folders")
-                        if refresh:
-                            try:
-                                refresh()
-                            except Exception:
-                                pass
-                        refresh2 = ctx.job_status_refs.get("refresh_job_list")
-                        if refresh2:
-                            try:
-                                refresh2()
-                            except Exception:
-                                pass
-                        ctx.select_tab("Job Status")
-                    except Exception as exc:
-                        _append_system_message(f"Recalc error: {exc}")
+
+                def _do_recalc_batch(job_dirs=targets):
+                    submitted = 0
+                    for job_dir in job_dirs:
+                        try:
+                            result = ctx.backend.submit_delfin(
+                                job_dir=job_dir, job_name=job_dir.name,
+                                mode="delfin-recalc-classic",
+                            )
+                            if result.returncode == 0:
+                                submitted += 1
+                                _append_system_message(f"Recalc submitted: {job_dir.name}")
+                            else:
+                                _append_system_message(f"Recalc failed {job_dir.name}: {result.stderr[:200]}")
+                        except Exception as exc:
+                            _append_system_message(f"Recalc error {job_dir.name}: {exc}")
+                    _append_system_message(f"Done: {submitted}/{len(job_dirs)} recalc jobs submitted.")
+                    refresh = ctx.recalc_refs.get("refresh_recalc_folders")
+                    if refresh:
+                        try:
+                            refresh()
+                        except Exception:
+                            pass
+                    refresh2 = ctx.job_status_refs.get("refresh_job_list")
+                    if refresh2:
+                        try:
+                            refresh2()
+                        except Exception:
+                            pass
+                    ctx.select_tab("Job Status")
+
+                names = ", ".join(t.name for t in targets)
                 _confirm_or_exec(
-                    "recalc_single",
-                    f"Submit recalc for '{folder}'?",
-                    _do_recalc,
-                    cmd_for_zone=f"/recalc {folder}",
+                    "recalc_batch",
+                    f"Submit recalc for {len(targets)} folder(s): {names}?",
+                    _do_recalc_batch,
+                    cmd_for_zone="/recalc batch",
                 )
             return True
 
