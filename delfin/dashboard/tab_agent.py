@@ -84,6 +84,28 @@ _AGENT_CSS = """\
 .delfin-chat-tool .tool-param { color: #e0af68; }
 .delfin-chat-tool .tool-diff-old { color: #f7768e; }
 .delfin-chat-tool .tool-diff-new { color: #9ece6a; }
+.delfin-streaming-pre {
+    margin: 0;
+    padding: 0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: inherit;
+    background: transparent;
+}
+.delfin-settings-toggle {
+    cursor: pointer;
+    font-size: 11px;
+    color: #9ca3af;
+    padding: 2px 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    background: #f9fafb;
+    user-select: none;
+}
+.delfin-settings-toggle:hover { background: #f3f4f6; color: #6b7280; }
 .delfin-chat-approval {
     background: #fef3c7;
     margin: 8px 0;
@@ -2379,18 +2401,25 @@ def create_tab(ctx):
         )
         _update_status()
 
-    def _update_last_assistant(content, role_label=""):
-        """Update the last assistant message (for streaming)."""
+    def _update_last_assistant(content, role_label="", finalize=False):
+        """Update the last assistant message (for streaming).
+
+        During streaming (*finalize* is False), the message is rendered
+        as plain pre-formatted text for speed.  When *finalize* is True,
+        the message is converted to full markdown HTML.
+        """
         msgs = state["chat_messages"]
         if msgs and msgs[-1]["role"] == "assistant":
             msgs[-1]["content"] = content
             if role_label:
                 msgs[-1]["role_label"] = role_label
+            msgs[-1]["_streaming"] = not finalize
         else:
             msgs.append(
-                {"role": "assistant", "content": content, "role_label": role_label}
+                {"role": "assistant", "content": content,
+                 "role_label": role_label, "_streaming": not finalize}
             )
-        _refresh_chat_html(streaming=True)
+        _refresh_chat_html(streaming=not finalize)
 
     # HTML cache: stores rendered HTML for messages that haven't changed.
     # During streaming, only the last (assistant) message is re-rendered.
@@ -2399,13 +2428,22 @@ def create_tab(ctx):
     def _render_single_msg(msg):
         """Render a single chat message to HTML."""
         role = msg["role"]
-        content = _md_to_html(msg["content"])
         if role == "user":
+            content = _md_to_html(msg["content"])
             return (
                 f'<div class="delfin-chat-msg delfin-chat-user">{content}</div>'
             )
         elif role == "assistant":
             label = msg.get("role_label", "Agent")
+            # During streaming: plain <pre> — no expensive markdown parsing.
+            # On finalize: full _md_to_html with code blocks, formatting etc.
+            if msg.get("_streaming"):
+                content = (
+                    f'<pre class="delfin-streaming-pre">'
+                    f'{_html.escape(msg["content"])}</pre>'
+                )
+            else:
+                content = _md_to_html(msg["content"])
             return (
                 f'<div class="delfin-chat-msg delfin-chat-agent">'
                 f'<div class="delfin-chat-role">{_html.escape(label)}</div>'
@@ -2424,6 +2462,7 @@ def create_tab(ctx):
                 f'</details>'
             )
         elif role == "approval":
+            content = _md_to_html(msg["content"])
             return (
                 f'<div class="delfin-chat-msg delfin-chat-approval">'
                 f'\u26a0\ufe0f {content}'
@@ -2432,6 +2471,7 @@ def create_tab(ctx):
                 f'</div>'
             )
         elif role == "gate":
+            content = _md_to_html(msg["content"])
             gate_type = msg.get("gate_type", "")
             gate_title = msg.get("gate_title", _gate_label(gate_type))
             gate_hint = msg.get("gate_hint", "")
@@ -2464,6 +2504,7 @@ def create_tab(ctx):
             )
         elif role == "system":
             raw = msg["content"]
+            content = _md_to_html(raw)
             if raw.startswith("---") or raw.startswith("Session restored"):
                 css_class = "delfin-chat-msg delfin-chat-handoff"
             else:
@@ -5609,9 +5650,9 @@ def create_tab(ctx):
                         thinking_budget=_budget,
                         memory_context=_memory,
                     )
-                    # Final update for this role
+                    # Final update: finalize=True triggers full markdown rendering
                     if chunks:
-                        _update_last_assistant("".join(chunks), role_label)
+                        _update_last_assistant("".join(chunks), role_label, finalize=True)
 
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI
@@ -5656,7 +5697,7 @@ def create_tab(ctx):
                             memory_context=_memory,
                         )
                         if chunks:
-                            _update_last_assistant("".join(chunks), role_label)
+                            _update_last_assistant("".join(chunks), role_label, finalize=True)
 
                     # Show per-role cost
                     _role_cost = engine.cost_usd - _cost_before
