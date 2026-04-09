@@ -563,6 +563,8 @@ class AgentEngine:
             f"Validate the implementation for this task:\n\n{user_task}\n\n"
             f"Prior agent outputs:\n{prior_summary}\n"
             f"{checklist}{gate_list}\n"
+            f"IMPORTANT: Confirm acceptance criteria with the user BEFORE running tests. "
+            f"Use QUESTION: to list the criteria and ask if anything should be added or skipped.\n\n"
             f"Run `python -m pytest tests/ -v --tb=short` and verify each "
             f"criterion and gate above as PASS / FAIL / UNTESTED."
         )
@@ -670,13 +672,13 @@ class AgentEngine:
         instructions = {
             "session_manager": (
                 f"The user wants:\n\n{user_task}\n\n"
-                f"Create a structured PLAN in the mandatory format. "
-                f"Start by running `git diff --stat` to see the current state.\n"
-                f"Lock the real goal, define the success oracle, and break non-trivial work "
-                f"into small stage gates with exit evidence.\n"
+                f"IMPORTANT: Ask the user clarifying questions BEFORE creating the plan. "
+                f"Use QUESTION: to ask about scope, constraints, and success criteria. "
+                f"Only write the PLAN after the user responds.\n\n"
+                f"When you do write the plan: lock the real goal, define the success oracle, "
+                f"and break non-trivial work into small stage gates with exit evidence.\n"
                 f"If the task needs external research, add RESEARCH_NEEDED: [topic]. "
-                f"If not, add SKIP_RESEARCH.\n"
-                f"If the task is ambiguous, ask the user with QUESTION: [question]."
+                f"If not, add SKIP_RESEARCH."
                 + (_cycle_memory_ctx or "")
             ),
             "chief_agent": (
@@ -687,14 +689,18 @@ class AgentEngine:
                 f"Research the following for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"IMPORTANT: Confirm your research questions with the user BEFORE searching. "
+                f"Use QUESTION: to list your 2-3 planned research questions and ask if "
+                f"anything else should be investigated.\n\n"
                 f"Focus on actionable findings for the Builder. "
-                f"Use WebSearch and WebFetch. Max 5 searches. "
-                f"Call out weak proxies, missing benchmarks, or missing comparison oracles."
+                f"Use WebSearch and WebFetch. Max 5 searches."
             ),
             "critic_agent": (
                 f"Review the plan and/or changes for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"IMPORTANT: After your analysis, present your top findings to the user "
+                f"with QUESTION: and ask which the Builder should prioritize.\n\n"
                 f"Produce a structured REVIEW. Focus on critical and major issues. "
                 f"Explicitly flag goal drift, weak success proxies, and missing stage gates."
             ),
@@ -709,6 +715,9 @@ class AgentEngine:
                 f"Implement the following task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
                 f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"IMPORTANT: Confirm your approach with the user BEFORE writing code. "
+                f"Use QUESTION: to summarize your planned approach and the key trade-off "
+                f"or decision you need confirmed.\n\n"
                 f"Follow the PLAN from Session Manager. Address all critical/major "
                 f"findings from Critic/Runtime/Research. Work through stage gates in order. "
                 f"Do not silently substitute an easier proxy metric for the locked goal. "
@@ -720,7 +729,8 @@ class AgentEngine:
                 f"Prior agent outputs:\n{prior_summary}\n\n"
                 f"Review the actual diff, not the hypothetical plan. "
                 f"Check correctness, regressions, and whether the Builder stayed aligned "
-                f"with the locked goal instead of solving an easier proxy problem."
+                f"with the locked goal instead of solving an easier proxy problem.\n"
+                f"If you find ambiguous changes, ask the user with QUESTION: before finalizing."
             ),
             "test_agent": (
                 self._build_test_handoff(user_task, prior_summary)

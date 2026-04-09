@@ -5126,6 +5126,8 @@ def create_tab(ctx):
             state["_question_answer"] = current_msg
             _set_active_gate()
             _update_status()
+            _role_lbl = _format_role_label(_question_role)
+            _append_system_message(f"Antwort an {_role_lbl} gesendet.")
 
         # Handle conflict resolution
         if state.pop("_awaiting_conflict_resolution", False):
@@ -5598,12 +5600,13 @@ def create_tab(ctx):
                         )
                         if _q_match:
                             _q_text = _q_match.group(1).strip()
+                            _role_label = _format_role_label(prev_role_id)
                             _append_gate_message(
                                 "question",
                                 prev_role_id,
-                                f"{_format_role_label(prev_role_id)} needs input",
+                                f"{_role_label} fragt dich:",
                                 _q_text,
-                                "Reply with the missing decision or clarification.",
+                                f"Antworte dem {_role_label}.",
                             )
                             state["_awaiting_agent_question"] = prev_role_id
                             _update_status()
@@ -5635,36 +5638,19 @@ def create_tab(ctx):
                             _update_pipeline_display(engine)
                             break
 
-                        # Auto-approve low-risk plans in quick mode to
-                        # avoid an unnecessary round-trip.
-                        _plan_risk = _AE.extract_plan_field(last_out, "Risk").lower().strip()
-                        _auto_approve = (
-                            engine.mode == "quick"
-                            and _plan_risk in ("low", "")
+                        # Always show plan for user approval — no auto-approve.
+                        # The user should always be involved in the planning process.
+                        _append_gate_message(
+                            "plan-approval",
+                            prev_role_id,
+                            "Plan approval required",
+                            (
+                                "The Session Manager produced a plan. "
+                                "Review it and approve via the Continue button "
+                                "or type corrections."
+                            ),
+                            "",
                         )
-                        if _auto_approve:
-                            _sm_approval = True
-                            _append_chat_message(
-                                "system", "",
-                                role_label="Session Manager",
-                                content_html=(
-                                    '<span class="delfin-agent-queue">'
-                                    'Low-risk plan auto-approved in quick mode'
-                                    '</span>'
-                                ),
-                            )
-                        else:
-                            _append_gate_message(
-                                "plan-approval",
-                                prev_role_id,
-                                "Plan approval required",
-                                (
-                                    "The Session Manager produced a plan. "
-                                    "Review it and approve via the Continue button "
-                                    "or type corrections."
-                                ),
-                                "",
-                            )
                             _update_status()
                             _update_pipeline_display(engine)
                             break
