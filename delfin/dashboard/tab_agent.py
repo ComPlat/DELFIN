@@ -4914,6 +4914,9 @@ def create_tab(ctx):
         """Show visual pipeline progress: SM ✓ → Critic ✓ → Builder ⏳ → Test ○"""
         if not eng:
             return
+        # Solo/Dashboard: no pipeline noise
+        if mode_dropdown.value in ("solo", "dashboard"):
+            return
         steps = eng.pipeline_status()
         _icons = {"done": "\u2705", "active": "\u23f3", "pending": "\u25cb"}
         parts = []
@@ -5091,10 +5094,12 @@ def create_tab(ctx):
             _fu_idx = engine.route.index(_fu_role) if _fu_role in engine.route else 0
             engine.current_role_index = _fu_idx
             state["_follow_up"] = True
-            _append_system_message(
-                f"--- Follow-up mode ({_fu_role.replace('_', ' ').title()}) "
-                f"— continue chatting or /reset for new task ---"
-            )
+            # Solo/Dashboard: silent follow-up (no pipeline noise)
+            if mode_dropdown.value not in ("solo", "dashboard"):
+                _append_system_message(
+                    f"--- Follow-up mode ({_fu_role.replace('_', ' ').title()}) "
+                    f"— continue chatting or /reset for new task ---"
+                )
 
         # Detect user approval to start pipeline from Session Manager
         # If SM has already responded and user sends a short confirmation,
@@ -5837,8 +5842,9 @@ def create_tab(ctx):
                             break
                         state["_conflict_resolved"] = True
 
-                    # Dashboard / follow-up: never advance — keep conversation open
-                    if mode_dropdown.value == "dashboard" or state.get("_follow_up"):
+                    # Dashboard / Solo / follow-up: never advance — keep conversation open
+                    # No pipeline messages for conversational modes.
+                    if mode_dropdown.value in ("dashboard", "solo") or state.get("_follow_up"):
                         _set_active_gate()
                         _update_status()
                         break
