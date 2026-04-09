@@ -2227,12 +2227,9 @@ def create_tab(ctx):
     def _update_cycle_inspector():
         # Hide Cycle Inspector for dashboard/solo — only relevant for pipelines
         _is_pipeline = mode_dropdown.value not in ("dashboard", "solo")
-        _vis = "visible" if _is_pipeline else "hidden"
-        _h = "auto" if _is_pipeline else "0px"
+        _disp = "block" if _is_pipeline else "none"
         for _w in (cycle_inspector_html, inspector_actions_row, inspector_detail_box):
-            _w.layout.visibility = _vis
-            _w.layout.height = _h
-            _w.layout.overflow = "hidden" if not _is_pipeline else "visible"
+            _w.layout.display = _disp
         if not _is_pipeline:
             return
         cycle_inspector_html.value = _render_cycle_inspector()
