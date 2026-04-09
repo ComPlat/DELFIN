@@ -66,6 +66,24 @@ _AGENT_CSS = """\
     white-space: pre-wrap;
     word-break: break-all;
 }
+.delfin-chat-tool {
+    background: #1a1b26;
+    color: #a9b1d6;
+    margin: 1px 0;
+    padding: 3px 10px;
+    font-size: 11px;
+    max-width: 100%;
+    border-left: 2px solid #7aa2f7;
+    border-radius: 0 3px 3px 0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+.delfin-chat-tool .tool-name { color: #7aa2f7; font-weight: 600; }
+.delfin-chat-tool .tool-path { color: #9ece6a; }
+.delfin-chat-tool .tool-param { color: #e0af68; }
+.delfin-chat-tool .tool-diff-old { color: #f7768e; }
+.delfin-chat-tool .tool-diff-new { color: #9ece6a; }
 .delfin-chat-approval {
     background: #fef3c7;
     margin: 8px 0;
@@ -1845,6 +1863,14 @@ def create_tab(ctx):
     def _append_system_message(text):
         _append_chat_message("system", text)
 
+    def _append_tool_message(html_content: str):
+        """Append a tool-call message with terminal-style formatting.
+
+        Content is pre-formatted HTML (not markdown) using the
+        .tool-name, .tool-path, .tool-param CSS classes.
+        """
+        _append_chat_message("tool", html_content)
+
     def _record_cycle_event(kind: str, title: str, detail: str = "", role: str = ""):
         history = state.setdefault("_cycle_history", [])
         entry = {
@@ -2435,6 +2461,12 @@ def create_tab(ctx):
                     f'<div class="gate-body">{content}</div>'
                     f'{hint_html}'
                     f'</div>'
+                )
+            elif role == "tool":
+                # Tool messages use pre-formatted HTML (not markdown-converted)
+                parts.append(
+                    f'<div class="delfin-chat-msg delfin-chat-tool">'
+                    f'{msg["content"]}</div>'
                 )
             elif role == "system":
                 raw = msg["content"]
@@ -5266,87 +5298,153 @@ def create_tab(ctx):
                         if full_thinking.strip():
                             _append_chat_message("thinking", full_thinking.strip())
                         thinking_chunks.clear()
-                    # Show detailed activity like Claude CLI
+                    # Parse tool input
                     try:
                         import json as _j
-                        _p = _j.loads(tool_input)
+                        parsed = _j.loads(tool_input)
                     except Exception:
-                        _p = {}
-                    _fname = (_p.get("file_path") or _p.get("path") or "")
+                        parsed = {}
+
+                    # Spinner detail
+                    _fname = (parsed.get("file_path") or parsed.get("path") or "")
                     if _fname:
-                        _fname = _fname.rsplit("/", 1)[-1]  # basename only
+                        _fname = _fname.rsplit("/", 1)[-1]
                     _detail = {
                         "Read":  f"Reading {_fname}..." if _fname else "Reading...",
                         "Edit":  f"Editing {_fname}..." if _fname else "Editing...",
                         "Write": f"Writing {_fname}..." if _fname else "Writing...",
-                        "Grep":  f"Searching: {_p.get('pattern', '')[:40]}...",
-                        "Glob":  f"Finding: {_p.get('pattern', '')[:40]}...",
-                        "Bash":  f"$ {(_p.get('command') or '')[:50]}...",
-                        "Agent": f"Sub-agent: {(_p.get('description') or '')[:40]}...",
+                        "Grep":  f"Searching: {parsed.get('pattern', '')[:40]}...",
+                        "Glob":  f"Finding: {parsed.get('pattern', '')[:40]}...",
+                        "Bash":  f"$ {(parsed.get('command') or '')[:50]}...",
+                        "Agent": f"Sub-agent: {(parsed.get('description') or '')[:40]}...",
                     }.get(tool_name, f"Running {tool_name}...")
                     _set_working(True, _detail)
+
                     # Flush pending text as a finalized assistant message
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label)
-                        chunks.clear()  # reset — next text starts fresh
+                        chunks.clear()
 
-                    try:
-                        import json as _json
-                        parsed = _json.loads(tool_input)
-                    except Exception:
-                        parsed = {}
+                    # --- Build terminal-style tool display ---
+                    _e = _html.escape
 
-                    # --- Edit/Write: show diff preview ---
-                    if tool_name in ("Edit", "Write") and parsed.get("file_path"):
-                        fpath = parsed["file_path"]
-                        short_path = fpath.replace(
-                            str(ctx.repo_dir or ""), ""
-                        ).lstrip("/")
+                    def _short_path(p, segments=3):
+                        """Last N path segments for readability."""
+                        parts = p.rstrip("/").split("/")
+                        return "/".join(parts[-segments:]) if len(parts) > segments else p
+
+                    if tool_name == "Read":
+                        fpath = parsed.get("file_path", "")
+                        sp = _short_path(fpath)
+                        line_info = ""
+                        if parsed.get("offset"):
+                            lim = parsed.get("limit", "")
+                            line_info = f":{parsed['offset']}"
+                            if lim:
+                                line_info += f"-{parsed['offset'] + lim}"
+                        _append_tool_message(
+                            f'<span class="tool-name">Read</span>  '
+                            f'<span class="tool-path">{_e(sp)}{_e(line_info)}</span>'
+                        )
+
+                    elif tool_name == "Grep":
+                        pat = parsed.get("pattern", "")
+                        path = _short_path(parsed.get("path", "."))
+                        glb = parsed.get("glob", "")
+                        typ = parsed.get("type", "")
+                        scope = f" in {_e(path)}" if path != "." else ""
+                        filt = ""
+                        if glb:
+                            filt = f"  ({_e(glb)})"
+                        elif typ:
+                            filt = f"  (*.{_e(typ)})"
+                        _append_tool_message(
+                            f'<span class="tool-name">Grep</span>  '
+                            f'<span class="tool-param">"{_e(pat[:60])}"</span>'
+                            f'{scope}{filt}'
+                        )
+
+                    elif tool_name == "Glob":
+                        pat = parsed.get("pattern", "")
+                        path = _short_path(parsed.get("path", "."))
+                        scope = f"  in {_e(path)}" if path != "." else ""
+                        _append_tool_message(
+                            f'<span class="tool-name">Glob</span>  '
+                            f'<span class="tool-param">{_e(pat)}</span>{scope}'
+                        )
+
+                    elif tool_name == "Bash":
+                        cmd = parsed.get("command", "")
+                        # Show full command up to 200 chars
+                        if len(cmd) > 200:
+                            cmd = cmd[:200] + "..."
+                        _append_tool_message(
+                            f'<span class="tool-name">$</span> {_e(cmd)}'
+                        )
+
+                    elif tool_name in ("Edit", "Write"):
+                        fpath = parsed.get("file_path", "")
+                        sp = _short_path(fpath)
                         if tool_name == "Edit":
                             old = parsed.get("old_string", "")
                             new = parsed.get("new_string", "")
-                            old_preview = old[:150] + ("..." if len(old) > 150 else "")
-                            new_preview = new[:150] + ("..." if len(new) > 150 else "")
-                            _append_system_message(
-                                f"\u270f Edit: {short_path}\n"
-                                f"  - {old_preview}\n"
-                                f"  + {new_preview}"
+                            old_p = _e(old[:100] + ("..." if len(old) > 100 else ""))
+                            new_p = _e(new[:100] + ("..." if len(new) > 100 else ""))
+                            _append_tool_message(
+                                f'<span class="tool-name">Edit</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>\n'
+                                f'  <span class="tool-diff-old">- {old_p}</span>\n'
+                                f'  <span class="tool-diff-new">+ {new_p}</span>'
                             )
                         else:
                             content = parsed.get("content", "")
-                            _append_system_message(
-                                f"\u270f Write: {short_path} "
-                                f"({len(content)} chars)"
+                            _append_tool_message(
+                                f'<span class="tool-name">Write</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>'
+                                f'  ({len(content)} chars)'
                             )
                         state["recent_edits"].append({
                             "file": fpath, "tool": tool_name,
                         })
                         undo_btn.disabled = False
-                        return
 
-                    # --- Bash: show command ---
-                    if tool_name == "Bash" and parsed.get("command"):
-                        cmd = parsed["command"]
-                        if len(cmd) > 120:
-                            cmd = cmd[:120] + "..."
-                        _append_system_message(f"\u25b8 $ {cmd}")
-                        return
+                    elif tool_name == "Agent":
+                        desc = parsed.get("description", "")
+                        prompt = parsed.get("prompt", "")[:80]
+                        _append_tool_message(
+                            f'<span class="tool-name">Agent</span>  '
+                            f'<span class="tool-param">{_e(desc)}</span>'
+                            + (f'\n  {_e(prompt)}...' if prompt else '')
+                        )
 
-                    # --- Other tools: show key param ---
-                    short = ""
-                    for key in ("file_path", "path", "pattern",
-                                "prompt", "description", "query"):
-                        if key in parsed:
-                            val = str(parsed[key])
-                            if len(val) > 80:
-                                val = val[:80] + "..."
-                            short = val
-                            break
-                    if not short:
-                        short = tool_input[:120]
-                    _append_system_message(
-                        f"\u25b8 {tool_name}({short})"
-                    )
+                    elif tool_name == "WebSearch":
+                        query = parsed.get("query", "")
+                        _append_tool_message(
+                            f'<span class="tool-name">WebSearch</span>  '
+                            f'<span class="tool-param">"{_e(query[:80])}"</span>'
+                        )
+
+                    elif tool_name == "WebFetch":
+                        url = parsed.get("url", "")
+                        _append_tool_message(
+                            f'<span class="tool-name">WebFetch</span>  '
+                            f'<span class="tool-path">{_e(url[:100])}</span>'
+                        )
+
+                    else:
+                        # Generic: show first meaningful param
+                        param = ""
+                        for key in ("file_path", "path", "pattern",
+                                    "prompt", "description", "query", "command"):
+                            if key in parsed:
+                                val = str(parsed[key])[:80]
+                                param = f'<span class="tool-param">{_e(val)}</span>'
+                                break
+                        if not param:
+                            param = _e(tool_input[:100])
+                        _append_tool_message(
+                            f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
+                        )
 
                 def _on_permission_denied(description):
                     if chunks:
@@ -6081,6 +6179,17 @@ def create_tab(ctx):
         # Show/hide Cycle Inspector based on mode
         _update_cycle_inspector()
 
+        # Solo-minimal UI: hide pipeline overhead for solo/dashboard
+        _is_minimal = new_mode in ("solo", "dashboard")
+        # Hide mode description (saves vertical space)
+        mode_desc_html.layout.display = "none" if _is_minimal else "block"
+        # Hide session row (accessible via /session)
+        session_row.layout.display = "none" if _is_minimal else "flex"
+        # Hide pipeline-only buttons
+        advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
+        commit_btn.layout.display = "none" if _is_minimal else "inline-flex"
+        push_btn.layout.display = "none" if _is_minimal else "inline-flex"
+
     def _on_provider_change(change):
         """Switch provider (Claude / OpenAI / KIT), update model options."""
         if state["streaming"]:
@@ -6347,6 +6456,15 @@ def create_tab(ctx):
     _update_status()
     _update_button_states()
     _refresh_session_dropdown()
+
+    # Apply solo-minimal UI at startup (default mode is dashboard)
+    _init_mode = mode_dropdown.value
+    if _init_mode in ("solo", "dashboard"):
+        mode_desc_html.layout.display = "none"
+        session_row.layout.display = "none"
+        advance_btn.layout.display = "none"
+        commit_btn.layout.display = "none"
+        push_btn.layout.display = "none"
 
     _enter_key_init_js = """
 (function() {
