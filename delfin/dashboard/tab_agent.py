@@ -6298,10 +6298,8 @@ def create_tab(ctx):
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
         # Hide session row (accessible via /session)
         session_row.layout.display = "none" if _is_minimal else "flex"
-        # Hide pipeline-only buttons
+        # Hide pipeline-only buttons (but keep commit/push visible)
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
-        commit_btn.layout.display = "none" if _is_minimal else "inline-flex"
-        push_btn.layout.display = "none" if _is_minimal else "inline-flex"
 
     def _on_provider_change(change):
         """Switch provider (Claude / OpenAI / KIT), update model options."""
@@ -6576,8 +6574,6 @@ def create_tab(ctx):
         mode_desc_html.layout.display = "none"
         session_row.layout.display = "none"
         advance_btn.layout.display = "none"
-        commit_btn.layout.display = "none"
-        push_btn.layout.display = "none"
 
     _enter_key_init_js = """
 (function() {
