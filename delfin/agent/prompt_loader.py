@@ -296,10 +296,14 @@ class PromptLoader:
                     cycle_info += (
                         f"\n---\n"
                         f"Tool access:\n"
-                        f"- You may use: Read, Grep, Glob (to read DELFIN source code and understand UI flows).\n"
-                        f"- Do NOT use Edit, Write, or Bash. You control the dashboard via ACTION: slash commands only.\n"
-                        f"- Read the dashboard code (delfin/dashboard/) to understand widget relationships\n"
-                        f"  and figure out the correct /ui command sequences."
+                        f"- Read, Grep, Glob: read DELFIN source code, calculation data, archives (anywhere).\n"
+                        f"- Write: ONLY to agent_workspace/ (analysis scripts, CSVs, reports).\n"
+                        f"- Bash: ONLY to run scripts in agent_workspace/ (ask user first!).\n"
+                        f"- WebSearch, WebFetch: literature research for methods and parameters.\n"
+                        f"- No Edit. Use Write to create/replace entire files in agent_workspace/.\n"
+                        f"- Dashboard control via ACTION: slash commands.\n"
+                        f"- calc/archive file changes ONLY through ACTION: commands (never Write/Bash).\n"
+                        f"- Data directories are READ-ONLY for Write/Bash tools (CLI enforced via --add-dir)."
                     )
                 else:
                     cycle_info += (

@@ -100,11 +100,15 @@ class CLIClient(_BaseClient):
 
     def __init__(self, model: str = "", claude_path: str = "",
                  permission_mode: str = "", cwd: str = "",
-                 mcp_config: str = ""):
+                 mcp_config: str = "",
+                 allowed_tools: list[str] | None = None,
+                 extra_dirs: list[str] | None = None):
         self.model = model or self.DEFAULT_MODEL
         self.permission_mode = permission_mode
         self.cwd = cwd or None
         self.mcp_config = mcp_config  # path to MCP config JSON or empty
+        self.allowed_tools = allowed_tools  # restrict CLI to these tools only
+        self.extra_dirs = extra_dirs  # extra writable directories (--add-dir)
         self.claude_path = claude_path or shutil.which("claude") or "claude"
         if not shutil.which(self.claude_path):
             raise FileNotFoundError(
@@ -139,6 +143,13 @@ class CLIClient(_BaseClient):
 
         if self.mcp_config:
             cmd.extend(["--mcp-config", self.mcp_config])
+
+        if self.allowed_tools is not None:
+            cmd.extend(["--allowedTools", ",".join(self.allowed_tools)])
+
+        if self.extra_dirs:
+            for d in self.extra_dirs:
+                cmd.extend(["--add-dir", d])
 
         if session_id:
             cmd.extend(["--resume", session_id])
@@ -959,6 +970,8 @@ def create_client(
     permission_mode: str = "",
     cwd: str = "",
     mcp_config: str = "",
+    allowed_tools: list[str] | None = None,
+    extra_dirs: list[str] | None = None,
 ) -> _BaseClient:
     """Create the appropriate client backend.
 
@@ -979,6 +992,10 @@ def create_client(
         ``"auto"``, ``"bypassPermissions"``).
     cwd : str
         Working directory for the CLI process.
+    allowed_tools : list[str], optional
+        Restrict the CLI to these tools only (``--allowedTools``).
+    extra_dirs : list[str], optional
+        Extra writable directories for the CLI (``--add-dir``).
     """
     if provider == "kit":
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
@@ -997,4 +1014,6 @@ def create_client(
         return APIClient(api_key=api_key, model=model)
     return CLIClient(model=model, claude_path=claude_path,
                      permission_mode=permission_mode, cwd=cwd,
-                     mcp_config=mcp_config)
+                     mcp_config=mcp_config,
+                     allowed_tools=allowed_tools,
+                     extra_dirs=extra_dirs)

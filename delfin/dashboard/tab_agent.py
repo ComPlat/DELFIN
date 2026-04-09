@@ -1865,6 +1865,19 @@ def create_tab(ctx):
             _agent_s = _get_agent_settings()
             _mcp_cfg = _agent_s.get("mcp_config", "")
 
+            # Dashboard mode: restrict CLI tools and grant workspace write access
+            _cli_tools = None
+            _extra_dirs = None
+            _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
+            if mode_dropdown.value == "dashboard":
+                _cli_tools = [
+                    "Read", "Grep", "Glob",      # read code + data
+                    "Write", "Bash",              # agent_workspace only
+                    "WebSearch", "WebFetch",      # literature research
+                ]
+                if _ws_dir:
+                    _extra_dirs = [_ws_dir]
+
             engine = AgentEngine(
                 repo_dir=repo_dir,
                 backend=backend,
@@ -1874,6 +1887,9 @@ def create_tab(ctx):
                 mode=mode_dropdown.value,
                 permission_mode=_active_cli_perm(),
                 mcp_config=_mcp_cfg,
+                allowed_tools=_cli_tools,
+                extra_dirs=_extra_dirs,
+                agent_workspace_dir=_ws_dir,
             )
             state["engine"] = engine
             ctx.agent_engine = engine

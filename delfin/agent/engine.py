@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import threading
@@ -148,7 +149,7 @@ _ROLE_MODEL_MAP: dict[str, str] = {
     "builder_agent": "auto",      # user's choice (often sonnet/opus)
     "test_agent": "haiku",        # run tests, assert results
     "solo_agent": "auto",         # user's choice
-    "dashboard_agent": "haiku",   # only parses slash commands
+    "dashboard_agent": "sonnet",  # data analysis + research needs quality
     "research_agent": "sonnet",   # chemistry method synthesis needs depth
 }
 
@@ -162,7 +163,7 @@ _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "test_agent": 8000,           # test execution
     "research_agent": 16000,      # deep chemistry method analysis
     "solo_agent": 64000,          # scales: low=32k, medium=64k, high=128k
-    "dashboard_agent": 32000,     # scales: low=16k, medium=32k, high=64k
+    "dashboard_agent": 64000,     # scales: low=32k, medium=64k, high=128k
 }
 _DEFAULT_THINKING_BUDGET = 10000
 
@@ -178,7 +179,7 @@ _ROLE_MAX_TOKENS: dict[str, int] = {
     "research_agent": 8192,
     "test_agent": 8192,
     "runtime_agent": 8192,
-    "dashboard_agent": 8192,
+    "dashboard_agent": 16384,    # analysis scripts + research reports need space
 }
 _DEFAULT_MAX_TOKENS = 8192
 
@@ -190,8 +191,13 @@ _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
 _RESEARCH_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "WebSearch", "WebFetch"})
 _FULL_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"})
+_DASHBOARD_TOOLS = frozenset({
+    "Read", "Grep", "Glob",        # read code + data
+    "Write", "Bash",               # agent_workspace only (CLI enforced via --add-dir)
+    "WebSearch", "WebFetch",       # literature research
+})
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
-    "dashboard_agent": _READ_TOOLS,             # read code to understand UI, no writes
+    "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
     "chief_agent":     _GIT_BASH,
     "session_manager": _GIT_BASH,
@@ -235,6 +241,9 @@ class AgentEngine:
         permission_mode: str = "",
         pack_dir: Path | None = None,
         mcp_config: str = "",
+        allowed_tools: list[str] | None = None,
+        extra_dirs: list[str] | None = None,
+        agent_workspace_dir: str = "",
     ):
         self.repo_dir = Path(repo_dir)
         self.loader = PromptLoader(repo_dir=pack_dir)
@@ -242,10 +251,12 @@ class AgentEngine:
             backend=backend, provider=provider, api_key=api_key,
             model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir), mcp_config=mcp_config,
+            allowed_tools=allowed_tools, extra_dirs=extra_dirs,
         )
         self.backend = backend
         self.provider = provider
         self.mode = mode
+        self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
         self.mode_description: str = ""
         self.current_role_index: int = 0
@@ -387,6 +398,20 @@ class AgentEngine:
                     if allowed is not None and event.tool_name not in allowed:
                         # Block unauthorized tool — don't call on_tool_use
                         continue
+                    # Defense-in-depth: dashboard_agent Write restricted to workspace
+                    if (role_id == "dashboard_agent"
+                            and event.tool_name == "Write"
+                            and self._agent_workspace_dir):
+                        try:
+                            _parsed = json.loads(event.tool_input)
+                            _fp = _parsed.get("file_path", "")
+                            if _fp:
+                                _resolved = str(Path(_fp).resolve())
+                                _ws = str(Path(self._agent_workspace_dir).resolve())
+                                if not _resolved.startswith(_ws + "/") and _resolved != _ws:
+                                    continue  # block write outside workspace
+                        except Exception:
+                            pass
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
 
