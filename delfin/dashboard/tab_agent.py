@@ -35,11 +35,14 @@ _AGENT_CSS = """\
 }
 .delfin-chat-msg {
     overflow-anchor: none;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     padding: 8px 12px;
     border-radius: 8px;
     max-width: 85%;
     word-wrap: break-word;
+}
+.delfin-chat-tool + .delfin-chat-tool {
+    margin-top: -6px;
 }
 .delfin-chat-user {
     background: #dbeafe;
@@ -1393,14 +1396,14 @@ def create_tab(ctx):
 
     # Input area
     input_textarea = widgets.Textarea(
-        placeholder="Type your message here... (Enter = Send, Shift+Enter = new line, queues while busy)",
-        layout=widgets.Layout(width="100%", height="70px"),
+        placeholder="Message... (Enter = send, Shift+Enter = newline)",
+        layout=widgets.Layout(width="100%", height="50px"),
     )
     input_textarea.add_class("delfin-agent-input")
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
-        layout=widgets.Layout(width="80px", height="70px"),
+        layout=widgets.Layout(width="80px", height="50px"),
     )
     input_row = widgets.HBox(
         [input_textarea, send_btn],
@@ -2671,7 +2674,14 @@ def create_tab(ctx):
                 f'{icon} {_esc(short)}</span>'
             )
         else:
-            working_html.value = ""
+            # Auto-focus input textarea when agent finishes
+            working_html.value = (
+                '<img src="" onerror="'
+                "var ta=document.querySelector('.delfin-agent-input textarea');"
+                "if(ta)ta.focus();"
+                "this.remove();"
+                '" style="display:none">'
+            )
             ctx.agent_status_html.value = ""
 
     def _update_queue_display():
