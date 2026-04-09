@@ -5195,28 +5195,7 @@ def create_tab(ctx):
         if engine is None:
             return
 
-        if not engine.messages and not state.get("_mode_manual_override"):
-            from delfin.agent.engine import AgentEngine as _AE
-            route_decision = _AE.recommend_task_route(user_text, mode_dropdown.value)
-            recommended = route_decision.get("mode", mode_dropdown.value)
-            reasons = route_decision.get("reasons", []) or []
-            task_class = route_decision.get("task_class", "task")
-            confidence = route_decision.get("confidence", "low")
-            if recommended != mode_dropdown.value:
-                # Only auto-switch from the default "dashboard" mode.
-                # If the user explicitly chose a mode, respect it.
-                should_auto = mode_dropdown.value == "dashboard"
-                reason_text = "; ".join(reasons[:2]) if reasons else task_class
-                if should_auto:
-                    _set_mode_programmatically(recommended)
-                    _append_system_message(
-                        f"Auto mode: **{recommended}** "
-                        f"({task_class}, {confidence}) — {reason_text}."
-                    )
-                    engine = _ensure_engine()
-                    if engine is None:
-                        return
-                # No mode hints — respect the user's choice silently
+        # No auto-mode-switching — the user's chosen mode is always respected.
 
         # After cycle complete: enter follow-up mode (keep context alive).
         # The user can continue chatting with the builder/solo agent.
