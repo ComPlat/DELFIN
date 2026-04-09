@@ -70,23 +70,35 @@ _AGENT_CSS = """\
     word-break: break-all;
 }
 .delfin-chat-tool {
-    background: #1a1b26;
-    color: #a9b1d6;
-    margin: 1px 0;
-    padding: 3px 10px;
+    background: transparent;
+    color: #9ca3af;
+    margin: 0;
+    padding: 0 10px;
     font-size: 11px;
     max-width: 100%;
-    border-left: 2px solid #7aa2f7;
-    border-radius: 0 3px 3px 0;
+    border-radius: 0;
     font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
     white-space: pre-wrap;
     word-break: break-all;
+    line-height: 1.4;
 }
-.delfin-chat-tool .tool-name { color: #7aa2f7; font-weight: 600; }
-.delfin-chat-tool .tool-path { color: #9ece6a; }
-.delfin-chat-tool .tool-param { color: #e0af68; }
+.delfin-chat-tool .tool-name { color: #6b7280; font-weight: 600; }
+.delfin-chat-tool .tool-path { color: #6b7280; }
+.delfin-chat-tool .tool-param { color: #9ca3af; }
 .delfin-chat-tool .tool-diff-old { color: #f7768e; }
 .delfin-chat-tool .tool-diff-new { color: #9ece6a; }
+.delfin-chat-tool details { cursor: pointer; }
+.delfin-chat-tool details summary { display: inline; }
+.delfin-chat-tool details pre {
+    margin: 2px 0 0 16px;
+    padding: 4px 8px;
+    background: #f3f4f6;
+    border-radius: 3px;
+    font-size: 10px;
+    color: #6b7280;
+    max-height: 120px;
+    overflow-y: auto;
+}
 .delfin-streaming-pre {
     margin: 0;
     padding: 0;
@@ -5151,16 +5163,30 @@ def create_tab(ctx):
             _handle_slash_command(user_text)
             return
 
-        # If streaming, queue the message for later
+        # If streaming, interrupt current work and send the new message
+        # (terminal-like behavior: user can redirect the agent mid-work)
         if state["streaming"]:
-            state["message_queue"].append(user_text)
-            input_textarea.value = ""
-            _append_system_message(
-                f"Message queued ({len(state['message_queue'])} in queue). "
-                f"Will send when current response completes."
-            )
+            engine = state["engine"]
+            if engine:
+                engine.request_stop()
+                if hasattr(engine.client, "kill"):
+                    engine.client.kill()
+            # Bump generation so old worker's finally block won't touch UI
+            state["_generation_id"] = state.get("_generation_id", 0) + 1
+            state["streaming"] = False
+            # Finalize any in-progress streaming message
+            msgs = state["chat_messages"]
+            if msgs and msgs[-1].get("_streaming"):
+                msgs[-1]["_streaming"] = False
+                _refresh_chat_html()
+            _set_working(False)
+            _update_button_states()
+            # Clear any previously queued messages
+            state["message_queue"].clear()
             _update_queue_display()
-            return
+            # Brief pause to let old worker thread notice the stop
+            time.sleep(0.1)
+            # Fall through to send the new message normally
 
         # Track user message for safety intent-checking
         state["_last_user_message"] = user_text
@@ -5194,7 +5220,7 @@ def create_tab(ctx):
                     engine = _ensure_engine()
                     if engine is None:
                         return
-                elif not state.get("_mode_suggested"):
+                elif not state.get("_mode_suggested") and mode_dropdown.value != "solo":
                     state["_mode_suggested"] = True
                     _append_system_message(
                         f"Mode hint: **{recommended}** would likely be cheaper/better "
@@ -5529,13 +5555,13 @@ def create_tab(ctx):
                         )
 
                 def _on_tool_result(tool_name, tool_output):
-                    """Display tool execution results in terminal style."""
+                    """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
                         return
-                    # Truncate large outputs (file contents, grep results)
+                    # Truncate for display
                     output = tool_output
-                    _MAX_LINES = 12
-                    _MAX_CHARS = 1200
+                    _MAX_LINES = 8
+                    _MAX_CHARS = 600
                     lines = output.split("\n")
                     truncated = False
                     if len(lines) > _MAX_LINES:
@@ -5547,14 +5573,25 @@ def create_tab(ctx):
                     suffix = ""
                     if truncated:
                         total = len(tool_output)
-                        suffix = (
-                            f'\n<span style="color:#565f89;">'
-                            f"... ({total:,} chars total)</span>"
+                        suffix = f"\n... ({total:,} chars total)"
+                    # Integrate into the last tool message as collapsible detail
+                    msgs = state["chat_messages"]
+                    if msgs and msgs[-1]["role"] == "tool":
+                        first_line = output.split("\n")[0][:80]
+                        detail_html = (
+                            f'<details><summary> → {_html.escape(first_line)}'
+                            f'{"..." if truncated or len(output.split(chr(10))) > 1 else ""}'
+                            f'</summary>'
+                            f'<pre>{_html.escape(output)}{_html.escape(suffix)}</pre>'
+                            f'</details>'
                         )
-                    _append_tool_message(
-                        f'<span style="color:#565f89;">'
-                        f'{_html.escape(output)}</span>{suffix}'
-                    )
+                        msgs[-1]["content"] += detail_html
+                        _refresh_chat_html()
+                    else:
+                        _append_tool_message(
+                            f'<span style="color:#9ca3af;">'
+                            f'{_html.escape(output)}</span>'
+                        )
 
                 def _on_permission_denied(description):
                     if chunks:
@@ -5697,11 +5734,12 @@ def create_tab(ctx):
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
 
-                    # Show per-role cost
+                    # Show per-role cost (only for pipeline modes, not solo/dashboard)
                     _role_cost = engine.cost_usd - _cost_before
                     _role_in = engine.token_usage["input"] - _in_before
                     _role_out = engine.token_usage["output"] - _out_before
-                    if _role_in > 0 or _role_out > 0:
+                    _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
+                    if _is_pipeline_mode and (_role_in > 0 or _role_out > 0):
                         _cost_str = f"${_role_cost:.3f}" if _role_cost > 0 else ""
                         _append_system_message(
                             f"{role_label}: {_role_in:,} in / {_role_out:,} out"
@@ -6192,7 +6230,14 @@ def create_tab(ctx):
             # Kill the persistent CLI process
             if hasattr(engine.client, "kill"):
                 engine.client.kill()
+        # Bump generation so the old worker's finally block won't touch UI
+        state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
+        # Finalize any in-progress streaming message
+        msgs = state["chat_messages"]
+        if msgs and msgs[-1].get("_streaming"):
+            msgs[-1]["_streaming"] = False
+            _refresh_chat_html()
         _set_active_gate()
         _set_working(False)
         _update_button_states()
