@@ -98,17 +98,6 @@ _AGENT_CSS = """\
     color: inherit;
     background: transparent;
 }
-.delfin-settings-toggle {
-    cursor: pointer;
-    font-size: 11px;
-    color: #9ca3af;
-    padding: 2px 8px;
-    border: 1px solid #e5e7eb;
-    border-radius: 4px;
-    background: #f9fafb;
-    user-select: none;
-}
-.delfin-settings-toggle:hover { background: #f3f4f6; color: #6b7280; }
 .delfin-chat-approval {
     background: #fef3c7;
     margin: 8px 0;
@@ -1212,30 +1201,13 @@ def create_tab(ctx):
         tooltip="Export chat as Markdown file",
     )
 
-    # Collapsible settings: in solo/dashboard, extra controls hide behind toggle
-    settings_toggle = widgets.Button(
-        description="Settings",
-        layout=widgets.Layout(width="70px", height="26px"),
-        tooltip="Show/hide settings",
-    )
-    settings_toggle.add_class("delfin-settings-toggle")
-
-    # Essential controls (always visible): mode, provider, model, stop, commit, push
-    _essential_row = widgets.HBox(
-        [mode_dropdown, provider_dropdown, model_dropdown, stop_btn,
-         commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
-         settings_toggle],
-        layout=widgets.Layout(flex_flow="row wrap"),
-    )
-    # Extra controls (collapsed in solo/dashboard): pipeline-specific stuff
-    _extra_row = widgets.HBox(
-        [effort_dropdown, perm_dropdown,
-         new_cycle_btn, advance_btn, undo_btn, export_btn],
-        layout=widgets.Layout(flex_flow="row wrap"),
-    )
     controls_row = widgets.VBox([
-        _essential_row,
-        _extra_row,
+        widgets.HBox(
+            [mode_dropdown, provider_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+             new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
+             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+            layout=widgets.Layout(flex_flow="row wrap"),
+        ),
         mode_desc_html,
     ], layout=widgets.Layout(margin="0 0 6px 0"))
 
@@ -5048,12 +5020,6 @@ def create_tab(ctx):
         """Export button handler."""
         _export_chat()
 
-    def _on_settings_toggle(button):
-        """Toggle extra settings row visibility."""
-        visible = _extra_row.layout.display != "none"
-        _extra_row.layout.display = "none" if visible else "flex"
-        settings_toggle.description = "Settings" if visible else "Hide"
-
     def _on_search_change(change):
         """Live search as user types."""
         _do_search(change["new"])
@@ -6336,10 +6302,6 @@ def create_tab(ctx):
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
         commit_btn.layout.display = "none" if _is_minimal else "inline-flex"
         push_btn.layout.display = "none" if _is_minimal else "inline-flex"
-        # Collapse extra settings in minimal mode, show in pipeline modes
-        _extra_row.layout.display = "none" if _is_minimal else "flex"
-        settings_toggle.layout.display = "inline-flex" if _is_minimal else "none"
-        settings_toggle.description = "Settings"
 
     def _on_provider_change(change):
         """Switch provider (Claude / OpenAI / KIT), update model options."""
@@ -6590,7 +6552,6 @@ def create_tab(ctx):
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)
-    settings_toggle.on_click(_on_settings_toggle)
     approve_btn.on_click(_on_approve)
     deny_btn.on_click(_on_deny)
     search_input.observe(_on_search_change, names="value")
@@ -6617,9 +6578,6 @@ def create_tab(ctx):
         advance_btn.layout.display = "none"
         commit_btn.layout.display = "none"
         push_btn.layout.display = "none"
-        _extra_row.layout.display = "none"
-    else:
-        settings_toggle.layout.display = "none"
 
     _enter_key_init_js = """
 (function() {
