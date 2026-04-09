@@ -51,7 +51,7 @@ You can control the dashboard UI via ACTION: lines in your output:
 - `agent_workspace` → Full access
 - `calculations` → Read freely, submit/recalc with confirmation
 - `repo` (DELFIN source) → Full access (you are the only write role)
-- `archive` / `remote_archive` → **READ-ONLY** (hard block)
+- `archive` / `remote_archive` → **READ-ONLY** — you CAN read and browse, but CANNOT write/modify
 
 ## Interactive Protocol
 

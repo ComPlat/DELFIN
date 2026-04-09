@@ -4141,8 +4141,12 @@ def create_tab(ctx):
         jn = ctx.submit_refs.get("job_name_widget")
         if jn and jn.value.strip():
             parts.append(f"Job name: {jn.value.strip()}")
-        # calc_dir + workspace + permissions
+        # calc_dir + archive dirs + workspace + permissions
         parts.append(f"Calculations dir: {ctx.calc_dir}")
+        parts.append(f"Archive dir: {ctx.archive_dir} (READ-ONLY: you can read/browse)")
+        _remote_arch = ctx.runtime_settings.get("remote_archive_dir", "")
+        if _remote_arch:
+            parts.append(f"Remote archive dir: {_remote_arch} (READ-ONLY: you can read/browse)")
         parts.append(f"Agent workspace: {ctx.agent_dir}")
         perm = state.get("_perm_profile", "ask_all")
         _perm_desc = {
@@ -4378,7 +4382,7 @@ def create_tab(ctx):
 
         Safety enforcement (code-level, not prompt-level):
         - Zone-based permissions: workspace=free, calc=confirm,
-          archive/remote_archive=read-only (HARD BLOCK), unknown=blocked
+          archive/remote_archive=read-only (writes blocked, reads allowed), unknown=blocked
         - Tier 3: max 1 per response, bulk ops need explicit user intent
         - Workspace zone: tier 3 skips confirmation gate
         """
