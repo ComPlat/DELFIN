@@ -528,18 +528,56 @@ _AGENT_CSS = """\
     50% { opacity: 1.0; }
 }
 .delfin-agent-working {
-    display: inline-block;
-    padding: 3px 10px;
-    border-radius: 12px;
-    background: #fef3c7;
-    color: #92400e;
-    font-size: 12px;
-    font-weight: 600;
-    animation: delfin-pulse 1.5s ease-in-out infinite;
-    max-width: 90%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    margin: 4px 0;
+    border-radius: 6px;
+    background: linear-gradient(90deg, #1e293b, #334155);
+    color: #e2e8f0;
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.delfin-spinner {
+    display: inline-flex;
+    gap: 3px;
+}
+.delfin-spinner-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: #60a5fa;
+    animation: delfin-bounce 1.2s ease-in-out infinite;
+}
+.delfin-spinner-dot:nth-child(2) { animation-delay: 0.15s; }
+.delfin-spinner-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes delfin-bounce {
+    0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+    40% { opacity: 1; transform: scale(1.2); }
+}
+.delfin-activity-icon {
+    color: #60a5fa;
+    font-size: 13px;
+    min-width: 16px;
+    text-align: center;
+}
+.delfin-activity-label {
+    color: #94a3b8;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.delfin-activity-text {
+    color: #e2e8f0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .delfin-chat-thinking {
     background: #f5f3ff;
@@ -2451,21 +2489,53 @@ def create_tab(ctx):
         _update_inspector_detail()
 
     def _set_working(active, label=""):
-        """Show or hide the working indicator."""
+        """Show or hide the CLI-like activity spinner."""
         if active:
             text = label or "Working..."
+            _esc = _html.escape
+
+            # Classify activity for icon + label
+            _tl = text.lower()
+            if _tl.startswith("thinking"):
+                icon, cat = "\U0001f4ad", "think"
+            elif "reading" in _tl:
+                icon, cat = "\U0001f4c4", "read"
+            elif "editing" in _tl:
+                icon, cat = "\u270f\ufe0f", "edit"
+            elif "writing" in _tl:
+                icon, cat = "\u270f\ufe0f", "write"
+            elif "searching" in _tl or "finding" in _tl:
+                icon, cat = "\U0001f50d", "grep"
+            elif _tl.startswith("$") or _tl.startswith("\u25b8"):
+                icon, cat = "\u25b8", "bash"
+            elif "sub-agent" in _tl:
+                icon, cat = "\U0001f916", "agent"
+            else:
+                icon, cat = "\u26a1", "work"
+
+            _spinner = (
+                '<span class="delfin-spinner">'
+                '<span class="delfin-spinner-dot"></span>'
+                '<span class="delfin-spinner-dot"></span>'
+                '<span class="delfin-spinner-dot"></span>'
+                '</span>'
+            )
+
             working_html.value = (
-                f'<span class="delfin-agent-working">'
-                f'\u23f3 {_html.escape(text)}</span>'
+                f'<div class="delfin-agent-working">'
+                f'{_spinner}'
+                f'<span class="delfin-activity-icon">{icon}</span>'
+                f'<span class="delfin-activity-label">{_esc(cat)}</span>'
+                f'<span class="delfin-activity-text">{_esc(text)}</span>'
+                f'</div>'
             )
             # Global header spinner — visible from all tabs
-            short = text[:40] + ("…" if len(text) > 40 else "")
+            short = text[:40] + ("\u2026" if len(text) > 40 else "")
             ctx.agent_status_html.value = (
-                f'<span style="font-family:monospace; color:#1565c0; '
-                f'padding:2px 6px; border:1px solid #90caf9; '
-                f'border-radius:4px; animation:pulse 1.5s infinite;">'
-                f'\u23f3 Agent: {_html.escape(short)}</span>'
-                f'<style>@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.5}}}}</style>'
+                f'<span style="font-family:monospace; color:#60a5fa; '
+                f'padding:2px 6px; background:#1e293b; '
+                f'border-radius:4px; font-size:11px;">'
+                f'{icon} {_esc(short)}</span>'
             )
         else:
             working_html.value = ""
