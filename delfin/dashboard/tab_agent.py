@@ -1587,6 +1587,9 @@ def create_tab(ctx):
             "control": "control_widget",
             "coords": "coords_widget",
             "submit-btn": "submit_button",
+            "batch-smiles": "smiles_batch_widget",
+            "time-limit": "job_type_widget",
+            "custom-time": "custom_time_widget",
         }
         for alias, ref_key in _submit_map.items():
             w = ctx.submit_refs.get(ref_key)

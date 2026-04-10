@@ -132,7 +132,7 @@ Calc/archive file operations (rename, move, delete, recalc, submit) happen ONLY 
 - `/ui <widget> width|height <css>` — Set size (e.g. 120px)
 
 **Agent tab:** `send-btn`, `input`, `mode`, `perm`
-**Submit tab:** `job-name`, `control`, `coords`, `submit-btn`
+**Submit tab:** `job-name`, `control`, `coords`, `submit-btn`, `batch-smiles`, `time-limit`, `custom-time`
 **ORCA Builder:** `orca-method`, `orca-basis`, `orca-job-type`, `orca-charge`,
   `orca-mult`, `orca-pal`, `orca-maxcore`, `orca-coords`, `orca-dispersion`,
   `orca-solvent`, `orca-submit-btn`, `orca-preview`

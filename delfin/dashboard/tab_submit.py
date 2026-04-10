@@ -2371,6 +2371,8 @@ def create_tab(ctx):
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,
         'smiles_batch_widget': smiles_batch_widget,
+        'job_type_widget': job_type_widget,
+        'custom_time_widget': custom_time_widget,
         'handle_submit': handle_submit,
         'handle_validate_control': handle_validate_control,
     }
