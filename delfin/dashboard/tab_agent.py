@@ -4483,12 +4483,16 @@ def create_tab(ctx):
         },
     }
 
-    # Map DELFIN profile → Claude CLI permission_mode
+    # Map DELFIN profile → Claude CLI permission_mode.
+    # Safety: never use bypassPermissions for ANY mode — all modes cap at
+    # 'acceptEdits', which auto-approves file edits but still asks for Bash.
+    # The DELFIN zone system is the primary safety layer; CLI permissions
+    # are defense-in-depth.
     _PROFILE_TO_CLI_PERM: dict[str, str] = {
-        "plan":      "plan",
-        "ask_all":   "default",
-        "repo_free": "bypassPermissions",  # CLI runs non-interactive; DELFIN zone system enforces safety
-        "all_free":  "bypassPermissions",  # CLI runs non-interactive; DELFIN zone system enforces safety
+        "plan":      "plan",           # read-only
+        "ask_all":   "default",        # CLI asks before every write/bash
+        "repo_free": "acceptEdits",    # CLI auto-approves edits, asks for bash
+        "all_free":  "acceptEdits",    # still asks for dangerous bash commands
     }
 
     def _active_perms() -> dict[str, tuple[int, bool]]:
@@ -4499,8 +4503,9 @@ def create_tab(ctx):
     def _active_cli_perm() -> str:
         """Return the Claude CLI permission_mode for the active profile.
 
-        Dashboard mode always uses 'default' (asks before write tools)
-        because the dashboard agent should never write files directly.
+        Dashboard mode always uses 'default' (asks before write tools).
+        All other modes map through _PROFILE_TO_CLI_PERM which caps at
+        'acceptEdits' — never bypassPermissions.
         """
         cur_mode = mode_dropdown.value
         if cur_mode == "dashboard":
@@ -5058,6 +5063,27 @@ def create_tab(ctx):
         # --- Bash commands: run directly, report result to agent ---
         if tool == "Bash" and inp.get("command"):
             cmd = inp["command"]
+            # Block truly destructive commands even after approval
+            _DANGEROUS_PATTERNS = [
+                "rm -rf /", "rm -rf ~", "rm -rf .",
+                "mkfs", "dd if=", "> /dev/sd",
+                ":(){ :|:& };:",  # fork bomb
+                "--force-with-lease", "push --force",
+                "git reset --hard", "git clean -fd",
+            ]
+            _cmd_lower = cmd.lower().strip()
+            if any(dp in _cmd_lower for dp in _DANGEROUS_PATTERNS):
+                _append_system_message(
+                    f"\u26d4 BLOCKED: Destructive command rejected for safety.\n"
+                    f"  $ {cmd[:200]}\n"
+                    f"Run this manually in the terminal if you really need it."
+                )
+                input_textarea.value = (
+                    f"That command was blocked for safety. "
+                    f"Please suggest a safer alternative."
+                )
+                _on_send(None)
+                return
             _append_system_message(f"\u2705 Approved & executing: $ {cmd[:200]}")
             try:
                 result = _sp.run(
