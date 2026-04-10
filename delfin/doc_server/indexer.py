@@ -15,7 +15,7 @@ from typing import Any
 # PDF extraction
 # ---------------------------------------------------------------------------
 
-def _extract_pdf_text(path: Path) -> list[dict[str, Any]]:
+def _extract_pdf_text(path: Path, quiet: bool = False) -> list[dict[str, Any]]:
     """Extract text from a PDF file, one entry per page.
 
     Returns a list of ``{"page": int, "text": str}`` dicts.
@@ -23,7 +23,8 @@ def _extract_pdf_text(path: Path) -> list[dict[str, Any]]:
     try:
         from pypdf import PdfReader  # type: ignore
     except ImportError:
-        print(f"  [skip] pypdf not installed — cannot index {path.name}", file=sys.stderr)
+        if not quiet:
+            print(f"  [skip] pypdf not installed — cannot index {path.name}", file=sys.stderr)
         return []
 
     reader = PdfReader(str(path))
@@ -255,7 +256,7 @@ def build_index(
             print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
 
         if doc_type == "pdf":
-            pages = _extract_pdf_text(path)
+            pages = _extract_pdf_text(path, quiet=quiet)
             sections_list = _chunk_pdf_into_sections(pages)
         elif doc_type == "markdown":
             sections_list = _extract_markdown_sections(path)

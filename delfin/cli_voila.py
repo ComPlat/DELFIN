@@ -376,12 +376,15 @@ def main(argv=None):
     ]
 
     # Token authentication for Voilà/Jupyter
+    # Always disable XSRF checks — Voilà's internal kernel shutdown POSTs
+    # don't include the _xsrf token, causing spurious 403 errors in the log.
+    # Voilà is not a general-purpose Jupyter server, so XSRF is not needed.
+    cmd.append("--ServerApp.disable_check_xsrf=True")
     if _token:
         cmd.append(f"--ServerApp.token={_token}")
     elif args.ip == "127.0.0.1":
         # Localhost: no token needed, disable for convenience
         cmd.append("--ServerApp.token=")
-        cmd.append("--ServerApp.disable_check_xsrf=True")
 
     voila_static_root = _get_voila_static_root()
     if voila_static_root:
