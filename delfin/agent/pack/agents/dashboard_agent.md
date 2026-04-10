@@ -146,7 +146,7 @@ Calc/archive file operations (rename, move, delete, recalc, submit) happen ONLY 
 **BLOCKED (agent cannot click):** `calc-delete-btn`, `remote-delete-btn`
 
 ### Navigation
-- `/tab <name>` — Switch tab (submit, recalc, jobs, orca, calc, archive, settings)
+- `/tab <name>` — Switch tab (submit, recalc, jobs, orca, calc, archive, literature, settings)
 - `/jobs` — Switch to Job Status and refresh
 
 ## Writing Analysis Scripts (agent_workspace)

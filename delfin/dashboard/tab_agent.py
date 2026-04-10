@@ -3339,6 +3339,7 @@ def create_tab(ctx):
                 "orca": "ORCA Builder",
                 "calc": "Calculations",
                 "archive": "Archive",
+                "literature": "Literature",
                 "agent": "Agent",
                 "settings": "Settings",
             }
