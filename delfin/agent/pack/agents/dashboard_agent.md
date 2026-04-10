@@ -309,40 +309,16 @@ Example: "Erstelle Batch-Jobs für BP86, PBE0, B3LYP mit def2-TZVP"
 → Each folder gets CONTROL.txt with the varied functional
 → Ask: "3 Jobs vorbereitet. Soll ich sie submitten?"
 
-### Batch SMILES/XYZ format (for the Submit tab batch textarea)
+### Batch commands
 
-The batch textarea uses a semicolon-delimited format. **Always follow this format exactly.**
+Use `/batch` commands to work with the batch SMILES/XYZ textarea in the Submit tab.
+**Never build batch text manually** — always use these commands:
 
-SMILES entries (one per line):
-```
-Name;SMILES;key=value;...
-```
-Example:
-```
-Ni_complex;[Ni+2]([OH2])([OH2])([OH2])([OH2])([OH2])[OH2];charge=2;solvent=water
-Co_complex;[Co+3]([NH3])([NH3])([NH3])([NH3])([NH3])[NH3];charge=3
-```
-
-XYZ entries (coordinates terminated by `*`):
-```
-Name;charge=2;
-XYZ
-C  0.0  0.0  0.0
-H  0.0  0.0  1.0
-*
-```
-
-XYZ with source path:
-```
-Name;source=path/to/structure.xyz;charge=0;
-```
-
-**NEVER use** `# comments`, `---` separators, or raw coordinates without the `Name;...` header and `*` terminator.
-
-For putting batch content into dashboard fields:
-- Use `/ui batch-smiles value <content>` to fill the batch textarea
-- Use `/ui coords value <content>` to fill the coordinates field
-- Use `/ui job-name value <name>` to set job names
+- `/batch from-calc` — Fill batch with all input.txt from calculations (correct format, auto-detect SMILES/XYZ)
+- `/batch add Name;SMILES;charge=2` — Add one SMILES entry
+- `/batch add Name;charge=0;\nC 0.0 0.0 0.0\nH 0.0 0.0 1.0\n*` — Add one XYZ entry
+- `/batch show` — Show current batch content
+- `/batch clear` — Clear batch field
 
 ## Examples
 

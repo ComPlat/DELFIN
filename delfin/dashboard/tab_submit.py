@@ -2370,6 +2370,7 @@ def create_tab(ctx):
         'coords_widget': coords_widget,
         'submit_button': submit_button,
         'job_name_widget': job_name_widget,
+        'smiles_batch_widget': smiles_batch_widget,
         'handle_submit': handle_submit,
         'handle_validate_control': handle_validate_control,
     }

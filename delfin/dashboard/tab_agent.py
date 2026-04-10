@@ -4353,6 +4353,118 @@ def create_tab(ctx):
                 _confirm_or_exec("cancel_single", f"Cancel job {job_id}?", _do_cancel, cmd_for_zone=f"/cancel {job_id}")
             return True
 
+        # -- /batch commands ---------------------------------------------------
+
+        if cmd.startswith("/batch "):
+            sub = text[len("/batch"):].strip()
+
+            if sub == "from-calc" or sub.startswith("from-calc"):
+                # Collect all input.txt from calc_dir, build batch format
+                from pathlib import Path as _P
+                calc_root = ctx.calc_dir
+                entries = []
+                for input_file in sorted(calc_root.rglob("input.txt")):
+                    # Only direct children (one level deep)
+                    if input_file.parent.parent != calc_root:
+                        continue
+                    folder_name = input_file.parent.name
+                    try:
+                        content = input_file.read_text(encoding="utf-8", errors="replace").strip()
+                    except Exception:
+                        continue
+                    if not content:
+                        continue
+                    lines = content.splitlines()
+                    # Detect SMILES vs XYZ: SMILES is a single line with brackets/letters, no spaces at start
+                    is_smiles = (
+                        len(lines) == 1
+                        and not lines[0].strip()[0:1].isspace()
+                        and any(c in lines[0] for c in "[]()=#@+\\/-")
+                    )
+                    if is_smiles:
+                        entries.append(f"{folder_name};{content}")
+                    else:
+                        # XYZ: skip header lines (atom count + comment) if present
+                        xyz_lines = lines
+                        if len(lines) >= 3:
+                            try:
+                                int(lines[0].strip())
+                                xyz_lines = lines[2:]  # skip count + comment
+                            except ValueError:
+                                pass
+                        xyz_block = "\n".join(xyz_lines)
+                        entries.append(f"{folder_name};\n{xyz_block}\n*")
+
+                if not entries:
+                    _append_system_message("No input.txt files found in calculations.")
+                    return True
+
+                batch_text = "\n".join(entries)
+                batch_widget = ctx.submit_refs.get("smiles_batch_widget")
+                if batch_widget:
+                    batch_widget.value = batch_text
+                    ctx.select_tab("Submit Job")
+                    _append_system_message(
+                        f"Batch filled with {len(entries)} entries from calculations.\n"
+                        f"Switched to Submit tab."
+                    )
+                else:
+                    _append_system_message(
+                        f"Built {len(entries)} batch entries but could not find batch widget.\n"
+                        f"Content:\n{batch_text[:500]}..."
+                    )
+                return True
+
+            if sub == "clear":
+                batch_widget = ctx.submit_refs.get("smiles_batch_widget")
+                if batch_widget:
+                    batch_widget.value = ""
+                    _append_system_message("Batch field cleared.")
+                else:
+                    _append_system_message("Batch widget not found.")
+                return True
+
+            if sub == "show":
+                batch_widget = ctx.submit_refs.get("smiles_batch_widget")
+                if batch_widget:
+                    val = batch_widget.value.strip()
+                    if val:
+                        line_count = len([l for l in val.splitlines() if l.strip()])
+                        _append_system_message(f"Batch content ({line_count} lines):\n{val[:1000]}")
+                    else:
+                        _append_system_message("Batch field is empty.")
+                else:
+                    _append_system_message("Batch widget not found.")
+                return True
+
+            if sub.startswith("add "):
+                entry = sub[4:].strip()
+                if not entry or ";" not in entry:
+                    _append_system_message(
+                        "Format: /batch add Name;SMILES;key=value\n"
+                        "    or: /batch add Name;charge=0;\\nXYZ\\ncoords\\n*"
+                    )
+                    return True
+                batch_widget = ctx.submit_refs.get("smiles_batch_widget")
+                if batch_widget:
+                    current = batch_widget.value
+                    if current and not current.endswith("\n"):
+                        current += "\n"
+                    batch_widget.value = current + entry
+                    _append_system_message(f"Added to batch: {entry[:80]}")
+                else:
+                    _append_system_message("Batch widget not found.")
+                return True
+
+            _append_system_message(
+                "Batch commands:\n"
+                "  /batch from-calc  — Fill batch from all input.txt in calculations\n"
+                "  /batch add Name;SMILES;key=value  — Add one entry\n"
+                "  /batch show  — Show current batch content\n"
+                "  /batch clear  — Clear batch field"
+            )
+            return True
+
         return False
 
     # -- dashboard mode helpers --------------------------------------------
