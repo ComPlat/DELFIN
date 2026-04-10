@@ -4359,30 +4359,58 @@ def create_tab(ctx):
             sub = text[len("/batch"):].strip()
 
             if sub == "from-calc" or sub.startswith("from-calc"):
-                # Collect all input.txt from calc_dir, build batch format
-                from pathlib import Path as _P
+                # Collect geometry files from calc_dir, build batch format
+                # Optional: /batch from-calc *.xyz or /batch from-calc input.txt
+                parts = sub.split(None, 1)
+                pattern = parts[1].strip() if len(parts) > 1 else None
                 calc_root = ctx.calc_dir
+                # Supported geometry extensions
+                _GEO_EXTS = {".txt", ".xyz", ".smi", ".smiles"}
                 entries = []
-                for input_file in sorted(calc_root.rglob("input.txt")):
-                    # Only direct children (one level deep)
-                    if input_file.parent.parent != calc_root:
+                seen_names = set()
+
+                # Collect matching files (one level deep in calc subfolders)
+                candidates = []
+                for folder in sorted(calc_root.iterdir()):
+                    if not folder.is_dir() or folder.name.startswith("."):
                         continue
-                    folder_name = input_file.parent.name
+                    if pattern:
+                        # User-specified pattern (e.g. "*.xyz", "input.txt")
+                        matches = sorted(folder.glob(pattern))
+                    else:
+                        # Default: input.txt first, then any .xyz/.smi
+                        matches = []
+                        inp = folder / "input.txt"
+                        if inp.exists():
+                            matches.append(inp)
+                        else:
+                            for ext in (".xyz", ".smi", ".smiles"):
+                                matches.extend(sorted(folder.glob(f"*{ext}")))
+                    for f in matches:
+                        if f.is_file() and f.suffix.lower() in _GEO_EXTS:
+                            candidates.append((folder.name, f))
+
+                for folder_name, geo_file in candidates:
+                    # Unique name per folder
+                    name = folder_name
+                    if name in seen_names:
+                        name = f"{folder_name}_{geo_file.stem}"
+                    seen_names.add(name)
                     try:
-                        content = input_file.read_text(encoding="utf-8", errors="replace").strip()
+                        content = geo_file.read_text(encoding="utf-8", errors="replace").strip()
                     except Exception:
                         continue
                     if not content:
                         continue
                     lines = content.splitlines()
-                    # Detect SMILES vs XYZ: SMILES is a single line with brackets/letters, no spaces at start
+                    # Detect SMILES vs XYZ
                     is_smiles = (
                         len(lines) == 1
                         and not lines[0].strip()[0:1].isspace()
                         and any(c in lines[0] for c in "[]()=#@+\\/-")
                     )
                     if is_smiles:
-                        entries.append(f"{folder_name};{content}")
+                        entries.append(f"{name};{content}")
                     else:
                         # XYZ: skip header lines (atom count + comment) if present
                         xyz_lines = lines
@@ -4393,10 +4421,11 @@ def create_tab(ctx):
                             except ValueError:
                                 pass
                         xyz_block = "\n".join(xyz_lines)
-                        entries.append(f"{folder_name};\n{xyz_block}\n*")
+                        entries.append(f"{name};\n{xyz_block}\n*")
 
                 if not entries:
-                    _append_system_message("No input.txt files found in calculations.")
+                    hint = f" matching '{pattern}'" if pattern else ""
+                    _append_system_message(f"No geometry files{hint} found in calculations.")
                     return True
 
                 batch_text = "\n".join(entries)
@@ -4458,7 +4487,9 @@ def create_tab(ctx):
 
             _append_system_message(
                 "Batch commands:\n"
-                "  /batch from-calc  — Fill batch from all input.txt in calculations\n"
+                "  /batch from-calc          — Fill batch from calculations (input.txt, then *.xyz)\n"
+                "  /batch from-calc *.xyz    — Fill batch from *.xyz files only\n"
+                "  /batch from-calc input.txt — Fill batch from input.txt only\n"
                 "  /batch add Name;SMILES;key=value  — Add one entry\n"
                 "  /batch show  — Show current batch content\n"
                 "  /batch clear  — Clear batch field"
