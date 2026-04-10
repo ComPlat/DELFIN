@@ -11658,7 +11658,7 @@ def create_tab(ctx):
                 throw new Error('Upload chunk widget not found');
             }
             if (_clickWidgetButton(root, 'calc-upload-trigger-btn')) {
-                await _waitForUploadAck(root, prevAck, 60000);
+                await _waitForUploadAck(root, prevAck, 300000);
                 await _sleep(5);
                 return;
             }
@@ -11669,7 +11669,7 @@ def create_tab(ctx):
             if (!_setWidgetInput(root, 'calc-upload-seq', String(root._delfinUploadSeq))) {
                 throw new Error('Upload trigger controls not found');
             }
-            await _waitForUploadAck(root, prevAck, 60000);
+            await _waitForUploadAck(root, prevAck, 300000);
             await _sleep(5);
         }
         async function _putContentsModel(relPath, model){
