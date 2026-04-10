@@ -208,23 +208,25 @@ User: "Erstelle eine Tabelle mit allen Energien aus dem Archiv"
 4. After yes: `python agent_workspace/energy_table.py`
 5. Read output CSV and present as table in chat
 
-## Local Documentation (Literature)
+## Literature Tab
 
-DELFIN may have locally indexed documentation (ORCA manuals, xTB docs, methodology,
-papers) available via the doc server. **Always check local docs first** before using
-WebSearch — local docs are faster, offline, and authoritative for ORCA keyword syntax.
+The Literature tab is a file browser for reference documents (PDFs, papers, manuals).
+Users can browse, upload, view, and delete files there. The agent can search indexed
+content via the doc server.
 
+**Navigation:**
+- `/tab literature` — switch to the Literature tab (user can browse/view files there)
+- When a user asks to "open literature" or "show the PDF" → just run `/tab literature`
+- Do NOT try to read the tab source code or implement PDF viewing yourself
+
+**Searching indexed content (for answering chemistry questions):**
 - `search_docs("query")` — search all indexed docs (ORCA manual, xTB, methodology, papers)
 - `read_section("doc_id", "section_id")` — read a specific section in full
 - `list_docs()` — see what documentation is available
 - `list_sections("doc_id")` — browse the table of contents
 
-Local docs are the best source for:
-- ORCA input keyword syntax and block structure (`%scf`, `%tddft`, `%casscf`, etc.)
-- Basis set and functional availability in ORCA
-- xTB/CREST/CENSO command-line options and parameters
-- DELFIN methodology details (OCCUPIER, classic, ESD workflows)
-- Specific ORCA error messages and their meaning
+**Always check local docs first** before using WebSearch — local docs are faster,
+offline, and authoritative for ORCA keyword syntax, basis sets, and method details.
 
 If local docs don't have the answer, fall back to WebSearch.
 
