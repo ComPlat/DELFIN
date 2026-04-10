@@ -388,7 +388,12 @@ def create_tab(ctx):
 
     tab_widget = widgets.VBox([
         lit_css,
-        widgets.HTML('<h3>\U0001F4DA Literature</h3>'),
+        widgets.HTML(
+            '<h3>\U0001F4DA Literature</h3>'
+            '<p style="margin:-8px 0 8px 0;font-size:12px;color:#666;">'
+            'The DELFIN agent can search and read these documents. '
+            'Click <b>\U0001F50D Index</b> after adding files.</p>'
+        ),
         widgets.HBox(
             [lit_left, lit_splitter, lit_right],
             layout=widgets.Layout(
