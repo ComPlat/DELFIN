@@ -457,69 +457,27 @@ def create_tab(ctx):
                 }});
             }}
 
-            /* --- Find the hidden upload input --- */
-            function getUploadInput() {{
-                return root.querySelector('.lit-left .widget-upload input[type="file"]');
-            }}
-
-            /* --- Upload button triggers the hidden file input --- */
-            var triggerBtn = root.querySelector('.lit-upload-trigger');
-            if (triggerBtn) {{
-                triggerBtn.addEventListener('click', function(e) {{
+            /* --- Upload button: click opens the native file picker --- */
+            function bindUploadBtn(retries) {{
+                var btn = root.querySelector('.lit-upload-trigger');
+                var inp = root.querySelector('.widget-upload input[type="file"]');
+                if (!btn || !inp) {{
+                    if ((retries || 0) < 50) {{
+                        setTimeout(function() {{ bindUploadBtn((retries||0)+1); }}, 200);
+                    }}
+                    return;
+                }}
+                if (btn._litBound) return;
+                btn._litBound = true;
+                btn.addEventListener('click', function(e) {{
                     e.preventDefault();
                     e.stopPropagation();
-                    var inp = getUploadInput();
-                    if (inp) inp.click();
+                    /* Re-query in case widget was recreated */
+                    var fileInput = root.querySelector('.widget-upload input[type="file"]');
+                    if (fileInput) fileInput.click();
                 }});
             }}
-
-            /* --- Drop-zone visual feedback on file list --- */
-            var leftEl = root.querySelector('.lit-left');
-            var fileListEl = root.querySelector('.lit-file-list');
-            if (fileListEl && leftEl) {{
-                fileListEl.addEventListener('dragover', function(e) {{
-                    e.preventDefault();
-                    leftEl.classList.add('lit-drop-active');
-                }});
-                fileListEl.addEventListener('dragleave', function(e) {{
-                    leftEl.classList.remove('lit-drop-active');
-                }});
-                fileListEl.addEventListener('drop', function(e) {{
-                    e.preventDefault();
-                    leftEl.classList.remove('lit-drop-active');
-                    var inp = getUploadInput();
-                    if (inp && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {{
-                        try {{
-                            inp.files = e.dataTransfer.files;
-                            inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        }} catch (_err) {{}}
-                    }}
-                }});
-            }}
-
-            /* --- Drop on the whole tab (also triggers upload) --- */
-            root.addEventListener('dragover', function(e) {{
-                e.preventDefault();
-                var l = root.querySelector('.lit-left');
-                if (l) l.classList.add('lit-drop-active');
-            }});
-            root.addEventListener('dragleave', function(e) {{
-                if (e.relatedTarget && root.contains(e.relatedTarget)) return;
-                var l = root.querySelector('.lit-left');
-                if (l) l.classList.remove('lit-drop-active');
-            }});
-            root.addEventListener('drop', function(e) {{
-                e.preventDefault();
-                var l = root.querySelector('.lit-left');
-                if (l) l.classList.remove('lit-drop-active');
-                var inp = getUploadInput();
-                if (inp && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {{
-                    try {{
-                        inp.files = e.dataTransfer.files;
-                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    }} catch (_err) {{}}
-                }}
-            }});
+            bindUploadBtn(0);
         }}
         initLitSplitter(0);
     }})();
