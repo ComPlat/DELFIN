@@ -65,6 +65,11 @@ DEFAULT_SETTINGS = {
             "hidden": [],
         },
     },
+    "docs": {
+        "enabled": False,
+        "literature_path": "",
+        "index_path": "",
+    },
     "agent": {
         "backend": "cli",
         "model": "sonnet",
@@ -367,6 +372,25 @@ def _normalized_settings_dict(payload):
     if "remote_archive_enabled" in normalized_features:
         normalized_features["remote_archive_enabled"] = bool(normalized_features["remote_archive_enabled"])
     normalized["features"] = normalized_features
+    docs = normalized.get("docs", {})
+    if docs is None:
+        docs = {}
+    if not isinstance(docs, dict):
+        raise ValueError("Settings key 'docs' must be a JSON object.")
+    normalized["docs"] = {
+        "enabled": normalize_bool_setting(
+            docs.get("enabled", DEFAULT_SETTINGS["docs"]["enabled"]),
+            DEFAULT_SETTINGS["docs"]["enabled"],
+        ),
+        "literature_path": normalize_local_directory_setting(
+            docs.get("literature_path", ""),
+            "Literature path",
+        ),
+        "index_path": normalize_local_directory_setting(
+            docs.get("index_path", ""),
+            "Doc index path",
+        ),
+    }
     ui = normalized.get("ui", {})
     if ui is None:
         ui = {}

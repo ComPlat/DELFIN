@@ -89,6 +89,10 @@ agent = [
     "openai>=1.0",
     "pyyaml",
 ]
+docs = [
+    "mcp>=1.0",
+    "pypdf>=4.0",
+]
 dev = [
     "pytest>=6.0",
     "pytest-cov",
@@ -108,6 +112,7 @@ delfin-guppy = "delfin.guppy_sampling:main"
 delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
 delfin-pipeline = "delfin.cli_pipeline:main"
+delfin-docs-index = "delfin.doc_server.indexer:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

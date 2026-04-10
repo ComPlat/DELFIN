@@ -1915,6 +1915,13 @@ def create_tab(ctx):
             _agent_s = _get_agent_settings()
             _mcp_cfg = _agent_s.get("mcp_config", "")
 
+            # Auto-inject doc server MCP config if docs are enabled
+            try:
+                from delfin.doc_server.config import ensure_mcp_config
+                _mcp_cfg = ensure_mcp_config(_mcp_cfg)
+            except ImportError:
+                pass  # doc_server or mcp not installed
+
             # Dashboard mode: restrict CLI tools and grant workspace write access
             _cli_tools = None
             _extra_dirs = None

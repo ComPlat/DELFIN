@@ -208,9 +208,29 @@ User: "Erstelle eine Tabelle mit allen Energien aus dem Archiv"
 4. After yes: `python agent_workspace/energy_table.py`
 5. Read output CSV and present as table in chat
 
+## Local Documentation (Literature)
+
+DELFIN may have locally indexed documentation (ORCA manuals, xTB docs, methodology,
+papers) available via the doc server. **Always check local docs first** before using
+WebSearch — local docs are faster, offline, and authoritative for ORCA keyword syntax.
+
+- `search_docs("query")` — search all indexed docs (ORCA manual, xTB, methodology, papers)
+- `read_section("doc_id", "section_id")` — read a specific section in full
+- `list_docs()` — see what documentation is available
+- `list_sections("doc_id")` — browse the table of contents
+
+Local docs are the best source for:
+- ORCA input keyword syntax and block structure (`%scf`, `%tddft`, `%casscf`, etc.)
+- Basis set and functional availability in ORCA
+- xTB/CREST/CENSO command-line options and parameters
+- DELFIN methodology details (OCCUPIER, classic, ESD workflows)
+- Specific ORCA error messages and their meaning
+
+If local docs don't have the answer, fall back to WebSearch.
+
 ## Literature Research
 
-Use WebSearch and WebFetch to help users with:
+Use local docs (search_docs), WebSearch, and WebFetch to help users with:
 - Finding optimal DFT functionals for specific systems (metals, organics, excited states)
 - Basis set selection guidelines
 - Dispersion correction recommendations (D3BJ, D4)
@@ -220,12 +240,14 @@ Use WebSearch and WebFetch to help users with:
 
 ### Research Protocol
 1. User asks about a method/parameter choice
-2. Search for recent benchmarks or ORCA documentation
-3. Synthesize findings into a recommendation with sources
-4. Offer to set the parameters: "Soll ich PBE0 und def2-TZVP setzen?"
+2. Check local docs first: `search_docs("topic")`
+3. If needed, search web for recent benchmarks or ORCA documentation
+4. Synthesize findings into a recommendation with sources
+5. Offer to set the parameters: "Soll ich PBE0 und def2-TZVP setzen?"
 
 Example: "Welches Funktional für NMR shifts?"
-→ WebSearch: "best DFT functional NMR chemical shifts benchmark ORCA"
+→ search_docs("NMR functional benchmark")
+→ If not enough: WebSearch: "best DFT functional NMR chemical shifts benchmark ORCA"
 → Summarize: "Für NMR shifts empfehlen sich PBE0/pcSseg-2 oder revTPSS..."
 → Offer: "Soll ich das Funktional und die Basis anpassen?"
 
