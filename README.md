@@ -7,56 +7,86 @@
 [![PyPI version](https://img.shields.io/pypi/v/delfin-complat.svg)](https://pypi.org/project/delfin-complat/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/delfin-complat.svg)](https://pypistats.org/packages/delfin-complat)
 
-> 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
+> Preprint: Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials", ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is an agentic computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and a multi-agent AI system behind a unified interface with an interactive browser-based dashboard.
+DELFIN is a computational chemistry platform for automated molecular workflows. It combines file-based chemistry workflows, a browser dashboard, a workflow/pipeline layer, and an optional multi-agent assistant in one codebase.
 
-DELFIN can be used in three ways:
-- **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
-- **Dashboard** — Interactive browser UI for job management, result analysis, and configuration
-- **Agent** — AI co-pilot that operates the dashboard, analyzes results, researches methods, and implements code changes through a multi-agent pipeline
+The repository has grown beyond the original redox workflow and now covers:
 
-### What DELFIN can do
+- automated redox and spin-state workflows (`OCCUPIER`, `classic`, `manually`)
+- thermodynamics / stability-constant workflows
+- excited-state dynamics, spectra, and report generation
+- SMILES-to-3D conversion, GUPPY sampling, xTB / CREST / GOAT pre-optimisation
+- local and SLURM execution backends
+- a Jupyter / Voila dashboard with job management and setup tooling
+- a step-based tool layer and YAML-defined pipelines
+- optional AI-agent support inside the dashboard
 
-| Capability | Description |
-|------------|-------------|
-| **Redox Potentials** | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows |
-| **Thermodynamics Simulations** | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
-| **Excited-State Dynamics** | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps |
-| **TADF Screening** | xTB-based singlet-triplet gap estimation for OLED material discovery |
-| **Spectroscopy** | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
-| **Hyperpolarizability** | Static and frequency-dependent β tensors for NLO materials |
-| **Structure Generation** | SMILES→3D for organic molecules and metal complexes (RDKit, Open Babel, architector, PSO builder) |
-| **Conformer Sampling** | GUPPY multi-start sampling, CREST conformer search, XTB-GOAT global optimization |
-| **ML Potentials** | 8 backends (ANI-2x, MACE, CHGNet, M3GNet, ...) for fast energy/force evaluation |
-| **Crystal Structure Prediction** | Genarris integration for random crystal generation |
-| **CO2 Coordination** | Automated CO2 placement, distance/rotation scans |
-| **Reporting** | DOCX reports with embedded spectra, JSON export, text summaries |
-| **AI Agent** | Multi-agent orchestration: dashboard co-pilot, code implementation, literature research, result analysis with persistent memory |
+## Main Entry Points
 
----
+| Interface | Purpose |
+| --- | --- |
+| `delfin` | Main CLI for workspace-based DELFIN runs from `CONTROL.txt` |
+| `delfin-voila` | Launch the dashboard as a browser app |
+| `python -m delfin` | Module entry point equivalent to `delfin` |
+| `delfin-step` | Run one registered step such as `xtb_opt` or `orca_sp` |
+| `delfin-pipeline` | Execute a YAML-defined multi-step pipeline |
+| `from delfin.dashboard import create_dashboard` | Start the dashboard from Python / Jupyter |
+| `from delfin.api import run` | Programmatic execution with CLI semantics |
 
-## 🚀 Installation
+## Capabilities
 
-**PyPI Package**: https://pypi.org/project/delfin-complat/
+### Core chemistry workflows
+
+- redox potentials with automated spin-state handling
+- OCCUPIER-based broken-symmetry workflows for transition-metal chemistry
+- classic and manually configured redox sequences
+- thermodynamics / reaction-mode stability-constant workflows
+- excited-state dynamics (ESD), TD-DFT, delta-SCF, and AFP / IR / NMR reporting
+- xTB-based TADF screening and hyperpolarizability workflows
+
+### Structure generation and sampling
+
+- SMILES to XYZ conversion for organic molecules and metal complexes
+- quick conversion, normal conversion, GUPPY multi-start generation, and ARCHITECTOR-based build options
+- xTB optimisation, XTB_GOAT, CREST, and xTB solvator integrations
+- build-up workflow for stepwise metal-complex assembly
+
+### Execution and orchestration
+
+- local execution backend with configurable resource limits
+- SLURM backend with submit-template support
+- global resource coordination across parallel workflows
+- automatic retry / recovery logic for ORCA failures
+- job prioritisation for workflow bottlenecks
+
+### Interfaces and automation
+
+- browser dashboard for submission, monitoring, recalc, archive browsing, and settings
+- agent tab for dashboard control, analysis, and coding / research workflows
+- Python step registry and declarative pipeline builder
+- YAML pipelines and single-step CLI execution
+
+## Installation
+
+PyPI package: https://pypi.org/project/delfin-complat/
 
 ### Requirements
-- **Python 3.10 or 3.11**
-- **ORCA 6.1.1** in your `PATH` (`orca` and `orca_pltvib`) — [free for academic use](https://orcaforum.kofo.mpg.de/app.php/portal)
-- **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
-- **Optional:** `censo`, `anmr`, `c2anmr`, and `nmrplot` (for ensemble-averaged NMR workflows)
-- **Optional:** `xtb4stda`, `stda`, and `std2` plus the required `xtb4stda` runtime files (for xTB-based response/screening workflows)
-- **Optional:** Any of the 88 supported computational tools — auto-detected via PATH, installable via Dashboard
-- **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
 
-### Install Methods
+- Python `3.10` or `3.11`
+- ORCA `6.1.1` available via `PATH` or configured in the DELFIN runtime settings
+- optional for some workflows: `xtb`, `crest`, `xtb4stda`, `stda`, `std2`
+- optional for some analysis/report workflows: `censo`, `anmr`, `c2anmr`, `nmrplot`
+- optional for dashboard usage: JupyterLab / Notebook or Voila
 
-**Standard install (recommended for most users):**
+### Standard install
+
 ```bash
 pip install delfin-complat
 ```
 
-**Development install (from source):**
+### Editable install from source
+
 ```bash
 git clone https://github.com/ComPlat/DELFIN.git
 cd DELFIN
@@ -65,15 +95,19 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-All Python dependencies (e.g., RDKit/OpenBabel for SMILES workflows, ipywidgets/py3Dmol for dashboard visualisation) are installed automatically.
+### Optional extras
 
-This exposes the console command **`delfin`** and enables `python -m delfin`.
+Source installs expose additional extras, for example:
 
-External QM binaries are not installed automatically by `pip`. For the local binary-based setup of `xtb`, `crest`, `xtb4stda`, `stda`, `std2`, and the `xtb4stda` runtime bundle, see `delfin/qm_tools/README.txt`.
+```bash
+pip install -e ".[agent,analysis,mlp]"
+```
 
-### External QM Tool Setup
+DELFIN does not bundle licensed or external QM binaries. Those tools must be installed separately and made visible to the runtime.
 
-After installing the Python package, initialise the bundled QM tool wrapper and validate the external binaries:
+### QM tool bundle helpers
+
+DELFIN ships a managed `qm_tools` helper layer. After installing the Python package, you can stage and validate the shared tool environment with:
 
 ```bash
 source delfin/qm_tools/env.sh
@@ -81,764 +115,140 @@ USE_SYSTEM_TOOLS=1 bash delfin/qm_tools/install_qm_tools.sh
 bash delfin/qm_tools/check_qm_tools.sh
 ```
 
----
+The dashboard Settings tab exposes the same runtime setup flows graphically.
 
-## Quick start
+## Quick Start
 
-Create a working directory with at least these two files:
+Create a workspace with `CONTROL.txt` and `input.txt`:
 
-* `CONTROL.txt` — your control/config file
-* `input.txt` — either
-  * XYZ body (without the first two header lines), or
-  * a single-line SMILES string
-* starting from a full `.xyz` file is optional (`delfin --define=input.xyz` auto-converts)
+```bash
+mkdir my_project
+cd my_project
+delfin --define
+```
 
-Then run:
+If you already have an XYZ file, DELFIN can build the matching input template:
 
-from the directory that contains `CONTROL.txt` and `input.txt`
+```bash
+delfin --define=structure.xyz
+```
+
+Then edit `CONTROL.txt` and set at minimum:
+
+- `charge`
+- redox steps such as `oxidation_steps` / `reduction_steps`
+- workflow method (`classic`, `manually`, or `OCCUPIER`)
+- level-of-theory and resource settings as needed
+
+Run DELFIN inside the workspace:
+
 ```bash
 delfin
 ```
-alternatively
+
+Equivalent module entry point:
+
 ```bash
 python -m delfin
 ```
 
-You can also point DELFIN at a different workspace directory:
+You can also point DELFIN at another project directory:
+
 ```bash
 delfin /path/to/project
 ```
 
-Results and reports are written to the current working directory,
-e.g. `DELFIN.txt`, `OCCUPIER.txt`, and per-step folders.
+Typical outputs include:
 
----
+- `DELFIN.txt`
+- `DELFIN_Data.json`
+- step-specific `.inp`, `.out`, `.xyz`, and report files
+- workflow directories such as `initial_OCCUPIER`, `ox_step_1_OCCUPIER`, or `thermodynamics`
 
-## 🧪 Dashboard
+## Common CLI Tasks
 
-Start in Jupyter/Voila and create the dashboard from Python:
+```bash
+delfin --help
+delfin --recalc
+delfin --imag
+delfin --report text
+delfin --report docx
+delfin --json
+delfin cleanup --help
+delfin qm_check
+delfin-step --list
+delfin-pipeline workflow.yaml --cores 8
+```
+
+## Dashboard
+
+Start the dashboard in Jupyter:
 
 ```python
 from delfin.dashboard import create_dashboard
+
 ctx = create_dashboard(backend="auto")
 ```
 
-`backend="auto"` selects SLURM if available, otherwise local execution.
+`backend="auto"` uses SLURM when `sbatch` is available and otherwise falls back to local execution.
 
-### Dashboard Tabs
-
-| Tab | Purpose |
-|-----|---------|
-| **Submit Job** | SMILES/XYZ input, 3D preview, `CONVERT SMILES`, `QUICK CONVERT`, `CONVERT + UFF`, `BUILD COMPLEX`, `ARCHITECTOR`, `SUBMIT GUPPY` |
-| **Recalc** | Edit and resubmit existing CONTROL.txt |
-| **ORCA Builder** | Interactive ORCA input generation with geometry preview |
-| **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
-| **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
-| **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc ANMR` |
-| **Archive** | Archive browser with statistics |
-| **Agent** | AI co-pilot with multi-agent pipelines, dashboard control, result analysis, persistent memory |
-| **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration, agent model settings |
-
-### GUI with Voila
+Start the Voila app:
 
 ```bash
-delfin-voila                 # starts on localhost:8866
-delfin-voila --port 9000     # custom port
-delfin-voila --ip 0.0.0.0    # bind to all interfaces if required
-delfin-voila --dark          # dark theme
+delfin-voila
+delfin-voila --port 9000
+delfin-voila --ip 0.0.0.0
 ```
 
-Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
-
----
-
-## 🤖 AI Agent System
-
-DELFIN includes a built-in multi-agent AI system that can operate as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab and supports multiple LLM providers: **Claude** (Anthropic), **OpenAI / Codex**, and **KIT Toolbox** (university-hosted). The provider and model are selectable per session from the dashboard.
-
-### Agent Modes
-
-| Mode | Route | Purpose |
-|------|-------|---------|
-| **dashboard** | Dashboard Agent | Operate the dashboard via natural language — set CONTROL keys, configure ORCA Builder, browse calculations, analyze results, trigger smart recalc, manage jobs. Cheapest mode (Haiku). |
-| **solo** | Solo Agent | Direct conversation for code questions, small edits, debugging. Full tool access, no pipeline overhead. |
-| **research** | Research Agent | Literature search, DFT functional benchmarks, best-practice protocols, state-of-the-art methods. Web search enabled, read-only. |
-| **quick** | Session Manager → Builder → Test | Lightweight implementation pipeline for bugfixes, docs, isolated module changes. |
-| **reviewed** | SM → Critic → Builder → Reviewer → Test | Adds architectural review before and code review after implementation. For risky refactors and API changes. |
-| **tdd** | SM → Test → Builder → Reviewer → Test | Test-driven development: tests written first, then implementation. |
-| **cluster** | SM → Runtime → Critic → Builder → Test | Includes HPC/SLURM runtime specialist for submission scripts, job scheduling, error recovery. |
-| **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead. For releases and milestones. |
-
-### Automatic Task Routing
-
-The agent classifies each task and selects the cheapest capable mode automatically:
-
-- **Dashboard operations** (slash commands, CONTROL editing) → dashboard mode
-- **Chemistry / method questions** (DFT functionals, basis sets, spin states) → research mode
-- **Code questions** (how does X work, explain Y) → solo mode (single-agent, no pipeline overhead)
-- **Code changes** (fix, implement, refactor) → quick mode, escalated to reviewed/cluster/full only when risk signals are detected (API semantics, SLURM changes, release scope)
-
-Manual mode selection always takes priority over automatic routing.
-
-### Goal-Lock Orchestration
-
-Multi-agent pipelines use a structured contract to prevent goal drift:
-
-1. **Session Manager** locks the real goal, defines a success oracle, names the wrong proxy to avoid, and breaks work into small **stage gates** with explicit exit evidence
-2. **Builder** reports gate status (DONE / PARTIAL / BLOCKED) for each stage gate
-3. **Critic / Runtime / Reviewer** verify the implementation against the locked goal, not a substituted proxy
-4. **Test Agent** verifies each acceptance criterion and stage gate as PASS / FAIL / UNTESTED
-5. **Communication gates** automatically pause the pipeline when: plans are incomplete, builds are partial or blocked, reviews flag goal drift, or risk verdicts require user attention
-
-The **Cycle Inspector** in the dashboard visualises gate decisions, open risks, retry history, and provides action buttons (Continue / Retry / Stop / Next).
-
-### Key Agent Features
-
-- **Multi-provider support**: Claude (CLI or API), OpenAI / Codex (API or CLI), KIT Toolbox — selectable per session with auto-detection of available providers
-- **Per-role model routing**: Each agent role uses the optimal model tier (e.g., Haiku for cheap review roles, Sonnet/Opus for implementation)
-- **Endless conversation**: After a pipeline completes, the Builder stays active for follow-up questions and adjustments — no context lost until explicit `/reset`
-- **Dashboard co-pilot**: In dashboard mode, the agent reads current CONTROL/ORCA settings and executes slash commands visible in real-time (e.g., "setze BP86" → functional changes in Submit tab)
-- **Findings filter**: After Critic/Runtime review, the user can accept all findings or skip specific ones before the Builder starts
-- **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every agent prompt
-- **Agent workspace**: `~/agent_workspace/` directory for uploaded reference files, accessible to the agent
-- **Cost tracking**: Per-role token usage and USD cost displayed in real-time
-- **Session persistence**: Conversations can be saved, restored, and exported as Markdown
-- **Tool whitelists**: Each role has a code-level tool whitelist that blocks unauthorized tool use regardless of prompt content
-
-### Agent Slash Commands
-
-The agent tab supports extensive slash commands for direct dashboard control:
-
-```
-/control key <key> <value>   — Change a single CONTROL key
-/orca set <param> <value>    — Configure ORCA Builder
-/calc ls, /calc read, /calc info, /calc tree — Browse calculations
-/analyze energy, /analyze convergence, /analyze errors — Analyze ORCA outputs
-/recalc check-all, /recalc auto — Smart recalculation
-/submit, /cancel — Job management (with confirmation)
-/remember, /memories, /forget — Persistent memory
-/workspace ls, /workspace read — Agent workspace
-```
-
-### Requirements & Architecture
-
-The agent supports three LLM providers:
-
-| Provider | Backend | Setup |
-|----------|---------|-------|
-| **Claude** (default) | CLI (`claude` in PATH) or API (`ANTHROPIC_API_KEY`) | [Claude Code CLI](https://claude.ai/code) with OAuth — no API key needed for CLI |
-| **OpenAI / Codex** | CLI (`codex` in PATH) or API (`OPENAI_API_KEY`) | [Codex CLI](https://github.com/openai/codex) or OpenAI API key |
-| **KIT Toolbox** | API (`KIT_TOOLBOX_API_KEY`) | University-hosted endpoint, OpenAI-compatible |
-
-Available providers are auto-detected from PATH and environment variables. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, ...): as a **subprocess dependency** that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls official binaries via their documented interfaces. All API usage runs through each provider's standard rate limits and billing under the user's own account.
-
----
-
-## ✨ Features
-
-### Redox Potential Prediction (OCCUPIER)
-
-DELFIN's core workflow automates spin-state identification and redox potential calculation:
-
-- **Multi-step redox**: Up to 3 sequential oxidation/reduction steps
-- **Parallel workflows**: Oxidation and reduction run simultaneously with automatic PAL splitting
-- **Smart recalc**: Fingerprint-based skip logic avoids unnecessary reruns
-
-### Thermodynamics Simulations
-
-DELFIN can run thermodynamics simulations for coordination complexes, including stability-constant (`log K`) prediction from a Born-Haber-type thermodynamic cycle:
-
-- **Automatic reaction analysis**: Extracts unique ligands, denticities, displaced solvent count, and the matching metal-solvent reference complex directly from complex SMILES
-- **OCCUPIER-aware metal treatment**: Both the target complex and the solvated metal reference can use the same converter, preoptimization, multiplicity, and broken-symmetry logic as the main workflow
-- **Efficient sub-workflows**: Duplicate ligands are detected and computed only once, while ligand, solvent, and metal-solvent jobs run in parallel
-- **Free-energy output**: Combines OPT+FREQ free energies for complex, solvated metal, ligand(s), and solvent into `ΔG` and `log K`
-
-### Excited-State Dynamics (ESD)
-
-The ESD module calculates photophysical properties:
-
-- **Electronic states**: S0, S1, S2, T1, T2 geometry optimization
-- **ISC / RISC rates**: Intersystem and reverse intersystem crossing - **Internal conversion (IC)**: Non-radiative decay rates
-- **Fluorescence & phosphorescence rates**: Radiative lifetimes including per-sublevel phosphorescence
-- **E₀₀ energies**: Adiabatic 0-0 transition energies
-- **ΔE(S-T)**: Singlet-triplet energy gaps
-```ini
-ESD_modul=yes
-states=S0,S1,T1,T2
-ISCs=S1>T1,T1>S1
-ICs=S1>S0
-```
-
-### TADF Screening (xTB-based)
-
-Fast screening of TADF candidates using semi-empirical methods:
-
-- S0/T1 optimization via xTB, S1 estimation via Stokes shift
-- ΔE(S-T) gap calculation
-- First allowed singlet state detection
-- TADF efficiency metrics
-
-### Spectroscopy & Properties
-
-| Module | Output |
-|--------|--------|
-| **UV-Vis** | TD-DFT absorption spectra, oscillator strengths, transition analysis |
-| **IR** | Vibrational frequencies, intensities, Lorentzian broadening, transmittance |
-| **AFP** | Combined absorption/fluorescence/phosphorescence spectrum plot |
-| **Hyperpolarizability** | Static & frequency-dependent β tensors (NLO), dipole moments |
-
-### Ensemble NMR via CREST + CENSO + ANMR
-
-DELFIN includes a browser-launched ensemble NMR workflow for `.xyz` inputs:
-
-- **`Calc NMR`**: single-structure ORCA NMR workflow
-- **`Calc ANMR`**: end-to-end ensemble workflow based on `CREST -> CENSO -> c2anmr -> ANMR`
-
-The ensemble workflow:
-
-- starts from an input `.xyz` geometry
-- performs CREST conformer sampling with `-nmr`
-- re-ranks and refines the ensemble with CENSO
-- runs ORCA-based NMR shieldings/couplings for the surviving conformers
-- builds Boltzmann-weighted ANMR spectra
-- writes `PNG`, `PDF`, `SVG`, and JSON/text summaries into the workflow folder
-
-The required helper tools (`censo`, `anmr`, `c2anmr`, `nmrplot`) are detected in DELFIN's shared runtime layer and can be installed or updated from the Dashboard `Settings` tab. When a supported analysis tool is missing, DELFIN can also auto-install it on first use in the workflow.
-
-### SMILES→3D Structure Generation
-
-DELFIN provides multiple conversion methods for organic and metal-containing systems:
-
-| Button | Method | Best for |
-|--------|--------|----------|
-| `CONVERT SMILES` | Full isomer/conformer search (RDKit + Open Babel) | Thorough exploration |
-| `QUICK CONVERT` | Fast single-conformer generation | Quick previews |
-| `CONVERT + UFF` | Full search + UFF force-field refinement | Refined geometries |
-| `BUILD COMPLEX` | ORCA/XTB DOCKER stepwise complex assembly | Metal complexes (job submission) |
-| `ARCHITECTOR` | [architector](https://github.com/lanl/Architector) automated 3D generation | Metal complexes (instant preview) |
-| `SUBMIT GUPPY` | Multi-start XTB sampling with ranked trajectories | Robust start structures |
-
-For coordination complexes, DELFIN combines Open Babel conformer pools, RDKit multi-seed embedding, topological isomer enumeration, and fragment sanity checks.
-
-### ML Potentials & Unified Calculator Factory
-
-34 computational backends accessible through a single interface returning standard ASE Calculator objects:
-
-```python
-from delfin.calculators import create_calculator
-
-calc = create_calculator("ani2x", device="cuda")       # ML potential
-calc = create_calculator("orca", method="B3LYP")       # DFT
-calc = create_calculator("xtb")                        # Semi-empirical
-calc = create_calculator("vasp", xc="PBE", kpts=[4,4,4])  # Periodic DFT
-
-atoms.calc = calc
-energy = atoms.get_potential_energy()
-```
-
-Automatic CUDA validation with CPU fallback. All backends are lazily loaded — only imported when actually used.
-
-### AI/ML Tools Integration
-
-21 AI/ML tools across molecular generation, retrosynthesis, screening, and metal complex design — all behind runtime validation with per-tool Install/Update buttons in the Dashboard Settings tab.
-
-### Auto-Detection of External Programs
-
-DELFIN automatically detects 88 computational chemistry programs via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (ORCA, Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
-
-Install/update buttons for pip-installable integrations are available in the Dashboard under `Settings -> Tool Installation`. Licensed or externally managed binaries such as ORCA, Gaussian, VASP, and TURBOMOLE are detected and reported by DELFIN, but not installed by the dashboard.
-
-<details>
-<summary><b>Linked overview of supported tools</b></summary>
-
-**ML Potentials (8):**
-[ANI-2x](https://github.com/aiqm/torchani),
-[AIMNet2](https://github.com/isayevlab/AIMNet2),
-[MACE-OFF](https://github.com/ACEsuit/mace),
-[CHGNet](https://github.com/CederGroupHub/chgnet),
-[M3GNet/MatGL](https://github.com/materialyzeai/matgl),
-[SchNetPack](https://github.com/atomistic-machine-learning/schnetpack),
-[NequIP/Allegro](https://github.com/mir-group/nequip),
-[ALIGNN](https://github.com/usnistgov/alignn)
-
-**QM Programs — Ab initio / DFT (11):**
-[ORCA](https://orcaforum.kofo.mpg.de/app.php/portal),
-[Gaussian (g16/g09)](https://gaussian.com/),
-[TURBOMOLE](https://www.turbomole.org/),
-[NWChem](https://www.nwchem-sw.org/),
-[Q-Chem](https://www.q-chem.com/),
-[GAMESS](https://www.msg.chem.iastate.edu/GAMESS/),
-[Molpro](https://www.molpro.net/),
-[Dalton](https://daltonprogram.org/),
-[Psi4](https://psicode.org/),
-[CFOUR](https://cfour.uni-mainz.de/),
-[MRCC](https://www.mrcc.hu/)
-
-**QM Programs — Periodic / Solid State (11):**
-[VASP](https://www.vasp.at/),
-[Quantum ESPRESSO](https://www.quantum-espresso.org/),
-[CP2K](https://www.cp2k.org/),
-[FHI-aims](https://fhi-aims.org/),
-[CRYSTAL](https://www.crystal.unito.it/),
-[SIESTA](https://siesta-project.org/),
-[GPAW](https://gpaw.readthedocs.io/),
-[FLEUR](https://www.flapw.de/),
-[WIEN2k](https://www.tuwien.at/en/tch/tc/home-of-wien2k),
-[Elk](https://elk.sourceforge.io/),
-[ABINIT](https://www.abinit.org/)
-
-**QM Programs — Multireference (3):**
-[OpenMolcas](https://openmolcas.org/),
-[BAGEL](https://nubakery.org/),
-[Columbus](https://www.univie.ac.at/columbus/)
-
-**Semi-empirical & Workflow Helpers (8):**
-[xTB](https://github.com/grimme-lab/xtb),
-[CREST](https://github.com/crest-lab/crest),
-[MOPAC](https://openmopac.net/),
-[Sparrow](https://scine.ethz.ch/download/sparrow),
-[DFTB+](https://dftbplus.org/),
-[xTB4STDA](https://github.com/grimme-lab/xtb4stda),
-[sTDA](https://github.com/grimme-lab/std2),
-[sTD2](https://github.com/grimme-lab/std2)
-
-**MD Engines (5):**
-[GROMACS](https://www.gromacs.org/),
-[LAMMPS](https://www.lammps.org/),
-[AMBER](https://ambermd.org/),
-[NAMD](https://www.ks.uiuc.edu/Research/namd/),
-[OpenMM](https://openmm.org/)
-
-**AI/ML — Foundation Models (3):**
-[MoLFormer](https://github.com/IBM/molformer),
-[Uni-Mol](https://github.com/deepmodeling/Uni-Mol),
-[ChemBERTa](https://huggingface.co/seyonec/ChemBERTa-zinc-base-v1)
-
-**AI/ML — Generative (2):**
-[REINVENT4](https://github.com/MolecularAI/REINVENT4),
-[SyntheMol](https://github.com/swansonk14/SyntheMol)
-
-**AI/ML — Conformers (2):**
-[GeoMol](https://github.com/PattanaikL/GeoMol),
-[torsional-diffusion](https://github.com/gcorso/torsional-diffusion)
-
-**AI/ML — Crystal Generation (2):**
-[MatterGen](https://github.com/microsoft/mattergen),
-[CDVAE](https://github.com/txie-93/cdvae)
-
-**AI/ML — Retrosynthesis (3):**
-[AiZynthFinder](https://github.com/MolecularAI/aizynthfinder),
-[RXNMapper](https://github.com/rxn4chemistry/rxnmapper),
-[LocalRetro](https://github.com/kaist-amsg/LocalRetro)
-
-**AI/ML — Screening / ADMET (2):**
-[DeepChem](https://deepchem.io/),
-[ADMETlab](https://admetlab3.scbdd.com/)
-
-**AI/ML — Metal Complex ML (2):**
-[molSimplify](https://molsimplify.mit.edu/),
-[architector](https://github.com/lanl/Architector)
-
-**Analysis / Post-Processing (15):**
-[cclib](https://cclib.github.io/),
-[Multiwfn](http://sobereva.com/multiwfn/),
-[CENSO](https://github.com/grimme-lab/CENSO),
-[ANMR](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
-[c2anmr](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
-[nmrplot](https://xtb-docs.readthedocs.io/en/latest/CENSO_docs/censo_nmr.html),
-[morfeus](https://github.com/digital-chemistry-laboratory/morfeus),
-[nglview](https://github.com/nglviewer/nglview),
-[Packmol](https://m3g.github.io/packmol/userguide.shtml),
-[NBO](https://nbo6.chem.wisc.edu/),
-[AIMAll](https://aim.tkgristmill.com/),
-[critic2](https://aoterodelaroza.github.io/),
-[Chargemol](https://sourceforge.net/projects/ddec/),
-[LOBSTER](http://www.cohp.de/),
-[phonopy](https://phonopy.github.io/phonopy/)
-
-**Wrapper Libraries (5):**
-[ASE](https://ase-lib.org/),
-[pymatgen](https://pymatgen.org/),
-[QCEngine](https://github.com/MolSSI/QCEngine),
-[MDAnalysis](https://www.mdanalysis.org/),
-[pymolpro](https://github.com/molpro/pymolpro)
-
-**Visualization (6):**
-[plotly](https://plotly.com/python/),
-[VMD](https://www.ks.uiuc.edu/Research/vmd/),
-[Avogadro](https://avogadro.cc/),
-[Jmol](https://jmol.sourceforge.net/),
-[ChimeraX](https://www.cgl.ucsf.edu/chimerax/),
-[IQmol](https://www.iqmol.org/index.html)
-
-**Python-Only Backends (2):**
-[PySCF](https://pyscf.org/),
-[PLAMS](https://www.scm.com/doc/plams/)
-
-**Crystal Structure Prediction (1):**
-[Genarris](https://github.com/Yi5817/Genarris)
-
-</details>
-
-### Conformer Search & Sampling
-
-- **CREST**: Conformer-rotamer ensemble generation and sorting
-- **XTB-GOAT**: Gradient-based global optimization
-- **GUPPY**: Multi-start SMILES sampling with parallel XTB optimization and energy-ranked trajectories
-
-### Crystal Structure Prediction (CSP)
-
-Genarris integration for random crystal structure generation with configurable space groups, Z values, and MPI-parallel execution.
-
-### CO2 Coordinator
-
-Automated CO2 placement around metal centers with relaxed distance scans (1.6–4.0 Å) and rotation scans (±180°).
-
-### Reporting & Export
-
-| Format | Command | Content |
-|--------|---------|---------|
-| **Text** | automatic | `DELFIN.txt` (redox potentials), `OCCUPIER.txt` (occupation tracking), `ESD_report.txt` |
-| **DOCX** | `delfin --report docx` | Word document with embedded spectra plots and structured tables |
-| **JSON** | `delfin --json` | Machine-readable `DELFIN_Data.json` with all energies, rates, spectra |
-| **UV-Vis** | `delfin_ESD output.out` | Parsed UV-Vis spectrum with transitions and oscillator strengths |
-| **IR** | `delfin_IR output.out` | Parsed IR spectrum with vibrational modes and intensities |
-| **AFP** | `delfin --afp` | Absorption/fluorescence/phosphorescence combined plot |
-
----
-
-## 📋 CLI Reference
-
-### Basic Commands
-
-- `delfin` — Run DELFIN workflow in current directory (requires `CONTROL.txt` and `input.txt`)
-- `delfin /path/to/project` — Run DELFIN workflow in specified directory
-- `python -m delfin` — Alternative way to run DELFIN
-
-### Companion CLI Tools
-
-- `delfin-build [input.txt]` — Build metal complexes stepwise from SMILES using ORCA/XTB Docker workflow
-- `delfin-guppy [input.txt]` — Multi-start SMILES sampling workflow with repeated XTB optimization and ranked trajectories
-- `delfin-voila` — Launch the DELFIN Dashboard as a standalone web app via Voila
-- `delfin-json` — Collect DELFIN project outputs into JSON
-- `delfin_ESD` — UV-Vis spectrum report from ORCA ESD output
-- `delfin_IR` — IR spectrum report from ORCA frequency output
-
-### Setup & Configuration
-
-- `delfin --define[=input.xyz] [--overwrite]` — Create/update `CONTROL.txt` and optionally convert XYZ to `input.txt`
-- `delfin /path/to/project --define[=input.xyz] [--overwrite]` — Same as above, but in a different workspace directory
-- `delfin --control /path/to/CONTROL.txt` — Run workflow from another directory while normalising all paths
-
-### Execution Control
-
-- `delfin --recalc` — Re-parse existing results and only restart missing or incomplete jobs
-- `delfin WORKSPACE --recalc --occupier-override STAGE=INDEX` — Force a specific OCCUPIER index for a stage during recalc
-- `delfin --report` — Re-calculate redox potentials from existing output files without launching new calculations
-- `delfin --imag` — Eliminate imaginary modes from existing ORCA results (`*.out`/`*.hess`) and regenerate the summary report
-- `delfin stop --workspace PATH` — Send a graceful stop signal to running DELFIN processes associated with a workspace
-
-### Cleanup & Maintenance
-
-- `delfin --no-cleanup` — Keep temporary files and scratch folders after the pipeline finishes
-- `delfin --cleanup` — Remove previously generated intermediates and exit immediately
-- `delfin cleanup [--dry-run] [--workspace PATH] [--scratch PATH]` — Fine control over workspace/scratch cleanup
-- `delfin cleanup --orca` — Stop running ORCA jobs, purge OCCUPIER scratch folders
-- `delfin --purge` — Remove DELFIN-generated artifacts after confirmation
-
-### Export & Reporting
-
-- `delfin --json` — Collect key results into `DELFIN_Data.json`
-- `delfin --report docx` — Generate a Word report in DOCX format
-- `delfin --afp` — Generate an AFP spectrum plot from existing ESD results
-
-### Specialized Workflows
-
-- `delfin co2 ...` — CO2 Coordinator helper workflow
-- `delfin ESD` — Run excited-state dynamics workflow (requires `ESD_modul=yes` in CONTROL)
-- `delfin-guppy --runs N --parallel-jobs M --pal P` — Broadened start-structure sampling
-- `delfin-build --goat [--no-ligand-goat]` — Ligand docking with optional GOAT optimization
-
----
-
-## ⚙️ Configuration (CONTROL.txt)
-
-DELFIN is configured via `CONTROL.txt` in your working directory. Key settings include:
-
-### Workflow Control
-* `method = OCCUPIER | classic | manually` (leave empty for ESD-only runs)
-* `OCCUPIER_method = auto | manually` (auto uses adaptive tree-based sequences)
-* `calc_initial = yes | no`
-* `oxidation_steps = 1,2,3` / `reduction_steps = 1,2,3`
-* `parallel_workflows = yes | no | auto`
-
-### Resource Management
-* `pal_jobs = N` (number of parallel PAL processes; auto-detected from cluster if not set)
-* `orca_parallel_strategy = auto | threads | serial`
-
-### Optional Modules
-* `XTB_OPT = yes | no` / `XTB_GOAT = yes | no` / `CREST = yes | no`
-* `XTB_SOLVATOR = yes | no`
-* `ESD_modul = yes | no` (excited-state dynamics)
-  * `states = S0,S1,T1,T2`
-  * `ISCs = S1>T1,...` / `ICs = S1>S0,...`
-* `IMAG = yes | no` (imaginary frequency elimination)
-  * `IMAG_scope = initial | all`
-  * `allow_imaginary_freq = N`
-
-### Error Recovery
-* `enable_auto_recovery = yes | no` (intelligent ORCA error recovery with MOREAD)
-* `max_recovery_attempts = N` (default: 1)
-* `enable_job_timeouts = yes | no` (set to 'no' for unlimited runtime)
-
----
-
-## 🏗️ Architecture
-
-### Global Resource Management
-
-DELFIN uses a **global job manager singleton** to coordinate all computational workflows:
-
-* **Single source of truth:** PAL is read once from `CONTROL.txt` and managed centrally
-* **Automatic PAL splitting:** Parallel ox/red workflows share cores (PAL=12 → 6+6)
-* **Thread-safe execution:** Shared resource pool prevents race conditions
-* **Subprocess coordination:** OCCUPIER subprocesses inherit limits via environment variables
-
-### Modular Tool Architecture
-
-```
-delfin/
-  calculators.py       ← Unified ASE calculator factory (34 backends)
-  mlp_tools/           ← ML potential backends with lazy loading
-  ai_tools/            ← AI/ML tools registry and per-tool installers
-  analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, ANMR, ...)
-  csp_tools/           ← Crystal structure prediction (Genarris)
-  runtime_setup.py     ← Auto-detection of 88 external programs
-  dashboard/           ← 11-tab interactive dashboard (Voila/JupyterLab)
-  agent/               ← Multi-agent AI system (Claude, OpenAI/Codex, KIT Toolbox)
-    engine.py          ← Orchestration engine (task routing, goal-lock gates, role transitions, cost tracking)
-    api_client.py      ← LLM backends: Claude CLI, Anthropic API, OpenAI API, Codex CLI
-    prompt_loader.py   ← Role-specific prompt composition from pack system
-    memory_store.py    ← Persistent memory across sessions
-    session_store.py   ← Conversation persistence and restore
-    pack/              ← Agent role prompts (builder, critic, runtime, research, ...)
-      shared/          ← Shared context: DELFIN rules, goal decomposition, work cycle rules
-    pack_lite/         ← Mode definitions and routing manifest
-```
-
-All tool integrations follow the same pattern:
-1. **Lazy loading** — `importlib.util.find_spec()` for availability checks, no imports until use
-2. **Per-tool install** — Individual Install/Update buttons in Dashboard Settings
-3. **Auto-detection** — `shutil.which()` for binaries, compatible with cluster module systems
-4. **Unified interface** — All backends return standard ASE Calculator objects
-
-### Cluster & HPC Integration
-
-* **Backends:** Local execution, SLURM, SSH-based remote transfer
-* **Auto-resource detection:** CPUs and memory on SLURM/PBS/LSF clusters
-* **Scratch directory:** `DELFIN_SCRATCH=/path/to/scratch`
-* **Logging:** `delfin_run.log` per workspace, `occupier.log` per subprocess
-* **Programmatic API:** `delfin.api.run(control_file="CONTROL.txt")` for notebooks and workflow engines
-
-**Cluster templates:** see `examples/` for SLURM, PBS, and LSF submit scripts.
-
----
-
-## 🔧 Automatic Error Recovery & Retry System
-
-DELFIN includes an intelligent error recovery system that automatically detects and fixes common ORCA calculation failures.
-
-### Quick Enable
-
-```ini
-enable_auto_recovery=yes
-max_recovery_attempts=1
-```
-
-### How It Works
-
-```
-ORCA fails → Detect error type → Modify input with fixes → Continue from last .gbw and xyz → Retry
-```
-
-| Error | Automatic Fix |
-|-------|--------------|
-| **SCF not converged** | SlowConv → VerySlowConv + KDIIS |
-| **TRAH segfault** | NoAutoTRAH |
-| **Geometry not converged** | Smaller trust radius → Loose criteria |
-| **MPI crashes** | Reduce cores |
-| **Memory errors** | Reduce maxcore and PAL |
-| **Transient system errors** | Exponential backoff retry |
-
-See **[docs/RETRY_LOGIC.md](docs/RETRY_LOGIC.md)** for the complete guide.
-
----
-
-## Troubleshooting
-
-* **`CONTROL.txt` not found** — Create it via `delfin --define` (or copy your own).
-* **Input file not found** — Run `delfin --define=your.xyz` to auto-convert.
-* **ORCA not found** — Ensure `orca` is in your PATH: `which orca`.
-* **CREST/xTB tools missing** — Disable corresponding flags in `CONTROL.txt` or install and add to PATH.
-* **Optional tool not detected** — Check Dashboard Settings tab or run `delfin --diagnostics`.
-
----
-
-## References
-
-The generic references for ORCA, xTB and CREST are:
-
-- Frank Neese. The ORCA program system. *Wiley Interdiscip. Rev. Comput. Mol. Sci.*, 2(1):73–78, 2012. doi:<https://doi.wiley.com/10.1002/wcms.81>.
-- Frank Neese. Software update: the ORCA program system, version 4.0. *Wiley Interdiscip. Rev. Comput. Mol. Sci.*, 8(1):e1327, 2018. doi:<https://doi.wiley.com/10.1002/wcms.1327>.
-- Frank Neese, Frank Wennmohs, Ute Becker, and Christoph Riplinger. The ORCA quantum chemistry program package. *J. Chem. Phys.*, 152(22):224108, 2020. doi:<https://aip.scitation.org/doi/10.1063/5.0004608>.
-- Christoph Bannwarth, Erik Caldeweyher, Sebastian Ehlert, Andreas Hansen, Philipp Pracht, Jan Seibert, Sebastian Spicher, and Stefan Grimme. Extended tight-binding quantum chemistry methods. *WIREs Comput. Mol. Sci.*, 11:e1493, 2021. doi:<https://doi.org/10.1002/wcms.1493>. *(xTB & GFN methods)*
-- Philipp Pracht, Stefan Grimme, Christoph Bannwarth, Florian Bohle, Sebastian Ehlert, Gunnar Feldmann, Jan Gorges, Max Müller, Timo Neudecker, Christoph Plett, Sebastian Spicher, Pascal Steinbach, Piotr A. Wesołowski, and Fabian Zeller. CREST — A program for the exploration of low-energy molecular chemical space. *J. Chem. Phys.*, 160:114110, 2024. doi:<https://doi.org/10.1063/5.0197592>. *(CREST)*
-
-Please always check the output files—at the end, you will find a list of relevant papers for the calculations. Kindly cite them. Please do not only cite the above generic references, but also cite in addition the
-[original papers](https://www.faccts.de/docs/orca/6.0/manual/contents/public.html) that report the development and ORCA implementation of the methods DELFIN has used! The publications that describe the functionality implemented in ORCA are
-given in the manual.
-
----
-
-# Dependencies and Legal Notice
-
-**DISCLAIMER: DELFIN is a workflow tool that interfaces with external quantum chemistry software. Users are responsible for obtaining proper licenses for all required software.**
-
-## ORCA Requirements
-To use DELFIN, you must be authorized to use ORCA 6.1.1. You can download the latest version of ORCA here:
-https://orcaforum.kofo.mpg.de/app.php/portal
-
-***IMPORTANT: ORCA 6.1.1 requires a valid license and registration. Academic users can obtain free access, but commercial use requires a commercial license. Please carefully review and comply with ORCA's license terms before use.***
-https://www.faccts.de/
-
-**ORCA License Requirements:**
-- Academic use: Free after registration and license agreement
-- Commercial use: Requires commercial license
-- Users must register and agree to license terms before downloading
-- Redistribution of ORCA is prohibited
-- Each user must obtain their own license
-- DELFIN does not include or distribute ORCA
-- ORCA is proprietary software owned by the Max Planck Institute for Coal Research
-- End users must comply with ORCA's terms of service and usage restrictions
-- DELFIN authors are not affiliated with or endorsed by the ORCA development team
-
-## xTB Requirements
-***xTB is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/grimme-lab/xtb
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute xTB
-
-## CREST Requirements
-***CREST is free for academic use under the GNU General Public License (GPLv3).***
-The code and license information are available here: https://github.com/crest-lab/crest
-- Commercial use may require different licensing terms
-- DELFIN does not include or distribute CREST
-
-**Legal Notice:** DELFIN itself is licensed under LGPL-3.0-or-later, but this does not grant any rights to use ORCA, xTB, or CREST. Users must comply with the individual license terms of each external software package.
-
-## Warranty and Liability
-DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim all warranties, express or implied, including but not limited to implied warranties of merchantability and fitness for a particular purpose. In no event shall the authors be liable for any damages arising from the use of this software.
-
----
-
-## Please cite
-
-If you use DELFIN in a scientific publication, please cite:
-
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.0). Zenodo. https://doi.org/10.5281/zenodo.17208145
-- Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
-
-### BibTeX
-```bibtex
-@software{hartmann2025delfin,
-  author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.1.0},
-  year    = {2026},
-  publisher = {Zenodo},
-  doi     = {10.5281/zenodo.17208145},
-  url     = {https://doi.org/10.5281/zenodo.17208145}
-}
-
-@article{hartmann2025chemrxiv,
-  author  = {Hartmann, Maximilian},
-  title   = {DELFIN: Automated prediction of preferred spin states and redox potentials},
-  journal = {ChemRxiv},
-  year    = {2025},
-  url     = {https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a}
-}
-```
-
----
-
-## 📚 Appendix (For Developers)
-
-### Project Layout
-
-```
-delfin/
-  __init__.py
-  __main__.py              # enables `python -m delfin`
-  cli.py                   # main CLI entry point
-  pipeline.py              # high-level orchestration (classic/manually/OCCUPIER)
-  config.py                # CONTROL.txt parsing & helpers
-  calculators.py           # unified ASE calculator factory (34 backends)
-  api.py                   # programmatic API for notebooks/workflows
-
-  # ── Core Workflows ──
-  occupier.py              # OCCUPIER workflow (sequence execution + summary)
-  occupier_auto.py         # auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py        # adaptive BS evolution tree
-  esd_module.py            # excited-state dynamics (ISC/IC/fluorescence/phosphorescence)
-  esd_input_generator.py   # ORCA input builders for ESD states
-  tadf_xtb.py              # TADF screening via xTB
-  hyperpol.py              # hyperpolarizability (NLO)
-  xtb_crest.py             # xTB / GOAT / CREST / ALPB solvation workflows
-  imag.py                  # imaginary frequency elimination
-  guppy_sampling.py        # multi-start SMILES sampling + ranking
-  build_up_complex.py      # stepwise metal-complex assembly (ORCA/XTB DOCKER)
-  build_up_complex2.py     # PSO-based metal complex builder
-
-  # ── Resource Management ──
-  global_manager.py        # singleton global job manager
-  global_scheduler.py      # dynamic shared resource scheduling
-  dynamic_pool.py          # dynamic core pool for job scheduling
-  cluster_utils.py         # SLURM/PBS/LSF resource detection
-  runtime_setup.py         # auto-detection of 88 external programs
-
-  # ── Tool Integrations ──
-  mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, ...)
-  ai_tools/                # AI/ML tools (21 tools across 9 categories)
-  analysis_tools/          # analysis wrappers (cclib, Packmol, Multiwfn, CENSO, morfeus)
-  csp_tools/               # crystal structure prediction (Genarris)
-  qm_tools/                # external QM binary management
-
-  # ── Dashboard ──
-  dashboard/               # 11-tab interactive dashboard (Voila/JupyterLab)
-
-  # ── Reporting ──
-  reporting/               # DOCX, JSON, text report generation
-  co2/                     # CO2 coordinator workflows
-
-  # ── Shared ──
-  common/                  # logging, paths, ORCA block assembly
-```
-
-### Development Notes
-
-* CLI entry points are defined in `pyproject.toml`
-* Build a wheel: `pip wheel .`
-* Install development tools: `pip install -e '.[dev]'`
-* Format code: `black .` / Lint code: `ruff check .`
-
----
+Main dashboard areas:
+
+- Submit Job
+- Recalc
+- Job Status
+- ORCA Builder
+- TURBOMOLE Builder (backend-dependent)
+- Calculations Browser
+- Archive
+- Agent
+- Settings
+
+## Agent System
+
+The dashboard includes an optional agent tab for:
+
+- dashboard control through natural language
+- result inspection and workflow troubleshooting
+- literature / method research
+- code-editing and implementation workflows
+
+Supported provider families in the current codebase include Claude, OpenAI / Codex, and KIT Toolbox. DELFIN treats these like external runtime dependencies: the user installs the CLI or provides the API key, and DELFIN detects what is available.
+
+## Documentation
+
+- [User Manual](docs/USER_MANUAL.md)
+- [Settings and Setup](docs/SETTINGS_AND_SETUP.md)
+- [Methodology](docs/methodology.md)
+- [Retry Logic](docs/RETRY_LOGIC.md)
+- [Job Prioritization](docs/job_prioritization.md)
+- [Example submission scripts](examples/example_Job_Submission_Scripts/README.md)
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `delfin/` | main Python package |
+| `delfin/dashboard/` | dashboard UI and backends |
+| `delfin/workflows/` | workflow orchestration and scheduling |
+| `delfin/tools/` | step registry, adapters, declarative pipelines |
+| `delfin/agent/` | agent orchestration, prompts, session state |
+| `docs/` | user and technical documentation |
+| `examples/` | sample projects and cluster submission scripts |
+| `tests/` | automated test suite |
+
+## Citation
+
+If DELFIN is useful in academic work, please cite the ChemRxiv preprint above and the repository / release metadata in [CITATION.cff](CITATION.cff).
 
 ## License
 
-This project is licensed under the GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later).
-
-You should have received a copy of the GNU Lesser General Public License along with this repository in the files `COPYING` and `COPYING.LESSER`.
-If not, see <https://www.gnu.org/licenses/>.
-
-Non-binding citation request:
-If you use this software in research, please cite the associated paper (see [CITATION.cff](./CITATION.cff)).
+LGPL-3.0-or-later. See [LICENSE](LICENSE).
