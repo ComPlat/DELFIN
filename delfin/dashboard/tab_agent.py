@@ -4454,10 +4454,11 @@ def create_tab(ctx):
     # remote_archive is ALWAYS read-only — no profile can override this.
     _PERM_PROFILES: dict[str, dict[str, tuple[int, bool]]] = {
         "plan": {
-            # Read-only + navigation/UI — agent can browse, analyze, switch tabs, style UI
-            "workspace":      (1, True),
-            "calc":           (1, True),
-            "repo":           (1, True),
+            # Browse + dashboard control — agent can navigate, style UI, fill fields
+            # but cannot submit jobs, cancel, recalc, or write files
+            "workspace":      (2, True),
+            "calc":           (2, True),
+            "repo":           (2, True),
             "archive":        (1, True),
             "remote_archive": (0, True),
             "unknown":        (-1, True),
