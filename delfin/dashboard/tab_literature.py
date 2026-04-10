@@ -163,14 +163,25 @@ def create_tab(ctx):
         ),
     )
 
-    # Upload: visible FileUpload widget, styled via CSS to look clean
+    # Upload: hidden FileUpload + visible drop-zone (same pattern as ORCA Builder)
     lit_upload = widgets.FileUpload(
-        accept='',
-        multiple=True,
-        description='\U0001F4E4 Upload',
-        layout=widgets.Layout(width='100%', height='32px', margin='6px 0 0 0'),
+        accept='', multiple=True, description='',
+        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
     )
-    lit_upload.add_class('lit-upload-widget')
+    lit_upload.add_class('lit-hidden-upload')
+    lit_drop_zone = widgets.HTML(
+        value=(
+            '<div class="lit-drop-zone" style="'
+            'border:2px dashed #aaa; border-radius:8px; padding:12px 8px;'
+            'text-align:center; cursor:pointer; color:#666;'
+            'min-height:50px; display:flex; align-items:center; justify-content:center;'
+            'transition: border-color 0.2s, background 0.2s; margin:6px 0 0 0;'
+            '">'
+            '<span style="font-size:13px;">\U0001F4E4 Drop files here or click to upload</span>'
+            '</div>'
+        ),
+        layout=widgets.Layout(width='100%'),
+    )
 
     # Hidden bridge widgets for chunked upload (used by _explorer_interactions_js)
     _h = widgets.Layout(width='1px', height='1px', display='none')
@@ -240,7 +251,8 @@ def create_tab(ctx):
         lit_nav_bar,
         lit_filter_sort_row,
         lit_file_list,
-        lit_upload,
+        lit_drop_zone,
+        lit_upload,  # hidden 1px
     ], layout=widgets.Layout(
         flex=f'0 0 {LEFT_DEFAULT}px',
         min_width=f'{LEFT_MIN}px',
@@ -362,10 +374,9 @@ def create_tab(ctx):
         f'.{scope_id} input::-webkit-scrollbar {{ width:0; height:0; display:none; }}'
         f'.{scope_id} input {{ scrollbar-width:none; }}'
         '.lit-file-list select { font-family:monospace !important; font-size:13px !important; }'
-        # Style the FileUpload widget to look like a clean button
-        '.lit-upload-widget { flex:0 0 auto !important; }'
-        '.lit-upload-widget button { width:100% !important; height:32px !important;'
-        ' font-size:13px !important; cursor:pointer !important; }'
+        # Hide the FileUpload widget completely
+        '.lit-hidden-upload { position:absolute !important; width:1px !important; height:1px !important;'
+        ' opacity:0 !important; overflow:hidden !important; pointer-events:none !important; }'
         '</style>'
     )
 
@@ -445,7 +456,62 @@ def create_tab(ctx):
                 }});
             }}
 
-            /* Upload button is a native FileUpload widget — no JS binding needed */
+            /* --- Drop-zone: click + drag-drop (same pattern as ORCA Builder) --- */
+            function litInjectFiles(uploadBtn, files) {{
+                if (!uploadBtn || !files || !files.length) return false;
+                var dt = new DataTransfer();
+                for (var i = 0; i < files.length; i++) {{
+                    if (files[i]) dt.items.add(files[i]);
+                }}
+                if (!dt.files.length) return false;
+                var capturedInput = null;
+                var origClick = HTMLInputElement.prototype.click;
+                HTMLInputElement.prototype.click = function() {{
+                    if (this.type === 'file') {{ capturedInput = this; return; }}
+                    return origClick.call(this);
+                }};
+                try {{ uploadBtn.click(); }} finally {{
+                    HTMLInputElement.prototype.click = origClick;
+                }}
+                if (!capturedInput) return false;
+                capturedInput.files = dt.files;
+                capturedInput.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                return true;
+            }}
+            function installLitDropZone(zone) {{
+                if (!zone || zone._litDropReady) return;
+                zone._litDropReady = true;
+                function findUpload() {{
+                    return root.querySelector('.lit-hidden-upload');
+                }}
+                zone.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    var btn = findUpload();
+                    if (btn) btn.click();
+                }});
+                zone.addEventListener('dragover', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    zone.style.borderColor = '#1a73e8';
+                    zone.style.background = '#e8f0fe';
+                    try {{ e.dataTransfer.dropEffect = 'copy'; }} catch(_) {{}}
+                }});
+                zone.addEventListener('dragleave', function() {{
+                    zone.style.borderColor = '#aaa';
+                    zone.style.background = '';
+                }});
+                zone.addEventListener('drop', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    zone.style.borderColor = '#aaa';
+                    zone.style.background = '';
+                    var files = Array.from(e.dataTransfer.files || []);
+                    if (!files.length) return;
+                    var btn = findUpload();
+                    if (btn) litInjectFiles(btn, files);
+                }});
+            }}
+            root.querySelectorAll('.lit-drop-zone').forEach(installLitDropZone);
         }}
         initLitSplitter(0);
     }})();
