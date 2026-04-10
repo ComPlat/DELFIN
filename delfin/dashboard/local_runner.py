@@ -108,6 +108,16 @@ def _handle_termination(signum, _frame):
 
 
 def _configure_environment() -> None:
+    # Configure logging to stdout so messages appear in delfin_*.out on SLURM.
+    # Without this, logger.error() calls in orca.py are silently dropped.
+    try:
+        from delfin.common.logging import configure_logging
+        configure_logging(stream=sys.stdout, force=True)
+    except Exception:
+        import logging
+        logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                            format='%(levelname)s: %(message)s', force=True)
+
     os.environ['OMPI_MCA_pml'] = 'ob1'
     os.environ['OMPI_MCA_btl'] = 'self,tcp,vader'
     os.environ['OMPI_MCA_mpi_show_mca_params_file'] = '0'
@@ -235,6 +245,65 @@ def _print_orca_summary(out_file: str, ok: bool, elapsed: float) -> None:
                     print('ORCA Marker:   NOT FOUND (output may be incomplete)')
         else:
             print(f'Output File:   NOT FOUND')
+
+        # On failure: classify error and show relevant lines
+        if not ok and out_path.is_file():
+            _print_orca_error_diagnosis(out_path)
+    except Exception:
+        pass
+
+
+# Keywords that flag an ORCA error line (case-insensitive check).
+_ORCA_ERROR_KEYWORDS = (
+    'error', 'aborting', 'not converged', 'segmentation fault',
+    'signal:', 'mpirun noticed', 'cannot allocate', 'insufficient memory',
+    'out of memory', 'no space left', 'disk quota',
+)
+
+
+def _print_orca_error_diagnosis(out_path: Path) -> None:
+    """Classify the ORCA error and print relevant lines from the output."""
+    # 1) Use the existing error detector for classification
+    try:
+        from delfin.orca_recovery import OrcaErrorDetector
+        error_type = OrcaErrorDetector.analyze_output(out_path)
+        if error_type is not None:
+            print(f'Error Type:    {error_type.value}')
+    except Exception:
+        pass
+
+    # 2) Extract the last ~50 error-relevant lines from the output tail
+    try:
+        with open(out_path, 'r', errors='replace') as f:
+            size = out_path.stat().st_size
+            # Read last 32 KB — enough to capture error context
+            if size > 32768:
+                f.seek(size - 32768)
+                f.readline()  # skip partial first line
+            lines = f.readlines()
+
+        error_lines: list[str] = []
+        for line in lines:
+            low = line.lower()
+            if any(kw in low for kw in _ORCA_ERROR_KEYWORDS):
+                stripped = line.rstrip()
+                if stripped and stripped not in error_lines:
+                    error_lines.append(stripped)
+
+        if error_lines:
+            # Show up to 15 most relevant lines
+            print('Error Lines:')
+            for line in error_lines[-15:]:
+                print(f'  | {line}')
+        elif not any('ORCA TERMINATED NORMALLY' in l for l in lines[-20:]):
+            # No error keywords but also no success marker → abrupt termination
+            print('Error Lines:   (none found — output ends abruptly, likely killed by signal/timeout)')
+            # Show last 5 non-empty lines for context
+            tail_lines = [l.rstrip() for l in lines[-10:] if l.strip()]
+            if tail_lines:
+                print('Last output:')
+                for line in tail_lines[-5:]:
+                    print(f'  | {line}')
     except Exception:
         pass
 
