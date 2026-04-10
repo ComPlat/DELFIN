@@ -1150,7 +1150,7 @@ def create_tab(ctx):
         description="Perms:",
         layout=widgets.Layout(width="195px"),
         style={"description_width": "42px"},
-        tooltip="Permission profile: Plan=read-only, Default=ask all changes, "
+        tooltip="Permission profile: Plan=read + navigate/UI, Default=ask all changes, "
                 "Erlaubt=repo free/calc asks, Full=all free (archive always read-only)",
     )
 
@@ -4454,11 +4454,11 @@ def create_tab(ctx):
     # remote_archive is ALWAYS read-only — no profile can override this.
     _PERM_PROFILES: dict[str, dict[str, tuple[int, bool]]] = {
         "plan": {
-            # Read-only everywhere — agent can only browse and analyze
-            "workspace":      (0, True),
-            "calc":           (0, True),
-            "repo":           (0, True),
-            "archive":        (0, True),
+            # Read-only + navigation/UI — agent can browse, analyze, switch tabs, style UI
+            "workspace":      (1, True),
+            "calc":           (1, True),
+            "repo":           (1, True),
+            "archive":        (1, True),
             "remote_archive": (0, True),
             "unknown":        (-1, True),
         },
