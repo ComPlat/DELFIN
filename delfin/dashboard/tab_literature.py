@@ -762,7 +762,7 @@ def create_tab(ctx):
             _set_status('Building index...', '#1565c0')
         try:
             from delfin.doc_server.indexer import build_index, get_default_index_path
-            index = build_index(lit_dir)
+            index = build_index(lit_dir, quiet=True)
             out = get_default_index_path()
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(json.dumps(index, indent=2, ensure_ascii=False), encoding='utf-8')

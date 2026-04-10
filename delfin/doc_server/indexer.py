@@ -201,7 +201,11 @@ def _discover_repo_docs(literature_dir: Path) -> list[dict[str, str]]:
     return extra
 
 
-def build_index(literature_dir: Path, extra_paths: list[dict[str, str]] | None = None) -> dict:
+def build_index(
+    literature_dir: Path,
+    extra_paths: list[dict[str, str]] | None = None,
+    quiet: bool = False,
+) -> dict:
     """Build the search index from documents in the literature directory.
 
     Automatically includes DELFIN's own ``docs/`` folder as well.
@@ -213,6 +217,8 @@ def build_index(literature_dir: Path, extra_paths: list[dict[str, str]] | None =
     extra_paths : list, optional
         Additional documents outside the literature folder.
         Each entry: ``{"path": ..., "doc_id": ..., "title": ...}``.
+    quiet : bool
+        Suppress progress output (used when called from the dashboard).
 
     Returns
     -------
@@ -240,11 +246,13 @@ def build_index(literature_dir: Path, extra_paths: list[dict[str, str]] | None =
     for spec in doc_specs:
         path = Path(spec["path"])
         if not path.exists():
-            print(f"  [skip] not found: {path}", file=sys.stderr)
+            if not quiet:
+                print(f"  [skip] not found: {path}", file=sys.stderr)
             continue
 
         doc_type = spec.get("type", _SUPPORTED_EXTENSIONS.get(path.suffix.lower(), "text"))
-        print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
+        if not quiet:
+            print(f"  indexing: {path.name} ({doc_type})", file=sys.stderr)
 
         if doc_type == "pdf":
             pages = _extract_pdf_text(path)
