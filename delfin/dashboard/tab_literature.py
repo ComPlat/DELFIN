@@ -170,11 +170,15 @@ def create_tab(ctx):
         description='',
         layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
     )
-    lit_upload_btn = widgets.Button(
-        description='\U0001F4E4 Upload',
-        layout=widgets.Layout(width='100%', height='30px', margin='6px 0 0 0'),
+    lit_upload_btn = widgets.HTML(
+        value=(
+            '<button class="lit-upload-trigger" style="'
+            'width:100%;height:30px;margin:6px 0 0 0;cursor:pointer;'
+            'border:1px solid #ccc;border-radius:4px;background:#f5f5f5;'
+            'font-size:13px;display:flex;align-items:center;justify-content:center;gap:4px;'
+            '">\U0001F4E4 Upload</button>'
+        ),
     )
-    lit_upload_btn.add_class('lit-upload-trigger')
 
     # Hidden bridge widgets for chunked upload (used by _explorer_interactions_js)
     _h = widgets.Layout(width='1px', height='1px', display='none')
