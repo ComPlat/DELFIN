@@ -134,6 +134,17 @@ def _resolve_orca_bin() -> str | None:
     return candidate if candidate else None
 
 
+def _delfin_version_string() -> str:
+    """Return DELFIN version including runtime key (git hash) when available."""
+    try:
+        from delfin import __version__
+        ver = __version__
+    except Exception:
+        ver = 'unknown'
+    runtime_key = os.environ.get('DELFIN_RUNTIME_KEY', '')
+    return f'{ver} ({runtime_key})' if runtime_key else ver
+
+
 def _print_job_banner(mode: str, job_name: str, inp_file: str) -> None:
     print('========================================')
     print(f'DELFIN Local Job - {job_name}')
@@ -146,6 +157,7 @@ def _print_job_banner(mode: str, job_name: str, inp_file: str) -> None:
     print(f'Started:     {datetime.now().isoformat(timespec="seconds")}')
     if inp_file:
         print(f'Input File:  {inp_file}')
+    print(f'DELFIN:      {_delfin_version_string()}')
     print('========================================')
     print('')
 
@@ -198,6 +210,33 @@ def _detect_mode(mode: str) -> str:
     raise RuntimeError(
         'No valid input files found. Expected CONTROL.txt + input.txt (DELFIN) or *.inp (ORCA).'
     )
+
+
+def _print_orca_summary(out_file: str, ok: bool, elapsed: float) -> None:
+    """Print ORCA result summary to stdout for the DELFIN job log."""
+    hours, rem = divmod(int(elapsed), 3600)
+    mins, secs = divmod(rem, 60)
+    status = 'SUCCESS' if ok else 'FAILED'
+    print('')
+    print(f'ORCA Result:   {status}')
+    print(f'ORCA Elapsed:  {hours:02d}:{mins:02d}:{secs:02d}')
+    try:
+        out_path = Path(out_file)
+        if out_path.is_file():
+            size = out_path.stat().st_size
+            print(f'Output Size:   {size:,} bytes')
+            with open(out_path, 'r', errors='replace') as f:
+                if size > 8192:
+                    f.seek(size - 8192)
+                tail = f.read()
+                if 'ORCA TERMINATED NORMALLY' in tail:
+                    print('ORCA Marker:   TERMINATED NORMALLY')
+                else:
+                    print('ORCA Marker:   NOT FOUND (output may be incomplete)')
+        else:
+            print(f'Output File:   NOT FOUND')
+    except Exception:
+        pass
 
 
 def _run_mode(mode: str) -> int:
@@ -258,7 +297,10 @@ def _run_mode(mode: str) -> int:
             return 1
         out_file = f'{Path(inp_file).stem}.out'
         print(f'Starting ORCA: {inp_file} -> {out_file}')
+        t0 = time.monotonic()
         ok = run_orca(inp_file, out_file)
+        elapsed = time.monotonic() - t0
+        _print_orca_summary(out_file, ok, elapsed)
         return 0 if ok else 1
     if resolved_mode == 'build':
         print('Starting delfin-build (complex build-up)...')

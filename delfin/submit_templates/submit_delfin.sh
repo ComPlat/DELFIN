@@ -665,6 +665,11 @@ collect_sync_results() {
     local profile="${2:-full}"
     local stamp_path=""
 
+    # Disable pipefail inside this function: find may encounter vanishing
+    # files (ORCA MPI cleanup) and return non-zero, which with set -eo
+    # pipefail would abort the entire script before the final sync runs.
+    set +o pipefail 2>/dev/null || true
+
     case "$profile" in
         minimal)
             stamp_path="$SYNC_STAMP_MINIMAL"
@@ -681,9 +686,9 @@ collect_sync_results() {
                    -o -name '*.dat' \)
             )
             if [ -f "$stamp_path" ]; then
-                find "$RUN_DIR" "${find_filter[@]}" -newer "$stamp_path" -printf '%P\n' | sort -u > "$list_file"
+                find "$RUN_DIR" "${find_filter[@]}" -newer "$stamp_path" -printf '%P\n' 2>/dev/null | sort -u > "$list_file" || true
             else
-                find "$RUN_DIR" "${find_filter[@]}" -printf '%P\n' | sort -u > "$list_file"
+                find "$RUN_DIR" "${find_filter[@]}" -printf '%P\n' 2>/dev/null | sort -u > "$list_file" || true
             fi
             ;;
         *)
@@ -694,9 +699,11 @@ collect_sync_results() {
                 ! -path '*/.ipynb_checkpoints/*' \
                 ! -name '*.tmp' ! -name '*.pyc' ! -name '*.pyo' \
                 ! -name 'XTB_GOAT.goat.*.out' \
-                -printf '%P\n' | sort -u > "$list_file"
+                -printf '%P\n' 2>/dev/null | sort -u > "$list_file" || true
             ;;
     esac
+
+    set -o pipefail 2>/dev/null || true
 }
 
 sync_results_back() {
@@ -890,7 +897,7 @@ echo "CPUs:        ${SLURM_NTASKS:-$(nproc)}"
 echo "Memory:      ${SLURM_MEM_PER_NODE:-unknown} MB"
 TIME_LIMIT="${SLURM_TIMELIMIT:-}"
 if [ -z "$TIME_LIMIT" ] && [ -n "${SLURM_JOB_ID:-}" ] && command -v scontrol >/dev/null 2>&1; then
-    TIME_LIMIT="$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | awk -F= '/TimeLimit=/{print $2; exit}')"
+    TIME_LIMIT="$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+' || echo "")"
 fi
 echo "Time Limit:  ${TIME_LIMIT:-unknown}"
 echo "Submit Dir:  $ORIGIN_DIR"
@@ -911,7 +918,9 @@ echo "ORCA: ${orca_path:-not found}"
 [ -n "$orca_path" ] && { orca --version 2>&1 | head -5 || true; }
 echo ""
 
-echo "DELFIN Version: $(delfin --version 2>&1 || echo 'unknown')"
+_DELFIN_VER="$(delfin --version 2>&1 || echo 'unknown')"
+[ -n "${DELFIN_RUNTIME_KEY:-}" ] && _DELFIN_VER="$_DELFIN_VER ($DELFIN_RUNTIME_KEY)"
+echo "DELFIN Version: $_DELFIN_VER"
 echo ""
 
 purge_xtb_goat_out_files
@@ -920,15 +929,21 @@ touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
 # ======================================================================
 # Section 20: Run DELFIN (always via local_runner.py)
 # ======================================================================
+_JOB_START_EPOCH=$(date +%s)
+
 "$PYTHON_BIN" -m delfin.dashboard.local_runner &
 _DELFIN_PID=$!
 wait "$_DELFIN_PID"
 EXIT_CODE=$?
 
+_JOB_END_EPOCH=$(date +%s)
+_JOB_ELAPSED=$(( _JOB_END_EPOCH - _JOB_START_EPOCH ))
+
 echo ""
 echo "========================================"
 echo "Job finished: $(date)"
 echo "Exit Code:   $EXIT_CODE"
+echo "Elapsed:     $(printf '%02d:%02d:%02d' $((_JOB_ELAPSED/3600)) $(((_JOB_ELAPSED%3600)/60)) $((_JOB_ELAPSED%60)))"
 echo "========================================"
 
 if [ "$EXIT_CODE" -eq 0 ]; then
