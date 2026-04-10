@@ -291,20 +291,12 @@ def create_tab(ctx):
         " border:1px solid #ddd; padding:6px;"
         " background:#fafafa; width:100%; box-sizing:border-box;"
     )
-    _lit_dir_display = str(lit_dir)
     _CONTENT_DEFAULT = (
         f"<div style='{_CONTENT_FRAME} color:#666; font-family:sans-serif;"
         f" min-height:200px; padding:20px;'>"
         f"<p style='font-size:14px;margin:0 0 12px 0;'>Select a file to preview</p>"
-        f"<p style='font-size:12px;color:#888;margin:0 0 6px 0;'>"
-        f"Drop files here or click <b>Upload</b> for small files.</p>"
-        f"<p style='font-size:12px;color:#888;margin:0 0 6px 0;'>"
-        f"For large PDFs (ORCA Manual etc.) copy directly:</p>"
-        f"<code style='font-size:11px;background:#eee;padding:4px 8px;"
-        f"border-radius:3px;display:inline-block;margin:4px 0;'>"
-        f"cp ~/Downloads/your_file.pdf {_html.escape(_lit_dir_display)}/</code>"
-        f"<p style='font-size:12px;color:#888;margin:8px 0 0 0;'>"
-        f"Then click <b>\U0001F504</b> to refresh.</p>"
+        f"<p style='font-size:12px;color:#888;margin:0;'>"
+        f"Drop files here or click <b>\U0001F4E4 Upload</b> to add documents.</p>"
         f"</div>"
     )
     lit_content = widgets.HTML(
