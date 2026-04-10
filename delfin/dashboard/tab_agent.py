@@ -4359,88 +4359,73 @@ def create_tab(ctx):
             sub = text[len("/batch"):].strip()
 
             if sub == "from-calc" or sub.startswith("from-calc"):
-                # Collect geometry files from calc_dir, build batch format
-                # Optional: /batch from-calc *.xyz or /batch from-calc input.txt
-                parts = sub.split(None, 1)
-                pattern = parts[1].strip() if len(parts) > 1 else None
-                calc_root = ctx.calc_dir
-                # Supported geometry extensions
-                _GEO_EXTS = {".txt", ".xyz", ".smi", ".smiles"}
-                entries = []
-                seen_names = set()
+                # Use the Calculations Browser's Build Batch from XYZ system
+                # 1) Select all folders, 2) prepare export, 3) fill Submit batch field
+                calc_refs = ctx.calc_browser_refs or {}
+                prepare_fn = calc_refs.get("xyz_batch_prepare_export")
+                batch_state = calc_refs.get("xyz_batch_state")
+                refresh_fn = calc_refs.get("xyz_batch_refresh")
+                show_panel_fn = calc_refs.get("xyz_batch_show_panel")
 
-                # Collect matching files (one level deep in calc subfolders)
-                candidates = []
+                if not prepare_fn or not batch_state:
+                    _append_system_message("Batch export function not available.")
+                    return True
+
+                # Optional filter: /batch from-calc Casagrande*
+                parts = sub.split(None, 1)
+                name_filter = parts[1].strip() if len(parts) > 1 else ""
+
+                # Mark all folders (or filtered ones) in calc root
+                calc_root = ctx.calc_dir
+                all_folders = []
                 for folder in sorted(calc_root.iterdir()):
                     if not folder.is_dir() or folder.name.startswith("."):
                         continue
-                    if pattern:
-                        # User-specified pattern (e.g. "*.xyz", "input.txt")
-                        matches = sorted(folder.glob(pattern))
-                    else:
-                        # Default: input.txt first, then any .xyz/.smi
-                        matches = []
-                        inp = folder / "input.txt"
-                        if inp.exists():
-                            matches.append(inp)
-                        else:
-                            for ext in (".xyz", ".smi", ".smiles"):
-                                matches.extend(sorted(folder.glob(f"*{ext}")))
-                    for f in matches:
-                        if f.is_file() and f.suffix.lower() in _GEO_EXTS:
-                            candidates.append((folder.name, f))
+                    if name_filter:
+                        import fnmatch as _fnmatch
+                        if not _fnmatch.fnmatch(folder.name, name_filter):
+                            continue
+                    all_folders.append(folder.name)
 
-                for folder_name, geo_file in candidates:
-                    # Unique name per folder
-                    name = folder_name
-                    if name in seen_names:
-                        name = f"{folder_name}_{geo_file.stem}"
-                    seen_names.add(name)
-                    try:
-                        content = geo_file.read_text(encoding="utf-8", errors="replace").strip()
-                    except Exception:
-                        continue
-                    if not content:
-                        continue
-                    lines = content.splitlines()
-                    # Detect SMILES vs XYZ
-                    is_smiles = (
-                        len(lines) == 1
-                        and not lines[0].strip()[0:1].isspace()
-                        and any(c in lines[0] for c in "[]()=#@+\\/-")
-                    )
-                    if is_smiles:
-                        entries.append(f"{name};{content}")
-                    else:
-                        # XYZ: skip header lines (atom count + comment) if present
-                        xyz_lines = lines
-                        if len(lines) >= 3:
-                            try:
-                                int(lines[0].strip())
-                                xyz_lines = lines[2:]  # skip count + comment
-                            except ValueError:
-                                pass
-                        xyz_block = "\n".join(xyz_lines)
-                        entries.append(f"{name};\n{xyz_block}\n*")
-
-                if not entries:
-                    hint = f" matching '{pattern}'" if pattern else ""
-                    _append_system_message(f"No geometry files{hint} found in calculations.")
+                if not all_folders:
+                    hint = f" matching '{name_filter}'" if name_filter else ""
+                    _append_system_message(f"No calculation folders{hint} found.")
                     return True
 
-                batch_text = "\n".join(entries)
+                # Set marked paths in batch state
+                batch_state["xyz_batch_marked_paths"] = list(all_folders)
+
+                # Set batch filename
+                batch_filename_widget = calc_refs.get("xyz_batch_filename")
+                if batch_filename_widget:
+                    batch_filename_widget.value = "batch"
+
+                # Prepare export using the existing function
+                export_data, skipped, error = prepare_fn()
+                batch_state["xyz_batch_marked_paths"] = []  # clean up
+
+                if error:
+                    skip_info = f" (skipped: {', '.join(skipped[:5])})" if skipped else ""
+                    _append_system_message(f"Batch build failed: {error}{skip_info}")
+                    return True
+
+                # Fill the Submit tab batch textarea
+                batch_text = export_data["payload_text"]
+                entry_count = export_data["entry_count"]
                 batch_widget = ctx.submit_refs.get("smiles_batch_widget")
                 if batch_widget:
                     batch_widget.value = batch_text
                     ctx.select_tab("Submit Job")
+                    skip_info = ""
+                    if skipped:
+                        skip_info = f"\nSkipped {len(skipped)}: {', '.join(skipped[:5])}"
                     _append_system_message(
-                        f"Batch filled with {len(entries)} entries from calculations.\n"
+                        f"Batch filled with {entry_count} entries from calculations.{skip_info}\n"
                         f"Switched to Submit tab."
                     )
                 else:
                     _append_system_message(
-                        f"Built {len(entries)} batch entries but could not find batch widget.\n"
-                        f"Content:\n{batch_text[:500]}..."
+                        f"Built {entry_count} batch entries but batch widget not found."
                     )
                 return True
 

@@ -13086,4 +13086,11 @@ def create_tab(ctx):
         'calc_update_options_dropdown': calc_update_options_dropdown,
         # Delete (exposed for blocking only — agent must NOT click)
         'calc_delete_btn': calc_delete_btn,
+        # Batch from XYZ
+        'xyz_batch_prepare_export': _calc_xyz_batch_prepare_export,
+        'xyz_batch_state': state,
+        'xyz_batch_select': calc_xyz_batch_select,
+        'xyz_batch_filename': calc_xyz_batch_filename,
+        'xyz_batch_refresh': _calc_refresh_xyz_batch_selector,
+        'xyz_batch_show_panel': _calc_show_xyz_batch_panel,
     }

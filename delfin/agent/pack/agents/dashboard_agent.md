@@ -314,9 +314,8 @@ Example: "Erstelle Batch-Jobs für BP86, PBE0, B3LYP mit def2-TZVP"
 Use `/batch` commands to work with the batch SMILES/XYZ textarea in the Submit tab.
 **Never build batch text manually** — always use these commands:
 
-- `/batch from-calc` — Fill batch from calculations (input.txt, then *.xyz), switches to Submit tab
-- `/batch from-calc *.xyz` — Fill batch from *.xyz files only
-- `/batch from-calc input.txt` — Fill batch from input.txt only
+- `/batch from-calc` — Build batch from ALL calculation folders (uses Build Batch from XYZ logic), fills Submit tab
+- `/batch from-calc Casagrande*` — Build batch from matching folders only (glob filter)
 - `/batch add Name;SMILES;charge=2` — Add one SMILES entry
 - `/batch show` — Show current batch content
 - `/batch clear` — Clear batch field
