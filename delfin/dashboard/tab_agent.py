@@ -5237,28 +5237,73 @@ def create_tab(ctx):
         return None
 
     def _show_question_ui(question_info: dict):
-        """Show interactive buttons based on detected question type."""
+        """Show interactive widgets based on detected question type.
+
+        - numbered (multi-select): Checkboxes for each option + Submit button
+        - yesno: Yes / No buttons
+        - open: Focus input area with hint
+        """
         state["_pending_question"] = question_info
         qtype = question_info["type"]
-        buttons = []
+        children = []
 
         if qtype == "numbered":
-            question_hint_html.value = (
-                '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
-                'Choose an option:</span>'
+            options = question_info["options"]
+            # Use checkboxes for multi-select when 2+ options
+            checkboxes = []
+            for num, label in options:
+                short_label = label if len(label) <= 45 else label[:42] + "..."
+                cb = widgets.Checkbox(
+                    value=False,
+                    description=f"{num}. {short_label}",
+                    indent=False,
+                    layout=widgets.Layout(width="auto", margin="0 12px 0 0"),
+                    style={"description_width": "0px"},
+                )
+                cb._option_num = num
+                checkboxes.append(cb)
+            state["_question_checkboxes"] = checkboxes
+
+            # "Other" free-text input
+            other_input = widgets.Text(
+                placeholder="Or type your own answer...",
+                layout=widgets.Layout(width="200px", height="28px"),
             )
-            for num, label in question_info["options"]:
+            state["_question_other_input"] = other_input
+
+            # Submit button
+            submit_btn = widgets.Button(
+                description="Submit",
+                button_style="primary",
+                layout=widgets.Layout(width="80px", height="30px"),
+            )
+            submit_btn.on_click(_on_question_submit)
+
+            # Quick single-click buttons (for fast single selection)
+            quick_btns = []
+            for num, _label in options:
                 btn = widgets.Button(
                     description=f"{num}",
-                    tooltip=label,
                     button_style="info",
-                    layout=widgets.Layout(
-                        min_width="36px", height="30px",
-                    ),
+                    tooltip=f"Quick select {num}",
+                    layout=widgets.Layout(min_width="32px", height="28px"),
                 )
                 btn._option_value = num
                 btn.on_click(_on_question_option)
-                buttons.append(btn)
+                quick_btns.append(btn)
+
+            question_hint_html.value = (
+                '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
+                'Select options (checkboxes) or quick-pick (buttons):</span>'
+            )
+            # Layout: checkboxes in a column, then quick buttons + other + submit
+            cb_box = widgets.VBox(checkboxes, layout=widgets.Layout(gap="0px"))
+            action_row = widgets.HBox(
+                quick_btns + [other_input, submit_btn],
+                layout=widgets.Layout(gap="4px", align_items="center"),
+            )
+            children = [cb_box, action_row]
+
         elif qtype == "yesno":
             question_hint_html.value = (
                 '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
@@ -5278,17 +5323,34 @@ def create_tab(ctx):
             )
             no_btn._option_value = "no"
             no_btn.on_click(_on_question_option)
-            buttons = [yes_btn, no_btn]
+            children = [yes_btn, no_btn]
+
         elif qtype == "open":
             question_hint_html.value = (
                 '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
                 'Agent awaits your answer</span>'
             )
-            # No buttons — just highlight the input area
             input_textarea.placeholder = "Type your answer..."
 
-        question_buttons_box.children = buttons
+        question_buttons_box.children = children
         question_row.layout.display = "flex"
+
+    def _on_question_submit(button):
+        """Submit multi-select: gather checked options + free text, send as answer."""
+        parts = []
+        checkboxes = state.get("_question_checkboxes", [])
+        for cb in checkboxes:
+            if cb.value:
+                parts.append(getattr(cb, "_option_num", ""))
+        other_input = state.get("_question_other_input")
+        if other_input and other_input.value.strip():
+            parts.append(other_input.value.strip())
+        if not parts:
+            return  # nothing selected
+        answer = ", ".join(parts)
+        _hide_question_ui()
+        input_textarea.value = answer
+        _on_send(None)
 
     def _hide_question_ui():
         """Hide question UI and reset state."""
@@ -5296,6 +5358,8 @@ def create_tab(ctx):
         question_hint_html.value = ""
         question_buttons_box.children = []
         state.pop("_pending_question", None)
+        state.pop("_question_checkboxes", None)
+        state.pop("_question_other_input", None)
         input_textarea.placeholder = "Message the agent... (Enter to send, Shift+Enter for newline)"
 
     def _on_question_option(button):
