@@ -163,22 +163,14 @@ def create_tab(ctx):
         ),
     )
 
-    # Upload: hidden FileUpload (same as Calculations) + styled trigger button
+    # Upload: visible FileUpload widget, styled via CSS to look clean
     lit_upload = widgets.FileUpload(
         accept='',
         multiple=True,
-        description='',
-        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
+        description='\U0001F4E4 Upload',
+        layout=widgets.Layout(width='100%', height='32px', margin='6px 0 0 0'),
     )
-    lit_upload_btn = widgets.HTML(
-        value=(
-            '<button class="lit-upload-trigger" style="'
-            'width:100%;height:30px;margin:6px 0 0 0;cursor:pointer;'
-            'border:1px solid #ccc;border-radius:4px;background:#f5f5f5;'
-            'font-size:13px;display:flex;align-items:center;justify-content:center;gap:4px;'
-            '">\U0001F4E4 Upload</button>'
-        ),
-    )
+    lit_upload.add_class('lit-upload-widget')
 
     # Hidden bridge widgets for chunked upload (used by _explorer_interactions_js)
     _h = widgets.Layout(width='1px', height='1px', display='none')
@@ -248,8 +240,7 @@ def create_tab(ctx):
         lit_nav_bar,
         lit_filter_sort_row,
         lit_file_list,
-        lit_upload_btn,
-        lit_upload,  # hidden 1px widget
+        lit_upload,
     ], layout=widgets.Layout(
         flex=f'0 0 {LEFT_DEFAULT}px',
         min_width=f'{LEFT_MIN}px',
@@ -371,9 +362,10 @@ def create_tab(ctx):
         f'.{scope_id} input::-webkit-scrollbar {{ width:0; height:0; display:none; }}'
         f'.{scope_id} input {{ scrollbar-width:none; }}'
         '.lit-file-list select { font-family:monospace !important; font-size:13px !important; }'
-        # Drop-zone highlight (activated by JS drag events)
-        '.lit-drop-active .lit-file-list select {'
-        ' border:2px dashed #1976d2 !important; background:#e3f2fd !important; }'
+        # Style the FileUpload widget to look like a clean button
+        '.lit-upload-widget { flex:0 0 auto !important; }'
+        '.lit-upload-widget button { width:100% !important; height:32px !important;'
+        ' font-size:13px !important; cursor:pointer !important; }'
         '</style>'
     )
 
@@ -453,27 +445,7 @@ def create_tab(ctx):
                 }});
             }}
 
-            /* --- Upload button: click opens the native file picker --- */
-            function bindUploadBtn(retries) {{
-                var btn = root.querySelector('.lit-upload-trigger');
-                var inp = root.querySelector('.widget-upload input[type="file"]');
-                if (!btn || !inp) {{
-                    if ((retries || 0) < 50) {{
-                        setTimeout(function() {{ bindUploadBtn((retries||0)+1); }}, 200);
-                    }}
-                    return;
-                }}
-                if (btn._litBound) return;
-                btn._litBound = true;
-                btn.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    /* Re-query in case widget was recreated */
-                    var fileInput = root.querySelector('.widget-upload input[type="file"]');
-                    if (fileInput) fileInput.click();
-                }});
-            }}
-            bindUploadBtn(0);
+            /* Upload button is a native FileUpload widget — no JS binding needed */
         }}
         initLitSplitter(0);
     }})();
