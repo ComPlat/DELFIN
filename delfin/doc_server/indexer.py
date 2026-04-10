@@ -182,8 +182,29 @@ def _discover_documents(literature_dir: Path) -> list[dict[str, str]]:
     return docs
 
 
+def _discover_repo_docs(literature_dir: Path) -> list[dict[str, str]]:
+    """Auto-discover DELFIN's own docs/ folder relative to the literature dir."""
+    docs_dir = literature_dir.parent / "docs"
+    if not docs_dir.is_dir():
+        return []
+    extra: list[dict[str, str]] = []
+    for path in sorted(docs_dir.glob("*.md")):
+        if path.name.startswith("."):
+            continue
+        doc_id = f"delfin_{path.stem}"
+        extra.append({
+            "path": str(path),
+            "doc_id": doc_id,
+            "title": f"DELFIN: {path.stem.replace('_', ' ')}",
+            "type": "markdown",
+        })
+    return extra
+
+
 def build_index(literature_dir: Path, extra_paths: list[dict[str, str]] | None = None) -> dict:
     """Build the search index from documents in the literature directory.
+
+    Automatically includes DELFIN's own ``docs/`` folder as well.
 
     Parameters
     ----------
@@ -199,6 +220,10 @@ def build_index(literature_dir: Path, extra_paths: list[dict[str, str]] | None =
         The complete index structure.
     """
     doc_specs = _discover_documents(literature_dir)
+
+    # Auto-include DELFIN's own docs/ folder
+    doc_specs.extend(_discover_repo_docs(literature_dir))
+
     if extra_paths:
         for spec in extra_paths:
             p = Path(spec["path"]).expanduser()

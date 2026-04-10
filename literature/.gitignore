@@ -1,11 +1,8 @@
 # Proprietary documentation - do NOT commit
 # Users must download these separately and place them here locally
 
-# ORCA manual and related docs (redistribution prohibited)
-orca/
-
-# User papers and articles
-papers/
-
-# All PDF files (most are proprietary)
+# All PDF files (ORCA manual, papers, etc.)
 *.pdf
+
+# Word documents
+*.docx
