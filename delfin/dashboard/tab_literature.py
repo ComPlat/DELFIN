@@ -391,8 +391,7 @@ def create_tab(ctx):
         widgets.HTML(
             '<h3>\U0001F4DA Literature</h3>'
             '<p style="margin:-8px 0 8px 0;font-size:12px;color:#666;">'
-            'The DELFIN agent can search and read these documents. '
-            'Click <b>\U0001F50D Index</b> after adding files.</p>'
+            'The DELFIN agent can search and read these documents.</p>'
         ),
         widgets.HBox(
             [lit_left, lit_splitter, lit_right],
@@ -757,8 +756,10 @@ def create_tab(ctx):
     def on_sort_change(change) -> None:
         list_directory()
 
-    def on_reindex(btn) -> None:
-        _set_status('Building index...', '#1565c0')
+    def _rebuild_index(silent: bool = False) -> None:
+        """Rebuild the doc server search index. Called automatically after changes."""
+        if not silent:
+            _set_status('Building index...', '#1565c0')
         try:
             from delfin.doc_server.indexer import build_index, get_default_index_path
             index = build_index(lit_dir)
@@ -769,7 +770,11 @@ def create_tab(ctx):
             n_secs = sum(d['section_count'] for d in index['documents'].values())
             _set_status(f'\u2705 Index: {n_docs} docs, {n_secs} sections', '#2e7d32')
         except Exception as exc:
-            _set_status(f'Index error: {exc}', '#d32f2f')
+            if not silent:
+                _set_status(f'Index error: {exc}', '#d32f2f')
+
+    def on_reindex(btn) -> None:
+        _rebuild_index()
 
     def on_upload(change) -> None:
         entries = change.get('new', ())
@@ -793,8 +798,9 @@ def create_tab(ctx):
             dest.write_bytes(bytes(content))
             saved += 1
         if saved:
-            _set_status(f'Uploaded {saved} file(s)', '#2e7d32')
+            _set_status(f'Uploaded {saved} file(s) — re-indexing...', '#2e7d32')
             list_directory()
+            _rebuild_index()
         try:
             lit_upload.value = ()
         except Exception:
@@ -828,6 +834,7 @@ def create_tab(ctx):
             state['selected_file'] = None
             lit_delete_btn.disabled = True
             list_directory()
+            _rebuild_index()
         except Exception as exc:
             lit_del_status.value = (
                 f'<span style="color:#d32f2f;font-size:12px;">'
@@ -924,12 +931,13 @@ def create_tab(ctx):
 
                 if len(batch['completed']) >= batch['expected']:
                     n = len(batch['saved'])
-                    _set_status(f'Uploaded {n} file(s)', '#2e7d32')
+                    _set_status(f'Uploaded {n} file(s) — re-indexing...', '#2e7d32')
                     lit_ops_status.value = (
                         f'<span style="color:#2e7d32;">Uploaded {n} file(s)</span>'
                     )
                     upload_bridge_state['batches'].pop(batch_id, None)
                     list_directory()
+                    _rebuild_index()
         except Exception as exc:
             _set_status(f'Upload failed: {exc}', '#d32f2f')
             lit_ops_status.value = (
@@ -977,5 +985,6 @@ def create_tab(ctx):
 
     # ── Initial load ──────────────────────────────────────────────────
     list_directory()
+    _rebuild_index(silent=True)
 
     return tab_widget, {'init_js': _init_js}
