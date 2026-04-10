@@ -715,6 +715,41 @@ _AGENT_CSS = """\
     border: 1px solid #d1d5db;
     margin: 6px 0;
 }
+/* Agent question / interactive dialog */
+.delfin-chat-question {
+    background: #eff6ff;
+    margin: 8px 0;
+    text-align: left;
+    font-size: 12px;
+    max-width: 100%;
+    padding: 10px 14px;
+    border-left: 4px solid #3b82f6;
+    border-radius: 0 8px 8px 0;
+    color: #1e3a5f;
+    font-weight: 500;
+}
+.delfin-chat-question .question-hint {
+    font-size: 11px;
+    color: #6b7280;
+    margin-top: 6px;
+    font-weight: 400;
+}
+.delfin-agent-question-row {
+    background: #eff6ff;
+    border: 1px solid #3b82f6;
+    border-radius: 8px;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    margin: 4px 0;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    flex-wrap: wrap;
+}
+.delfin-agent-question-row button {
+    min-width: 36px;
+}
 </style>
 """
 
@@ -1285,6 +1320,21 @@ def create_tab(ctx):
     )
     approval_row.add_class("delfin-agent-approval-row")
 
+    # Interactive question widgets (option buttons shown when agent asks)
+    question_hint_html = widgets.HTML(value="")
+    question_buttons_box = widgets.HBox(
+        [],
+        layout=widgets.Layout(gap="4px", flex_wrap="wrap"),
+    )
+    question_row = widgets.HBox(
+        [question_hint_html, question_buttons_box],
+        layout=widgets.Layout(
+            margin="4px 0", padding="6px 10px",
+            display="none",
+        ),
+    )
+    question_row.add_class("delfin-agent-question-row")
+
     # Status bar
     status_html = widgets.HTML(
         value=_render_status("quick", "cli", "session_manager", 0, 3, 0, 0, 0.0),
@@ -1672,7 +1722,7 @@ def create_tab(ctx):
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, chat_html, working_html, queue_html, approval_row, input_row],
+         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, chat_html, working_html, queue_html, approval_row, question_row, input_row],
     )
 
     if not _yaml_ok:
@@ -2738,6 +2788,8 @@ def create_tab(ctx):
                 "  /clear           — Clear chat history\n"
                 "  /cost            — Show token usage & cost\n"
                 "  /compact         — Summarize context (reduce tokens)\n"
+                "  /undo            — Undo last agent turn (remove from context)\n"
+                "  /retry           — Retry last message (undo + re-send)\n"
                 "  /stop            — Stop current generation\n"
                 "  /status          — Show engine status\n"
                 "  /usage           — Detailed token usage, cost & session stats\n"
@@ -2980,6 +3032,38 @@ def create_tab(ctx):
                 _append_system_message(
                     f"Only {n_before} messages — too few to compact."
                 )
+            return True
+
+        if cmd == "/undo":
+            engine = state["engine"]
+            if not engine or len(engine.messages) < 2:
+                _append_system_message("Nothing to undo.")
+                return True
+            # Remove the last assistant + user message pair
+            removed = 0
+            while engine.messages and removed < 2:
+                last = engine.messages[-1]
+                engine.messages.pop()
+                removed += 1
+                if last["role"] == "user":
+                    break
+            # Also remove last chat messages from display
+            msgs = state["chat_messages"]
+            to_remove = 0
+            for m in reversed(msgs):
+                if m["role"] in ("assistant", "tool", "system"):
+                    to_remove += 1
+                elif m["role"] == "user":
+                    to_remove += 1
+                    break
+                else:
+                    break
+            if to_remove:
+                state["chat_messages"] = msgs[:-to_remove]
+                _refresh_chat_html()
+            _append_system_message(
+                f"Undone last turn ({removed} engine messages removed)."
+            )
             return True
 
         # /git commands
@@ -5054,6 +5138,149 @@ def create_tab(ctx):
         input_textarea.value = f"No, do NOT do that. Find an alternative approach."
         _on_send(None)
 
+    # -- Interactive question detection & UI ------------------------------------
+
+    def _detect_question(text: str) -> dict | None:
+        """Detect if the agent's response ends with a question requiring user input.
+
+        Returns a dict with 'type' and 'options' if a question is detected,
+        or None if the response is a normal statement.
+
+        Types:
+        - 'numbered': Options like "1) foo  2) bar  3) baz"
+        - 'yesno': Yes/no confirmation question
+        - 'open': Open-ended question (ends with ?)
+        """
+        if not text or len(text) < 10:
+            return None
+        # Only look at the last ~500 chars (the tail of the response)
+        tail = text[-500:].strip()
+        # Skip if the response ended with a code block (likely not a question)
+        if tail.rstrip().endswith("```"):
+            return None
+
+        # --- Numbered options: 1) / 1. / (1) patterns ---
+        # Look for 2+ numbered items in the tail
+        # Patterns: "1) text", "1. text", "(1) text", "**1.** text"
+        option_patterns = [
+            # "1) description" or "1. description" at line start
+            re.compile(r'^\s*\*?\*?(\d+)[).]\*?\*?\s+(.+)', re.MULTILINE),
+            # "(1) description" at line start
+            re.compile(r'^\s*\((\d+)\)\s+(.+)', re.MULTILINE),
+            # "- **Option 1**: description"
+            re.compile(r'^\s*[-*]\s+\*?\*?(?:Option\s+)?(\d+)\*?\*?[.:]\s*(.+)', re.MULTILINE),
+        ]
+        for pat in option_patterns:
+            matches = pat.findall(tail)
+            if len(matches) >= 2:
+                options = []
+                for num, desc in matches:
+                    label = desc.strip().rstrip("*").strip()
+                    # Truncate long option text
+                    if len(label) > 60:
+                        label = label[:57] + "..."
+                    options.append((num, label))
+                return {"type": "numbered", "options": options}
+
+        # --- QUESTION: tag (from solo_agent.md) ---
+        if "QUESTION:" in tail:
+            return {"type": "open", "options": []}
+
+        # --- Yes/No questions ---
+        last_lines = tail.split("\n")[-3:]
+        last_text = " ".join(last_lines).strip().lower()
+        yesno_indicators = [
+            "shall i", "should i", "do you want me to", "would you like me to",
+            "soll ich", "möchtest du dass ich", "willst du dass ich",
+            "proceed?", "continue?", "go ahead?",
+            "fortfahren?", "weitermachen?",
+            "(yes/no)", "(y/n)", "(ja/nein)",
+        ]
+        if any(ind in last_text for ind in yesno_indicators) and "?" in last_text:
+            return {"type": "yesno", "options": []}
+
+        # --- Open question (ends with ?) ---
+        # Only trigger if the very last meaningful line ends with ?
+        for line in reversed(last_lines):
+            line = line.strip()
+            if line:
+                if line.endswith("?"):
+                    return {"type": "open", "options": []}
+                break
+
+        return None
+
+    def _show_question_ui(question_info: dict):
+        """Show interactive buttons based on detected question type."""
+        state["_pending_question"] = question_info
+        qtype = question_info["type"]
+        buttons = []
+
+        if qtype == "numbered":
+            question_hint_html.value = (
+                '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
+                'Choose an option:</span>'
+            )
+            for num, label in question_info["options"]:
+                btn = widgets.Button(
+                    description=f"{num}",
+                    tooltip=label,
+                    button_style="info",
+                    layout=widgets.Layout(
+                        min_width="36px", height="30px",
+                    ),
+                )
+                btn._option_value = num
+                btn.on_click(_on_question_option)
+                buttons.append(btn)
+        elif qtype == "yesno":
+            question_hint_html.value = (
+                '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
+                'Confirm:</span>'
+            )
+            yes_btn = widgets.Button(
+                description="Yes",
+                button_style="success",
+                layout=widgets.Layout(width="70px", height="30px"),
+            )
+            yes_btn._option_value = "yes"
+            yes_btn.on_click(_on_question_option)
+            no_btn = widgets.Button(
+                description="No",
+                button_style="danger",
+                layout=widgets.Layout(width="70px", height="30px"),
+            )
+            no_btn._option_value = "no"
+            no_btn.on_click(_on_question_option)
+            buttons = [yes_btn, no_btn]
+        elif qtype == "open":
+            question_hint_html.value = (
+                '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
+                'Agent awaits your answer</span>'
+            )
+            # No buttons — just highlight the input area
+            input_textarea.placeholder = "Type your answer..."
+
+        question_buttons_box.children = buttons
+        question_row.layout.display = "flex"
+
+    def _hide_question_ui():
+        """Hide question UI and reset state."""
+        question_row.layout.display = "none"
+        question_hint_html.value = ""
+        question_buttons_box.children = []
+        state.pop("_pending_question", None)
+        input_textarea.placeholder = "Message the agent... (Enter to send, Shift+Enter for newline)"
+
+    def _on_question_option(button):
+        """User clicked an option button — send as answer."""
+        value = getattr(button, "_option_value", "")
+        if not value:
+            return
+        _hide_question_ui()
+        input_textarea.value = value
+        _on_send(None)
+
     def _on_export(button):
         """Export button handler."""
         _export_chat()
@@ -5174,13 +5401,16 @@ def create_tab(ctx):
         if not user_text:
             return
 
+        # Hide any pending question UI when user sends a message
+        _hide_question_ui()
+
         # Slash commands execute immediately, even during streaming.
         # But file paths like /home/... are NOT slash commands — only
         # short tokens like /help, /calc, /orca etc. count.
         _first_token = user_text.split()[0].lower() if user_text else ""
         _SLASH_PREFIXES = {
             "/help", "/clear", "/cost", "/compact", "/stop", "/status",
-            "/usage", "/export", "/search", "/retry", "/git", "/provider",
+            "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
@@ -5361,6 +5591,7 @@ def create_tab(ctx):
             nonlocal _sm_approval
             chunks = []
             thinking_chunks = []
+            tool_count = [0]  # mutable counter for tool calls in this turn
             last_update = 0.0
             try:
 
@@ -5411,7 +5642,9 @@ def create_tab(ctx):
                     except Exception:
                         parsed = {}
 
-                    # Spinner detail
+                    # Spinner detail with tool counter
+                    tool_count[0] += 1
+                    _tc = tool_count[0]
                     _fname = (parsed.get("file_path") or parsed.get("path") or "")
                     if _fname:
                         _fname = _fname.rsplit("/", 1)[-1]
@@ -5424,7 +5657,7 @@ def create_tab(ctx):
                         "Bash":  f"$ {(parsed.get('command') or '')[:50]}...",
                         "Agent": f"Sub-agent: {(parsed.get('description') or '')[:40]}...",
                     }.get(tool_name, f"Running {tool_name}...")
-                    _set_working(True, _detail)
+                    _set_working(True, f"[{_tc}] {_detail}")
 
                     # Flush pending text as a finalized assistant message
                     if chunks:
@@ -5496,18 +5729,46 @@ def create_tab(ctx):
                             new = parsed.get("new_string", "")
                             old_p = _e(old[:100] + ("..." if len(old) > 100 else ""))
                             new_p = _e(new[:100] + ("..." if len(new) > 100 else ""))
+                            # Build collapsible full diff if content is longer
+                            full_diff = ""
+                            if len(old) > 100 or len(new) > 100:
+                                diff_lines = []
+                                for dl in old.split("\n"):
+                                    diff_lines.append(f'<span class="tool-diff-old">- {_e(dl)}</span>')
+                                for dl in new.split("\n"):
+                                    diff_lines.append(f'<span class="tool-diff-new">+ {_e(dl)}</span>')
+                                _max_diff = 20
+                                shown = diff_lines[:_max_diff]
+                                extra = f"\n... ({len(diff_lines) - _max_diff} more lines)" if len(diff_lines) > _max_diff else ""
+                                full_diff = (
+                                    f'\n<details><summary>full diff ({len(old.split(chr(10)))}→{len(new.split(chr(10)))} lines)</summary>'
+                                    f'<pre style="font-size:10px;">{chr(10).join(shown)}{_e(extra)}</pre></details>'
+                                )
                             _append_tool_message(
                                 f'<span class="tool-name">Edit</span>  '
                                 f'<span class="tool-path">{_e(sp)}</span>\n'
                                 f'  <span class="tool-diff-old">- {old_p}</span>\n'
                                 f'  <span class="tool-diff-new">+ {new_p}</span>'
+                                f'{full_diff}'
                             )
                         else:
                             content = parsed.get("content", "")
+                            # Show preview of file content
+                            preview = ""
+                            if content:
+                                lines = content.split("\n")
+                                _max_preview = 10
+                                shown = lines[:_max_preview]
+                                extra = f"\n... ({len(lines) - _max_preview} more lines)" if len(lines) > _max_preview else ""
+                                preview = (
+                                    f'\n<details><summary>preview ({len(lines)} lines, {len(content)} chars)</summary>'
+                                    f'<pre style="font-size:10px;">{_e(chr(10).join(shown))}{_e(extra)}</pre></details>'
+                                )
                             _append_tool_message(
                                 f'<span class="tool-name">Write</span>  '
                                 f'<span class="tool-path">{_e(sp)}</span>'
                                 f'  ({len(content)} chars)'
+                                f'{preview}'
                             )
                         state["recent_edits"].append({
                             "file": fpath, "tool": tool_name,
@@ -5731,6 +5992,16 @@ def create_tab(ctx):
                         )
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
+
+                    # -- Interactive question detection (solo/dashboard) --
+                    # After the agent finishes a turn, check if the response
+                    # ends with a question and show option buttons if applicable.
+                    _hide_question_ui()  # always reset first
+                    if chunks and engine.mode in ("solo", "dashboard"):
+                        _full_text = "".join(chunks)
+                        _q_info = _detect_question(_full_text)
+                        if _q_info:
+                            _show_question_ui(_q_info)
 
                     # Show per-role cost (only for pipeline modes, not solo/dashboard)
                     _role_cost = engine.cost_usd - _cost_before
