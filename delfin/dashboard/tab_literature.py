@@ -207,6 +207,7 @@ def create_tab(ctx):
         description='\U0001F4E4 Upload',
         layout=widgets.Layout(width='100%', height='30px', margin='6px 0 0 0'),
     )
+    lit_upload_btn.add_class('lit-upload-trigger')
 
     # Status
     lit_status = widgets.HTML(
@@ -426,19 +427,14 @@ def create_tab(ctx):
             }}
 
             /* --- Upload button triggers the hidden file input --- */
-            var uploadBtn = root.querySelector('.lit-left .jupyter-button');
-            if (uploadBtn) {{
-                /* Find the last button in left panel (our styled upload btn) */
-                var allBtns = root.querySelectorAll('.lit-left .jupyter-button');
-                var triggerBtn = allBtns[allBtns.length - 1];
-                if (triggerBtn && triggerBtn.textContent.indexOf('Upload') >= 0) {{
-                    triggerBtn.addEventListener('click', function(e) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        var inp = getUploadInput();
-                        if (inp) inp.click();
-                    }});
-                }}
+            var triggerBtn = root.querySelector('.lit-upload-trigger');
+            if (triggerBtn) {{
+                triggerBtn.addEventListener('click', function(e) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+                    var inp = getUploadInput();
+                    if (inp) inp.click();
+                }});
             }}
 
             /* --- Drop-zone visual feedback on file list --- */
