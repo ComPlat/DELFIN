@@ -176,11 +176,18 @@ class PromptLoader:
         """
         sections = []
 
-        # Solo mode: minimal prompt only — behave like terminal CLI
+        # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 sections.append(role_prompt)
+            # Include DELFIN project context so solo knows the codebase
+            # (only delfin_context.md — skip pipeline-specific rules)
+            ctx_text = self._cached_read(
+                self.agent_dir / "shared" / "delfin_context.md"
+            )
+            if ctx_text:
+                sections.append(f"--- Project Context ---\n{ctx_text}")
             if memory_context:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
             return "\n\n".join(sections)

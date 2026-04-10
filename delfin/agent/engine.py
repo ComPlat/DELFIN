@@ -191,6 +191,10 @@ _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
 _RESEARCH_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "WebSearch", "WebFetch"})
 _FULL_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "Edit", "Write"})
+_SOLO_TOOLS = frozenset({
+    "Read", "Grep", "Glob", "Bash", "Edit", "Write",  # full code access
+    "WebSearch", "WebFetch",                            # research capabilities
+})
 _DASHBOARD_TOOLS = frozenset({
     "Read", "Grep", "Glob",        # read code + data
     "Write", "Bash",               # agent_workspace only (CLI enforced via --add-dir)
@@ -206,7 +210,7 @@ _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "runtime_agent":   _GIT_BASH,
     "test_agent":      _FULL_TOOLS,
     "builder_agent":   _FULL_TOOLS,
-    "solo_agent":      _FULL_TOOLS,
+    "solo_agent":      _SOLO_TOOLS,
 }
 
 
