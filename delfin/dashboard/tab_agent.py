@@ -738,17 +738,20 @@ _AGENT_CSS = """\
     background: #eff6ff;
     border: 1px solid #3b82f6;
     border-radius: 8px;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    padding: 8px 12px;
     margin: 4px 0;
     position: sticky;
     bottom: 0;
     z-index: 10;
-    flex-wrap: wrap;
 }
-.delfin-agent-question-row button {
-    min-width: 36px;
+.delfin-agent-question-row .widget-checkbox {
+    margin: 0;
+}
+.delfin-agent-question-row .widget-checkbox label {
+    font-size: 12px;
 }
 </style>
 """
@@ -5376,7 +5379,7 @@ def create_tab(ctx):
     def _show_question_ui(question_info: dict):
         """Show interactive widgets based on detected question type.
 
-        - numbered (multi-select): Checkboxes for each option + Submit button
+        - numbered: Each option as a row with checkbox + quick-pick button
         - yesno: Yes / No buttons
         - open: Focus input area with hint
         """
@@ -5386,60 +5389,48 @@ def create_tab(ctx):
 
         if qtype == "numbered":
             options = question_info["options"]
-            # Use checkboxes for multi-select when 2+ options
+            # Each option = one row: [checkbox] [quick-pick button]
             checkboxes = []
+            rows = []
             for num, label in options:
-                short_label = label if len(label) <= 45 else label[:42] + "..."
                 cb = widgets.Checkbox(
                     value=False,
-                    description=f"{num}. {short_label}",
+                    description=label,
                     indent=False,
-                    layout=widgets.Layout(width="auto", margin="0 12px 0 0"),
+                    layout=widgets.Layout(width="auto", min_width="200px"),
                     style={"description_width": "0px"},
                 )
                 cb._option_num = num
                 checkboxes.append(cb)
-            state["_question_checkboxes"] = checkboxes
-
-            # "Other" free-text input
-            other_input = widgets.Text(
-                placeholder="Or type your own answer...",
-                layout=widgets.Layout(width="200px", height="28px"),
-            )
-            state["_question_other_input"] = other_input
-
-            # Submit button
-            submit_btn = widgets.Button(
-                description="Submit",
-                button_style="primary",
-                layout=widgets.Layout(width="80px", height="30px"),
-            )
-            submit_btn.on_click(_on_question_submit)
-
-            # Quick single-click buttons (for fast single selection)
-            quick_btns = []
-            for num, _label in options:
                 btn = widgets.Button(
                     description=f"{num}",
                     button_style="info",
                     tooltip=f"Quick select {num}",
-                    layout=widgets.Layout(min_width="32px", height="28px"),
+                    layout=widgets.Layout(width="32px", min_width="32px", height="26px"),
                 )
                 btn._option_value = num
                 btn.on_click(_on_question_option)
-                quick_btns.append(btn)
+                row = widgets.HBox(
+                    [btn, cb],
+                    layout=widgets.Layout(gap="6px", align_items="center"),
+                )
+                rows.append(row)
+            state["_question_checkboxes"] = checkboxes
+
+            # Submit button for multi-select
+            submit_btn = widgets.Button(
+                description="Submit selection",
+                button_style="primary",
+                layout=widgets.Layout(width="130px", height="30px"),
+            )
+            submit_btn.on_click(_on_question_submit)
 
             question_hint_html.value = (
                 '<span style="font-size:11px;color:#3b82f6;font-weight:600;">'
-                'Select options (checkboxes) or quick-pick (buttons):</span>'
+                'Pick one (buttons) or select multiple (checkboxes + Submit):</span>'
             )
-            # Layout: checkboxes in a column, then quick buttons + other + submit
-            cb_box = widgets.VBox(checkboxes, layout=widgets.Layout(gap="0px"))
-            action_row = widgets.HBox(
-                quick_btns + [other_input, submit_btn],
-                layout=widgets.Layout(gap="4px", align_items="center"),
-            )
-            children = [cb_box, action_row]
+            option_list = widgets.VBox(rows, layout=widgets.Layout(gap="0px"))
+            children = [option_list, submit_btn]
 
         elif qtype == "yesno":
             question_hint_html.value = (
@@ -5473,15 +5464,12 @@ def create_tab(ctx):
         question_row.layout.display = "flex"
 
     def _on_question_submit(button):
-        """Submit multi-select: gather checked options + free text, send as answer."""
+        """Submit multi-select: gather checked options, send as answer."""
         parts = []
         checkboxes = state.get("_question_checkboxes", [])
         for cb in checkboxes:
             if cb.value:
                 parts.append(getattr(cb, "_option_num", ""))
-        other_input = state.get("_question_other_input")
-        if other_input and other_input.value.strip():
-            parts.append(other_input.value.strip())
         if not parts:
             return  # nothing selected
         answer = ", ".join(parts)
@@ -5496,7 +5484,6 @@ def create_tab(ctx):
         question_buttons_box.children = []
         state.pop("_pending_question", None)
         state.pop("_question_checkboxes", None)
-        state.pop("_question_other_input", None)
         input_textarea.placeholder = "Message the agent... (Enter to send, Shift+Enter for newline)"
 
     def _on_question_option(button):
