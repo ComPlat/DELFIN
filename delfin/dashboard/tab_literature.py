@@ -201,16 +201,18 @@ def create_tab(ctx):
     lit_ops_status = widgets.HTML(value='', layout=widgets.Layout(width='100%', overflow_x='hidden'))
     lit_ops_status.add_class('calc-ops-status')
 
+    # Hidden bridge widgets (must be in DOM for JS to find them)
+    _hidden_bridge = widgets.VBox(
+        [lit_upload_meta, lit_upload_chunk, lit_upload_seq,
+         lit_upload_ack, lit_upload_trigger, lit_upload_ack_label],
+        layout=widgets.Layout(display='none'),
+    )
+
     lit_nav_bar = widgets.VBox([
         lit_path_label,
         lit_nav_controls_row,
         lit_rename_row,
-        # Hidden bridge widgets (must be in DOM for JS to find them)
-        widgets.VBox(
-            [lit_upload, lit_upload_meta, lit_upload_chunk, lit_upload_seq,
-             lit_upload_ack, lit_upload_trigger, lit_upload_ack_label],
-            layout=widgets.Layout(display='none'),
-        ),
+        _hidden_bridge,
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
 
     # Filter & sort row
