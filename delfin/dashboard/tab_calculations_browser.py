@@ -4079,6 +4079,11 @@ def create_tab(ctx):
         root_dir = _calc_xyz_batch_dir()
         candidates = _calc_collect_xyz_batch_labels(root_dir)
         previous_selection = set(calc_xyz_batch_select.value or ())
+        # Save scroll position before re-render, restore after.
+        _run_js(
+            "var el=document.querySelector('.calc-xyz-batch-select select');"
+            "if(el) window._batchScrollTop=el.scrollTop;"
+        )
         # Force a real widget rerender so changed labels (⬜ -> ✅) become visible.
         calc_xyz_batch_select.options = ()
         calc_xyz_batch_select.value = ()
@@ -4111,6 +4116,13 @@ def create_tab(ctx):
         calc_xyz_batch_select_all_btn.disabled = not bool(candidates)
         if not calc_xyz_batch_filename.value.strip():
             calc_xyz_batch_filename.value = _calc_xyz_batch_default_filename()
+        # Restore scroll position after widget re-render
+        _run_js(
+            "setTimeout(function(){"
+            "var el=document.querySelector('.calc-xyz-batch-select select');"
+            "if(el && window._batchScrollTop!=null) el.scrollTop=window._batchScrollTop;"
+            "}, 50);"
+        )
 
     def _calc_show_xyz_batch_panel(show):
         if show:
