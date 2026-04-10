@@ -956,4 +956,8 @@ sync_results_back "job-end" "full"
 # Cleanup scratch and staged binaries
 rm -rf "$DELFIN_SCRATCH" "$ORCA_TMPDIR" "${VENV_LOCAL:-}" "${ORCA_LOCAL:-}" "${OMPI_LOCAL:-}" 2>/dev/null || true
 
+# Completion marker — if this line is missing in delfin_*.out, the
+# wrapper script itself crashed (DELFIN bug, not an ORCA problem).
+echo "DELFIN WRAPPER COMPLETED (exit $EXIT_CODE)"
+
 exit $EXIT_CODE

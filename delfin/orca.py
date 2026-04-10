@@ -728,7 +728,19 @@ def _run_orca_subprocess(
                     logger.debug(f"Process cleanup: {e}")
 
             if return_code != 0:
-                logger.error(f"ORCA failed with return code {return_code} for {input_file_path}")
+                _SIGNAL_NAMES = {
+                    6: 'SIGABRT', 9: 'SIGKILL (likely OOM-killer)',
+                    11: 'SIGSEGV (segfault)', 15: 'SIGTERM (timeout/cancelled)',
+                }
+                if return_code > 128:
+                    sig = return_code - 128
+                    sig_name = _SIGNAL_NAMES.get(sig, f'signal {sig}')
+                    logger.error(f"ORCA killed by {sig_name} (exit code {return_code}) for {input_file_path}")
+                elif return_code < 0:
+                    sig_name = _SIGNAL_NAMES.get(-return_code, f'signal {-return_code}')
+                    logger.error(f"ORCA killed by {sig_name} for {input_file_path}")
+                else:
+                    logger.error(f"ORCA failed with exit code {return_code} for {input_file_path}")
                 logger.error(f"Check {output_log} for details")
                 _cleanup_process_group()
                 return False

@@ -272,7 +272,13 @@ def _print_orca_error_diagnosis(out_path: Path) -> None:
     except Exception:
         pass
 
-    # 2) Extract the last ~50 error-relevant lines from the output tail
+    # 2) Detect the last ORCA computation phase from the output
+    try:
+        _print_last_orca_phase(out_path)
+    except Exception:
+        pass
+
+    # 3) Extract the last ~50 error-relevant lines from the output tail
     try:
         with open(out_path, 'r', errors='replace') as f:
             size = out_path.stat().st_size
@@ -306,6 +312,49 @@ def _print_orca_error_diagnosis(out_path: Path) -> None:
                     print(f'  | {line}')
     except Exception:
         pass
+
+    # 4) Disk space — helps spot "no space left" before reading the error
+    try:
+        stat = os.statvfs(out_path.parent)
+        free_gb = (stat.f_bavail * stat.f_frsize) / (1024 ** 3)
+        print(f'Disk Free:     {free_gb:.1f} GB ({out_path.parent})')
+    except Exception:
+        pass
+
+
+# ORCA computation phases, ordered by typical execution sequence.
+# The LAST match in the output tells us where ORCA was when it died.
+_ORCA_PHASE_MARKERS = (
+    ('SCF ITERATIONS', 'SCF iterations'),
+    ('GEOMETRY OPTIMIZATION CYCLE', 'geometry optimization'),
+    ('THE OPTIMIZATION HAS CONVERGED', 'optimization converged'),
+    ('OPTIMIZATION RUN DONE', 'optimization done'),
+    ('SCF HESSIAN', 'analytical Hessian'),
+    ('COSX Hessian', 'COSX Hessian evaluation'),
+    ('CP-SCF DRIVER', 'CPSCF / frequency perturbations'),
+    ('VIBRATIONAL FREQUENCIES', 'frequency analysis'),
+    ('NORMAL MODES', 'normal mode analysis'),
+    ('IR SPECTRUM', 'IR spectrum'),
+    ('THERMOCHEMISTRY', 'thermochemistry'),
+)
+
+
+def _print_last_orca_phase(out_path: Path) -> None:
+    """Detect and print the last ORCA computation phase from output."""
+    size = out_path.stat().st_size
+    # Read last 64 KB to find the latest phase marker
+    with open(out_path, 'r', errors='replace') as f:
+        if size > 65536:
+            f.seek(size - 65536)
+            f.readline()
+        content = f.read()
+
+    last_phase = None
+    for marker, label in _ORCA_PHASE_MARKERS:
+        if marker in content:
+            last_phase = label
+    if last_phase:
+        print(f'Last Phase:    {last_phase}')
 
 
 def _run_mode(mode: str) -> int:
