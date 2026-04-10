@@ -11885,7 +11885,7 @@ def create_tab(ctx):
             console.log('[DELFIN] _uploadBrowserFiles called, files:', browserFiles.length, 'targetName:', targetName);
             if (!root || !browserFiles || !browserFiles.length) return false;
             _setOpsStatus(root, 'Uploading ' + browserFiles.length + ' file(s)...', '#555');
-            var chunkChars = 350000;
+            var chunkChars = 1000000;
             var batchId = String(batchPrefix || 'drop') + '_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
             var target = String(targetName || '');
             for (var i = 0; i < browserFiles.length; i++) {

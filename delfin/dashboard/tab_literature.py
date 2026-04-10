@@ -106,6 +106,7 @@ def create_tab(ctx):
         [lit_path_prefix, lit_path_input],
         layout=widgets.Layout(width='100%', overflow_x='hidden', align_items='stretch', gap='2px'),
     )
+    lit_path_label.add_class('calc-path-label')
 
     # Navigation buttons (identical style to Calculations Browser)
     lit_back_btn = widgets.Button(
@@ -162,10 +163,47 @@ def create_tab(ctx):
         ),
     )
 
+    # Upload: hidden FileUpload (same as Calculations) + styled trigger button
+    lit_upload = widgets.FileUpload(
+        accept='',
+        multiple=True,
+        description='',
+        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
+    )
+    lit_upload_btn = widgets.Button(
+        description='\U0001F4E4 Upload',
+        layout=widgets.Layout(width='100%', height='30px', margin='6px 0 0 0'),
+    )
+    lit_upload_btn.add_class('lit-upload-trigger')
+
+    # Hidden bridge widgets for chunked upload (used by _explorer_interactions_js)
+    _h = widgets.Layout(width='1px', height='1px', display='none')
+    lit_upload_meta = widgets.Textarea(value='', layout=_h)
+    lit_upload_chunk = widgets.Textarea(value='', layout=_h)
+    lit_upload_seq = widgets.IntText(value=0, layout=_h)
+    lit_upload_ack = widgets.IntText(value=0, layout=_h)
+    lit_upload_trigger = widgets.Button(description='', layout=_h)
+    lit_upload_ack_label = widgets.Label(value='0', layout=_h)
+    lit_upload_meta.add_class('calc-upload-meta')
+    lit_upload_chunk.add_class('calc-upload-chunk')
+    lit_upload_seq.add_class('calc-upload-seq')
+    lit_upload_ack.add_class('calc-upload-ack')
+    lit_upload_trigger.add_class('calc-upload-trigger-btn')
+    lit_upload_ack_label.add_class('calc-upload-ack-label')
+    # Status area for the explorer upload system
+    lit_ops_status = widgets.HTML(value='', layout=widgets.Layout(width='100%', overflow_x='hidden'))
+    lit_ops_status.add_class('calc-ops-status')
+
     lit_nav_bar = widgets.VBox([
         lit_path_label,
         lit_nav_controls_row,
         lit_rename_row,
+        # Hidden bridge widgets (must be in DOM for JS to find them)
+        widgets.VBox(
+            [lit_upload, lit_upload_meta, lit_upload_chunk, lit_upload_seq,
+             lit_upload_ack, lit_upload_trigger, lit_upload_ack_label],
+            layout=widgets.Layout(display='none'),
+        ),
     ], layout=widgets.Layout(width='100%', overflow_x='hidden'))
 
     # Filter & sort row
@@ -195,19 +233,6 @@ def create_tab(ctx):
         layout=widgets.Layout(width='100%', flex='1 1 0', min_height='0', margin='-4px 0 0 0'),
     )
     lit_file_list.add_class('lit-file-list')
-
-    # Upload: hidden FileUpload (1px, same as Calculations) + styled trigger button
-    lit_upload = widgets.FileUpload(
-        accept='',
-        multiple=True,
-        description='',
-        layout=widgets.Layout(width='1px', height='1px', overflow='hidden'),
-    )
-    lit_upload_btn = widgets.Button(
-        description='\U0001F4E4 Upload',
-        layout=widgets.Layout(width='100%', height='30px', margin='6px 0 0 0'),
-    )
-    lit_upload_btn.add_class('lit-upload-trigger')
 
     # Status
     lit_status = widgets.HTML(
@@ -298,6 +323,7 @@ def create_tab(ctx):
         lit_path_display,
         lit_del_confirm,
         lit_del_status,
+        lit_ops_status,
         lit_status,
         lit_content,
     ], layout=widgets.Layout(
@@ -375,8 +401,14 @@ def create_tab(ctx):
         width='100%', max_width='100%',
     ))
     tab_widget.add_class(scope_id)
+    # Use calc-* classes so the shared _explorer_interactions_js picks up
+    # this tab for drag-drop highlighting, chunked upload, etc.
+    tab_widget.add_class('calc-tab')
     lit_left.add_class('lit-left')
+    lit_left.add_class('calc-left')
     lit_right.add_class('lit-right')
+    lit_right.add_class('calc-right')
+    lit_file_list.add_class('calc-file-list')
 
     # ==================================================================
     #  JAVASCRIPT — splitter drag + drop-zone + dblclick navigation
@@ -393,6 +425,10 @@ def create_tab(ctx):
                 }}
                 return;
             }}
+            /* --- Register this tab for the shared explorer upload bridge --- */
+            window.__delfinCalcUploadStagingRoots = window.__delfinCalcUploadStagingRoots || {{}};
+            window.__delfinCalcUploadStagingRoots['{scope_id}'] = '';
+
             /* --- Splitter drag --- */
             var left = root.querySelector('.lit-left');
             var right = root.querySelector('.lit-right');
@@ -843,6 +879,84 @@ def create_tab(ctx):
         lit_rename_input.layout.display = 'none'
         lit_rename_confirm.layout.display = 'none'
         lit_rename_cancel.layout.display = 'none'
+
+    # ── Chunked upload bridge handler (same protocol as Calculations) ──
+
+    upload_bridge_state = {
+        'last_seq': 0,
+        'files': {},
+        'batches': {},
+    }
+
+    def _process_upload_chunk(seq):
+        """Process one chunk from the JS upload bridge."""
+        batch_id = ''
+        try:
+            meta = json.loads(lit_upload_meta.value or '{}')
+            chunk_data = str(lit_upload_chunk.value or '')
+            batch_id = str(meta.get('batch_id') or '').strip() or f'batch_{seq}'
+            upload_id = str(meta.get('upload_id') or '').strip() or f'{batch_id}:file'
+            batch_total = max(1, int(meta.get('batch_total') or 1))
+            chunk_index = int(meta.get('chunk_index') or 0)
+            chunk_total = max(1, int(meta.get('chunk_total') or 1))
+            name = str(meta.get('name') or 'upload.bin')
+
+            batch = upload_bridge_state['batches'].setdefault(
+                batch_id, {'expected': batch_total, 'completed': set(), 'saved': []},
+            )
+            file_state = upload_bridge_state['files'].setdefault(
+                upload_id, {'chunks': [None] * chunk_total, 'name': name, 'batch_id': batch_id},
+            )
+            file_state['chunks'][chunk_index] = chunk_data
+
+            if all(part is not None for part in file_state['chunks']):
+                payload = base64.b64decode(''.join(file_state['chunks']))
+                dest = _cur_dir() / name
+                if dest.exists():
+                    stem, sfx = dest.stem, dest.suffix
+                    c = 2
+                    while dest.exists():
+                        dest = _cur_dir() / f'{stem}_{c}{sfx}'
+                        c += 1
+                dest.write_bytes(payload)
+                batch['saved'].append(dest.name)
+                batch['completed'].add(upload_id)
+                upload_bridge_state['files'].pop(upload_id, None)
+
+                if len(batch['completed']) >= batch['expected']:
+                    n = len(batch['saved'])
+                    _set_status(f'Uploaded {n} file(s)', '#2e7d32')
+                    lit_ops_status.value = (
+                        f'<span style="color:#2e7d32;">Uploaded {n} file(s)</span>'
+                    )
+                    upload_bridge_state['batches'].pop(batch_id, None)
+                    list_directory()
+        except Exception as exc:
+            _set_status(f'Upload failed: {exc}', '#d32f2f')
+            lit_ops_status.value = (
+                f'<span style="color:#d32f2f;">Upload failed: {_html.escape(str(exc))}</span>'
+            )
+        finally:
+            lit_upload_ack.value = seq
+            lit_upload_ack_label.value = str(seq)
+            lit_upload_chunk.value = ''
+
+    def on_upload_seq(change):
+        try:
+            seq = int(change.get('new') or 0)
+        except Exception:
+            return
+        if seq <= 0 or seq <= upload_bridge_state['last_seq']:
+            return
+        upload_bridge_state['last_seq'] = seq
+        _process_upload_chunk(seq)
+
+    def on_upload_trigger(_btn):
+        upload_bridge_state['last_seq'] += 1
+        _process_upload_chunk(upload_bridge_state['last_seq'])
+
+    lit_upload_seq.observe(on_upload_seq, names='value')
+    lit_upload_trigger.on_click(on_upload_trigger)
 
     # ── Wire events ───────────────────────────────────────────────────
 
