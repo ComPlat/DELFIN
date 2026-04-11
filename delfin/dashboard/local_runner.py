@@ -170,6 +170,7 @@ def _print_job_banner(mode: str, job_name: str, inp_file: str) -> None:
     print(f'DELFIN:      {_delfin_version_string()}')
     print('========================================')
     print('')
+    sys.stdout.flush()
 
 
 def _run_command(cmd: list[str], *, cwd: Path | None = None) -> int:
@@ -575,4 +576,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        # Catch-all so import errors or unexpected crashes are ALWAYS visible
+        # in the SLURM delfin_*.out / delfin_*.err files.
+        import traceback
+        print(f'[local_runner] FATAL: {exc}', file=sys.stderr, flush=True)
+        traceback.print_exc()
+        raise SystemExit(1)

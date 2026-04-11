@@ -545,6 +545,9 @@ if [ "$MODE" = "auto" ]; then
     fi
 fi
 export DELFIN_MODE="$MODE"
+export DELFIN_INP_FILE="$INP_FILE"
+export DELFIN_OVERRIDE="${OVERRIDE}"
+export DELFIN_XYZ_FILE="${DELFIN_XYZ_FILE:-}"
 
 # ======================================================================
 # Section 14: Workspace copy to scratch
@@ -755,7 +758,7 @@ PERIODIC_COPY_PID=$!
 
 get_walltime_seconds() {
     local timelimit
-    timelimit=$(scontrol show job "${SLURM_JOB_ID:-0}" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+' || echo "")
+    timelimit=$(scontrol show job "${SLURM_JOB_ID:-0}" 2>/dev/null | grep -oP '\bTimeLimit=\K\S+' | head -1 || echo "")
     if [ -z "$timelimit" ] || [ "$timelimit" = "UNLIMITED" ]; then
         echo "0"
         return
@@ -893,11 +896,11 @@ echo "Mode: $MODE"
 echo "========================================"
 echo "Job ID:      ${SLURM_JOB_ID:-$DELFIN_JOB_ID}"
 echo "Node:        ${SLURM_JOB_NODELIST:-$(hostname)}"
-echo "CPUs:        ${SLURM_NTASKS:-$(nproc)}"
+echo "CPUs:        ${SLURM_CPUS_PER_TASK:-$(nproc)}"
 echo "Memory:      ${SLURM_MEM_PER_NODE:-unknown} MB"
 TIME_LIMIT="${SLURM_TIMELIMIT:-}"
 if [ -z "$TIME_LIMIT" ] && [ -n "${SLURM_JOB_ID:-}" ] && command -v scontrol >/dev/null 2>&1; then
-    TIME_LIMIT="$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | grep -oP 'TimeLimit=\K[^ ]+' || echo "")"
+    TIME_LIMIT="$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | grep -oP '\bTimeLimit=\K\S+' | head -1 || echo "")"
 fi
 echo "Time Limit:  ${TIME_LIMIT:-unknown}"
 echo "Submit Dir:  $ORIGIN_DIR"
@@ -931,10 +934,19 @@ touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
 # ======================================================================
 _JOB_START_EPOCH=$(date +%s)
 
+# Ensure Python stdout/stderr are line-buffered so output is visible
+# immediately in delfin_*.out even when stdout is not a TTY (SLURM).
+export PYTHONUNBUFFERED=1
+
+echo "[wrapper] Starting local_runner (PID will follow)..."
 "$PYTHON_BIN" -m delfin.dashboard.local_runner &
 _DELFIN_PID=$!
+echo "[wrapper] local_runner PID: $_DELFIN_PID"
 wait "$_DELFIN_PID"
 EXIT_CODE=$?
+if [ "$EXIT_CODE" -ne 0 ]; then
+    echo "[wrapper] local_runner exited with code $EXIT_CODE"
+fi
 
 _JOB_END_EPOCH=$(date +%s)
 _JOB_ELAPSED=$(( _JOB_END_EPOCH - _JOB_START_EPOCH ))
