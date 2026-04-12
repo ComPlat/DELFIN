@@ -867,24 +867,28 @@ configure_local_xtb4stda_home
 # Section 18: NMR post-processing fallback
 # ======================================================================
 _postprocess_nmr_if_needed() {
-    if [ "${DELFIN_MODE:-}" != "orca" ]; then return; fi
+    # Must always return 0 — called after ORCA, set -e would otherwise
+    # propagate any non-zero exit (e.g. from grep) and kill the wrapper
+    # before the final sync and completion marker.
+    if [ "${DELFIN_MODE:-}" != "orca" ]; then return 0; fi
     local inp_file="${DELFIN_INP_FILE:-}"
     if [ -z "$inp_file" ]; then
         inp_file="$(find . -maxdepth 1 -type f -name '*.inp' | sort | head -n 1)"
         inp_file="${inp_file#./}"
     fi
-    [ -z "$inp_file" ] || [ ! -f "$inp_file" ] && return
-    grep -qi 'EPRNMR' "$inp_file" || return
+    if [ -z "$inp_file" ] || [ ! -f "$inp_file" ]; then return 0; fi
+    if ! grep -qi 'EPRNMR' "$inp_file"; then return 0; fi
 
     local stem="${inp_file%.inp}"
     local out_file="${stem}.out"
     local png_file="NMR_${stem}.png"
-    [ ! -f "$out_file" ] && return
-    [ -f "$png_file" ] && return
+    if [ ! -f "$out_file" ]; then return 0; fi
+    if [ -f "$png_file" ]; then return 0; fi
 
     echo "[nmr] Missing ${png_file}; running fallback NMR report generation"
     "$PYTHON_BIN" -m delfin.cli_nmr_report "$out_file" --table || \
         echo "[nmr] WARNING: fallback NMR report generation failed"
+    return 0
 }
 
 # ======================================================================
@@ -942,6 +946,12 @@ echo "[wrapper] Starting local_runner (PID will follow)..."
 "$PYTHON_BIN" -m delfin.dashboard.local_runner &
 _DELFIN_PID=$!
 echo "[wrapper] local_runner PID: $_DELFIN_PID"
+
+# Disable set -e for the wait + post-job cleanup: a failed ORCA run
+# must NOT cause the wrapper itself to exit before the final sync and
+# completion marker. Any non-zero EXIT_CODE is propagated via exit at
+# the very end of the script.
+set +e
 wait "$_DELFIN_PID"
 EXIT_CODE=$?
 if [ "$EXIT_CODE" -ne 0 ]; then
