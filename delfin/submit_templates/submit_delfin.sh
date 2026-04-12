@@ -732,9 +732,34 @@ sync_results_back() {
     fi
 
     file_count="$(wc -l < "$list_file" 2>/dev/null || echo 0)"
-    rsync -a --files-from="$list_file" "$RUN_DIR"/ "$ORIGIN_DIR"/ 2>/dev/null || true
+
+    # Capture rsync exit code + stderr so silent failures (e.g. disk full
+    # on $HOME, NFS hiccup, permission error) are visible in delfin_*.out
+    # instead of pretending the sync succeeded.
+    local rsync_err
+    rsync_err="$(mktemp 2>/dev/null || echo /tmp/delfin_rsync_err.$$)"
+    local rsync_rc=0
+    rsync -a --files-from="$list_file" "$RUN_DIR"/ "$ORIGIN_DIR"/ 2>"$rsync_err" \
+        || rsync_rc=$?
+
     [ "$sync_profile" = "minimal" ] && touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
-    echo "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
+
+    if [ "$rsync_rc" -eq 0 ]; then
+        echo "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
+    else
+        echo "WARNING: rsync exited with code ${rsync_rc} during ${sync_label} sync."
+        echo "WARNING: ${file_count} files were scheduled; some may be missing in ${ORIGIN_DIR}."
+        if [ -s "$rsync_err" ]; then
+            echo "rsync stderr (first 5 lines):"
+            head -n 5 "$rsync_err" | sed 's/^/  | /'
+        fi
+        # Quick sanity check: report free space on destination so the
+        # user immediately sees if the home filesystem filled up.
+        local free_gb
+        free_gb="$(df -BG "$ORIGIN_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+        [ -n "$free_gb" ] && echo "  | Free on $ORIGIN_DIR: ${free_gb}"
+    fi
+    rm -f "$rsync_err" 2>/dev/null || true
 }
 
 # ======================================================================

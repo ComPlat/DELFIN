@@ -167,3 +167,23 @@ def test_submit_script_postprocess_nmr_has_explicit_return_0():
         "exit code and kills the wrapper via set -e"
     assert "return 0" in func_body, \
         "_postprocess_nmr_if_needed must explicitly return 0 on early exits"
+
+
+def test_submit_script_rsync_failures_are_reported():
+    """rsync failures must be logged (not silently swallowed) so the user
+    sees when $HOME is full / NFS errors / permission issues occurred."""
+    content = _SCRIPT.read_text()
+    # Find the sync_results_back function body
+    func_start = content.index("sync_results_back() {")
+    func_end = content.index("\n}\n", func_start)
+    func_body = content[func_start:func_end]
+
+    # Must NOT use the old silent `rsync ... 2>/dev/null || true` pattern
+    assert 'rsync -a --files-from="$list_file" "$RUN_DIR"/ "$ORIGIN_DIR"/ 2>/dev/null || true' \
+        not in func_body, \
+        "rsync must not swallow errors silently — capture the exit code"
+
+    # Must capture the exit code and warn on failure
+    assert "rsync_rc" in func_body, "rsync exit code must be captured"
+    assert "WARNING: rsync exited with code" in func_body, \
+        "rsync failures must be logged visibly"
