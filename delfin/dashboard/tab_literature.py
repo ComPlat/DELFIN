@@ -1076,6 +1076,5 @@ def create_tab(ctx):
 
     # ── Initial load ──────────────────────────────────────────────────
     list_directory()
-    _rebuild_index(silent=True)
 
     return tab_widget, {'init_js': _init_js}
