@@ -377,10 +377,14 @@ def _normalized_settings_dict(payload):
         docs = {}
     if not isinstance(docs, dict):
         raise ValueError("Settings key 'docs' must be a JSON object.")
+    # Read the docs defaults defensively: DEFAULT_SETTINGS may be mocked
+    # (tests) or come from an older version that predates the 'docs' section.
+    docs_defaults = DEFAULT_SETTINGS.get("docs", {}) or {}
+    docs_enabled_default = docs_defaults.get("enabled", False)
     normalized["docs"] = {
         "enabled": normalize_bool_setting(
-            docs.get("enabled", DEFAULT_SETTINGS["docs"]["enabled"]),
-            DEFAULT_SETTINGS["docs"]["enabled"],
+            docs.get("enabled", docs_enabled_default),
+            docs_enabled_default,
         ),
         "literature_path": normalize_local_directory_setting(
             docs.get("literature_path", ""),
