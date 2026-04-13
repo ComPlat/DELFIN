@@ -7164,7 +7164,10 @@ def create_tab(ctx):
                     }}
                 }}, 0);
                 """)
-                _calc_update_png_frame(idx)
+                # NOTE: _calc_update_png_frame was referenced here but never
+                # defined — calling it would crash the PNG navigation button.
+                # The JS above (v.setFrame(idx)) already updates the displayed
+                # frame; the Python-side Python frame tracker isn't used.
                 _calc_set_png_button_mode(main=True)
             return
 
@@ -9204,10 +9207,15 @@ def create_tab(ctx):
                 f'<span style="color:#d32f2f;">Delete failed: {_html.escape(str(exc))}</span>'
             )
         calc_delete_confirm.layout.display = 'none'
+        # This code path IS the "delete current folder" fallback (see comment
+        # above at line 9191), so after successful deletion we always move up
+        # to the parent directory. Previously this guarded on an undefined
+        # local `delete_current` (a leftover after a state-dict refactor);
+        # the state-dict flag was cleared before the guard ran, so the guard
+        # body never executed and the parent-navigation was silently dead.
         state['delete_current'] = False
-        if delete_current:
-            cp = state['current_path']
-            state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
+        cp = state['current_path']
+        state['current_path'] = cp.rsplit('/', 1)[0] if '/' in cp else ''
         calc_file_list.value = ()
         _calc_refresh_related_explorers()
 

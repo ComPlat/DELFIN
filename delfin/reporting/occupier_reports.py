@@ -197,7 +197,6 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
     # selection mode
     occ_method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
-    occ_method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
     raw_sel = str(config.get('occupier_selection', 'tolerance')).lower()
     sel = raw_sel.split('|')[0].strip()
     ap = config.get('approximate_spin_projection_APMethod')
@@ -895,6 +894,7 @@ def generate_summary_report_OCCUPIER_safe(duration, fspe_values, is_even, charge
     lowest_label = f"LOWEST {energy_label}:"
 
     # selection mode
+    occ_method = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()
     raw_sel = str(config.get('occupier_selection', 'tolerance')).lower()
     sel = raw_sel.split('|')[0].strip()
     ap = config.get('approximate_spin_projection_APMethod')

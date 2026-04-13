@@ -15,7 +15,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
 
@@ -5988,7 +5988,7 @@ def _assemble_secondary_metal_coordination_modules(
             except Exception:
                 bond_len = 2.1
             metal_pos = dp + direction * bond_len
-            conf.SetAtomPosition(metal_idx, Geometry.Point3D(*metal_pos))
+            conf.SetAtomPosition(metal_idx, Point3D(*metal_pos))
             placed_secondary.add(metal_idx)
             module_atoms.add(metal_idx)
             module_atoms.add(donor_idx)
@@ -12205,6 +12205,7 @@ def _shortest_path_length_excluding(
     max_depth: int = 6,
 ) -> Optional[int]:
     """Return shortest path length from ``start`` to ``goal`` while skipping ``blocked``."""
+    from collections import deque
     if start == goal:
         return 0
     visited = {blocked, start}
@@ -16447,6 +16448,8 @@ def smiles_to_xyz(
         error = "RDKit is not installed. Install with: pip install rdkit"
         logger.error(error)
         return None, error
+
+    import numpy as np  # local import: keeps module import cheap
 
     try:
         has_metal = contains_metal(smiles)
