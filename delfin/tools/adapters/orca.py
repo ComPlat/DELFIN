@@ -32,10 +32,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
 from delfin.tools.adapters.xtb import _read_xyz_coords
+
+logger = get_logger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────
