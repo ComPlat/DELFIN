@@ -5355,9 +5355,6 @@ def create_tab(ctx):
                 options = []
                 for num, desc in matches:
                     label = desc.strip().rstrip("*").strip()
-                    # Truncate long option text
-                    if len(label) > 60:
-                        label = label[:57] + "..."
                     options.append((num, label))
                 return {"type": "numbered", "options": options}
 
