@@ -1040,18 +1040,24 @@ def create_tab(ctx):
             ("o3", "o3"),
         ],
         "kit": [
-            ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
+            ("Azure GPT-5.1", "azure.gpt-5.1"),
+            ("Azure GPT-5", "azure.gpt-5"),
+            ("Azure GPT-5-mini", "azure.gpt-5-mini"),
+            ("Azure GPT-5-nano", "azure.gpt-5-nano"),
+            ("Azure o3", "azure.o3"),
+            ("Azure o4-mini", "azure.o4-mini"),
             ("Azure GPT-4.1", "azure.gpt-4.1"),
+            ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
             ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "azure.gpt-4.1-mini"}
+                          "kit": "azure.gpt-5.1"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
-                       "kit": "azure.gpt-4.1-nano"}
+                       "kit": "azure.gpt-5-nano"}
 
     # Skip patterns: models that should not appear in the dropdown
-    _KIT_SKIP = {"standard-external", "standard-local"}
+    _KIT_SKIP = {"standard-external", "standard-extern", "standard-local"}
 
     def _fetch_models(provider):
         """Fetch model list from API. Returns [(label, id), ...] or None."""

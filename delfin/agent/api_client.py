@@ -617,16 +617,191 @@ class APIClient(_BaseClient):
 # OpenAI backend (uses OpenAI API key)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Local doc-search tools (function calling for non-CLI backends)
+# ---------------------------------------------------------------------------
+
+_DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_docs",
+            "description": (
+                "Search indexed documentation (ORCA manual, xTB docs, papers) "
+                "for sections matching a query.  Returns JSON with doc_id, "
+                "section_id, title, score, and snippet."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text search query (e.g. 'relaxed surface scan', 'RIJCOSX')",
+                    },
+                    "doc_filter": {
+                        "type": "string",
+                        "description": "Optional: restrict to a specific doc_id",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max results to return (default 10)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_section",
+            "description": (
+                "Read the full text of a specific section from an indexed document. "
+                "Use after search_docs to read a section in detail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Document identifier (from search_docs results)",
+                    },
+                    "section_id": {
+                        "type": "string",
+                        "description": "Section identifier (from search_docs results)",
+                    },
+                },
+                "required": ["doc_id", "section_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_docs",
+            "description": "List all indexed documents with doc_id, title, section_count.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_sections",
+            "description": "List all sections (table of contents) of a specific document.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Document identifier (from list_docs)",
+                    },
+                },
+                "required": ["doc_id"],
+            },
+        },
+    },
+]
+
+
+class _DocToolExecutor:
+    """Lazy-loaded local executor for doc search tools."""
+
+    def __init__(self) -> None:
+        self._engine = None
+        self._index: dict | None = None
+
+    def _ensure_loaded(self) -> bool:
+        """Load index and build search engine. Returns True if ready."""
+        if self._engine is not None:
+            return True
+        try:
+            from delfin.doc_server.indexer import get_default_index_path
+            idx_path = get_default_index_path()
+            if not idx_path.exists():
+                return False
+            self._index = json.loads(idx_path.read_text(encoding="utf-8"))
+            from delfin.doc_server.search import DocSearchEngine
+            self._engine = DocSearchEngine(self._index)
+            return True
+        except Exception:
+            return False
+
+    def execute(self, name: str, arguments: dict) -> str:
+        """Execute a doc tool by name. Returns the result string."""
+        if not self._ensure_loaded():
+            return json.dumps({"error": "Doc index not available. Run delfin-docs-index."})
+
+        if name == "search_docs":
+            results = self._engine.search(
+                query=arguments.get("query", ""),
+                doc_filter=arguments.get("doc_filter", ""),
+                max_results=arguments.get("max_results", 10),
+            )
+            return json.dumps(results, indent=2, ensure_ascii=False)
+
+        elif name == "read_section":
+            doc_id = arguments.get("doc_id", "")
+            section_id = arguments.get("section_id", "")
+            doc = self._index.get("documents", {}).get(doc_id)
+            if not doc:
+                available = list(self._index.get("documents", {}).keys())
+                return f"Document '{doc_id}' not found. Available: {available}"
+            section = doc.get("sections", {}).get(section_id)
+            if not section:
+                available = list(doc.get("sections", {}).keys())[:20]
+                return f"Section '{section_id}' not found. First sections: {available}"
+            return (
+                f"# {section.get('title', section_id)}\n"
+                f"Source: {doc.get('title', doc_id)}\n\n"
+                f"{section.get('text', '')}"
+            )
+
+        elif name == "list_docs":
+            docs = []
+            for doc_id, doc in self._index.get("documents", {}).items():
+                docs.append({
+                    "doc_id": doc_id,
+                    "title": doc.get("title", ""),
+                    "section_count": doc.get("section_count", 0),
+                    "total_chars": doc.get("total_chars", 0),
+                })
+            return json.dumps(docs, indent=2, ensure_ascii=False)
+
+        elif name == "list_sections":
+            doc_id = arguments.get("doc_id", "")
+            doc = self._index.get("documents", {}).get(doc_id)
+            if not doc:
+                available = list(self._index.get("documents", {}).keys())
+                return f"Document '{doc_id}' not found. Available: {available}"
+            sections = []
+            for sid, sec in doc.get("sections", {}).items():
+                sections.append({
+                    "section_id": sid,
+                    "title": sec.get("title", ""),
+                    "level": sec.get("level", 0),
+                    "char_count": len(sec.get("text", "")),
+                })
+            return json.dumps(sections, indent=2, ensure_ascii=False)
+
+        return json.dumps({"error": f"Unknown tool: {name}"})
+
+
+# Singleton — shared across all OpenAIClient instances.
+_doc_executor = _DocToolExecutor()
+
+
 class OpenAIClient(_BaseClient):
     """Use the OpenAI Python SDK for GPT / o-series models.
 
     Requires an API key (``OPENAI_API_KEY`` or passed explicitly).
-    Supports text streaming and cost tracking.
+    Supports text streaming, cost tracking, and local doc-search tools
+    via OpenAI function calling.
     """
 
     DEFAULT_MODEL = "gpt-4.1"
 
     # Pricing per million tokens (USD).
+    # Keys are base model names; _estimate_cost strips "azure." prefix.
     _PRICING: dict[str, tuple[float, float]] = {
         # GPT-5 family
         "gpt-5.4": (2.0, 8.0),
@@ -634,8 +809,12 @@ class OpenAIClient(_BaseClient):
         "gpt-5.3-codex": (2.0, 8.0),
         "gpt-5.2-codex": (2.0, 8.0),
         "gpt-5.2": (2.0, 8.0),
+        "gpt-5.1": (2.0, 8.0),
         "gpt-5.1-codex-max": (2.0, 8.0),
         "gpt-5.1-codex-mini": (0.40, 1.60),
+        "gpt-5": (2.0, 8.0),
+        "gpt-5-mini": (0.40, 1.60),
+        "gpt-5-nano": (0.10, 0.40),
         # GPT-4 family
         "gpt-4.1": (2.0, 8.0),
         "gpt-4.1-mini": (0.40, 1.60),
@@ -680,7 +859,9 @@ class OpenAIClient(_BaseClient):
         return ""
 
     def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
-        pricing = self._PRICING.get(self.model)
+        # Strip provider prefix (e.g. "azure.gpt-5.1" -> "gpt-5.1")
+        base = self.model.split(".", 1)[-1] if self.model.startswith(("azure.", "kit.")) else self.model
+        pricing = self._PRICING.get(base) or self._PRICING.get(self.model)
         if not pricing:
             pricing = (2.0, 8.0)
         return (input_tokens * pricing[0] + output_tokens * pricing[1]) / 1_000_000
@@ -693,9 +874,16 @@ class OpenAIClient(_BaseClient):
         session_id: str = "",
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
-        """Stream via the OpenAI Chat Completions API."""
-        api_messages: list[dict[str, str]] = []
-        is_reasoning = self.model.startswith("o")
+        """Stream via the OpenAI Chat Completions API.
+
+        Includes local doc-search tools via function calling.  When the
+        model calls a doc tool, the result is executed locally and fed
+        back in a tool-call loop (up to 5 rounds).
+        """
+        api_messages: list[dict[str, Any]] = []
+        # Detect reasoning models (o3, o4-mini, azure.o3, azure.o4-mini)
+        _base = self.model.split(".", 1)[-1] if self.model.startswith(("azure.", "kit.")) else self.model
+        is_reasoning = _base.startswith("o")
 
         if system:
             # o-series uses "developer" role instead of "system"
@@ -708,56 +896,146 @@ class OpenAIClient(_BaseClient):
                 "content": msg["content"],
             })
 
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": api_messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-
-        if is_reasoning:
-            kwargs["max_completion_tokens"] = max_tokens
-            # Map thinking budget to reasoning_effort
-            if thinking_budget >= 64000:
-                kwargs["reasoning_effort"] = "high"
-            elif thinking_budget >= 16000:
-                kwargs["reasoning_effort"] = "medium"
-            else:
-                kwargs["reasoning_effort"] = "low"
-        else:
-            kwargs["max_tokens"] = max_tokens
+        # Check if doc tools are available
+        has_doc_tools = _doc_executor._ensure_loaded()
 
         _total_in = 0
         _total_out = 0
+        _MAX_TOOL_ROUNDS = 5
 
-        stream = self.client.chat.completions.create(**kwargs)
-        try:
-            for chunk in stream:
-                # Token usage (only in the final chunk with stream_options)
-                if chunk.usage:
-                    _total_in = chunk.usage.prompt_tokens or 0
-                    _total_out = chunk.usage.completion_tokens or 0
+        for _round in range(_MAX_TOOL_ROUNDS + 1):
+            kwargs: dict[str, Any] = {
+                "model": self.model,
+                "messages": api_messages,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            }
 
-                if not chunk.choices:
-                    continue
+            if is_reasoning:
+                kwargs["max_completion_tokens"] = max_tokens
+                if thinking_budget >= 64000:
+                    kwargs["reasoning_effort"] = "high"
+                elif thinking_budget >= 16000:
+                    kwargs["reasoning_effort"] = "medium"
+                else:
+                    kwargs["reasoning_effort"] = "low"
+            else:
+                kwargs["max_tokens"] = max_tokens
 
-                choice = chunk.choices[0]
-                delta = choice.delta
+            if has_doc_tools and not is_reasoning:
+                kwargs["tools"] = _DOC_TOOLS_OPENAI
 
-                if delta and delta.content:
-                    yield StreamEvent(type="text_delta", text=delta.content)
+            # Accumulate streamed tool calls (may arrive in chunks)
+            _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
+            _text_chunks: list[str] = []
 
-                if choice.finish_reason:
-                    cost = self._estimate_cost(_total_in, _total_out)
+            stream = self.client.chat.completions.create(**kwargs)
+            finish_reason = None
+            try:
+                for chunk in stream:
+                    if chunk.usage:
+                        _total_in += chunk.usage.prompt_tokens or 0
+                        _total_out += chunk.usage.completion_tokens or 0
+
+                    if not chunk.choices:
+                        continue
+
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+
+                    # Text content
+                    if delta and delta.content:
+                        _text_chunks.append(delta.content)
+                        yield StreamEvent(type="text_delta", text=delta.content)
+
+                    # Tool call chunks
+                    if delta and delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in _tool_calls:
+                                _tool_calls[idx] = {
+                                    "id": tc_delta.id or "",
+                                    "name": (tc_delta.function.name or "") if tc_delta.function else "",
+                                    "arguments_parts": [],
+                                }
+                            entry = _tool_calls[idx]
+                            if tc_delta.id:
+                                entry["id"] = tc_delta.id
+                            if tc_delta.function and tc_delta.function.name:
+                                entry["name"] = tc_delta.function.name
+                            if tc_delta.function and tc_delta.function.arguments:
+                                entry["arguments_parts"].append(tc_delta.function.arguments)
+
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+            finally:
+                stream.close()
+
+            # If model made tool calls, execute them locally and loop
+            if finish_reason == "tool_calls" and _tool_calls:
+                # Build assistant message with tool_calls for the API
+                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                if _text_chunks:
+                    assistant_msg["content"] = "".join(_text_chunks)
+                else:
+                    assistant_msg["content"] = None
+                tc_list = []
+                for idx in sorted(_tool_calls):
+                    entry = _tool_calls[idx]
+                    tc_list.append({
+                        "id": entry["id"],
+                        "type": "function",
+                        "function": {
+                            "name": entry["name"],
+                            "arguments": "".join(entry["arguments_parts"]),
+                        },
+                    })
+                assistant_msg["tool_calls"] = tc_list
+                api_messages.append(assistant_msg)
+
+                # Execute each tool call and append results
+                for tc in tc_list:
+                    fn_name = tc["function"]["name"]
+                    try:
+                        fn_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        fn_args = {}
+
+                    # Emit tool_use event for UI display
                     yield StreamEvent(
-                        type="message_delta",
-                        input_tokens=_total_in,
-                        output_tokens=_total_out,
-                        cost_usd=cost,
-                        stop_reason=choice.finish_reason,
+                        type="tool_use",
+                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_input=json.dumps(fn_args),
                     )
-        finally:
-            stream.close()
+
+                    result = _doc_executor.execute(fn_name, fn_args)
+
+                    # Emit tool_result event for UI display
+                    yield StreamEvent(
+                        type="tool_result",
+                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_output=result[:2000],
+                    )
+
+                    api_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+
+                # Loop back to get the model's next response
+                continue
+
+            # No tool calls — emit final message_delta and break
+            cost = self._estimate_cost(_total_in, _total_out)
+            yield StreamEvent(
+                type="message_delta",
+                input_tokens=_total_in,
+                output_tokens=_total_out,
+                cost_usd=cost,
+                stop_reason=finish_reason or "end_turn",
+            )
+            break
 
 
 # ---------------------------------------------------------------------------

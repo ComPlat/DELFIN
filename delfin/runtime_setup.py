@@ -770,8 +770,8 @@ echo "Creating fresh venv ..."
 echo "Upgrading pip + wheel ..."
 "{repo_root / '.venv' / 'bin' / 'python'}" -m pip install --upgrade pip wheel
 
-echo "Installing DELFIN (pip install -e .) ..."
-"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}"
+echo "Installing DELFIN (pip install -e .[agent,docs]) ..."
+"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}[agent,docs]"
 
 echo "Packaging delfin_venv.tar ..."
 rm -f "{repo_root / 'delfin_venv.tar'}"
@@ -1265,7 +1265,7 @@ def run_pip_install_editable() -> subprocess.CompletedProcess[str]:
         )
 
     return subprocess.run(
-        [python_bin, "-m", "pip", "install", "-e", "."],
+        [python_bin, "-m", "pip", "install", "-e", ".[agent,docs]"],
         cwd=str(repo_root),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
