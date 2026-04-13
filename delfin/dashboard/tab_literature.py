@@ -153,6 +153,7 @@ def create_tab(ctx):
         layout=widgets.Layout(
             width='100%', overflow_x='hidden',
             justify_content='flex-start', gap='6px',
+            display='flex', flex_flow='row wrap',
         ),
     )
     lit_rename_row = widgets.HBox(
@@ -363,6 +364,8 @@ def create_tab(ctx):
         ' overflow-y:auto !important; overflow-x:hidden !important; }'
         '.lit-content-area .widget-html-content { height:100%; }'
         '.lit-left, .lit-right { overflow-x:hidden !important; }'
+        '.lit-nav-controls-row { display:flex !important; flex-flow:row wrap !important;'
+        ' align-items:flex-start !important; }'
         '.lit-splitter { width:8px; height:100%; cursor:col-resize;'
         ' background:linear-gradient(to right, #d6d6d6, #f2f2f2, #d6d6d6);'
         ' border-radius:4px; display:block;'
@@ -413,6 +416,7 @@ def create_tab(ctx):
     lit_left.add_class('calc-left')
     lit_right.add_class('lit-right')
     lit_right.add_class('calc-right')
+    lit_nav_controls_row.add_class('lit-nav-controls-row')
     lit_file_list.add_class('calc-file-list')
 
     # ==================================================================
