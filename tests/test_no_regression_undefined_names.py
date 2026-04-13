@@ -172,6 +172,11 @@ def test_no_undefined_names_in_delfin_tree():
       - occupier.py: `copy` used without import
       - occupier.py: `folder_path` referenced outside its closure
       - tools/adapters/orca.py: `logger` used without definition
+      - runtime_setup.py: `logger` typo (should be _logger)
+      - smiles_converter.py: `np`/`deque`/`Geometry` used without import
+      - reporting/occupier_reports.py: `occ_method` undefined in safe variant
+      - tab_calculations_browser.py: `_calc_update_png_frame` nonexistent call
+      - tab_calculations_browser.py: `delete_current` undefined local
     """
     try:
         import pyflakes  # noqa: F401
@@ -188,3 +193,108 @@ def test_no_undefined_names_in_delfin_tree():
             "path is exercised. Either import the missing name, fix the "
             "scope, or delete the dead reference."
         )
+
+
+# ---------------------------------------------------------------------------
+# Shim export consistency
+# ---------------------------------------------------------------------------
+#
+# The workflows/ and tools/ refactor in cf78545 left behind backward-compat
+# shim files at the old flat paths (delfin/global_manager.py,
+# delfin/dynamic_pool.py, etc.). Every import in user code and tests still
+# goes through these shims. If a shim stops re-exporting a symbol the
+# target module defines, user code breaks silently at import.
+#
+# This test pins the shim contract: for every shim, every public name the
+# target module exports must also be accessible on the shim.
+
+_BACKWARD_COMPAT_SHIMS = {
+    "delfin.dynamic_pool": "delfin.workflows.scheduling.pool",
+    "delfin.global_manager": "delfin.workflows.scheduling.manager",
+    "delfin.global_scheduler": "delfin.workflows.engine.scheduler",
+    "delfin.job_priority": "delfin.workflows.scheduling.priority",
+    "delfin.parallel_classic_manually": "delfin.workflows.engine.classic",
+    "delfin.parallel_occupier": "delfin.workflows.engine.occupier",
+    "delfin.pipeline": "delfin.workflows.pipeline",
+}
+
+
+@pytest.mark.parametrize("shim_name,target_name", sorted(_BACKWARD_COMPAT_SHIMS.items()))
+def test_shim_reexports_all_target_public_names(shim_name, target_name):
+    """Backward-compat shims must re-export every public name of their target.
+
+    If the target module adds a new export, the shim's `from X import *`
+    must also pick it up. Missing re-exports break any caller that
+    imports via the old flat path.
+    """
+    import importlib
+
+    shim = importlib.import_module(shim_name)
+    target = importlib.import_module(target_name)
+
+    target_exports = set(getattr(target, "__all__", None) or [
+        name for name in dir(target) if not name.startswith("_")
+    ])
+    shim_names = set(dir(shim))
+
+    missing = target_exports - shim_names
+    assert not missing, (
+        f"{shim_name} is missing re-exports from {target_name}: "
+        f"{sorted(missing)}. The shim uses `from X import *` — if a name "
+        "is in the target's __all__ but not on the shim, the star-import "
+        "is filtering it out or the target added it after the shim was "
+        "last regenerated."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Smoke import of critical public entry points
+# ---------------------------------------------------------------------------
+
+_CRITICAL_IMPORTS = [
+    # Workflow engine — anything below here breaks every CONTROL.txt run
+    ("delfin.workflows.pipeline", "run_occuper_phase"),
+    ("delfin.workflows.pipeline", "run_classic_phase"),
+    ("delfin.workflows.engine.classic", "_WorkflowManager"),
+    ("delfin.workflows.engine.classic", "WorkflowJob"),
+    ("delfin.workflows.engine.classic", "_parse_step_set"),
+    ("delfin.workflows.engine.occupier", "build_flat_occupier_fob_jobs"),
+    ("delfin.workflows.engine.occupier", "OccupierExecutionContext"),
+    ("delfin.workflows.engine.occupier", "run_occupier_orca_jobs"),
+    ("delfin.workflows.scheduling.manager", "get_global_manager"),
+    ("delfin.workflows.scheduling.pool", "DynamicCorePool"),
+    ("delfin.workflows.scheduling.pool", "JobPriority"),
+    # Tools adapter layer
+    ("delfin.tools._registry", "register"),
+    ("delfin.tools._types", "StepResult"),
+    ("delfin.tools._types", "StepStatus"),
+    # Core delfin
+    ("delfin.orca", "run_orca"),
+    ("delfin.orca", "run_orca_with_intelligent_recovery"),
+    ("delfin.user_settings", "load_settings"),
+    ("delfin.runtime_setup", "apply_runtime_environment"),
+    ("delfin.runtime_setup", "detect_local_runtime_limits"),
+    ("delfin.smart_recalc", "should_skip"),
+    ("delfin.common.logging", "get_logger"),
+    # Reporting
+    ("delfin.reporting", "generate_summary_report_OCCUPIER"),
+]
+
+
+@pytest.mark.parametrize("module_name,symbol_name", _CRITICAL_IMPORTS)
+def test_critical_public_api_is_importable(module_name, symbol_name):
+    """Public names that other modules rely on must stay importable.
+
+    This is the contract-test companion to the shim test: if a refactor
+    renames or removes a public function without updating callers, this
+    test fails loudly before users see a traceback.
+    """
+    import importlib
+
+    module = importlib.import_module(module_name)
+    assert hasattr(module, symbol_name), (
+        f"{module_name}.{symbol_name} is missing. This is a public API "
+        f"other modules/shims depend on — a refactor either removed it "
+        f"or forgot to export it. Either restore the symbol or update "
+        f"_CRITICAL_IMPORTS after consciously dropping the API."
+    )
