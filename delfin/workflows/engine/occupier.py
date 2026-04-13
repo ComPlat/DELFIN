@@ -1,5 +1,6 @@
 """Integration of dynamic pool with OCCUPIER workflow."""
 
+import copy
 import os
 import re
 import shutil
@@ -2010,6 +2011,11 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         cores_min = 1 if total_cores == 1 else 2
         cores_max = total_cores
 
+        # NOTE: working_dir=None because `folder_path` is only defined inside
+        # the `work()` closure above (via prepare_occ_folder_*_setup). Previously
+        # this tried to reference folder_path out of scope → NameError at job
+        # creation time. The OCCUPIER itself does os.chdir(folder_path) inside
+        # work(), so the working_dir field is informational only here.
         return WorkflowJob(
             job_id=job_id,
             work=work,
@@ -2018,7 +2024,7 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             cores_min=cores_min,
             cores_optimal=cores_optimal_per_job,
             cores_max=cores_max,
-            working_dir=folder_path.resolve(),
+            working_dir=None,
         )
 
     imag_enabled = str(config.get('IMAG', 'no')).strip().lower() == 'yes'
