@@ -4531,6 +4531,14 @@ def create_tab(ctx):
         jn = ctx.submit_refs.get("job_name_widget")
         if jn and jn.value.strip():
             parts.append(f"Job name: {jn.value.strip()}")
+        # User identity (so agent knows who it's talking to)
+        try:
+            import os as _os
+            _user = _os.environ.get("USER", "") or _os.getlogin()
+            if _user:
+                parts.append(f"Current user: {_user}")
+        except Exception:
+            pass
         # calc_dir + archive dirs + workspace + permissions
         parts.append(f"Calculations dir: {ctx.calc_dir}")
         parts.append(f"Archive dir: {ctx.archive_dir} (READ-ONLY: you can read/browse)")
