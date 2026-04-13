@@ -157,9 +157,9 @@ def _run_pyflakes_on_all_delfin() -> list[str]:
         # Skip backward-compat shim stars
         if "from" in line and "import *" in line:
             continue
-        # Skip the legacy safe.py module (dead code, no imports from it)
-        if "/delfin/safe.py:" in line:
-            continue
+        # (Previously had a skip for delfin/safe.py — that file was deleted
+        # in the cleanup; if it ever comes back as dead code, this filter
+        # can be re-added.)
         real_bugs.append(line)
     return real_bugs
 

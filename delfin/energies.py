@@ -1,10 +1,104 @@
 # energies.py
 import re
+from pathlib import Path
 from typing import Optional, Sequence, Dict, Any, Tuple
 
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# Canonical key → relative-path mapping for the 7 redox states the
+# pipeline writes ORCA outputs to. Used by both the live pipeline and
+# the post-hoc reporting collector — keep one source of truth.
+GIBBS_STATE_FILES = {
+    '0': 'initial.out',
+    '+1': 'ox_step_1.out',
+    '+2': 'ox_step_2.out',
+    '+3': 'ox_step_3.out',
+    '-1': 'red_step_1.out',
+    '-2': 'red_step_2.out',
+    '-3': 'red_step_3.out',
+}
+
+
+def collect_gibbs_energies_from_dir(
+    working_dir: Path,
+    *,
+    esd_enabled: bool = False,
+    occupier_fallback: bool = False,
+    log_progress: bool = False,
+) -> Dict[str, Optional[float]]:
+    """Collect Gibbs energies for the 7 redox states from a working directory.
+
+    Single source of truth used by:
+      - delfin.workflows.pipeline.collect_gibbs_energies (live pipeline)
+      - delfin.reporting.delfin_collector.collect_gibbs_energies (json export)
+
+    Both call this helper with their respective flags so any change to the
+    state-file mapping or fallback rules lands in exactly one place.
+
+    Args:
+        working_dir: directory containing initial.out / ox_step_*.out /
+            red_step_*.out
+        esd_enabled: if True, fall back to ``ESD/S0.out`` for the ground
+            state when ``initial.out`` is missing
+        occupier_fallback: if True, also look at
+            ``initial_OCCUPIER/initial.out`` for the ground state
+        log_progress: if True, log each found / missing energy at INFO
+
+    Returns:
+        Dict mapping state key ('0', '+1', ..., '-3') to Gibbs energy in
+        Hartree (or None if not found).
+    """
+    energies: Dict[str, Optional[float]] = {}
+
+    for key, filename in GIBBS_STATE_FILES.items():
+        path = working_dir / filename
+
+        # Ground-state has multiple legacy locations; check fallbacks before
+        # giving up. Fallback list is order-sensitive: prefer the canonical
+        # initial.out, then ESD-stored S0, then OCCUPIER subfolder.
+        if key == '0':
+            ground_candidates = [path]
+            if esd_enabled:
+                ground_candidates.append(working_dir / "ESD" / "S0.out")
+            if occupier_fallback:
+                ground_candidates.append(
+                    working_dir / "initial_OCCUPIER" / "initial.out"
+                )
+            for candidate in ground_candidates:
+                if candidate.exists():
+                    if candidate != path and log_progress:
+                        try:
+                            rel = candidate.relative_to(working_dir)
+                        except ValueError:
+                            rel = candidate
+                        logger.info(
+                            "Using %s for ground state Gibbs energy "
+                            "(initial.out not found)",
+                            rel,
+                        )
+                    path = candidate
+                    break
+
+        if not path.exists():
+            energies[key] = None
+            continue
+
+        value = find_gibbs_energy(str(path))
+        energies[key] = value
+
+        if log_progress:
+            if value is not None:
+                logger.info("Free Gibbs Free Energy %s (H): %s", key, value)
+            else:
+                logger.info(
+                    "Skipping Gibbs energy for state %s (data unavailable in %s)",
+                    key, path.name,
+                )
+
+    return energies
 
 FLOAT_RE = r'([-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?)'
 

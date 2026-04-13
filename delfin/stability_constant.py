@@ -701,7 +701,7 @@ def _convert_smiles_and_write(
     config: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Convert SMILES to XYZ and write start.txt in output_dir."""
-    from delfin.pipeline import _run_guppy_for_smiles
+    from delfin.workflows.pipeline import _run_guppy_for_smiles
     from delfin.smiles_converter import (
         smiles_to_xyz,
         smiles_to_xyz_architector,
@@ -749,7 +749,7 @@ def _normalized_thdy_preopt(config: Dict[str, Any]) -> str:
 
 
 def _resolve_main_workflow_converter(config: Dict[str, Any]) -> str:
-    from delfin.pipeline import _resolve_smiles_converter
+    from delfin.workflows.pipeline import _resolve_smiles_converter
 
     return _resolve_smiles_converter(config)
 
@@ -808,7 +808,7 @@ def _run_preopt_sequence(
     label: str,
     pal_override: Optional[int] = None,
 ) -> None:
-    from delfin.pipeline import _skip_xtb_goat_after_guppy
+    from delfin.workflows.pipeline import _skip_xtb_goat_after_guppy
 
     for step in steps:
         if step == "GOAT" and _skip_xtb_goat_after_guppy(config):

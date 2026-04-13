@@ -14,9 +14,9 @@ class EsdWorkflow:
     description = "Excited-state dynamics: ISC/RISC rates, fluorescence, phosphorescence"
 
     def run(self, *, config: Dict[str, Any], **kwargs: Any) -> Any:
-        from delfin.esd_module import run_esd_phase
+        from delfin.esd_module import execute_esd_jobs
 
-        return run_esd_phase(
+        return execute_esd_jobs(
             config=config,
             charge=kwargs.get("charge", int(config.get("charge", 0))),
             solvent=kwargs.get("solvent", config.get("solvent", "")),
@@ -39,9 +39,9 @@ class EsdWorkflow:
         from delfin.config import read_control_file
         config = read_control_file()
 
-        from delfin.esd_module import run_esd_phase
+        from delfin.esd_module import execute_esd_jobs
         try:
-            run_esd_phase(
+            execute_esd_jobs(
                 config=config,
                 charge=args.charge,
                 solvent=args.solvent,

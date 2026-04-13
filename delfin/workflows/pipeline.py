@@ -21,7 +21,7 @@ from delfin.workflows.engine.classic import execute_classic_workflows, execute_m
 from delfin.xtb_crest import XTB, XTB_GOAT, XTB_SOLVATOR, run_crest_workflow
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 from delfin.energies import find_gibbs_energy
-from delfin.esd_module import run_esd_phase as execute_esd_module, parse_esd_config
+from delfin.esd_module import execute_esd_jobs as execute_esd_module, parse_esd_config
 from delfin.esd_results import collect_esd_results, ESDSummary
 
 logger = get_logger(__name__)
@@ -1133,59 +1133,22 @@ def run_tadf_xtb_phase(ctx: PipelineContext) -> bool:
 
 
 def collect_gibbs_energies(ctx: PipelineContext) -> Dict[str, Optional[float]]:
-    bundle = ctx.file_bundle
-    file_map = {
-        '0': 'initial.out',
-        '+1': 'ox_step_1.out',
-        '+2': 'ox_step_2.out',
-        '+3': 'ox_step_3.out',
-        '-1': 'red_step_1.out',
-        '-2': 'red_step_2.out',
-        '-3': 'red_step_3.out',
-    }
+    """Collect Gibbs free energies for all redox states in the pipeline run.
 
-    energies: Dict[str, Optional[float]] = {}
+    Thin wrapper around the canonical helper in ``delfin.energies``. Both
+    this function and ``delfin.reporting.delfin_collector.collect_gibbs_energies``
+    delegate to ``collect_gibbs_energies_from_dir`` so the state-file
+    mapping and fallback rules live in exactly one place.
+    """
+    from delfin.energies import collect_gibbs_energies_from_dir
 
-    # Determine working directory from control file path
-    working_dir = ctx.control_file_path.parent
     esd_enabled, _, _, _ = parse_esd_config(ctx.config)
-
-    for key, filename in file_map.items():
-        path = working_dir / filename
-
-        # Special handling for ground state Gibbs energy: try sensible fallbacks
-        if key == '0':
-            ground_candidates = [path]
-            if esd_enabled:
-                ground_candidates.append(working_dir / "ESD" / "S0.out")
-            # OCCUPIER workflows may store the initial result in a subfolder
-            ground_candidates.append(working_dir / "initial_OCCUPIER" / "initial.out")
-
-            for candidate in ground_candidates:
-                if candidate.exists():
-                    if candidate != path:
-                        logger.info(
-                            "Using %s for ground state Gibbs energy (initial.out not found)",
-                            candidate.relative_to(working_dir),
-                        )
-                    path = candidate
-                    break
-
-        if not path.exists():
-            energies[key] = None
-            continue
-
-        value = find_gibbs_energy(str(path))
-        energies[key] = value
-        if value is not None:
-            logger.info("Free Gibbs Free Energy %s (H): %s", key, value)
-        else:
-            logger.info(
-                "Skipping Gibbs energy for state %s (data unavailable in %s)",
-                key,
-                path.name,
-            )
-    return energies
+    return collect_gibbs_energies_from_dir(
+        ctx.control_file_path.parent,
+        esd_enabled=esd_enabled,
+        occupier_fallback=True,
+        log_progress=True,
+    )
 
 
 @dataclass

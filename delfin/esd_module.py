@@ -1198,23 +1198,11 @@ def add_esd_jobs_to_scheduler(
     # Get the scheduler's internal manager
     manager = scheduler.manager
 
-    # Temporarily store original dependencies and modify them
-    # We need to inject the dependency_job_id into state dependencies
-    original_state_deps = {
-        "S0": set(),
-        "S1": {"esd_S0"},
-        "S2": {"esd_S1"},
-        "S3": {"esd_S2"},
-        "S4": {"esd_S3"},
-        "S5": {"esd_S4"},
-        "S6": {"esd_S5"},
-        "T1": {"esd_S0"},
-        "T2": {"esd_T1"},
-        "T3": {"esd_T2"},
-        "T4": {"esd_T3"},
-        "T5": {"esd_T4"},
-        "T6": {"esd_T5"},
-    }
+    # NOTE: An `original_state_deps` lookup table for excited-state
+    # dependencies (S1→esd_S0, T1→esd_S0, etc.) was previously declared here
+    # but never read. _populate_state_jobs builds the dependencies inline,
+    # so the table was unused. Removed during cleanup; if state-dependency
+    # injection is reintroduced, restore the table where it is consumed.
 
     # Populate jobs (they will be added to the shared scheduler manager)
     if states_effective:
@@ -1311,7 +1299,7 @@ def add_esd_jobs_to_scheduler(
     return esd_enabled, states, iscs, ics
 
 
-def run_esd_phase(
+def execute_esd_jobs(
     config: Dict[str, Any],
     charge: int,
     solvent: str,
@@ -1320,6 +1308,13 @@ def run_esd_phase(
     metal_basisset: str,
 ) -> WorkflowRunResult:
     """Execute ESD module calculations.
+
+    This is the inner worker for the ESD module — called from the pipeline
+    phase ``delfin.workflows.pipeline.run_esd_phase`` (and from the standalone
+    ``workflows/contrib/esd_workflow.py`` wrapper). Renamed from
+    ``run_esd_phase`` (which was the same name the pipeline phase uses) so
+    callers can't accidentally confuse the two; the pipeline phase still
+    exists at ``delfin.workflows.pipeline.run_esd_phase(ctx)``.
 
     This is the main entry point for the ESD module. It:
     1. Parses ESD configuration

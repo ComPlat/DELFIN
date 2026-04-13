@@ -153,7 +153,19 @@ O      0.000000    0.000000    4.160000
 
 
 # === CONTROL.txt einlesen ===
-def read_control_file(path="CONTROL.txt"):
+def _minimal_read_control_file(path="CONTROL.txt"):
+    """Standalone-friendly CONTROL.txt parser for CO2 Coordinator.
+
+    Deliberately separate from ``delfin.config.read_control_file``: this
+    parser is a light-weight key=value reader with auto type-coercion
+    (int/float/bool) and no strict validation, so the CO2 Coordinator can
+    run standalone with a minimal CONTROL.txt that lacks the keys the
+    full pipeline parser would require.
+
+    Was previously named ``read_control_file`` which collided with the
+    canonical parser in delfin.config and risked silent drift if
+    CONTROL.txt grew new keys.
+    """
     params = {}
     if not os.path.exists(path):
         print(f"[WARN] CONTROL.txt not found → using defaults.")
@@ -1275,7 +1287,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
 
 # === Main ===
 def main():
-    args = read_control_file()
+    args = _minimal_read_control_file()
 
     # ---- Defaults / CONTROL-Parameter ----
     xyz_in        = args.get("xyz", "complex.xyz")

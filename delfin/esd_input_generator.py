@@ -1350,9 +1350,12 @@ def _create_state_input_hybrid1(
     # Step 2: deltaSCF OPT with FREQ
     input_file_second = esd_dir / f"{state_upper}_second.inp"
 
-    # Now create deltaSCF input that reads from first step
-    # Determine if this state uses deltaSCF
-    use_deltascf = True  # All excited states in hybrid mode use deltaSCF for second step
+    # Now create deltaSCF input that reads from first step.
+    # Note: hybrid mode always uses deltaSCF for the second step — the
+    # keyword is appended unconditionally to keywords_second below. A
+    # `use_deltascf = True` flag was previously set here as a reminder but
+    # never read; removed so the (always-on) behaviour is no longer
+    # disguised as a toggle.
 
     # Get frequency settings
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')

@@ -1468,7 +1468,9 @@ class Pipeline:
         manager = _WorkflowManager(config, label=self.name)
 
         results_map: Dict[str, StepResult] = {}
-        trunk_geom: Dict[int, Optional[Path]] = {}  # step index -> output geometry
+        # NOTE: results are funneled through _make_callback into results_map;
+        # the previous `trunk_geom` dict (step index → output geometry) was
+        # declared here but never populated, so it has been removed.
 
         def _make_callback(step_idx: str):
             def cb(result: StepResult):
@@ -1564,8 +1566,10 @@ class Pipeline:
                 manager.add_job(job)
                 prev_branch_id = job_id
 
-        # Execute all jobs
-        run_result = manager.execute()
+        # Execute all jobs — results are gathered via _make_callback into
+        # results_map, so the manager.execute() return value is intentionally
+        # discarded here.
+        manager.execute()
 
         # Collect results in order
         trunk_results = [

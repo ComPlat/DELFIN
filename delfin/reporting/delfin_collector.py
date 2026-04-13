@@ -359,31 +359,21 @@ def parse_input_data(project_dir: Path, control_config: Dict[str, Any]) -> Dict[
 
 
 def collect_gibbs_energies(project_dir: Path) -> Dict[str, Optional[float]]:
-    """Collect Gibbs free energies for ground/charged states."""
-    state_files = {
-        "0": project_dir / "initial.out",
-        "+1": project_dir / "ox_step_1.out",
-        "+2": project_dir / "ox_step_2.out",
-        "+3": project_dir / "ox_step_3.out",
-        "-1": project_dir / "red_step_1.out",
-        "-2": project_dir / "red_step_2.out",
-        "-3": project_dir / "red_step_3.out",
-    }
+    """Collect Gibbs free energies for ground/charged states.
 
-    energies: Dict[str, Optional[float]] = {}
-    for key, path in state_files.items():
-        if not path.exists():
-            energies[key] = None
-            continue
-        energies[key] = find_gibbs_energy(str(path))
+    Thin wrapper around the canonical helper in ``delfin.energies``. The
+    matching pipeline-side wrapper lives at
+    ``delfin.workflows.pipeline.collect_gibbs_energies``; both delegate
+    here so the state-file mapping and ESD fallback live in one place.
+    """
+    from delfin.energies import collect_gibbs_energies_from_dir
 
-    # Fallback: try ESD/S0.out for the neutral state if initial.out is missing
-    if energies.get("0") is None:
-        esd_s0 = project_dir / "ESD" / "S0.out"
-        if esd_s0.exists():
-            energies["0"] = find_gibbs_energy(str(esd_s0))
-
-    return energies
+    return collect_gibbs_energies_from_dir(
+        project_dir,
+        esd_enabled=True,  # always check the ESD/S0.out fallback when collecting
+        occupier_fallback=False,
+        log_progress=False,
+    )
 
 
 def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
