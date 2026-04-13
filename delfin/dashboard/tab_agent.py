@@ -5348,6 +5348,13 @@ def create_tab(ctx):
         for pat in option_patterns:
             matches = pat.findall(tail)
             if len(matches) >= 2:
+                # Only treat as choosable options if the text after the list
+                # contains a question mark — otherwise it's just numbered steps
+                # in an explanation (e.g. "1. Define geometry  2. Set method").
+                last_match_end = tail.rfind(matches[-1][1])
+                after_list = tail[last_match_end + len(matches[-1][1]):].strip() if last_match_end >= 0 else ""
+                if "?" not in after_list:
+                    continue  # numbered steps, not a question — skip
                 options = []
                 for num, desc in matches:
                     label = desc.strip().rstrip("*").strip()
