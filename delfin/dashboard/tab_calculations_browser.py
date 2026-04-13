@@ -1762,11 +1762,35 @@ def create_tab(ctx):
             return None
         return _calc_path_for_label(labels[0])
 
+    def _calc_selected_item_paths():
+        paths = []
+        seen = set()
+        for label in _calc_selected_labels():
+            path = _calc_path_for_label(label)
+            if path is None:
+                continue
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+        return paths
+
     def _calc_set_ops_status(message, color='#555'):
         calc_ops_status.value = f'<span style="color:{color};">{message}</span>'
 
     def _calc_current_dir():
         return _calc_dir() / state['current_path'] if state['current_path'] else _calc_dir()
+
+    def _calc_copy_path_targets():
+        selected_paths = _calc_selected_item_paths()
+        if selected_paths:
+            return selected_paths
+        current_dir = _calc_current_dir()
+        return [current_dir] if current_dir.exists() else []
+
+    def _calc_update_copy_path_btn_state():
+        calc_copy_path_btn.disabled = not bool(_calc_copy_path_targets())
 
     def _calc_state_rel_path(path):
         rel = Path(path).resolve().relative_to(_calc_dir().resolve()).as_posix()
@@ -2814,6 +2838,7 @@ def create_tab(ctx):
         return mode
 
     def _calc_update_explorer_action_state():
+        _calc_update_copy_path_btn_state()
         _calc_clipboard_paths()
         if _remote_archive_enabled:
             has_selection = bool(_calc_collect_selected_sources_only())
@@ -8440,18 +8465,27 @@ def create_tab(ctx):
         _calc_copy_to_clipboard(content, label='file content')
 
     def calc_on_path_copy(button):
-        full_path_obj = _calc_selected_item_path()
-        if full_path_obj is None and state['current_path']:
-            full_path_obj = _calc_dir() / state['current_path']
-        if full_path_obj is None:
+        full_path_objs = _calc_copy_path_targets()
+        if not full_path_objs:
             return
-        full_path = str(full_path_obj)
-        calc_path_display.value = (
-            f'<input type="text" value="{_html.escape(full_path)}" onclick="this.select()"'
-            f' style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
-            f'padding:2px;background:#f8f8f8" readonly>'
+        full_paths = [str(path) for path in full_path_objs]
+        if len(full_paths) == 1:
+            calc_path_display.value = (
+                f'<input type="text" value="{_html.escape(full_paths[0])}" onclick="this.select()"'
+                f' style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
+                f'padding:2px;background:#f8f8f8" readonly>'
+            )
+        else:
+            calc_path_display.value = (
+                "<textarea readonly onclick=\"this.select()\" "
+                "style=\"width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;"
+                "padding:4px;background:#f8f8f8;min-height:72px;resize:vertical;box-sizing:border-box;\">"
+                f"{_html.escape(chr(10).join(full_paths))}</textarea>"
+            )
+        _calc_copy_to_clipboard(
+            '\n'.join(full_paths),
+            label='paths' if len(full_paths) > 1 else 'path',
         )
-        _calc_copy_to_clipboard(full_path, label='path')
 
     def _calc_trigger_download(filename, payload, mime='application/octet-stream'):
         b64 = base64.b64encode(payload).decode('ascii')

@@ -948,14 +948,26 @@ def create_tab(ctx):
         selected_path_html.value = ""
 
     def _set_selected_path_display(path_value):
-        full_path = str(path_value or "").strip()
-        if not full_path:
+        if isinstance(path_value, (list, tuple, set)):
+            paths = [str(value or "").strip() for value in path_value if str(value or "").strip()]
+        else:
+            full_path = str(path_value or "").strip()
+            paths = [full_path] if full_path else []
+        if not paths:
             _clear_selected_path_display()
             return
+        if len(paths) == 1:
+            selected_path_html.value = (
+                f'<input type="text" value="{html.escape(paths[0])}" onclick="this.select()" '
+                f'style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
+                f'padding:2px;background:#f8f8f8" readonly>'
+            )
+            return
         selected_path_html.value = (
-            f'<input type="text" value="{html.escape(full_path)}" onclick="this.select()" '
-            f'style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
-            f'padding:2px;background:#f8f8f8" readonly>'
+            "<textarea readonly onclick=\"this.select()\" "
+            "style=\"width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;"
+            "padding:4px;background:#f8f8f8;min-height:72px;resize:vertical;box-sizing:border-box;\">"
+            f"{html.escape(chr(10).join(paths))}</textarea>"
         )
 
     def _clear_viewer():
@@ -2039,6 +2051,17 @@ def create_tab(ctx):
             if str(entry.get("relative_path", "")).strip() in selected
         ]
 
+    def _selected_remote_paths():
+        paths = []
+        seen = set()
+        for entry in _selected_entries():
+            remote_path = str(_current_entry_remote_path(entry) or "").strip()
+            if not remote_path or remote_path in seen:
+                continue
+            seen.add(remote_path)
+            paths.append(remote_path)
+        return paths
+
     def _selected_entry():
         entries = _selected_entries()
         return entries[0] if len(entries) == 1 else None
@@ -2272,6 +2295,7 @@ def create_tab(ctx):
         selected_entries = _selected_entries()
         selected = _selected_entry()
         has_selection = bool(selected_entries)
+        current_remote_path = str(_current_remote_path() if config_ready else "").strip()
         transfer_back_btn.disabled = not (config_ready and has_selection)
         transfer_to_archive_btn.disabled = not (config_ready and has_selection)
         open_btn.disabled = not bool(selected)
@@ -2281,8 +2305,7 @@ def create_tab(ctx):
         file_list.disabled = not config_ready
         filter_input.disabled = not config_ready
         sort_dropdown.disabled = not config_ready
-        if not selected or not state.get("selected_remote_path"):
-            copy_path_btn.disabled = True
+        copy_path_btn.disabled = not (config_ready and (has_selection or current_remote_path))
         copy_btn.disabled = not bool(state.get("file_content"))
         new_folder_btn.disabled = not config_ready
         rename_btn.disabled = not (config_ready and selected)
@@ -2583,11 +2606,17 @@ def create_tab(ctx):
         _copy_to_clipboard(content, label="remote file content")
 
     def _on_copy_path_click(_button=None):
-        remote_path = str(state.get("selected_remote_path") or "")
-        if not remote_path:
+        remote_paths = _selected_remote_paths()
+        if not remote_paths:
+            current_remote_path = str(_current_remote_path() or "").strip()
+            remote_paths = [current_remote_path] if current_remote_path else []
+        if not remote_paths:
             return
-        _set_selected_path_display(remote_path)
-        _copy_to_clipboard(remote_path, label="remote path")
+        _set_selected_path_display(remote_paths)
+        _copy_to_clipboard(
+            "\n".join(remote_paths),
+            label="remote paths" if len(remote_paths) > 1 else "remote path",
+        )
 
     def _start_transfer_back(local_target, destination_label):
         config = state.get("config")

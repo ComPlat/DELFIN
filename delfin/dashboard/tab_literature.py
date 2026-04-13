@@ -125,6 +125,10 @@ def create_tab(ctx):
         description='\U0001F5D1 Delete', button_style='danger',
         layout=widgets.Layout(width='80px', height='26px'),
     )
+    lit_copy_path_btn = widgets.Button(
+        description='PATH',
+        layout=widgets.Layout(width='70px', min_width='70px', height='26px'),
+    )
     lit_reindex_btn = widgets.Button(
         description='\U0001F50D Index',
         tooltip='Rebuild the doc server search index',
@@ -319,7 +323,20 @@ def create_tab(ctx):
     lit_content.add_class('lit-content-area')
 
     lit_right = widgets.VBox([
-        widgets.HBox([lit_file_info], layout=widgets.Layout(
+        widgets.HBox([
+            lit_file_info,
+            widgets.HBox(
+                [lit_copy_path_btn],
+                layout=widgets.Layout(
+                    gap='10px',
+                    flex_flow='row wrap',
+                    justify_content='flex-end',
+                    align_items='center',
+                    width='100%',
+                    overflow_x='hidden',
+                ),
+            ),
+        ], layout=widgets.Layout(
             align_items='center', justify_content='space-between', width='100%',
         )),
         lit_path_display,
@@ -537,6 +554,65 @@ def create_tab(ctx):
     def _set_status(msg: str, color: str = '#666') -> None:
         lit_status.value = f'<span style="font-size:12px;color:{color}">{msg}</span>'
 
+    def _run_js(script: str) -> None:
+        ctx.run_js(script)
+
+    def _copy_to_clipboard(text: str, label: str = 'path') -> None:
+        text_payload = json.dumps(str(text or ''))
+        label_payload = json.dumps(str(label or 'content'))
+        _run_js(
+            "(function(){"
+            f"const text={text_payload};"
+            f"const label={label_payload};"
+            "function _manualPrompt(){"
+            "try{window.prompt('Copy to clipboard (Cmd+C/Ctrl+C, Enter):', text);}catch(_e){}"
+            "}"
+            "function _legacyCopy(){"
+            "try{"
+            "const ta=document.createElement('textarea');"
+            "ta.value=text;"
+            "ta.setAttribute('readonly','readonly');"
+            "ta.style.position='fixed';"
+            "ta.style.top='-1000px';"
+            "ta.style.left='-1000px';"
+            "ta.style.opacity='0';"
+            "document.body.appendChild(ta);"
+            "ta.focus();"
+            "ta.select();"
+            "ta.setSelectionRange(0, ta.value.length);"
+            "const ok=document.execCommand('copy');"
+            "document.body.removeChild(ta);"
+            "return !!ok;"
+            "}catch(_e){return false;}"
+            "}"
+            "if(navigator.clipboard && navigator.clipboard.writeText){"
+            "navigator.clipboard.writeText(text).catch(function(){"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "});"
+            "}else{"
+            "if(!_legacyCopy()) _manualPrompt();"
+            "}"
+            "})();"
+        )
+
+    def _set_path_display(path_value: Path | str | None) -> None:
+        full_path = str(path_value or '').strip()
+        if not full_path:
+            lit_path_display.value = ''
+            return
+        lit_path_display.value = (
+            f'<input type="text" value="{_html.escape(full_path)}" onclick="this.select()" '
+            f'style="width:100%;font-family:monospace;font-size:12px;border:1px solid #aaa;'
+            f'padding:2px;background:#f8f8f8" readonly>'
+        )
+
+    def _lit_copy_target_path() -> Path | None:
+        selected = state.get('selected_file')
+        if selected and Path(selected).exists():
+            return Path(selected)
+        current_dir = _cur_dir()
+        return current_dir if current_dir.exists() else None
+
     def _display_path(p: Path) -> str:
         try:
             rel = p.resolve().relative_to(lit_dir.resolve())
@@ -561,10 +637,12 @@ def create_tab(ctx):
         rel = state['current_path'] or ''
         lit_path_input.value = '/' if not rel else f'/{rel}'
         lit_back_btn.disabled = (rel == '')
+        lit_copy_path_btn.disabled = False
 
         cur = _cur_dir()
         if not cur.exists():
             lit_file_list.options = ['(Folder not found)']
+            lit_copy_path_btn.disabled = True
             return
 
         items = []
@@ -780,6 +858,14 @@ def create_tab(ctx):
     def on_reindex(btn) -> None:
         _rebuild_index()
 
+    def on_copy_path_click(_btn=None) -> None:
+        target = _lit_copy_target_path()
+        if target is None:
+            return
+        _set_path_display(target)
+        _copy_to_clipboard(str(target), label='path')
+        _set_status('Copied path', '#2e7d32')
+
     def on_upload(change) -> None:
         entries = change.get('new', ())
         if not entries:
@@ -978,6 +1064,7 @@ def create_tab(ctx):
     lit_path_input.observe(on_path_submit, names='value')
     lit_sort.observe(on_sort_change, names='value')
     lit_filter.observe(filter_list, names='value')
+    lit_copy_path_btn.on_click(on_copy_path_click)
     lit_reindex_btn.on_click(on_reindex)
     lit_upload.observe(on_upload, names='value')
     lit_delete_btn.on_click(on_delete_click)
