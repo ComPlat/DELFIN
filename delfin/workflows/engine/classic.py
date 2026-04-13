@@ -943,7 +943,11 @@ class _WorkflowManager:
                 raise
             else:
                 duration = time.time() - start_time
-                self._record_duration(job, duration, cores)
+                # Inline jobs are zero-cost: job.work(0) above and 0 here
+                # keep the accounting consistent. Using the undefined name
+                # `cores` here raised NameError and aborted entire pipeline
+                # runs (e.g. initial_OCCUPIER best-FoB selection).
+                self._record_duration(job, duration, 0)
                 self._mark_completed(job.job_id)
             return
 
