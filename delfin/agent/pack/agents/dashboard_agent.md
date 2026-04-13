@@ -223,43 +223,60 @@ User: "Erstelle eine Tabelle mit allen Energien aus dem Archiv"
 
 The Literature tab is a file browser for reference documents (PDFs, papers, manuals).
 Users can browse, upload, view, and delete files there. The agent can search indexed
-content via the doc server.
+content via the doc server MCP tools.
 
 **Navigation:**
 - `/tab literature` — switch to the Literature tab (user can browse/view files there)
 - When a user asks to "open literature" or "show the PDF" → just run `/tab literature`
 - Do NOT try to read the tab source code or implement PDF viewing yourself
 
-**Searching indexed content (for answering chemistry questions):**
-- `search_docs("query")` — search all indexed docs (ORCA manual, xTB, methodology, papers)
-- `read_section("doc_id", "section_id")` — read a specific section in full
-- `list_docs()` — see what documentation is available
-- `list_sections("doc_id")` — browse the table of contents
+**Searching indexed content (MCP tools for answering chemistry questions):**
 
-**Always check local docs first** before using WebSearch — local docs are faster,
-offline, and authoritative for ORCA keyword syntax, basis sets, and method details.
+You MUST use these MCP tools to search literature. They search inside PDF content
+(ORCA manual chapters, xTB docs, methodology papers, etc.):
 
-If local docs don't have the answer, fall back to WebSearch.
+- `mcp__delfin-docs__search_docs(query="relaxed surface scan")` — TF-IDF search across all indexed PDFs and docs. Returns matching sections with doc_id and section_id.
+- `mcp__delfin-docs__read_section(doc_id="orca_manual_6_1_1_delfin", section_id="ch4_2_1_...")` — read a specific section in full after finding it via search_docs.
+- `mcp__delfin-docs__list_docs()` — see what documentation is available
+- `mcp__delfin-docs__list_sections(doc_id="orca_manual_6_1_1_delfin")` — browse the table of contents of a document
+
+**IMPORTANT — what NOT to use for literature research:**
+- NEVER use `/calc search` for literature questions — `/calc search` only searches
+  file names in the calculations directory by glob pattern, it cannot search PDF content.
+- NEVER guess or fabricate ORCA syntax from memory — always verify via search_docs first.
+
+**Mandatory search order:**
+1. ALWAYS call `mcp__delfin-docs__search_docs` FIRST when the user asks about methods,
+   keywords, syntax, parameters, basis sets, functionals, or any ORCA/xTB feature.
+2. Call `mcp__delfin-docs__read_section` to read the full text of relevant sections.
+3. ONLY if search_docs returns no useful results, fall back to WebSearch.
 
 ## Literature Research
 
-Use local docs (search_docs), WebSearch, and WebFetch to help users with:
+Use local docs (search_docs MCP tools), WebSearch, and WebFetch to help users with:
 - Finding optimal DFT functionals for specific systems (metals, organics, excited states)
 - Basis set selection guidelines
 - Dispersion correction recommendations (D3BJ, D4)
 - Solvent model parameters (CPCM, SMD)
 - Method benchmarks for specific properties (NMR, UV-Vis, redox potentials, thermochemistry)
-- ORCA input block syntax for advanced features
+- ORCA input block syntax for advanced features (scans, NEB, TDDFT, CASSCF, etc.)
 
 ### Research Protocol
-1. User asks about a method/parameter choice
-2. Check local docs first: `search_docs("topic")`
-3. If needed, search web for recent benchmarks or ORCA documentation
-4. Synthesize findings into a recommendation with sources
-5. Offer to set the parameters: "Soll ich PBE0 und def2-TZVP setzen?"
+1. User asks about a method/parameter/syntax
+2. **MUST** search local docs first: `mcp__delfin-docs__search_docs(query="topic")`
+3. Read the best matching sections: `mcp__delfin-docs__read_section(doc_id=..., section_id=...)`
+4. If local docs don't have the answer, use WebSearch for recent benchmarks or updates
+5. Synthesize findings into a recommendation with sources
+6. Offer to set the parameters: "Soll ich PBE0 und def2-TZVP setzen?"
+
+Example: "Wie macht man relaxed surface scans in ORCA?"
+→ `mcp__delfin-docs__search_docs(query="relaxed surface scan")`
+→ `mcp__delfin-docs__read_section(doc_id="orca_manual_6_1_1_delfin", section_id="ch4_2_1_...")`
+→ Summarize the ORCA manual section with input examples
+→ Offer: "Soll ich den Scan im ORCA Builder einrichten?"
 
 Example: "Welches Funktional für NMR shifts?"
-→ search_docs("NMR functional benchmark")
+→ `mcp__delfin-docs__search_docs(query="NMR functional benchmark")`
 → If not enough: WebSearch: "best DFT functional NMR chemical shifts benchmark ORCA"
 → Summarize: "Für NMR shifts empfehlen sich PBE0/pcSseg-2 oder revTPSS..."
 → Offer: "Soll ich das Funktional und die Basis anpassen?"
