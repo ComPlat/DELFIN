@@ -4895,7 +4895,7 @@ def create_tab(ctx):
         # Write to file
         from datetime import datetime
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        export_dir = Path.home() / ".delfin" / "exports"
+        export_dir = ctx.repo_dir / "agent_workspace" / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         export_path = export_dir / f"chat_{ts}.md"
         export_path.write_text(md_text, encoding="utf-8")
