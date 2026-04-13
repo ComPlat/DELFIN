@@ -743,9 +743,6 @@ _AGENT_CSS = """\
     gap: 4px;
     padding: 8px 12px;
     margin: 4px 0;
-    position: sticky;
-    bottom: 0;
-    z-index: 10;
 }
 .delfin-agent-question-row .widget-checkbox {
     margin: 0;
