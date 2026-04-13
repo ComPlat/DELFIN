@@ -5443,7 +5443,7 @@ def create_tab(ctx):
                 'Pick one (buttons) or select multiple (checkboxes + Submit):</span>'
             )
             option_list = widgets.VBox(rows, layout=widgets.Layout(gap="0px"))
-            children = [option_list, submit_btn]
+            children = [widgets.VBox([option_list, submit_btn], layout=widgets.Layout(gap="6px"))]
 
         elif qtype == "yesno":
             question_hint_html.value = (
