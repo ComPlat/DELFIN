@@ -37,6 +37,9 @@ delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
 # Local runtime/build cache
 .runtime_cache/
 
+# Agent workspace (lives in ~/agent_workspace, not in repo)
+agent_workspace/
+
 # Environment files (API keys, secrets)
 .env
 .env.*
