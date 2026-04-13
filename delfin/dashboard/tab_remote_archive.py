@@ -4541,7 +4541,14 @@ def create_tab(ctx):
     )
     filter_row = widgets.HBox(
         [filter_input, sort_dropdown],
-        layout=widgets.Layout(width="100%", gap="6px", align_items="center"),
+        layout=widgets.Layout(
+            width="100%",
+            gap="6px",
+            margin="0 0 8px 0",
+            align_items="center",
+            justify_content="flex-start",
+            overflow_x="hidden",
+        ),
     )
     filter_row.add_class("remote-filter-row")
     left_panel = widgets.VBox(
