@@ -159,5 +159,87 @@ def run_server(argv: list[str] | None = None) -> None:
             })
         return json.dumps(sections, indent=2, ensure_ascii=False)
 
+    # -- Calculation search tools ---
+    # Build calc index lazily on first call
+    _calc_engine_cache: dict[str, Any] = {}
+
+    def _get_calc_engine():
+        if "engine" not in _calc_engine_cache:
+            from .calc_indexer import build_calc_index
+            from .calc_search import CalcSearchEngine
+            calc_dir = Path.home() / "calc"
+            archive_dir = Path.home() / "archive"
+            idx = build_calc_index(
+                calc_dir=calc_dir if calc_dir.is_dir() else None,
+                archive_dir=archive_dir if archive_dir.is_dir() else None,
+                quiet=True,
+            )
+            _calc_engine_cache["engine"] = CalcSearchEngine(idx)
+        return _calc_engine_cache["engine"]
+
+    @mcp.tool()
+    def search_calcs(
+        query: str = "",
+        source: str = "",
+        functional: str = "",
+        basis_set: str = "",
+        solvent: str = "",
+        module: str = "",
+        max_results: int = 20,
+    ) -> str:
+        """Search DELFIN calculations across calc/, archive/, and remote_archive/.
+
+        Find calculations by keyword or structured filters. Searches method,
+        basis set, solvent, molecule name, DELFIN modules, and more.
+
+        Args:
+            query: Free-text keyword query (e.g. 'PBE0 def2-TZVP', 'TDDFT toluene')
+            source: Filter by source: 'calc', 'archive', or 'remote_archive'
+            functional: Filter by DFT functional (e.g. 'PBE0', 'B3LYP')
+            basis_set: Filter by basis set (e.g. 'def2-TZVP')
+            solvent: Filter by solvent (e.g. 'toluene', 'DMF')
+            module: Filter by DELFIN module (e.g. 'ESD', 'GUPPY', 'IMAG')
+            max_results: Maximum results to return (default: 20)
+
+        Returns:
+            JSON array of matching calculations with metadata.
+        """
+        eng = _get_calc_engine()
+        results = eng.search(
+            query=query, source=source, functional=functional,
+            basis_set=basis_set, solvent=solvent, module=module,
+            max_results=max_results,
+        )
+        return json.dumps(results, indent=2, ensure_ascii=False)
+
+    @mcp.tool()
+    def get_calc_info(calc_id: str) -> str:
+        """Get detailed information about a specific DELFIN calculation.
+
+        Returns functional, basis set, solvent, charge, SMILES, energies,
+        modules, output files, completion status, and more.
+
+        Args:
+            calc_id: Calculation name or ID (e.g. 'Emitter8_CAMB3LYP_ma-def2-TZVP')
+
+        Returns:
+            JSON object with all available metadata, or error if not found.
+        """
+        eng = _get_calc_engine()
+        info = eng.get_calc_info(calc_id)
+        if info is None:
+            return json.dumps({"error": f"Calculation '{calc_id}' not found."})
+        return json.dumps(info, indent=2, ensure_ascii=False)
+
+    @mcp.tool()
+    def calc_summary() -> str:
+        """Get a summary of all indexed DELFIN calculations.
+
+        Returns total count, breakdown by source, most-used functionals,
+        basis sets, solvents, and DELFIN modules.
+        """
+        eng = _get_calc_engine()
+        return json.dumps(eng.summary(), indent=2, ensure_ascii=False)
+
     # Run the server on stdio
     mcp.run(transport="stdio")

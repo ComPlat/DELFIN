@@ -1957,6 +1957,20 @@ def create_tab(ctx):
                 extra_dirs=_extra_dirs,
                 agent_workspace_dir=_ws_dir,
             )
+
+            # Configure calc search directories for OpenAI function calling
+            try:
+                from delfin.agent.api_client import _doc_executor
+                _doc_executor._calc_dirs = {
+                    "calc": str(ctx.calc_dir),
+                    "archive": str(ctx.archive_dir),
+                    "remote_archive": ctx.runtime_settings.get(
+                        "remote_archive_dir", ""
+                    ),
+                }
+            except Exception:
+                pass
+
             state["engine"] = engine
             ctx.agent_engine = engine
             return engine

@@ -700,18 +700,98 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # -- Calculation search tools --
+    {
+        "type": "function",
+        "function": {
+            "name": "search_calcs",
+            "description": (
+                "Search DELFIN calculations across calc/, archive/, and remote_archive/. "
+                "Find calculations by keyword (method, basis set, solvent, molecule name) "
+                "or structured filters. Returns matching calculations with metadata."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Free-text keyword query (e.g. 'PBE0 def2-TZVP', 'TDDFT toluene')",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Filter by source: 'calc', 'archive', or 'remote_archive'",
+                    },
+                    "functional": {
+                        "type": "string",
+                        "description": "Filter by DFT functional (e.g. 'PBE0', 'B3LYP', 'CAM-B3LYP')",
+                    },
+                    "basis_set": {
+                        "type": "string",
+                        "description": "Filter by basis set (e.g. 'def2-TZVP', 'ma-def2-TZVP')",
+                    },
+                    "solvent": {
+                        "type": "string",
+                        "description": "Filter by solvent (e.g. 'toluene', 'DMF', 'chcl3')",
+                    },
+                    "module": {
+                        "type": "string",
+                        "description": "Filter by DELFIN module (e.g. 'ESD', 'GUPPY', 'IMAG', 'OCCUPIER')",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max results to return (default 20)",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_calc_info",
+            "description": (
+                "Get detailed information about a specific calculation by name. "
+                "Returns functional, basis set, solvent, charge, SMILES, energies, "
+                "modules, output files, completion status, and more."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calc_id": {
+                        "type": "string",
+                        "description": "Calculation name or ID (e.g. 'Emitter8_CAMB3LYP_ma-def2-TZVP')",
+                    },
+                },
+                "required": ["calc_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "calc_summary",
+            "description": (
+                "Get a summary of all indexed calculations: total count, breakdown by source, "
+                "most-used functionals, basis sets, solvents, and DELFIN modules."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
 class _DocToolExecutor:
-    """Lazy-loaded local executor for doc search tools."""
+    """Lazy-loaded local executor for doc and calc search tools."""
 
     def __init__(self) -> None:
         self._engine = None
         self._index: dict | None = None
+        self._calc_engine = None
+        self._calc_dirs: dict[str, str] = {}  # set by caller
 
     def _ensure_loaded(self) -> bool:
-        """Load index and build search engine. Returns True if ready."""
+        """Load doc index and build search engine. Returns True if ready."""
         if self._engine is not None:
             return True
         try:
@@ -726,8 +806,37 @@ class _DocToolExecutor:
         except Exception:
             return False
 
+    def _ensure_calc_loaded(self) -> bool:
+        """Build calc index on first use. Returns True if ready."""
+        if self._calc_engine is not None:
+            return True
+        try:
+            from pathlib import Path
+            from delfin.doc_server.calc_indexer import build_calc_index
+            from delfin.doc_server.calc_search import CalcSearchEngine
+
+            calc_dir = Path(self._calc_dirs.get("calc", "~/calc")).expanduser()
+            archive_dir = Path(self._calc_dirs.get("archive", "~/archive")).expanduser()
+            remote = self._calc_dirs.get("remote_archive", "")
+            remote_dir = Path(remote).expanduser() if remote else None
+
+            idx = build_calc_index(
+                calc_dir=calc_dir if calc_dir.is_dir() else None,
+                archive_dir=archive_dir if archive_dir.is_dir() else None,
+                remote_archive_dir=remote_dir if remote_dir and remote_dir.is_dir() else None,
+                quiet=True,
+            )
+            self._calc_engine = CalcSearchEngine(idx)
+            return True
+        except Exception:
+            return False
+
     def execute(self, name: str, arguments: dict) -> str:
-        """Execute a doc tool by name. Returns the result string."""
+        """Execute a doc/calc tool by name. Returns the result string."""
+        # Calc search tools
+        if name in ("search_calcs", "get_calc_info", "calc_summary"):
+            return self._execute_calc(name, arguments)
+
         if not self._ensure_loaded():
             return json.dumps({"error": "Doc index not available. Run delfin-docs-index."})
 
@@ -784,6 +893,38 @@ class _DocToolExecutor:
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
+
+    def _execute_calc(self, name: str, arguments: dict) -> str:
+        """Execute a calc search tool."""
+        if not self._ensure_calc_loaded():
+            return json.dumps({"error": "Calc index could not be built. Check calc/archive directories."})
+
+        if name == "search_calcs":
+            results = self._calc_engine.search(
+                query=arguments.get("query", ""),
+                source=arguments.get("source", ""),
+                functional=arguments.get("functional", ""),
+                basis_set=arguments.get("basis_set", ""),
+                solvent=arguments.get("solvent", ""),
+                module=arguments.get("module", ""),
+                has_data=arguments.get("has_data", ""),
+                max_results=arguments.get("max_results", 20),
+            )
+            return json.dumps(results, indent=2, ensure_ascii=False)
+
+        elif name == "get_calc_info":
+            calc_id = arguments.get("calc_id", "")
+            info = self._calc_engine.get_calc_info(calc_id)
+            if info is None:
+                return json.dumps({"error": f"Calculation '{calc_id}' not found."})
+            return json.dumps(info, indent=2, ensure_ascii=False)
+
+        elif name == "calc_summary":
+            return json.dumps(
+                self._calc_engine.summary(), indent=2, ensure_ascii=False
+            )
+
+        return json.dumps({"error": f"Unknown calc tool: {name}"})
 
 
 # Singleton — shared across all OpenAIClient instances.
@@ -896,8 +1037,9 @@ class OpenAIClient(_BaseClient):
                 "content": msg["content"],
             })
 
-        # Check if doc tools are available
+        # Check if doc/calc tools are available
         has_doc_tools = _doc_executor._ensure_loaded()
+        has_calc_tools = _doc_executor._ensure_calc_loaded()
 
         _total_in = 0
         _total_out = 0
@@ -922,7 +1064,7 @@ class OpenAIClient(_BaseClient):
             else:
                 kwargs["max_tokens"] = max_tokens
 
-            if has_doc_tools and not is_reasoning:
+            if (has_doc_tools or has_calc_tools) and not is_reasoning:
                 kwargs["tools"] = _DOC_TOOLS_OPENAI
 
             # Accumulate streamed tool calls (may arrive in chunks)
