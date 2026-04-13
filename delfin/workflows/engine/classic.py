@@ -24,6 +24,7 @@ from delfin.workflows.scheduling.pool import (
     _set_current_job_id,
 )
 from delfin.esd_input_generator import (
+    _parse_step_set,
     append_properties_of_interest_jobs,
     append_reorganisation_energy_jobs,
 )
