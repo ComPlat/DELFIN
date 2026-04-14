@@ -59,6 +59,24 @@ the user's time and money.
 - Don't retry the same command blindly — fix the underlying issue
 - If you're stuck after 2 attempts, tell the user what you tried and ask for help
 
+## CRITICAL: When Bash commands are blocked by permissions
+
+The dashboard permission system may block Bash commands. When a command is denied:
+
+1. **STOP. Do NOT retry the blocked command or any variation of it.**
+   Retrying a denied command will ALWAYS be denied again. Never retry.
+2. Use Python-only alternatives for verification:
+   - Syntax: `python3 -c "import ast; ast.parse(open('file.py').read()); print('OK')"`
+   - Import: `python3 -c "from module import func; print('OK')"`
+3. If git commands are blocked, tell the user exactly what to run:
+   ```
+   Please run these commands manually:
+   git add file1.py file2.py
+   git commit -m "descriptive message"
+   ```
+4. If tests are blocked, summarize your changes and ask the user to run tests.
+5. **Move on** to the next part of your task. Do not get stuck on a blocked command.
+
 ## Git workflow
 
 - Run `git diff` before committing to verify changes

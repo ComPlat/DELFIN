@@ -1931,7 +1931,7 @@ def create_tab(ctx):
             except ImportError:
                 pass  # doc_server or mcp not installed
 
-            # Dashboard mode: restrict CLI tools and grant workspace write access
+            # CLI tool configuration per mode and permission profile
             _cli_tools = None
             _extra_dirs = None
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
@@ -1943,6 +1943,19 @@ def create_tab(ctx):
                 ]
                 if _ws_dir:
                     _extra_dirs = [_ws_dir]
+            elif state.get("_perm_profile") == "repo_free":
+                # repo_free + non-dashboard: auto-approve safe bash commands
+                # so the agent doesn't get stuck in permission-denial loops
+                # for routine operations (git, pytest, syntax checks).
+                _cli_tools = [
+                    "Read", "Grep", "Glob", "Write", "Edit", "Bash",
+                    "WebSearch", "WebFetch",
+                    # Safe bash auto-approve patterns
+                    "Bash(git *)",
+                    "Bash(python -m pytest*)", "Bash(python3 -m pytest*)",
+                    "Bash(python -c *)", "Bash(python3 -c *)",
+                    "Bash(python -m py_compile*)", "Bash(python3 -m py_compile*)",
+                ]
 
             engine = AgentEngine(
                 repo_dir=repo_dir,
@@ -4660,7 +4673,7 @@ def create_tab(ctx):
         "plan":      "plan",           # read-only
         "ask_all":   "default",        # CLI asks before every write/bash
         "repo_free": "acceptEdits",    # CLI auto-approves edits, asks for bash
-        "all_free":  "acceptEdits",    # still asks for dangerous bash commands
+        "all_free":  "auto",           # user chose "all free" → skip permission prompts
     }
 
     def _active_perms() -> dict[str, tuple[int, bool]]:
@@ -6105,18 +6118,34 @@ def create_tab(ctx):
                     denied_raw = str(description)
                     readable = _format_tool_description(denied_raw)
                     state["_last_denied"] = denied_raw
-                    # Track denials to stop retry loops
+                    # Accumulate denied commands for context injection
+                    _denied_cmds = state.setdefault("_denied_commands", [])
+                    if readable not in _denied_cmds:
+                        _denied_cmds.append(readable)
+                    # Track denials to stop retry loops (1 denial = stop)
                     deny_count = state.get("_deny_count", 0) + 1
                     state["_deny_count"] = deny_count
-                    if deny_count >= 3:
+                    if deny_count >= 2:
                         _append_system_message(
-                            f"\u26d4 Blocked 3x — stopping retries. "
+                            f"\u26d4 Blocked {deny_count}x — stopping. "
                             f"Change permission mode or do it manually."
                         )
+                        # Inject denial context so the model knows on the
+                        # next turn that commands were blocked.
+                        _denied_list = ", ".join(_denied_cmds[-5:])
+                        engine.messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[System] Bash commands were BLOCKED by the "
+                                f"permission system: {_denied_list}. "
+                                f"Do NOT retry these or any variation. "
+                                f"Tell the user what commands to run manually."
+                            ),
+                        })
                         engine.request_stop()
                         return
                     _append_system_message(
-                        f"\u26d4 Blocked ({deny_count}/3): {readable}"
+                        f"\u26d4 Blocked ({deny_count}/2): {readable}"
                     )
                     # Show approval buttons for interactive approval
                     _show_approval_prompt(denied_raw, denied_raw)
