@@ -1996,7 +1996,15 @@ def create_tab(ctx):
         payload = {"role": role, "content": content, "role_label": role_label}
         payload.update(meta)
         state["chat_messages"].append(payload)
-        _refresh_chat_html()
+        # Debounce: during streaming, batch tool messages to reduce jitter.
+        # Only refresh if >0.2s since last refresh or if not streaming.
+        now = time.monotonic()
+        if not state.get("streaming") or now - state.get("_last_html_refresh", 0) > 0.2:
+            _refresh_chat_html()
+            state["_last_html_refresh"] = now
+        else:
+            # Schedule a delayed refresh so batched messages still appear
+            state["_html_refresh_pending"] = True
 
     def _append_system_message(text):
         _append_chat_message("system", text)
@@ -2628,7 +2636,7 @@ def create_tab(ctx):
     _SCROLL_TAG = (
         '<img src="" onerror="'
         "var c=this.closest('.delfin-agent-chat');"
-        "if(c)c.scrollTop=c.scrollHeight;"
+        "if(c){c.style.scrollBehavior='smooth';c.scrollTop=c.scrollHeight;}"
         "this.remove();"
         '" style="display:none">'
     )
@@ -5889,7 +5897,12 @@ def create_tab(ctx):
                         thinking_chunks.clear()
                     chunks.append(text)
                     now = time.monotonic()
-                    if now - last_update > 0.1:
+                    # Flush any pending tool message refreshes
+                    if state.get("_html_refresh_pending"):
+                        state["_html_refresh_pending"] = False
+                        _refresh_chat_html()
+                        state["_last_html_refresh"] = now
+                    if now - last_update > 0.25:
                         _set_working(True, "Writing...")
                         _update_last_assistant("".join(chunks), role_label)
                         _update_status()
