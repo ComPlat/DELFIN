@@ -91,23 +91,61 @@
     }
   },
   "claude": {
-    "meta": {
-      "last_updated": "2026-04-14",
-      "total_sessions": 1,
-      "profile_version": "3.0"
+    "avg_cost_per_task": {
+      "coding": 4.772,
+      "chemistry": 7.768
     },
-    "preferred_model": {},
-    "thinking_budget_mult": 1.0,
-    "avg_cost_per_task": {},
     "success_rate": {
-      "solo": 0.85,
+      "solo": 0.959,
       "quick": 0.8,
       "reviewed": 0.75,
       "cluster": 0.7,
       "dashboard": 0.9
     },
+    "task_performance": {
+      "coding": {
+        "success_rate": 0.949
+      },
+      "chemistry": {
+        "success_rate": 0.813
+      }
+    },
     "common_failures": [
       "dashboard edits drifting into longer prose than the UI needs"
+    ],
+    "total_cycles": 8,
+    "updated_at": "2026-04-14 15:40:38",
+    "meta": {
+      "total_sessions": 1
+    },
+    "communication": {
+      "rules": [
+        "No Co-Authored-By in commits",
+        "Dashboard actions: ACTION line + max 5 words explanation"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "pytest in background after every code change",
+        "Agent subprocesses for research spanning >3 files"
+      ],
+      "environment_detection": "python -c 'import delfin' first, then micromamba only as fallback"
+    },
+    "domain": {
+      "weaknesses": [
+        "Tendency toward generic answers on QM parameters — use search_docs immediately",
+        "Context waste from unnecessarily large Reads",
+        "Too much confirmation instead of action"
+      ],
+      "strengths": [
+        "build_up_complex.py: PSO fitness, VdW radii, Procrustes init",
+        "Coordination chemistry: geometries, bond lengths, clash detection",
+        "ORCA/xTB parameters via search_docs"
+      ]
+    },
+    "anti_patterns": [
+      "Confirmation questions on unambiguous tasks",
+      "Qualitative statements without numeric values"
     ],
     "error_patterns": [
       {
@@ -132,32 +170,6 @@
         "prevents": "Grep/Read failing silently on wrong filename"
       }
     ],
-    "total_cycles": 0,
-    "communication": {
-      "rules": [
-        "No Co-Authored-By in commits",
-        "Dashboard actions: ACTION line + max 5 words explanation"
-      ]
-    },
-    "tool_usage": {
-      "rules": [
-        "pytest in background after every code change",
-        "Agent subprocesses for research spanning >3 files"
-      ],
-      "environment_detection": "python -c 'import delfin' first, then micromamba only as fallback"
-    },
-    "domain": {
-      "strengths": [
-        "build_up_complex.py: PSO fitness, VdW radii, Procrustes init",
-        "Coordination chemistry: geometries, bond lengths, clash detection",
-        "ORCA/xTB parameters via search_docs"
-      ],
-      "weaknesses": [
-        "Tendency toward generic answers on QM parameters — use search_docs immediately",
-        "Context waste from unnecessarily large Reads",
-        "Too much confirmation instead of action"
-      ]
-    },
     "playbooks": {
       "build_up_complex": {
         "description": "Editing the metal complex builder (PSO swarm, ligand placement)",
@@ -354,10 +366,6 @@
         ]
       }
     },
-    "anti_patterns": [
-      "Confirmation questions on unambiguous tasks",
-      "Qualitative statements without numeric values"
-    ],
     "session_log": [
       {
         "date": "2026-04-14",
