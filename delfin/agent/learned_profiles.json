@@ -3,7 +3,7 @@
     "meta": {
       "last_updated": "2026-04-14",
       "total_sessions": 1,
-      "profile_version": "2.0"
+      "profile_version": "2.2"
     },
     "preferred_model": {},
     "thinking_budget_mult": 1.0,
@@ -21,6 +21,29 @@
       "generic QM answers without search_docs",
       "forgetting pytest after code changes",
       "multi-paragraph explanations instead of one-liner diffs"
+    ],
+    "error_patterns": [
+      {
+        "error": "Profile schema mismatch — engine.py couldn't read task_performance data",
+        "root_cause": "Nested profile keys didn't match _DEFAULT_PROFILE flat structure",
+        "fix": "Added top-level success_rate, thinking_budget_mult, common_failures",
+        "date": "2026-04-14",
+        "prevents": "Adaptive routing and thinking budget silently falling back to defaults"
+      },
+      {
+        "error": "format_profile_context() never called — profile data invisible to agents",
+        "root_cause": "prompt_loader.py build_system_prompt() didn't invoke it",
+        "fix": "Added _load_profile_context() call for solo and pipeline modes",
+        "date": "2026-04-14",
+        "prevents": "Agents ignoring learned success rates and failure patterns"
+      },
+      {
+        "error": "File referenced as build_up_complex2.py but actual name is build_up_complex.py",
+        "root_cause": "Memory from earlier session used wrong filename",
+        "fix": "Verified with Glob, corrected in profile and playbooks",
+        "date": "2026-04-14",
+        "prevents": "Grep/Read failing silently on wrong filename"
+      }
     ],
     "total_cycles": 0,
     "communication": {
@@ -288,6 +311,11 @@
         "date": "2026-04-14",
         "change": "v2.0 → v2.1: Aligned schema with provider_profile.py _DEFAULT_PROFILE. Added top-level success_rate (per mode), thinking_budget_mult, common_failures. Sharpened communication rules.",
         "impact": "Engine can now read profile data for adaptive routing and thinking budget"
+      },
+      {
+        "date": "2026-04-14",
+        "change": "v2.1 → v2.2: Added verification checklist, solo auto-retry, git context at session start, code templates in playbooks, proactive domain recommendations, structured error_patterns with root cause and fix",
+        "impact": "Closes gap with CLI tools: systematic verification, self-healing test failures, domain expertise surfaced proactively"
       }
     ]
   }

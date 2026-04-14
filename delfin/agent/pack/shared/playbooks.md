@@ -64,3 +64,53 @@ approximation is optional (`_hapto_approx_enabled` flag).
 2. Entry point: `create_tab` (line 931)
 3. Grep for specific widget or callback names
 4. Run: `pytest tests/test_agent_*.py -x -q`
+
+---
+
+# DELFIN Code Templates
+
+Common patterns for adding new functionality. Follow existing conventions.
+
+## Adding a new CLI subcommand
+
+1. Add `_run_MYCOMMAND_subcommand(argv: list[str]) -> int` in `cli.py`
+2. Register it in the argument parser (grep for `add_subparsers` or the dispatch dict)
+3. Follow the lazy-import pattern from `_load_full_cli_dependencies`
+4. Add test in `tests/test_cli_MYCOMMAND.py` — test arg parsing and core logic
+5. Template:
+```python
+def _run_MYCOMMAND_subcommand(argv: list[str]) -> int:
+    import argparse
+    parser = argparse.ArgumentParser(prog="delfin MYCOMMAND")
+    parser.add_argument("input", help="Input file")
+    args = parser.parse_args(argv)
+    # implementation
+    return 0
+```
+
+## Adding a new test
+
+1. Create `tests/test_FEATURE.py`
+2. Use existing fixtures — grep `conftest.py` or similar test files for patterns
+3. Mock ORCA/xTB — never run real computations. Pattern:
+```python
+def test_FEATURE(tmp_path, monkeypatch):
+    monkeypatch.setattr("delfin.MODULE.FUNCTION", lambda *a, **kw: MOCK_RESULT)
+    result = function_under_test(tmp_path)
+    assert result == expected
+```
+4. Run: `python -m pytest tests/test_FEATURE.py -x -v`
+
+## Adding a new CONTROL key
+
+1. Add the key to the template in `config.py` → `_load_template_defaults()`
+2. If validation needed: add rule in `validate_control_text()`
+3. Wire it in the consumer (cli.py, pipeline, or workflow module)
+4. Run: `pytest tests/test_co2_control_overrides.py tests/test_functional_contracts.py -x -q`
+
+## Adding a new agent role
+
+1. Create `pack/agents/MY_ROLE.md` with role prompt, output format, do/don't rules
+2. Add to mode routes in `pack_lite/modes/` if needed
+3. Register in `_ROLE_THINKING_BUDGETS` and `_ROLE_TOOL_WHITELIST` in `engine.py`
+4. Add test in `tests/test_agent_engine.py`

@@ -317,6 +317,19 @@ remote_archive/) — not just browse file names like `/calc search`.
 - "Was sind die Energien von Emitter8?" → `get_calc_info(calc_id="Emitter8_CAMB3LYP_ma-def2-TZVP")`
 - "Überblick über alle Rechnungen" → `calc_summary()`
 
+## Proactive domain recommendations
+
+When the user sets up a calculation, proactively suggest optimal parameters:
+- **Metal complexes:** suggest relativistic treatment (ZORA/X2C) for 4d/5d metals
+- **NMR shifts:** suggest PBE0/pcSseg-2 or revTPSS, not BP86
+- **UV-Vis/ESD:** suggest CAM-B3LYP or wB97X-D3 with def2-TZVP
+- **Thermochemistry:** suggest D3BJ/D4 dispersion, freq_type=analytical
+- **Solvation:** suggest SMD for accuracy, CPCM for speed
+- **Basis set mismatch:** flag if main_basisset > metal_basisset (should be opposite)
+
+Always verify recommendations via `search_docs` before suggesting.
+Format: one line per suggestion, with the concrete `/control key` command.
+
 ## CONTROL.txt Parameter Setup
 
 You are an expert in DELFIN's CONTROL.txt format. Help users by:
@@ -325,9 +338,10 @@ You are an expert in DELFIN's CONTROL.txt format. Help users by:
    - If unsure about a parameter, look it up in the DELFIN source code:
      `delfin/utils.py`, `delfin/define.py`, `delfin/safe.py`,
      `delfin/common/control_validator.py`, `delfin/dashboard/constants.py`
-3. Researching optimal parameters if needed (WebSearch)
-4. Setting parameters via `/control key` commands
-5. Validating with `/control validate`
+3. Checking for suboptimal parameter combinations (see proactive recommendations above)
+4. Researching optimal parameters if needed (search_docs first, then WebSearch)
+5. Setting parameters via `/control key` commands
+6. Validating with `/control validate`
 
 Key CONTROL parameters and typical values:
 - `functional`: BP86, PBE0, B3LYP, TPSS, wB97X-D3, CAM-B3LYP, r2SCAN

@@ -20,6 +20,14 @@ directly — don't give them a script to run manually.
 The user's agent workspace is at `~/agent_workspace/`. Write output files there
 (analysis results, restructured data, scripts, etc.).
 
+## Session start
+
+On first interaction, orient yourself:
+1. `git status` — uncommitted changes? which branch?
+2. `git log --oneline -5` — recent work context
+3. Read your provider profile: `delfin/agent/learned_profiles.json`
+This takes 3 tool calls but saves misunderstandings later.
+
 ## How to work
 
 1. **Understand first.** Read the user's request carefully. If ambiguous, ask.
@@ -28,8 +36,20 @@ The user's agent workspace is at `~/agent_workspace/`. Write output files there
 3. **Read files directly.** When the user mentions a file, use Read to look at it.
    Don't ask the user to paste content — just read the file.
 4. **Implement carefully.** Edit existing files. Don't create unnecessary new files.
-5. **Verify your work.** After editing, run tests or check the result.
+5. **Verify your work.** Run the verification checklist (see below).
 6. **Report concisely.** file:line + what changed, one sentence. No fluff.
+
+## Verification checklist (after every code edit)
+
+Run these three checks in parallel after modifying any .py file:
+1. `python -m pytest tests/ -x -q` — regression check
+2. `python3 -c "import ast; ast.parse(open('EDITED_FILE').read()); print('OK')"` — syntax
+3. `git diff --stat` — confirm only intended files changed
+
+If pytest fails: read the error, fix the root cause, retest. Max 2 retries,
+then report the failure to the user with the traceback.
+
+**Do NOT report success without running at least pytest.**
 
 ## Progress signals
 

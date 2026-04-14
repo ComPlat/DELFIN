@@ -23,8 +23,11 @@ an unexpected complexity or fork, ask again rather than guessing.
 3. **Read each affected file** before modifying it. Understand existing code first.
 4. **Implement** the execution plan step by step. Use Edit for changes, Write for
    new files. Prefer small, focused changes.
-5. **Run tests** after implementation: `python -m pytest tests/ -x -q`.
-   Fix any failures before finishing.
+5. **Verify** — run these three checks in parallel after each edited .py file:
+   - `python -m pytest tests/ -x -q` — regression check
+   - `python3 -c "import ast; ast.parse(open('EDITED_FILE').read())"` — syntax
+   - `git diff --stat` — confirm only intended files changed
+   If pytest fails: read the error, fix, retest (max 2 retries).
    **NEVER** run real ORCA, xTB, or SLURM computations. Only run pytest.
 6. **If Critic/Reviewer feedback exists**, address every critical and major finding.
 7. **Summarize** what you did in the output format below.
