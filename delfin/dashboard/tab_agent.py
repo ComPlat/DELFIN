@@ -2633,25 +2633,11 @@ def create_tab(ctx):
             return f'<div class="{css_class}">{content}</div>'
         return ""
 
-    # Scroll strategy: use a global variable to track whether the user was
-    # near the bottom before the HTML was replaced. The _SCROLL_PRE tag
-    # saves the state, and the _SCROLL_TAG at the end restores/scrolls.
-    # This prevents the "jump to top then scroll down" flicker.
-    _SCROLL_PRE = (
-        '<img src="" onerror="'
-        "var c=this.closest('.delfin-agent-chat');"
-        "if(c){window._delfin_atBottom=(c.scrollHeight-c.scrollTop-c.clientHeight<150);"
-        "window._delfin_scrollPos=c.scrollTop;}"
-        "this.remove();"
-        '" style="display:none">'
-    )
+    # Always scroll to bottom — simple and reliable.
     _SCROLL_TAG = (
         '<img src="" onerror="'
         "var c=this.closest('.delfin-agent-chat');"
-        "if(c){"
-        "if(window._delfin_atBottom){c.scrollTop=c.scrollHeight;}"
-        "else if(window._delfin_scrollPos){c.scrollTop=window._delfin_scrollPos;}"
-        "}"
+        "if(c)c.scrollTop=c.scrollHeight;"
         "this.remove();"
         '" style="display:none">'
     )
@@ -2681,7 +2667,6 @@ def create_tab(ctx):
             last_html = _render_single_msg(msgs[-1])
             chat_html.value = (
                 '<div class="delfin-agent-chat">'
-                + _SCROLL_PRE
                 + _html_cache["prefix"]
                 + "\n" + last_html
                 + "\n" + _SCROLL_TAG
@@ -2704,7 +2689,6 @@ def create_tab(ctx):
 
         chat_html.value = (
             '<div class="delfin-agent-chat">'
-            + _SCROLL_PRE
             + "\n".join(parts)
             + "\n" + _SCROLL_TAG
             + "</div>"
