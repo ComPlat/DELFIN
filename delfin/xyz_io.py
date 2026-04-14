@@ -437,6 +437,22 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
     Append per-atom 'NewGTO "metal_basisset" end' to
     - all metal atoms (always when metal_basisset provided),
     - atoms in first coordination sphere when enabled in CONTROL.
+
+    RELATIVISTIC SYSTEMS:
+      When DELFIN is in relativistic mode (``relativity`` is ZORA/X2C/DKH),
+      the metal_basisset will typically be a SARC-family basis
+      (SARC-ZORA-TZVP, SARC-DKH-TZVP, ...). SARC is only defined for
+      heavy elements (Rb-Xe, La-Lu, Hf-Hg, Tl-Rn, Ac-Lr). Applying the
+      per-atom SARC basis to light atoms (C, N, O, H, etc.) in the first
+      coordination sphere crashes ORCA with
+          "There are no main basis functions on atom number N (C)"
+      which is exactly what Jan's Ru-complex jobs hit. For relativistic
+      runs we therefore only attach the per-atom basis to the metal
+      atoms themselves and let light coordination-sphere atoms fall back
+      to the main (e.g. ZORA-def2-SVP) basis, which IS defined for
+      light elements. Non-relativistic workflows keep the original
+      behaviour (per-atom basis on the whole first coordination sphere)
+      because def2-TZVP etc. cover all elements.
     """
     enable_first = str(config.get('first_coordination_sphere_metal_basisset', 'no')).lower() in ('yes','true','1','on')
 
@@ -454,12 +470,24 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a["elem"].capitalize() in metal_syms]
 
+    # Detect relativistic mode — SARC/relativistic bases are defined only for
+    # heavy elements, so coordination-sphere light atoms must fall back to
+    # the main basis. See docstring above.
+    relativity = str(config.get('relativity', '') or '').strip()
+    is_relativistic = bool(relativity) and relativity.lower() not in ('', 'no', 'none', 'false', '0', 'off')
+
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
     if sphere_scale_raw:
         scale = float(sphere_scale_raw)
     else:
         scale = 1.20
-    first = _first_sphere_indices(atoms, metal_indices, scale, radii_map) if (enable_first and metal_indices) else set()
+
+    if is_relativistic:
+        # Skip first-coordination-sphere per-atom basis in relativistic mode
+        # (prevents SARC-ZORA-TZVP from being attached to C/N/O/H).
+        first = set()
+    else:
+        first = _first_sphere_indices(atoms, metal_indices, scale, radii_map) if (enable_first and metal_indices) else set()
 
     metal_line_set = {atoms[i]['line_idx'] for i in metal_indices}
     first_line_set = {atoms[i]['line_idx'] for i in first}
