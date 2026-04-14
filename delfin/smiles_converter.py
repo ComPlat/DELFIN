@@ -10904,17 +10904,41 @@ def _build_hapto_scaffold(
         assigned_dirs = [hapto_dirs[i] for i in range(n_hapto)
                          if hapto_dirs[i] is not None]
 
+        # In multi-metal systems, compute anti-M2 direction so hapto
+        # groups point away from the other metal(s).
+        _anti_other_metal = None
+        if len(metal_indices) > 1:
+            other_positions = [coords[mj] for mj in metal_indices if mj != mi
+                               and mj in placed]
+            if other_positions:
+                avg_other = np.mean(other_positions, axis=0)
+                away = m_pos - avg_other
+                away_len = float(np.linalg.norm(away))
+                if away_len > 1e-8:
+                    _anti_other_metal = away / away_len
+
         if unassigned_hapto:
             if not assigned_dirs:
                 # All hapto groups unassigned: use analytical placement
                 if len(unassigned_hapto) == 1:
-                    hapto_dirs[unassigned_hapto[0]] = np.array([0.0, 0.0, 1.0])
+                    hapto_dirs[unassigned_hapto[0]] = (_anti_other_metal
+                        if _anti_other_metal is not None
+                        else np.array([0.0, 0.0, 1.0]))
                 elif len(unassigned_hapto) == 2:
-                    # Sandwich: ~175° apart (nearly anti-parallel)
-                    hapto_dirs[unassigned_hapto[0]] = np.array([0.0, 0.0, 1.0])
-                    a175 = np.radians(175.0)
-                    hapto_dirs[unassigned_hapto[1]] = np.array(
-                        [0.0, np.sin(a175), np.cos(a175)])
+                    # Sandwich: ~175° apart (nearly anti-parallel).
+                    # In multi-metal: orient perpendicular to M-M axis.
+                    if _anti_other_metal is not None:
+                        u_s, _ = _ortho_basis(_anti_other_metal)
+                        hapto_dirs[unassigned_hapto[0]] = u_s
+                        a175 = np.radians(175.0)
+                        hapto_dirs[unassigned_hapto[1]] = (
+                            np.cos(a175) * u_s + np.sin(a175)
+                            * _anti_other_metal)
+                    else:
+                        hapto_dirs[unassigned_hapto[0]] = np.array([0.0, 0.0, 1.0])
+                        a175 = np.radians(175.0)
+                        hapto_dirs[unassigned_hapto[1]] = np.array(
+                            [0.0, np.sin(a175), np.cos(a175)])
                 else:
                     # Evenly distributed in a plane (120° for 3, 90° for 4, …)
                     for k, ui in enumerate(unassigned_hapto):
@@ -10938,21 +10962,35 @@ def _build_hapto_scaffold(
                                       else np.array([0.0, 0.0, 1.0]))
                     used.append(hapto_dirs[ui])
 
-        # Fill sigma donor directions, maximally separated from hapto dirs
+        # Fill sigma donor directions, maximally separated from hapto dirs.
+        # Piano-stool special case: 1 hapto + n sigma → place sigma donors
+        # analytically on a cone at ~125° from the hapto axis.
         sigma_dir_list = []
         if n_sigma > 0:
             all_used = [hd for hd in hapto_dirs if hd is not None]
-            candidates = _sphere_dirs(n_sigma + len(all_used) + 8)
-            for cd in candidates:
-                if len(sigma_dir_list) >= n_sigma:
-                    break
-                ok = True
-                for ud in all_used + sigma_dir_list:
-                    if float(np.dot(cd, ud)) > 0.70:
-                        ok = False
+            if n_hapto == 1 and len(all_used) == 1:
+                hapto_ax = all_used[0] / max(float(np.linalg.norm(all_used[0])), 1e-12)
+                cone_angle = np.radians(125.0)
+                u_cone, v_cone = _ortho_basis(hapto_ax)
+                for k in range(n_sigma):
+                    phi = 2.0 * np.pi * k / n_sigma
+                    d = (np.cos(cone_angle) * hapto_ax
+                         + np.sin(cone_angle) * (np.cos(phi) * u_cone + np.sin(phi) * v_cone))
+                    sigma_dir_list.append(d / max(float(np.linalg.norm(d)), 1e-12))
+            else:
+                candidates = _sphere_dirs(max(n_sigma + len(all_used) + 8, 60))
+                candidates.sort(key=lambda cd: max(
+                    float(np.dot(cd, ud)) for ud in all_used) if all_used else 0.0)
+                for cd in candidates:
+                    if len(sigma_dir_list) >= n_sigma:
                         break
-                if ok:
-                    sigma_dir_list.append(cd)
+                    ok = True
+                    for ud in all_used + sigma_dir_list:
+                        if float(np.dot(cd, ud)) > 0.50:
+                            ok = False
+                            break
+                    if ok:
+                        sigma_dir_list.append(cd)
             while len(sigma_dir_list) < n_sigma:
                 sigma_dir_list.append(np.array([1.0, 0.0, 0.0]))
 
@@ -11266,6 +11304,85 @@ def _build_hapto_scaffold(
                     sub_count += 1
                 sub_count += 1
 
+    # ---- Pre-compute ring info for inline ring placement during BFS ----
+    try:
+        Chem.FastFindRings(mol)
+        _ri = mol.GetRingInfo()
+        _all_rings = list(_ri.AtomRings())
+    except Exception:
+        _all_rings = []
+    _organic_rings = []
+    for ring in _all_rings:
+        ring_set = set(ring)
+        if ring_set <= all_hapto_atoms:
+            continue
+        if any(mol.GetAtomWithIdx(a).GetSymbol() in _METAL_SET for a in ring):
+            continue
+        _organic_rings.append(ring)
+    _atom_to_rings: Dict[int, List[int]] = {}
+    for ri_idx, ring in enumerate(_organic_rings):
+        for a in ring:
+            _atom_to_rings.setdefault(a, []).append(ri_idx)
+    _ring_done: set = set()
+
+    def _place_ring_inline(ring_tuple, anchor_idx):
+        ring_set = set(ring_tuple)
+        rsize = len(ring_tuple)
+        cc_ring = 1.40 if rsize <= 6 else 1.50
+        radius = cc_ring / (2.0 * np.sin(np.pi / max(rsize, 3)))
+
+        anchor_pos = coords[anchor_idx]
+        parent_of_anchor = None
+        for nbr in mol.GetAtomWithIdx(anchor_idx).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in placed and ni not in ring_set:
+                parent_of_anchor = ni
+                break
+        if parent_of_anchor is not None:
+            bond_dir = anchor_pos - coords[parent_of_anchor]
+            bd_len = float(np.linalg.norm(bond_dir))
+            if bd_len > 1e-8:
+                bond_dir = bond_dir / bd_len
+            else:
+                bond_dir = np.array([1.0, 0.0, 0.0])
+        else:
+            bond_dir = np.array([1.0, 0.0, 0.0])
+
+        u_r, v_r = _ortho_basis(bond_dir)
+        ring_center = anchor_pos + bond_dir * radius
+
+        ring_adj = {a: [] for a in ring_tuple}
+        for a in ring_tuple:
+            for nbr in mol.GetAtomWithIdx(a).GetNeighbors():
+                if nbr.GetIdx() in ring_set:
+                    ring_adj[a].append(nbr.GetIdx())
+        chain = [anchor_idx]
+        visited_r = {anchor_idx}
+        while len(chain) < rsize:
+            cur = chain[-1]
+            nxt = None
+            for nb in ring_adj[cur]:
+                if nb not in visited_r:
+                    nxt = nb
+                    break
+            if nxt is None:
+                break
+            chain.append(nxt)
+            visited_r.add(nxt)
+        if len(chain) != rsize:
+            return False
+
+        anchor_offset = np.arctan2(
+            float(np.dot(anchor_pos - ring_center, v_r)),
+            float(np.dot(anchor_pos - ring_center, u_r)),
+        )
+        for k, atom_idx in enumerate(chain):
+            angle = anchor_offset + 2.0 * np.pi * k / rsize
+            coords[atom_idx] = ring_center + radius * (
+                np.cos(angle) * u_r + np.sin(angle) * v_r)
+            placed.add(atom_idx)
+        return True
+
     # ---- BFS propagate remaining atoms with VSEPR local geometry ----
     for _iteration in range(n_atoms * 3):
         progress = False
@@ -11279,6 +11396,24 @@ def _build_hapto_scaffold(
                     parent = nbr
                     break
             if parent is None:
+                continue
+
+            # If this atom belongs to an unplaced organic ring, place
+            # the entire ring analytically instead of via BFS.
+            ring_handled = False
+            for _ri_idx in _atom_to_rings.get(ai, []):
+                if _ri_idx in _ring_done:
+                    continue
+                _ring_t = _organic_rings[_ri_idx]
+                _ring_s = set(_ring_t)
+                _ring_anchors = [a for a in _ring_t if a in placed]
+                if _ring_anchors:
+                    if _place_ring_inline(_ring_t, _ring_anchors[0]):
+                        _ring_done.add(_ri_idx)
+                        ring_handled = True
+                        progress = True
+                        break
+            if ring_handled:
                 continue
 
             pi = parent.GetIdx()
@@ -11302,6 +11437,20 @@ def _build_hapto_scaffold(
                     if d_len > 1e-8:
                         used_dirs.append(d / d_len)
 
+            # Metal avoidance: if child is NOT bonded to any metal,
+            # add metal directions as repulsive so BFS pushes away.
+            _child_bonded_metals = set()
+            for nbr in atom.GetNeighbors():
+                if nbr.GetSymbol() in _METAL_SET:
+                    _child_bonded_metals.add(nbr.GetIdx())
+            for mi in metal_indices:
+                if mi in _child_bonded_metals:
+                    continue
+                m_to_p = parent_pos - coords[mi]
+                m_to_p_len = float(np.linalg.norm(m_to_p))
+                if m_to_p_len < 4.0 and m_to_p_len > 1e-8:
+                    used_dirs.append(-m_to_p / m_to_p_len)
+
             if len(used_dirs) == 0:
                 direction = np.array([0.0, 0.0, 1.0])
             elif len(used_dirs) == 1:
@@ -11310,7 +11459,6 @@ def _build_hapto_scaffold(
                        else np.array([0.0, 1.0, 0.0]))
                 perp = np.cross(d0, ref)
                 perp = perp / max(float(np.linalg.norm(perp)), 1e-12)
-                # ~109.5 deg from existing bond
                 direction = (-d0 * np.cos(np.radians(70.5))
                              + perp * np.sin(np.radians(70.5)))
             elif len(used_dirs) == 2:
@@ -11382,12 +11530,13 @@ def _build_hapto_scaffold(
                 max_err = err
         if max_err < 0.05:
             break
-        # Apply forces with reduced weight for hapto atoms
+        # Apply forces — hapto ring atoms and metals are frozen
         for ai in range(n_atoms):
             if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
-                continue  # metals frozen
-            w = 0.12 if ai in all_hapto_atoms else 1.0
-            coords[ai] = coords[ai] + forces[ai] * w
+                continue
+            if ai in all_hapto_atoms:
+                continue
+            coords[ai] = coords[ai] + forces[ai]
 
     # ---- Clash resolution (push apart, preserve intra-ring geometry) ----
     # Build metal bond set for metal proximity check
@@ -11398,7 +11547,7 @@ def _build_hapto_scaffold(
             metal_bonded.add((nbr.GetIdx(), mi))
 
     rng_clash = np.random.default_rng(123)
-    for _pass in range(15):
+    for _pass in range(30):
         moved = False
         for i in range(n_atoms):
             is_metal_i = mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
@@ -11410,17 +11559,22 @@ def _build_hapto_scaffold(
                 d = float(np.linalg.norm(diff))
                 # Metal proximity: non-bonded atoms too close to metal
                 if (is_metal_i or is_metal_j) and (i, j) not in metal_bonded:
-                    min_ml = 1.8  # minimum non-bonded M-X distance
+                    min_ml = 2.8  # minimum non-bonded M-X distance
                     if d < min_ml:
                         if d < 1e-8:
                             direction = rng_clash.standard_normal(3)
                             direction /= max(np.linalg.norm(direction), 1e-12)
                             push = 0.5 * direction
                         else:
-                            push = 0.5 * (min_ml - d) / d * diff
+                            push = 0.8 * (min_ml - d) / d * diff
                         non_metal = j if is_metal_i else i
+                        metal_atom = i if is_metal_i else j
                         sign = 1.0 if non_metal == j else -1.0
-                        if non_metal not in all_hapto_atoms:
+                        # Allow push if atom is not hapto, OR if it's hapto
+                        # but not bonded to THIS metal (bimetallic case).
+                        is_own_hapto = (non_metal in all_hapto_atoms
+                                        and (metal_atom, non_metal) in metal_bonded)
+                        if not is_own_hapto:
                             coords[non_metal] = coords[non_metal] + sign * push
                             moved = True
                     continue
@@ -11437,8 +11591,8 @@ def _build_hapto_scaffold(
                     gj = atom_to_hapto_group.get(j, -2)
                     same_group = (gi == gj and gi >= 0)
                     if not same_group:
-                        can_move_i = (i not in all_hapto_atoms) or (gi != gj)
-                        can_move_j = (j not in all_hapto_atoms) or (gi != gj)
+                        can_move_i = i not in all_hapto_atoms
+                        can_move_j = j not in all_hapto_atoms
                         if can_move_i:
                             coords[i] = coords[i] - push * 0.5
                             moved = True
@@ -11447,6 +11601,46 @@ def _build_hapto_scaffold(
                             moved = True
         if not moved:
             break
+
+    # ---- Rigid-body separation for multi-metal systems ----
+    # If hapto atoms of one metal intrude into another metal's coordination
+    # sphere, translate the entire hapto fragment (metal + all its bonded
+    # atoms) as a rigid body to increase M-M distance.
+    if len(metal_indices) > 1:
+        min_nonbonded_ml = 2.8
+        for _sep_pass in range(5):
+            any_moved = False
+            for mi in metal_indices:
+                mi_hapto = set()
+                for grp in by_metal.get(mi, []):
+                    mi_hapto.update(grp)
+                if not mi_hapto:
+                    continue
+                for mj in metal_indices:
+                    if mj == mi:
+                        continue
+                    mj_pos = coords[mj]
+                    worst_intrusion = 0.0
+                    push_dir = np.zeros(3)
+                    for ha in mi_hapto:
+                        d = float(np.linalg.norm(coords[ha] - mj_pos))
+                        if d < min_nonbonded_ml and (mj, ha) not in metal_bonded:
+                            intrusion = min_nonbonded_ml - d
+                            if intrusion > worst_intrusion:
+                                worst_intrusion = intrusion
+                                v = coords[ha] - mj_pos
+                                vl = float(np.linalg.norm(v))
+                                push_dir = v / vl if vl > 1e-8 else np.array([1, 0, 0])
+                    if worst_intrusion > 0.05:
+                        shift = push_dir * worst_intrusion * 1.2
+                        mi_frag = {mi} | mi_hapto
+                        for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
+                            mi_frag.add(nbr.GetIdx())
+                        for ai in mi_frag:
+                            coords[ai] = coords[ai] + shift
+                        any_moved = True
+            if not any_moved:
+                break
 
     # ---- Write conformer to mol ----
     conf = Chem.Conformer(n_atoms)
@@ -13746,10 +13940,86 @@ def _select_best_hapto_candidate(
         bool(accepted),
         len(pool),
     )
+    _enforce_metal_topology(best_mol, conf_id=0)
     return best_mol
 
 
-def _segment_distance_sq(p1, p2, p3, p4) -> float:
+def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
+    """Push non-bonded atoms away from metals to preserve SMILES topology.
+
+    Operates as a final post-processing step: for every metal, any atom
+    NOT bonded to it in the molecular graph but closer than *min_nonbonded*
+    gets radially pushed outward.  Hapto ring atoms are moved as a rigid
+    group to preserve ring geometry.
+    """
+    if not RDKIT_AVAILABLE or mol is None:
+        return
+    try:
+        import numpy as np
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return
+
+    def _gp(i):
+        p = conf.GetAtomPosition(i)
+        return np.array([p.x, p.y, p.z])
+
+    def _sp(i, arr):
+        conf.SetAtomPosition(i, Point3D(float(arr[0]), float(arr[1]),
+                                         float(arr[2])))
+
+    n = mol.GetNumAtoms()
+    metal_indices = [i for i in range(n)
+                     if mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET]
+    if not metal_indices:
+        return
+
+    metal_bonded: Dict[int, set] = {}
+    for mi in metal_indices:
+        bonded = set()
+        for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
+            bonded.add(nbr.GetIdx())
+        metal_bonded[mi] = bonded
+
+    hapto_groups = _find_hapto_groups(mol)
+    hapto_of: Dict[int, int] = {}
+    for gi, (_, grp) in enumerate(hapto_groups):
+        for a in grp:
+            hapto_of[a] = gi
+    group_atoms: Dict[int, List[int]] = {}
+    for gi, (_, grp) in enumerate(hapto_groups):
+        group_atoms[gi] = list(grp)
+
+    for _pass in range(10):
+        any_moved = False
+        for mi in metal_indices:
+            mpos = _gp(mi)
+            bonded = metal_bonded[mi]
+            for ai in range(n):
+                if ai == mi or ai in bonded:
+                    continue
+                if mol.GetAtomWithIdx(ai).GetSymbol() == 'H':
+                    continue
+                if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
+                    continue
+                apos = _gp(ai)
+                d = float(np.linalg.norm(apos - mpos))
+                if d >= min_nonbonded or d < 1e-8:
+                    continue
+                push_dir = (apos - mpos) / d
+                push_dist = (min_nonbonded - d) * 1.1
+                gi = hapto_of.get(ai)
+                if gi is not None:
+                    for ha in group_atoms[gi]:
+                        _sp(ha, _gp(ha) + push_dir * push_dist)
+                else:
+                    _sp(ai, apos + push_dir * push_dist)
+                any_moved = True
+        if not any_moved:
+            break
+
+
+
     """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
 
     Each point is a tuple ``(x, y, z)``.  Uses the parametric approach:
