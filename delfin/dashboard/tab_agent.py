@@ -5361,8 +5361,8 @@ def create_tab(ctx):
         """
         if not text or len(text) < 10:
             return None
-        # Only look at the last ~500 chars (the tail of the response)
-        tail = text[-500:].strip()
+        # Only look at the last ~2000 chars (the tail of the response)
+        tail = text[-2000:].strip()
         # Skip if the response ended with a code block (likely not a question)
         if tail.rstrip().endswith("```"):
             return None
@@ -5386,8 +5386,8 @@ def create_tab(ctx):
                 # near a question mark. Long numbered items are instructions.
                 avg_len = sum(len(d.strip()) for _, d in matches) / len(matches)
                 has_question = "?" in tail
-                if avg_len > 50 or not has_question:
-                    continue  # long steps or no question context — skip
+                if avg_len > 120 or not has_question:
+                    continue  # very long steps or no question context — skip
                 options = []
                 for num, desc in matches:
                     label = desc.strip().rstrip("*").strip()
