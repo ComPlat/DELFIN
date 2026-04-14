@@ -6271,7 +6271,7 @@ def create_tab(ctx):
 
                     # Load persistent memory for system prompt
                     from delfin.agent.memory_store import format_memory_context
-                    _memory = format_memory_context()
+                    _memory = format_memory_context(task_text=original_task)
 
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state

@@ -274,6 +274,62 @@ def test_build_system_prompt_skips_profile_playbook_for_unknown_module(agent_tre
     assert "Target module: build_up_complex.py" not in prompt
 
 
+def test_build_system_prompt_injects_repo_map(agent_tree):
+    from delfin.agent.prompt_loader import PromptLoader
+
+    src_dir = agent_tree / "delfin"
+    src_dir.mkdir()
+    (src_dir / "build_up_complex.py").write_text(
+        "def _pso_fitness():\n    return 1\n\nclass SwarmBuilder:\n    pass\n",
+        encoding="utf-8",
+    )
+    tests_dir = agent_tree / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_build_up_complex.py").write_text(
+        "def test_placeholder():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    profile_path = agent_tree / "profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "shared": {
+                    "playbooks": {
+                        "build_up_complex": {
+                            "description": "Editing the metal complex builder",
+                            "steps": ["1. Grep first"],
+                        }
+                    },
+                    "codebase_map": {
+                        "modules": {
+                            "build_up_complex.py": {},
+                        },
+                        "test_mapping": {
+                            "build_up_complex.py": ["test_build_up_complex.py"],
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = profile_path
+    prompt = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        task_text="Fix regression in delfin/build_up_complex.py around _pso_fitness",
+    )
+
+    assert "Repo Map" in prompt
+    assert "delfin/build_up_complex.py" in prompt
+    assert "_pso_fitness" in prompt
+    assert "tests/test_build_up_complex.py" in prompt
+
+
 def test_caching(agent_tree):
     from delfin.agent.prompt_loader import PromptLoader
 

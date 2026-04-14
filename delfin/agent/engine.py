@@ -272,6 +272,7 @@ class AgentEngine:
         self.current_role_index: int = 0
         self.messages: list[dict[str, Any]] = []
         self.role_outputs: dict[str, str] = {}
+        self.compaction_summaries: dict[str, str] = {}
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
         self.session_id: str = ""  # CLI session ID for conversation persistence
@@ -517,10 +518,56 @@ class AgentEngine:
         for msg in reversed(self.messages):
             if msg["role"] == "assistant":
                 self.role_outputs[role] = msg["content"]
+                self.compaction_summaries[role] = self._summarize_output_for_handoff(
+                    msg["content"]
+                )
                 break
 
         self.current_role_index += 1
         return not self.is_cycle_complete
+
+    @staticmethod
+    def _summarize_output_for_handoff(text: str, limit: int = 320) -> str:
+        """Compress a role output into a short handoff digest."""
+        if not text:
+            return ""
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        selected: list[str] = []
+        for line in lines:
+            lowered = line.lower()
+            if (
+                lowered.startswith("**status:")
+                or lowered.startswith("**question:")
+                or lowered.startswith("**summary:")
+                or lowered.startswith("## ")
+                or lowered.startswith("### ")
+                or lowered.startswith("- ")
+                or re.match(r"^\d+\.\s", line)
+            ):
+                selected.append(line)
+            if sum(len(item) for item in selected) >= limit:
+                break
+        if not selected:
+            selected = lines[:3]
+        summary = " | ".join(selected)
+        if len(summary) > limit:
+            summary = summary[: limit - 3].rstrip() + "..."
+        return summary
+
+    def _capture_current_role_summary(self) -> None:
+        """Persist the latest assistant output before message compaction."""
+        role = self.current_role
+        if not role:
+            return
+        for msg in reversed(self.messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                content = msg["content"]
+                self.role_outputs.setdefault(role, content)
+                self.compaction_summaries.setdefault(
+                    role,
+                    self._summarize_output_for_handoff(content),
+                )
+                return
 
     def request_stop(self) -> None:
         """Request the current streaming response to stop."""
@@ -533,6 +580,7 @@ class AgentEngine:
             self.client.kill()
         self.messages.clear()
         self.role_outputs.clear()
+        self.compaction_summaries.clear()
         self.current_role_index = 0
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd = 0.0
@@ -552,6 +600,7 @@ class AgentEngine:
             "role_index": self.current_role_index,
             "route": list(self.route),
             "role_outputs": dict(self.role_outputs),
+            "compaction_summaries": dict(self.compaction_summaries),
             "engine_messages": list(self.messages),
             "token_usage": dict(self.token_usage),
             "cost_usd": self.cost_usd,
@@ -568,6 +617,7 @@ class AgentEngine:
             self._load_mode(data["mode"])
         self.current_role_index = data.get("role_index", 0)
         self.role_outputs = data.get("role_outputs", {})
+        self.compaction_summaries = data.get("compaction_summaries", {})
         self.messages = data.get("engine_messages", [])
         self.token_usage = data.get("token_usage", {"input": 0, "output": 0})
         self.cost_usd = data.get("cost_usd", 0.0)
@@ -819,23 +869,16 @@ class AgentEngine:
         """
         role = self.current_role
         prior_summary = ""
-        # Role-aware prior output limits — SM plan is critical for Builder
-        _PRIOR_LIMITS = {
-            "session_manager": 8000,
-            "critic_agent": 6000,
-            "runtime_agent": 6000,
-            "reviewer_agent": 4000,
-            "research_agent": 4000,
-        }
-        if self.role_outputs:
-            parts = []
-            for rid, output in self.role_outputs.items():
-                limit = _PRIOR_LIMITS.get(rid, 2000)
-                text = output[:limit]
-                if len(output) > limit:
-                    text += "\n... [truncated]"
-                parts.append(f"### {rid}\n{text}")
-            prior_summary = "\n\n".join(parts)
+        if self.compaction_summaries:
+            parts = ["Compact prior outputs:"]
+            for rid, summary in self.compaction_summaries.items():
+                if summary:
+                    parts.append(f"- {rid}: {summary}")
+            if len(parts) > 1:
+                parts.append(
+                    "- Full prior outputs are already available in the system context."
+                )
+                prior_summary = "\n".join(parts)
 
         # Load cycle memory for Session Manager
         _cycle_memory_ctx = ""
@@ -864,7 +907,7 @@ class AgentEngine:
             "research_agent": (
                 f"Research the following for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
-                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"{prior_summary}\n\n"
                 f"IMPORTANT: Confirm your research questions with the user BEFORE searching. "
                 f"Use QUESTION: to list your 2-3 planned research questions and ask if "
                 f"anything else should be investigated.\n\n"
@@ -874,7 +917,7 @@ class AgentEngine:
             "critic_agent": (
                 f"Review the plan and/or changes for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
-                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"{prior_summary}\n\n"
                 f"IMPORTANT: After your analysis, present your top findings to the user "
                 f"with QUESTION: and ask which the Builder should prioritize.\n\n"
                 f"Produce a structured REVIEW. Focus on critical and major issues. "
@@ -883,14 +926,14 @@ class AgentEngine:
             "runtime_agent": (
                 f"Review the runtime implications for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
-                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"{prior_summary}\n\n"
                 f"Produce a structured RUNTIME REVIEW. Check local vs cluster behavior and "
                 f"whether the runtime-facing success metric is actually sufficient."
             ),
             "builder_agent": (
                 f"Implement the following task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
-                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"{prior_summary}\n\n"
                 f"IMPORTANT: Confirm your approach with the user BEFORE writing code. "
                 f"Use QUESTION: to summarize your planned approach and the key trade-off "
                 f"or decision you need confirmed.\n\n"
@@ -902,7 +945,7 @@ class AgentEngine:
             "reviewer_agent": (
                 f"Review the implemented changes for this task:\n\n{user_task}\n\n"
                 f"{locked_contract}\n\n"
-                f"Prior agent outputs:\n{prior_summary}\n\n"
+                f"{prior_summary}\n\n"
                 f"Review the actual diff, not the hypothetical plan. "
                 f"Check correctness, regressions, and whether the Builder stayed aligned "
                 f"with the locked goal instead of solving an easier proxy problem.\n"
@@ -1089,6 +1132,7 @@ class AgentEngine:
         different system prompt (``--append-system-prompt`` is set at
         process startup).  Keeping it alive would use the wrong prompt.
         """
+        self._capture_current_role_summary()
         self.messages.clear()
         if hasattr(self.client, "kill"):
             self.client.kill()

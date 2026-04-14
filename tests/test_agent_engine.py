@@ -976,6 +976,7 @@ def test_build_handoff_message(agent_tree, mock_client):
     msg = engine.build_handoff_message("Fix the bug in cli.py")
     assert "Fix the bug in cli.py" in msg
     assert "session_manager" in msg  # prior output referenced
+    assert "Compact prior outputs" in msg
     assert "Implement" in msg  # builder-specific instruction
 
 
@@ -1071,6 +1072,24 @@ def test_compact_for_next_role(agent_tree, mock_client):
     engine.compact_for_next_role()
     assert engine.messages == []
     assert "session_manager" in engine.role_outputs  # preserved
+    assert "session_manager" in engine.compaction_summaries
+
+
+def test_compact_for_next_role_preserves_current_role_output_before_advance(agent_tree, mock_client):
+    """Compaction should not lose the latest role output if called before advance."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    engine.stream_response("Plan")
+    engine.compact_for_next_role()
+
+    assert engine.messages == []
+    assert engine.role_outputs["session_manager"] == "Hello from Claude!"
+    assert "Hello from Claude!" in engine.compaction_summaries["session_manager"]
 
 
 def test_create_client_api():

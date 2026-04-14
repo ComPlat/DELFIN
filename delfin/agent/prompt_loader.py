@@ -53,9 +53,11 @@ class PromptLoader:
             base = Path(repo_dir)
             self.agent_dir = base / "pack"
             self.agent_lite_dir = base / "pack_lite"
+            self.repo_root = base
         else:
             self.agent_dir = self._MODULE_DIR / "pack"
             self.agent_lite_dir = self._MODULE_DIR / "pack_lite"
+            self.repo_root = self._MODULE_DIR.parent.parent
         self._cache: dict[str, str] = {}
         self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
 
@@ -102,8 +104,57 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _load_repo_map_context(self, task_text: str) -> str:
+        """Load a compact task-scoped repository map."""
+        try:
+            from delfin.agent.repo_map import format_repo_map_context
+
+            provider = getattr(self, "_active_provider", "claude")
+            profile_path = getattr(self, "_profile_path", None)
+            playbooks_path = getattr(self, "_playbooks_path", None)
+            return format_repo_map_context(
+                self.repo_root,
+                task_text,
+                provider=provider,
+                profile_path=profile_path,
+                playbooks_path=playbooks_path,
+            )
+        except Exception:
+            return ""
+
     def _profile_injection_allowed(self, role_id: str) -> bool:
         return role_id in {"solo_agent", "session_manager", "builder_agent"}
+
+    def _repo_map_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {
+            "solo_agent",
+            "session_manager",
+            "builder_agent",
+            "critic_agent",
+            "reviewer_agent",
+        }
+
+    def _memory_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {"solo_agent", "session_manager", "builder_agent"}
+
+    def _should_inject_context(
+        self,
+        role_id: str,
+        session_key: str,
+        key: str,
+        value: str,
+    ) -> bool:
+        if not value:
+            return False
+        if not session_key:
+            return True
+        state = self._prompt_state.setdefault((session_key, role_id), {})
+        digest = str(hash(value))
+        state_key = f"{key}_digest"
+        if state.get(state_key) == digest:
+            return False
+        state[state_key] = digest
+        return True
 
     def _should_inject_profile_context(
         self,
@@ -111,16 +162,14 @@ class PromptLoader:
         session_key: str,
         profile_ctx: str,
     ) -> bool:
-        if not profile_ctx or not self._profile_injection_allowed(role_id):
+        if not self._profile_injection_allowed(role_id):
             return False
-        if not session_key:
-            return True
-        state = self._prompt_state.setdefault((session_key, role_id), {})
-        digest = str(hash(profile_ctx))
-        if state.get("profile_digest") == digest:
-            return False
-        state["profile_digest"] = digest
-        return True
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "profile",
+            profile_ctx,
+        )
 
     def _should_inject_playbook(
         self,
@@ -128,16 +177,42 @@ class PromptLoader:
         session_key: str,
         relevant_playbook: str,
     ) -> bool:
-        if not relevant_playbook:
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "playbook",
+            relevant_playbook,
+        )
+
+    def _should_inject_repo_map(
+        self,
+        role_id: str,
+        session_key: str,
+        repo_map_ctx: str,
+    ) -> bool:
+        if not self._repo_map_injection_allowed(role_id):
             return False
-        if not session_key:
-            return True
-        state = self._prompt_state.setdefault((session_key, role_id), {})
-        digest = str(hash(relevant_playbook))
-        if state.get("playbook_digest") == digest:
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "repo_map",
+            repo_map_ctx,
+        )
+
+    def _should_inject_memory(
+        self,
+        role_id: str,
+        session_key: str,
+        memory_ctx: str,
+    ) -> bool:
+        if not self._memory_injection_allowed(role_id):
             return False
-        state["playbook_digest"] = digest
-        return True
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "memory",
+            memory_ctx,
+        )
 
     # -- shared context ----------------------------------------------------
 
@@ -255,6 +330,7 @@ class PromptLoader:
         """
         sections = []
         relevant_playbook = self._load_relevant_playbook_context(task_text)
+        repo_map_ctx = self._load_repo_map_context(task_text)
         include_playbook = self._should_inject_playbook(
             role_id,
             session_key,
@@ -270,13 +346,18 @@ class PromptLoader:
                 self.agent_dir / "shared" / "delfin_context.md"
             )
             if ctx_text:
-                sections.append(f"--- Project Context ---\n{ctx_text}")
+                lines = ctx_text.splitlines()
+                sections.append(
+                    "--- Project Context ---\n" + "\n".join(lines[:18])
+                )
+            if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
             profile_ctx = self._load_profile_context(mode_id)
             if self._should_inject_profile_context(role_id, session_key, profile_ctx):
                 sections.append(f"--- Provider Profile ---\n{profile_ctx}")
             if include_playbook:
                 sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
-            if memory_context:
+            if self._should_inject_memory(role_id, session_key, memory_context):
                 sections.append(f"--- Project Memory ---\n{memory_context}")
             return "\n\n".join(sections)
 
@@ -287,15 +368,14 @@ class PromptLoader:
 
         # 2. Shared DELFIN context (full only for roles that modify code
         #    or make strategic decisions; brief summary for read-only roles)
-        _FULL_CONTEXT_ROLES = {
-            "builder_agent", "session_manager",
-            "chief_agent", "critic_agent",
-        }
+        _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent"}
         _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
         shared = self.load_shared_context()
         if shared:
             if role_id in _FULL_CONTEXT_ROLES:
                 sections.append(shared)
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
                 if role_id in _PLAYBOOK_ROLES:
                     playbooks = self._cached_read(
                         self.agent_dir / "shared" / "playbooks.md"
@@ -307,15 +387,22 @@ class PromptLoader:
                             f"--- Relevant Playbook ---\n{relevant_playbook}"
                         )
             else:
-                # Brief context: first paragraph + key paths only
+                # Brief context: short intro only. Detailed guidance comes from
+                # the relevant playbook and repo map to keep prompts cheap.
                 lines = shared.split("\n")
-                brief = "\n".join(lines[:20])  # ~300 words intro
+                brief = "\n".join(lines[:12])
                 brief += (
                     "\n\n(Full DELFIN context omitted for this role. "
                     "Key paths: delfin/dashboard/, delfin/orca/, "
                     "delfin/slurm/, delfin/agent/, tests/)"
                 )
                 sections.append(brief)
+                if include_playbook:
+                    sections.append(
+                        f"--- Relevant Playbook ---\n{relevant_playbook}"
+                    )
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
 
         # 3. Mode description (only for session_manager / chief who need it
         #    for routing/strategic decisions; other roles get their
@@ -451,11 +538,12 @@ class PromptLoader:
         # 7. Prior role outputs (role-aware truncation)
         # SM plan is critical for Builder/Test — keep most of it
         _PRIOR_LIMITS = {
-            "session_manager": 8000,
-            "critic_agent": 6000,
-            "runtime_agent": 6000,
-            "reviewer_agent": 4000,
-            "research_agent": 4000,
+            "session_manager": 5000,
+            "critic_agent": 3000,
+            "runtime_agent": 2500,
+            "reviewer_agent": 2500,
+            "research_agent": 2500,
+            "builder_agent": 1800,
         }
         if prior_outputs:
             parts = ["--- Prior Role Outputs ---"]
@@ -468,7 +556,7 @@ class PromptLoader:
             sections.append("\n\n".join(parts))
 
         # 8. Memory context
-        if memory_context:
+        if self._should_inject_memory(role_id, session_key, memory_context):
             sections.append(f"--- Project Memory ---\n{memory_context}")
 
         # 9. Provider profile (success rates, failures, playbooks)
