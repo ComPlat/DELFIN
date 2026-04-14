@@ -921,6 +921,45 @@ def test_thinking_budget_for_role():
     assert critic > 0
 
 
+def test_thinking_budget_for_role_uses_task_profile_multiplier():
+    """Task-class thinking budget should come from task_performance first."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch(
+        "delfin.agent.provider_profile.load_provider_profile",
+        return_value={"thinking_budget_mult": 1.0, "task_performance": {}},
+    ), patch(
+        "delfin.agent.provider_profile.load_task_profile",
+        return_value={"thinking_budget_mult": 1.5},
+    ):
+        budget = AgentEngine.thinking_budget_for_role(
+            "builder_agent",
+            task_class="coding",
+        )
+
+    assert budget == int(50000 * 1.5)
+
+
+def test_recommend_task_route_escalates_low_success_coding_tasks():
+    """Low task-class success should escalate coding changes from quick."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch(
+        "delfin.agent.provider_profile.load_provider_profile",
+        return_value={
+            "task_performance": {"coding": {"success_rate": 0.6}},
+        },
+    ):
+        decision = AgentEngine.recommend_task_route(
+            "Fix the regression in delfin/agent/engine.py",
+            "quick",
+        )
+
+    assert decision["task_class"] == "coding"
+    assert decision["mode"] == "reviewed"
+    assert any("task success" in reason for reason in decision["reasons"])
+
+
 def test_build_handoff_message(agent_tree, mock_client):
     """Test that handoff messages include prior outputs and task."""
     from delfin.agent.engine import AgentEngine

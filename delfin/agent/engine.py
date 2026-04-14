@@ -639,17 +639,27 @@ class AgentEngine:
     # -- mode auto-detection --------------------------------------------------
 
     @staticmethod
-    def thinking_budget_for_role(role_id: str) -> int:
+    def thinking_budget_for_role(
+        role_id: str,
+        task_class: str = "",
+    ) -> int:
         """Return the recommended thinking budget for a role.
 
         Applies provider-specific multiplier from the learned profile.
         """
         base = _ROLE_THINKING_BUDGETS.get(role_id, _DEFAULT_THINKING_BUDGET)
         try:
-            from delfin.agent.provider_profile import load_provider_profile
+            from delfin.agent.provider_profile import (
+                load_provider_profile,
+                load_task_profile,
+            )
             _prov = getattr(AgentEngine, "_active_provider", "claude")
             _profile = load_provider_profile(_prov)
-            mult = _profile.get("thinking_budget_mult", 1.0)
+            _task_profile = load_task_profile(_prov, task_class)
+            mult = _task_profile.get(
+                "thinking_budget_mult",
+                _profile.get("thinking_budget_mult", 1.0),
+            )
             # Clamp multiplier to safe range
             mult = max(0.0, min(3.0, mult))
             return int(base * mult)
@@ -1022,17 +1032,19 @@ class AgentEngine:
             # Use a class-level provider hint if available; fall back to "claude"
             _prov = getattr(AgentEngine, "_active_provider", "claude")
             _profile = load_provider_profile(_prov)
-            _rates = _profile.get("success_rate", {})
-            if _rates and mode in ("quick", "reviewed") and task_class in ("chemistry", "coding"):
-                _alt = "reviewed" if mode == "quick" else "quick"
-                _cur_rate = _rates.get(mode, 0.5)
-                _alt_rate = _rates.get(_alt, 0.5)
-                # Only switch if alternative has >10% better success
-                if _alt_rate > _cur_rate + 0.10:
-                    reasons.append(
-                        f"adaptive: {_alt} has {_alt_rate:.0%} vs {mode} {_cur_rate:.0%} success"
-                    )
-                    mode = _alt
+            _task_perf = _profile.get("task_performance", {}).get(task_class, {})
+            _task_rate = _task_perf.get("success_rate")
+            if (
+                isinstance(_task_rate, (int, float))
+                and mode == "quick"
+                and task_class in ("chemistry", "coding")
+                and _task_rate < 0.75
+            ):
+                reasons.append(
+                    f"adaptive: escalate {task_class} task from quick to reviewed "
+                    f"(task success {_task_rate:.0%})"
+                )
+                mode = "reviewed"
         except Exception:
             pass
 

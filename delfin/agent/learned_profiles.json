@@ -19,7 +19,8 @@
         "file:line + change, one sentence — no prose",
         "No confirmation questions on clear tasks",
         "After every 3rd tool call in a sequence, emit a one-line progress status",
-        "Flag risk proactively before editing SLURM/runtime/scheduler files"
+        "Flag risk proactively before editing SLURM/runtime/scheduler files",
+        "Git workflow: commit and push directly to main, no feature branches, no PRs"
       ]
     },
     "tool_usage": {
@@ -45,7 +46,49 @@
       "Forgetting tests after code changes",
       "Generic ORCA/xTB answers instead of search_docs",
       "Multi-paragraph explanations instead of one-liner diffs"
-    ]
+    ],
+    "task_performance": {
+      "build_up_complex": {
+        "success_rate": 0.85,
+        "notes": "VdW fix, Procrustes init, xTB reranking validated. Strength.",
+        "thinking_budget_mult": 1.0
+      },
+      "pipeline_orchestration": {
+        "success_rate": 0.7,
+        "notes": "Monolithic files — grep-first strategy critical",
+        "thinking_budget_mult": 1.5
+      },
+      "config_validation": {
+        "success_rate": 0.75,
+        "notes": "CONTROL parsing, mutable dicts — proceed carefully",
+        "thinking_budget_mult": 1.2
+      },
+      "test_writing": {
+        "success_rate": 0.8,
+        "notes": "Mocks for ORCA/xTB, never run real computations",
+        "thinking_budget_mult": 1.0
+      },
+      "git_workflow": {
+        "success_rate": 0.9,
+        "notes": "Commit and push directly to main. No branches, no PRs.",
+        "thinking_budget_mult": 0.8
+      },
+      "coding": {
+        "success_rate": 0.84,
+        "notes": "General DELFIN code changes default here unless a narrower class overrides it.",
+        "thinking_budget_mult": 1.1
+      },
+      "chemistry": {
+        "success_rate": 0.78,
+        "notes": "Method-sensitive chemistry tasks need docs-first and more caution.",
+        "thinking_budget_mult": 1.2
+      },
+      "dashboard": {
+        "success_rate": 0.9,
+        "notes": "Dashboard tasks succeed often but still need concise UI-safe diffs.",
+        "thinking_budget_mult": 1.0
+      }
+    }
   },
   "claude": {
     "meta": {
@@ -311,33 +354,6 @@
         ]
       }
     },
-    "task_performance": {
-      "build_up_complex": {
-        "success_rate": 0.85,
-        "notes": "VdW fix, Procrustes init, xTB reranking validated. Strength.",
-        "thinking_budget_mult": 1.0
-      },
-      "pipeline_orchestration": {
-        "success_rate": 0.7,
-        "notes": "Monolithic files — grep-first strategy critical",
-        "thinking_budget_mult": 1.5
-      },
-      "config_validation": {
-        "success_rate": 0.75,
-        "notes": "CONTROL parsing, mutable dicts — proceed carefully",
-        "thinking_budget_mult": 1.2
-      },
-      "test_writing": {
-        "success_rate": 0.8,
-        "notes": "Mocks for ORCA/xTB, never run real computations",
-        "thinking_budget_mult": 1.0
-      },
-      "git_workflow": {
-        "success_rate": 0.9,
-        "notes": "No Co-Authored-By. Short why-focused messages.",
-        "thinking_budget_mult": 0.8
-      }
-    },
     "anti_patterns": [
       "Confirmation questions on unambiguous tasks",
       "Qualitative statements without numeric values"
@@ -406,22 +422,37 @@
       "coding": 7.392
     },
     "success_rate": {
-      "solo": 0.898,
+      "solo": 0.913,
       "quick": 0.78,
       "reviewed": 0.84,
       "cluster": 0.74,
       "dashboard": 0.9
     },
+    "task_performance": {
+      "coding": {
+        "success_rate": 0.864
+      }
+    },
     "common_failures": [
       "editing before verifying provider/module wiring"
     ],
-    "total_cycles": 1,
-    "updated_at": "2026-04-14 11:46:34",
+    "total_cycles": 2,
+    "updated_at": "2026-04-14 11:53:43",
     "meta": {
-      "last_updated": "2026-04-14",
       "total_sessions": 0,
-      "profile_version": "3.0",
       "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
+    },
+    "communication": {
+      "rules": [
+        "State plan briefly before touching >1 DELFIN file"
+      ]
+    },
+    "domain": {
+      "strengths": [
+        "Fast repo-wide triage across DELFIN agent and dashboard modules",
+        "Test-driven Python edits with bounded patches",
+        "Codex/OpenAI model selection awareness for solo vs reviewed work"
+      ]
     },
     "error_patterns": [
       {
@@ -431,21 +462,6 @@
         "date": "2026-04-14",
         "prevents": "Codex learning signals being mixed with claude guidance"
       }
-    ],
-    "communication": {
-      "rules": [
-        "State plan briefly before touching >1 DELFIN file"
-      ]
-    },
-    "tool_usage": {
-      "rules": []
-    },
-    "domain": {
-      "strengths": [
-        "Fast repo-wide triage across DELFIN agent and dashboard modules",
-        "Test-driven Python edits with bounded patches",
-        "Codex/OpenAI model selection awareness for solo vs reviewed work"
-      ]
-    }
+    ]
   }
 }

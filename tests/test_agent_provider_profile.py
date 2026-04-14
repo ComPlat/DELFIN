@@ -97,6 +97,41 @@ def test_load_provider_profile_merges_shared_and_provider_layers(tmp_path):
     ]
 
 
+def test_load_task_profile_prefers_task_performance_block(tmp_path):
+    from delfin.agent.provider_profile import load_task_profile
+
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(
+        textwrap.dedent(
+            """\
+            {
+              "shared": {
+                "task_performance": {
+                  "coding": {
+                    "success_rate": 0.82,
+                    "thinking_budget_mult": 1.15
+                  }
+                }
+              },
+              "openai": {
+                "task_performance": {
+                  "coding": {
+                    "success_rate": 0.91
+                  }
+                }
+              }
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    task_profile = load_task_profile("codex", "coding", profile_path)
+
+    assert task_profile["success_rate"] == 0.91
+    assert task_profile["thinking_budget_mult"] == 1.15
+
+
 def test_save_provider_profile_normalizes_codex_alias(tmp_path):
     from delfin.agent.provider_profile import save_provider_profile
 
@@ -180,6 +215,46 @@ def test_format_profile_context_includes_shared_rules_without_cycles(tmp_path):
     assert "Shared DELFIN failure patterns" in context
     assert "search_docs before chemistry answers" in context
     assert "Provider: openai (0 cycles)" in context
+
+
+def test_update_from_outcome_writes_task_performance_overlay(tmp_path):
+    from delfin.agent.outcome_tracker import CycleOutcome
+    from delfin.agent.provider_profile import update_from_outcome
+
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(
+        textwrap.dedent(
+            """\
+            {
+              "shared": {
+                "task_performance": {
+                  "coding": {
+                    "success_rate": 0.84,
+                    "thinking_budget_mult": 1.1
+                  }
+                }
+              }
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    changes = update_from_outcome(
+        "openai",
+        CycleOutcome(
+            provider="openai",
+            mode="solo",
+            verdict="PASS",
+            task_class="coding",
+            task="Fix engine task profile routing",
+        ),
+        profile_path,
+    )
+
+    data = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert "task_success_rate" in changes
+    assert data["openai"]["task_performance"]["coding"]["success_rate"] > 0.84
 
 
 def test_engine_passes_provider_to_prompt_loader(agent_tree):

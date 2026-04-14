@@ -54,6 +54,7 @@ _DEFAULT_PROFILE: dict[str, Any] = {
     "thinking_budget_mult": 1.0,
     "avg_cost_per_task": {},
     "success_rate": {},
+    "task_performance": {},
     "common_failures": [],
     "total_cycles": 0,
     "updated_at": "",
@@ -187,6 +188,16 @@ def load_provider_profile(
     return _merge_profile_layers(shared, provider_profile)
 
 
+def load_task_profile(
+    provider: str,
+    task_class: str,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Load the merged task-specific profile for a task class."""
+    profile = load_provider_profile(provider, path)
+    return profile.get("task_performance", {}).get(task_class or "", {})
+
+
 def save_provider_profile(
     provider: str,
     profile: dict[str, Any],
@@ -256,7 +267,25 @@ def update_from_outcome(
                 f"{task_class}: ${old_avg:.2f} → ${new_avg:.2f}"
             )
 
-    # 3. Track failure patterns
+    # 3. Update task-class success rate for adaptive routing/budgeting
+    if outcome.task_class and outcome.verdict:
+        task_perf = profile.setdefault("task_performance", {}).setdefault(
+            outcome.task_class,
+            {},
+        )
+        old_task_rate = task_perf.get("success_rate", 0.5)
+        new_task_val = 1.0 if outcome.verdict == "PASS" else 0.0
+        new_task_rate = _clamp(
+            _ema(old_task_rate, new_task_val), "success_rate"
+        )
+        task_perf["success_rate"] = round(new_task_rate, 3)
+        if abs(new_task_rate - old_task_rate) > 0.01:
+            changes["task_success_rate"] = (
+                f"{outcome.task_class}: {old_task_rate:.0%} → "
+                f"{new_task_rate:.0%}"
+            )
+
+    # 4. Track failure patterns
     if outcome.verdict == "FAIL" and outcome.error_type:
         failures = profile.setdefault("common_failures", [])
         if outcome.error_type not in failures:
@@ -265,7 +294,7 @@ def update_from_outcome(
             profile["common_failures"] = failures[-10:]
             changes["new_failure"] = outcome.error_type
 
-    # 4. Track denied command patterns
+    # 5. Track denied command patterns
     if outcome.denied_commands:
         denied = profile.setdefault("denied_patterns", [])
         for cmd in outcome.denied_commands:

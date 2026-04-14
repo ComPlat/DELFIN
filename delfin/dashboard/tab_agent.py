@@ -6198,11 +6198,23 @@ def create_tab(ctx):
                     # Role-specific thinking budget and model routing
                     from delfin.agent.engine import AgentEngine as _AE
                     _cur_role = engine.current_role
+                    _task_class = ""
+                    try:
+                        _route_info = _AE.recommend_task_route(
+                            original_task or current_msg,
+                            engine.mode,
+                        )
+                        _task_class = _route_info.get("task_class", "")
+                    except Exception:
+                        pass
                     # Solo: adaptive thinking (0 = CLI manages it)
                     if _cur_role == "solo_agent":
                         _budget = 0
                     else:
-                        _base_budget = _AE.thinking_budget_for_role(_cur_role)
+                        _base_budget = _AE.thinking_budget_for_role(
+                            _cur_role,
+                            task_class=_task_class,
+                        )
                         _budget = min(int(_base_budget * _mult), 128000)
 
                     # Per-role model: switch to optimal model (Claude only)
