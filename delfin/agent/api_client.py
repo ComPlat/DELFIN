@@ -780,6 +780,84 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    # -- Repo file access tools (for providers without CLI subprocess) --
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": (
+                "Read a file from the DELFIN repository. Returns the file content. "
+                "Use for .py, .json, .md, .yaml, .txt, .xyz, .out files. "
+                "For large files, use offset and limit to read a specific range."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to repo root (e.g. 'delfin/agent/learned_profiles.json')",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Start reading from this line number (0-based). Optional.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to read. Optional, default 200.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep_file",
+            "description": (
+                "Search for a regex pattern in files under the DELFIN repository. "
+                "Returns matching lines with file paths and line numbers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search in (relative to repo root). Default: entire repo.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of matching lines to return (default 30)",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": (
+                "List files matching a glob pattern in the DELFIN repository. "
+                "Returns file paths sorted by modification time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern (e.g. 'delfin/agent/*.py', 'tests/test_*.py')",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
 ]
 
 
@@ -894,6 +972,14 @@ class _DocToolExecutor:
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
+        # Repo file access tools
+        if name == "read_file":
+            return self._execute_read_file(arguments)
+        elif name == "grep_file":
+            return self._execute_grep_file(arguments)
+        elif name == "list_files":
+            return self._execute_list_files(arguments)
+
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     def _execute_calc(self, name: str, arguments: dict) -> str:
@@ -927,6 +1013,89 @@ class _DocToolExecutor:
             )
 
         return json.dumps({"error": f"Unknown calc tool: {name}"})
+
+    # -- Repo file access tools -----------------------------------------------
+
+    def _repo_root(self) -> Path:
+        """Best-effort repo root from common locations."""
+        # Check if cwd was set (via engine)
+        for candidate in [
+            Path.cwd(),
+            Path(__file__).resolve().parent.parent.parent,  # delfin/agent/api_client.py → repo
+        ]:
+            if (candidate / "delfin").is_dir():
+                return candidate
+        return Path.cwd()
+
+    def _execute_read_file(self, arguments: dict) -> str:
+        rel_path = arguments.get("path", "")
+        if not rel_path:
+            return json.dumps({"error": "path is required"})
+        full = self._repo_root() / rel_path
+        if not full.exists():
+            return json.dumps({"error": f"File not found: {rel_path}"})
+        if full.is_dir():
+            entries = sorted(p.name for p in full.iterdir())[:50]
+            return json.dumps({"type": "directory", "entries": entries})
+        try:
+            lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception as exc:
+            return json.dumps({"error": str(exc)})
+        offset = arguments.get("offset", 0) or 0
+        limit = arguments.get("limit", 200) or 200
+        selected = lines[offset:offset + limit]
+        result = "\n".join(f"{i + offset}  {line}" for i, line in enumerate(selected))
+        if len(lines) > offset + limit:
+            result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
+        return result
+
+    def _execute_grep_file(self, arguments: dict) -> str:
+        import re as _re
+        pattern = arguments.get("pattern", "")
+        if not pattern:
+            return json.dumps({"error": "pattern is required"})
+        search_path = self._repo_root() / (arguments.get("path", "") or "")
+        max_results = arguments.get("max_results", 30) or 30
+        try:
+            regex = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as exc:
+            return json.dumps({"error": f"Invalid regex: {exc}"})
+        matches = []
+        files = [search_path] if search_path.is_file() else sorted(search_path.rglob("*"))
+        for fp in files:
+            if not fp.is_file() or fp.suffix in (".pyc", ".so", ".gz", ".pdf", ".png", ".jpg"):
+                continue
+            if "/__pycache__/" in str(fp) or "/.git/" in str(fp):
+                continue
+            try:
+                for i, line in enumerate(fp.read_text(encoding="utf-8", errors="replace").splitlines()):
+                    if regex.search(line):
+                        rel = fp.relative_to(self._repo_root())
+                        matches.append(f"{rel}:{i + 1}: {line.rstrip()[:200]}")
+                        if len(matches) >= max_results:
+                            break
+            except Exception:
+                continue
+            if len(matches) >= max_results:
+                break
+        return "\n".join(matches) if matches else "No matches found."
+
+    def _execute_list_files(self, arguments: dict) -> str:
+        import fnmatch
+        pattern = arguments.get("pattern", "*")
+        root = self._repo_root()
+        matches = []
+        for fp in sorted(root.rglob("*")):
+            if not fp.is_file():
+                continue
+            rel = str(fp.relative_to(root))
+            if "/__pycache__/" in rel or "/.git/" in rel:
+                continue
+            if fnmatch.fnmatch(rel, pattern):
+                matches.append(rel)
+                if len(matches) >= 50:
+                    break
+        return "\n".join(matches) if matches else "No files matching pattern."
 
 
 # Singleton — shared across all OpenAIClient instances.
