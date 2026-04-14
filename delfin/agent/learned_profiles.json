@@ -419,10 +419,10 @@
     },
     "thinking_budget_mult": 1.1,
     "avg_cost_per_task": {
-      "coding": 7.392
+      "coding": 10.306
     },
     "success_rate": {
-      "solo": 0.937,
+      "solo": 0.946,
       "quick": 0.78,
       "reviewed": 0.84,
       "cluster": 0.74,
@@ -430,7 +430,7 @@
     },
     "task_performance": {
       "coding": {
-        "success_rate": 0.901
+        "success_rate": 0.916
       }
     },
     "common_failures": [
@@ -439,8 +439,8 @@
       "answering ORCA/xTB/method questions without doc-first lookup",
       "reading DELFIN monoliths before narrowing to concrete call sites"
     ],
-    "total_cycles": 4,
-    "updated_at": "2026-04-14 13:12:10",
+    "total_cycles": 5,
+    "updated_at": "2026-04-14 13:18:53",
     "meta": {
       "total_sessions": 0,
       "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
@@ -452,7 +452,27 @@
         "For backend_slurm.py, runtime_setup.py, qm_runtime.py, parallel_classic_manually.py, orca_recovery.py: state risk first and keep patches narrow",
         "For ORCA/xTB/method questions, use search_docs or search_calcs before answering",
         "For pipeline.py, config.py, and parallel_classic_manually.py: grep first, then read only the narrowed region",
-        "Keep solo as default; switch to reviewed behavior only for high-risk scheduler/runtime work"
+        "Keep solo as default; switch to reviewed behavior only for high-risk scheduler/runtime work",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Max 40 tool calls per task; after that, stop and summarize current findings",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files",
+        "If the same command fails twice, explain the failure and move on instead of retrying"
+      ]
+    },
+    "domain": {
+      "weaknesses": [
+        "Provider wiring and module entry points need explicit verification before edits",
+        "Cluster/runtime changes need stricter validation than local dashboard work",
+        "QM guidance quality drops if doc-first lookup is skipped"
+      ],
+      "strengths": [
+        "Fast repo-wide triage across DELFIN agent and dashboard modules",
+        "Test-driven Python edits with bounded patches",
+        "Codex/OpenAI model selection awareness for solo vs reviewed work"
       ]
     },
     "next_steps": [
@@ -467,17 +487,201 @@
         "why": "Current profile playbook selection resolves one focused module per task"
       }
     ],
-    "domain": {
-      "strengths": [
-        "Fast repo-wide triage across DELFIN agent and dashboard modules",
-        "Test-driven Python edits with bounded patches",
-        "Codex/OpenAI model selection awareness for solo vs reviewed work"
-      ],
-      "weaknesses": [
-        "Provider wiring and module entry points need explicit verification before edits",
-        "Cluster/runtime changes need stricter validation than local dashboard work",
-        "QM guidance quality drops if doc-first lookup is skipped"
-      ]
+    "playbooks": {
+      "build_up_complex": {
+        "description": "Editing the metal complex builder (PSO swarm, ligand placement)",
+        "steps": [
+          "1. Grep for the target function name in build_up_complex.py",
+          "2. Read only the function body (offset+limit)",
+          "3. Check _pso_fitness, _compute_clash_score, _prepare_force_field_terms for side effects",
+          "4. Edit, then run: pytest tests/ -x -q -k 'not browser' in background",
+          "5. If touching VdW/clash logic: verify radii are VdW (not covalent), threshold 75% of sum"
+        ],
+        "key_invariants": [
+          "PSO places ligands as rigid bodies (6 DOF) — never modify intra-ligand topology",
+          "VdW radii for clash detection, NOT covalent radii",
+          "Procrustes init for bidentate+ ligands (>=2 donors → SVD alignment)"
+        ]
+      },
+      "config_editing": {
+        "description": "Modifying CONTROL parsing or validation",
+        "steps": [
+          "1. Grep config.py for the relevant key/function",
+          "2. Check _parse_control_file (line ~353) for parsing flow",
+          "3. Check validate_control_text (line ~501) for validation rules",
+          "4. Run pytest tests/test_co2_control_overrides.py tests/test_functional_contracts.py -x -q"
+        ],
+        "key_invariants": [
+          "Config dicts are mutable — changes propagate. Be careful with shared state",
+          "OCCUPIER_parser is separate from main CONTROL parser",
+          "Template defaults loaded from _load_template_defaults (line ~271)"
+        ]
+      },
+      "cli_changes": {
+        "description": "Adding or modifying CLI subcommands",
+        "steps": [
+          "1. Grep cli.py for the subcommand name",
+          "2. Each subcommand is a _run_*_subcommand function",
+          "3. Check _load_full_cli_dependencies (line 24) for lazy imports",
+          "4. Run pytest tests/test_cli_*.py -x -q"
+        ],
+        "key_invariants": [
+          "CLI uses lazy loading — heavy imports are deferred",
+          "Override logic: _parse_occupier_overrides, _apply_occupier_overrides",
+          "Downstream cascade: _downstream_stages invalidates dependent stages"
+        ]
+      },
+      "orca_recovery": {
+        "description": "Modifying error detection or retry logic",
+        "steps": [
+          "1. OrcaErrorType enum (line 28) defines all known error types",
+          "2. OrcaErrorDetector (line 62) matches output patterns to error types",
+          "3. RecoveryStrategy (line 275) maps errors to fix actions",
+          "4. OrcaInputModifier (line 684) applies the actual input file changes",
+          "5. Run pytest tests/test_orca_workflow_contracts.py -x -q"
+        ],
+        "key_invariants": [
+          "RetryStateTracker (line 1633) prevents infinite retry loops",
+          "Recovery must work for both local and SLURM backends",
+          "Never modify the original input — create a new input for retry"
+        ]
+      },
+      "smiles_converter": {
+        "description": "SMILES to 3D coordinate conversion",
+        "steps": [
+          "1. This is the largest module (18073 lines) — always Grep first",
+          "2. Main classes: _HybridHaptoFragment, _PrimaryOrganometalModule",
+          "3. Entry point: _try_multiple_strategies (line ~627)",
+          "4. Metal handling: _manual_metal_embed (line ~835), _normalize_metal_smiles (line ~1573)",
+          "5. Hapto groups: _find_hapto_groups (line ~1944), _apply_hapto_approximation (line ~2087)"
+        ],
+        "key_invariants": [
+          "Multiple fallback strategies: RDKit → OpenBabel → manual embed",
+          "Metal bonds converted to dative bonds via _convert_metal_bonds_to_dative",
+          "Hapto approximation is optional — check _hapto_approx_enabled flag"
+        ]
+      },
+      "dashboard_agent": {
+        "description": "AI agent tab in the dashboard",
+        "steps": [
+          "1. tab_agent.py is 7435 lines — always Grep first",
+          "2. Entry point: create_tab (line 931)",
+          "3. Grep for specific widget or callback names",
+          "4. Run pytest tests/test_agent_*.py -x -q"
+        ]
+      }
+    },
+    "codebase_map": {
+      "description": "Key files with sizes and important entry points. Verify line numbers before using — code evolves.",
+      "modules": {
+        "build_up_complex.py": {
+          "lines": 1531,
+          "key_functions": {
+            "extract_ligands_from_complex": 82,
+            "run_build_up": 972,
+            "main": 1390,
+            "_run_docker_step": 847
+          }
+        },
+        "cli.py": {
+          "lines": 2034,
+          "key_functions": {
+            "_load_full_cli_dependencies": 24,
+            "_apply_occupier_overrides": 588,
+            "_run_co2_subcommand": 871,
+            "_run_run_orca_subcommand": 956
+          }
+        },
+        "config.py": {
+          "lines": 834,
+          "key_functions": {
+            "_parse_control_file": 353,
+            "validate_control_text": 501,
+            "OCCUPIER_parser": 651,
+            "get_E_ref": 777
+          }
+        },
+        "orca_recovery.py": {
+          "lines": 1728,
+          "key_classes": {
+            "OrcaErrorType": 28,
+            "OrcaErrorDetector": 62,
+            "RecoveryStrategy": 275,
+            "OrcaInputModifier": 684,
+            "RetryStateTracker": 1633
+          }
+        },
+        "smiles_converter.py": {
+          "lines": 18073,
+          "key_functions": {
+            "_try_multiple_strategies": 627,
+            "_manual_metal_embed": 835,
+            "_find_hapto_groups": 1944,
+            "_apply_hapto_approximation": 2087
+          },
+          "warning": "Largest module — ALWAYS Grep, never Read whole file"
+        },
+        "qm_runtime.py": {
+          "lines": 523
+        },
+        "runtime_setup.py": {
+          "lines": 1846
+        },
+        "pipeline.py": {
+          "lines": 9
+        },
+        "parallel_classic_manually.py": {
+          "lines": 18
+        },
+        "dashboard/backend_local.py": {
+          "lines": 584
+        },
+        "dashboard/backend_slurm.py": {
+          "lines": 504
+        },
+        "dashboard/tab_agent.py": {
+          "lines": 7435,
+          "key_functions": {
+            "create_tab": 931
+          },
+          "warning": "Large module — always Grep first"
+        }
+      },
+      "test_mapping": {
+        "build_up_complex.py": [
+          "(no dedicated test yet)"
+        ],
+        "cli.py": [
+          "test_cli_recalc.py",
+          "test_cli_step_pipeline.py",
+          "test_cli_voila.py"
+        ],
+        "config.py": [
+          "test_co2_control_overrides.py",
+          "test_functional_contracts.py"
+        ],
+        "orca_recovery.py": [
+          "test_orca_workflow_contracts.py",
+          "test_orca_process_tracking.py"
+        ],
+        "qm_runtime.py": [
+          "test_qm_runtime.py"
+        ],
+        "runtime_setup.py": [
+          "test_runtime_setup.py"
+        ],
+        "dashboard/backend_local.py": [
+          "test_backend_local.py"
+        ],
+        "dashboard/backend_slurm.py": [
+          "test_backend_slurm.py"
+        ],
+        "dashboard/tab_agent.py": [
+          "test_agent_engine.py",
+          "test_agent_prompt_loader.py",
+          "test_agent_session_store.py"
+        ]
+      }
     },
     "error_patterns": [
       {

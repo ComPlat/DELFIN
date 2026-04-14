@@ -462,6 +462,24 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
             f"Provider-specific failure patterns: {', '.join(failures[-5:])}"
         )
 
+    communication_rules = (
+        provider_overlay.get("communication", {}).get("rules", [])
+    )
+    if communication_rules:
+        parts.append(
+            "Provider communication rules: "
+            + ", ".join(str(rule) for rule in communication_rules[:5])
+        )
+
+    provider_tool_rules = (
+        provider_overlay.get("tool_usage", {}).get("rules", [])
+    )
+    if provider_tool_rules:
+        parts.append(
+            "Provider tool rules: "
+            + ", ".join(str(rule) for rule in provider_tool_rules[:5])
+        )
+
     # Denied patterns
     denied = provider_overlay.get("denied_patterns", [])
     if denied:

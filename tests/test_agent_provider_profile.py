@@ -248,6 +248,42 @@ def test_format_profile_context_includes_persisted_next_steps(tmp_path):
     assert "Expand multi-module playbook selection" in context
 
 
+def test_format_profile_context_includes_provider_rules(tmp_path):
+    from delfin.agent.provider_profile import format_profile_context
+
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(
+        textwrap.dedent(
+            """\
+            {
+              "openai": {
+                "communication": {
+                  "rules": [
+                    "I'll leave the commit to the user"
+                  ]
+                },
+                "tool_usage": {
+                  "rules": [
+                    "Max 40 tool calls per task",
+                    "If a command fails twice, stop retrying"
+                  ]
+                }
+              }
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    context = format_profile_context("openai", profile_path)
+
+    assert "Provider communication rules" in context
+    assert "I'll leave the commit to the user" in context
+    assert "Provider tool rules" in context
+    assert "Max 40 tool calls per task" in context
+    assert "If a command fails twice, stop retrying" in context
+
+
 def test_update_from_outcome_writes_task_performance_overlay(tmp_path):
     from delfin.agent.outcome_tracker import CycleOutcome
     from delfin.agent.provider_profile import update_from_outcome
