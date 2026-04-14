@@ -6273,15 +6273,9 @@ def create_tab(ctx):
                     from delfin.agent.memory_store import format_memory_context
                     _memory = format_memory_context()
 
-                    # Inject provider profile + denied-command context
-                    try:
-                        from delfin.agent.provider_profile import format_profile_context
-                        _prov = provider_dropdown.value
-                        _prof_ctx = format_profile_context(_prov)
-                        if _prof_ctx:
-                            _memory = (_memory + "\n\n" + _prof_ctx) if _memory else _prof_ctx
-                    except Exception:
-                        pass
+                    # Provider profile is injected by PromptLoader.
+                    # Keep memory_context reserved for session memory + transient state
+                    # so we do not pay twice for the same profile tokens.
                     _denied = state.get("_denied_commands", [])
                     if _denied:
                         _denial_ctx = (

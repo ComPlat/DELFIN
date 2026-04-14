@@ -284,3 +284,41 @@ def test_caching(agent_tree):
     assert ctx1 == ctx2
     # Verify cache is populated
     assert len(loader._cache) > 0
+
+
+def test_build_system_prompt_skips_duplicate_profile_in_same_session(agent_tree):
+    from delfin.agent.prompt_loader import PromptLoader
+
+    profile_path = agent_tree / "profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "shared": {
+                    "common_failures": ["grep-first before large reads"],
+                    "tool_usage": {"rules": ["run pytest after Python edits"]},
+                },
+                "openai": {
+                    "success_rate": {"solo": 0.91},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = profile_path
+
+    prompt1 = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        session_key="s1",
+    )
+    prompt2 = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        session_key="s1",
+    )
+
+    assert "Provider Profile" in prompt1
+    assert "Provider Profile" not in prompt2

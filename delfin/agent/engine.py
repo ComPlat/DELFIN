@@ -275,6 +275,7 @@ class AgentEngine:
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
         self.session_id: str = ""  # CLI session ID for conversation persistence
+        self._prompt_session_serial: int = 1
         self._stop_requested = False
         self._lock = threading.Lock()
 
@@ -335,6 +336,7 @@ class AgentEngine:
             prior_outputs=self.role_outputs if self.role_outputs else None,
             memory_context=memory_context,
             task_text=task_text,
+            session_key=f"engine-session-{self._prompt_session_serial}",
         )
 
     def stream_response(
@@ -535,6 +537,10 @@ class AgentEngine:
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd = 0.0
         self.session_id = ""  # New session for new cycle
+        self.loader.reset_session_prompt_state(
+            f"engine-session-{self._prompt_session_serial}"
+        )
+        self._prompt_session_serial += 1
         self._stop_requested = False
         if mode is not None and mode != self.mode:
             self._load_mode(mode)

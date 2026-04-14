@@ -212,7 +212,7 @@ def test_format_profile_context_includes_shared_rules_without_cycles(tmp_path):
 
     context = format_profile_context("openai", profile_path)
 
-    assert "Shared DELFIN failure patterns" in context
+    assert "Shared failures" in context
     assert "search_docs before chemistry answers" in context
     assert "Provider: openai (0 cycles)" in context
 
@@ -243,9 +243,8 @@ def test_format_profile_context_includes_persisted_next_steps(tmp_path):
 
     context = format_profile_context("openai", profile_path)
 
-    assert "Persisted next steps" in context
+    assert "Next:" in context
     assert "[pending] Track FAIL solo outcomes" in context
-    assert "Expand multi-module playbook selection" in context
 
 
 def test_format_profile_context_includes_provider_rules(tmp_path):
@@ -277,11 +276,35 @@ def test_format_profile_context_includes_provider_rules(tmp_path):
 
     context = format_profile_context("openai", profile_path)
 
-    assert "Provider communication rules" in context
+    assert "Communication:" in context
     assert "I'll leave the commit to the user" in context
-    assert "Provider tool rules" in context
+    assert "Tool rules:" in context
     assert "Max 40 tool calls per task" in context
     assert "If a command fails twice, stop retrying" in context
+
+
+def test_save_provider_profile_writes_transient_keys_to_local_overlay(tmp_path):
+    from delfin.agent.provider_profile import save_provider_profile
+
+    profile_path = tmp_path / "profiles.json"
+    save_provider_profile(
+        "openai",
+        {
+            "success_rate": {"solo": 0.8},
+            "next_steps": ["Keep answers terse"],
+            "denied_patterns": ["git push"],
+        },
+        profile_path,
+    )
+
+    repo_data = json.loads(profile_path.read_text(encoding="utf-8"))
+    local_data = json.loads(
+        profile_path.with_name("profiles.local.json").read_text(encoding="utf-8")
+    )
+    assert "next_steps" not in repo_data["openai"]
+    assert "denied_patterns" not in repo_data["openai"]
+    assert local_data["openai"]["next_steps"] == ["Keep answers terse"]
+    assert local_data["openai"]["denied_patterns"] == ["git push"]
 
 
 def test_update_from_outcome_writes_task_performance_overlay(tmp_path):

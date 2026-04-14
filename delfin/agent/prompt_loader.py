@@ -57,6 +57,15 @@ class PromptLoader:
             self.agent_dir = self._MODULE_DIR / "pack"
             self.agent_lite_dir = self._MODULE_DIR / "pack_lite"
         self._cache: dict[str, str] = {}
+        self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
+
+    def reset_session_prompt_state(self, session_key: str) -> None:
+        """Forget prompt-injection state for a session."""
+        if not session_key:
+            return
+        stale = [key for key in self._prompt_state if key[0] == session_key]
+        for key in stale:
+            self._prompt_state.pop(key, None)
 
     def _cached_read(self, path: Path) -> str:
         key = str(path)
@@ -64,13 +73,13 @@ class PromptLoader:
             self._cache[key] = _read_text(path)
         return self._cache[key]
 
-    def _load_profile_context(self) -> str:
+    def _load_profile_context(self, mode_id: str = "") -> str:
         """Load provider profile context for prompt injection."""
         try:
             from delfin.agent.provider_profile import format_profile_context
             provider = getattr(self, "_active_provider", "claude")
             profile_path = getattr(self, "_profile_path", None)
-            return format_profile_context(provider, profile_path)
+            return format_profile_context(provider, profile_path, mode_id=mode_id)
         except Exception:
             return ""
 
@@ -83,13 +92,52 @@ class PromptLoader:
 
             provider = getattr(self, "_active_provider", "claude")
             profile_path = getattr(self, "_profile_path", None)
+            playbooks_path = getattr(self, "_playbooks_path", None)
             return format_relevant_playbook_context(
                 provider,
                 task_text,
                 profile_path,
+                playbooks_path=playbooks_path,
             )
         except Exception:
             return ""
+
+    def _profile_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {"solo_agent", "session_manager", "builder_agent"}
+
+    def _should_inject_profile_context(
+        self,
+        role_id: str,
+        session_key: str,
+        profile_ctx: str,
+    ) -> bool:
+        if not profile_ctx or not self._profile_injection_allowed(role_id):
+            return False
+        if not session_key:
+            return True
+        state = self._prompt_state.setdefault((session_key, role_id), {})
+        digest = str(hash(profile_ctx))
+        if state.get("profile_digest") == digest:
+            return False
+        state["profile_digest"] = digest
+        return True
+
+    def _should_inject_playbook(
+        self,
+        role_id: str,
+        session_key: str,
+        relevant_playbook: str,
+    ) -> bool:
+        if not relevant_playbook:
+            return False
+        if not session_key:
+            return True
+        state = self._prompt_state.setdefault((session_key, role_id), {})
+        digest = str(hash(relevant_playbook))
+        if state.get("playbook_digest") == digest:
+            return False
+        state["playbook_digest"] = digest
+        return True
 
     # -- shared context ----------------------------------------------------
 
@@ -182,6 +230,7 @@ class PromptLoader:
         prior_outputs: dict[str, str] | None = None,
         memory_context: str = "",
         task_text: str = "",
+        session_key: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -206,6 +255,11 @@ class PromptLoader:
         """
         sections = []
         relevant_playbook = self._load_relevant_playbook_context(task_text)
+        include_playbook = self._should_inject_playbook(
+            role_id,
+            session_key,
+            relevant_playbook,
+        )
 
         # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
@@ -217,10 +271,10 @@ class PromptLoader:
             )
             if ctx_text:
                 sections.append(f"--- Project Context ---\n{ctx_text}")
-            profile_ctx = self._load_profile_context()
-            if profile_ctx:
+            profile_ctx = self._load_profile_context(mode_id)
+            if self._should_inject_profile_context(role_id, session_key, profile_ctx):
                 sections.append(f"--- Provider Profile ---\n{profile_ctx}")
-            if relevant_playbook:
+            if include_playbook:
                 sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
             if memory_context:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
@@ -248,7 +302,7 @@ class PromptLoader:
                     )
                     if playbooks:
                         sections.append(playbooks)
-                    if relevant_playbook:
+                    if include_playbook:
                         sections.append(
                             f"--- Relevant Playbook ---\n{relevant_playbook}"
                         )
@@ -418,8 +472,8 @@ class PromptLoader:
             sections.append(f"--- Project Memory ---\n{memory_context}")
 
         # 9. Provider profile (success rates, failures, playbooks)
-        profile_ctx = self._load_profile_context()
-        if profile_ctx:
+        profile_ctx = self._load_profile_context(mode_id)
+        if self._should_inject_profile_context(role_id, session_key, profile_ctx):
             sections.append(f"--- Provider Profile ---\n{profile_ctx}")
 
         return "\n\n".join(sections)

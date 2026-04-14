@@ -27,6 +27,9 @@ from delfin.agent.outcome_tracker import CycleOutcome
 # Store in the repo so learned profiles are version-controlled and shared
 # across machines (pushed with git).  Outcome history stays local (~/.delfin/).
 _DEFAULT_PATH = Path(__file__).resolve().parent / "learned_profiles.json"
+_PLAYBOOKS_PATH = Path(__file__).resolve().parent / "profile_playbooks.json"
+_LOCAL_STATE_PATH = Path.home() / ".delfin" / "provider_profile_state.json"
+_LOCAL_ONLY_KEYS = {"next_steps", "denied_patterns"}
 
 # Exponential moving average smoothing factor (0.1 = slow, 0.3 = fast)
 _EMA_ALPHA = 0.15
@@ -144,6 +147,80 @@ def _profile_overlay(base: Any, merged: Any) -> Any:
 
 def _default_profile() -> dict[str, Any]:
     return deepcopy(_DEFAULT_PROFILE)
+
+
+def _resolve_local_state_path(
+    profile_path: Path | None = None,
+    local_state_path: Path | None = None,
+) -> Path:
+    if local_state_path is not None:
+        return local_state_path
+    if profile_path is not None and profile_path != _DEFAULT_PATH:
+        return profile_path.with_name(f"{profile_path.stem}.local.json")
+    return _LOCAL_STATE_PATH
+
+
+def _read_local_state(path: Path | None = None) -> dict[str, Any]:
+    return _read_all(path or _LOCAL_STATE_PATH)
+
+
+def _write_local_state(data: dict[str, Any], path: Path | None = None) -> None:
+    _write_all(path or _LOCAL_STATE_PATH, data)
+
+
+def _split_local_overlay(profile: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    repo_profile = deepcopy(profile)
+    local_profile: dict[str, Any] = {}
+    for key in list(repo_profile.keys()):
+        if key in _LOCAL_ONLY_KEYS:
+            local_profile[key] = repo_profile.pop(key)
+    return repo_profile, local_profile
+
+
+def _merge_local_overlay(provider: str, profile: dict[str, Any], local_state_path: Path | None = None) -> dict[str, Any]:
+    local_state = _read_local_state(local_state_path)
+    local_overlay = local_state.get(provider, {})
+    if not isinstance(local_overlay, dict):
+        return profile
+    return _merge_profile_layers(profile, local_overlay)
+
+
+def _load_playbook_data(path: Path | None = None) -> dict[str, Any]:
+    return _read_all(path or _PLAYBOOKS_PATH)
+
+
+def _load_playbook_catalog(
+    provider: str,
+    path: Path | None = None,
+    profile_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    provider = canonical_provider_name(provider)
+    data = profile_data or _read_all(_DEFAULT_PATH)
+    shared = data.get(_SHARED_PROFILE_KEY, {})
+    provider_block = data.get(provider, {})
+    legacy_shared = {
+        "playbooks": shared.get("playbooks", {}),
+        "codebase_map": shared.get("codebase_map", {}),
+    }
+    legacy_provider = {
+        "playbooks": provider_block.get("playbooks", {}),
+        "codebase_map": provider_block.get("codebase_map", {}),
+    }
+    if (
+        path is None
+        and profile_data is not None
+        and (legacy_shared["playbooks"] or legacy_provider["playbooks"])
+    ):
+        return _merge_profile_layers(legacy_shared, legacy_provider)
+
+    catalog = _load_playbook_data(path)
+    if catalog:
+        shared = catalog.get("shared", {})
+        provider_block = catalog.get(provider, {})
+        return _merge_profile_layers(shared, provider_block)
+
+    # Backward-compatible fallback: load legacy embedded playbooks from profile data.
+    return _merge_profile_layers(legacy_shared, legacy_provider)
 
 
 def _load_shared_profile_from_data(data: dict[str, Any]) -> dict[str, Any]:
@@ -269,22 +346,26 @@ def load_shared_profile(path: Path | None = None) -> dict[str, Any]:
 def load_provider_profile(
     provider: str,
     path: Path | None = None,
+    local_state_path: Path | None = None,
 ) -> dict[str, Any]:
     """Load the merged shared + provider-specific profile."""
     provider = canonical_provider_name(provider)
     data = _read_all(path or _DEFAULT_PATH)
     shared = _load_shared_profile_from_data(data)
     provider_profile = data.get(provider, {})
-    return _merge_profile_layers(shared, provider_profile)
+    merged = _merge_profile_layers(shared, provider_profile)
+    resolved_local = _resolve_local_state_path(path, local_state_path)
+    return _merge_local_overlay(provider, merged, resolved_local)
 
 
 def load_task_profile(
     provider: str,
     task_class: str,
     path: Path | None = None,
+    local_state_path: Path | None = None,
 ) -> dict[str, Any]:
     """Load the merged task-specific profile for a task class."""
-    profile = load_provider_profile(provider, path)
+    profile = load_provider_profile(provider, path, local_state_path)
     return profile.get("task_performance", {}).get(task_class or "", {})
 
 
@@ -320,38 +401,50 @@ def save_provider_profile(
     provider: str,
     profile: dict[str, Any],
     path: Path | None = None,
+    local_state_path: Path | None = None,
 ) -> None:
     """Save only the provider-specific overlay, preserving shared rules."""
     provider = canonical_provider_name(provider)
     p = path or _DEFAULT_PATH
+    resolved_local = _resolve_local_state_path(p, local_state_path)
     data = _read_all(p)
     shared = _load_shared_profile_from_data(data)
     profile_to_save = deepcopy(profile)
     profile_to_save["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    overlay = _profile_overlay(shared, profile_to_save)
+    repo_profile, local_profile = _split_local_overlay(profile_to_save)
+    overlay = _profile_overlay(shared, repo_profile)
     data[provider] = overlay if isinstance(overlay, dict) else {}
     _write_all(p, data)
+
+    local_state = _read_local_state(resolved_local)
+    if local_profile:
+        local_state[provider] = local_profile
+    else:
+        local_state.pop(provider, None)
+    _write_local_state(local_state, resolved_local)
 
 
 def reset_profile(
     provider: str,
     path: Path | None = None,
+    local_state_path: Path | None = None,
 ) -> None:
     """Reset a provider profile to defaults."""
-    save_provider_profile(provider, _default_profile(), path)
+    save_provider_profile(provider, _default_profile(), path, local_state_path)
 
 
 def update_from_outcome(
     provider: str,
     outcome: CycleOutcome,
     path: Path | None = None,
+    local_state_path: Path | None = None,
 ) -> dict[str, str]:
     """Update provider profile based on a cycle outcome.
 
     Returns a dict of changes made (for transparency logging).
     """
     provider = canonical_provider_name(provider)
-    profile = load_provider_profile(provider, path)
+    profile = load_provider_profile(provider, path, local_state_path)
     changes: dict[str, str] = {}
 
     profile["total_cycles"] = profile.get("total_cycles", 0) + 1
@@ -420,16 +513,26 @@ def update_from_outcome(
                 denied.append(cmd)
         profile["denied_patterns"] = denied[-20:]
 
-    save_provider_profile(provider, profile, path)
+    save_provider_profile(provider, profile, path, local_state_path)
     return changes
 
 
-def format_profile_context(provider: str, path: Path | None = None) -> str:
+def format_profile_context(
+    provider: str,
+    path: Path | None = None,
+    *,
+    mode_id: str = "",
+) -> str:
     """Format provider profile as context for the system prompt."""
     provider = canonical_provider_name(provider)
     data = _read_all(path or _DEFAULT_PATH)
     shared = _load_shared_profile_from_data(data)
-    profile = _merge_profile_layers(shared, data.get(provider, {}))
+    resolved_local = _resolve_local_state_path(path, None)
+    profile = _merge_local_overlay(
+        provider,
+        _merge_profile_layers(shared, data.get(provider, {})),
+        resolved_local,
+    )
     provider_overlay = data.get(provider, {})
     total = profile.get("total_cycles", 0)
     if not _profile_has_context(shared) and not _profile_has_context(profile):
@@ -440,26 +543,30 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
     shared_failures = shared.get("common_failures", [])
     if shared_failures:
         parts.append(
-            f"Shared DELFIN failure patterns: {', '.join(shared_failures[-5:])}"
+            f"Shared failures: {', '.join(shared_failures[-2:])}"
         )
 
     shared_rules = shared.get("tool_usage", {}).get("rules", [])
     if shared_rules:
-        parts.append(f"Shared DELFIN tool rules: {', '.join(shared_rules[:5])}")
+        parts.append(f"Shared tool rules: {', '.join(shared_rules[:2])}")
 
     parts.append(f"Provider: {provider} ({total} cycles)")
 
-    # Success rates
     rates = profile.get("success_rate", {})
     if rates:
-        rate_strs = [f"{k}: {v:.0%}" for k, v in sorted(rates.items())]
-        parts.append(f"Success rates: {', '.join(rate_strs)}")
+        if mode_id and mode_id in rates:
+            parts.append(f"Mode success: {mode_id}={rates[mode_id]:.0%}")
+        else:
+            top_rates = sorted(rates.items(), key=lambda item: item[1], reverse=True)[:2]
+            parts.append(
+                "Best mode success: "
+                + ", ".join(f"{k}={v:.0%}" for k, v in top_rates)
+            )
 
-    # Common failures
     failures = provider_overlay.get("common_failures", [])
     if failures:
         parts.append(
-            f"Provider-specific failure patterns: {', '.join(failures[-5:])}"
+            f"Provider failures: {', '.join(failures[-2:])}"
         )
 
     communication_rules = (
@@ -467,8 +574,7 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
     )
     if communication_rules:
         parts.append(
-            "Provider communication rules: "
-            + ", ".join(str(rule) for rule in communication_rules[:5])
+            "Communication: " + ", ".join(str(rule) for rule in communication_rules[:2])
         )
 
     provider_tool_rules = (
@@ -476,26 +582,24 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
     )
     if provider_tool_rules:
         parts.append(
-            "Provider tool rules: "
-            + ", ".join(str(rule) for rule in provider_tool_rules[:5])
+            "Tool rules: " + ", ".join(str(rule) for rule in provider_tool_rules[:2])
         )
 
-    # Denied patterns
-    denied = provider_overlay.get("denied_patterns", [])
+    denied = profile.get("denied_patterns", [])
     if denied:
         parts.append(
-            f"Previously denied commands: {', '.join(denied[-5:])}"
+            f"Denied: {', '.join(denied[-2:])}"
         )
 
-    next_steps = provider_overlay.get("next_steps", [])
+    next_steps = profile.get("next_steps", [])
     if isinstance(next_steps, list):
         rendered_steps = [
             rendered
-            for rendered in (_format_next_step_entry(step) for step in next_steps[:5])
+            for rendered in (_format_next_step_entry(step) for step in next_steps[:1])
             if rendered
         ]
         if rendered_steps:
-            parts.append(f"Persisted next steps: {'; '.join(rendered_steps)}")
+            parts.append(f"Next: {'; '.join(rendered_steps)}")
 
     return "\n".join(parts)
 
@@ -504,16 +608,20 @@ def format_relevant_playbook_context(
     provider: str,
     task_text: str,
     path: Path | None = None,
+    *,
+    playbooks_path: Path | None = None,
 ) -> str:
     """Format the single most relevant playbook for the current task."""
-    profile = load_provider_profile(provider, path)
-    resolved = _find_relevant_playbook(profile, task_text)
+    provider = canonical_provider_name(provider)
+    profile_data = _read_all(path or _DEFAULT_PATH)
+    catalog = _load_playbook_catalog(provider, playbooks_path, profile_data)
+    resolved = _find_relevant_playbook(catalog, task_text)
     if not resolved:
         return ""
 
     playbook_key, playbook, module_name = resolved
     tests = (
-        profile.get("codebase_map", {})
+        catalog.get("codebase_map", {})
         .get("test_mapping", {})
         .get(module_name, [])
     )

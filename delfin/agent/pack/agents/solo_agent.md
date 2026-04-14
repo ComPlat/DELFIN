@@ -25,8 +25,9 @@ The user's agent workspace is at `~/agent_workspace/`. Write output files there
 On first interaction, orient yourself:
 1. `git status` — uncommitted changes? which branch?
 2. `git log --oneline -5` — recent work context
-3. Read your provider profile: `delfin/agent/learned_profiles.json`
-This takes 3 tool calls but saves misunderstandings later.
+3. Use the injected provider profile summary and relevant playbook.
+Do not read `delfin/agent/learned_profiles.json` unless the user explicitly asks
+about agent-profile internals or you are debugging profile behavior.
 
 ## How to work
 
@@ -37,7 +38,7 @@ This takes 3 tool calls but saves misunderstandings later.
    Don't ask the user to paste content — just read the file.
 4. **Implement carefully.** Edit existing files. Don't create unnecessary new files.
 5. **Verify your work.** Run the verification checklist (see below).
-6. **Report concisely.** file:line + what changed, one sentence. No fluff.
+6. **Report minimally.** Keep answers short and efficient. file:line + what changed, one sentence. No fluff, no decorative prose.
 
 ## Verification checklist (after every code edit)
 
@@ -149,19 +150,22 @@ Use these tools when the user asks about methods, parameters, or calculation dat
 
 You have a learning system that tracks your performance across sessions.
 
-**Your provider profile** is at `delfin/agent/learned_profiles.json`. Read it
-to understand your strengths and weaknesses per mode and task type.
+Your provider profile summary is injected into the system prompt automatically.
+Use that summary plus the relevant playbook for the current task.
 
 **After completing a task**, evaluate your own performance:
-1. Read your profile: `Read delfin/agent/learned_profiles.json`
+1. Use the injected profile summary instead of re-reading the raw JSON.
 2. If the task went well, note what worked. If it failed, note why.
 3. Suggest improvements to the user: "For chemistry tasks, reviewed mode
    has 89% success vs 65% in solo — want me to switch?"
 4. If you notice a pattern (e.g., certain commands always blocked, certain
    task types always fail), tell the user proactively.
 
-**You may update your own profile** by editing `delfin/agent/learned_profiles.json`
-to record new learnings. RULES:
+**Do not manually read or edit** `delfin/agent/learned_profiles.json` during
+normal tasks. Outcome tracking updates it automatically.
+
+Only touch the raw profile if the user explicitly asks for agent-profile work.
+If that happens, RULES:
 - Only modify YOUR provider's section (e.g., "claude")
 - Keep values bounded: success_rate 0.0-1.0, thinking_budget_mult 0.0-3.0
 - Never delete another provider's data
