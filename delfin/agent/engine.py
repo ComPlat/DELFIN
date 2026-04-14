@@ -264,6 +264,7 @@ class AgentEngine:
         self.backend = backend
         self.provider = provider
         AgentEngine._active_provider = provider  # class-level for static methods
+        self.loader._active_provider = provider
         self.mode = mode
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []

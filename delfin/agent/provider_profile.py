@@ -1,21 +1,22 @@
-"""Provider-specific learning profiles for DELFIN agent.
+"""Shared + provider-specific learning profiles for the DELFIN agent.
 
-Each provider (Claude, OpenAI/Codex, KIT Toolbox) has a profile that
-tracks success rates, cost patterns, and failure modes.  Profiles are
-updated after each cycle outcome and used for adaptive routing and
-thinking budget selection.
+Profiles combine a repo-wide DELFIN baseline (``shared``) with
+provider-specific overlays (Claude, OpenAI/Codex, KIT Toolbox). The
+merged result drives adaptive routing and thinking budget selection,
+while outcome updates stay scoped to the active provider.
 
 Safety:
-- Only modifies ~/.delfin/provider_profiles.json (agent's own config)
+- Only modifies ``delfin/agent/learned_profiles.json``
 - All values are bounded (no runaway drift)
 - Rate-limited: max 1 update per cycle
-- Fully reversible: reset_profile() restores defaults
+- Fully reversible: reset_profile() restores provider defaults
 """
 
 from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,17 @@ _BOUNDS = {
     "avg_cost_per_task": (0.0, 100.0),
 }
 
+_PROVIDER_ALIASES = {
+    "anthropic": "claude",
+    "claude": "claude",
+    "codex": "openai",
+    "openai": "openai",
+    "kit": "kit",
+}
+
+_SHARED_PROFILE_KEY = "shared"
+_NO_DIFF = object()
+
 # Default profile for new providers
 _DEFAULT_PROFILE: dict[str, Any] = {
     "preferred_model": {},
@@ -46,6 +58,14 @@ _DEFAULT_PROFILE: dict[str, Any] = {
     "total_cycles": 0,
     "updated_at": "",
 }
+
+
+def canonical_provider_name(provider: str) -> str:
+    """Normalize provider aliases to the profile storage key."""
+    normalized = (provider or "").strip().lower()
+    if not normalized:
+        return "claude"
+    return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def _read_all(path: Path) -> dict[str, Any]:
@@ -74,17 +94,97 @@ def _ema(old: float, new: float, alpha: float = _EMA_ALPHA) -> float:
     return old * (1 - alpha) + new * alpha
 
 
+def _merge_profile_layers(base: Any, overlay: Any) -> Any:
+    """Recursively merge shared and provider-specific profile layers."""
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        merged = deepcopy(base)
+        for key, value in overlay.items():
+            if key in merged:
+                merged[key] = _merge_profile_layers(merged[key], value)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+
+    if isinstance(base, list) and isinstance(overlay, list):
+        merged = deepcopy(base)
+        for item in overlay:
+            if item not in merged:
+                merged.append(deepcopy(item))
+        return merged
+
+    return deepcopy(overlay)
+
+
+def _profile_overlay(base: Any, merged: Any) -> Any:
+    """Return only the provider-specific delta relative to shared defaults."""
+    if isinstance(base, dict) and isinstance(merged, dict):
+        diff: dict[str, Any] = {}
+        for key, value in merged.items():
+            if key in base:
+                child = _profile_overlay(base[key], value)
+                if child is not _NO_DIFF:
+                    diff[key] = child
+            else:
+                diff[key] = deepcopy(value)
+        return diff if diff else _NO_DIFF
+
+    if isinstance(base, list) and isinstance(merged, list):
+        extras = [deepcopy(item) for item in merged if item not in base]
+        return extras if extras else _NO_DIFF
+
+    if base == merged:
+        return _NO_DIFF
+
+    return deepcopy(merged)
+
+
+def _default_profile() -> dict[str, Any]:
+    return deepcopy(_DEFAULT_PROFILE)
+
+
+def _load_shared_profile_from_data(data: dict[str, Any]) -> dict[str, Any]:
+    shared = data.get(_SHARED_PROFILE_KEY, {})
+    return _merge_profile_layers(_default_profile(), shared)
+
+
+def _profile_has_context(profile: dict[str, Any]) -> bool:
+    if profile.get("total_cycles", 0) > 0:
+        return True
+
+    for key in (
+        "common_failures",
+        "denied_patterns",
+        "anti_patterns",
+        "communication",
+        "tool_usage",
+        "domain",
+        "playbooks",
+        "codebase_map",
+        "task_performance",
+        "error_patterns",
+    ):
+        if profile.get(key):
+            return True
+
+    return False
+
+
+def load_shared_profile(path: Path | None = None) -> dict[str, Any]:
+    """Load the shared DELFIN baseline profile."""
+    data = _read_all(path or _DEFAULT_PATH)
+    return _load_shared_profile_from_data(data)
+
+
 def load_provider_profile(
     provider: str,
     path: Path | None = None,
 ) -> dict[str, Any]:
-    """Load the learned profile for a provider."""
+    """Load the merged shared + provider-specific profile."""
+    provider = canonical_provider_name(provider)
     data = _read_all(path or _DEFAULT_PATH)
-    profile = data.get(provider, {})
-    # Merge with defaults for missing keys
-    result = dict(_DEFAULT_PROFILE)
-    result.update(profile)
-    return result
+    shared = _load_shared_profile_from_data(data)
+    provider_profile = data.get(provider, {})
+    return _merge_profile_layers(shared, provider_profile)
 
 
 def save_provider_profile(
@@ -92,11 +192,15 @@ def save_provider_profile(
     profile: dict[str, Any],
     path: Path | None = None,
 ) -> None:
-    """Save a provider profile."""
+    """Save only the provider-specific overlay, preserving shared rules."""
+    provider = canonical_provider_name(provider)
     p = path or _DEFAULT_PATH
     data = _read_all(p)
-    profile["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    data[provider] = profile
+    shared = _load_shared_profile_from_data(data)
+    profile_to_save = deepcopy(profile)
+    profile_to_save["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    overlay = _profile_overlay(shared, profile_to_save)
+    data[provider] = overlay if isinstance(overlay, dict) else {}
     _write_all(p, data)
 
 
@@ -105,7 +209,7 @@ def reset_profile(
     path: Path | None = None,
 ) -> None:
     """Reset a provider profile to defaults."""
-    save_provider_profile(provider, dict(_DEFAULT_PROFILE), path)
+    save_provider_profile(provider, _default_profile(), path)
 
 
 def update_from_outcome(
@@ -117,6 +221,7 @@ def update_from_outcome(
 
     Returns a dict of changes made (for transparency logging).
     """
+    provider = canonical_provider_name(provider)
     profile = load_provider_profile(provider, path)
     changes: dict[str, str] = {}
 
@@ -174,12 +279,28 @@ def update_from_outcome(
 
 def format_profile_context(provider: str, path: Path | None = None) -> str:
     """Format provider profile as context for the system prompt."""
-    profile = load_provider_profile(provider, path)
+    provider = canonical_provider_name(provider)
+    data = _read_all(path or _DEFAULT_PATH)
+    shared = _load_shared_profile_from_data(data)
+    profile = _merge_profile_layers(shared, data.get(provider, {}))
+    provider_overlay = data.get(provider, {})
     total = profile.get("total_cycles", 0)
-    if total == 0:
+    if not _profile_has_context(shared) and not _profile_has_context(profile):
         return ""
 
-    parts = [f"Provider: {provider} ({total} cycles)"]
+    parts = []
+
+    shared_failures = shared.get("common_failures", [])
+    if shared_failures:
+        parts.append(
+            f"Shared DELFIN failure patterns: {', '.join(shared_failures[-5:])}"
+        )
+
+    shared_rules = shared.get("tool_usage", {}).get("rules", [])
+    if shared_rules:
+        parts.append(f"Shared DELFIN tool rules: {', '.join(shared_rules[:5])}")
+
+    parts.append(f"Provider: {provider} ({total} cycles)")
 
     # Success rates
     rates = profile.get("success_rate", {})
@@ -188,12 +309,14 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
         parts.append(f"Success rates: {', '.join(rate_strs)}")
 
     # Common failures
-    failures = profile.get("common_failures", [])
+    failures = provider_overlay.get("common_failures", [])
     if failures:
-        parts.append(f"Known failure patterns: {', '.join(failures[-5:])}")
+        parts.append(
+            f"Provider-specific failure patterns: {', '.join(failures[-5:])}"
+        )
 
     # Denied patterns
-    denied = profile.get("denied_patterns", [])
+    denied = provider_overlay.get("denied_patterns", [])
     if denied:
         parts.append(
             f"Previously denied commands: {', '.join(denied[-5:])}"

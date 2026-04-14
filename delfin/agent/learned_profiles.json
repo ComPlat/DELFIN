@@ -1,9 +1,57 @@
 {
+  "shared": {
+    "meta": {
+      "last_updated": "2026-04-14",
+      "profile_version": "3.0",
+      "scope": "Repo-wide DELFIN baseline inherited by all providers"
+    },
+    "common_failures": [
+      "generic QM answers without search_docs",
+      "reading large DELFIN modules without grep-first narrowing",
+      "under-specifying verification after Python edits",
+      "overexplaining instead of file:line + impact"
+    ],
+    "communication": {
+      "language": "de",
+      "style": "terse_diffs",
+      "rules": [
+        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
+        "file:line + change, one sentence — no prose",
+        "No confirmation questions on clear tasks",
+        "After every 3rd tool call in a sequence, emit a one-line progress status",
+        "Flag risk proactively before editing SLURM/runtime/scheduler files"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Grep before Read — never >200 lines at once",
+        "Read(offset, limit) after Grep, never whole file",
+        "Independent tool calls always in parallel",
+        "Run pytest plus syntax check after every Python edit",
+        "For chemistry questions: search_docs before answering"
+      ],
+      "environment_detection": "python -c 'import delfin' first, then local repo tests before broader probing"
+    },
+    "domain": {
+      "weaknesses": [
+        "QM/method guidance must stay doc-first",
+        "Large DELFIN monoliths require grep-first narrowing",
+        "Scheduler/runtime edits need explicit risk framing"
+      ]
+    },
+    "anti_patterns": [
+      "Reading entire file when >200 lines",
+      "Sequential tool calls on independent tasks",
+      "Forgetting tests after code changes",
+      "Generic ORCA/xTB answers instead of search_docs",
+      "Multi-paragraph explanations instead of one-liner diffs"
+    ]
+  },
   "claude": {
     "meta": {
       "last_updated": "2026-04-14",
       "total_sessions": 1,
-      "profile_version": "2.2"
+      "profile_version": "3.0"
     },
     "preferred_model": {},
     "thinking_budget_mult": 1.0,
@@ -16,11 +64,7 @@
       "dashboard": 0.9
     },
     "common_failures": [
-      "reading entire large files instead of grep-first",
-      "sequential tool calls on independent tasks",
-      "generic QM answers without search_docs",
-      "forgetting pytest after code changes",
-      "multi-paragraph explanations instead of one-liner diffs"
+      "dashboard edits drifting into longer prose than the UI needs"
     ],
     "error_patterns": [
       {
@@ -47,23 +91,13 @@
     ],
     "total_cycles": 0,
     "communication": {
-      "language": "de",
-      "style": "terse_diffs",
       "rules": [
-        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
-        "file:line + change, one sentence — no prose",
-        "No confirmation questions on clear tasks",
         "No Co-Authored-By in commits",
-        "After every 3rd tool call in a sequence, emit a one-line progress status",
-        "Dashboard actions: ACTION line + max 5 words explanation",
-        "Flag risk proactively before editing SLURM/runtime/scheduler files"
+        "Dashboard actions: ACTION line + max 5 words explanation"
       ]
     },
     "tool_usage": {
       "rules": [
-        "Grep before Read — never >200 lines at once",
-        "Read(offset, limit) after Grep, never whole file",
-        "Independent tool calls always in parallel",
         "pytest in background after every code change",
         "Agent subprocesses for research spanning >3 files"
       ],
@@ -215,28 +249,66 @@
           },
           "warning": "Largest module — ALWAYS Grep, never Read whole file"
         },
-        "qm_runtime.py": {"lines": 523},
-        "runtime_setup.py": {"lines": 1846},
-        "pipeline.py": {"lines": 9},
-        "parallel_classic_manually.py": {"lines": 18},
-        "dashboard/backend_local.py": {"lines": 584},
-        "dashboard/backend_slurm.py": {"lines": 504},
+        "qm_runtime.py": {
+          "lines": 523
+        },
+        "runtime_setup.py": {
+          "lines": 1846
+        },
+        "pipeline.py": {
+          "lines": 9
+        },
+        "parallel_classic_manually.py": {
+          "lines": 18
+        },
+        "dashboard/backend_local.py": {
+          "lines": 584
+        },
+        "dashboard/backend_slurm.py": {
+          "lines": 504
+        },
         "dashboard/tab_agent.py": {
           "lines": 7435,
-          "key_functions": {"create_tab": 931},
+          "key_functions": {
+            "create_tab": 931
+          },
           "warning": "Large module — always Grep first"
         }
       },
       "test_mapping": {
-        "build_up_complex.py": ["(no dedicated test yet)"],
-        "cli.py": ["test_cli_recalc.py", "test_cli_step_pipeline.py", "test_cli_voila.py"],
-        "config.py": ["test_co2_control_overrides.py", "test_functional_contracts.py"],
-        "orca_recovery.py": ["test_orca_workflow_contracts.py", "test_orca_process_tracking.py"],
-        "qm_runtime.py": ["test_qm_runtime.py"],
-        "runtime_setup.py": ["test_runtime_setup.py"],
-        "dashboard/backend_local.py": ["test_backend_local.py"],
-        "dashboard/backend_slurm.py": ["test_backend_slurm.py"],
-        "dashboard/tab_agent.py": ["test_agent_engine.py", "test_agent_prompt_loader.py", "test_agent_session_store.py"]
+        "build_up_complex.py": [
+          "(no dedicated test yet)"
+        ],
+        "cli.py": [
+          "test_cli_recalc.py",
+          "test_cli_step_pipeline.py",
+          "test_cli_voila.py"
+        ],
+        "config.py": [
+          "test_co2_control_overrides.py",
+          "test_functional_contracts.py"
+        ],
+        "orca_recovery.py": [
+          "test_orca_workflow_contracts.py",
+          "test_orca_process_tracking.py"
+        ],
+        "qm_runtime.py": [
+          "test_qm_runtime.py"
+        ],
+        "runtime_setup.py": [
+          "test_runtime_setup.py"
+        ],
+        "dashboard/backend_local.py": [
+          "test_backend_local.py"
+        ],
+        "dashboard/backend_slurm.py": [
+          "test_backend_slurm.py"
+        ],
+        "dashboard/tab_agent.py": [
+          "test_agent_engine.py",
+          "test_agent_prompt_loader.py",
+          "test_agent_session_store.py"
+        ]
       }
     },
     "task_performance": {
@@ -267,19 +339,18 @@
       }
     },
     "anti_patterns": [
-      "Reading entire file when >200 lines",
-      "Sequential tool calls on independent tasks",
       "Confirmation questions on unambiguous tasks",
-      "Qualitative statements without numeric values",
-      "Forgetting tests after code changes",
-      "Generic ORCA/xTB answers instead of search_docs",
-      "Multi-paragraph explanations instead of one-liner diffs"
+      "Qualitative statements without numeric values"
     ],
     "session_log": [
       {
         "date": "2026-04-14",
         "session": 1,
-        "tasks": ["Profile creation", "Self-optimization analysis", "System-wide agent optimization"],
+        "tasks": [
+          "Profile creation",
+          "Self-optimization analysis",
+          "System-wide agent optimization"
+        ],
         "outcome": "success",
         "errors": [],
         "learnings": [
@@ -316,7 +387,65 @@
         "date": "2026-04-14",
         "change": "v2.1 → v2.2: Added verification checklist, solo auto-retry, git context at session start, code templates in playbooks, proactive domain recommendations, structured error_patterns with root cause and fix",
         "impact": "Closes gap with CLI tools: systematic verification, self-healing test failures, domain expertise surfaced proactively"
+      },
+      {
+        "date": "2026-04-14",
+        "change": "v2.2 → v3.0: Moved repo-wide DELFIN rules into shared baseline and kept only claude-specific overlays here",
+        "impact": "Separates global DELFIN guidance from provider-specific behavior"
       }
     ]
+  },
+  "openai": {
+    "preferred_model": {
+      "solo": "gpt-5.4",
+      "reviewed": "gpt-5.4",
+      "quick": "gpt-5.4-mini"
+    },
+    "thinking_budget_mult": 1.1,
+    "avg_cost_per_task": {
+      "coding": 7.392
+    },
+    "success_rate": {
+      "solo": 0.898,
+      "quick": 0.78,
+      "reviewed": 0.84,
+      "cluster": 0.74,
+      "dashboard": 0.9
+    },
+    "common_failures": [
+      "editing before verifying provider/module wiring"
+    ],
+    "total_cycles": 1,
+    "updated_at": "2026-04-14 11:46:34",
+    "meta": {
+      "last_updated": "2026-04-14",
+      "total_sessions": 0,
+      "profile_version": "3.0",
+      "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
+    },
+    "error_patterns": [
+      {
+        "error": "Codex/OpenAI sessions inherited claude profile context",
+        "root_cause": "Prompt loader and profile lookup defaulted to claude when provider wiring was missing",
+        "fix": "Normalize provider aliases and propagate active provider into PromptLoader",
+        "date": "2026-04-14",
+        "prevents": "Codex learning signals being mixed with claude guidance"
+      }
+    ],
+    "communication": {
+      "rules": [
+        "State plan briefly before touching >1 DELFIN file"
+      ]
+    },
+    "tool_usage": {
+      "rules": []
+    },
+    "domain": {
+      "strengths": [
+        "Fast repo-wide triage across DELFIN agent and dashboard modules",
+        "Test-driven Python edits with bounded patches",
+        "Codex/OpenAI model selection awareness for solo vs reviewed work"
+      ]
+    }
   }
 }
