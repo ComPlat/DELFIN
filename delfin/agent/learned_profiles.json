@@ -706,5 +706,202 @@
         "prevents": "Solo-mode learnings and pending DELFIN follow-ups disappearing between sessions"
       }
     ]
+  },
+  "kit": {
+    "preferred_model": {
+      "solo": "Azure GPT-5.1",
+      "reviewed": "Azure GPT-5.1",
+      "quick": "Azure GPT-5-mini",
+      "reasoning_heavy": "Azure o3"
+    },
+    "avg_cost_per_task": {
+      "coding": 0.04
+    },
+    "success_rate": {
+      "solo": 0.639,
+      "quick": 0.7,
+      "reviewed": 0.8,
+      "cluster": 0.65,
+      "dashboard": 0.85
+    },
+    "task_performance": {
+      "coding": {
+        "success_rate": 0.884,
+        "notes": "Azure GPT-5.1 via KIT Toolbox is cost-efficient (~$0.03/task) and reliable for DELFIN code edits.",
+        "thinking_budget_mult": 1.0
+      },
+      "chemistry": {
+        "success_rate": 0.7,
+        "notes": "Doc-first is critical — KIT models answer generic QM otherwise.",
+        "thinking_budget_mult": 1.3
+      }
+    },
+    "common_failures": [
+      "searching docs repeatedly without synthesizing an answer (tool-call budget waste)",
+      "attempting git commit despite explicit user instruction to leave commits to the user",
+      "generic QM answers when search_docs returns few hits — fall back to ORCA manual + methodology doc instead of guessing",
+      "reading DELFIN monoliths before narrowing to concrete call sites",
+      "missing KIT-specific constraints (SLURM partitions, micromamba envs, /pfs/ paths)"
+    ],
+    "total_cycles": 2,
+    "updated_at": "2026-04-14 15:40:27",
+    "meta": {
+      "profile_version": "1.2",
+      "total_sessions": 1,
+      "bootstrap_note": "KIT Toolbox (Azure-hosted GPT/o-series) seed profile for DELFIN-specific self-optimization",
+      "provider_description": "KIT Toolbox proxies Azure OpenAI models (GPT-5.1/5/5-mini/5-nano, o3, o4-mini, GPT-4.1 family) via ki-toolbox.scc.kit.edu. KIT SCC infrastructure — data-protection compliant, no external telemetry.",
+      "CAPABILITY_LIMIT": "KIT uses raw Chat-Completions API and only exposes doc/calc tools (search_docs, read_section, list_docs, search_calcs, get_calc_info). It has NO Read/Edit/Write/Bash/Grep/Glob — unlike claude (Claude Code CLI subprocess) and openai (Codex CLI subprocess). See api_client.py:626 (_DOC_TOOLS_OPENAI) and :1069.",
+      "suitable_tasks": [
+        "Chemistry Q&A (ORCA/xTB methodology, functional selection, ESD, TDDFT)",
+        "Benchmark lookup via search_calcs / get_calc_info",
+        "Doc synthesis with citation (ORCA manual, DELFIN manual, methodology)",
+        "Dashboard usage guidance (explaining UI, parameters, workflow steps)",
+        "Quick analysis with bounded scope",
+        "Data-protection-sensitive queries (stays within KIT infrastructure)"
+      ],
+      "unsuitable_tasks": [
+        "Code edits — no Edit/Write tool",
+        "Profile or JSON maintenance — no Read/Bash for repo files",
+        "Multi-file refactoring — no Grep/Glob",
+        "Test execution — no Bash",
+        "Git operations — no shell access",
+        "Any task needing inspection of repo files beyond indexed chemistry docs"
+      ],
+      "routing_recommendation": "Code/repo work → claude or openai provider. Chemistry/docs/dashboard-help/analysis → KIT is appropriate and cost-efficient."
+    },
+    "communication": {
+      "rules": [
+        "German for user-facing conversation (matches KIT user base)",
+        "State plan briefly before touching >1 DELFIN file",
+        "Verify provider/module wiring with Grep before editing agent, dashboard, or provider paths",
+        "For backend_slurm.py, runtime_setup.py, qm_runtime.py, parallel_classic_manually.py, orca_recovery.py: state risk first and keep patches narrow",
+        "For ORCA/xTB/method questions, use search_docs or search_calcs before answering",
+        "For pipeline.py, config.py, and parallel_classic_manually.py: grep first, then read only the narrowed region",
+        "Keep solo as default; switch to reviewed behavior only for high-risk scheduler/runtime work",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files",
+        "No Co-Authored-By line in any commit message",
+        "Prefer Azure GPT-5.1 for DELFIN agent work; suggest Azure o3 only when task is pure reasoning with few tool calls"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "CRITICAL TOOL ROUTING: search_docs is ONLY for chemistry documentation (ORCA manual, DELFIN manual, methodology). For ANY file inside this repo (including delfin/agent/learned_profiles.json, .py, .md, .json, .ipynb) use Read or Bash — NEVER search_docs.",
+        "CRITICAL LOOP-GUARD: Maximum 3 search_docs calls per question. After 3 calls with no exact match, STOP searching and SYNTHESIZE an answer from sections already read + ORCA manual general knowledge. State uncertainty explicitly. Continuing to search past 3 calls is a documented failure mode for this provider.",
+        "CRITICAL ORDER OF OPERATIONS: If the user prompt says \"read X first\" or \"lies zuerst X\", the FIRST tool call MUST be Read(X) — not search_docs, not list_docs, not anything else. File-editing tasks come BEFORE chemistry questions unless explicitly reversed.",
+        "Max 40 tool calls per task; after that, stop and summarize current findings",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files",
+        "If the same command fails twice, explain the failure and move on instead of retrying",
+        "If the same search_docs query returns the same [] result twice, do NOT reword and retry — switch tool (Read/Grep/Bash) or synthesize from existing context",
+        "For chemistry questions: max 3 search_docs + max 3 read_section, then MUST produce answer. search_calcs for benchmark matches is optional, not a substitute for answering",
+        "Grep before Read — never Read >200 lines at once"
+      ],
+      "environment_detection": "python -c 'import delfin' first, then local repo tests before broader probing. On BwUniCluster use micromamba only as fallback.",
+      "tool_routing_cheatsheet": {
+        "Read repo file (.py, .json, .md, .ipynb)": "Read tool",
+        "Find file in repo": "Glob tool",
+        "Search code content in repo": "Grep tool",
+        "Shell / system / python -c": "Bash tool",
+        "Chemistry docs (ORCA manual, DELFIN manual, methodology)": "search_docs / read_section",
+        "Benchmark calculation database": "search_calcs / get_calc_info",
+        "Edit repo file": "Edit or Write tool",
+        "NEVER use search_docs for": "Repo files, config, code, profile JSON, notebooks, anything under the project directory"
+      }
+    },
+    "domain": {
+      "weaknesses": [
+        "Provider wiring and module entry points need explicit verification before edits",
+        "Cluster/runtime changes need stricter validation than local dashboard work",
+        "QM guidance quality drops if doc-first lookup is skipped",
+        "Azure GPT-5.1 tends to over-search docs before committing to an answer — cap at 3-4 search_docs calls then synthesize"
+      ],
+      "strengths": [
+        "Cost-efficient DELFIN code edits via Azure GPT-5.1 through KIT Toolbox",
+        "Test-driven Python edits with bounded patches",
+        "Fast repo-wide triage across DELFIN agent and dashboard modules",
+        "KIT-Cluster awareness: BwUniCluster SLURM partitions, /pfs/ storage, micromamba envs"
+      ]
+    },
+    "anti_patterns": [
+      "DOCUMENTED FAILURE: Using search_docs to look for repo files like learned_profiles.json — search_docs only indexes chemistry documentation, repo files need Read/Bash",
+      "DOCUMENTED FAILURE: Reworking the same search_docs query 5-10 times with minor variations when results are sparse — after 3 attempts, synthesize instead",
+      "DOCUMENTED FAILURE: Ignoring prompt ordering (\"lies zuerst X\") and jumping straight to the second task — always execute file-read / file-edit steps before chemistry Q&A"
+    ],
+    "safety_rules": [
+      "Never touch /pfs/data*/home/*/software/ outside the current repo",
+      "Never modify SLURM submit scripts or partition configs without explicit user approval",
+      "Never commit or push — KIT project may have audit requirements; leave git operations to the user",
+      "Never export chat/session data outside ~/agent_workspace/",
+      "Never run real ORCA/xTB calculations in tests — always use mocks"
+    ],
+    "playbooks": {
+      "build_up_complex": {
+        "description": "Editing the metal complex builder (PSO swarm, ligand placement)",
+        "steps": [
+          "1. Grep for the target function name in build_up_complex.py",
+          "2. Read only the function body (offset+limit)",
+          "3. Check _pso_fitness, _compute_clash_score, _prepare_force_field_terms for side effects",
+          "4. Edit, then run: pytest tests/ -x -q -k 'not browser' in background",
+          "5. If touching VdW/clash logic: verify radii are VdW (not covalent), threshold 75% of sum"
+        ],
+        "key_invariants": [
+          "PSO places ligands as rigid bodies (6 DOF) — never modify intra-ligand topology",
+          "VdW radii for clash detection, NOT covalent radii",
+          "Procrustes init for bidentate+ ligands (>=2 donors → SVD alignment)"
+        ]
+      },
+      "chemistry_qa": {
+        "description": "Answering QM/method questions doc-first",
+        "steps": [
+          "1. search_docs with the specific method name + property (max 2 calls)",
+          "2. If hits found: read_section on the most relevant match",
+          "3. search_calcs for benchmark calculations matching the system",
+          "4. Synthesize answer with ORCA keyword, basis set, solvent, and doc citation",
+          "5. If no hits: fall back to ORCA manual + delfin_methodology, state limitations explicitly"
+        ],
+        "key_invariants": [
+          "Always cite doc_id + section_id when quoting",
+          "Give concrete ORCA input snippet when possible",
+          "State method limitations (e.g. charge-transfer failure of pure GGAs)"
+        ]
+      }
+    },
+    "error_patterns": [
+      {
+        "error": "Agent looped on search_docs without producing a chemistry answer (16+ tool calls, no final response)",
+        "root_cause": "KIT/Azure GPT-5.1 over-searches when initial results are sparse, instead of synthesizing from available knowledge + 2-3 doc hits",
+        "fix": "Cap search_docs at 3-4 calls per question; after that, synthesize an answer using ORCA manual + general QM knowledge and explicitly flag uncertainty",
+        "date": "2026-04-14",
+        "prevents": "Tool-call budget exhaustion without delivering an answer"
+      }
+    ],
+    "next_steps": [
+      {
+        "task": "Track FAIL/PARTIAL outcomes for KIT provider to refine success_rate per task type",
+        "status": "pending",
+        "why": "Only 1 cycle recorded so far — need more data for reliable adaptive routing"
+      },
+      {
+        "task": "Benchmark Azure o3 vs GPT-5.1 on DELFIN chemistry_qa tasks",
+        "status": "pending",
+        "why": "o3 may be better for deep reasoning on QM method selection"
+      }
+    ],
+    "optimization_history": [
+      {
+        "date": "2026-04-14",
+        "change": "v1.0: Initial KIT profile modeled after openai profile. Added Azure model preferences, KIT-specific safety rules, chemistry_qa playbook to prevent doc-search looping.",
+        "impact": "KIT sessions now start with full DELFIN context instead of auto-stats only"
+      },
+      {
+        "date": "2026-04-14",
+        "change": "v1.0 -> v1.1: Tightened tool_usage rules after two observed KIT sessions where Azure GPT-5.1 looped on search_docs for 16-28 calls without producing an answer or file edit. Added explicit tool routing cheatsheet, 3-call hard cap on search_docs, CRITICAL ORDER OF OPERATIONS rule, and three DOCUMENTED FAILURE anti-patterns.",
+        "impact": "Future KIT sessions should (a) use Read for repo files instead of search_docs, (b) break out of search loops after 3 attempts, (c) execute file-read/edit tasks before chemistry Q&A when prompt orders them that way."
+      },
+      {
+        "date": "2026-04-14",
+        "change": "v1.1 -> v1.2: Documented the actual capability limit. Code inspection of api_client.py:626+1069 confirmed KIT provider only receives doc/calc tools via Chat-Completions function-calling — no Read/Edit/Bash/Grep/Glob. The prior v1.1 rules telling the model to 'use Read for repo files' were impossible to follow because the tool simply does not exist in the KIT tool inventory. Added CAPABILITY_LIMIT, suitable_tasks, unsuitable_tasks, routing_recommendation to meta.",
+        "impact": "KIT is now correctly scoped as a chemistry-QA / docs / dashboard-guidance / analysis provider. Code edits and repo maintenance must be routed to claude or openai (both spawn full-featured CLI subprocesses). Prevents future sessions from being given impossible tasks."
+      }
+    ]
   }
 }
