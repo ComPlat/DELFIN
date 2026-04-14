@@ -1218,7 +1218,9 @@ class CodexCLIClient(_BaseClient):
     _PERM_TO_CODEX_FLAGS: dict[str, list[str]] = {
         "plan":                ["--sandbox", "read-only"],
         "default":             ["--sandbox", "workspace-write"],
-        "acceptEdits":         ["--full-auto", "--sandbox", "danger-full-access"],  # repo_free: needs git write
+        # repo_free: full disk access (git needs .git/ writable) but still
+        # asks for approval on untrusted commands — not fully autonomous.
+        "acceptEdits":         ["-a", "untrusted", "--sandbox", "danger-full-access"],
         "auto":                ["--full-auto", "--sandbox", "danger-full-access"],
         "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
     }
