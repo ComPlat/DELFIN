@@ -20,7 +20,7 @@ import ipywidgets as widgets
 _AGENT_CSS = """\
 <style>
 .delfin-agent-chat {
-    max-height: calc(100vh - 420px);
+    max-height: calc(100vh - 460px);
     overflow-y: auto;
     overflow-anchor: auto;
     padding: 10px;
@@ -1438,14 +1438,14 @@ def create_tab(ctx):
 
     # Input area
     input_textarea = widgets.Textarea(
-        placeholder="Message... (Enter = send, Shift+Enter = newline)",
-        layout=widgets.Layout(width="100%", height="50px"),
+        placeholder="Message the agent... (Enter = send, Shift+Enter = newline)",
+        layout=widgets.Layout(width="100%", height="80px"),
     )
     input_textarea.add_class("delfin-agent-input")
     send_btn = widgets.Button(
         description="Send",
         button_style="primary",
-        layout=widgets.Layout(width="80px", height="50px"),
+        layout=widgets.Layout(width="80px", height="80px"),
     )
     input_row = widgets.HBox(
         [input_textarea, send_btn],
@@ -6317,6 +6317,20 @@ def create_tab(ctx):
                         _q_info = _detect_question(_full_text)
                         if _q_info:
                             _show_question_ui(_q_info)
+
+                    # Solo/dashboard outcome tracking (lightweight, per-turn)
+                    if engine.mode in ("solo", "dashboard") and chunks:
+                        _solo_turns = state.get("_solo_turns", 0) + 1
+                        state["_solo_turns"] = _solo_turns
+                        if _solo_turns % 5 == 0:
+                            try:
+                                engine.record_cycle_outcome(
+                                    verdict="PASS",
+                                    user_task=original_task[:200] if original_task else "",
+                                    start_time=state.get("session_start_time"),
+                                )
+                            except Exception:
+                                pass
 
                     # Show per-role cost (only for pipeline modes, not solo/dashboard)
                     _role_cost = engine.cost_usd - _cost_before
