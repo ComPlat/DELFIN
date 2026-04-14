@@ -1045,7 +1045,7 @@ class OpenAIClient(_BaseClient):
 
         _total_in = 0
         _total_out = 0
-        _MAX_TOOL_ROUNDS = 5
+        _MAX_TOOL_ROUNDS = 15
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             kwargs: dict[str, Any] = {
@@ -1180,6 +1180,17 @@ class OpenAIClient(_BaseClient):
                 stop_reason=finish_reason or "end_turn",
             )
             break
+        else:
+            # Exhausted all tool rounds without a final text response.
+            # Emit a message_delta so the engine knows streaming is done.
+            cost = self._estimate_cost(_total_in, _total_out)
+            yield StreamEvent(
+                type="message_delta",
+                input_tokens=_total_in,
+                output_tokens=_total_out,
+                cost_usd=cost,
+                stop_reason="max_tool_rounds",
+            )
 
 
 # ---------------------------------------------------------------------------
