@@ -316,7 +316,11 @@ class AgentEngine:
             "session_id": self.session_id,
         }
 
-    def _build_current_system_prompt(self, memory_context: str = "") -> str:
+    def _build_current_system_prompt(
+        self,
+        memory_context: str = "",
+        task_text: str = "",
+    ) -> str:
         """Build the system prompt for the current role."""
         role = self.current_role
         if not role:
@@ -330,6 +334,7 @@ class AgentEngine:
             role_index=self.current_role_index,
             prior_outputs=self.role_outputs if self.role_outputs else None,
             memory_context=memory_context,
+            task_text=task_text,
         )
 
     def stream_response(
@@ -378,7 +383,10 @@ class AgentEngine:
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
-        system_prompt = self._build_current_system_prompt(memory_context)
+        system_prompt = self._build_current_system_prompt(
+            memory_context,
+            task_text=user_message,
+        )
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)

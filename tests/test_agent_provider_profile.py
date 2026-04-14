@@ -271,3 +271,27 @@ def test_engine_passes_provider_to_prompt_loader(agent_tree):
         )
 
     assert engine.loader._active_provider == "openai"
+
+
+def test_engine_passes_task_text_to_prompt_loader(agent_tree):
+    from delfin.agent.engine import AgentEngine
+
+    mock_client = MagicMock()
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(
+            repo_dir=agent_tree,
+            backend="cli",
+            provider="openai",
+            mode="quick",
+            pack_dir=agent_tree,
+        )
+
+    with patch.object(engine.loader, "build_system_prompt", return_value="PROMPT") as build_prompt:
+        prompt = engine._build_current_system_prompt(
+            memory_context="mem",
+            task_text="Fix delfin/build_up_complex.py",
+        )
+
+    assert prompt == "PROMPT"
+    build_prompt.assert_called_once()
+    assert build_prompt.call_args.kwargs["task_text"] == "Fix delfin/build_up_complex.py"

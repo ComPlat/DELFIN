@@ -422,7 +422,7 @@
       "coding": 7.392
     },
     "success_rate": {
-      "solo": 0.913,
+      "solo": 0.926,
       "quick": 0.78,
       "reviewed": 0.84,
       "cluster": 0.74,
@@ -430,7 +430,7 @@
     },
     "task_performance": {
       "coding": {
-        "success_rate": 0.864
+        "success_rate": 0.884
       }
     },
     "common_failures": [
@@ -439,8 +439,8 @@
       "answering ORCA/xTB/method questions without doc-first lookup",
       "reading DELFIN monoliths before narrowing to concrete call sites"
     ],
-    "total_cycles": 2,
-    "updated_at": "2026-04-14 12:55:28",
+    "total_cycles": 3,
+    "updated_at": "2026-04-14 13:03:31",
     "meta": {
       "total_sessions": 0,
       "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
@@ -474,6 +474,13 @@
         "fix": "Normalize provider aliases and propagate active provider into PromptLoader",
         "date": "2026-04-14",
         "prevents": "Codex learning signals being mixed with claude guidance"
+      },
+      {
+        "error": "Provider playbooks existed in learned_profiles.json but never reached the active system prompt",
+        "root_cause": "PromptLoader only loaded static pack playbooks and had no task-text-based selection from profile playbooks/codebase_map",
+        "fix": "Pass current task text from AgentEngine into PromptLoader and inject the matched provider playbook via provider_profile formatting helpers",
+        "date": "2026-04-14",
+        "prevents": "Known-module tasks running without the focused DELFIN playbook for that module"
       }
     ]
   }

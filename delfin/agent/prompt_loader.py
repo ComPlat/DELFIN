@@ -69,7 +69,25 @@ class PromptLoader:
         try:
             from delfin.agent.provider_profile import format_profile_context
             provider = getattr(self, "_active_provider", "claude")
-            return format_profile_context(provider)
+            profile_path = getattr(self, "_profile_path", None)
+            return format_profile_context(provider, profile_path)
+        except Exception:
+            return ""
+
+    def _load_relevant_playbook_context(self, task_text: str) -> str:
+        """Load a task-specific playbook from the learned provider profile."""
+        try:
+            from delfin.agent.provider_profile import (
+                format_relevant_playbook_context,
+            )
+
+            provider = getattr(self, "_active_provider", "claude")
+            profile_path = getattr(self, "_profile_path", None)
+            return format_relevant_playbook_context(
+                provider,
+                task_text,
+                profile_path,
+            )
         except Exception:
             return ""
 
@@ -163,6 +181,7 @@ class PromptLoader:
         role_index: int = 0,
         prior_outputs: dict[str, str] | None = None,
         memory_context: str = "",
+        task_text: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -182,8 +201,11 @@ class PromptLoader:
             Outputs from previous roles in this cycle.
         memory_context : str
             Persistent memory to inject.
+        task_text : str
+            Current task text used to select a relevant profile playbook.
         """
         sections = []
+        relevant_playbook = self._load_relevant_playbook_context(task_text)
 
         # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
@@ -198,6 +220,8 @@ class PromptLoader:
             profile_ctx = self._load_profile_context()
             if profile_ctx:
                 sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+            if relevant_playbook:
+                sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
             if memory_context:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
             return "\n\n".join(sections)
@@ -224,6 +248,10 @@ class PromptLoader:
                     )
                     if playbooks:
                         sections.append(playbooks)
+                    if relevant_playbook:
+                        sections.append(
+                            f"--- Relevant Playbook ---\n{relevant_playbook}"
+                        )
             else:
                 # Brief context: first paragraph + key paths only
                 lines = shared.split("\n")

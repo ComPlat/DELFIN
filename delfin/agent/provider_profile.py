@@ -15,6 +15,7 @@ Safety:
 from __future__ import annotations
 
 import json
+import re
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -44,6 +45,8 @@ _PROVIDER_ALIASES = {
     "openai": "openai",
     "kit": "kit",
 }
+
+_PLAYBOOK_STOPWORDS = {"editing", "changes", "change"}
 
 _SHARED_PROFILE_KEY = "shared"
 _NO_DIFF = object()
@@ -168,6 +171,92 @@ def _profile_has_context(profile: dict[str, Any]) -> bool:
             return True
 
     return False
+
+
+def _tokenize_identifier(value: str) -> set[str]:
+    """Split identifiers like ``dashboard/tab_agent.py`` into search tokens."""
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", (value or "").lower())
+        if token and token not in _PLAYBOOK_STOPWORDS
+    }
+    return tokens
+
+
+def _playbook_aliases(playbook_key: str, module_name: str) -> list[str]:
+    """Return canonical aliases that may appear in a task description."""
+    aliases = {
+        playbook_key.lower(),
+        playbook_key.lower().removesuffix("_editing"),
+        playbook_key.lower().removesuffix("_changes"),
+        module_name.lower(),
+    }
+    module_path = Path(module_name)
+    aliases.add(module_path.name.lower())
+    aliases.add(module_path.stem.lower())
+    if module_name and not module_name.startswith("delfin/"):
+        aliases.add(f"delfin/{module_name.lower()}")
+    return [alias for alias in aliases if alias]
+
+
+def _find_relevant_playbook(
+    profile: dict[str, Any],
+    task_text: str,
+) -> tuple[str, dict[str, Any], str] | None:
+    """Resolve the best-matching playbook for a task description."""
+    lower_task = (task_text or "").lower()
+    if not lower_task.strip():
+        return None
+
+    playbooks = profile.get("playbooks", {})
+    if not isinstance(playbooks, dict) or not playbooks:
+        return None
+
+    modules = profile.get("codebase_map", {}).get("modules", {})
+    module_names = list(modules.keys()) if isinstance(modules, dict) else []
+    best: tuple[int, int, str, dict[str, Any], str] | None = None
+
+    for playbook_key, playbook in playbooks.items():
+        playbook_tokens = _tokenize_identifier(playbook_key)
+        matched_module = ""
+        matched_score = -1
+        for module_name in module_names:
+            overlap = len(
+                playbook_tokens & _tokenize_identifier(module_name)
+            )
+            if overlap > matched_score:
+                matched_score = overlap
+                matched_module = module_name
+
+        for alias in _playbook_aliases(playbook_key, matched_module):
+            if "/" in alias or "." in alias:
+                position = lower_task.find(alias)
+                if position < 0:
+                    continue
+            else:
+                match = re.search(
+                    rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])",
+                    lower_task,
+                )
+                if not match:
+                    continue
+                position = match.start()
+
+            candidate = (
+                position,
+                -len(alias),
+                playbook_key,
+                playbook,
+                matched_module,
+            )
+            if best is None or candidate < best:
+                best = candidate
+
+    if best is None:
+        return None
+
+    _, _, key, playbook, module_name = best
+    return key, playbook, module_name
 
 
 def load_shared_profile(path: Path | None = None) -> dict[str, Any]:
@@ -352,3 +441,45 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
         )
 
     return "\n".join(parts)
+
+
+def format_relevant_playbook_context(
+    provider: str,
+    task_text: str,
+    path: Path | None = None,
+) -> str:
+    """Format the single most relevant playbook for the current task."""
+    profile = load_provider_profile(provider, path)
+    resolved = _find_relevant_playbook(profile, task_text)
+    if not resolved:
+        return ""
+
+    playbook_key, playbook, module_name = resolved
+    tests = (
+        profile.get("codebase_map", {})
+        .get("test_mapping", {})
+        .get(module_name, [])
+    )
+
+    lines = ["Relevant Playbook"]
+    if module_name:
+        lines.append(f"Target module: {module_name}")
+    description = playbook.get("description", "")
+    if description:
+        lines.append(f"Focus: {description}")
+
+    steps = playbook.get("steps", [])
+    if steps:
+        lines.append("Steps:")
+        lines.extend(str(step) for step in steps)
+
+    invariants = playbook.get("key_invariants", [])
+    if invariants:
+        lines.append("Key invariants:")
+        lines.extend(f"- {item}" for item in invariants)
+
+    if tests:
+        lines.append(f"Related tests: {', '.join(str(test) for test in tests)}")
+
+    lines.append(f"Playbook key: {playbook_key}")
+    return "\n".join(lines)

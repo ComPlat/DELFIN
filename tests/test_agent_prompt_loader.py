@@ -1,5 +1,6 @@
 """Tests for delfin.agent.prompt_loader."""
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -185,6 +186,92 @@ def test_build_system_prompt_with_memory(agent_tree):
     )
     assert "Project Memory" in prompt
     assert "refactored config.py" in prompt
+
+
+def test_build_system_prompt_injects_relevant_profile_playbook(agent_tree):
+    from delfin.agent.prompt_loader import PromptLoader
+
+    profile_path = agent_tree / "profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "shared": {
+                    "playbooks": {
+                        "build_up_complex": {
+                            "description": "Editing the metal complex builder",
+                            "steps": [
+                                "1. Grep for the target function name in build_up_complex.py",
+                            ],
+                            "key_invariants": [
+                                "PSO places ligands as rigid bodies",
+                            ],
+                        }
+                    },
+                    "codebase_map": {
+                        "modules": {
+                            "build_up_complex.py": {"lines": 1531},
+                        },
+                        "test_mapping": {
+                            "build_up_complex.py": ["test_build_up_complex.py"],
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = profile_path
+    prompt = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        task_text="Fix a regression in delfin/build_up_complex.py",
+    )
+
+    assert "Relevant Playbook" in prompt
+    assert "Target module: build_up_complex.py" in prompt
+    assert "Editing the metal complex builder" in prompt
+    assert "PSO places ligands as rigid bodies" in prompt
+    assert "test_build_up_complex.py" in prompt
+
+
+def test_build_system_prompt_skips_profile_playbook_for_unknown_module(agent_tree):
+    from delfin.agent.prompt_loader import PromptLoader
+
+    profile_path = agent_tree / "profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "shared": {
+                    "playbooks": {
+                        "build_up_complex": {
+                            "description": "Editing the metal complex builder",
+                            "steps": ["1. Grep first"],
+                        }
+                    },
+                    "codebase_map": {
+                        "modules": {
+                            "build_up_complex.py": {"lines": 1531},
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = PromptLoader(agent_tree)
+    loader._active_provider = "openai"
+    loader._profile_path = profile_path
+    prompt = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="quick",
+        task_text="Fix a regression in delfin/unknown_module.py",
+    )
+
+    assert "Target module: build_up_complex.py" not in prompt
 
 
 def test_caching(agent_tree):
