@@ -973,6 +973,7 @@ def create_tab(ctx):
         "_inspector_detail_key": "", # selected cycle inspector detail entry
         "_mode_manual_override": False,
         "_mode_change_internal": False,
+        "_state_lock": __import__("threading").Lock(),  # protects streaming/gen_id/deny_count
     }
 
     # -- widgets -----------------------------------------------------------
@@ -5690,8 +5691,9 @@ def create_tab(ctx):
                 if hasattr(engine.client, "kill"):
                     engine.client.kill()
             # Bump generation so old worker's finally block won't touch UI
-            state["_generation_id"] = state.get("_generation_id", 0) + 1
-            state["streaming"] = False
+            with state["_state_lock"]:
+                state["_generation_id"] = state.get("_generation_id", 0) + 1
+                state["streaming"] = False
             # Finalize any in-progress streaming message
             msgs = state["chat_messages"]
             if msgs and msgs[-1].get("_streaming"):
@@ -5835,10 +5837,11 @@ def create_tab(ctx):
         input_textarea.value = ""
         _append_chat_message("user", user_text)
 
-        state["streaming"] = True
-        state["_generation_id"] = state.get("_generation_id", 0) + 1
-        _my_gen_id = state["_generation_id"]
-        state["_deny_count"] = 0  # Reset retry counter for new message
+        with state["_state_lock"]:
+            state["streaming"] = True
+            state["_generation_id"] = state.get("_generation_id", 0) + 1
+            _my_gen_id = state["_generation_id"]
+            state["_deny_count"] = 0  # Reset retry counter for new message
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
         _update_button_states()
@@ -6123,8 +6126,9 @@ def create_tab(ctx):
                     if readable not in _denied_cmds:
                         _denied_cmds.append(readable)
                     # Track denials to stop retry loops (1 denial = stop)
-                    deny_count = state.get("_deny_count", 0) + 1
-                    state["_deny_count"] = deny_count
+                    with state["_state_lock"]:
+                        deny_count = state.get("_deny_count", 0) + 1
+                        state["_deny_count"] = deny_count
                     if deny_count >= 2:
                         _append_system_message(
                             f"\u26d4 Blocked {deny_count}x — stopping. "
@@ -6208,6 +6212,24 @@ def create_tab(ctx):
                     # Load persistent memory for system prompt
                     from delfin.agent.memory_store import format_memory_context
                     _memory = format_memory_context()
+
+                    # Inject provider profile + denied-command context
+                    try:
+                        from delfin.agent.provider_profile import format_profile_context
+                        _prov = provider_dropdown.value
+                        _prof_ctx = format_profile_context(_prov)
+                        if _prof_ctx:
+                            _memory = (_memory + "\n\n" + _prof_ctx) if _memory else _prof_ctx
+                    except Exception:
+                        pass
+                    _denied = state.get("_denied_commands", [])
+                    if _denied:
+                        _denial_ctx = (
+                            "\n[System] Previously BLOCKED commands in this session: "
+                            + ", ".join(_denied[-5:])
+                            + ". Do NOT retry these."
+                        )
+                        current_msg = current_msg + _denial_ctx
 
                     engine.stream_response(
                         user_message=current_msg,
@@ -6649,7 +6671,7 @@ def create_tab(ctx):
                         )
                         _update_pipeline_display(engine)
 
-                        # --- Persistent Cycle Memory ---
+                        # --- Persistent Cycle Memory + Provider Profile ---
                         try:
                             import json as _json_mem
                             from datetime import datetime as _dt_mem
@@ -6665,6 +6687,24 @@ def create_tab(ctx):
                             }
                             with open(_mem_path, "a", encoding="utf-8") as _mf:
                                 _mf.write(_json_mem.dumps(_cycle_mem) + "\n")
+                        except Exception:
+                            pass
+                        # Self-optimization: record outcome + update provider profile
+                        try:
+                            _denied = state.get("_denied_commands", [])
+                            _opt_changes = engine.record_cycle_outcome(
+                                verdict=_cycle_verdict,
+                                user_task=original_task,
+                                denied_commands=_denied,
+                                start_time=state.get("session_start_time"),
+                            )
+                            if _opt_changes:
+                                _opt_str = "; ".join(
+                                    f"{k}: {v}" for k, v in _opt_changes.items()
+                                )
+                                _append_system_message(
+                                    f"\U0001f504 Self-optimization: {_opt_str}"
+                                )
                         except Exception:
                             pass
 
@@ -6744,8 +6784,11 @@ def create_tab(ctx):
             finally:
                 # Only clean up UI state if no newer generation has started
                 # (prevents stale worker from clobbering a fresh send after Stop)
-                if state.get("_generation_id") == _my_gen_id:
-                    state["streaming"] = False
+                with state["_state_lock"]:
+                    _is_current = state.get("_generation_id") == _my_gen_id
+                    if _is_current:
+                        state["streaming"] = False
+                if _is_current:
                     _set_working(False)
                     _update_status()
                     _update_button_states()

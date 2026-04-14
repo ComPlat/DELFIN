@@ -398,20 +398,22 @@ class CLIClient(_BaseClient):
                 # Turn complete — stop reading, wait for next send
                 return
 
-        # If we exit the loop, the process died
+        # If we exit the loop, the process died or finished unexpectedly
         rc = proc.poll()
-        if rc is not None and rc != 0:
-            stderr = proc.stderr.read() if proc.stderr else ""
+        if rc is not None:
+            # Always clear dead process reference so _ensure_proc() restarts
             self._proc = None
-            if "Not logged in" in stderr:
-                raise RuntimeError(
-                    "Claude Code CLI is not logged in. "
-                    "Run 'claude' in a terminal and complete login first."
-                )
-            if stderr.strip():
-                raise RuntimeError(
-                    f"Claude CLI error (exit {rc}): {stderr.strip()[:500]}"
-                )
+            if rc != 0:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                if "Not logged in" in stderr:
+                    raise RuntimeError(
+                        "Claude Code CLI is not logged in. "
+                        "Run 'claude' in a terminal and complete login first."
+                    )
+                if stderr.strip():
+                    raise RuntimeError(
+                        f"Claude CLI error (exit {rc}): {stderr.strip()[:500]}"
+                    )
 
     def switch_model(self, model: str) -> None:
         """Switch the model by killing the current process.

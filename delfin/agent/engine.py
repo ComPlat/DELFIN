@@ -263,6 +263,7 @@ class AgentEngine:
         )
         self.backend = backend
         self.provider = provider
+        AgentEngine._active_provider = provider  # class-level for static methods
         self.mode = mode
         self._agent_workspace_dir = agent_workspace_dir
         self.route: list[str] = []
@@ -373,6 +374,9 @@ class AgentEngine:
         self._stop_requested = False
 
         self.messages.append({"role": "user", "content": user_message})
+        # Sanitize message history: ensure proper user/assistant alternation.
+        # Concurrent stop/send can leave consecutive user messages.
+        self._sanitize_messages()
         system_prompt = self._build_current_system_prompt(memory_context)
 
         # Resolve max_tokens: caller override > role default > global default
@@ -462,8 +466,36 @@ class AgentEngine:
         full_response = "".join(chunks)
         if full_response:
             self.messages.append({"role": "assistant", "content": full_response})
+        elif self._stop_requested:
+            # Stop during thinking — no response generated.
+            # Pop the orphaned user message to prevent consecutive user
+            # messages that break the API on the next turn.
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
 
         return full_response
+
+    def _sanitize_messages(self) -> None:
+        """Ensure message history has proper user/assistant alternation.
+
+        Concurrent stop/send can leave consecutive user messages or other
+        structural issues.  This removes duplicates and ensures the
+        conversation can be sent to the API without errors.
+        """
+        if len(self.messages) < 2:
+            return
+        cleaned: list[dict] = [self.messages[0]]
+        for msg in self.messages[1:]:
+            if msg.get("role") == cleaned[-1].get("role") == "user":
+                # Consecutive user messages: merge into the latest one
+                cleaned[-1] = msg
+            elif msg.get("role") == cleaned[-1].get("role") == "assistant":
+                # Consecutive assistant messages: keep the latest
+                cleaned[-1] = msg
+            else:
+                cleaned.append(msg)
+        if len(cleaned) != len(self.messages):
+            self.messages[:] = cleaned
 
     def advance_role(self) -> bool:
         """Advance to the next role in the route.
@@ -530,6 +562,56 @@ class AgentEngine:
         """Return list of available mode IDs."""
         return self.loader.available_modes()
 
+    def record_cycle_outcome(
+        self,
+        verdict: str,
+        user_task: str,
+        error_type: str | None = None,
+        denied_commands: list[str] | None = None,
+        start_time: float | None = None,
+    ) -> dict[str, str]:
+        """Record a cycle outcome and update the provider profile.
+
+        Returns a dict of profile changes made (for transparency logging).
+        """
+        from delfin.agent.outcome_tracker import CycleOutcome, append_outcome
+        from delfin.agent.provider_profile import update_from_outcome
+
+        duration = 0.0
+        if start_time:
+            import time
+            duration = time.monotonic() - start_time
+
+        task_class = ""
+        try:
+            route_info = self.recommend_task_route(user_task, self.mode)
+            task_class = route_info.get("task_class", "")
+        except Exception:
+            pass
+
+        outcome = CycleOutcome(
+            task=user_task[:200],
+            provider=self.provider,
+            model=getattr(self.client, "model", ""),
+            mode=self.mode,
+            verdict=verdict,
+            cost_usd=self.cost_usd,
+            duration_s=round(duration, 1),
+            retries=0,
+            denied_commands=denied_commands or [],
+            error_type=error_type,
+            task_class=task_class,
+            timestamp="",
+        )
+        try:
+            append_outcome(outcome)
+        except Exception:
+            pass
+        try:
+            return update_from_outcome(self.provider, outcome)
+        except Exception:
+            return {}
+
     # -- test-failure retry ---------------------------------------------------
 
     def retry_from_builder(self) -> bool:
@@ -557,8 +639,21 @@ class AgentEngine:
 
     @staticmethod
     def thinking_budget_for_role(role_id: str) -> int:
-        """Return the recommended thinking budget for a role."""
-        return _ROLE_THINKING_BUDGETS.get(role_id, _DEFAULT_THINKING_BUDGET)
+        """Return the recommended thinking budget for a role.
+
+        Applies provider-specific multiplier from the learned profile.
+        """
+        base = _ROLE_THINKING_BUDGETS.get(role_id, _DEFAULT_THINKING_BUDGET)
+        try:
+            from delfin.agent.provider_profile import load_provider_profile
+            _prov = getattr(AgentEngine, "_active_provider", "claude")
+            _profile = load_provider_profile(_prov)
+            mult = _profile.get("thinking_budget_mult", 1.0)
+            # Clamp multiplier to safe range
+            mult = max(0.0, min(3.0, mult))
+            return int(base * mult)
+        except Exception:
+            return base
 
     @staticmethod
     def model_for_role(role_id: str) -> str:
@@ -920,12 +1015,32 @@ class AgentEngine:
             confidence = "medium"
             reasons.append("de-escalated to single-agent code exploration")
 
+        # Adaptive routing: use provider profile to prefer higher-success modes
+        try:
+            from delfin.agent.provider_profile import load_provider_profile
+            # Use a class-level provider hint if available; fall back to "claude"
+            _prov = getattr(AgentEngine, "_active_provider", "claude")
+            _profile = load_provider_profile(_prov)
+            _rates = _profile.get("success_rate", {})
+            if _rates and mode in ("quick", "reviewed") and task_class in ("chemistry", "coding"):
+                _alt = "reviewed" if mode == "quick" else "quick"
+                _cur_rate = _rates.get(mode, 0.5)
+                _alt_rate = _rates.get(_alt, 0.5)
+                # Only switch if alternative has >10% better success
+                if _alt_rate > _cur_rate + 0.10:
+                    reasons.append(
+                        f"adaptive: {_alt} has {_alt_rate:.0%} vs {mode} {_cur_rate:.0%} success"
+                    )
+                    mode = _alt
+        except Exception:
+            pass
+
         return {
             "mode": mode,
             "task_class": task_class,
             "intent": intent,
             "confidence": confidence,
-            "reasons": reasons[:4],
+            "reasons": reasons[:5],
             "risk_flags": {
                 "reviewed": bool(reviewed_hits),
                 "cluster": bool(cluster_hits),
