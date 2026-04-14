@@ -121,24 +121,6 @@ def _spin_from_control_manual(
 # CO2 CONTROL.txt generation
 # ---------------------------------------------------------------------------
 
-_TRANSFER_KEYS = [
-    "functional",
-    "disp_corr",
-    "ri_jkx",
-    "aux_jk",
-    "main_basisset",
-    "metal_basisset",
-    "first_coordination_sphere_metal_basisset",
-    "first_coordination_sphere_scale",
-    "second_coordination_sphere_metal_basisset",
-    "second_coordination_sphere_scale",
-    "implicit_solvation_model",
-    "solvent",
-    "PAL",
-    "maxcore",
-    "place_axis",
-]
-
 _CO2_DEFAULTS = {
     "xyz": "input.xyz",
     "out": "complex_aligned.xyz",
@@ -165,6 +147,53 @@ _CO2_DEFAULTS = {
     "max_workers": "4",
 }
 
+# Fields that DELFIN's main CONTROL.txt may set and that should be
+# forwarded to the generated CO2 Coordinator CONTROL.txt. Anything the
+# CO2 Coordinator template understands can be overridden from the main
+# CONTROL.txt — either with the plain key (e.g. ``place_axis=x``) or
+# with a ``co2_`` prefix (e.g. ``co2_place_axis=x``), which takes
+# priority and avoids ambiguity for keys that also mean something in
+# the main DELFIN pipeline.
+#
+# The base list is every CO2 default key PLUS the level-of-theory
+# fields the main CONTROL.txt already owns. Charge / multiplicity /
+# broken_sym stay out because they are set dynamically per species.
+_TRANSFER_KEYS = sorted({
+    *_CO2_DEFAULTS.keys(),
+    "functional",
+    "disp_corr",
+    "ri_jkx",
+    "aux_jk",
+    "main_basisset",
+    "metal_basisset",
+    "first_coordination_sphere_metal_basisset",
+    "first_coordination_sphere_scale",
+    "second_coordination_sphere_metal_basisset",
+    "second_coordination_sphere_scale",
+    "implicit_solvation_model",
+    "solvent",
+    "PAL",
+    "maxcore",
+} - {
+    # These are dynamic per species and set explicitly further down.
+    "charge",
+    "multiplicity",
+    "broken_sym",
+})
+
+
+def _co2_override_value(delfin_ctrl: Dict[str, str], key: str) -> str:
+    """Resolve a CO2 coordinator field from the main CONTROL.txt.
+
+    Lookup priority (first non-empty wins):
+      1. ``co2_<key>``  — explicit, unambiguous override
+      2. ``<key>``      — plain key (backward-compatible, shared with pipeline)
+    """
+    prefixed = delfin_ctrl.get(f"co2_{key}", "").strip()
+    if prefixed:
+        return prefixed
+    return delfin_ctrl.get(key, "").strip()
+
 _CO2_XYZ = """\
 3
 
@@ -185,10 +214,11 @@ def _build_co2_control(
         "# Input / Output",
         "------------------------------------",
     ]
-    # Merge: CO2 defaults < DELFIN CONTROL overrides
+    # Merge: CO2 defaults < DELFIN CONTROL overrides (either plain key
+    # or co2_<key> prefix; prefix takes priority — see _co2_override_value).
     merged: Dict[str, str] = dict(_CO2_DEFAULTS)
     for key in _TRANSFER_KEYS:
-        val = delfin_ctrl.get(key, "").strip()
+        val = _co2_override_value(delfin_ctrl, key)
         if val:
             merged[key] = val
 
