@@ -839,10 +839,22 @@ def _create_occupier_fob_jobs(
                     if report_target.exists():
                         try:
                             import re
+                            from datetime import date
                             content = report_target.read_text(encoding="utf-8", errors="ignore")
                             PREFERRED_INDEX_RE = re.compile(r"(Preferred Index:\s*)(\d+)", re.IGNORECASE)
+                            OVERRIDE_MARKER_RE = re.compile(r"^\(Manual Override.*\)\n?", re.MULTILINE)
                             new_content, count = PREFERRED_INDEX_RE.subn(rf"\g<1>{override_index}", content, count=1)
                             if count > 0 and new_content != content:
+                                # Remove old marker, insert fresh one after Preferred Index line
+                                new_content = OVERRIDE_MARKER_RE.sub("", new_content)
+                                override_marker = f"(Manual Override Applied: Index {override_index}, Date {date.today().isoformat()})"
+                                lines = new_content.splitlines(True)
+                                out_lines = []
+                                for line in lines:
+                                    out_lines.append(line)
+                                    if PREFERRED_INDEX_RE.search(line):
+                                        out_lines.append(override_marker + "\n")
+                                new_content = "".join(out_lines)
                                 report_target.write_text(new_content, encoding="utf-8")
                                 logger.info(
                                     "[%s] Applied --occupier-override: Preferred Index set to %d (before cache update)",

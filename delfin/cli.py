@@ -474,6 +474,81 @@ _SAFE_DIR_PATTERNS: tuple[str, ...] = (
 )
 
 _PREFERRED_INDEX_RE = re.compile(r"(Preferred Index:\s*)(\d+)", re.IGNORECASE)
+_OVERRIDE_MARKER_RE = re.compile(r"^\(Manual Override.*\)\n?", re.MULTILINE)
+
+
+def _downstream_stages(folder_name: str, config: dict) -> list[str]:
+    """Return base names of all stages downstream of *folder_name*.
+
+    The dependency chain is:
+        initial → ox_step_1 → ox_step_2 → ...
+        initial → red_step_1 → red_step_2 → ...
+    An override on any stage invalidates everything after it in the chain.
+    """
+    base = folder_name[:-len("_OCCUPIER")] if folder_name.endswith("_OCCUPIER") else folder_name
+
+    ox_steps = sorted(_parse_override_step_list(config.get("oxidation_steps")))
+    red_steps = sorted(_parse_override_step_list(config.get("reduction_steps")))
+
+    downstream: list[str] = []
+
+    if base == "initial":
+        # Everything depends on initial
+        for s in ox_steps:
+            downstream.append(f"ox_step_{s}")
+        for s in red_steps:
+            downstream.append(f"red_step_{s}")
+    elif base.startswith("ox_step_"):
+        try:
+            idx = int(base.split("_")[-1])
+        except ValueError:
+            return []
+        for s in ox_steps:
+            if s > idx:
+                downstream.append(f"ox_step_{s}")
+    elif base.startswith("red_step_"):
+        try:
+            idx = int(base.split("_")[-1])
+        except ValueError:
+            return []
+        for s in red_steps:
+            if s > idx:
+                downstream.append(f"red_step_{s}")
+
+    return downstream
+
+
+def _parse_override_step_list(raw_steps) -> list[int]:
+    """Lightweight step-list parser (avoids importing occupier module)."""
+    if not raw_steps:
+        return []
+    if isinstance(raw_steps, int):
+        return [raw_steps] if raw_steps > 0 else []
+    tokens = str(raw_steps).replace(";", ",").split(",")
+    result: list[int] = []
+    for tok in tokens:
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            v = int(tok)
+            if v > 0:
+                result.append(v)
+        except ValueError:
+            continue
+    return sorted(set(result))
+
+
+def _invalidate_stage_files(base_name: str, workspace_root: Path) -> None:
+    """Remove .out, .inp, and .fprint files for a stage so recalc reruns it."""
+    for suffix in (".out", ".inp", ".inp.fprint"):
+        path = workspace_root / f"{base_name}{suffix}"
+        if path.exists():
+            try:
+                path.unlink()
+                logger.info("[recalc] Removed downstream %s (override cascade)", path.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[recalc] Could not remove %s: %s", path.name, exc)
 
 
 def _parse_occupier_overrides(raw_tokens: list[str]) -> dict[str, int]:
@@ -545,6 +620,19 @@ def _apply_occupier_overrides(
             logger.error("Preferred Index line not found in %s; override skipped.", occ_path)
             ok = False
         else:
+            # Remove any existing override marker, then insert a fresh one
+            # after the Preferred Index line.
+            from datetime import date
+            new_content = _OVERRIDE_MARKER_RE.sub("", new_content)
+            override_marker = f"(Manual Override Applied: Index {preferred_index}, Date {date.today().isoformat()})"
+            lines = new_content.splitlines(True)
+            out_lines: list[str] = []
+            for line in lines:
+                out_lines.append(line)
+                if _PREFERRED_INDEX_RE.search(line):
+                    eol = "\n" if not line.endswith("\n") else ""
+                    out_lines.append(override_marker + "\n")
+            new_content = "".join(out_lines)
             try:
                 if new_content != content:
                     occ_path.write_text(new_content, encoding="utf-8")
@@ -597,6 +685,22 @@ def _apply_occupier_overrides(
                 logger.info("[recalc] Removed existing %s to force regeneration with override", inp_path.name)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[recalc] Could not remove %s: %s (will be overwritten)", inp_path.name, exc)
+
+    # Invalidate downstream stages so the entire chain gets recalculated
+    for folder_name in overrides:
+        downstream = _downstream_stages(folder_name, config)
+        for ds_base in downstream:
+            ds_out = (workspace_root / f"{ds_base}.out").resolve()
+            force_outputs.add(ds_out)
+            _invalidate_stage_files(ds_base, workspace_root)
+            # Also clear the runtime cache for downstream OCCUPIER folders
+            ds_folder = f"{ds_base}_OCCUPIER"
+            if isinstance(cache, dict):
+                cache.pop(ds_folder, None)
+            logger.info(
+                "[recalc] Downstream stage %s will be recalculated (cascade from override)",
+                ds_base,
+            )
 
     # Store overrides for post-OCCUPIER reapplication
     if overrides:
