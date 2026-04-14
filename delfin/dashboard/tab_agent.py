@@ -5682,31 +5682,36 @@ def create_tab(ctx):
             _handle_slash_command(user_text)
             return
 
-        # If streaming, interrupt current work and send the new message
-        # (terminal-like behavior: user can redirect the agent mid-work)
+        # If streaming, queue the message instead of interrupting.
+        # The agent will receive it after finishing the current response.
+        # Use /stop to force-interrupt if needed.
         if state["streaming"]:
-            engine = state["engine"]
-            if engine:
-                engine.request_stop()
-                if hasattr(engine.client, "kill"):
-                    engine.client.kill()
-            # Bump generation so old worker's finally block won't touch UI
-            with state["_state_lock"]:
-                state["_generation_id"] = state.get("_generation_id", 0) + 1
-                state["streaming"] = False
-            # Finalize any in-progress streaming message
-            msgs = state["chat_messages"]
-            if msgs and msgs[-1].get("_streaming"):
-                msgs[-1]["_streaming"] = False
-                _refresh_chat_html()
-            _set_working(False)
-            _update_button_states()
-            # Clear any previously queued messages
-            state["message_queue"].clear()
-            _update_queue_display()
-            # Brief pause to let old worker thread notice the stop
-            time.sleep(0.1)
-            # Fall through to send the new message normally
+            # Safety: detect stale streaming state (worker crashed/finished
+            # but streaming flag wasn't reset). If no active CLI process,
+            # reset the flag and process normally.
+            _engine = state.get("engine")
+            _stale = False
+            if _engine and hasattr(_engine, "client"):
+                _proc = getattr(_engine.client, "_proc", None)
+                if _proc is not None and _proc.poll() is not None:
+                    _stale = True  # process is dead but streaming still True
+                elif _proc is None:
+                    _stale = True  # no process at all
+            if _stale:
+                with state["_state_lock"]:
+                    state["streaming"] = False
+                _set_working(False)
+                # Fall through to send normally
+            else:
+                state["message_queue"].append(user_text)
+                input_textarea.value = ""
+                _append_chat_message("user", user_text)
+                _append_system_message(
+                    f"\U0001f4e8 Queued — agent will receive this after finishing. "
+                    f"Type /stop to interrupt."
+                )
+                _update_queue_display()
+                return
 
         # Track user message for safety intent-checking
         state["_last_user_message"] = user_text
