@@ -431,6 +431,20 @@ def _build_bang_line(config, rel_token, main_basis, aux_jk, implicit,
     # normalize spacing
     return " ".join(t for t in tokens if t).replace("  ", " ").strip()
 
+def is_relativistic_mode(config) -> bool:
+    """Single source of truth: is DELFIN in a relativistic scalar-Hamiltonian
+    run (ZORA / X2C / DKH / ...)?
+
+    Used by every per-atom basis-assignment path (xyz_io, co2/CO2_Coordinator6,
+    and future callers) to decide whether attaching SARC-family basis sets
+    to light coordination-sphere atoms is safe. SARC is only defined for
+    heavy elements, so when this returns True, first/second coordination
+    sphere atoms MUST NOT get the per-atom metal_basisset.
+    """
+    raw = str(config.get('relativity', '') or '').strip().lower()
+    return bool(raw) and raw not in ('', 'no', 'none', 'false', '0', 'off')
+
+
 def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
                            metal_basisset: Optional[str], config, radii_map):
     """
@@ -470,21 +484,16 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
     metal_syms = {m.strip().capitalize() for m in (found_metals or [])}
     metal_indices = [i for i, a in enumerate(atoms) if a["elem"].capitalize() in metal_syms]
 
-    # Detect relativistic mode — SARC/relativistic bases are defined only for
-    # heavy elements, so coordination-sphere light atoms must fall back to
-    # the main basis. See docstring above.
-    relativity = str(config.get('relativity', '') or '').strip()
-    is_relativistic = bool(relativity) and relativity.lower() not in ('', 'no', 'none', 'false', '0', 'off')
-
     sphere_scale_raw = str(config.get('first_coordination_sphere_scale', '')).strip()
     if sphere_scale_raw:
         scale = float(sphere_scale_raw)
     else:
         scale = 1.20
 
-    if is_relativistic:
+    if is_relativistic_mode(config):
         # Skip first-coordination-sphere per-atom basis in relativistic mode
-        # (prevents SARC-ZORA-TZVP from being attached to C/N/O/H).
+        # (prevents SARC-ZORA-TZVP from being attached to C/N/O/H). See
+        # is_relativistic_mode docstring for details.
         first = set()
     else:
         first = _first_sphere_indices(atoms, metal_indices, scale, radii_map) if (enable_first and metal_indices) else set()

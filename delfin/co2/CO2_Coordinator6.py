@@ -471,24 +471,36 @@ def _build_newgto_assignments(atoms, keywords: str, metal_basis: Optional[str],
     first_scale = _parse_float(config.get("first_coordination_sphere_scale"), 1.20)
     second_scale = _parse_float(config.get("second_coordination_sphere_scale"), 1.30)
 
+    # RELATIVISTIC GUARD: in relativistic mode (ZORA/X2C/DKH) the metal_basis
+    # is typically a SARC-family set which is only defined for heavy elements.
+    # Attaching it to light sphere atoms (C/N/O/H) crashes ORCA with
+    # "no main basis functions on atom N (C)". Shared helper is the single
+    # source of truth across every per-atom basis assignment path.
+    from delfin.xyz_io import is_relativistic_mode
+    is_relativistic = is_relativistic_mode(control_args or {})
+
     assignments: Dict[int, str] = {}
     if not skip_metals:
         assignments.update({idx: basis for idx in metal_indices})
 
-    need_first = first_enabled or second_enabled
+    need_first = (first_enabled or second_enabled) and not is_relativistic
     first_indices = _first_coordination_sphere_indices(atoms, metal_indices, first_scale) if need_first else set()
-    if first_enabled:
+    if first_enabled and not is_relativistic:
         for idx in first_indices:
             if idx <= qm_last:
                 assignments[idx] = basis
 
-    if second_enabled:
+    if second_enabled and not is_relativistic:
         second_indices = _second_coordination_sphere_indices(atoms, first_indices, metal_indices, second_scale)
         for idx in second_indices:
             if idx <= qm_last:
                 assignments[idx] = basis
 
-    # CO2 atoms always get the metal basis set
+    # CO2 atoms always get the metal basis set (by design — they're the
+    # reactive substrate and should share the metal's basis treatment).
+    # Note: in relativistic mode this means C/O of CO2 get SARC too. If
+    # that causes the same ORCA abort for CO2 specifically, the check
+    # above needs to be extended to skip CO2 as well.
     if co2_indices:
         for idx in co2_indices:
             if idx <= qm_last:

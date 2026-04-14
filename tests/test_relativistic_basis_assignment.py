@@ -146,3 +146,138 @@ def test_relativistic_x2c_also_skips_light_atoms():
             f"relativity={rel_value!r}: only the metal should get per-atom "
             f"basis, got {_count_newgto(out)} total NewGTO blocks."
         )
+
+
+# ===========================================================================
+# Central relativity-detection helper (single source of truth)
+# ===========================================================================
+
+
+def test_is_relativistic_mode_helper_exists_and_is_shared():
+    """The helper lives in delfin.xyz_io and is reused by other per-atom
+    basis assignment paths (e.g. delfin.co2.CO2_Coordinator6) so the
+    relativistic-guard logic lives in exactly one place.
+    """
+    from delfin.xyz_io import is_relativistic_mode
+    assert callable(is_relativistic_mode)
+
+    # Contract: a short list of inputs and the expected classification.
+    falsy = [{}, {"relativity": ""}, {"relativity": "none"}, {"relativity": "NO"},
+             {"relativity": "false"}, {"relativity": "0"}, {"relativity": "off"}]
+    truthy = [{"relativity": "ZORA"}, {"relativity": "X2C"},
+              {"relativity": "DKH"}, {"relativity": "dkh2"},
+              {"relativity": "zora"}]
+    for cfg in falsy:
+        assert is_relativistic_mode(cfg) is False, f"{cfg} should be non-relativistic"
+    for cfg in truthy:
+        assert is_relativistic_mode(cfg) is True, f"{cfg} should be relativistic"
+
+
+def test_co2_coordinator_uses_shared_relativity_helper():
+    """The CO2 Coordinator's per-atom basis assignment must go through the
+    same is_relativistic_mode helper as xyz_io. This test fails if a future
+    edit copies the detection logic inline again."""
+    from pathlib import Path
+
+    co2_src = (
+        Path(__file__).resolve().parents[1]
+        / "delfin" / "co2" / "CO2_Coordinator6.py"
+    ).read_text()
+    assert "is_relativistic_mode" in co2_src, (
+        "CO2_Coordinator6 must use delfin.xyz_io.is_relativistic_mode "
+        "instead of inlining its own relativity detection — keeps the "
+        "SARC/light-atom safety rule in one place."
+    )
+
+
+# ===========================================================================
+# CO2 Coordinator path: same guarantee via the shared helper
+# ===========================================================================
+
+
+def test_co2_coordinator_skips_light_sphere_in_relativistic_mode():
+    """Same SARC-safety behaviour on the CO2 Coordinator side: light
+    sphere atoms (C/N/O) must NOT get the metal_basis NewGTO when
+    relativity is enabled."""
+    pytest.importorskip("ase")
+    from ase import Atoms
+    from delfin.co2.CO2_Coordinator6 import _build_newgto_assignments
+
+    atoms = Atoms(
+        symbols=["Ru", "C", "N", "O"],
+        positions=[
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.5, 1.5, 0.0],
+            [0.0, 0.0, 2.0],
+        ],
+    )
+    control_args = {
+        "first_coordination_sphere_metal_basisset": "yes",
+        "first_coordination_sphere_scale": "1.3",
+        "relativity": "ZORA",
+    }
+
+    assignments = _build_newgto_assignments(
+        atoms,
+        keywords="! PBE0 ZORA",
+        metal_basis="SARC-ZORA-TZVP",
+        control_args=control_args,
+        qmmm_range=None,
+        skip_metals=False,
+        co2_indices=None,
+    )
+
+    # Only the Ru (index 0) should get the per-atom basis. C/N/O (1/2/3)
+    # must NOT — otherwise ORCA aborts with "no main basis functions".
+    assert assignments == {0: "SARC-ZORA-TZVP"}, (
+        f"Expected only Ru (index 0) to get SARC basis in relativistic "
+        f"CO2-coordinator run, got {assignments}. Light sphere atoms "
+        f"(C/N/O) must fall back to main basis."
+    )
+
+
+def test_co2_coordinator_still_assigns_full_sphere_when_not_relativistic():
+    """Non-relativistic CO2-coordinator path is unchanged.
+
+    Requires real ASE atoms (with ``.number`` etc.) because the sphere
+    detector uses ASE radii — skipped if ASE is not available in the
+    test env. The happy path is covered on the xyz_io side by
+    test_non_relativistic_mode_still_full_sphere.
+    """
+    pytest.importorskip("ase")
+    from ase import Atoms
+    from delfin.co2.CO2_Coordinator6 import _build_newgto_assignments
+
+    atoms = Atoms(
+        symbols=["Ru", "C", "N", "O"],
+        positions=[
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.5, 1.5, 0.0],
+            [0.0, 0.0, 2.0],
+        ],
+    )
+    control_args = {
+        "first_coordination_sphere_metal_basisset": "yes",
+        "first_coordination_sphere_scale": "1.3",
+        "relativity": "",  # non-relativistic
+    }
+
+    assignments = _build_newgto_assignments(
+        atoms,
+        keywords="! PBE0",
+        metal_basis="def2-TZVP",
+        control_args=control_args,
+        qmmm_range=None,
+        skip_metals=False,
+        co2_indices=None,
+    )
+
+    # Ru + at least one sphere atom must be assigned
+    assert 0 in assignments, "Ru must always get metal_basis"
+    sphere_assignments = {i for i in assignments if i != 0}
+    assert sphere_assignments, (
+        f"Non-relativistic CO2 path must still assign metal_basis to "
+        f"sphere atoms. Got assignments {assignments}."
+    )
