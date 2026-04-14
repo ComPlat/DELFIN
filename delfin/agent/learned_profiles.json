@@ -422,7 +422,7 @@
       "coding": 7.392
     },
     "success_rate": {
-      "solo": 0.926,
+      "solo": 0.937,
       "quick": 0.78,
       "reviewed": 0.84,
       "cluster": 0.74,
@@ -430,7 +430,7 @@
     },
     "task_performance": {
       "coding": {
-        "success_rate": 0.884
+        "success_rate": 0.901
       }
     },
     "common_failures": [
@@ -439,8 +439,8 @@
       "answering ORCA/xTB/method questions without doc-first lookup",
       "reading DELFIN monoliths before narrowing to concrete call sites"
     ],
-    "total_cycles": 3,
-    "updated_at": "2026-04-14 13:03:31",
+    "total_cycles": 4,
+    "updated_at": "2026-04-14 13:12:10",
     "meta": {
       "total_sessions": 0,
       "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
@@ -455,6 +455,18 @@
         "Keep solo as default; switch to reviewed behavior only for high-risk scheduler/runtime work"
       ]
     },
+    "next_steps": [
+      {
+        "task": "Track FAIL/PARTIAL solo outcomes when a solo turn errors or is user-stopped",
+        "status": "pending",
+        "why": "The new solo auto-tracking covers successful completed turns first"
+      },
+      {
+        "task": "Extend playbook injection from one best match to multi-module tasks",
+        "status": "pending",
+        "why": "Current profile playbook selection resolves one focused module per task"
+      }
+    ],
     "domain": {
       "strengths": [
         "Fast repo-wide triage across DELFIN agent and dashboard modules",
@@ -481,6 +493,13 @@
         "fix": "Pass current task text from AgentEngine into PromptLoader and inject the matched provider playbook via provider_profile formatting helpers",
         "date": "2026-04-14",
         "prevents": "Known-module tasks running without the focused DELFIN playbook for that module"
+      },
+      {
+        "error": "Successful solo sessions did not update the provider profile or preserve planning carry-over",
+        "root_cause": "tab_agent only called record_cycle_outcome at pipeline completion, and provider profiles had no rendered next_steps context",
+        "fix": "Record PASS outcomes after each completed solo turn in tab_agent.py and render openai.next_steps through format_profile_context()",
+        "date": "2026-04-14",
+        "prevents": "Solo-mode learnings and pending DELFIN follow-ups disappearing between sessions"
       }
     ]
   }

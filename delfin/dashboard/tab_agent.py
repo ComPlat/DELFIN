@@ -923,6 +923,34 @@ def _md_to_html(text: str) -> str:
     return escaped
 
 
+def _record_solo_turn_outcome(
+    engine,
+    user_task: str,
+    response_text: str,
+    state: dict,
+    start_time: float | None,
+) -> dict[str, str]:
+    """Persist one completed solo turn into outcome history/profile."""
+    if getattr(engine, "mode", "") != "solo":
+        return {}
+    if not (user_task or "").strip() or not (response_text or "").strip():
+        return {}
+
+    denied_commands = []
+    if isinstance(state, dict):
+        denied_commands = list(state.get("_denied_commands", []))
+
+    try:
+        return engine.record_cycle_outcome(
+            verdict="PASS",
+            user_task=user_task[:200],
+            denied_commands=denied_commands,
+            start_time=start_time,
+        )
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Tab creation
 # ---------------------------------------------------------------------------
@@ -6189,6 +6217,7 @@ def create_tab(ctx):
                     )
                 else:
                     current_msg = user_text
+                _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
 
                 for _step in range(max_auto_steps):
@@ -6331,19 +6360,15 @@ def create_tab(ctx):
                         if _q_info:
                             _show_question_ui(_q_info)
 
-                    # Solo/dashboard outcome tracking (lightweight, per-turn)
-                    if engine.mode in ("solo", "dashboard") and chunks:
-                        _solo_turns = state.get("_solo_turns", 0) + 1
-                        state["_solo_turns"] = _solo_turns
-                        if _solo_turns % 5 == 0:
-                            try:
-                                engine.record_cycle_outcome(
-                                    verdict="PASS",
-                                    user_task=original_task[:200] if original_task else "",
-                                    start_time=state.get("session_start_time"),
-                                )
-                            except Exception:
-                                pass
+                    # Solo outcome tracking: persist every completed user turn.
+                    if engine.mode == "solo" and chunks:
+                        _record_solo_turn_outcome(
+                            engine,
+                            user_task=original_task,
+                            response_text="".join(chunks),
+                            state=state,
+                            start_time=_turn_start_time,
+                        )
 
                     # Show per-role cost (only for pipeline modes, not solo/dashboard)
                     _role_cost = engine.cost_usd - _cost_before

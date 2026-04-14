@@ -217,6 +217,37 @@ def test_format_profile_context_includes_shared_rules_without_cycles(tmp_path):
     assert "Provider: openai (0 cycles)" in context
 
 
+def test_format_profile_context_includes_persisted_next_steps(tmp_path):
+    from delfin.agent.provider_profile import format_profile_context
+
+    profile_path = tmp_path / "profiles.json"
+    profile_path.write_text(
+        textwrap.dedent(
+            """\
+            {
+              "openai": {
+                "next_steps": [
+                  {
+                    "task": "Track FAIL solo outcomes",
+                    "status": "pending",
+                    "why": "PASS-only tracking is implemented first"
+                  },
+                  "Expand multi-module playbook selection"
+                ]
+              }
+            }
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    context = format_profile_context("openai", profile_path)
+
+    assert "Persisted next steps" in context
+    assert "[pending] Track FAIL solo outcomes" in context
+    assert "Expand multi-module playbook selection" in context
+
+
 def test_update_from_outcome_writes_task_performance_overlay(tmp_path):
     from delfin.agent.outcome_tracker import CycleOutcome
     from delfin.agent.provider_profile import update_from_outcome

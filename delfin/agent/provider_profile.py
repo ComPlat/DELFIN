@@ -162,6 +162,7 @@ def _profile_has_context(profile: dict[str, Any]) -> bool:
         "communication",
         "tool_usage",
         "domain",
+        "next_steps",
         "playbooks",
         "codebase_map",
         "task_performance",
@@ -285,6 +286,34 @@ def load_task_profile(
     """Load the merged task-specific profile for a task class."""
     profile = load_provider_profile(provider, path)
     return profile.get("task_performance", {}).get(task_class or "", {})
+
+
+def _format_next_step_entry(step: Any) -> str:
+    """Render a persisted next-step entry for prompt context."""
+    if isinstance(step, str):
+        return step.strip()
+    if not isinstance(step, dict):
+        return ""
+
+    task = str(step.get("task", "")).strip()
+    status = str(step.get("status", "")).strip()
+    why = str(step.get("why", "")).strip()
+
+    parts: list[str] = []
+    if status and task:
+        parts.append(f"[{status}] {task}")
+    elif task:
+        parts.append(task)
+    elif status:
+        parts.append(f"[{status}]")
+
+    if why:
+        if parts:
+            parts.append(f"({why})")
+        else:
+            parts.append(why)
+
+    return " ".join(parts).strip()
 
 
 def save_provider_profile(
@@ -439,6 +468,16 @@ def format_profile_context(provider: str, path: Path | None = None) -> str:
         parts.append(
             f"Previously denied commands: {', '.join(denied[-5:])}"
         )
+
+    next_steps = provider_overlay.get("next_steps", [])
+    if isinstance(next_steps, list):
+        rendered_steps = [
+            rendered
+            for rendered in (_format_next_step_entry(step) for step in next_steps[:5])
+            if rendered
+        ]
+        if rendered_steps:
+            parts.append(f"Persisted next steps: {'; '.join(rendered_steps)}")
 
     return "\n".join(parts)
 
