@@ -1,1 +1,84 @@
-{}
+{
+  "claude": {
+    "meta": {
+      "last_updated": "2026-04-14",
+      "total_sessions": 1,
+      "profile_version": "1.0"
+    },
+    "communication": {
+      "language": "de",
+      "style": "terse_diffs",
+      "rules": [
+        "Deutsch, exakt, mit Zahlen (Å, eV, s)",
+        "Datei:Zeile + Änderung, ein Satz — keine Prosa",
+        "Keine Bestätigungsfragen bei klaren Aufgaben",
+        "Kein Co-Authored-By in Commits"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Grep vor Read — nie >200 Zeilen auf einmal lesen",
+        "Read(offset, limit) nach Grep, nie ganzes File",
+        "Unabhängige Tool-Calls immer parallel",
+        "pytest im Hintergrund nach jeder Code-Änderung",
+        "Agent-Subprozesse für Recherche >3 Dateien"
+      ],
+      "environment_detection": "python -c 'import delfin' erst, dann micromamba nur als Fallback"
+    },
+    "domain": {
+      "strengths": [
+        "build_up_complex2.py: PSO-Fitness, VdW-Radien, Procrustes-Init",
+        "Koordinationschemie: Geometrien, Bindungslängen, Clash-Detection",
+        "ORCA/xTB-Parameter über search_docs"
+      ],
+      "weaknesses": [
+        "Neigung zu generischen Antworten bei QM-Parametern — search_docs sofort nutzen",
+        "Kontext-Verschwendung durch unnötig große Reads",
+        "Zu viel Bestätigung statt Handlung"
+      ]
+    },
+    "task_performance": {
+      "build_up_complex2": {
+        "success_rate": 0.85,
+        "notes": "VdW-Fix, Procrustes-Init, xTB-Reranking validiert. Stärke.",
+        "thinking_budget_mult": 1.0
+      },
+      "pipeline_orchestration": {
+        "success_rate": 0.7,
+        "notes": "Monolithische Dateien — Grep-First-Strategie kritisch",
+        "thinking_budget_mult": 1.5
+      },
+      "config_validation": {
+        "success_rate": 0.75,
+        "notes": "CONTROL-Parsing, mutable dicts — vorsichtig vorgehen",
+        "thinking_budget_mult": 1.2
+      },
+      "test_writing": {
+        "success_rate": 0.8,
+        "notes": "Mocks für ORCA/xTB, nie echte Rechnungen starten",
+        "thinking_budget_mult": 1.0
+      },
+      "git_workflow": {
+        "success_rate": 0.9,
+        "notes": "Kein Co-Authored-By. Kurze why-Messages.",
+        "thinking_budget_mult": 0.8
+      }
+    },
+    "anti_patterns": [
+      "Ganze Datei lesen bei >200 Zeilen",
+      "Sequentielle Tool-Calls bei unabhängigen Aufgaben",
+      "Rückfragen bei eindeutigen Aufgaben",
+      "Qualitative Aussagen ohne Zahlenwerte",
+      "Tests vergessen nach Code-Änderungen",
+      "Generische ORCA/xTB-Antworten statt search_docs",
+      "Mehrabsatz-Erklärungen statt Einzeiler-Diffs"
+    ],
+    "optimization_history": [
+      {
+        "date": "2026-04-14",
+        "change": "Profil initial befüllt aus 9 Feedback-Memories",
+        "impact": "Zukünftige Sessions starten mit vollem Kontext statt bei Null"
+      }
+    ]
+  }
+}
