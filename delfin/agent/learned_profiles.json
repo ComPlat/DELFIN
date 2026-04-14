@@ -434,17 +434,25 @@
       }
     },
     "common_failures": [
-      "editing before verifying provider/module wiring"
+      "editing before verifying provider/module wiring",
+      "treating cluster or scheduler changes like low-risk local edits",
+      "answering ORCA/xTB/method questions without doc-first lookup",
+      "reading DELFIN monoliths before narrowing to concrete call sites"
     ],
     "total_cycles": 2,
-    "updated_at": "2026-04-14 11:53:43",
+    "updated_at": "2026-04-14 12:55:28",
     "meta": {
       "total_sessions": 0,
       "bootstrap_note": "Codex/OpenAI seed profile for DELFIN-specific self-optimization"
     },
     "communication": {
       "rules": [
-        "State plan briefly before touching >1 DELFIN file"
+        "State plan briefly before touching >1 DELFIN file",
+        "Verify provider/module wiring with rg before editing agent, dashboard, or provider paths",
+        "For backend_slurm.py, runtime_setup.py, qm_runtime.py, parallel_classic_manually.py, orca_recovery.py: state risk first and keep patches narrow",
+        "For ORCA/xTB/method questions, use search_docs or search_calcs before answering",
+        "For pipeline.py, config.py, and parallel_classic_manually.py: grep first, then read only the narrowed region",
+        "Keep solo as default; switch to reviewed behavior only for high-risk scheduler/runtime work"
       ]
     },
     "domain": {
@@ -452,6 +460,11 @@
         "Fast repo-wide triage across DELFIN agent and dashboard modules",
         "Test-driven Python edits with bounded patches",
         "Codex/OpenAI model selection awareness for solo vs reviewed work"
+      ],
+      "weaknesses": [
+        "Provider wiring and module entry points need explicit verification before edits",
+        "Cluster/runtime changes need stricter validation than local dashboard work",
+        "QM guidance quality drops if doc-first lookup is skipped"
       ]
     },
     "error_patterns": [
