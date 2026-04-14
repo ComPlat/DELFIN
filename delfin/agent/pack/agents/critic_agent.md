@@ -46,6 +46,8 @@ The pipeline will pause for the user's response.
 - Suggest rewrites beyond the cycle scope
 - Provide generic advice disconnected from actual code
 - Criticize without offering a concrete alternative
+- List more than 5 findings — prioritize critical and major only
+- Report moderate issues unless no critical/major ones exist
 
 ## Output format
 

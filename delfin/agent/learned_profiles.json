@@ -5,6 +5,24 @@
       "total_sessions": 1,
       "profile_version": "2.0"
     },
+    "preferred_model": {},
+    "thinking_budget_mult": 1.0,
+    "avg_cost_per_task": {},
+    "success_rate": {
+      "solo": 0.85,
+      "quick": 0.8,
+      "reviewed": 0.75,
+      "cluster": 0.7,
+      "dashboard": 0.9
+    },
+    "common_failures": [
+      "reading entire large files instead of grep-first",
+      "sequential tool calls on independent tasks",
+      "generic QM answers without search_docs",
+      "forgetting pytest after code changes",
+      "multi-paragraph explanations instead of one-liner diffs"
+    ],
+    "total_cycles": 0,
     "communication": {
       "language": "de",
       "style": "terse_diffs",
@@ -12,7 +30,10 @@
         "German for user-facing conversation, exact, with numbers (Å, eV, s)",
         "file:line + change, one sentence — no prose",
         "No confirmation questions on clear tasks",
-        "No Co-Authored-By in commits"
+        "No Co-Authored-By in commits",
+        "After every 3rd tool call in a sequence, emit a one-line progress status",
+        "Dashboard actions: ACTION line + max 5 words explanation",
+        "Flag risk proactively before editing SLURM/runtime/scheduler files"
       ]
     },
     "tool_usage": {
@@ -235,17 +256,20 @@
       {
         "date": "2026-04-14",
         "session": 1,
-        "tasks": ["Profile creation", "Self-optimization analysis"],
+        "tasks": ["Profile creation", "Self-optimization analysis", "System-wide agent optimization"],
         "outcome": "success",
         "errors": [],
         "learnings": [
-          "Profile was empty — initial population from feedback memories",
-          "File is build_up_complex.py (not build_up_complex2.py) on main branch"
+          "Profile schema must match _DEFAULT_PROFILE for engine.py to consume it",
+          "Playbooks and codebase_map need prompt injection to be useful",
+          "format_profile_context() exists but is never called in build_system_prompt()",
+          "Solo mode outcome tracking was missing"
         ],
-        "user_corrections": 2,
+        "user_corrections": 3,
         "correction_details": [
-          "Requested English for all artifacts (profile was in German)",
-          "Identified that profile should be self-updating after every session"
+          "Profile must be in English",
+          "Profile should self-update after every session",
+          "Optimize all modes, not just dashboard"
         ]
       }
     ],
@@ -257,8 +281,13 @@
       },
       {
         "date": "2026-04-14",
-        "change": "v1.0 → v2.0: Added playbooks, codebase_map, session_log. Converted to English. Fixed filename (build_up_complex.py not build_up_complex2.py)",
-        "impact": "Sessions now have step-by-step strategies per task type, file navigation shortcuts, and error tracking"
+        "change": "v1.0 → v2.0: Added playbooks, codebase_map, session_log",
+        "impact": "Step-by-step strategies per task type"
+      },
+      {
+        "date": "2026-04-14",
+        "change": "v2.0 → v2.1: Aligned schema with provider_profile.py _DEFAULT_PROFILE. Added top-level success_rate (per mode), thinking_budget_mult, common_failures. Sharpened communication rules.",
+        "impact": "Engine can now read profile data for adaptive routing and thinking budget"
       }
     ]
   }

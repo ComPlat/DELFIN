@@ -64,6 +64,15 @@ class PromptLoader:
             self._cache[key] = _read_text(path)
         return self._cache[key]
 
+    def _load_profile_context(self) -> str:
+        """Load provider profile context for prompt injection."""
+        try:
+            from delfin.agent.provider_profile import format_profile_context
+            provider = getattr(self, "_active_provider", "claude")
+            return format_profile_context(provider)
+        except Exception:
+            return ""
+
     # -- shared context ----------------------------------------------------
 
     def load_shared_context(self) -> str:
@@ -181,13 +190,14 @@ class PromptLoader:
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 sections.append(role_prompt)
-            # Include DELFIN project context so solo knows the codebase
-            # (only delfin_context.md — skip pipeline-specific rules)
             ctx_text = self._cached_read(
                 self.agent_dir / "shared" / "delfin_context.md"
             )
             if ctx_text:
                 sections.append(f"--- Project Context ---\n{ctx_text}")
+            profile_ctx = self._load_profile_context()
+            if profile_ctx:
+                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
             if memory_context:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
             return "\n\n".join(sections)
@@ -203,10 +213,17 @@ class PromptLoader:
             "builder_agent", "session_manager",
             "chief_agent", "critic_agent",
         }
+        _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
         shared = self.load_shared_context()
         if shared:
             if role_id in _FULL_CONTEXT_ROLES:
                 sections.append(shared)
+                if role_id in _PLAYBOOK_ROLES:
+                    playbooks = self._cached_read(
+                        self.agent_dir / "shared" / "playbooks.md"
+                    )
+                    if playbooks:
+                        sections.append(playbooks)
             else:
                 # Brief context: first paragraph + key paths only
                 lines = shared.split("\n")
@@ -371,5 +388,10 @@ class PromptLoader:
         # 8. Memory context
         if memory_context:
             sections.append(f"--- Project Memory ---\n{memory_context}")
+
+        # 9. Provider profile (success rates, failures, playbooks)
+        profile_ctx = self._load_profile_context()
+        if profile_ctx:
+            sections.append(f"--- Provider Profile ---\n{profile_ctx}")
 
         return "\n\n".join(sections)

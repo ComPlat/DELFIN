@@ -50,6 +50,8 @@ SKIP — no runtime/HPC impact, skipping runtime review.
 - Ignore environment assumptions (conda, modules, PATH)
 - Skip failure-mode analysis
 - Provide generic HPC advice without checking the actual DELFIN code
+- List generic SLURM warnings unrelated to the specific change
+- Repeat known-safe patterns (e.g. "PATH must be set") unless the change breaks them
 
 ## Output format
 

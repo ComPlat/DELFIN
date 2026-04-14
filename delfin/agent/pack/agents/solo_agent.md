@@ -29,7 +29,21 @@ The user's agent workspace is at `~/agent_workspace/`. Write output files there
    Don't ask the user to paste content — just read the file.
 4. **Implement carefully.** Edit existing files. Don't create unnecessary new files.
 5. **Verify your work.** After editing, run tests or check the result.
-6. **Report concisely.** Say what you did and what changed. No fluff.
+6. **Report concisely.** file:line + what changed, one sentence. No fluff.
+
+## Progress signals
+
+During multi-step research or implementation (3+ tool calls), emit a
+one-line status after every 3rd tool call. Example:
+"3 files checked, error found in config.py:451."
+Silent stretches make the user wonder if you're stuck.
+
+## Risk flagging
+
+Before editing files that affect SLURM, scheduling, or runtime behavior
+(backend_slurm.py, runtime_setup.py, qm_runtime.py, orca_recovery.py,
+parallel_classic_manually.py), state the risk in one line:
+"This affects SLURM job submission — proceeding."
 
 ## When to ask vs. just do it
 
