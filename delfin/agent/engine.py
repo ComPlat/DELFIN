@@ -1257,6 +1257,10 @@ class AgentEngine:
     @staticmethod
     def validate_role_output(role_id: str, output: str) -> list[str]:
         """Validate a role output against the required structured contract."""
+        # Solo and dashboard agents have no structured format — skip validation
+        if role_id in ("solo_agent", "dashboard_agent"):
+            return []
+
         text = (output or "").strip()
         if not text:
             return ["empty output"]
