@@ -318,21 +318,21 @@ def main(argv=None):
         args.ip = "127.0.0.1"
 
     # -- Token-based authentication ----------------------------------------
-    # Auto-generate a token when binding to non-localhost (security).
+    # Auto-generate a token by default. On shared multi-user hosts (HPC login
+    # nodes), even 127.0.0.1 is reachable by other local users, so a token is
+    # required regardless of bind address. Only --no-token disables it.
     _token = ""
     if args.no_token:
         _token = ""
-        if args.ip != "127.0.0.1":
-            print(
-                "\n  ⚠  WARNING: Token auth disabled on non-localhost binding!\n"
-                "     The DELFIN Agent has FULL CLI ACCESS.\n"
-                "     Anyone who can reach this port can execute commands.\n",
-                file=sys.stderr,
-            )
+        print(
+            "\n  ⚠  WARNING: Token auth disabled!\n"
+            "     On shared hosts, ANY local user can reach 127.0.0.1:PORT.\n"
+            "     The DELFIN Agent has FULL CLI ACCESS.\n",
+            file=sys.stderr,
+        )
     elif args.token:
         _token = args.token
-    elif args.ip != "127.0.0.1":
-        # Auto-generate token for network-facing deployments
+    else:
         import secrets
         _token = secrets.token_urlsafe(32)
         print(f"\n  🔑 Auto-generated access token (required in URL):\n")
@@ -381,9 +381,10 @@ def main(argv=None):
     # Voilà is not a general-purpose Jupyter server, so XSRF is not needed.
     cmd.append("--ServerApp.disable_check_xsrf=True")
     if _token:
-        cmd.append(f"--ServerApp.token={_token}")
-    elif args.ip == "127.0.0.1":
-        # Localhost: no token needed, disable for convenience
+        # Pass via env var, not CLI: /proc/PID/cmdline is world-readable on
+        # shared hosts, so a CLI token would leak to any local user via `ps`.
+        env["JUPYTER_TOKEN"] = _token
+    else:
         cmd.append("--ServerApp.token=")
 
     voila_static_root = _get_voila_static_root()
