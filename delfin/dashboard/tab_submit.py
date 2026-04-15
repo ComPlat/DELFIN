@@ -750,11 +750,14 @@ def create_tab(ctx):
                         'preview_items': preview_items,
                     }
                 else:
+                    # Interactive metal-complex conversion should prioritize
+                    # isomer diversity over strict reproducibility.
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
                         collapse_label_variants=False,
                         include_binding_mode_isomers=True,
+                        deterministic=not contains_metal(cleaned_data),
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(

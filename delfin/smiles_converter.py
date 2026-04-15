@@ -14017,9 +14017,7 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
                 any_moved = True
         if not any_moved:
             break
-
-
-
+def _segment_distance_sq(p1, p2, p3, p4) -> float:
     """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
 
     Each point is a tuple ``(x, y, z)``.  Uses the parametric approach:
@@ -16209,7 +16207,7 @@ def smiles_to_xyz_isomers(
             ob_error: Optional[str] = None
             for _restart in range(_n_ob_restarts):
                 _blocks, _err = _openbabel_generate_conformer_xyz(
-                    smiles, num_confs=_per_ob, deterministic=True
+                    smiles, num_confs=_per_ob, deterministic=False
                 )
                 if _blocks:
                     for _b in _blocks:

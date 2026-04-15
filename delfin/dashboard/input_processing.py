@@ -129,6 +129,7 @@ def smiles_to_xyz_isomers(
     collapse_label_variants=True,
     include_binding_mode_isomers=False,
     hapto_approx=None,
+    deterministic=True,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -140,6 +141,7 @@ def smiles_to_xyz_isomers(
         collapse_label_variants=collapse_label_variants,
         include_binding_mode_isomers=include_binding_mode_isomers,
         hapto_approx=hapto_approx,
+        deterministic=deterministic,
     )
     if error and hapto_approx is None and _is_hapto_failfast(error):
         results, error = _delfin_smiles_to_xyz_isomers(
@@ -148,6 +150,7 @@ def smiles_to_xyz_isomers(
             collapse_label_variants=collapse_label_variants,
             include_binding_mode_isomers=include_binding_mode_isomers,
             hapto_approx=True,
+            deterministic=deterministic,
         )
     if error:
         return [], error
