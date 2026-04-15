@@ -527,29 +527,44 @@ class AgentEngine:
         return not self.is_cycle_complete
 
     @staticmethod
-    def _summarize_output_for_handoff(text: str, limit: int = 320) -> str:
-        """Compress a role output into a short handoff digest."""
+    def _summarize_output_for_handoff(text: str, limit: int = 1200) -> str:
+        """Compress a role output keeping structured content (headers, lists, decisions).
+
+        Default 1200 chars keeps enough detail for downstream agents to act
+        without re-reading the full output.  The ``build_handoff_message``
+        method selects between summary and full text per-role.
+        """
         if not text:
             return ""
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         selected: list[str] = []
+        total = 0
         for line in lines:
             lowered = line.lower()
-            if (
+            is_structural = (
                 lowered.startswith("**status:")
                 or lowered.startswith("**question:")
                 or lowered.startswith("**summary:")
+                or lowered.startswith("**goal:")
+                or lowered.startswith("**plan:")
                 or lowered.startswith("## ")
                 or lowered.startswith("### ")
                 or lowered.startswith("- ")
                 or re.match(r"^\d+\.\s", line)
-            ):
+            )
+            if is_structural:
                 selected.append(line)
-            if sum(len(item) for item in selected) >= limit:
+                total += len(line)
+            if total >= limit:
                 break
+        # If nothing structural found, take the first lines
         if not selected:
-            selected = lines[:3]
-        summary = " | ".join(selected)
+            for line in lines[:8]:
+                selected.append(line)
+                total += len(line)
+                if total >= limit:
+                    break
+        summary = "\n".join(selected)
         if len(summary) > limit:
             summary = summary[: limit - 3].rstrip() + "..."
         return summary
@@ -869,16 +884,37 @@ class AgentEngine:
         """
         role = self.current_role
         prior_summary = ""
-        if self.compaction_summaries:
-            parts = ["Compact prior outputs:"]
+
+        # Roles that act on prior outputs need more detail than read-only roles.
+        # Builder and Test need the full SM plan + critic findings.
+        # Research/Reviewer/Runtime only need compact summaries.
+        _FULL_PRIOR_ROLES = {"builder_agent", "test_agent"}
+        _PRIOR_CHAR_LIMITS = {
+            "session_manager": 4000,
+            "critic_agent": 3000,
+            "research_agent": 1500,
+            "runtime_agent": 1500,
+            "reviewer_agent": 1500,
+        }
+
+        if role in _FULL_PRIOR_ROLES and self.role_outputs:
+            # Builder/Test get truncated-but-substantial prior outputs
+            parts = ["--- Prior Role Outputs ---"]
+            for rid, output in self.role_outputs.items():
+                limit = _PRIOR_CHAR_LIMITS.get(rid, 3000)
+                text = output[:limit]
+                if len(output) > limit:
+                    text += "\n... [truncated]"
+                parts.append(f"### {rid}\n{text}")
+            prior_summary = "\n\n".join(parts)
+        elif self.compaction_summaries:
+            # Other roles get compact summaries (saves tokens)
+            parts = ["Prior outputs (compact):"]
             for rid, summary in self.compaction_summaries.items():
                 if summary:
-                    parts.append(f"- {rid}: {summary}")
+                    parts.append(f"### {rid}\n{summary}")
             if len(parts) > 1:
-                parts.append(
-                    "- Full prior outputs are already available in the system context."
-                )
-                prior_summary = "\n".join(parts)
+                prior_summary = "\n\n".join(parts)
 
         # Load cycle memory for Session Manager
         _cycle_memory_ctx = ""

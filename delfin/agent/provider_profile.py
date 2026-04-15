@@ -543,12 +543,12 @@ def format_profile_context(
     shared_failures = shared.get("common_failures", [])
     if shared_failures:
         parts.append(
-            f"Shared failures: {', '.join(shared_failures[-2:])}"
+            f"Shared failures: {', '.join(shared_failures[-3:])}"
         )
 
     shared_rules = shared.get("tool_usage", {}).get("rules", [])
     if shared_rules:
-        parts.append(f"Shared tool rules: {', '.join(shared_rules[:2])}")
+        parts.append(f"Shared tool rules: {', '.join(shared_rules[:3])}")
 
     parts.append(f"Provider: {provider} ({total} cycles)")
 
@@ -566,7 +566,7 @@ def format_profile_context(
     failures = provider_overlay.get("common_failures", [])
     if failures:
         parts.append(
-            f"Provider failures: {', '.join(failures[-2:])}"
+            f"Provider failures: {', '.join(failures[-3:])}"
         )
 
     communication_rules = (
@@ -574,7 +574,7 @@ def format_profile_context(
     )
     if communication_rules:
         parts.append(
-            "Communication: " + ", ".join(str(rule) for rule in communication_rules[:2])
+            "Communication: " + ", ".join(str(rule) for rule in communication_rules[:3])
         )
 
     provider_tool_rules = (
@@ -582,7 +582,7 @@ def format_profile_context(
     )
     if provider_tool_rules:
         parts.append(
-            "Tool rules: " + ", ".join(str(rule) for rule in provider_tool_rules[:2])
+            "Tool rules: " + ", ".join(str(rule) for rule in provider_tool_rules[:3])
         )
 
     denied = profile.get("denied_patterns", [])

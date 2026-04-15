@@ -976,7 +976,7 @@ def test_build_handoff_message(agent_tree, mock_client):
     msg = engine.build_handoff_message("Fix the bug in cli.py")
     assert "Fix the bug in cli.py" in msg
     assert "session_manager" in msg  # prior output referenced
-    assert "Compact prior outputs" in msg
+    assert "Prior Role Outputs" in msg
     assert "Implement" in msg  # builder-specific instruction
 
 

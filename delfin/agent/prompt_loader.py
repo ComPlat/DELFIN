@@ -368,7 +368,7 @@ class PromptLoader:
 
         # 2. Shared DELFIN context (full only for roles that modify code
         #    or make strategic decisions; brief summary for read-only roles)
-        _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent"}
+        _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent", "builder_agent", "critic_agent"}
         _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
         shared = self.load_shared_context()
         if shared:
@@ -390,7 +390,7 @@ class PromptLoader:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
                 lines = shared.split("\n")
-                brief = "\n".join(lines[:12])
+                brief = "\n".join(lines[:16])
                 brief += (
                     "\n\n(Full DELFIN context omitted for this role. "
                     "Key paths: delfin/dashboard/, delfin/orca/, "
@@ -538,12 +538,12 @@ class PromptLoader:
         # 7. Prior role outputs (role-aware truncation)
         # SM plan is critical for Builder/Test — keep most of it
         _PRIOR_LIMITS = {
-            "session_manager": 5000,
-            "critic_agent": 3000,
-            "runtime_agent": 2500,
-            "reviewer_agent": 2500,
-            "research_agent": 2500,
-            "builder_agent": 1800,
+            "session_manager": 6000,
+            "critic_agent": 4000,
+            "runtime_agent": 3000,
+            "reviewer_agent": 3000,
+            "research_agent": 3000,
+            "builder_agent": 4000,
         }
         if prior_outputs:
             parts = ["--- Prior Role Outputs ---"]
