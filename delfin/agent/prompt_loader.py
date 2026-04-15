@@ -186,6 +186,44 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _load_chemistry_reminder(self, task_text: str) -> str:
+        """Generate a chemistry-specific reminder for doc-first approach.
+
+        Triggered when the task contains chemistry keywords.  Code-enforced
+        rather than prompt-only to ensure compliance.
+        """
+        try:
+            from delfin.agent.briefing import classify_task
+            if classify_task(task_text) != "chemistry":
+                return ""
+            return (
+                "CHEMISTRY TASK DETECTED — mandatory doc-first protocol:\n"
+                "1. Use search_docs (ORCA manual, xTB docs) BEFORE answering.\n"
+                "2. Cite doc_id + section when quoting methods or keywords.\n"
+                "3. Give concrete ORCA input snippets when possible.\n"
+                "4. State method limitations explicitly (e.g. DFT vs post-HF).\n"
+                "5. If no doc hits after 2 searches, state uncertainty — do NOT guess."
+            )
+        except Exception:
+            return ""
+
+    def _load_decomposition_context(self, task_text: str) -> str:
+        """Load goal decomposition rules for complex tasks.
+
+        Only injects rules when the task is classified as complex,
+        to avoid wasting tokens on simple tasks.
+        """
+        try:
+            from delfin.agent.engine import AgentEngine
+            complexity = AgentEngine.classify_task_complexity(task_text)
+            if complexity != "complex":
+                return ""
+            return self._cached_read(
+                self.agent_dir / "shared" / "goal_decomposition_rules.md"
+            )
+        except Exception:
+            return ""
+
     def _load_briefing_context(self, task_text: str) -> str:
         """Load pre-task briefing from outcome history analysis."""
         try:
@@ -469,6 +507,8 @@ class PromptLoader:
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
         briefing_ctx = self._load_briefing_context(task_text)
+        decomposition_ctx = self._load_decomposition_context(task_text)
+        chemistry_reminder = self._load_chemistry_reminder(task_text)
         include_playbook = self._should_inject_playbook(
             role_id,
             session_key,
@@ -491,11 +531,15 @@ class PromptLoader:
                     "--- Project Context ---\n" + "\n".join(lines[:18])
                 )
 
-            # Layer 1: Task-aware (briefing)
+            # Layer 1: Task-aware (briefing + decomposition for complex tasks)
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
                 if not self._should_skip_section("briefing", role_id):
                     sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
                     injected.append("briefing")
+            if decomposition_ctx:
+                sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+            if chemistry_reminder:
+                sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
             # Layer 2: On-demand (repo_map, playbook, profile)
             if progressive:
@@ -715,6 +759,18 @@ class PromptLoader:
             if not self._should_skip_section("briefing", role_id):
                 sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
                 injected.append("briefing")
+
+        # 6c. Goal decomposition for complex tasks (Feature 3)
+        if decomposition_ctx and role_id in (
+            "session_manager", "builder_agent", "solo_agent",
+        ):
+            sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+
+        # 6d. Chemistry doc-first protocol (Feature 6)
+        if chemistry_reminder and role_id in (
+            "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
+        ):
+            sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
         # 7. Prior role outputs (role-aware truncation)
         # SM plan is critical for Builder/Test — keep most of it

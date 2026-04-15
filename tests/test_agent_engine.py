@@ -1099,3 +1099,126 @@ def test_create_client_api():
 
     client = create_client(backend="api", api_key="test-key", model="claude-sonnet-4-20250514")
     assert isinstance(client, APIClient)
+
+
+# -- Feature tests: model routing, verification, error learning, etc. --------
+
+
+def test_classify_task_complexity():
+    """Test task complexity classification."""
+    from delfin.agent.engine import AgentEngine
+
+    assert AgentEngine.classify_task_complexity("git status") == "simple"
+    assert AgentEngine.classify_task_complexity("show me the readme") == "simple"
+    assert AgentEngine.classify_task_complexity("refactor the pipeline module across files") == "complex"
+    assert AgentEngine.classify_task_complexity("fix the bug in cli.py") == "moderate"
+    assert AgentEngine.classify_task_complexity("") == "moderate"
+    # Multiple file refs → complex
+    assert AgentEngine.classify_task_complexity(
+        "update engine.py, prompt_loader.py, and api_client.py"
+    ) == "complex"
+
+
+def test_model_for_task_routing():
+    """Test intelligent model routing based on task complexity."""
+    from delfin.agent.engine import AgentEngine
+
+    # Simple solo task → haiku
+    assert AgentEngine.model_for_task("solo_agent", "git status") == "haiku"
+    # Complex solo task → auto (user's choice)
+    assert AgentEngine.model_for_task("solo_agent", "refactor the entire pipeline") == "auto"
+    # Non-solo role → use role model map
+    assert AgentEngine.model_for_task("session_manager", "plan the task") == "sonnet"
+    # No task text → auto
+    assert AgentEngine.model_for_task("solo_agent", "") == "auto"
+
+
+def test_adaptive_thinking_budget():
+    """Test that thinking budget adapts to task complexity."""
+    from delfin.agent.engine import AgentEngine
+
+    base = AgentEngine.thinking_budget_for_role("solo_agent", task_text="fix the bug")
+    simple = AgentEngine.thinking_budget_for_role("solo_agent", task_text="git status")
+    complex_ = AgentEngine.thinking_budget_for_role(
+        "solo_agent", task_text="refactor the pipeline across multiple files"
+    )
+
+    assert simple < base  # simple gets reduced budget
+    assert complex_ > base  # complex gets increased budget
+
+
+def test_auto_verify_on_python_edit(agent_tree, mock_client):
+    """Test auto-verification triggers after Python file edits."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    # Override route to solo for this test
+    engine.route = ["solo_agent"]
+    engine.current_role_index = 0
+
+    # Python edit → should trigger verification
+    result = engine.check_auto_verify("Edit", "File updated: engine.py")
+    assert result is not None
+    assert "pytest" in result
+
+    # Non-Python edit → no trigger
+    result = engine.check_auto_verify("Edit", "File updated: readme.md")
+    assert result is None
+
+    # Non-edit tool → no trigger
+    result = engine.check_auto_verify("Read", "content of file.py")
+    assert result is None
+
+
+def test_session_error_learning(agent_tree, mock_client):
+    """Test within-session error tracking and context injection."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    # No errors initially
+    assert engine.format_error_context() == ""
+
+    # Record errors
+    engine.record_session_error("Bash", "Permission denied: rm -rf /")
+    engine.record_session_error("Bash", "Command not found: foobar")
+
+    ctx = engine.format_error_context()
+    assert "Permission denied" in ctx
+    assert "Command not found" in ctx
+    assert "do NOT repeat" in ctx
+
+    # Duplicate error → count increases, not duplicated
+    engine.record_session_error("Bash", "Permission denied: rm -rf /")
+    ctx = engine.format_error_context()
+    assert "x2" in ctx
+
+
+def test_parallel_role_detection(agent_tree, mock_client):
+    """Test parallel execution detection for critic+runtime."""
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    # Set up a route with critic→runtime adjacent
+    engine.route = ["session_manager", "critic_agent", "runtime_agent", "builder_agent"]
+    engine.current_role_index = 1  # at critic_agent
+
+    parallel = engine.can_run_parallel()
+    assert parallel is not None
+    assert "critic_agent" in parallel
+    assert "runtime_agent" in parallel
+
+    # Not parallel at session_manager
+    engine.current_role_index = 0
+    assert engine.can_run_parallel() is None

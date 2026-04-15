@@ -153,6 +153,31 @@ _ROLE_MODEL_MAP: dict[str, str] = {
     "research_agent": "sonnet",   # chemistry method synthesis needs depth
 }
 
+# Task-complexity-based model routing for solo mode (Feature 1).
+# Simple tasks → cheaper model, complex → user's choice (often Opus).
+_SIMPLE_TASK_PATTERNS: tuple[str, ...] = (
+    "git status", "git log", "git diff", "git branch",
+    "was ist", "what is", "zeig mir", "show me",
+    "lies", "read ", "cat ", "grep ",
+    "wie heißt", "how many", "wieviele",
+    "welche datei", "which file", "where is",
+    "list ", "zeige ", "display",
+)
+
+_COMPLEX_TASK_PATTERNS: tuple[str, ...] = (
+    "refactor", "implement", "rewrite", "migrate",
+    "architecture", "redesign", "optimize",
+    "fix.*bug.*in.*multiple", "across.*files",
+    "pipeline", "workflow", "integration",
+)
+
+# Adaptive thinking budget multipliers by task complexity.
+_COMPLEXITY_THINKING_MULT: dict[str, float] = {
+    "simple": 0.4,    # simple questions → 40% of base budget
+    "moderate": 1.0,  # default
+    "complex": 1.5,   # complex multi-file tasks → 150%
+}
+
 _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "chief_agent": 16000,         # strategic decisions need depth
     "session_manager": 32000,     # planning is critical — needs deep analysis
@@ -357,6 +382,11 @@ class AgentEngine:
         role = self.current_role
         if not role:
             role = self.route[0] if self.route else "builder_agent"
+
+        # Inject session error context into memory (Feature 4)
+        error_ctx = self.format_error_context()
+        if error_ctx:
+            memory_context = f"{memory_context}\n\n{error_ctx}" if memory_context else error_ctx
 
         return self.loader.build_system_prompt(
             role_id=role,
@@ -737,6 +767,73 @@ class AgentEngine:
             return "\n\n".join(parts)
         return ""
 
+    # -- Auto-verification after code edits (Feature 2) --------------------
+
+    _AUTO_VERIFY_ROLES = {"solo_agent", "builder_agent"}
+    _CODE_EDIT_TOOLS = {"Edit", "Write"}
+
+    def check_auto_verify(self, tool_name: str, tool_output: str) -> str | None:
+        """Check if auto-verification should run after a tool call.
+
+        Returns a verification message to inject, or None.
+        Called by the dashboard worker after each tool result.
+        """
+        role = self.current_role
+        if role not in self._AUTO_VERIFY_ROLES:
+            return None
+        if tool_name not in self._CODE_EDIT_TOOLS:
+            return None
+        # Check if the edited file is a Python file
+        # (tool_output from Edit/Write contains the file path)
+        if ".py" not in tool_output and ".py" not in str(getattr(self, "_last_edit_path", "")):
+            return None
+        return (
+            "[System] A Python file was just modified. "
+            "Run `python -m pytest tests/ -x -q --tb=short` to verify. "
+            "If tests fail, fix the issue before continuing."
+        )
+
+    # -- Within-session error learning (Feature 4) -------------------------
+
+    def __init_error_memory(self) -> None:
+        """Initialize error memory if not present."""
+        if not hasattr(self, "_session_errors"):
+            self._session_errors: list[dict[str, str]] = []
+
+    def record_session_error(
+        self,
+        tool_name: str,
+        error_text: str,
+    ) -> None:
+        """Record a tool error within the current session."""
+        self.__init_error_memory()
+        # Deduplicate
+        key = f"{tool_name}:{error_text[:100]}"
+        for existing in self._session_errors:
+            if existing.get("key") == key:
+                existing["count"] = str(int(existing.get("count", "1")) + 1)
+                return
+        self._session_errors.append({
+            "key": key,
+            "tool": tool_name,
+            "error": error_text[:300],
+            "count": "1",
+        })
+        # Keep bounded
+        if len(self._session_errors) > 20:
+            self._session_errors = self._session_errors[-20:]
+
+    def format_error_context(self) -> str:
+        """Format session errors as context for the system prompt."""
+        self.__init_error_memory()
+        if not self._session_errors:
+            return ""
+        lines = ["[Session errors — do NOT repeat these:]"]
+        for err in self._session_errors[-5:]:
+            count = err.get("count", "1")
+            lines.append(f"- {err['tool']}: {err['error'][:150]} (x{count})")
+        return "\n".join(lines)
+
     def advance_role(self) -> bool:
         """Advance to the next role in the route.
 
@@ -752,6 +849,40 @@ class AgentEngine:
                 break
 
         self.current_role_index += 1
+        return not self.is_cycle_complete
+
+    # -- Parallel agent execution (Feature 5) ------------------------------
+
+    # Roles that can run in parallel (same pipeline position).
+    _PARALLEL_GROUPS: list[set[str]] = [
+        {"critic_agent", "runtime_agent"},  # both review the plan independently
+    ]
+
+    def can_run_parallel(self) -> list[str] | None:
+        """Check if the current + next role can run in parallel.
+
+        Returns a list of role IDs that can run concurrently, or None.
+        """
+        if self.current_role_index >= len(self.route) - 1:
+            return None
+        current = self.route[self.current_role_index]
+        next_role = self.route[self.current_role_index + 1]
+        for group in self._PARALLEL_GROUPS:
+            if current in group and next_role in group:
+                return [current, next_role]
+        return None
+
+    def advance_past_parallel(self, outputs: dict[str, str]) -> bool:
+        """Skip past parallel roles, storing their outputs.
+
+        Call this after running parallel roles instead of advance_role().
+        ``outputs`` maps role_id → output text.
+        """
+        for rid, output in outputs.items():
+            self.role_outputs[rid] = output
+            self.compaction_summaries[rid] = self._summarize_output_for_handoff(output)
+        # Advance past all parallel roles
+        self.current_role_index += len(outputs)
         return not self.is_cycle_complete
 
     @staticmethod
@@ -949,12 +1080,19 @@ class AgentEngine:
     def thinking_budget_for_role(
         role_id: str,
         task_class: str = "",
+        task_text: str = "",
     ) -> int:
         """Return the recommended thinking budget for a role.
 
-        Applies provider-specific multiplier from the learned profile.
+        Applies both provider-specific and task-complexity multipliers.
+        Simple tasks get 40% of base, complex tasks get 150%.
         """
         base = _ROLE_THINKING_BUDGETS.get(role_id, _DEFAULT_THINKING_BUDGET)
+
+        # Task complexity multiplier (Feature 7)
+        complexity = AgentEngine.classify_task_complexity(task_text)
+        complexity_mult = _COMPLEXITY_THINKING_MULT.get(complexity, 1.0)
+
         try:
             from delfin.agent.provider_profile import (
                 load_provider_profile,
@@ -963,15 +1101,51 @@ class AgentEngine:
             _prov = getattr(AgentEngine, "_active_provider", "claude")
             _profile = load_provider_profile(_prov)
             _task_profile = load_task_profile(_prov, task_class)
-            mult = _task_profile.get(
+            provider_mult = _task_profile.get(
                 "thinking_budget_mult",
                 _profile.get("thinking_budget_mult", 1.0),
             )
             # Clamp multiplier to safe range
-            mult = max(0.0, min(3.0, mult))
-            return int(base * mult)
+            provider_mult = max(0.0, min(3.0, provider_mult))
+            return int(base * provider_mult * complexity_mult)
         except Exception:
-            return base
+            return int(base * complexity_mult)
+
+    @staticmethod
+    def classify_task_complexity(text: str) -> str:
+        """Classify task complexity: simple / moderate / complex."""
+        lower = (text or "").lower().strip()
+        if not lower:
+            return "moderate"
+        # Simple: short questions, read-only operations
+        if len(lower) < 60 and any(p in lower for p in _SIMPLE_TASK_PATTERNS):
+            return "simple"
+        # Complex: multi-file refactors, architecture changes
+        if any(re.search(p, lower) for p in _COMPLEX_TASK_PATTERNS):
+            return "complex"
+        # Long messages with multiple file paths → likely complex
+        file_refs = re.findall(r"[\w./]+\.py\b", lower)
+        if len(file_refs) >= 3:
+            return "complex"
+        return "moderate"
+
+    @staticmethod
+    def model_for_task(role_id: str, task_text: str = "") -> str:
+        """Intelligent model routing based on role AND task complexity.
+
+        Simple tasks (git status, read file) → haiku (cheap, fast).
+        Moderate tasks → sonnet or user's choice.
+        Complex tasks → user's choice (often opus).
+        """
+        role_model = _ROLE_MODEL_MAP.get(role_id, "auto")
+        if role_model != "auto":
+            return role_model
+        # Solo/builder: route by complexity
+        if role_id in ("solo_agent", "dashboard_agent") and task_text:
+            complexity = AgentEngine.classify_task_complexity(task_text)
+            if complexity == "simple":
+                return "haiku"
+        return "auto"
 
     @staticmethod
     def model_for_role(role_id: str) -> str:
