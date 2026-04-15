@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .api_client import StreamEvent, create_client
-from .prompt_loader import PromptLoader
+from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
 
 # -- Legacy mode name migration ------------------------------------------------
@@ -280,7 +280,37 @@ class AgentEngine:
         self._stop_requested = False
         self._lock = threading.Lock()
 
+        # Context engineering features (all opt-in, default off)
+        self._context_tracker = None  # type: Any  # ContextUsageTracker
+        self._distiller = None  # type: Any  # ContextDistiller
+        self._progressive_disclosure = False
+        self._init_context_features()
+
         self._load_mode(mode)
+
+    def _init_context_features(self) -> None:
+        """Initialize context engineering features (tracker, distiller)."""
+        try:
+            from .context_tracker import ContextUsageTracker
+            self._context_tracker = ContextUsageTracker()
+            self.loader._context_tracker = self._context_tracker
+        except Exception:
+            pass
+        try:
+            from .context_distiller import ContextDistiller
+            self._distiller = ContextDistiller(enabled=False)
+        except Exception:
+            pass
+
+    def set_progressive_disclosure(self, enabled: bool) -> None:
+        """Enable/disable progressive context disclosure."""
+        self._progressive_disclosure = enabled
+        self.loader._progressive_disclosure = enabled
+
+    def set_context_distillation(self, enabled: bool) -> None:
+        """Enable/disable cheap-model context distillation."""
+        if self._distiller is not None:
+            self._distiller.enabled = enabled
 
     def _load_mode(self, mode: str) -> None:
         """Load a mode definition from the LITE manifest."""
@@ -386,10 +416,23 @@ class AgentEngine:
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
+
+        # Mid-conversation compaction for long solo sessions (Feature 3)
+        if self.current_role in ("solo_agent", "dashboard_agent"):
+            self._compact_history()
+
         system_prompt = self._build_current_system_prompt(
             memory_context,
             task_text=user_message,
         )
+
+        # Context distillation for expensive calls (Feature 5)
+        if self._distiller and self._distiller.should_distill(
+            system_prompt, self.messages,
+        ):
+            system_prompt = self._distiller.distill(
+                system_prompt, task_text=user_message,
+            )
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
@@ -478,6 +521,22 @@ class AgentEngine:
         full_response = "".join(chunks)
         if full_response:
             self.messages.append({"role": "assistant", "content": full_response})
+
+            # Context usage tracking (Feature 4)
+            self._record_context_usage(full_response)
+
+            # Progressive disclosure: NEED_CONTEXT detection (Feature 1)
+            if self._progressive_disclosure:
+                full_response = self._handle_need_context(
+                    full_response, user_message, memory_context,
+                    on_token=on_token,
+                    on_tool_use=on_tool_use,
+                    on_tool_result=on_tool_result,
+                    on_permission_denied=on_permission_denied,
+                    on_thinking=on_thinking,
+                    thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
+                )
         elif self._stop_requested:
             # Stop during thinking — no response generated.
             # Pop the orphaned user message to prevent consecutive user
@@ -508,6 +567,175 @@ class AgentEngine:
                 cleaned.append(msg)
         if len(cleaned) != len(self.messages):
             self.messages[:] = cleaned
+
+    # -- Mid-conversation compaction (Feature 3) ---------------------------
+
+    _COMPACTION_THRESHOLD = 12  # messages before compaction triggers
+    _KEEP_RECENT = 4            # keep last 4 messages intact
+
+    def _compact_history(self) -> None:
+        """Summarize older messages, keeping recent ones intact.
+
+        Only runs for solo/dashboard modes with long conversations.
+        Uses extractive summarization (no extra API call).
+        """
+        if len(self.messages) < self._COMPACTION_THRESHOLD:
+            return
+
+        old_msgs = self.messages[:-self._KEEP_RECENT]
+        recent = self.messages[-self._KEEP_RECENT:]
+
+        summary_parts: list[str] = []
+        for msg in old_msgs:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                # Keep first line of user messages (the request)
+                first_line = content.split("\n")[0][:200]
+                summary_parts.append(f"User: {first_line}")
+            elif role == "assistant":
+                # Extract structured content from assistant messages
+                extracted = self._summarize_output_for_handoff(content, limit=300)
+                if extracted:
+                    summary_parts.append(f"Assistant: {extracted}")
+
+        summary = "\n".join(summary_parts)
+        if not summary:
+            return
+
+        self.messages = [
+            {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
+            {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
+        ] + recent
+
+        # For CLI backend: kill the process so the next call starts fresh
+        # with the compacted messages.
+        if hasattr(self.client, "kill") and self.backend == "cli":
+            self.client.kill()
+
+    # -- Context usage tracking (Feature 4) --------------------------------
+
+    def _record_context_usage(self, response_text: str) -> None:
+        """Record which injected sections the agent actually referenced."""
+        if self._context_tracker is None:
+            return
+        injected = getattr(self.loader, "_last_injected_sections", [])
+        if not injected:
+            return
+        try:
+            self._context_tracker.record_usage(
+                sections_injected=injected,
+                response_text=response_text,
+                role_id=self.current_role,
+                provider=self.provider,
+            )
+        except Exception:
+            pass  # never let tracking break the main flow
+
+    # -- Progressive disclosure: NEED_CONTEXT handling (Feature 1) ---------
+
+    _NEED_CONTEXT_RE = re.compile(r"NEED_CONTEXT:\s*(\w+)", re.IGNORECASE)
+    _MAX_NEED_CONTEXT_ROUNDS = 3
+
+    def _handle_need_context(
+        self,
+        response_text: str,
+        original_user_message: str,
+        memory_context: str = "",
+        **stream_kwargs: Any,
+    ) -> str:
+        """Detect NEED_CONTEXT requests and inject the requested sections.
+
+        Returns the final response text (may include multiple rounds).
+        """
+        for _ in range(self._MAX_NEED_CONTEXT_ROUNDS):
+            matches = self._NEED_CONTEXT_RE.findall(response_text)
+            if not matches:
+                break
+
+            # Load requested sections
+            injected_parts: list[str] = []
+            for section_name in matches:
+                section_name = section_name.lower().strip()
+                if section_name not in AVAILABLE_ON_DEMAND:
+                    continue
+                content = self._load_on_demand_section(
+                    section_name, original_user_message, memory_context,
+                )
+                if content:
+                    injected_parts.append(
+                        f"[System] Requested context '{section_name}':\n{content}"
+                    )
+
+            if not injected_parts:
+                break
+
+            # Inject as a user message and continue the conversation
+            context_msg = "\n\n".join(injected_parts)
+            self.messages.append({"role": "user", "content": context_msg})
+
+            # Stream continuation
+            chunks: list[str] = []
+            try:
+                system_prompt = self._build_current_system_prompt(
+                    memory_context, task_text=original_user_message,
+                )
+                for event in self.client.stream_message(
+                    system=system_prompt,
+                    messages=self.messages,
+                    max_tokens=stream_kwargs.get("max_tokens") or self.max_tokens_for_role(self.current_role),
+                    session_id=self.session_id,
+                    thinking_budget=stream_kwargs.get("thinking_budget", 0),
+                ):
+                    if self._stop_requested:
+                        break
+                    if event.type == "text_delta" and event.text:
+                        chunks.append(event.text)
+                        on_token = stream_kwargs.get("on_token")
+                        if on_token:
+                            on_token(event.text)
+                    elif event.type == "message_start":
+                        with self._lock:
+                            self.token_usage["input"] += event.input_tokens
+                    elif event.type == "message_delta":
+                        with self._lock:
+                            self.token_usage["output"] += event.output_tokens
+                            self.cost_usd += event.cost_usd
+            except Exception:
+                break
+
+            continuation = "".join(chunks)
+            if continuation:
+                self.messages.append({"role": "assistant", "content": continuation})
+                response_text = continuation
+            else:
+                break
+
+        return response_text
+
+    def _load_on_demand_section(
+        self,
+        section_name: str,
+        task_text: str,
+        memory_context: str = "",
+    ) -> str:
+        """Load a specific context section on demand."""
+        if section_name == "playbook":
+            return self.loader._load_relevant_playbook_context(task_text)
+        elif section_name == "repo_map":
+            return self.loader._load_repo_map_context(task_text)
+        elif section_name == "profile":
+            return self.loader._load_profile_context(self.mode)
+        elif section_name == "memory":
+            return memory_context
+        elif section_name == "prior_outputs":
+            if not self.role_outputs:
+                return ""
+            parts = []
+            for rid, output in self.role_outputs.items():
+                parts.append(f"### {rid}\n{output[:3000]}")
+            return "\n\n".join(parts)
+        return ""
 
     def advance_role(self) -> bool:
         """Advance to the next role in the route.

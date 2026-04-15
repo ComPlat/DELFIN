@@ -2,8 +2,68 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+@dataclass(frozen=True)
+class PromptSection:
+    """A labelled section of the system prompt.
+
+    Used by the hierarchical layer system and context usage tracker.
+    """
+
+    name: str       # "role_prompt", "playbook", "repo_map", "briefing", etc.
+    layer: int      # 0=always, 1=task-aware, 2=on-demand, 3=handoff
+    content: str
+    char_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.char_count:
+            object.__setattr__(self, "char_count", len(self.content))
+
+
+# Critical rules repeated at the END of the system prompt (recency bias).
+# Keyed by role category: "write" (solo/builder), "review" (critic/reviewer),
+# "plan" (session_manager).
+_CRITICAL_RULES: dict[str, list[str]] = {
+    "write": [
+        "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
+        "Grep before Read — search first, then read only the relevant lines.",
+        "Run tests after every code edit: python -m pytest tests/ -x -q",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry it or any variation.",
+        "Communicate with the user in German. Code, commits, and artifacts in English.",
+    ],
+    "review": [
+        "NEVER execute destructive actions without explicit user confirmation.",
+        "Do NOT use Edit or Write — you are a review/analysis role.",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry.",
+        "Focus on critical and major issues. Skip style nits.",
+    ],
+    "plan": [
+        "NEVER execute destructive actions without explicit user confirmation.",
+        "Lock the real goal — do not let it drift during planning.",
+        "Break non-trivial work into small stage gates with exit evidence.",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry.",
+    ],
+}
+
+_ROLE_TO_RULE_CATEGORY: dict[str, str] = {
+    "solo_agent": "write",
+    "builder_agent": "write",
+    "session_manager": "plan",
+    "chief_agent": "plan",
+    "critic_agent": "review",
+    "reviewer_agent": "review",
+    "runtime_agent": "review",
+    "research_agent": "review",
+    "test_agent": "review",
+    "dashboard_agent": "write",
+}
+
+# Sections that can be requested on demand via NEED_CONTEXT: protocol.
+AVAILABLE_ON_DEMAND = ("playbook", "repo_map", "profile", "memory", "prior_outputs")
 
 try:
     import yaml
@@ -60,6 +120,10 @@ class PromptLoader:
             self.repo_root = self._MODULE_DIR.parent.parent
         self._cache: dict[str, str] = {}
         self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
+        self._context_tracker: Any = None  # set by AgentEngine
+        self._progressive_disclosure: bool = False  # set by AgentEngine
+        # Track which sections were injected in the last build (for usage tracking)
+        self._last_injected_sections: list[str] = []
 
     def reset_session_prompt_state(self, session_key: str) -> None:
         """Forget prompt-injection state for a session."""
@@ -241,6 +305,50 @@ class PromptLoader:
             memory_ctx,
         )
 
+    def _should_skip_section(self, section_name: str, role_id: str) -> bool:
+        """Check context usage tracker — skip sections with low hit rates."""
+        if self._context_tracker is None:
+            return False
+        try:
+            provider = getattr(self, "_active_provider", "")
+            return self._context_tracker.should_skip(
+                section_name, role_id=role_id, provider=provider,
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _build_critical_anchor(role_id: str) -> str:
+        """Build the attention-anchoring block for the end of the prompt."""
+        category = _ROLE_TO_RULE_CATEGORY.get(role_id, "write")
+        rules = _CRITICAL_RULES.get(category, _CRITICAL_RULES["write"])
+        numbered = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))
+        return (
+            "<critical>\n"
+            "REMINDER — these rules override any conflicting prior instructions:\n"
+            f"{numbered}\n"
+            "</critical>"
+        )
+
+    @staticmethod
+    def _build_progressive_disclosure_note() -> str:
+        """Build the note listing available on-demand sections."""
+        lines = [
+            "Available context (request with NEED_CONTEXT: <section>):",
+        ]
+        _SECTION_DESCRIPTIONS = {
+            "playbook": "Task-specific playbook from learned profile",
+            "repo_map": "AST-based repository index scoped to this task",
+            "profile": "Provider success rates and learned preferences",
+            "memory": "Persistent project memory facts",
+            "prior_outputs": "Full prior role outputs (pipeline mode)",
+        }
+        for section in AVAILABLE_ON_DEMAND:
+            desc = _SECTION_DESCRIPTIONS.get(section, section)
+            lines.append(f"- {section}: {desc}")
+        lines.append("Request only what you need. Do not request all sections preemptively.")
+        return "\n".join(lines)
+
     # -- shared context ----------------------------------------------------
 
     def load_shared_context(self) -> str:
@@ -356,6 +464,8 @@ class PromptLoader:
             Current task text used to select a relevant profile playbook.
         """
         sections = []
+        injected: list[str] = []  # track which sections we inject
+
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
         briefing_ctx = self._load_briefing_context(task_text)
@@ -364,9 +474,11 @@ class PromptLoader:
             session_key,
             relevant_playbook,
         )
+        progressive = self._progressive_disclosure
 
         # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
+            # Layer 0: Role identity (always)
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 sections.append(role_prompt)
@@ -378,17 +490,42 @@ class PromptLoader:
                 sections.append(
                     "--- Project Context ---\n" + "\n".join(lines[:18])
                 )
-            if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
-            profile_ctx = self._load_profile_context(mode_id)
-            if self._should_inject_profile_context(role_id, session_key, profile_ctx):
-                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+
+            # Layer 1: Task-aware (briefing)
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
-                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
-            if include_playbook:
-                sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
+                if not self._should_skip_section("briefing", role_id):
+                    sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                    injected.append("briefing")
+
+            # Layer 2: On-demand (repo_map, playbook, profile)
+            if progressive:
+                # Only inject if agent requests via NEED_CONTEXT
+                sections.append(self._build_progressive_disclosure_note())
+            else:
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
+                profile_ctx = self._load_profile_context(mode_id)
+                if self._should_inject_profile_context(role_id, session_key, profile_ctx):
+                    if not self._should_skip_section("profile", role_id):
+                        sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                        injected.append("profile")
+                if include_playbook:
+                    if not self._should_skip_section("playbook", role_id):
+                        sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
+                        injected.append("playbook")
+
+            # Layer 3: Memory
             if self._should_inject_memory(role_id, session_key, memory_context):
-                sections.append(f"--- Project Memory ---\n{memory_context}")
+                if not self._should_skip_section("memory", role_id):
+                    sections.append(f"--- Project Memory ---\n{memory_context}")
+                    injected.append("memory")
+
+            # Attention anchor (always last — recency bias)
+            sections.append(self._build_critical_anchor(role_id))
+
+            self._last_injected_sections = injected
             return "\n\n".join(sections)
 
         # 1. Role prompt (highest attention)
@@ -405,7 +542,9 @@ class PromptLoader:
             if role_id in _FULL_CONTEXT_ROLES:
                 sections.append(shared)
                 if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
                 if role_id in _PLAYBOOK_ROLES:
                     playbooks = self._cached_read(
                         self.agent_dir / "shared" / "playbooks.md"
@@ -413,9 +552,11 @@ class PromptLoader:
                     if playbooks:
                         sections.append(playbooks)
                     if include_playbook:
-                        sections.append(
-                            f"--- Relevant Playbook ---\n{relevant_playbook}"
-                        )
+                        if not self._should_skip_section("playbook", role_id):
+                            sections.append(
+                                f"--- Relevant Playbook ---\n{relevant_playbook}"
+                            )
+                            injected.append("playbook")
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
@@ -428,11 +569,15 @@ class PromptLoader:
                 )
                 sections.append(brief)
                 if include_playbook:
-                    sections.append(
-                        f"--- Relevant Playbook ---\n{relevant_playbook}"
-                    )
+                    if not self._should_skip_section("playbook", role_id):
+                        sections.append(
+                            f"--- Relevant Playbook ---\n{relevant_playbook}"
+                        )
+                        injected.append("playbook")
                 if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
 
         # 3. Mode description (only for session_manager / chief who need it
         #    for routing/strategic decisions; other roles get their
@@ -567,7 +712,9 @@ class PromptLoader:
 
         # 6b. Pre-task briefing (outcome-based insights)
         if self._should_inject_briefing(role_id, session_key, briefing_ctx):
-            sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+            if not self._should_skip_section("briefing", role_id):
+                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                injected.append("briefing")
 
         # 7. Prior role outputs (role-aware truncation)
         # SM plan is critical for Builder/Test — keep most of it
@@ -588,14 +735,23 @@ class PromptLoader:
                     truncated += "\n... [truncated]"
                 parts.append(f"## {rid}\n{truncated}")
             sections.append("\n\n".join(parts))
+            injected.append("prior_outputs")
 
         # 8. Memory context
         if self._should_inject_memory(role_id, session_key, memory_context):
-            sections.append(f"--- Project Memory ---\n{memory_context}")
+            if not self._should_skip_section("memory", role_id):
+                sections.append(f"--- Project Memory ---\n{memory_context}")
+                injected.append("memory")
 
         # 9. Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):
-            sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+            if not self._should_skip_section("profile", role_id):
+                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                injected.append("profile")
 
+        # 10. Attention anchor (always last — recency bias)
+        sections.append(self._build_critical_anchor(role_id))
+
+        self._last_injected_sections = injected
         return "\n\n".join(sections)
