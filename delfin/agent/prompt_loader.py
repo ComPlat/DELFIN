@@ -122,6 +122,33 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _load_briefing_context(self, task_text: str) -> str:
+        """Load pre-task briefing from outcome history analysis."""
+        try:
+            from delfin.agent.briefing import generate_briefing
+
+            provider = getattr(self, "_active_provider", "claude")
+            return generate_briefing(provider, task_text)
+        except Exception:
+            return ""
+
+    def _briefing_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {
+            "solo_agent", "session_manager", "builder_agent", "critic_agent",
+        }
+
+    def _should_inject_briefing(
+        self,
+        role_id: str,
+        session_key: str,
+        briefing_ctx: str,
+    ) -> bool:
+        if not self._briefing_injection_allowed(role_id):
+            return False
+        return self._should_inject_context(
+            role_id, session_key, "briefing", briefing_ctx,
+        )
+
     def _profile_injection_allowed(self, role_id: str) -> bool:
         return role_id in {"solo_agent", "session_manager", "builder_agent"}
 
@@ -331,6 +358,7 @@ class PromptLoader:
         sections = []
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
+        briefing_ctx = self._load_briefing_context(task_text)
         include_playbook = self._should_inject_playbook(
             role_id,
             session_key,
@@ -355,6 +383,8 @@ class PromptLoader:
             profile_ctx = self._load_profile_context(mode_id)
             if self._should_inject_profile_context(role_id, session_key, profile_ctx):
                 sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+            if self._should_inject_briefing(role_id, session_key, briefing_ctx):
+                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
             if include_playbook:
                 sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
             if self._should_inject_memory(role_id, session_key, memory_context):
@@ -534,6 +564,10 @@ class PromptLoader:
             )
 
             sections.append(cycle_info)
+
+        # 6b. Pre-task briefing (outcome-based insights)
+        if self._should_inject_briefing(role_id, session_key, briefing_ctx):
+            sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
 
         # 7. Prior role outputs (role-aware truncation)
         # SM plan is critical for Builder/Test — keep most of it
