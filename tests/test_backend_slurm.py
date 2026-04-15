@@ -55,3 +55,70 @@ def test_explicit_profile_overrides_auto_detect():
                       return_value="bwunicluster3"):
         backend = SlurmJobBackend("/tmp", slurm_profile="custom")
         assert backend.slurm_profile == "custom"
+
+
+def _fake_completed(stdout: str = "Submitted batch job 1\n"):
+    class R:
+        returncode = 0
+        stderr = ""
+    r = R()
+    r.stdout = stdout
+    return r
+
+
+def test_submit_guppy_batch_emits_array_and_env(tmp_path):
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+    csv = tmp_path / "smiles.csv"
+    csv.write_text("smiles,name\n[Fe+2],iron\nO,water\n", encoding="utf-8")
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run",
+               return_value=_fake_completed()) as run_mock:
+        result = backend.submit_guppy_batch(
+            job_dir=str(tmp_path),
+            job_name="guppy_bench",
+            smiles_csv=str(csv),
+            array_size=5,
+            array_concurrency=2,
+            pal=8,
+            maxcore=4000,
+            start_strategy="isomers",
+            max_isomers=150,
+            goat_topk=3,
+        )
+
+    assert result.returncode == 0
+    args = run_mock.call_args.args[0]
+    cmd_str = " ".join(args)
+
+    # Array spec 1-5%2 (1-based so SLURM_ARRAY_TASK_ID matches CSV row).
+    assert "--array=1-5%2" in args
+    # Env vars: mode, csv path, strategy, isomer cap, goat topk, rmsd/energy window.
+    assert "DELFIN_MODE=guppy_batch" in cmd_str
+    assert f"GUPPY_BATCH_CSV={csv}" in cmd_str
+    assert "GUPPY_START_STRATEGY=isomers" in cmd_str
+    assert "GUPPY_MAX_ISOMERS=150" in cmd_str
+    assert "GUPPY_GOAT_TOPK=3" in cmd_str
+    assert "GUPPY_RMSD_CUTOFF=0.3" in cmd_str
+    assert "GUPPY_ENERGY_WINDOW_KCAL=25.0" in cmd_str
+    # Resource derivation.
+    assert "--cpus-per-task=8" in args
+    assert "--mem=32000M" in args
+    assert any(a.endswith("submit_delfin.sh") for a in args)
+    assert args[0] == "sbatch"
+    assert "--job-name=guppy_bench" in args
+
+
+def test_submit_guppy_batch_without_concurrency(tmp_path):
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+    csv = tmp_path / "b.csv"
+    csv.write_text("CCO\nO\n", encoding="utf-8")
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run",
+               return_value=_fake_completed()) as run_mock:
+        backend.submit_guppy_batch(
+            job_dir=str(tmp_path), job_name="x", smiles_csv=str(csv),
+            array_size=2,
+        )
+    args = run_mock.call_args.args[0]
+    assert "--array=1-2" in args
+    assert not any(a.startswith("--array=1-2%") for a in args)

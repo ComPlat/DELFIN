@@ -61,11 +61,12 @@
   },
   "claude": {
     "avg_cost_per_task": {
-      "coding": 4.772,
-      "chemistry": 7.768
+      "coding": 13.358,
+      "chemistry": 14.619,
+      "dashboard": 27.526
     },
     "success_rate": {
-      "solo": 0.959,
+      "solo": 0.993,
       "quick": 0.8,
       "reviewed": 0.75,
       "cluster": 0.7,
@@ -73,15 +74,20 @@
     },
     "task_performance": {
       "coding": {
-        "success_rate": 0.949
+        "success_rate": 0.981
       },
       "chemistry": {
-        "success_rate": 0.813
+        "success_rate": 0.902
+      },
+      "dashboard": {
+        "success_rate": 0.915
       }
     },
     "common_failures": [
       "dashboard edits drifting into longer prose than the UI needs"
     ],
+    "total_cycles": 19,
+    "updated_at": "2026-04-15 12:02:01",
     "communication": {
       "rules": [
         "No Co-Authored-By in commits",
@@ -93,9 +99,7 @@
         "pytest in background after every code change",
         "Agent subprocesses for research spanning >3 files"
       ]
-    },
-    "total_cycles": 8,
-    "updated_at": "2026-04-14 15:40:38"
+    }
   },
   "openai": {
     "thinking_budget_mult": 1.1,

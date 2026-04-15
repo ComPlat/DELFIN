@@ -15046,6 +15046,7 @@ def _build_topology_xyz(
     perm: List[int],
     geometry: str,
     apply_uff: bool,
+    conf_id: Optional[int] = None,
 ) -> Optional[str]:
     """Build a DELFIN XYZ for one topological arrangement.
 
@@ -15061,6 +15062,10 @@ def _build_topology_xyz(
         perm: ``perm[position] = index into donor_atom_indices``.
         geometry: Key in ``_TOPO_GEOMETRY_VECTORS`` ('OH', 'SQ', …).
         apply_uff: Whether to run OB UFF optimization after placement.
+        conf_id: Optional template conformer ID. If None, the rigid-fragment
+            builder auto-selects the best-scoring conformer.  Callers iterating
+            over multiple alternative binding modes can use this to avoid
+            depending on a single (possibly poor) template.
 
     Returns:
         DELFIN-format XYZ string, or None on failure.
@@ -15071,7 +15076,8 @@ def _build_topology_xyz(
         # intraligand structure much better than de-novo fragment embedding.
         if mol.GetNumConformers() > 0:
             xyz_from_template = _build_topology_xyz_from_template(
-                mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff
+                mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff,
+                conf_id=conf_id,
             )
             if xyz_from_template is not None:
                 return xyz_from_template
@@ -15249,6 +15255,39 @@ def _build_topology_xyz(
         return None
 
 
+def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
+    """Return conformer IDs ranked deterministically by geometry quality.
+
+    Lower ``_geometry_quality_score`` is better.  Conformers with an atom clash
+    below ``min_dist=0.3`` are excluded (truly collapsed).  Ties are broken by
+    ascending conformer ID so the ordering is fully reproducible.
+
+    If ``top_k`` is given, only that many best candidates are returned.
+    """
+    try:
+        all_ids = [int(c.GetId()) for c in mol.GetConformers()]
+    except Exception:
+        return []
+    if not all_ids:
+        return []
+
+    ranked: List[Tuple[float, int]] = []
+    for cid in all_ids:
+        try:
+            if _has_atom_clash(mol, cid, min_dist=0.3):
+                continue
+            score = float(_geometry_quality_score(mol, cid))
+        except Exception:
+            continue
+        ranked.append((score, cid))
+
+    ranked.sort(key=lambda pair: (pair[0], pair[1]))
+    ordered = [cid for _score, cid in ranked]
+    if top_k is not None and top_k >= 0:
+        ordered = ordered[:top_k]
+    return ordered
+
+
 def _build_topology_xyz_from_template(
     mol,
     metal_idx: int,
@@ -15256,12 +15295,18 @@ def _build_topology_xyz_from_template(
     perm: List[int],
     geometry: str,
     apply_uff: bool,
+    conf_id: Optional[int] = None,
 ) -> Optional[str]:
     """Rigid-fragment topology builder using an existing template conformer.
 
     The ligand fragments are transformed as rigid bodies so their internal
     geometry remains close to the template. This is especially useful for
     aromatic/charged chelating ligands where ETKDG fragment embedding can fail.
+
+    If ``conf_id`` is None, the best-scored conformer (per
+    :func:`_rank_template_conformers`) is used.  Pass a specific ID when the
+    caller wants to iterate over several candidates (e.g. to try multiple
+    templates for the same alternative binding mode).
     """
     if not RDKIT_AVAILABLE:
         return None
@@ -15273,8 +15318,14 @@ def _build_topology_xyz_from_template(
     except Exception:
         return None
 
+    if conf_id is None:
+        ranked = _rank_template_conformers(mol, top_k=1)
+        if not ranked:
+            return None
+        conf_id = ranked[0]
+
     try:
-        conf = mol.GetConformer(0)
+        conf = mol.GetConformer(int(conf_id))
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
 
@@ -15678,14 +15729,24 @@ def _generate_topological_isomers(
             )
             feasible_isomers = isomers
 
+        # Pre-compute ranked template conformers once per metal centre so each
+        # permutation can retry against several templates when the default
+        # (best-scored) one produces no viable XYZ.
+        topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+
         for canonical_form, perm in feasible_isomers:
             if len(results) >= max_isomers:
                 return results
             geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
             try:
-                xyz = _build_topology_xyz(
-                    mol, metal_idx, donor_indices, perm, geom_name, apply_uff
-                )
+                xyz = None
+                for _tpl_cid in topo_template_cids:
+                    xyz = _build_topology_xyz(
+                        mol, metal_idx, donor_indices, perm, geom_name,
+                        apply_uff, conf_id=_tpl_cid,
+                    )
+                    if xyz is not None:
+                        break
                 if xyz is None:
                     continue
 
@@ -15907,11 +15968,15 @@ def _generate_linkage_isomers(
     mol,
     smiles: str,
     apply_uff: bool = True,
+    max_template_tries: int = 8,
 ) -> List[Tuple[str, str]]:
     """Build linkage isomers by rewiring ambidentate ligands and generating XYZ.
 
     For each alternative coordination mode, rewires the metal bond and builds
-    an idealized topology structure (OB UFF optimized).
+    an idealized topology structure (OB UFF optimized).  The builder is tried
+    against the top ``max_template_tries`` template conformers (ranked by
+    :func:`_rank_template_conformers`) so one bad conformer does not silently
+    discard valid linkage isomers.
 
     Returns [(xyz_string, label), …] where label is e.g. 'nitrito'.
     """
@@ -15932,11 +15997,29 @@ def _generate_linkage_isomers(
                 continue
             geom = geom_map[n_coord]
             perm = list(range(n_coord))  # identity: donor i → position i
-            xyz = _build_topology_xyz(
-                alt_mol, metal_idx, donor_indices, perm, geom, apply_uff
+
+            candidate_cids = _rank_template_conformers(
+                alt_mol, top_k=max_template_tries
             )
-            if xyz is not None:
+            if not candidate_cids:
+                candidate_cids = [None]
+
+            for cid in candidate_cids:
+                xyz = _build_topology_xyz(
+                    alt_mol, metal_idx, donor_indices, perm, geom, apply_uff,
+                    conf_id=cid,
+                )
+                if xyz is None:
+                    continue
+                if not _fragment_topology_ok(xyz, smiles):
+                    logger.debug(
+                        "linkage %s via template cid=%s: "
+                        "fragment topology mismatch, trying next template",
+                        type_label, cid,
+                    )
+                    continue
                 results.append((xyz, type_label))
+                break
         except Exception as e:
             logger.debug("Linkage isomer (%s) failed: %s", type_label, e)
 
@@ -16059,6 +16142,7 @@ def _generate_alternative_binding_modes(
     smiles: str,
     apply_uff: bool = True,
     max_alternatives: int = 20,
+    max_template_tries: int = 8,
 ) -> List[Tuple[str, str]]:
     """Generate isomers by swapping donor atoms with alternative binding sites.
 
@@ -16066,6 +16150,12 @@ def _generate_alternative_binding_modes(
     SAME ligand fragment as the current donor.  This avoids generating
     nonsensical structures from swapping donors across unrelated ligands
     or using C=O carbonyl oxygens as coordination donors.
+
+    For each rewired candidate the builder is tried against the top
+    ``max_template_tries`` template conformers (ranked by geometry quality)
+    and the first result that passes ``_fragment_topology_ok`` is kept.  This
+    decouples constitutional-isomer generation from a single, possibly poor,
+    template conformer (see Codex findings for the reasoning).
 
     Returns [(xyz_string, label), ...].
     """
@@ -16113,15 +16203,46 @@ def _generate_alternative_binding_modes(
                         continue
                     geom = geom_map[n_coord]
                     perm = list(range(n_coord))
-                    xyz = _build_topology_xyz(
-                        alt_mol, metal_idx, donor_indices, perm, geom, apply_uff
+
+                    if current_sym == alt_sym:
+                        label = f'alt-{alt_sym}-isomer'
+                    else:
+                        label = f'alt-bind-{alt_sym}'
+
+                    # Multi-template trial: iterate over the best-scored
+                    # conformer IDs and keep the first XYZ that validates.
+                    candidate_cids = _rank_template_conformers(
+                        alt_mol, top_k=max_template_tries
                     )
-                    if xyz is not None:
-                        if current_sym == alt_sym:
-                            label = f'alt-{alt_sym}-isomer'
-                        else:
-                            label = f'alt-bind-{alt_sym}'
+                    if not candidate_cids:
+                        # No usable template conformer — try de-novo once.
+                        candidate_cids = [None]
+
+                    accepted = False
+                    for cid in candidate_cids:
+                        xyz = _build_topology_xyz(
+                            alt_mol, metal_idx, donor_indices, perm,
+                            geom, apply_uff, conf_id=cid,
+                        )
+                        if xyz is None:
+                            continue
+                        if not _fragment_topology_ok(xyz, smiles):
+                            logger.debug(
+                                "alt-mode %s via template cid=%s: "
+                                "fragment topology mismatch, trying next template",
+                                label, cid,
+                            )
+                            continue
                         results.append((xyz, label))
+                        accepted = True
+                        break
+
+                    if not accepted:
+                        logger.debug(
+                            "alt-mode %s: no template conformer produced a "
+                            "topology-consistent XYZ (tried %d)",
+                            label, len(candidate_cids),
+                        )
                 except Exception as e:
                     logger.debug("Alternative binding mode failed: %s", e)
                     continue

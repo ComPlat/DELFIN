@@ -23,7 +23,11 @@ set -euo pipefail
 #
 # MODES (set via DELFIN_MODE environment variable):
 #   delfin | delfin-recalc | delfin-recalc-classic | orca | build | guppy
-#   | hyperpol_xtb | tadf_xtb | censo_anmr | delfin-co2-chain | auto (default: auto)
+#   | guppy_batch | hyperpol_xtb | tadf_xtb | censo_anmr | delfin-co2-chain
+#   | auto (default: auto)
+#
+# guppy_batch expects GUPPY_BATCH_CSV pointing to a CSV/txt of SMILES; under
+# `sbatch --array=...` each task runs one row via SLURM_ARRAY_TASK_ID.
 #
 # SITE-SPECIFIC FEATURES (all off by default):
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
@@ -623,7 +627,7 @@ copy_workspace_to_scratch() {
 # runs keep the full workspace copy because they may depend on existing outputs.
 COPY_PROFILE="full"
 case "$MODE" in
-    delfin|build|guppy|hyperpol_xtb|tadf_xtb|censo_anmr|delfin-co2-chain)
+    delfin|build|guppy|guppy_batch|hyperpol_xtb|tadf_xtb|censo_anmr|delfin-co2-chain)
         COPY_PROFILE="fresh"
         ;;
 esac

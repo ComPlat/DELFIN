@@ -2,6 +2,7 @@
 
 import html
 import json
+import os
 import re
 import shlex
 import threading
@@ -973,6 +974,31 @@ def create_tab(ctx):
             guppy_runs = 20
             guppy_parallel_jobs = 4
             guppy_goat_parallel_jobs = guppy_parallel_jobs
+            # Defaults for the new (M1/M2) GUPPY parameters; overridden below
+            # if CONTROL.txt is present and provides them via the validator.
+            guppy_start_strategy = 'isomers'
+            guppy_max_isomers = 100
+            guppy_rmsd_cutoff = 0.3
+            guppy_energy_window_kcal = 25.0
+            try:
+                from delfin.config_manager import DelfinConfig as _DelfinConfig
+                if os.path.isfile('CONTROL.txt'):
+                    _cfg = _DelfinConfig.from_control_file('CONTROL.txt')
+                    guppy_runs = int(getattr(_cfg, 'GUPPY_RUNS', guppy_runs))
+                    guppy_parallel_jobs = int(getattr(_cfg, 'GUPPY_PARALLEL_JOBS', guppy_parallel_jobs))
+                    guppy_goat_parallel_jobs = guppy_parallel_jobs
+                    guppy_start_strategy = str(
+                        getattr(_cfg, 'GUPPY_START_STRATEGY', guppy_start_strategy)
+                    )
+                    guppy_max_isomers = int(getattr(_cfg, 'GUPPY_MAX_ISOMERS', guppy_max_isomers))
+                    guppy_rmsd_cutoff = float(
+                        getattr(_cfg, 'GUPPY_RMSD_CUTOFF', guppy_rmsd_cutoff)
+                    )
+                    guppy_energy_window_kcal = float(
+                        getattr(_cfg, 'GUPPY_ENERGY_WINDOW_KCAL', guppy_energy_window_kcal)
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                print(f'Note: could not read GUPPY settings from CONTROL.txt ({_exc}); using defaults.')
             guppy_cli_command = shlex.join([
                 'python',
                 '-m',
@@ -990,6 +1016,14 @@ def create_tab(ctx):
                 str(goat_topk_value),
                 '--goat-parallel-jobs',
                 str(guppy_goat_parallel_jobs),
+                '--start-strategy',
+                guppy_start_strategy,
+                '--max-isomers',
+                str(guppy_max_isomers),
+                '--rmsd-cutoff',
+                str(guppy_rmsd_cutoff),
+                '--energy-window-kcal',
+                str(guppy_energy_window_kcal),
                 '--output',
                 'GUPPY_try.xyz',
             ])
@@ -1000,6 +1034,10 @@ def create_tab(ctx):
                 'GUPPY_PARALLEL_JOBS': str(guppy_parallel_jobs),
                 'GUPPY_GOAT_TOPK': str(goat_topk_value),
                 'GUPPY_GOAT_PARALLEL_JOBS': str(guppy_goat_parallel_jobs),
+                'GUPPY_START_STRATEGY': guppy_start_strategy,
+                'GUPPY_MAX_ISOMERS': str(guppy_max_isomers),
+                'GUPPY_RMSD_CUTOFF': str(guppy_rmsd_cutoff),
+                'GUPPY_ENERGY_WINDOW_KCAL': str(guppy_energy_window_kcal),
             }
 
             raw_input = coords_widget.value.strip()

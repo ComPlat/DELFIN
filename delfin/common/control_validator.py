@@ -870,6 +870,18 @@ def _as_positive_int(value: Any) -> int:
     return parsed
 
 
+_GUPPY_START_STRATEGIES = {"isomers", "isomers+random", "full"}
+
+
+def _as_guppy_start_strategy(value: Any) -> str:
+    text = str(value or "isomers").strip().lower()
+    if text not in _GUPPY_START_STRATEGIES:
+        raise ValueError(
+            f"must be one of {sorted(_GUPPY_START_STRATEGIES)}"
+        )
+    return text
+
+
 def _as_guppy_goat_topk(value: Any) -> int:
     parsed = _as_int(value)
     if parsed < 0 or parsed > 3:
@@ -1545,6 +1557,10 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0),
     FieldSpec("GUPPY_PARALLEL_JOBS", _as_positive_int, default=4),
     FieldSpec("GUPPY_SEED", _as_int, default=31),
+    FieldSpec("GUPPY_START_STRATEGY", _as_guppy_start_strategy, default="isomers"),
+    FieldSpec("GUPPY_MAX_ISOMERS", _as_positive_int, default=100),
+    FieldSpec("GUPPY_RMSD_CUTOFF", _as_non_negative_float, default=0.3),
+    FieldSpec("GUPPY_ENERGY_WINDOW_KCAL", _as_non_negative_float, default=25.0),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
     FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
