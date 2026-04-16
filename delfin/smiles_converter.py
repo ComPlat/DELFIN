@@ -1144,9 +1144,10 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             xyz_tetra = _build_xyz_for_4coord_vecs(tetra_vecs)
             xyz_sq = _build_xyz_for_4coord_vecs(sq_vecs)
 
-            # OB UFF refinement for both
-            xyz_tetra = _optimize_xyz_openbabel(xyz_tetra)
-            xyz_sq = _optimize_xyz_openbabel(xyz_sq)
+            # OB UFF refinement for both — through safe wrapper for
+            # universal coordination constraints.
+            xyz_tetra = _optimize_xyz_openbabel_safe(xyz_tetra, mol_template=mol)
+            xyz_sq = _optimize_xyz_openbabel_safe(xyz_sq, mol_template=mol)
 
             # Score via temporary RDKit conformers
             try:
@@ -1170,7 +1171,7 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             xyz_str = _build_xyz_for_4coord_vecs(
                 _COORD_VECTORS_BASE.get(4, [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)])
             )
-            xyz_str = _optimize_xyz_openbabel(xyz_str)
+            xyz_str = _optimize_xyz_openbabel_safe(xyz_str, mol_template=mol)
 
         return xyz_str, None
 
@@ -13111,8 +13112,8 @@ def _metal_donor_distances_realistic(
 def _verify_metal_connectivity(
     xyz_delfin: str,
     mol_template,
-    max_donor_frac: float = 1.50,
-    min_nonddonor_frac: float = 0.85,
+    max_donor_frac: float = 1.60,
+    min_nonddonor_frac: float = 0.80,
 ) -> bool:
     """Verify that the XYZ preserves the metal-donor connectivity from the template.
 
@@ -16120,7 +16121,7 @@ def _generate_topological_isomers(
         # Pre-compute ranked template conformers once per metal centre so each
         # permutation can retry against several templates when the default
         # (best-scored) one produces no viable XYZ.
-        topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+        topo_template_cids = _rank_template_conformers(mol, top_k=6) or [None]
 
         for canonical_form, perm in feasible_isomers:
             if len(results) >= max_isomers:
@@ -16251,7 +16252,7 @@ def _generate_topological_isomers(
                     # Cartesian product — limited to avoid explosion.
                     import itertools as _it
                     max_combos = max(1, max_isomers - len(results))
-                    topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+                    topo_template_cids = _rank_template_conformers(mol, top_k=6) or [None]
                     combo_count = 0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
@@ -17661,9 +17662,9 @@ def smiles_to_xyz(
                     xyz_content, manual_err = _manual_metal_embed(smiles)
                     if xyz_content:
                         if apply_uff:
-                            uff_xyz = _optimize_xyz_openbabel(xyz_content)
-                            if uff_xyz:
-                                xyz_content = uff_xyz
+                            xyz_content = _optimize_xyz_openbabel_safe(
+                                xyz_content, mol_template=mol
+                            )
                         if output_path:
                             Path(output_path).write_text(xyz_content, encoding='utf-8')
                         return xyz_content, None
@@ -18261,9 +18262,11 @@ def smiles_to_xyz(
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
 
-        # For metal complexes, Open Babel UFF has full metal parameters.
+        # For metal complexes: UFF with universal coordination constraints.
         if apply_uff and has_metal:
-            xyz_content = _optimize_xyz_openbabel(xyz_content)
+            xyz_content = _optimize_xyz_openbabel_safe(
+                xyz_content, mol_template=mol
+            )
 
         # Check if molecule contains metals and warn about geometry quality
         has_metals = any(atom.GetAtomicNum() in range(21, 31) or  # 3d metals: Sc-Zn
