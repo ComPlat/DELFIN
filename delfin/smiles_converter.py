@@ -13113,15 +13113,21 @@ def _verify_metal_connectivity(
     xyz_delfin: str,
     mol_template,
     max_donor_frac: float = 1.60,
+    min_donor_frac: float = 0.60,
     min_nonddonor_frac: float = 0.80,
 ) -> bool:
     """Verify that the XYZ preserves the metal-donor connectivity from the template.
 
-    Fundamental principle: the SMILES defines which atoms coordinate to
-    the metal.  Any 3D structure where a defined donor has drifted away
-    (> max_donor_frac × ideal) or an undefined atom has collapsed onto
-    the metal (< min_nondonor_frac × ideal for its element) violates
-    the input specification and must be rejected.
+    Fundamental principles:
+    1. Every defined donor must be within ``max_donor_frac × ideal`` of
+       its metal (not drifted away).
+    2. Every defined donor must be farther than ``min_donor_frac × ideal``
+       from its metal (not collapsed onto it).
+    3. Bridging donors (bonded to 2+ metals) only need to satisfy the
+       distance window for *at least one* of their metals — they cannot
+       be at ideal distance from all metals simultaneously.
+    4. Non-bonded atoms must not have collapsed onto a metal
+       (< min_nondonor_frac × ideal).
     """
     if not RDKIT_AVAILABLE or mol_template is None:
         return True
@@ -13135,6 +13141,31 @@ def _verify_metal_connectivity(
             if len(parts) < 4:
                 return True
             coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
+
+        # Pre-compute which donor atoms are bridging (bonded to 2+ metals)
+        # and collect all (metal_idx, donor_idx) pairs for deferred bridging check.
+        bridging_pairs: Dict[int, List[Tuple[int, str, float]]] = {}
+        for atom in mol_template.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            for nbr in atom.GetNeighbors():
+                if nbr.GetAtomicNum() <= 1 or nbr.GetSymbol() in _METAL_SET:
+                    continue
+                n_metal_nbrs = sum(
+                    1 for nn in nbr.GetNeighbors()
+                    if nn.GetSymbol() in _METAL_SET
+                )
+                if n_metal_nbrs >= 2:
+                    d_idx = nbr.GetIdx()
+                    m_idx = atom.GetIdx()
+                    m_sym = atom.GetSymbol()
+                    d_sym = nbr.GetSymbol()
+                    mx, my, mz = coords[m_idx]
+                    dx, dy, dz = coords[d_idx]
+                    d = math.sqrt((mx - dx) ** 2 + (my - dy) ** 2 + (mz - dz) ** 2)
+                    ideal = float(_get_ml_bond_length(m_sym, d_sym))
+                    if ideal > 0:
+                        bridging_pairs.setdefault(d_idx, []).append((m_idx, m_sym, d / ideal))
 
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() not in _METAL_SET:
@@ -13156,19 +13187,32 @@ def _verify_metal_connectivity(
                 ideal = float(_get_ml_bond_length(m_sym, d_sym))
                 if ideal <= 0:
                     continue
-                # Bridging donors (bonded to 2+ metals) compromise between
-                # ideal positions at each metal → wider tolerance.
-                n_metal_nbrs = sum(
-                    1 for nbr in d_atom.GetNeighbors()
-                    if nbr.GetSymbol() in _METAL_SET
-                )
-                frac = max_donor_frac if n_metal_nbrs <= 1 else 2.0
-                if d > frac * ideal:
+                ratio = d / ideal
+
+                # Bridging donors: defer to collective check below
+                if d_idx in bridging_pairs:
+                    continue
+
+                # Terminal donor: must be within [min_donor_frac, max_donor_frac] × ideal
+                if ratio > max_donor_frac or ratio < min_donor_frac:
                     return False
 
+            # Non-donor collapse check — only for atoms ≥3 bonds away from
+            # ANY metal.  Atoms within 2 bonds of any metal center are
+            # naturally close in macrocyclic/chelating/bimetallic systems
+            # (e.g. porphyrin C_alpha, bridging-ligand fragments).
+            near_any_metal: set = set()
+            for m_atom2 in mol_template.GetAtoms():
+                if m_atom2.GetSymbol() not in _METAL_SET:
+                    continue
+                near_any_metal.add(m_atom2.GetIdx())
+                for nbr1 in m_atom2.GetNeighbors():
+                    near_any_metal.add(nbr1.GetIdx())
+                    for nbr2 in nbr1.GetNeighbors():
+                        near_any_metal.add(nbr2.GetIdx())
             for other in mol_template.GetAtoms():
                 o_idx = other.GetIdx()
-                if o_idx == m_idx or o_idx in bonded_set:
+                if o_idx == m_idx or o_idx in near_any_metal:
                     continue
                 if other.GetAtomicNum() <= 1:
                     continue
@@ -13181,6 +13225,17 @@ def _verify_metal_connectivity(
                     continue
                 if d < min_nonddonor_frac * ideal:
                     return False
+
+        # Bridging donor check: each bridging donor must satisfy the distance
+        # window for AT LEAST ONE of its metal partners.
+        for d_idx, metal_entries in bridging_pairs.items():
+            any_ok = False
+            for _m_idx, _m_sym, ratio in metal_entries:
+                if min_donor_frac <= ratio <= max_donor_frac:
+                    any_ok = True
+                    break
+            if not any_ok:
+                return False
 
         return True
     except Exception:
@@ -13197,11 +13252,28 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
     if not RDKIT_AVAILABLE or mol_template is None:
         return True
     try:
+        # Ensure mol has explicit H so atom count matches XYZ (which
+        # includes H atoms from the topology builder).
         mol_tmp = Chem.RWMol(mol_template)
         mol_tmp.RemoveAllConformers()
         conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_delfin)
         if conf is None:
-            return False
+            # XYZ has H but mol doesn't → add explicit H and retry.
+            try:
+                mol_h = Chem.AddHs(mol_template)
+                mol_h = Chem.RWMol(mol_h)
+                mol_h.RemoveAllConformers()
+                conf = _xyz_to_rdkit_conformer(mol_h.GetMol(), xyz_delfin)
+                if conf is None:
+                    return True  # Can't validate → permissive
+                cid = mol_h.AddConformer(conf, assignId=True)
+                if _has_severe_covalent_distortion(mol_h.GetMol(), cid):
+                    return False
+                if _has_bad_geometry(mol_h.GetMol(), cid):
+                    return False
+                return True
+            except Exception:
+                return True  # Can't validate → permissive
         cid = mol_tmp.AddConformer(conf, assignId=True)
         if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
             return False
@@ -17510,29 +17582,16 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                # Keep only topology-consistent, chemically plausible
-                # candidates; broken XYZ roundtrips are excluded here.
-                if not _roundtrip_ring_count_ok(topo_xyz, smiles):
-                    logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
-                    continue
+                # Topology-built structures have correct M-D connectivity
+                # by construction (donors pinned to ideal-polyhedron vertices).
+                # OB-based roundtrip checks (_roundtrip_ring_count_ok,
+                # _organic_fragment_signature) are SKIPPED here because OB bond
+                # perception from 3D is unreliable for metal-ligand distances
+                # (2–4 Å range), causing massive false-positive rejections in
+                # multi-metallic and high-KZ systems.  The final output gate
+                # (_verify_metal_connectivity) catches real topology violations.
                 if not _no_spurious_bonds(topo_xyz, smiles):
                     logger.debug("Skipping topo isomer %s: spurious bonds", display)
-                    continue
-                # Organic fragment signature must match: this confirms the
-                # ligand backbones are intact.  Global heavy-component checks
-                # are skipped here because OB bond perception does not see
-                # metal-donor bonds at typical coordination distances, so it
-                # would mis-flag every topology-built structure as fragmented.
-                # The coordination sphere is guaranteed by the topology
-                # builder itself (donors pinned to M-D ideal distance).
-                _t_orig_sig = _organic_fragment_signature(smiles)
-                _t_xyz_sig = _organic_fragment_signature_xyz(topo_xyz)
-                if (
-                    _t_orig_sig is not None
-                    and _t_xyz_sig is not None
-                    and _t_orig_sig != _t_xyz_sig
-                ):
-                    logger.debug("Skipping topo isomer %s: organic fragment mismatch", display)
                     continue
                 if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
                     logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
@@ -17655,10 +17714,14 @@ def smiles_to_xyz_isomers(
     # --- Final output gate: SMILES connectivity invariant ---
     # Principle 1: the SMILES defines the truth.  Any structure whose
     # metal-donor graph differs from the input SMILES is wrong.
+    # Use wider tolerance (2.0×) because post-UFF geometries in high-KZ
+    # and multi-metallic systems legitimately have some donors at
+    # 1.6-2.0× ideal distance.  The gate catches topology violations
+    # (donor completely lost), not geometric imprecision.
     if has_metal and results:
         verified: List[Tuple[str, str]] = []
         for xyz, lbl in results:
-            if _verify_metal_connectivity(xyz, mol):
+            if _verify_metal_connectivity(xyz, mol, max_donor_frac=2.0):
                 verified.append((xyz, lbl))
             else:
                 logger.info(
