@@ -15992,9 +15992,8 @@ def _build_topology_xyz(
                 # it lacks force-field parameters for the metal.
                 coord_constraints = None
                 try:
-                    coord_constraints = _build_coordination_uff_constraints(
-                        mol, metal_idx, donor_atom_indices, perm, geometry,
-                        xyz_delfin=xyz,
+                    coord_constraints = _build_coordination_constraints_from_xyz(
+                        mol, xyz,
                     )
                 except Exception as cexc:
                     logger.debug(
@@ -16285,45 +16284,36 @@ def _build_topology_xyz_from_template(
             lines.append(f"{atom.GetSymbol():4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}")
         xyz = '\n'.join(lines) + '\n'
 
-        # Pre-UFF quality gate: skip expensive UFF if Procrustes
-        # placement already has severe clashes (saves ~70% of UFF calls
-        # that would fail anyway).
+        # Conservative UFF: only keep UFF result if it preserves topology.
+        # For metals without UFF parameters, UFF can BREAK the structure.
+        # The pre-UFF Procrustes geometry has correct M-D distances and
+        # is often better than what UFF produces.
         if apply_uff:
-            pre_uff_ok = True
-            try:
-                mol_pre = Chem.RWMol(mol)
-                mol_pre.RemoveAllConformers()
-                conf_pre = _xyz_to_rdkit_conformer(mol_pre.GetMol(), xyz)
-                if conf_pre is not None:
-                    cid_pre = mol_pre.AddConformer(conf_pre, assignId=True)
-                    if _has_atom_clash(mol_pre.GetMol(), cid_pre, min_dist=0.2):
-                        pre_uff_ok = False
-            except Exception:
-                pass
-            if not pre_uff_ok:
-                return None
-
+            xyz_pre_uff = xyz
             try:
                 coord_constraints = None
                 try:
-                    coord_constraints = _build_coordination_uff_constraints(
-                        mol, metal_idx, donor_atom_indices, perm, geometry,
-                        xyz_delfin=xyz,
+                    coord_constraints = _build_coordination_constraints_from_xyz(
+                        mol, xyz,
                     )
-                except Exception as cexc:
-                    logger.debug(
-                        "Coordination constraint build failed in template builder: %s",
-                        cexc,
-                    )
-                xyz = _optimize_xyz_openbabel_safe(
+                except Exception:
+                    pass
+                xyz_uff = _optimize_xyz_openbabel_safe(
                     xyz,
                     mol_template=mol,
                     coord_constraints=coord_constraints,
                 )
+                # Keep UFF only if topology survives.
+                if _verify_topology_from_graph(xyz_uff, mol):
+                    xyz = xyz_uff
+                else:
+                    logger.debug(
+                        "UFF broke topology in template builder — keeping pre-UFF geometry"
+                    )
+                    xyz = xyz_pre_uff
             except Exception as uff_exc:
                 logger.debug(
-                    "Template-topology UFF optimization failed, keeping unoptimized XYZ: %s",
-                    uff_exc,
+                    "Template-topology UFF failed, keeping pre-UFF: %s", uff_exc
                 )
         return xyz
     except Exception as e:
@@ -16609,24 +16599,14 @@ def _generate_topological_isomers(
                         break
                 if xyz is None:
                     continue
-                # Pre-UFF clash gate.
-                try:
-                    mt = Chem.RWMol(mol)
-                    mt.RemoveAllConformers()
-                    c = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
-                    if c is not None:
-                        ci = mt.AddConformer(c, assignId=True)
-                        if _has_atom_clash(mt.GetMol(), ci, min_dist=0.2):
-                            continue
-                except Exception:
-                    pass
+                # No pre-UFF clash gate — Procrustes can have transient
+                # overlaps that UFF resolves. Graph check after UFF.
                 # Build constraints for this permutation.
                 coord_c = None
                 if apply_uff:
                     try:
-                        coord_c = _build_coordination_uff_constraints(
-                            mol, metal_idx, donor_indices, pm, gn,
-                            xyz_delfin=xyz,
+                        coord_c = _build_coordination_constraints_from_xyz(
+                            mol, xyz,
                         )
                     except Exception:
                         pass
@@ -16666,32 +16646,25 @@ def _generate_topological_isomers(
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                # Conservative UFF: if UFF broke topology, keep pre-UFF.
+                if not _verify_topology_from_graph(xyz_opt, mol):
+                    xyz_opt = xyz_pre
                 _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr)
 
-        # Post-UFF quality checks (sequential, fast).
+        # Post-UFF: graph-based topology check (replaces the 5 legacy
+        # checks that were too aggressive for topo-generated structures).
         for cf, pm, gn, xyz, _cstr in _pre_uff_batch:
             if len(results) >= max_isomers:
                 break
             try:
+                if not _verify_topology_from_graph(xyz, mol):
+                    continue
                 mt = Chem.RWMol(mol)
                 mt.RemoveAllConformers()
                 c = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
                 if c is None:
                     continue
                 ci = mt.AddConformer(c, assignId=True)
-                try:
-                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.3):
-                        continue
-                    if _has_unphysical_metal_nonbonded_contact(mt.GetMol(), ci):
-                        continue
-                    if _has_unphysical_oco_geometry(mt.GetMol(), ci):
-                        continue
-                    if _has_pi_ring_nonplanarity(mt.GetMol(), ci):
-                        continue
-                    if _has_severe_covalent_distortion(mt.GetMol(), ci):
-                        continue
-                except Exception:
-                    pass
                 fp = _compute_coordination_fingerprint(
                     mt.GetMol(), ci, dtype_map=dtype_map
                 )

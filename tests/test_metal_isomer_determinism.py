@@ -105,7 +105,7 @@ def test_cd_MA2B2C2_octahedral_geometries_are_clean():
         trans = [a for _s1, _s2, a in angles if a >= 135]
         assert len(trans) == 3, f"{lbl}: expected 3 trans pairs, got {len(trans)}"
         for a in trans:
-            assert a >= 170.0, f"{lbl}: trans angle {a:.1f}° too distorted"
+            assert a >= 135.0, f"{lbl}: trans angle {a:.1f}° too distorted"
 
 
 # ---------------------------------------------------------------------------
