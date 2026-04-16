@@ -12100,10 +12100,23 @@ def _rescale_metal_donor_distances(mol, conf_id: int) -> None:
     except Exception:
         return
 
+    # Detect hapto metals (≥3 contiguous C donors) — skip rescaling
+    # for these because moving them distorts the η-ring which breaks
+    # bridging bonds to other metals.
+    hapto_metal_indices: set = set()
+    try:
+        hapto_groups = _find_hapto_groups(mol)
+        for _hm, _hc in hapto_groups:
+            hapto_metal_indices.add(_hm)
+    except Exception:
+        pass
+
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
         m_idx = atom.GetIdx()
+        if m_idx in hapto_metal_indices:
+            continue  # hapto metals keep ETKDG position
         m_sym = atom.GetSymbol()
         m_pos = conf.GetAtomPosition(m_idx)
         mx, my, mz = m_pos.x, m_pos.y, m_pos.z
@@ -13191,7 +13204,9 @@ def _verify_topology_from_graph(
                     if d > 1.8:
                         return False
                 else:
-                    if d > 2.2:
+                    # Covalent bonds near metal centers (e.g. Cp ring C-C)
+                    # can stretch slightly due to coordination effects.
+                    if d > 2.4:
                         return False
 
         # Bridging donors: ALL M-D bonds must be within [0.60, 2.00].
@@ -17503,6 +17518,7 @@ def smiles_to_xyz_isomers(
 
     has_metal = contains_metal(smiles)
     hapto_mode = _hapto_approx_enabled(hapto_approx)
+    mol = None
     hapto_groups: List[Tuple[int, List[int]]] = []
     if has_metal:
         hapto_groups = _probe_hapto_groups_from_smiles(smiles)
@@ -17526,7 +17542,24 @@ def smiles_to_xyz_isomers(
                     results_hapto.extend(hapto_sigma_iso)
             except Exception as _hse:
                 logger.debug("Hapto sigma enumeration failed: %s", _hse)
-            return results_hapto, None
+            # For mixed hapto+regular multi-metal: DON'T early-return.
+            # Fall through to multi-metal sampling augmentation so the
+            # non-hapto metal's coordination isomers are explored.
+            _n_metals_hapto = 0
+            try:
+                _mol_h = _prepare_mol_for_embedding(smiles, hapto_approx=True)
+                if _mol_h:
+                    _n_metals_hapto = sum(
+                        1 for a in _mol_h.GetAtoms()
+                        if a.GetSymbol() in _METAL_SET
+                    )
+            except Exception:
+                pass
+            if _n_metals_hapto <= 1:
+                return results_hapto, None
+            # Multi-metal hapto: set results and continue to augmentation.
+            # mol must be set for the sampling augmentation below.
+            mol = _mol_h
 
     # Non-metal molecules: single geometry
     if not has_metal:
@@ -17535,8 +17568,9 @@ def smiles_to_xyz_isomers(
             return [], err
         return [(xyz, '')], None
 
-    # Prepare molecule for embedding
-    mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
+    # Prepare molecule for embedding (skip if already set by hapto multi-metal path)
+    if mol is None:
+        mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
     if mol is None:
         # Fall back to single-conformer conversion
         xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
