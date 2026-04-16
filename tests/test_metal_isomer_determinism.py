@@ -80,21 +80,23 @@ CD_MA2B2C2 = (
 )
 
 
-def test_cd_MA2B2C2_yields_all_five_isomers():
+def test_cd_MA2B2C2_yields_all_five_octahedral_isomers():
     res = _isomers(CD_MA2B2C2)
-    labels = sorted(lbl for _xyz, lbl in res)
-    expected = {'all-cis', 'all-trans', 'N-trans', 'O-trans', 'Cl-trans'}
-    assert set(labels) == expected, (
-        f"expected exactly {expected}, got {labels}"
+    labels = {lbl for _xyz, lbl in res}
+    oh_expected = {'all-cis', 'all-trans', 'N-trans', 'O-trans', 'Cl-trans'}
+    assert oh_expected <= labels, (
+        f"missing octahedral isomers: {oh_expected - labels} (got {labels})"
     )
 
 
-def test_cd_MA2B2C2_geometries_are_octahedral():
+def test_cd_MA2B2C2_octahedral_geometries_are_clean():
     res = _isomers(CD_MA2B2C2)
+    oh_labels = {'all-cis', 'all-trans', 'N-trans', 'O-trans', 'Cl-trans'}
     for xyz, lbl in res:
+        if lbl not in oh_labels:
+            continue
         m, donors = _metal_and_donors(xyz, metal_symbols=('Cd',), top_k=6)
         assert len(donors) == 6, f"{lbl}: expected CN=6, got {len(donors)}"
-        # All coordination bond lengths within 2.15-2.70 Å (Cd-X range)
         for sym, _p, d in donors:
             assert 2.15 <= d <= 2.85, (
                 f"{lbl}: {sym} at d={d:.2f} Å outside Cd range"
@@ -131,6 +133,8 @@ def test_ir_complex_no_unphysical_short_metal_donor_bonds():
 def test_ir_complex_octahedral_angles_within_tolerance():
     res = _isomers(IR_COMPLEX)
     for xyz, lbl in res:
+        if 'trigonal-prismatic' in lbl or 'see-saw' in lbl:
+            continue
         m, donors = _metal_and_donors(xyz, metal_symbols=('Ir',), top_k=6)
         assert len(donors) == 6, f"{lbl}: expected CN=6"
         angles = _angles(m, donors)

@@ -14709,6 +14709,12 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                 return f'{n_total_same_trans}-trans'
             return ''
 
+        # --- 9-coordinate patterns ---
+        if n_coord == 9:
+            if len(elem_counts) == 1:
+                return ''
+            return ''
+
     return ''
 
 
@@ -14858,6 +14864,53 @@ def _canonical_dd(types: tuple) -> tuple:
     return ('DD', a_pairs, b_pairs)
 
 
+def _canonical_ss(types: tuple) -> tuple:
+    """Canonical form for see-saw / C2v (CN=4).
+
+    Positions 0,1 = axial (trans pair), 2,3 = equatorial (cis pair).
+    """
+    axial = tuple(sorted([types[0], types[1]]))
+    equatorial = tuple(sorted([types[2], types[3]]))
+    return ('SS', axial, equatorial)
+
+
+def _canonical_tpr(types: tuple) -> tuple:
+    """Canonical form for trigonal-prismatic (D3h, CN=6).
+
+    Positions 0-2 = top triangle, 3-5 = bottom triangle (eclipsed).
+    No 180° trans pairs exist in a trigonal prism.
+    """
+    top = tuple(sorted(types[:3]))
+    bottom = tuple(sorted(types[3:6]))
+    combined = tuple(sorted([top, bottom]))
+    return ('TPR', combined)
+
+
+def _canonical_coh(types: tuple) -> tuple:
+    """Canonical form for capped octahedral (C3v, CN=7).
+
+    Positions 0-5 = octahedral base (3 trans pairs: 0-1, 2-3, 4-5),
+    position 6 = capping atom above one triangular face.
+    """
+    base_pairs = tuple(sorted([
+        tuple(sorted([types[0], types[1]])),
+        tuple(sorted([types[2], types[3]])),
+        tuple(sorted([types[4], types[5]])),
+    ]))
+    return ('COH', base_pairs, types[6])
+
+
+def _canonical_ttp(types: tuple) -> tuple:
+    """Canonical form for tricapped trigonal-prismatic (D3h, CN=9).
+
+    Positions 0-5 = prism vertices (top 0-2, bottom 3-5 eclipsed),
+    positions 6-8 = equatorial caps.
+    """
+    prism = tuple(sorted(types[:6]))
+    caps = tuple(sorted(types[6:9]))
+    return ('TTP', prism, caps)
+
+
 # Trans position pairs (indices into the geometry vector list) for each geometry
 _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'LIN': [(0, 1)],
@@ -14871,6 +14924,10 @@ _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'PBP': [(0, 1)],          # axial-axial
     'SAP': [(0, 6), (1, 7), (2, 4), (3, 5)],  # square-antiprismatic
     'DD':  [(0, 2), (1, 3), (4, 6), (5, 7)],  # dodecahedral
+    'SS':  [(0, 1)],          # see-saw: axial pair only
+    'TPR': [],                # trigonal-prismatic: no 180° pairs
+    'COH': [(0, 1), (2, 3), (4, 5)],  # capped-oh: octahedral base trans pairs
+    'TTP': [],                # tricapped trigonal prism: no 180° pairs
 }
 
 _TOPO_CANONICAL_FNS = {
@@ -14885,6 +14942,10 @@ _TOPO_CANONICAL_FNS = {
     'PBP': _canonical_pbp,
     'SAP': _canonical_sap,
     'DD':  _canonical_dd,
+    'SS':  _canonical_ss,
+    'TPR': _canonical_tpr,
+    'COH': _canonical_coh,
+    'TTP': _canonical_ttp,
 }
 
 # Idealized coordination vectors per geometry (bond length ~2 Å)
@@ -14906,6 +14967,18 @@ _TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
     # Dodecahedral (D2d): two interpenetrating trapezoids
     'DD':  [(1.414, 0, 1), (0, 1.414, -1), (-1.414, 0, 1), (0, -1.414, -1),
             (0.9, 0.9, 0), (-0.9, 0.9, 0), (-0.9, -0.9, 0), (0.9, -0.9, 0)],
+    # See-saw / C2v (CN=4): axial pair along z, equatorial pair in xz-plane
+    'SS':  [(0, 0, 2), (0, 0, -2), (2, 0, 0.4), (-2, 0, 0.4)],
+    # Trigonal-prismatic (D3h, CN=6): eclipsed top/bottom triangles
+    'TPR': [(2, 0, 1), (-1, 1.732, 1), (-1, -1.732, 1),
+            (2, 0, -1), (-1, 1.732, -1), (-1, -1.732, -1)],
+    # Capped octahedral (C3v, CN=7): octahedral base + capping 7th
+    'COH': [(2, 0, 0), (-2, 0, 0), (0, 2, 0), (0, -2, 0), (0, 0, 2), (0, 0, -2),
+            (1.155, 1.155, 1.155)],
+    # Tricapped trigonal prism (D3h, CN=9): 6 prism + 3 equatorial caps
+    'TTP': [(1.633, 0, 1.155), (-0.816, 1.414, 1.155), (-0.816, -1.414, 1.155),
+            (1.633, 0, -1.155), (-0.816, 1.414, -1.155), (-0.816, -1.414, -1.155),
+            (1.0, 1.732, 0), (-2.0, 0, 0), (1.0, -1.732, 0)],
 }
 
 
@@ -14940,15 +15013,17 @@ def _enumerate_topological_isomers(
         # Metal-aware geometry ordering: preferred geometry first
         pref = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
         other = 'TH' if pref == 'SQ' else 'SQ'
-        geometries = [pref, other]
+        geometries = [pref, other, 'SS']
     elif n_coord == 5:
         geometries = ['TBP', 'SP']
     elif n_coord == 6:
-        geometries = ['OH']
+        geometries = ['OH', 'TPR']
     elif n_coord == 7:
-        geometries = ['PBP']
+        geometries = ['PBP', 'COH']
     elif n_coord == 8:
         geometries = ['SAP', 'DD']
+    elif n_coord == 9:
+        geometries = ['TTP']
     else:
         return []
 
@@ -15907,7 +15982,7 @@ def _generate_topological_isomers(
                 # correctly against sampling results.
                 _PRIMARY_GEOM_BASE = {
                     2: 'LIN', 3: 'TP', 5: 'TBP',
-                    6: 'OH', 7: 'PBP', 8: 'SAP',
+                    6: 'OH', 7: 'PBP', 8: 'SAP', 9: 'TTP',
                 }
                 # CN=4: use metal-specific preference (d8 → SQ, else → TH)
                 _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
@@ -15916,10 +15991,12 @@ def _generate_topological_isomers(
                 )
                 _GEOM_PRETTY = {
                     'LIN': 'linear', 'TP': 'trigonal-planar', 'TS': 'T-shaped',
-                    'SQ': 'square-planar', 'TH': 'tetrahedral',
+                    'SQ': 'square-planar', 'TH': 'tetrahedral', 'SS': 'see-saw',
                     'TBP': 'trigonal-bipyramidal', 'SP': 'square-pyramidal',
-                    'OH': 'octahedral', 'PBP': 'pentagonal-bipyramidal',
+                    'OH': 'octahedral', 'TPR': 'trigonal-prismatic',
+                    'PBP': 'pentagonal-bipyramidal', 'COH': 'capped-octahedral',
                     'SAP': 'square-antiprismatic', 'DD': 'dodecahedral',
+                    'TTP': 'tricapped-trigonal-prismatic',
                 }
                 primary = _PRIMARY_GEOM.get(n_coord)
                 if primary and geom_name != primary:
