@@ -13136,6 +13136,11 @@ def _verify_topology_from_graph(
             coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
 
         # Rule 1: Every bond must have a reasonable distance.
+        # For bridging donors: collect ALL M-D distances, pass if at
+        # least one metal is within normal range (a bridging atom can't
+        # be at ideal distance from ALL metals simultaneously).
+        bridging_donor_bonds: Dict[int, List[Tuple[int, str, float, float]]] = {}
+
         for bond in mol_template.GetBonds():
             a1 = bond.GetBeginAtom()
             a2 = bond.GetEndAtom()
@@ -13150,7 +13155,6 @@ def _verify_topology_from_graph(
             is_metal_2 = s2 in _METAL_SET
 
             if is_metal_1 and is_metal_2:
-                # M-M bond
                 mm_key = frozenset({s1, s2})
                 ideal = _METAL_METAL_BOND_LENGTHS.get(mm_key)
                 if ideal is None:
@@ -13160,34 +13164,44 @@ def _verify_topology_from_graph(
                 if d < 0.70 * ideal or d > 1.80 * ideal:
                     return False
             elif is_metal_1 or is_metal_2:
-                # M-D bond
                 m_sym = s1 if is_metal_1 else s2
                 d_sym = s2 if is_metal_1 else s1
+                d_atom = a2 if is_metal_1 else a1
+                m_idx = i1 if is_metal_1 else i2
                 if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
-                    continue  # skip M-H
+                    continue
                 ideal = float(_get_ml_bond_length(m_sym, d_sym))
                 if ideal <= 0:
                     continue
-                # Bridging donors get wider tolerance
-                d_atom = a2 if is_metal_1 else a1
                 n_metal_nbrs = sum(
                     1 for nbr in d_atom.GetNeighbors()
                     if nbr.GetSymbol() in _METAL_SET
                 )
                 if n_metal_nbrs >= 2:
-                    if d < 0.60 * ideal or d > 2.50 * ideal:
-                        return False
+                    # Bridging: defer to collective check below
+                    bridging_donor_bonds.setdefault(
+                        d_atom.GetIdx(), []
+                    ).append((m_idx, m_sym, d, ideal))
                 else:
+                    # Terminal donor: strict check
                     if d < 0.75 * ideal or d > 1.60 * ideal:
                         return False
             else:
-                # Covalent bond (non-metal)
                 if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
                     if d > 1.8:
-                        return False  # broken X-H bond
+                        return False
                 else:
                     if d > 2.2:
-                        return False  # broken covalent bond
+                        return False
+
+        # Bridging donors: ALL M-D bonds must be within [0.60, 2.00].
+        # A bridging atom IS bonded to all its metals per the SMILES —
+        # if any bond is broken (>2.0× ideal), the topology is lost.
+        for d_idx, metal_entries in bridging_donor_bonds.items():
+            for _m_idx, _m_sym, d, ideal in metal_entries:
+                ratio = d / ideal
+                if ratio < 0.60 or ratio > 2.00:
+                    return False
 
         # Rule 2+3: No collapsed heavy atoms or hydrogens.
         # Check only a random subset for large molecules (O(N) not O(N²)).
@@ -15689,6 +15703,80 @@ def _embed_fragment_procrustes(
     return True
 
 
+def _build_multimetal_scaffold(
+    mol,
+    metal_indices: List[int],
+    bridging_donors: List[Tuple[int, List[int]]],
+) -> Optional[Dict[int, Tuple[float, float, float]]]:
+    """Place metals + bridging donors as a rigid scaffold.
+
+    Strategy:
+    1. Metal1 at origin
+    2. Each bridging donor at ideal M1-D distance along geometry vectors
+    3. Metal2 placed so M2-bridge distances match ideals
+    4. Returns {atom_idx: (x,y,z)} for all scaffold atoms
+
+    This ensures the M-bridge-M core has correct geometry BEFORE
+    peripheral donors are placed.
+    """
+    if len(metal_indices) < 2 or not bridging_donors:
+        return None
+
+    try:
+        import numpy as np
+
+        coords: Dict[int, Tuple[float, float, float]] = {}
+        m1 = metal_indices[0]
+        m2 = metal_indices[1]
+        m1_sym = mol.GetAtomWithIdx(m1).GetSymbol()
+        m2_sym = mol.GetAtomWithIdx(m2).GetSymbol()
+
+        # Place M1 at origin.
+        coords[m1] = (0.0, 0.0, 0.0)
+
+        # Identify bridging donor atoms shared between M1 and M2.
+        shared_bridges = []
+        for d_idx, m_list in bridging_donors:
+            if m1 in m_list and m2 in m_list:
+                shared_bridges.append(d_idx)
+
+        if not shared_bridges:
+            return None
+
+        # Place first bridging donor on +x axis at ideal M1-D distance.
+        d0 = shared_bridges[0]
+        d0_sym = mol.GetAtomWithIdx(d0).GetSymbol()
+        d_m1 = float(_get_ml_bond_length(m1_sym, d0_sym))
+        d_m2 = float(_get_ml_bond_length(m2_sym, d0_sym))
+        coords[d0] = (d_m1, 0.0, 0.0)
+
+        # Place M2: on the M1-D0-M2 plane.
+        # M2 is at distance d_m2 from D0.
+        # M1-D0 = d_m1 along x. M2 must be at d_m2 from D0.
+        # Choose M1-D0-M2 angle ~130° (typical for μ-O bridge).
+        bridge_angle_rad = math.radians(130.0)
+        m2_x = d_m1 + d_m2 * math.cos(math.pi - bridge_angle_rad)
+        m2_y = d_m2 * math.sin(math.pi - bridge_angle_rad)
+        coords[m2] = (m2_x, m2_y, 0.0)
+
+        # Place additional bridging donors (if any) between the two metals.
+        for k, dk in enumerate(shared_bridges[1:], 1):
+            dk_sym = mol.GetAtomWithIdx(dk).GetSymbol()
+            dk_m1 = float(_get_ml_bond_length(m1_sym, dk_sym))
+            dk_m2 = float(_get_ml_bond_length(m2_sym, dk_sym))
+            # Place below the M1-M2 plane (alternating above/below)
+            angle_offset = math.radians(130.0)
+            sign = -1.0 if k % 2 == 1 else 1.0
+            mid_x = (coords[m1][0] + coords[m2][0]) / 2.0
+            mid_y = (coords[m1][1] + coords[m2][1]) / 2.0
+            coords[dk] = (mid_x, mid_y, sign * dk_m1 * 0.8)
+
+        return coords
+    except Exception as exc:
+        logger.debug("_build_multimetal_scaffold failed: %s", exc)
+        return None
+
+
 def _build_topology_xyz(
     mol,
     metal_idx: int,
@@ -16641,9 +16729,15 @@ def _generate_topological_isomers(
                     iso1 = _enumerate_topological_isomers(dl1, n1, clp1, metal_symbol=ms1)
                     iso2 = _enumerate_topological_isomers(dl2, n2, clp2, metal_symbol=ms2)
 
-                    # Cartesian product — limited to avoid explosion.
+                    # Scaffold-first approach: build M-bridge-M core first,
+                    # then place non-bridging donors around each metal.
+                    # Use the ETKDG template as scaffold base (it has correct
+                    # M-bridge-M topology from SMILES).
                     import itertools as _it
                     max_combos = max(1, max_isomers - len(results))
+                    scaffold = _build_multimetal_scaffold(
+                        mol, metal_indices, bridging
+                    )
                     topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
                     combo_count = 0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
@@ -16651,46 +16745,52 @@ def _generate_topological_isomers(
                             break
                         gn1 = cf1[0]
                         gn2 = cf2[0]
-                        # Build combined XYZ: permute Metal1's donors, then
-                        # Metal2's donors, on the same template conformer.
                         try:
+                            # Build each metal's donors on the template, keeping
+                            # the template's OTHER metal + bridge positions.
                             for _tpl_cid in topo_template_cids:
                                 xyz1 = _build_topology_xyz(
                                     mol, m1, d1, pm1, gn1, False, conf_id=_tpl_cid
                                 )
                                 if xyz1 is None:
                                     continue
-                                # Inject Metal1's arrangement as a conformer,
-                                # then rebuild Metal2's donors on top of it.
                                 mol_tmp = Chem.RWMol(mol)
                                 mol_tmp.RemoveAllConformers()
                                 conf_tmp = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz1)
                                 if conf_tmp is None:
                                     continue
                                 cid_tmp = mol_tmp.AddConformer(conf_tmp, assignId=True)
+                                # Rescale M-D for Metal1's arrangement.
+                                _rescale_metal_donor_distances(mol_tmp, cid_tmp)
                                 xyz_combined = _build_topology_xyz(
-                                    mol_tmp.GetMol(), m2, d2, pm2, gn2, apply_uff,
+                                    mol_tmp.GetMol(), m2, d2, pm2, gn2, False,
                                     conf_id=cid_tmp,
                                 )
                                 if xyz_combined is not None:
-                                    # Quality gate.
-                                    mol_chk = Chem.RWMol(mol)
-                                    mol_chk.RemoveAllConformers()
-                                    conf_chk = _xyz_to_rdkit_conformer(mol_chk.GetMol(), xyz_combined)
-                                    if conf_chk is None:
-                                        continue
-                                    cid_chk = mol_chk.AddConformer(conf_chk, assignId=True)
-                                    if _has_atom_clash(mol_chk.GetMol(), cid_chk, min_dist=0.3):
-                                        continue
-                                    fp = _compute_coordination_fingerprint(
-                                        mol_chk.GetMol(), cid_chk, dtype_map=dtype_map
-                                    )
-                                    label = _classify_isomer_label(fp, mol_chk.GetMol())
-                                    if not label:
-                                        label = f"multi-{gn1}/{gn2}"
-                                    results.append((xyz_combined, label))
-                                    combo_count += 1
+                                    # Rescale M-D again for Metal2.
+                                    mol_tmp2 = Chem.RWMol(mol)
+                                    mol_tmp2.RemoveAllConformers()
+                                    conf_c = _xyz_to_rdkit_conformer(mol_tmp2.GetMol(), xyz_combined)
+                                    if conf_c is not None:
+                                        cid_c = mol_tmp2.AddConformer(conf_c, assignId=True)
+                                        _rescale_metal_donor_distances(mol_tmp2, cid_c)
+                                        xyz_combined = _mol_to_xyz_conformer(mol_tmp2, cid_c)
+                                    # Apply UFF with constraints.
+                                    if apply_uff:
+                                        xyz_combined = _optimize_xyz_openbabel_safe(
+                                            xyz_combined, mol_template=mol
+                                        )
                                     break
+                            if xyz_combined is not None:
+                                # Graph-based topology check.
+                                if not _verify_topology_from_graph(xyz_combined, mol):
+                                    continue
+                                fp = _compute_coordination_fingerprint(
+                                    Chem.RWMol(mol), 0, dtype_map=dtype_map
+                                ) if False else None
+                                label = f"multi-{gn1}/{gn2}"
+                                results.append((xyz_combined, label))
+                                combo_count += 1
                         except Exception as _cexc:
                             logger.debug("Multinuclear combo build failed: %s", _cexc)
                             continue
