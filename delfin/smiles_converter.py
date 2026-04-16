@@ -17676,18 +17676,27 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                # Topology-built structures have correct M-D connectivity
-                # by construction (donors pinned to ideal-polyhedron vertices).
-                # OB-based roundtrip checks (_roundtrip_ring_count_ok,
-                # _organic_fragment_signature) are SKIPPED here because OB bond
-                # perception from 3D is unreliable for metal-ligand distances
-                # (2–4 Å range), causing massive false-positive rejections in
-                # multi-metallic and high-KZ systems.  The final output gate
-                # (_verify_metal_connectivity) catches real topology violations.
+                # Full quality pipeline — same as main's sampling path.
+                # For mono-metallic: OB-based checks catch broken topologies.
+                # For multi-metallic: OB perception is unreliable for M-L
+                # bonds → use relaxed fragment fallback only.
+                _n_metals_topo = sum(
+                    1 for a in topo_mol.GetAtoms()
+                    if a.GetSymbol() in _METAL_SET
+                )
+                if not _roundtrip_ring_count_ok(topo_xyz, smiles):
+                    if _n_metals_topo < 2:
+                        logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
+                        continue
                 if not _no_spurious_bonds(topo_xyz, smiles):
                     logger.debug("Skipping topo isomer %s: spurious bonds", display)
                     continue
-                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol, skip_angle_check=True):
+                if not _fragment_topology_ok(topo_xyz, smiles):
+                    if _n_metals_topo < 2:
+                        if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
+                            logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                            continue
+                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
                     logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
                     continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
