@@ -15900,7 +15900,24 @@ def _build_topology_xyz_from_template(
             lines.append(f"{atom.GetSymbol():4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}")
         xyz = '\n'.join(lines) + '\n'
 
+        # Pre-UFF quality gate: skip expensive UFF if Procrustes
+        # placement already has severe clashes (saves ~70% of UFF calls
+        # that would fail anyway).
         if apply_uff:
+            pre_uff_ok = True
+            try:
+                mol_pre = Chem.RWMol(mol)
+                mol_pre.RemoveAllConformers()
+                conf_pre = _xyz_to_rdkit_conformer(mol_pre.GetMol(), xyz)
+                if conf_pre is not None:
+                    cid_pre = mol_pre.AddConformer(conf_pre, assignId=True)
+                    if _has_atom_clash(mol_pre.GetMol(), cid_pre, min_dist=0.2):
+                        pre_uff_ok = False
+            except Exception:
+                pass
+            if not pre_uff_ok:
+                return None
+
             try:
                 coord_constraints = None
                 try:
@@ -16121,92 +16138,185 @@ def _generate_topological_isomers(
         # Pre-compute ranked template conformers once per metal centre so each
         # permutation can retry against several templates when the default
         # (best-scored) one produces no viable XYZ.
-        topo_template_cids = _rank_template_conformers(mol, top_k=6) or [None]
+        topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
 
-        for canonical_form, perm in feasible_isomers:
-            if len(results) >= max_isomers:
-                return results
-            geom_name = canonical_form[0]  # 'OH', 'SQ', 'TH', 'LIN', 'TP', 'TS', …
+        _PRIMARY_GEOM_BASE = {
+            2: 'LIN', 3: 'TP', 5: 'TBP',
+            6: 'OH', 7: 'PBP', 8: 'SAP', 9: 'TTP',
+        }
+        _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
+        _PRIMARY_GEOM[4] = _PREFERRED_CN4_GEOMETRY.get(
+            atom.GetSymbol(), 'SQ'
+        )
+        _GEOM_PRETTY = {
+            'LIN': 'linear', 'TP': 'trigonal-planar', 'TS': 'T-shaped',
+            'SQ': 'square-planar', 'TH': 'tetrahedral', 'SS': 'see-saw',
+            'TBP': 'trigonal-bipyramidal', 'SP': 'square-pyramidal',
+            'OH': 'octahedral', 'TPR': 'trigonal-prismatic',
+            'PBP': 'pentagonal-bipyramidal', 'COH': 'capped-octahedral',
+            'SAP': 'square-antiprismatic', 'DD': 'dodecahedral',
+            'TTP': 'tricapped-trigonal-prismatic',
+        }
+        _primary_geom = _PRIMARY_GEOM.get(n_coord)
+
+        def _build_one_topo(args):
+            cf, pm = args
+            gn = cf[0]
             try:
                 xyz = None
-                for _tpl_cid in topo_template_cids:
+                for _tc in topo_template_cids:
                     xyz = _build_topology_xyz(
-                        mol, metal_idx, donor_indices, perm, geom_name,
-                        apply_uff, conf_id=_tpl_cid,
+                        mol, metal_idx, donor_indices, pm, gn,
+                        apply_uff, conf_id=_tc,
+                    )
+                    if xyz is not None:
+                        break
+                if xyz is None:
+                    return None
+                mt = Chem.RWMol(mol)
+                mt.RemoveAllConformers()
+                c = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
+                if c is None:
+                    return None
+                ci = mt.AddConformer(c, assignId=True)
+                try:
+                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.3):
+                        return None
+                    if _has_unphysical_metal_nonbonded_contact(mt.GetMol(), ci):
+                        return None
+                    if _has_unphysical_oco_geometry(mt.GetMol(), ci):
+                        return None
+                    if _has_pi_ring_nonplanarity(mt.GetMol(), ci):
+                        return None
+                    if _has_severe_covalent_distortion(mt.GetMol(), ci):
+                        return None
+                except Exception:
+                    pass
+                fp = _compute_coordination_fingerprint(
+                    mt.GetMol(), ci, dtype_map=dtype_map
+                )
+                lbl = _classify_isomer_label(fp, mt.GetMol())
+                if _primary_geom and gn != _primary_geom:
+                    gp = _GEOM_PRETTY.get(gn, gn)
+                    lbl = f'{gp} {lbl}' if lbl else gp
+                return (xyz, lbl)
+            except Exception as exc:
+                logger.debug("Topo isomer build failed (%s): %s", gn, exc)
+                return None
+
+        # Build 3D for each permutation. OB UFF holds the GIL so
+        # ProcessPoolExecutor is needed for real parallelism.
+        # Strategy: build pre-UFF Procrustes XYZ in main process (fast),
+        # batch all UFF calls through ProcessPool, then quality-check.
+        _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
+        for cf, pm in feasible_isomers:
+            if len(_pre_uff_batch) + len(results) >= max_isomers * 3:
+                break
+            gn = cf[0]
+            try:
+                xyz = None
+                for _tc in topo_template_cids:
+                    xyz = _build_topology_xyz(
+                        mol, metal_idx, donor_indices, pm, gn,
+                        False, conf_id=_tc,
                     )
                     if xyz is not None:
                         break
                 if xyz is None:
                     continue
-
-                # Inject as temp conformer to run quality checks + fingerprint
-                mol_tmp = Chem.RWMol(mol)
-                mol_tmp.RemoveAllConformers()
-                conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz)
-                if conf is None:
-                    # Atom count/order mismatch: XYZ is unreliable, skip it.
-                    continue
-                cid = mol_tmp.AddConformer(conf, assignId=True)
+                # Pre-UFF clash gate.
                 try:
-                    # Relaxed clash check for topo-generated structures:
-                    # use min_dist=0.3 instead of default 0.5 since the
-                    # topological enumerator guarantees correct topology
-                    # and minor steric overlaps are expected before UFF.
-                    # Skip _has_bad_geometry entirely — the topo enumerator
-                    # places donors at ideal geometry positions, so angle-
-                    # based rejection would discard valid structures
-                    # (especially TH with 109.5° angles).
-                    if _has_atom_clash(mol_tmp.GetMol(), cid, min_dist=0.3):
+                    mt = Chem.RWMol(mol)
+                    mt.RemoveAllConformers()
+                    c = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
+                    if c is not None:
+                        ci = mt.AddConformer(c, assignId=True)
+                        if _has_atom_clash(mt.GetMol(), ci, min_dist=0.2):
+                            continue
+                except Exception:
+                    pass
+                # Build constraints for this permutation.
+                coord_c = None
+                if apply_uff:
+                    try:
+                        coord_c = _build_coordination_uff_constraints(
+                            mol, metal_idx, donor_indices, pm, gn,
+                            xyz_delfin=xyz,
+                        )
+                    except Exception:
+                        pass
+                _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
+            except Exception as exc:
+                logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+
+        # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
+        if apply_uff and _pre_uff_batch:
+            _n_uff_workers = min(len(_pre_uff_batch), os.cpu_count() or 4, 32)
+            _uff_inputs = [
+                (xyz, 500, cstr) for _cf, _pm, _gn, xyz, cstr in _pre_uff_batch
+            ]
+            try:
+                if _n_uff_workers > 1 and len(_uff_inputs) > 2:
+                    with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=_n_uff_workers
+                    ) as _pp:
+                        _uff_results = list(_pp.map(
+                            _optimize_xyz_openbabel,
+                            [inp[0] for inp in _uff_inputs],
+                            [inp[1] for inp in _uff_inputs],
+                            [inp[2] for inp in _uff_inputs],
+                        ))
+                else:
+                    _uff_results = [
+                        _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
+                        for inp in _uff_inputs
+                    ]
+            except Exception as _ppe:
+                logger.debug("ProcessPool UFF failed, falling back to sequential: %s", _ppe)
+                _uff_results = [
+                    _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
+                    for inp in _uff_inputs
+                ]
+            for idx, (cf, pm, gn, xyz_pre, _cstr) in enumerate(_pre_uff_batch):
+                xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
+                if not xyz_opt:
+                    xyz_opt = xyz_pre
+                _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr)
+
+        # Post-UFF quality checks (sequential, fast).
+        for cf, pm, gn, xyz, _cstr in _pre_uff_batch:
+            if len(results) >= max_isomers:
+                break
+            try:
+                mt = Chem.RWMol(mol)
+                mt.RemoveAllConformers()
+                c = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
+                if c is None:
+                    continue
+                ci = mt.AddConformer(c, assignId=True)
+                try:
+                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.3):
                         continue
-                    if _has_unphysical_metal_nonbonded_contact(mol_tmp.GetMol(), cid):
+                    if _has_unphysical_metal_nonbonded_contact(mt.GetMol(), ci):
                         continue
-                    if _has_unphysical_oco_geometry(mol_tmp.GetMol(), cid):
+                    if _has_unphysical_oco_geometry(mt.GetMol(), ci):
                         continue
-                    if _has_pi_ring_nonplanarity(mol_tmp.GetMol(), cid):
+                    if _has_pi_ring_nonplanarity(mt.GetMol(), ci):
                         continue
-                    if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
+                    if _has_severe_covalent_distortion(mt.GetMol(), ci):
                         continue
                 except Exception:
                     pass
                 fp = _compute_coordination_fingerprint(
-                    mol_tmp.GetMol(), cid, dtype_map=dtype_map
+                    mt.GetMol(), ci, dtype_map=dtype_map
                 )
-                label = _classify_isomer_label(fp, mol_tmp.GetMol())
-
-                # For CNs with multiple geometry types (e.g. CN=4: SQ + TH),
-                # prefix the geometry name on secondary geometries to
-                # distinguish them from the primary geometry's isomers.
-                # Primary geometry labels stay unprefixed so they dedup
-                # correctly against sampling results.
-                _PRIMARY_GEOM_BASE = {
-                    2: 'LIN', 3: 'TP', 5: 'TBP',
-                    6: 'OH', 7: 'PBP', 8: 'SAP', 9: 'TTP',
-                }
-                # CN=4: use metal-specific preference (d8 → SQ, else → TH)
-                _PRIMARY_GEOM = dict(_PRIMARY_GEOM_BASE)
-                _PRIMARY_GEOM[4] = _PREFERRED_CN4_GEOMETRY.get(
-                    atom.GetSymbol(), 'SQ'
-                )
-                _GEOM_PRETTY = {
-                    'LIN': 'linear', 'TP': 'trigonal-planar', 'TS': 'T-shaped',
-                    'SQ': 'square-planar', 'TH': 'tetrahedral', 'SS': 'see-saw',
-                    'TBP': 'trigonal-bipyramidal', 'SP': 'square-pyramidal',
-                    'OH': 'octahedral', 'TPR': 'trigonal-prismatic',
-                    'PBP': 'pentagonal-bipyramidal', 'COH': 'capped-octahedral',
-                    'SAP': 'square-antiprismatic', 'DD': 'dodecahedral',
-                    'TTP': 'tricapped-trigonal-prismatic',
-                }
-                primary = _PRIMARY_GEOM.get(n_coord)
-                if primary and geom_name != primary:
-                    geom_pretty = _GEOM_PRETTY.get(geom_name, geom_name)
-                    if label:
-                        label = f'{geom_pretty} {label}'
-                    else:
-                        label = geom_pretty
-
-                results.append((xyz, label))
-            except Exception as e:
-                logger.debug("Topology isomer build failed (%s): %s", geom_name, e)
+                lbl = _classify_isomer_label(fp, mt.GetMol())
+                if _primary_geom and gn != _primary_geom:
+                    gp = _GEOM_PRETTY.get(gn, gn)
+                    lbl = f'{gp} {lbl}' if lbl else gp
+                results.append((xyz, lbl))
+            except Exception as exc:
+                logger.debug("Topo post-UFF check failed (%s): %s", gn, exc)
                 continue
 
     # --- Multinuclear coupled enumeration for 2-metal clusters ---
@@ -16252,7 +16362,7 @@ def _generate_topological_isomers(
                     # Cartesian product — limited to avoid explosion.
                     import itertools as _it
                     max_combos = max(1, max_isomers - len(results))
-                    topo_template_cids = _rank_template_conformers(mol, top_k=6) or [None]
+                    topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
                     combo_count = 0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
@@ -16540,8 +16650,9 @@ def _generate_linkage_isomers(
                 candidate_cids = [None]
 
             for cid in candidate_cids:
+                # Build WITHOUT UFF first (fast), check topology, THEN UFF.
                 xyz = _build_topology_xyz(
-                    alt_mol, metal_idx, donor_indices, perm, geom, apply_uff,
+                    alt_mol, metal_idx, donor_indices, perm, geom, False,
                     conf_id=cid,
                 )
                 if xyz is None:
@@ -16553,6 +16664,10 @@ def _generate_linkage_isomers(
                         type_label, cid,
                     )
                     continue
+                if apply_uff:
+                    xyz = _optimize_xyz_openbabel_safe(
+                        xyz, mol_template=alt_mol
+                    )
                 results.append((xyz, type_label))
                 break
         except Exception as e:
@@ -16755,9 +16870,10 @@ def _generate_alternative_binding_modes(
 
                     accepted = False
                     for cid in candidate_cids:
+                        # Build WITHOUT UFF first, check topology, THEN UFF.
                         xyz = _build_topology_xyz(
                             alt_mol, metal_idx, donor_indices, perm,
-                            geom, apply_uff, conf_id=cid,
+                            geom, False, conf_id=cid,
                         )
                         if xyz is None:
                             continue
@@ -16768,6 +16884,10 @@ def _generate_alternative_binding_modes(
                                 label, cid,
                             )
                             continue
+                        if apply_uff:
+                            xyz = _optimize_xyz_openbabel_safe(
+                                xyz, mol_template=alt_mol
+                            )
                         results.append((xyz, label))
                         accepted = True
                         break
@@ -17083,13 +17203,22 @@ def smiles_to_xyz_isomers(
             conf_ids = []
 
     # Embed multiple conformers with deterministic seed schedule.
-    # This improves reproducibility while still sampling diverse geometries.
+    # Seeds are independent → parallelize with ThreadPoolExecutor.
     try:
         seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        for seed in seeds:
-            conf_ids.extend(_embed_multiple_confs_robust(mol, per_round, seed))
+        _n_workers = min(len(seeds), os.cpu_count() or 4)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_n_workers) as _pool:
+            _futs = [
+                _pool.submit(_embed_multiple_confs_robust, mol, per_round, s)
+                for s in seeds
+            ]
+            for _fut in concurrent.futures.as_completed(_futs):
+                try:
+                    conf_ids.extend(_fut.result())
+                except Exception:
+                    pass
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         # Do not abort here: keep already injected OB conformers if available.
@@ -17113,47 +17242,55 @@ def smiles_to_xyz_isomers(
     # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
     dtype_map = _donor_type_map(mol)
 
-    def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
-        pairs: List[Tuple[tuple, str, int, float]] = []
-        for cid in conf_ids:
+    def _classify_one_conf(_cid, _relax):
+        try:
+            if _has_atom_clash(mol, _cid, min_dist=0.3):
+                return None
             try:
-                # Hard-reject only truly collapsed structures. For difficult
-                # high-CN metal complexes, optionally downgrade selected
-                # chemistry checks to penalties instead of hard rejection.
-                if _has_atom_clash(mol, cid, min_dist=0.3):
-                    continue
-                # Hard-reject conformers with unphysical M-D distances
-                # (collapsed structures like Sc-O at 0.92 Å).
-                try:
-                    xyz_check = _mol_to_xyz_conformer(mol, cid)
-                    if not _metal_donor_distances_realistic(xyz_check, mol):
-                        continue
-                except Exception:
-                    pass
-                if _has_pi_ring_nonplanarity(mol, cid):
-                    continue
-                penalty = 0.0
-                if _has_unphysical_metal_nonbonded_contact(mol, cid):
-                    if not relax_hard_chem_filters:
-                        continue
-                    penalty += 350.0
-                if _has_unphysical_oco_geometry(mol, cid):
-                    if not relax_hard_chem_filters:
-                        continue
-                    penalty += 250.0
-                if _has_atom_clash(mol, cid):
-                    penalty += 500.0
-                if _has_bad_geometry(mol, cid):
-                    penalty += 300.0
-                if _has_ligand_intertwining(mol, cid):
-                    penalty += 200.0
-                fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
-                score = _geometry_quality_score(mol, cid) + penalty
+                xyz_check = _mol_to_xyz_conformer(mol, _cid)
+                if not _metal_donor_distances_realistic(xyz_check, mol):
+                    return None
             except Exception:
-                continue
+                return None
+            if _has_pi_ring_nonplanarity(mol, _cid):
+                return None
+            penalty = 0.0
+            if _has_unphysical_metal_nonbonded_contact(mol, _cid):
+                if not _relax:
+                    return None
+                penalty += 350.0
+            if _has_unphysical_oco_geometry(mol, _cid):
+                if not _relax:
+                    return None
+                penalty += 250.0
+            if _has_atom_clash(mol, _cid):
+                penalty += 500.0
+            if _has_bad_geometry(mol, _cid):
+                penalty += 300.0
+            if _has_ligand_intertwining(mol, _cid):
+                penalty += 200.0
+            fp = _compute_coordination_fingerprint(mol, _cid, dtype_map=dtype_map)
+            score = _geometry_quality_score(mol, _cid) + penalty
             label = _classify_isomer_label(fp, mol)
-            pairs.append((fp, label, cid, score))
-        return pairs
+            return (fp, label, _cid, score)
+        except Exception:
+            return None
+
+    def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
+        _n_cw = min(len(conf_ids), os.cpu_count() or 4) if conf_ids else 1
+        if _n_cw > 1 and len(conf_ids) > 4:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_n_cw) as _cp:
+                _futs = [
+                    _cp.submit(_classify_one_conf, c, relax_hard_chem_filters)
+                    for c in conf_ids
+                ]
+                return [
+                    r for r in (f.result() for f in _futs) if r is not None
+                ]
+        return [
+            r for r in (_classify_one_conf(c, relax_hard_chem_filters) for c in conf_ids)
+            if r is not None
+        ]
 
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = _collect_fp_label_pairs(
         relax_hard_chem_filters=False
@@ -17315,7 +17452,7 @@ def smiles_to_xyz_isomers(
         try:
             # Collect fingerprints from sampling results
             existing_fps: set = set()
-            topo_mol = _build_topology_template_mol(smiles) or mol
+            topo_mol = mol
             dtype_map_topo = _donor_type_map(topo_mol)
             for existing_xyz, _existing_display in results:
                 try:
@@ -17460,11 +17597,7 @@ def smiles_to_xyz_isomers(
     # "Isomer N" labels use spaces not dashes, so they are never collapsed.
     if collapse_label_variants and results and has_metal:
         try:
-            score_mol = None
-            try:
-                score_mol = _build_topology_template_mol(smiles) or mol
-            except Exception:
-                score_mol = mol
+            score_mol = mol
 
             def _score_xyz(_xyz: str) -> float:
                 if score_mol is None:
