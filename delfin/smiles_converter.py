@@ -16212,6 +16212,54 @@ def _find_linkage_alternatives(mol) -> List[Tuple[int, int, int, str]]:
                         (metal_idx, donor_idx, o_nbrs[0].GetIdx(), 'sulfoxide-O')
                     )
 
+            # --- Sulfite / Sulfonate (S-donor → O-donor, S with ≥3 O) ---
+            if donor_sym == 'S':
+                o_nbrs_all = [
+                    n for n in donor.GetNeighbors()
+                    if n.GetSymbol() == 'O' and n.GetIdx() not in bonded
+                ]
+                if len(o_nbrs_all) >= 2:
+                    for alt_o in o_nbrs_all:
+                        alternatives.append(
+                            (metal_idx, donor_idx, alt_o.GetIdx(), 'sulfito-O')
+                        )
+
+            # --- Nitrosyl (N=O, N-donor → O-donor) ---
+            if donor_sym == 'N':
+                for o_nbr in donor.GetNeighbors():
+                    if (o_nbr.GetSymbol() == 'O'
+                            and o_nbr.GetIdx() not in bonded
+                            and len(list(o_nbr.GetNeighbors())) == 1):
+                        bond = mol.GetBondBetweenAtoms(donor_idx, o_nbr.GetIdx())
+                        if bond is not None and bond.GetBondTypeAsDouble() >= 1.5:
+                            alternatives.append(
+                                (metal_idx, donor_idx, o_nbr.GetIdx(), 'isonitrosyl-O')
+                            )
+
+            # --- Nitrosyl O-bound → N-bound ---
+            if donor_sym == 'O':
+                for n_nbr in donor.GetNeighbors():
+                    if (n_nbr.GetSymbol() == 'N'
+                            and n_nbr.GetIdx() not in bonded
+                            and len(list(donor.GetNeighbors())) == 1):
+                        bond = mol.GetBondBetweenAtoms(donor_idx, n_nbr.GetIdx())
+                        if bond is not None and bond.GetBondTypeAsDouble() >= 1.5:
+                            alternatives.append(
+                                (metal_idx, donor_idx, n_nbr.GetIdx(), 'nitrosyl-N')
+                            )
+
+            # --- Selenocyanate SeCN (Se-donor → N-donor via C) ---
+            if donor_sym == 'Se':
+                for c_nbr in donor.GetNeighbors():
+                    if c_nbr.GetSymbol() == 'C' and c_nbr.GetIdx() not in bonded:
+                        for n_nbr in c_nbr.GetNeighbors():
+                            if (n_nbr.GetSymbol() == 'N'
+                                    and n_nbr.GetIdx() != donor_idx
+                                    and n_nbr.GetIdx() not in bonded):
+                                alternatives.append(
+                                    (metal_idx, donor_idx, n_nbr.GetIdx(), 'isoselenocyanato-N')
+                                )
+
             # --- Pyrazole / Imidazole / Triazole (N1 → N2 in same ring) ---
             if donor_sym == 'N':
                 try:
