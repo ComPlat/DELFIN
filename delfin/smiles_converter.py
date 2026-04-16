@@ -16539,6 +16539,189 @@ def _generate_alternative_binding_modes(
     return results
 
 
+def _enumerate_hapto_sigma_isomers(
+    smiles: str,
+    base_xyz: str,
+    apply_uff: bool = True,
+    max_isomers: int = 20,
+) -> List[Tuple[str, str]]:
+    """Enumerate σ-donor permutations for hapto complexes.
+
+    The η-ring positions are kept fixed from ``base_xyz``.  Only the
+    σ-donor ligand fragments are permuted via rigid-body Procrustes
+    swaps, giving constitutionally distinct hapto isomers that differ
+    in which σ-donor occupies which coordination slot around the
+    η-ring(s).
+    """
+    if not RDKIT_AVAILABLE:
+        return []
+    try:
+        import numpy as np
+        import itertools as _it
+
+        mol = _prepare_mol_for_embedding(smiles, hapto_approx=True)
+        if mol is None:
+            return []
+
+        # Inject base_xyz as conformer.
+        conf = _xyz_to_rdkit_conformer(mol, base_xyz)
+        if conf is None:
+            return []
+        mol.RemoveAllConformers()
+        cid = mol.AddConformer(conf, assignId=True)
+
+        hapto_groups = _find_hapto_groups(mol)
+        if not hapto_groups:
+            return []
+
+        hapto_atoms: set = set()
+        for _midx, members in hapto_groups:
+            hapto_atoms.update(members)
+
+        results: List[Tuple[str, str]] = []
+        dtype_map = _donor_type_map(mol)
+
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            metal_idx = atom.GetIdx()
+            all_donors = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
+            sigma_donors = [d for d in all_donors if d not in hapto_atoms]
+
+            if len(sigma_donors) < 2:
+                continue
+
+            # Donor labels for σ-donors.
+            donor_keys = [
+                dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))
+                for d in sigma_donors
+            ]
+            # If all σ-donors are equivalent → only 1 arrangement.
+            if len(set(donor_keys)) <= 1:
+                continue
+
+            # Current σ-donor positions from conformer.
+            conf_obj = mol.GetConformer(cid)
+            sigma_positions = []
+            for d in sigma_donors:
+                p = conf_obj.GetAtomPosition(d)
+                sigma_positions.append(np.array([p.x, p.y, p.z]))
+
+            # Build ligand fragments per σ-donor (BFS excluding metal + η).
+            non_metal = {
+                a.GetIdx() for a in mol.GetAtoms()
+                if a.GetSymbol() not in _METAL_SET
+            }
+            adj: Dict[int, set] = {i: set() for i in non_metal}
+            for bond in mol.GetBonds():
+                bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                if bi in non_metal and bj in non_metal:
+                    adj[bi].add(bj)
+                    adj[bj].add(bi)
+
+            donor_frag_atoms: Dict[int, set] = {}
+            for d in sigma_donors:
+                frag: set = set()
+                stack = [d]
+                visited: set = set()
+                while stack:
+                    node = stack.pop()
+                    if node in visited or node in hapto_atoms:
+                        continue
+                    # Don't cross into OTHER σ-donor territories.
+                    if node != d and node in sigma_donors:
+                        continue
+                    visited.add(node)
+                    frag.add(node)
+                    for nbr in adj.get(node, ()):
+                        if nbr not in visited:
+                            stack.append(nbr)
+                donor_frag_atoms[d] = frag
+
+            # Generate unique permutations of σ-donor labels.
+            original_label_tuple = tuple(donor_keys)
+            seen_labels: set = {original_label_tuple}
+
+            for perm in _it.permutations(range(len(sigma_donors))):
+                perm_labels = tuple(donor_keys[p] for p in perm)
+                if perm_labels in seen_labels:
+                    continue
+                seen_labels.add(perm_labels)
+                if len(results) >= max_isomers:
+                    break
+
+                # Build swapped XYZ: move fragment of donor perm[i] to
+                # the position of donor i via rigid-body alignment.
+                new_coords = np.zeros((mol.GetNumAtoms(), 3))
+                for ai in range(mol.GetNumAtoms()):
+                    p = conf_obj.GetAtomPosition(ai)
+                    new_coords[ai] = [p.x, p.y, p.z]
+
+                swap_ok = True
+                for slot_idx in range(len(sigma_donors)):
+                    src_donor = sigma_donors[perm[slot_idx]]
+                    tgt_donor = sigma_donors[slot_idx]
+                    if src_donor == tgt_donor:
+                        continue
+                    src_frag = sorted(donor_frag_atoms[src_donor])
+                    tgt_pos = sigma_positions[slot_idx]
+                    src_pos = sigma_positions[perm[slot_idx]]
+
+                    # Translate fragment so donor lands at target position.
+                    delta = tgt_pos - src_pos
+                    orig_frag_coords = np.array([
+                        [conf_obj.GetAtomPosition(ai).x,
+                         conf_obj.GetAtomPosition(ai).y,
+                         conf_obj.GetAtomPosition(ai).z]
+                        for ai in src_frag
+                    ])
+                    for fi, ai in enumerate(src_frag):
+                        new_coords[ai] = orig_frag_coords[fi] + delta
+
+                # Write XYZ.
+                lines = []
+                for ai in range(mol.GetNumAtoms()):
+                    sym = mol.GetAtomWithIdx(ai).GetSymbol()
+                    x, y, z = new_coords[ai]
+                    lines.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+                xyz_new = '\n'.join(lines) + '\n'
+
+                if apply_uff:
+                    try:
+                        xyz_new = _optimize_xyz_openbabel_safe(
+                            xyz_new, mol_template=mol
+                        )
+                    except Exception:
+                        pass
+
+                # Quality gate.
+                if not _metal_donor_distances_realistic(xyz_new, mol):
+                    continue
+
+                try:
+                    mol_chk = Chem.RWMol(mol)
+                    mol_chk.RemoveAllConformers()
+                    conf_chk = _xyz_to_rdkit_conformer(mol_chk.GetMol(), xyz_new)
+                    if conf_chk is None:
+                        continue
+                    cid_chk = mol_chk.AddConformer(conf_chk, assignId=True)
+                    if _has_atom_clash(mol_chk.GetMol(), cid_chk, min_dist=0.3):
+                        continue
+                    fp = _compute_coordination_fingerprint(
+                        mol_chk.GetMol(), cid_chk, dtype_map=dtype_map
+                    )
+                    label = _classify_isomer_label(fp, mol_chk.GetMol())
+                    if not label:
+                        label = f'hapto-sigma-{len(results) + 1}'
+                    results.append((xyz_new, label))
+                except Exception:
+                    continue
+
+    except Exception as exc:
+        logger.debug("Hapto sigma isomer enumeration failed: %s", exc)
+    return results
+
+
 def smiles_to_xyz_isomers(
     smiles: str,
     num_confs: int = 200,
@@ -16585,7 +16768,17 @@ def smiles_to_xyz_isomers(
             )
             if err:
                 return [], err
-            return [(xyz, 'hapto-approx')], None
+            results_hapto: List[Tuple[str, str]] = [(xyz, 'hapto-approx')]
+            # Enumerate σ-donor permutations around fixed η-positions.
+            try:
+                hapto_sigma_iso = _enumerate_hapto_sigma_isomers(
+                    smiles, xyz, apply_uff=apply_uff
+                )
+                if hapto_sigma_iso:
+                    results_hapto.extend(hapto_sigma_iso)
+            except Exception as _hse:
+                logger.debug("Hapto sigma enumeration failed: %s", _hse)
+            return results_hapto, None
 
     # Non-metal molecules: single geometry
     if not has_metal:
