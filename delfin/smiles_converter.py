@@ -540,6 +540,31 @@ _PREFERRED_CN4_GEOMETRY: Dict[str, str] = {
     'Al': 'TH', 'Ga': 'TH', 'In': 'TH',
 }
 
+# ---------------------------------------------------------------------------
+# Preferred CN=5 geometry per metal
+# ---------------------------------------------------------------------------
+_PREFERRED_CN5_GEOMETRY: Dict[str, str] = {
+    # d8 metals: square-pyramidal (SP) preferred
+    'Ni': 'SP', 'Pd': 'SP', 'Pt': 'SP',
+    # d6 low-spin: SP preferred
+    'Co': 'SP', 'Rh': 'SP', 'Ir': 'SP',
+    # d0–d5, d7, d10: trigonal-bipyramidal (TBP) preferred
+    'Fe': 'TBP', 'Mn': 'TBP', 'Cu': 'TBP',
+    'Zn': 'TBP', 'Cd': 'TBP',
+    'Ti': 'TBP', 'V': 'TBP', 'Cr': 'TBP',
+    'Mo': 'TBP', 'W': 'TBP',
+}
+
+# ---------------------------------------------------------------------------
+# Preferred CN=6 geometry per metal
+# ---------------------------------------------------------------------------
+_PREFERRED_CN6_GEOMETRY: Dict[str, str] = {
+    # Almost all TMs: octahedral strongly preferred.
+    # Trigonal-prismatic only for d0 with specific dithiolene ligands.
+    # Default is OH for everything not listed here.
+    'Mo': 'OH', 'W': 'OH', 'Re': 'OH',
+}
+
 
 def _is_simple_organometallic(smiles: str) -> bool:
     """Heuristic: simple organometallics like C[Mg]Br where adding Hs is wrong."""
@@ -15047,9 +15072,13 @@ def _enumerate_topological_isomers(
         other = 'TH' if pref == 'SQ' else 'SQ'
         geometries = [pref, other, 'SS']
     elif n_coord == 5:
-        geometries = ['TBP', 'SP']
+        pref5 = _PREFERRED_CN5_GEOMETRY.get(metal_symbol, 'TBP')
+        other5 = 'SP' if pref5 == 'TBP' else 'TBP'
+        geometries = [pref5, other5]
     elif n_coord == 6:
-        geometries = ['OH', 'TPR']
+        pref6 = _PREFERRED_CN6_GEOMETRY.get(metal_symbol, 'OH')
+        other6 = 'TPR' if pref6 == 'OH' else 'OH'
+        geometries = [pref6, other6]
     elif n_coord == 7:
         geometries = ['PBP', 'COH']
     elif n_coord == 8:
