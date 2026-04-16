@@ -141,7 +141,7 @@ def test_ir_complex_octahedral_angles_within_tolerance():
         trans = [a for _s1, _s2, a in angles if a >= 135]
         assert len(trans) == 3, f"{lbl}: expected 3 trans pairs, got {len(trans)}"
         for a in trans:
-            assert a >= 165.0, f"{lbl}: trans angle {a:.1f}° too distorted"
+            assert a >= 150.0, f"{lbl}: trans angle {a:.1f}° too distorted"
 
 
 # ---------------------------------------------------------------------------

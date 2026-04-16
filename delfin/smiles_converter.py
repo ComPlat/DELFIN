@@ -165,6 +165,27 @@ _COVALENT_RADII: Dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
+# Period-aware offset for M-L bond length fallback (Å).
+# 5d metals are shorter than expected from covalent radii due to
+# relativistic contraction; main-group metals are ionic with larger gaps.
+# ---------------------------------------------------------------------------
+_METAL_ROW_OFFSET: Dict[str, float] = {}
+for _m in ('Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn'):
+    _METAL_ROW_OFFSET[_m] = 0.40
+for _m in ('Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd'):
+    _METAL_ROW_OFFSET[_m] = 0.45
+for _m in ('La', 'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg'):
+    _METAL_ROW_OFFSET[_m] = 0.30
+for _m in ('Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho',
+           'Er', 'Tm', 'Yb', 'Lu'):
+    _METAL_ROW_OFFSET[_m] = 0.45
+for _m in ('Ac', 'Th', 'Pa', 'U', 'Np', 'Pu'):
+    _METAL_ROW_OFFSET[_m] = 0.40
+for _m in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
+           'Al', 'Ga', 'In', 'Tl', 'Sn', 'Pb', 'Bi', 'Po'):
+    _METAL_ROW_OFFSET[_m] = 0.50
+
+# ---------------------------------------------------------------------------
 # Typical M-L bond lengths (Å) from crystallographic databases.
 # Keyed as (metal_symbol, donor_element) → distance.
 # ---------------------------------------------------------------------------
@@ -263,8 +284,41 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Mg', 'N'): 2.20, ('Mg', 'O'): 2.05, ('Mg', 'Cl'): 2.45,
     ('Sr', 'N'): 2.65, ('Sr', 'O'): 2.55, ('Sr', 'Cl'): 2.85,
     ('Ba', 'N'): 2.85, ('Ba', 'O'): 2.75, ('Ba', 'Cl'): 3.05,
-    # Zn completions (Cd's lighter analog)
-    ('Zn', 'C'): 2.05, ('Zn', 'P'): 2.35,
+    # Zn completions
+    ('Zn', 'C'): 2.05, ('Zn', 'P'): 2.35, ('Zn', 'Br'): 2.35, ('Zn', 'F'): 1.95,
+    # First-row TM: P, S, Br, F completions
+    ('Sc', 'P'): 2.55, ('Sc', 'S'): 2.50, ('Sc', 'Br'): 2.65, ('Sc', 'F'): 2.00,
+    ('Ti', 'P'): 2.50, ('Ti', 'S'): 2.40, ('Ti', 'Br'): 2.55, ('Ti', 'F'): 1.90,
+    ('V', 'P'): 2.35, ('V', 'S'): 2.35, ('V', 'Br'): 2.50, ('V', 'F'): 1.85,
+    ('Cr', 'P'): 2.30, ('Cr', 'S'): 2.35, ('Cr', 'Br'): 2.50, ('Cr', 'F'): 1.90,
+    ('Mn', 'P'): 2.25, ('Mn', 'S'): 2.35, ('Mn', 'Br'): 2.50, ('Mn', 'F'): 1.90,
+    ('Fe', 'Br'): 2.40, ('Fe', 'F'): 1.90,
+    ('Co', 'P'): 2.18, ('Co', 'S'): 2.25, ('Co', 'Br'): 2.38, ('Co', 'F'): 1.88,
+    ('Ni', 'S'): 2.20, ('Ni', 'Br'): 2.35, ('Ni', 'F'): 1.85,
+    ('Cu', 'Br'): 2.40, ('Cu', 'F'): 1.90,
+    # Second-row TM completions
+    ('Zr', 'P'): 2.60, ('Zr', 'S'): 2.55, ('Zr', 'Br'): 2.60, ('Zr', 'F'): 2.05,
+    ('Nb', 'N'): 2.15, ('Nb', 'O'): 2.05, ('Nb', 'Cl'): 2.40,
+    ('Nb', 'P'): 2.50, ('Nb', 'S'): 2.50,
+    ('Mo', 'P'): 2.45, ('Mo', 'Br'): 2.55, ('Mo', 'F'): 2.00,
+    ('Tc', 'N'): 2.10, ('Tc', 'O'): 2.05, ('Tc', 'Cl'): 2.35,
+    ('Ru', 'Br'): 2.50, ('Ru', 'F'): 2.00,
+    ('Rh', 'S'): 2.35, ('Rh', 'Br'): 2.50, ('Rh', 'F'): 2.00,
+    ('Pd', 'Br'): 2.45, ('Pd', 'F'): 2.00,
+    ('Ag', 'Br'): 2.50, ('Ag', 'F'): 2.15,
+    # Third-row TM completions
+    ('Hf', 'P'): 2.55, ('Hf', 'S'): 2.50, ('Hf', 'Br'): 2.55, ('Hf', 'F'): 2.00,
+    ('Ta', 'N'): 2.10, ('Ta', 'O'): 2.00, ('Ta', 'Cl'): 2.35,
+    ('Ta', 'P'): 2.50, ('Ta', 'S'): 2.45,
+    ('W', 'P'): 2.45, ('W', 'S'): 2.40, ('W', 'Br'): 2.55, ('W', 'F'): 2.00,
+    ('Re', 'P'): 2.40, ('Re', 'S'): 2.40, ('Re', 'Br'): 2.50, ('Re', 'F'): 2.00,
+    ('Os', 'S'): 2.35, ('Os', 'Br'): 2.50, ('Os', 'F'): 2.00,
+    ('Ir', 'Br'): 2.50, ('Ir', 'F'): 2.00,
+    ('Pt', 'F'): 2.00,
+    ('Au', 'Br'): 2.40, ('Au', 'F'): 2.00, ('Au', 'O'): 2.10,
+    # Selenium/Tellurium donors
+    ('Fe', 'Se'): 2.40, ('Ru', 'Se'): 2.45, ('Pd', 'Se'): 2.40,
+    ('Pt', 'Se'): 2.40, ('Cu', 'Se'): 2.40, ('Ni', 'Se'): 2.30,
     # Alkali (hard Lewis acids)
     ('Li', 'N'): 2.10, ('Li', 'O'): 1.95, ('Li', 'Cl'): 2.35,
     ('Na', 'N'): 2.45, ('Na', 'O'): 2.35, ('Na', 'Cl'): 2.70,
@@ -420,7 +474,8 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     r_m = _COVALENT_RADII.get(metal_symbol)
     r_d = _COVALENT_RADII.get(donor_symbol)
     if r_m is not None and r_d is not None:
-        return r_m + r_d + 0.5
+        offset = _METAL_ROW_OFFSET.get(metal_symbol, 0.5)
+        return r_m + r_d + offset
     return 2.0
 
 
@@ -1922,9 +1977,11 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
             # Determine which atom is the ligand (non-metal)
             ligand_atom = a2 if is_metal_1 else a1
 
-            # Only convert if the ligand atom is NEUTRAL (no formal charge)
-            # Charged atoms like [N+] have covalent bonds that should stay covalent
-            if ligand_atom.GetFormalCharge() == 0:
+            # Convert if the ligand atom is neutral or POSITIVELY charged.
+            # Positive donors ([P+], [N+], [N@@+]) coordinate via lone pairs
+            # (dative). Negative donors ([O-], [N-]) have genuinely covalent
+            # bonds to the metal and must stay as-is.
+            if ligand_atom.GetFormalCharge() >= 0:
                 # If only_elements is set, skip elements not in the set
                 if only_elements and ligand_atom.GetSymbol() not in only_elements:
                     continue
@@ -1970,7 +2027,7 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
     # (trust the H count from the original SMILES).
     # Non-coordinating neutral atoms: recalculate H normally.
     for atom in result_mol.GetAtoms():
-        if atom.GetFormalCharge() == 0 and atom.GetSymbol() not in _METAL_SET:
+        if atom.GetFormalCharge() >= 0 and atom.GetSymbol() not in _METAL_SET:
             if atom.GetIdx() in dative_donor_indices:
                 hapto_sz = hapto_group_size_by_atom.get(atom.GetIdx(), 0)
                 if atom.GetSymbol() == 'C' and hapto_sz == 3:
@@ -11965,7 +12022,7 @@ def _prepare_mol_for_embedding(smiles: str, hapto_approx: bool = False):
                 has_metal_bond = any(
                     n.GetSymbol() in _METAL_SET for n in atom.GetNeighbors()
                 )
-                if has_metal_bond and atom.GetFormalCharge() == 0:
+                if has_metal_bond and atom.GetFormalCharge() >= 0:
                     atom.SetNoImplicit(True)
             mol.UpdatePropertyCache(strict=False)
         except Exception:
@@ -13048,7 +13105,85 @@ def _metal_donor_distances_realistic(
                         return False
         return True
     except Exception:
+        return False
+
+
+def _verify_metal_connectivity(
+    xyz_delfin: str,
+    mol_template,
+    max_donor_frac: float = 1.50,
+    min_nonddonor_frac: float = 0.85,
+) -> bool:
+    """Verify that the XYZ preserves the metal-donor connectivity from the template.
+
+    Fundamental principle: the SMILES defines which atoms coordinate to
+    the metal.  Any 3D structure where a defined donor has drifted away
+    (> max_donor_frac × ideal) or an undefined atom has collapsed onto
+    the metal (< min_nondonor_frac × ideal for its element) violates
+    the input specification and must be rejected.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
         return True
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return True
+        coords: List[Tuple[float, float, float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return True
+            coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
+
+        for atom in mol_template.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            m_idx = atom.GetIdx()
+            m_sym = atom.GetSymbol()
+            mx, my, mz = coords[m_idx]
+            bonded_set = {nbr.GetIdx() for nbr in atom.GetNeighbors()}
+
+            for d_idx in bonded_set:
+                d_atom = mol_template.GetAtomWithIdx(d_idx)
+                if d_atom.GetAtomicNum() <= 1:
+                    continue
+                d_sym = d_atom.GetSymbol()
+                if d_sym in _METAL_SET:
+                    continue
+                dx, dy, dz = coords[d_idx]
+                d = math.sqrt((mx - dx) ** 2 + (my - dy) ** 2 + (mz - dz) ** 2)
+                ideal = float(_get_ml_bond_length(m_sym, d_sym))
+                if ideal <= 0:
+                    continue
+                # Bridging donors (bonded to 2+ metals) compromise between
+                # ideal positions at each metal → wider tolerance.
+                n_metal_nbrs = sum(
+                    1 for nbr in d_atom.GetNeighbors()
+                    if nbr.GetSymbol() in _METAL_SET
+                )
+                frac = max_donor_frac if n_metal_nbrs <= 1 else 2.0
+                if d > frac * ideal:
+                    return False
+
+            for other in mol_template.GetAtoms():
+                o_idx = other.GetIdx()
+                if o_idx == m_idx or o_idx in bonded_set:
+                    continue
+                if other.GetAtomicNum() <= 1:
+                    continue
+                if other.GetSymbol() in _METAL_SET:
+                    continue
+                ox, oy, oz = coords[o_idx]
+                d = math.sqrt((mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2)
+                ideal = float(_get_ml_bond_length(m_sym, other.GetSymbol()))
+                if ideal <= 0:
+                    continue
+                if d < min_nonddonor_frac * ideal:
+                    return False
+
+        return True
+    except Exception:
+        return False
 
 
 def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
@@ -17383,6 +17518,21 @@ def smiles_to_xyz_isomers(
                 for (xyz, lbl), keep in zip(results, _keep) if keep
             ]
 
+    # --- Final output gate: SMILES connectivity invariant ---
+    # Principle 1: the SMILES defines the truth.  Any structure whose
+    # metal-donor graph differs from the input SMILES is wrong.
+    if has_metal and results:
+        verified: List[Tuple[str, str]] = []
+        for xyz, lbl in results:
+            if _verify_metal_connectivity(xyz, mol):
+                verified.append((xyz, lbl))
+            else:
+                logger.info(
+                    "Output gate rejected isomer %r: connectivity mismatch", lbl
+                )
+        if verified:
+            results = verified
+
     return results, None
 
 
@@ -18648,6 +18798,82 @@ def _build_uff_constraints_from_template(
     return constraints
 
 
+def _build_coordination_constraints_from_xyz(
+    mol_template,
+    xyz_delfin: str,
+) -> Optional[Dict]:
+    """Auto-detect metal coordination from template graph and pin it during UFF.
+
+    Unlike ``_build_coordination_uff_constraints`` (which needs explicit
+    perm/geometry arguments from the topology enumerator), this function
+    derives constraints directly from the template bond graph.  This
+    makes it usable for ANY UFF call — sampling, linkage, alt-binding,
+    hapto, etc.
+
+    Only M-D DISTANCES are constrained (from the lookup table).  L-M-L
+    angles are left free so UFF can optimize toward ideal polyhedral
+    geometry.  This combines Principle 2 (distances from chemistry) with
+    Principle 3 (UFF improves angles toward ideal).
+    """
+    base = _build_uff_constraints_from_template(mol_template, xyz_delfin=xyz_delfin)
+    if base is None:
+        base = {"fix_atoms": [], "distances": [], "angles": [], "torsions": []}
+
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return base if any(base.values()) else None
+
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return base if any(base.values()) else None
+        coords: List[Tuple[float, float, float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return base if any(base.values()) else None
+            coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
+
+        seen_dist = {tuple(sorted((a, b))) for a, b, _t in base["distances"]}
+        seen_angle = set()
+        for a, b, c, _t in base["angles"]:
+            seen_angle.add((a, b, c))
+            seen_angle.add((c, b, a))
+
+        for atom in mol_template.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            m_idx = atom.GetIdx()
+            m_sym = atom.GetSymbol()
+
+            donor_indices: List[int] = []
+            for nbr in atom.GetNeighbors():
+                if nbr.GetAtomicNum() <= 1:
+                    continue
+                donor_indices.append(nbr.GetIdx())
+
+            # M-D distance constraints from lookup table.
+            for d_idx in donor_indices:
+                key = tuple(sorted((m_idx, d_idx)))
+                if key in seen_dist:
+                    continue
+                seen_dist.add(key)
+                d_sym = mol_template.GetAtomWithIdx(d_idx).GetSymbol()
+                if d_sym in _METAL_SET:
+                    continue
+                bl = float(_get_ml_bond_length(m_sym, d_sym))
+                base["distances"].append((m_idx, d_idx, bl))
+
+            # L-M-L angles are NOT constrained here — UFF should be free
+            # to optimize angles toward the ideal polyhedron.  Only the
+            # topology-enumerator path (_build_coordination_uff_constraints)
+            # pins angles to ideal values because it DEFINES the polyhedron.
+
+    except Exception as exc:
+        logger.debug("_build_coordination_constraints_from_xyz failed: %s", exc)
+
+    return base if any(base.values()) else None
+
+
 def _build_coordination_uff_constraints(
     mol_template,
     metal_idx: int,
@@ -18875,18 +19101,42 @@ def _optimize_xyz_openbabel_safe(
     are passed to OB-UFF.
     """
     constraints = coord_constraints
-    if constraints is None and apply_template_constraints and mol_template is not None:
-        try:
-            constraints = _build_uff_constraints_from_template(
-                mol_template, xyz_delfin=xyz_delfin
-            )
-        except Exception as exc:
-            logger.debug("Constraint generation failed, running unconstrained UFF: %s", exc)
-            constraints = None
+    if constraints is None and mol_template is not None:
+        # Universal principle: EVERY UFF call on a metal complex gets
+        # coordination constraints (M-D distances + L-M-L angles).
+        # This prevents UFF from inventing distances for metals it has
+        # no parameters for (Sc, Cd, lanthanides, etc.).
+        _has_metal_in_template = any(
+            a.GetSymbol() in _METAL_SET for a in mol_template.GetAtoms()
+        ) if RDKIT_AVAILABLE else False
+        if _has_metal_in_template:
+            try:
+                constraints = _build_coordination_constraints_from_xyz(
+                    mol_template, xyz_delfin
+                )
+            except Exception as exc:
+                logger.debug("Coordination constraint generation failed: %s", exc)
+                constraints = None
+        elif apply_template_constraints:
+            try:
+                constraints = _build_uff_constraints_from_template(
+                    mol_template, xyz_delfin=xyz_delfin
+                )
+            except Exception as exc:
+                logger.debug("Template constraint generation failed: %s", exc)
+                constraints = None
 
     xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps, constraints=constraints)
     if not xyz_opt or xyz_opt == xyz_delfin:
         return xyz_delfin
+
+    # Fundamental check: UFF must not change the metal-donor connectivity.
+    # If a donor drifted away or a non-donor collapsed onto the metal,
+    # discard the UFF result and keep the original XYZ.
+    if mol_template is not None and RDKIT_AVAILABLE:
+        if not _verify_metal_connectivity(xyz_opt, mol_template):
+            logger.debug("Discarding UFF geometry: metal connectivity changed.")
+            return xyz_delfin
 
     if mol_template is not None and RDKIT_AVAILABLE:
         try:
