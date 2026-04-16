@@ -16949,8 +16949,6 @@ def smiles_to_xyz_isomers(
     # Embed multiple conformers with deterministic seed schedule.
     # This improves reproducibility while still sampling diverse geometries.
     try:
-        # Fixed seeds keep results reproducible across runs.
-        # Multiple diverse seeds improve sampling of coordination isomers.
         seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
@@ -16988,6 +16986,14 @@ def smiles_to_xyz_isomers(
                 # chemistry checks to penalties instead of hard rejection.
                 if _has_atom_clash(mol, cid, min_dist=0.3):
                     continue
+                # Hard-reject conformers with unphysical M-D distances
+                # (collapsed structures like Sc-O at 0.92 Å).
+                try:
+                    xyz_check = _mol_to_xyz_conformer(mol, cid)
+                    if not _metal_donor_distances_realistic(xyz_check, mol):
+                        continue
+                except Exception:
+                    pass
                 if _has_pi_ring_nonplanarity(mol, cid):
                     continue
                 penalty = 0.0
