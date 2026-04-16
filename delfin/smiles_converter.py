@@ -17826,11 +17826,17 @@ def smiles_to_xyz_isomers(
                 results = [(_fb_xyz, '')]
 
     # --- Topological enumerator: guarantee completeness ---
-    # Runs after sampling-based dedup; adds any isomers not found by sampling.
-    # Dedup is now fingerprint-based (not label-based) so that distinct
-    # topo-isomers with the same label (e.g. two different "mer" arrangements)
-    # are not incorrectly suppressed.
-    if has_metal:
+    # For MONO-metallic: use topology enumerator (guaranteed complete).
+    # For MULTI-metallic: the topo builder destroys bridge ligand geometry
+    # by moving metals independently. Instead, rely on ETKDG sampling
+    # (which preserves ligand topology) + M-D rescaling + graph check.
+    try:
+        _n_metals_total = sum(
+            1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+        ) if RDKIT_AVAILABLE else 0
+    except Exception:
+        _n_metals_total = 0
+    if has_metal and _n_metals_total <= 1:
         try:
             # Collect fingerprints from sampling results
             existing_fps: set = set()
@@ -17909,6 +17915,75 @@ def smiles_to_xyz_isomers(
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
+
+    # --- Multi-metal sampling augmentation ---
+    # For multi-metallic systems: augment with extra ETKDG conformers.
+    # The topology enumerator can't build multi-metal 3D correctly
+    # (moves metals independently, breaks bridge ligands).  Instead,
+    # ETKDG naturally produces diverse M-bridge-M arrangements that
+    # preserve ligand topology.  M-D rescaling fixes distances.
+    if has_metal and _n_metals_total >= 2 and len(results) < max_isomers:
+        try:
+            _extra_seeds = [137, 251, 353, 461, 571, 683, 797, 911, 1013, 1117]
+            _extra_ids: List[int] = []
+            _n_extra = min(len(_extra_seeds), os.cpu_count() or 4)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_n_extra) as _xp:
+                _xfuts = [
+                    _xp.submit(_embed_multiple_confs_robust, mol, 3, s)
+                    for s in _extra_seeds
+                ]
+                for _xf in concurrent.futures.as_completed(_xfuts):
+                    try:
+                        _extra_ids.extend(_xf.result())
+                    except Exception:
+                        pass
+            logger.debug("Multi-metal augmentation: %d extra conformers", len(_extra_ids))
+
+            # Classify + dedup with existing results
+            _existing_fps_mm: set = set()
+            for _xyz, _d in results:
+                try:
+                    _mt = Chem.RWMol(mol)
+                    _mt.RemoveAllConformers()
+                    _c = _xyz_to_rdkit_conformer(_mt.GetMol(), _xyz)
+                    if _c is not None:
+                        _ci = _mt.AddConformer(_c, assignId=True)
+                        _fp = _compute_coordination_fingerprint(
+                            _mt.GetMol(), _ci, dtype_map=dtype_map
+                        )
+                        _existing_fps_mm.add(_fp)
+                except Exception:
+                    pass
+
+            for _xid in _extra_ids:
+                if len(results) >= max_isomers:
+                    break
+                try:
+                    _xyz = _mol_to_xyz_conformer(mol, _xid)
+                    _xyz = _optimize_xyz_openbabel_safe(_xyz, mol_template=mol)
+                    if not _verify_topology_from_graph(_xyz, mol):
+                        continue
+                    _mt = Chem.RWMol(mol)
+                    _mt.RemoveAllConformers()
+                    _c = _xyz_to_rdkit_conformer(_mt.GetMol(), _xyz)
+                    if _c is None:
+                        continue
+                    _ci = _mt.AddConformer(_c, assignId=True)
+                    _fp = _compute_coordination_fingerprint(
+                        _mt.GetMol(), _ci, dtype_map=dtype_map
+                    )
+                    if _fp in _existing_fps_mm:
+                        continue
+                    _existing_fps_mm.add(_fp)
+                    _lbl = _classify_isomer_label(_fp, _mt.GetMol())
+                    if not _lbl:
+                        unknown_counter += 1
+                        _lbl = f'Isomer {unknown_counter}'
+                    results.append((_xyz, _lbl))
+                except Exception:
+                    continue
+        except Exception as _mm_exc:
+            logger.debug("Multi-metal augmentation failed: %s", _mm_exc)
 
     # --- Linkage isomers ---
     if has_metal and include_binding_mode_isomers:
