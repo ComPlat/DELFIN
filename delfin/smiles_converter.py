@@ -250,6 +250,25 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Hf', 'C'): 2.35, ('Hf', 'N'): 2.20, ('Hf', 'O'): 2.10, ('Hf', 'Cl'): 2.40,
     # Ruthenium (S)
     ('Ru', 'S'): 2.35,
+    # Cadmium (d10, larger ionic radius than first-row TMs)
+    ('Cd', 'C'): 2.25, ('Cd', 'N'): 2.33, ('Cd', 'O'): 2.30,
+    ('Cd', 'P'): 2.55, ('Cd', 'Cl'): 2.55, ('Cd', 'S'): 2.55,
+    ('Cd', 'Br'): 2.68, ('Cd', 'F'): 2.22,
+    # Mercury (d10, even larger)
+    ('Hg', 'C'): 2.12, ('Hg', 'N'): 2.20, ('Hg', 'O'): 2.25,
+    ('Hg', 'P'): 2.48, ('Hg', 'Cl'): 2.50, ('Hg', 'S'): 2.45,
+    ('Hg', 'Br'): 2.62,
+    # Alkaline earth carboxylate/aqua coordination
+    ('Ca', 'N'): 2.55, ('Ca', 'O'): 2.40, ('Ca', 'Cl'): 2.75,
+    ('Mg', 'N'): 2.20, ('Mg', 'O'): 2.05, ('Mg', 'Cl'): 2.45,
+    ('Sr', 'N'): 2.65, ('Sr', 'O'): 2.55, ('Sr', 'Cl'): 2.85,
+    ('Ba', 'N'): 2.85, ('Ba', 'O'): 2.75, ('Ba', 'Cl'): 3.05,
+    # Zn completions (Cd's lighter analog)
+    ('Zn', 'C'): 2.05, ('Zn', 'P'): 2.35,
+    # Alkali (hard Lewis acids)
+    ('Li', 'N'): 2.10, ('Li', 'O'): 1.95, ('Li', 'Cl'): 2.35,
+    ('Na', 'N'): 2.45, ('Na', 'O'): 2.35, ('Na', 'Cl'): 2.70,
+    ('K', 'N'): 2.85, ('K', 'O'): 2.75, ('K', 'Cl'): 3.10,
 }
 
 # ---------------------------------------------------------------------------
@@ -12899,6 +12918,82 @@ def _fragment_topology_relaxed_fallback_ok(
         return False
 
 
+def _metal_donor_distances_realistic(
+    xyz_delfin: str,
+    mol_template=None,
+    min_abs_ml: float = 1.70,
+    max_frac: float = 1.50,
+) -> bool:
+    """Reject structures with unphysical metal-donor distances.
+
+    Two checks per metal atom in the XYZ:
+
+    1. No heavy atom (any element, coordinating or not) closer than
+       ``min_abs_ml`` to any metal — catches collapsed alt-binding
+       artifacts where OB perception created false short bonds.
+    2. When ``mol_template`` is available, each bonded non-metal donor
+       must stay below ``max_frac`` × ``_get_ml_bond_length`` to flag
+       broken connectivity.
+    """
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        atoms: List[Tuple[str, Tuple[float, float, float]]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return True
+            atoms.append(
+                (parts[0], (float(parts[1]), float(parts[2]), float(parts[3])))
+            )
+        metals = [
+            (sym, pos) for sym, pos in atoms if sym in _METAL_SET
+        ]
+        if not metals:
+            return True
+
+        min_abs_sq = float(min_abs_ml) * float(min_abs_ml)
+        for m_sym, m_pos in metals:
+            for a_sym, a_pos in atoms:
+                if a_sym == m_sym and a_pos == m_pos:
+                    continue
+                if a_sym == 'H':
+                    continue
+                dx = m_pos[0] - a_pos[0]
+                dy = m_pos[1] - a_pos[1]
+                dz = m_pos[2] - a_pos[2]
+                dsq = dx * dx + dy * dy + dz * dz
+                if 0.0 < dsq < min_abs_sq:
+                    return False
+
+        if mol_template is not None and RDKIT_AVAILABLE:
+            if len(atoms) != mol_template.GetNumAtoms():
+                return True
+            coords = [pos for _sym, pos in atoms]
+            for atom in mol_template.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    continue
+                m_idx = atom.GetIdx()
+                m_sym_t = atom.GetSymbol()
+                for nbr in atom.GetNeighbors():
+                    if nbr.GetSymbol() in _METAL_SET:
+                        continue
+                    if nbr.GetAtomicNum() <= 1:
+                        continue
+                    n_idx = nbr.GetIdx()
+                    dx = coords[m_idx][0] - coords[n_idx][0]
+                    dy = coords[m_idx][1] - coords[n_idx][1]
+                    dz = coords[m_idx][2] - coords[n_idx][2]
+                    d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    ideal = float(_get_ml_bond_length(m_sym_t, nbr.GetSymbol()))
+                    if ideal <= 0:
+                        continue
+                    if d > float(max_frac) * ideal:
+                        return False
+        return True
+    except Exception:
+        return True
+
+
 def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
     """Final geometry sanity check for accepted XYZ outputs.
 
@@ -15233,16 +15328,25 @@ def _build_topology_xyz(
 
         if apply_uff:
             try:
-                # Free UFF optimization — do NOT constrain the metal or
-                # M-L distances here.  Constraints prevent proper ligand
-                # backbone relaxation and cause roundtrip connectivity
-                # failures (structures get dropped by the topology filter).
-                # The constraint API in _optimize_xyz_openbabel is available
-                # for callers that need it, but the topology builder relies
-                # on unconstrained relaxation for best results.
+                # Coordination-preserving UFF: M-D distances and L-M-L
+                # angles are pinned to the idealized polyhedron so UFF
+                # cannot distort the octahedral/PBP/etc. cage even when
+                # it lacks force-field parameters for the metal.
+                coord_constraints = None
+                try:
+                    coord_constraints = _build_coordination_uff_constraints(
+                        mol, metal_idx, donor_atom_indices, perm, geometry,
+                        xyz_delfin=xyz,
+                    )
+                except Exception as cexc:
+                    logger.debug(
+                        "Coordination constraint build failed, falling back to template constraints: %s",
+                        cexc,
+                    )
                 xyz = _optimize_xyz_openbabel_safe(
                     xyz,
                     mol_template=mol,
+                    coord_constraints=coord_constraints,
                 )
             except Exception as uff_exc:
                 # Keep the generated topology geometry when UFF fails.
@@ -15525,9 +15629,21 @@ def _build_topology_xyz_from_template(
 
         if apply_uff:
             try:
+                coord_constraints = None
+                try:
+                    coord_constraints = _build_coordination_uff_constraints(
+                        mol, metal_idx, donor_atom_indices, perm, geometry,
+                        xyz_delfin=xyz,
+                    )
+                except Exception as cexc:
+                    logger.debug(
+                        "Coordination constraint build failed in template builder: %s",
+                        cexc,
+                    )
                 xyz = _optimize_xyz_openbabel_safe(
                     xyz,
                     mol_template=mol,
+                    coord_constraints=coord_constraints,
                 )
             except Exception as uff_exc:
                 logger.debug(
@@ -16622,37 +16738,11 @@ def smiles_to_xyz_isomers(
                 except Exception:
                     pass
 
-                # Skip if this fingerprint was already seen
-                if topo_fp is not None and topo_fp in existing_fps:
-                    _base_existing = {
-                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
-                    }
-                    _norm_try = re.sub(r'-\d+$', '', topo_label) if topo_label else ''
-                    # Keep geometry-diverse labels even if coarse fingerprint
-                    # collides (e.g. homogeneous donor sets where SQ/TH can
-                    # hash similarly). Only skip when label space is already
-                    # covered as well.
-                    if collapse_label_variants and (not _norm_try or _norm_try in _base_existing):
-                        continue
-
+                # Always let topo isomers through; the final geometry-based
+                # dedup selects the best-scoring candidate per base label.
+                # Sampling conformers are UFF-distorted, so topo versions
+                # (donors pinned to ideal polyhedron) typically win.
                 norm = topo_label or ''
-                # Skip if sampling already produced an isomer with the same
-                # base label (e.g. topo "trans" when sampling found "trans").
-                # Fingerprint comparison alone fails here because OB-distorted
-                # sampling geometries have slightly different angles than the
-                # ideal topo geometry.
-                if collapse_label_variants and norm:
-                    _existing_base_labels = {
-                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
-                    }
-                    if norm in _existing_base_labels:
-                        logger.debug(
-                            "Skipping topo isomer %s: label already covered by sampling",
-                            norm,
-                        )
-                        if topo_fp is not None:
-                            existing_fps.add(topo_fp)
-                        continue
                 if not norm:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
@@ -16673,17 +16763,25 @@ def smiles_to_xyz_isomers(
                 if not _no_spurious_bonds(topo_xyz, smiles):
                     logger.debug("Skipping topo isomer %s: spurious bonds", display)
                     continue
-                if not _fragment_topology_ok(topo_xyz, smiles):
-                    if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
-                        logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
-                        continue
-                    if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
-                        logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
-                        continue
-                    logger.debug(
-                        "Keeping topo isomer %s via relaxed fragment fallback",
-                        display,
-                    )
+                # Organic fragment signature must match: this confirms the
+                # ligand backbones are intact.  Global heavy-component checks
+                # are skipped here because OB bond perception does not see
+                # metal-donor bonds at typical coordination distances, so it
+                # would mis-flag every topology-built structure as fragmented.
+                # The coordination sphere is guaranteed by the topology
+                # builder itself (donors pinned to M-D ideal distance).
+                _t_orig_sig = _organic_fragment_signature(smiles)
+                _t_xyz_sig = _organic_fragment_signature_xyz(topo_xyz)
+                if (
+                    _t_orig_sig is not None
+                    and _t_xyz_sig is not None
+                    and _t_orig_sig != _t_xyz_sig
+                ):
+                    logger.debug("Skipping topo isomer %s: organic fragment mismatch", display)
+                    continue
+                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
+                    logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
+                    continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
                 if topo_key in existing_xyz_keys:
                     logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
@@ -16701,6 +16799,9 @@ def smiles_to_xyz_isomers(
         try:
             link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
             for _lxyz, _llabel in link_results:
+                if not _metal_donor_distances_realistic(_lxyz, mol):
+                    logger.debug("Skipping linkage isomer %s: unphysical M-D distance", _llabel)
+                    continue
                 if _fragment_topology_ok(_lxyz, smiles):
                     results.append((_lxyz, _llabel))
                 else:
@@ -16718,6 +16819,12 @@ def smiles_to_xyz_isomers(
             )
             for alt_xyz, alt_label in alt_results:
                 if alt_label not in existing_base:
+                    if not _metal_donor_distances_realistic(alt_xyz, mol):
+                        logger.debug(
+                            "Skipping alt-binding isomer %s: unphysical M-D distance",
+                            alt_label,
+                        )
+                        continue
                     if not _fragment_topology_ok(alt_xyz, smiles):
                         logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
                         continue
@@ -16728,27 +16835,71 @@ def smiles_to_xyz_isomers(
 
     # --- Final label dedup (safety net) ---
     # Collapse entries that share the same base label (e.g. "trans-1" and
-    # "trans-2" that slipped through fingerprint/RMSD dedup).  Keep the first
-    # occurrence (best score from sampling or first topo result) and rename it
-    # to the bare base label so the user sees "trans" not "trans-1".
+    # "trans-2" that slipped through fingerprint/RMSD dedup).  Pick the
+    # geometrically best candidate per base label (sampling conformers
+    # from UFF-distorted ETKDG are usually worse than the topology-
+    # enumerator output which pins donors to the idealized polyhedron).
     # "Isomer N" labels use spaces not dashes, so they are never collapsed.
-    if collapse_label_variants and results:
-        _seen_base: Dict[str, int] = {}
-        _keep: List[bool] = [True] * len(results)
-        for _idx, (_, _lbl) in enumerate(results):
-            _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
-            if _base in _seen_base:
-                _keep[_idx] = False
-                logger.debug(
-                    "Final dedup: dropping duplicate label %r (base=%r kept at idx %d)",
-                    _lbl, _base, _seen_base[_base],
-                )
-            else:
-                _seen_base[_base] = _idx
-        results = [
-            (xyz, re.sub(r'-\d+$', '', lbl))
-            for (xyz, lbl), keep in zip(results, _keep) if keep
-        ]
+    if collapse_label_variants and results and has_metal:
+        try:
+            score_mol = None
+            try:
+                score_mol = _build_topology_template_mol(smiles) or mol
+            except Exception:
+                score_mol = mol
+
+            def _score_xyz(_xyz: str) -> float:
+                if score_mol is None:
+                    return float("inf")
+                try:
+                    tmp = Chem.RWMol(score_mol)
+                    tmp.RemoveAllConformers()
+                    conf = _xyz_to_rdkit_conformer(tmp.GetMol(), _xyz)
+                    if conf is None:
+                        return float("inf")
+                    cid = tmp.AddConformer(conf, assignId=True)
+                    return float(_geometry_quality_score(tmp.GetMol(), cid))
+                except Exception:
+                    return float("inf")
+
+            # Pick best-score candidate per base label, preserve first
+            # appearance order for the final result list.
+            base_best: Dict[str, Tuple[int, float]] = {}
+            scored_cache: List[float] = []
+            for idx, (xyz, lbl) in enumerate(results):
+                base = re.sub(r'-\d+$', '', lbl) if lbl else ''
+                score = _score_xyz(xyz)
+                scored_cache.append(score)
+                if base not in base_best or score < base_best[base][1]:
+                    base_best[base] = (idx, score)
+
+            keep_indices = {idx for idx, _s in base_best.values()}
+            new_results: List[Tuple[str, str]] = []
+            for idx, (xyz, lbl) in enumerate(results):
+                if idx not in keep_indices:
+                    logger.debug(
+                        "Final dedup: dropping %r (base=%r, score=%.3f) — better kept",
+                        lbl,
+                        re.sub(r'-\d+$', '', lbl) if lbl else '',
+                        scored_cache[idx],
+                    )
+                    continue
+                new_results.append((xyz, re.sub(r'-\d+$', '', lbl) if lbl else lbl))
+            results = new_results
+        except Exception as _dedup_exc:
+            logger.debug("Geometry-based dedup failed, falling back to first-keep: %s", _dedup_exc)
+            _seen_base: Dict[str, int] = {}
+            _keep: List[bool] = [True] * len(results)
+            for _idx, (_, _lbl) in enumerate(results):
+                _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
+                if _base in _seen_base:
+                    _keep[_idx] = False
+                else:
+                    _seen_base[_base] = _idx
+            results = [
+                (xyz, re.sub(r'-\d+$', '', lbl))
+                for (xyz, lbl), keep in zip(results, _keep) if keep
+            ]
 
     return results, None
 
@@ -17993,6 +18144,116 @@ def _build_uff_constraints_from_template(
     return constraints
 
 
+def _build_coordination_uff_constraints(
+    mol_template,
+    metal_idx: int,
+    donor_atom_indices: List[int],
+    perm: List[int],
+    geometry: str,
+    xyz_delfin: Optional[str] = None,
+) -> Optional[Dict]:
+    """UFF constraints that preserve an idealized coordination polyhedron.
+
+    Extends :func:`_build_uff_constraints_from_template` with hard
+    metal-donor distance pins (from :func:`_get_ml_bond_length`) and
+    donor-metal-donor angle targets derived from
+    ``_TOPO_GEOMETRY_VECTORS[geometry]`` combined with ``perm``.
+
+    These constraints keep octahedral/PBP/etc. geometry intact during
+    UFF relaxation even when UFF lacks parameters for the metal.
+    """
+    base = _build_uff_constraints_from_template(
+        mol_template, xyz_delfin=xyz_delfin
+    )
+    if base is None:
+        base = {
+            "fix_atoms": [],
+            "distances": [],
+            "angles": [],
+            "torsions": [],
+        }
+
+    vectors = _TOPO_GEOMETRY_VECTORS.get(geometry)
+    if not vectors or metal_idx is None:
+        return base if any(base.values()) else None
+
+    try:
+        metal_sym = mol_template.GetAtomWithIdx(metal_idx).GetSymbol()
+    except Exception:
+        return base if any(base.values()) else None
+
+    n_pos = len(vectors)
+    if n_pos != len(perm) or n_pos != len(donor_atom_indices):
+        return base if any(base.values()) else None
+
+    # Unit vectors for each geometry position.
+    unit_vecs: List[Tuple[float, float, float]] = []
+    for vx, vy, vz in vectors:
+        m = math.sqrt(vx * vx + vy * vy + vz * vz)
+        if m < 1e-8:
+            unit_vecs.append((0.0, 0.0, 0.0))
+        else:
+            unit_vecs.append((vx / m, vy / m, vz / m))
+
+    # Track existing distance keys so we don't duplicate OCO pins.
+    seen_dist = {tuple(sorted((a, b))) for a, b, _t in base["distances"]}
+
+    # M-D distance pins.
+    donor_pos_map: Dict[int, int] = {}
+    for pos_idx, donor_list_idx in enumerate(perm):
+        if donor_list_idx < 0 or donor_list_idx >= len(donor_atom_indices):
+            continue
+        donor_atom_idx = donor_atom_indices[donor_list_idx]
+        donor_pos_map[donor_atom_idx] = pos_idx
+        try:
+            donor_sym = mol_template.GetAtomWithIdx(donor_atom_idx).GetSymbol()
+        except Exception:
+            continue
+        bl = float(_get_ml_bond_length(metal_sym, donor_sym))
+        key = tuple(sorted((metal_idx, donor_atom_idx)))
+        if key in seen_dist:
+            continue
+        seen_dist.add(key)
+        base["distances"].append((metal_idx, donor_atom_idx, bl))
+
+    # L-M-L angle targets from ideal geometry vectors.
+    seen_angle = {
+        (a, b, c) for a, b, c, _t in base["angles"]
+    }
+    seen_angle.update(
+        (c, b, a) for a, b, c, _t in base["angles"]
+    )
+    donors_with_pos = [
+        d for d in donor_atom_indices if d in donor_pos_map
+    ]
+    for i in range(len(donors_with_pos)):
+        for j in range(i + 1, len(donors_with_pos)):
+            d_i = donors_with_pos[i]
+            d_j = donors_with_pos[j]
+            pi = donor_pos_map[d_i]
+            pj = donor_pos_map[d_j]
+            vi = unit_vecs[pi]
+            vj = unit_vecs[pj]
+            dot = vi[0] * vj[0] + vi[1] * vj[1] + vi[2] * vj[2]
+            dot = max(-1.0, min(1.0, dot))
+            ideal = math.degrees(math.acos(dot))
+            key = (d_i, metal_idx, d_j)
+            if key in seen_angle:
+                continue
+            seen_angle.add(key)
+            seen_angle.add((d_j, metal_idx, d_i))
+            base["angles"].append((d_i, metal_idx, d_j, ideal))
+
+    if not (
+        base["fix_atoms"]
+        or base["distances"]
+        or base["angles"]
+        or base["torsions"]
+    ):
+        return None
+    return base
+
+
 def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
@@ -18094,6 +18355,7 @@ def _optimize_xyz_openbabel_safe(
     smiles: Optional[str] = None,
     steps: int = 500,
     apply_template_constraints: bool = False,
+    coord_constraints: Optional[Dict] = None,
 ) -> str:
     """Run OB-UFF, but keep original XYZ if optimization breaks topology.
 
@@ -18102,11 +18364,14 @@ def _optimize_xyz_openbabel_safe(
     This wrapper accepts the optimized geometry only if it passes structural
     sanity checks against the original molecular graph.
 
-    When ``apply_template_constraints`` is True and a ``mol_template`` is
-    available, mild OCO/aromatic planarity constraints are passed to OB-UFF.
+    When ``coord_constraints`` is provided, those constraints are used
+    directly (topology-enumerator path with M-D + L-M-L pinning).
+    Otherwise, when ``apply_template_constraints`` is True and a
+    ``mol_template`` is available, mild OCO/aromatic planarity constraints
+    are passed to OB-UFF.
     """
-    constraints = None
-    if apply_template_constraints and mol_template is not None:
+    constraints = coord_constraints
+    if constraints is None and apply_template_constraints and mol_template is not None:
         try:
             constraints = _build_uff_constraints_from_template(
                 mol_template, xyz_delfin=xyz_delfin
@@ -18169,7 +18434,7 @@ def _optimize_xyz_openbabel_safe(
     # For constrained, template-guided UFF in the isomer path we defer
     # topology/spurious checks to the caller (which applies the same checks
     # afterwards) to avoid double-rejecting all optimized geometries.
-    if smiles and not apply_template_constraints:
+    if smiles and not apply_template_constraints and coord_constraints is None:
         try:
             if not _roundtrip_ring_count_ok(xyz_opt, smiles):
                 logger.debug("Discarding UFF geometry: ring-count mismatch.")
