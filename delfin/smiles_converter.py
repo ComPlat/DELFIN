@@ -14780,7 +14780,7 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
 # ---------------------------------------------------------------------------
 
 def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int],
-                    max_path: int = 4) -> List[FrozenSet]:
+                    max_path: int = 5) -> List[FrozenSet]:
     """Find donor pairs connected through a short non-metal path (chelate constraints).
 
     BFS from each donor atom to every other donor, blocking the metal.
@@ -14793,8 +14793,9 @@ def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int],
 
     Args:
         max_path: Maximum number of bonds in the non-metal path between two
-            donors to count as a chelate pair.  Default 4 corresponds to a
-            6-membered chelate ring (donor–4 bridge atoms–donor + metal).
+            donors to count as a chelate pair.  Default 5 corresponds to a
+            7-membered chelate ring (donor–5 bridge atoms–donor + metal),
+            capturing common diphosphine (dppp) and diamine chelates.
 
     Returns a list of frozensets {donor_i_idx, donor_j_idx}.
     """
