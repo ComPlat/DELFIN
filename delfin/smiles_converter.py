@@ -13113,7 +13113,7 @@ def _verify_metal_connectivity(
     xyz_delfin: str,
     mol_template,
     max_donor_frac: float = 1.60,
-    min_donor_frac: float = 0.60,
+    min_donor_frac: float = 0.75,
     min_nonddonor_frac: float = 0.80,
 ) -> bool:
     """Verify that the XYZ preserves the metal-donor connectivity from the template.
@@ -13242,12 +13242,22 @@ def _verify_metal_connectivity(
         return False
 
 
-def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
+def _xyz_passes_final_geometry_checks(
+    xyz_delfin: str,
+    mol_template,
+    skip_angle_check: bool = False,
+) -> bool:
     """Final geometry sanity check for accepted XYZ outputs.
 
     Intended for relaxed-fallback candidates: keep only structures that still
     pass hard geometric plausibility checks when mapped back to the template
     molecular graph.
+
+    When ``skip_angle_check`` is True, only covalent bond distortion is
+    checked (not L-M-L angles). This is correct for topology-built
+    structures whose donor positions are set by ideal-polyhedron vectors
+    — their angles may not satisfy the sampling-oriented thresholds in
+    ``_has_bad_geometry``.
     """
     if not RDKIT_AVAILABLE or mol_template is None:
         return True
@@ -13277,7 +13287,7 @@ def _xyz_passes_final_geometry_checks(xyz_delfin: str, mol_template) -> bool:
         cid = mol_tmp.AddConformer(conf, assignId=True)
         if _has_severe_covalent_distortion(mol_tmp.GetMol(), cid):
             return False
-        if _has_bad_geometry(mol_tmp.GetMol(), cid):
+        if not skip_angle_check and _has_bad_geometry(mol_tmp.GetMol(), cid):
             return False
         return True
     except Exception:
@@ -17593,7 +17603,7 @@ def smiles_to_xyz_isomers(
                 if not _no_spurious_bonds(topo_xyz, smiles):
                     logger.debug("Skipping topo isomer %s: spurious bonds", display)
                     continue
-                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
+                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol, skip_angle_check=True):
                     logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
                     continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
