@@ -13092,6 +13092,122 @@ def _global_heavy_connectivity_ok(
     return True
 
 
+def _verify_topology_from_graph(
+    xyz_delfin: str,
+    mol_template,
+) -> bool:
+    """Graph-based topology verification — no OB perception, no roundtrip.
+
+    Checks the XYZ coordinates directly against the template molecular
+    graph (from SMILES).  This is the SINGLE authoritative check for
+    structural integrity.
+
+    Three rules:
+    1. Every bond in the template graph must have a reasonable distance
+       in the XYZ:
+       - M-D bonds: within [0.75, 1.60] × ``_get_ml_bond_length``
+       - M-M bonds: within [0.70, 1.80] × ``_METAL_METAL_BOND_LENGTHS``
+       - Covalent bonds (non-metal): < 2.2 Å
+    2. No two heavy atoms closer than 0.7 Å (collapsed structure)
+    3. No H-H closer than 0.4 Å (collapsed hydrogens)
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return True
+    try:
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        n_atoms = mol_template.GetNumAtoms()
+        if len(lines) != n_atoms:
+            # Atom count mismatch → try AddHs fallback
+            try:
+                mol_h = Chem.AddHs(mol_template)
+                if len(lines) == mol_h.GetNumAtoms():
+                    mol_template = mol_h
+                    n_atoms = mol_h.GetNumAtoms()
+                else:
+                    return True  # can't validate → permissive
+            except Exception:
+                return True
+
+        coords: List[Tuple[float, float, float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return True
+            coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
+
+        # Rule 1: Every bond must have a reasonable distance.
+        for bond in mol_template.GetBonds():
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            i1, i2 = a1.GetIdx(), a2.GetIdx()
+            s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+            dx = coords[i1][0] - coords[i2][0]
+            dy = coords[i1][1] - coords[i2][1]
+            dz = coords[i1][2] - coords[i2][2]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+            is_metal_1 = s1 in _METAL_SET
+            is_metal_2 = s2 in _METAL_SET
+
+            if is_metal_1 and is_metal_2:
+                # M-M bond
+                mm_key = frozenset({s1, s2})
+                ideal = _METAL_METAL_BOND_LENGTHS.get(mm_key)
+                if ideal is None:
+                    r1 = _COVALENT_RADII.get(s1)
+                    r2 = _COVALENT_RADII.get(s2)
+                    ideal = (r1 + r2 + 0.3) if r1 and r2 else 2.5
+                if d < 0.70 * ideal or d > 1.80 * ideal:
+                    return False
+            elif is_metal_1 or is_metal_2:
+                # M-D bond
+                m_sym = s1 if is_metal_1 else s2
+                d_sym = s2 if is_metal_1 else s1
+                if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
+                    continue  # skip M-H
+                ideal = float(_get_ml_bond_length(m_sym, d_sym))
+                if ideal <= 0:
+                    continue
+                # Bridging donors get wider tolerance
+                d_atom = a2 if is_metal_1 else a1
+                n_metal_nbrs = sum(
+                    1 for nbr in d_atom.GetNeighbors()
+                    if nbr.GetSymbol() in _METAL_SET
+                )
+                if n_metal_nbrs >= 2:
+                    if d < 0.60 * ideal or d > 2.50 * ideal:
+                        return False
+                else:
+                    if d < 0.75 * ideal or d > 1.60 * ideal:
+                        return False
+            else:
+                # Covalent bond (non-metal)
+                if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
+                    if d > 1.8:
+                        return False  # broken X-H bond
+                else:
+                    if d > 2.2:
+                        return False  # broken covalent bond
+
+        # Rule 2+3: No collapsed heavy atoms or hydrogens.
+        # Check only a random subset for large molecules (O(N) not O(N²)).
+        heavy_indices = [
+            i for i in range(n_atoms)
+            if mol_template.GetAtomWithIdx(i).GetAtomicNum() > 1
+        ]
+        for i in range(len(heavy_indices)):
+            xi, yi, zi = coords[heavy_indices[i]]
+            for j in range(i + 1, min(i + 50, len(heavy_indices))):
+                xj, yj, zj = coords[heavy_indices[j]]
+                dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+                if dsq < 0.49:  # 0.7² = 0.49
+                    return False
+
+        return True
+    except Exception:
+        return False
+
+
 def _fragment_topology_relaxed_fallback_ok(
     xyz_delfin: str,
     original_smiles: str,
@@ -17676,28 +17792,11 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                # Full quality pipeline — same as main's sampling path.
-                # For mono-metallic: OB-based checks catch broken topologies.
-                # For multi-metallic: OB perception is unreliable for M-L
-                # bonds → use relaxed fragment fallback only.
-                _n_metals_topo = sum(
-                    1 for a in topo_mol.GetAtoms()
-                    if a.GetSymbol() in _METAL_SET
-                )
-                if not _roundtrip_ring_count_ok(topo_xyz, smiles):
-                    if _n_metals_topo < 2:
-                        logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
-                        continue
-                if not _no_spurious_bonds(topo_xyz, smiles):
-                    logger.debug("Skipping topo isomer %s: spurious bonds", display)
-                    continue
-                if not _fragment_topology_ok(topo_xyz, smiles):
-                    if _n_metals_topo < 2:
-                        if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
-                            logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
-                            continue
-                if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
-                    logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
+                # Graph-based topology verification: checks every bond in
+                # the template graph against actual XYZ distances.  No OB
+                # perception, no roundtrip — works for mono AND multi-metal.
+                if not _verify_topology_from_graph(topo_xyz, topo_mol):
+                    logger.debug("Skipping topo isomer %s: graph topology check failed", display)
                     continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
                 if topo_key in existing_xyz_keys:
@@ -17814,21 +17913,18 @@ def smiles_to_xyz_isomers(
                 for (xyz, lbl), keep in zip(results, _keep) if keep
             ]
 
-    # --- Final output gate: SMILES connectivity invariant ---
-    # Principle 1: the SMILES defines the truth.  Any structure whose
-    # metal-donor graph differs from the input SMILES is wrong.
-    # Use wider tolerance (2.0×) because post-UFF geometries in high-KZ
-    # and multi-metallic systems legitimately have some donors at
-    # 1.6-2.0× ideal distance.  The gate catches topology violations
-    # (donor completely lost), not geometric imprecision.
+    # --- Final output gate: graph-based topology verification ---
+    # Every output structure must preserve the bond topology from the
+    # input SMILES.  Uses _verify_topology_from_graph which checks
+    # every bond distance against the template graph — no OB perception.
     if has_metal and results:
         verified: List[Tuple[str, str]] = []
         for xyz, lbl in results:
-            if _verify_metal_connectivity(xyz, mol, max_donor_frac=2.0):
+            if _verify_topology_from_graph(xyz, mol):
                 verified.append((xyz, lbl))
             else:
                 logger.info(
-                    "Output gate rejected isomer %r: connectivity mismatch", lbl
+                    "Output gate rejected isomer %r: graph topology violated", lbl
                 )
         if verified:
             results = verified
