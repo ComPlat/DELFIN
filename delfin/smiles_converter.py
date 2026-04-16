@@ -12076,6 +12076,77 @@ def _dearomatized_embedding_copy(mol):
         return None
 
 
+def _rescale_metal_donor_distances(mol, conf_id: int) -> None:
+    """Scale metal positions so M-D distances match lookup-table ideals.
+
+    ETKDG treats metals like organic atoms and places M-D bonds at
+    ~1.4-1.7 Å.  Instead of moving individual donors (which breaks
+    chelate/macrocyclic rings), this function scales the METAL position
+    relative to the donor centroid.
+
+    For each metal:
+    1. Compute centroid of all donor positions
+    2. Compute average current M-D distance and average ideal M-D
+    3. Scale metal position along M→centroid vector so averages match
+
+    This preserves the ligand geometry while correcting the coordination
+    sphere radius.  Modifies the conformer in-place.
+    """
+    if not RDKIT_AVAILABLE:
+        return
+    try:
+        from rdkit.Geometry import Point3D as _P3D
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return
+
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        m_idx = atom.GetIdx()
+        m_sym = atom.GetSymbol()
+        m_pos = conf.GetAtomPosition(m_idx)
+        mx, my, mz = m_pos.x, m_pos.y, m_pos.z
+
+        # Collect donor positions and ideal distances.
+        donors: List[Tuple[float, float, float, float]] = []
+        for nbr in atom.GetNeighbors():
+            if nbr.GetAtomicNum() <= 1 or nbr.GetSymbol() in _METAL_SET:
+                continue
+            dp = conf.GetAtomPosition(nbr.GetIdx())
+            ideal = float(_get_ml_bond_length(m_sym, nbr.GetSymbol()))
+            donors.append((dp.x, dp.y, dp.z, ideal))
+
+        if not donors:
+            continue
+
+        # Centroid of donors.
+        n = len(donors)
+        cx = sum(d[0] for d in donors) / n
+        cy = sum(d[1] for d in donors) / n
+        cz = sum(d[2] for d in donors) / n
+
+        # Average current distance and average ideal.
+        avg_cur = sum(
+            math.sqrt((d[0] - mx) ** 2 + (d[1] - my) ** 2 + (d[2] - mz) ** 2)
+            for d in donors
+        ) / n
+        avg_ideal = sum(d[3] for d in donors) / n
+
+        if avg_cur < 0.3 or abs(avg_ideal / avg_cur - 1.0) < 0.05:
+            continue
+
+        # Move metal: new_metal = centroid + (metal - centroid) * (ideal/current)
+        scale = avg_ideal / avg_cur
+        new_mx = cx + (mx - cx) * scale
+        new_my = cy + (my - cy) * scale
+        new_mz = cz + (mz - cz) * scale
+        try:
+            conf.SetAtomPosition(m_idx, _P3D(new_mx, new_my, new_mz))
+        except Exception:
+            pass
+
+
 def _embed_multiple_confs_robust(
     mol,
     num_confs: int,
@@ -12105,6 +12176,14 @@ def _embed_multiple_confs_robust(
     except Exception as emb_exc:
         logger.debug("Primary ETKDG embedding failed (seed=%s): %s", seed, emb_exc)
     if primary_ids:
+        # Rescale M-D distances from organic (~1.5 Å) to ideal values
+        # BEFORE any UFF runs. This is the universal fix for metals
+        # without UFF parameters.
+        for cid in primary_ids:
+            try:
+                _rescale_metal_donor_distances(mol, cid)
+            except Exception:
+                pass
         return primary_ids
 
     # Fallback: embed on a temporary de-aromatized copy and transfer coords.
@@ -12128,6 +12207,11 @@ def _embed_multiple_confs_robust(
         except Exception:
             continue
     if transferred:
+        for cid in transferred:
+            try:
+                _rescale_metal_donor_distances(mol, cid)
+            except Exception:
+                pass
         logger.debug(
             "Embedded %d conformers via dearomatized fallback (seed=%s).",
             len(transferred), seed,
