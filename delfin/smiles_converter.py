@@ -272,6 +272,38 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
 }
 
 # ---------------------------------------------------------------------------
+# Metal-Metal bond lengths (Å) from CSD averages.
+# Keyed as frozenset({sym1, sym2}) → distance to handle both orderings.
+# ---------------------------------------------------------------------------
+_METAL_METAL_BOND_LENGTHS: Dict[frozenset, float] = {
+    frozenset({'Cr'}): 1.83,  # Cr-Cr quintuple bond
+    frozenset({'Mo'}): 2.10,  # Mo-Mo quadruple bond
+    frozenset({'W'}): 2.20,
+    frozenset({'Re'}): 2.24,
+    frozenset({'Ru'}): 2.28,
+    frozenset({'Rh'}): 2.40,
+    frozenset({'Ir'}): 2.55,
+    frozenset({'Pd'}): 2.58,
+    frozenset({'Pt'}): 2.60,
+    frozenset({'Cu'}): 2.55,
+    frozenset({'Ag'}): 2.90,
+    frozenset({'Au'}): 2.70,  # aurophilic
+    frozenset({'Fe'}): 2.50,
+    frozenset({'Co'}): 2.50,
+    frozenset({'Ni'}): 2.45,
+    frozenset({'Mn'}): 2.60,
+    frozenset({'Ti'}): 2.75,
+    frozenset({'Zr'}): 2.90,
+    frozenset({'Zn'}): 2.90,
+    frozenset({'Cd'}): 3.10,
+    # Heterometallic (common pairs)
+    frozenset({'Cu', 'Fe'}): 2.55,
+    frozenset({'Mo', 'Cu'}): 2.65,
+    frozenset({'Rh', 'Ir'}): 2.50,
+    frozenset({'Pt', 'Pd'}): 2.60,
+}
+
+# ---------------------------------------------------------------------------
 # Crystallographic Metal-Centroid distances (Å) for hapto coordination.
 # Keyed as (metal_symbol, eta) → centroid distance.
 # Values from CSD averages / literature data.
@@ -18545,6 +18577,28 @@ def _build_uff_constraints_from_template(
                         continue
                     seen_tors.add(tors_key)
                     constraints["torsions"].append((a, b, c, d, _nearest_planar_target(a, b, c, d)))
+
+        # Metal-metal bond distance constraints.
+        for bond in mol_template.GetBonds():
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            if a1.GetSymbol() not in _METAL_SET or a2.GetSymbol() not in _METAL_SET:
+                continue
+            i1, i2 = a1.GetIdx(), a2.GetIdx()
+            dist_key = tuple(sorted((i1, i2)))
+            if dist_key in seen_dist:
+                continue
+            seen_dist.add(dist_key)
+            mm_key = frozenset({a1.GetSymbol(), a2.GetSymbol()})
+            target = _METAL_METAL_BOND_LENGTHS.get(mm_key)
+            if target is None:
+                r1 = _COVALENT_RADII.get(a1.GetSymbol())
+                r2 = _COVALENT_RADII.get(a2.GetSymbol())
+                if r1 is not None and r2 is not None:
+                    target = r1 + r2 + 0.3
+                else:
+                    target = 2.5
+            constraints["distances"].append((i1, i2, float(target)))
     except Exception:
         return None
 
