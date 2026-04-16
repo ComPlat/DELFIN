@@ -206,3 +206,17 @@ def test_bis_en_co_chelate_allows_trans_cl():
         assert cis_nn, (
             f"{lbl}: no cis N-N pair — chelate constraint violated"
         )
+
+
+# ---------------------------------------------------------------------------
+# Multinuclear: bimetallic coupled enumeration
+# ---------------------------------------------------------------------------
+
+def test_bimetallic_produces_more_isomers_than_single_metal():
+    """[Fe2(mu-Cl)2Cl(NH3)4]: two Fe sharing bridging Cl.
+    Coupled enumeration should produce more isomers than a single metal."""
+    smi = '[Fe+2]1(N)(N)(Cl[Fe+2](N)(N)Cl1)Cl'
+    res = _isomers(smi, num_confs=12)
+    assert len(res) >= 3, (
+        f"bimetallic should produce >=3 isomers, got {len(res)}"
+    )

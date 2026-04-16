@@ -15850,7 +15850,7 @@ def _generate_topological_isomers(
         donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
         n_coord = len(donor_indices)
 
-        if n_coord < 2 or n_coord > 8:
+        if n_coord < 2 or n_coord > 9:
             continue
 
         # Use donor environment classes (element + Morgan environment) instead
@@ -16010,6 +16010,102 @@ def _generate_topological_isomers(
             except Exception as e:
                 logger.debug("Topology isomer build failed (%s): %s", geom_name, e)
                 continue
+
+    # --- Multinuclear coupled enumeration for 2-metal clusters ---
+    # Detect metals connected through bridging donors and enumerate the
+    # Cartesian product of their per-metal isomers to capture arrangements
+    # that per-metal enumeration misses.
+    try:
+        bridging = _find_bridging_donors(mol)
+        if bridging and len(results) < max_isomers:
+            # Build metal cluster graph via bridging donors.
+            metal_indices = [
+                a.GetIdx() for a in mol.GetAtoms()
+                if a.GetSymbol() in _METAL_SET
+            ]
+            if len(metal_indices) == 2:
+                m1, m2 = metal_indices
+                d1 = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(m1).GetNeighbors()]
+                d2 = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(m2).GetNeighbors()]
+                n1, n2 = len(d1), len(d2)
+                if 2 <= n1 <= 9 and 2 <= n2 <= 9:
+                    # Per-metal isomers.
+                    dk1 = [dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset())) for d in d1]
+                    dk2 = [dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset())) for d in d2]
+                    uk1 = sorted(set(dk1), key=lambda k: (k[0], tuple(sorted(k[1]))))
+                    uk2 = sorted(set(dk2), key=lambda k: (k[0], tuple(sorted(k[1]))))
+                    kc1 = {k: i for i, k in enumerate(uk1)}
+                    kc2 = {k: i for i, k in enumerate(uk2)}
+                    dl1 = [f"{k[0]}{kc1[k]}" for k in dk1]
+                    dl2 = [f"{k[0]}{kc2[k]}" for k in dk2]
+                    cp1 = _chelate_pairs(mol, m1, d1)
+                    cp2 = _chelate_pairs(mol, m2, d2)
+                    al1 = {atom_idx: li for li, atom_idx in enumerate(d1)}
+                    al2 = {atom_idx: li for li, atom_idx in enumerate(d2)}
+                    clp1 = [frozenset([al1[sorted(cp)[0]], al1[sorted(cp)[1]]]) for cp in cp1
+                            if sorted(cp)[0] in al1 and sorted(cp)[1] in al1]
+                    clp2 = [frozenset([al2[sorted(cp)[0]], al2[sorted(cp)[1]]]) for cp in cp2
+                            if sorted(cp)[0] in al2 and sorted(cp)[1] in al2]
+                    ms1 = mol.GetAtomWithIdx(m1).GetSymbol()
+                    ms2 = mol.GetAtomWithIdx(m2).GetSymbol()
+                    iso1 = _enumerate_topological_isomers(dl1, n1, clp1, metal_symbol=ms1)
+                    iso2 = _enumerate_topological_isomers(dl2, n2, clp2, metal_symbol=ms2)
+
+                    # Cartesian product — limited to avoid explosion.
+                    import itertools as _it
+                    max_combos = max(1, max_isomers - len(results))
+                    topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+                    combo_count = 0
+                    for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
+                        if combo_count >= max_combos:
+                            break
+                        gn1 = cf1[0]
+                        gn2 = cf2[0]
+                        # Build combined XYZ: permute Metal1's donors, then
+                        # Metal2's donors, on the same template conformer.
+                        try:
+                            for _tpl_cid in topo_template_cids:
+                                xyz1 = _build_topology_xyz(
+                                    mol, m1, d1, pm1, gn1, False, conf_id=_tpl_cid
+                                )
+                                if xyz1 is None:
+                                    continue
+                                # Inject Metal1's arrangement as a conformer,
+                                # then rebuild Metal2's donors on top of it.
+                                mol_tmp = Chem.RWMol(mol)
+                                mol_tmp.RemoveAllConformers()
+                                conf_tmp = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz1)
+                                if conf_tmp is None:
+                                    continue
+                                cid_tmp = mol_tmp.AddConformer(conf_tmp, assignId=True)
+                                xyz_combined = _build_topology_xyz(
+                                    mol_tmp.GetMol(), m2, d2, pm2, gn2, apply_uff,
+                                    conf_id=cid_tmp,
+                                )
+                                if xyz_combined is not None:
+                                    # Quality gate.
+                                    mol_chk = Chem.RWMol(mol)
+                                    mol_chk.RemoveAllConformers()
+                                    conf_chk = _xyz_to_rdkit_conformer(mol_chk.GetMol(), xyz_combined)
+                                    if conf_chk is None:
+                                        continue
+                                    cid_chk = mol_chk.AddConformer(conf_chk, assignId=True)
+                                    if _has_atom_clash(mol_chk.GetMol(), cid_chk, min_dist=0.3):
+                                        continue
+                                    fp = _compute_coordination_fingerprint(
+                                        mol_chk.GetMol(), cid_chk, dtype_map=dtype_map
+                                    )
+                                    label = _classify_isomer_label(fp, mol_chk.GetMol())
+                                    if not label:
+                                        label = f"multi-{gn1}/{gn2}"
+                                    results.append((xyz_combined, label))
+                                    combo_count += 1
+                                    break
+                        except Exception as _cexc:
+                            logger.debug("Multinuclear combo build failed: %s", _cexc)
+                            continue
+    except Exception as _mn_exc:
+        logger.debug("Multinuclear enumeration failed: %s", _mn_exc)
 
     return results
 
