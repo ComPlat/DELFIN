@@ -367,7 +367,7 @@ def main(argv=None):
         f"--Voila.ip={args.ip}",
         "--show_tracebacks=True",
         f"--Voila.root_dir={root_dir}",
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)",
+        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
         # XSRF handled per-mode: disabled for localhost, enabled for network
