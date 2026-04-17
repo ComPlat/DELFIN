@@ -16214,8 +16214,8 @@ def _orient_ligands_on_polyhedron(
     donor_atom_indices: List[int],
     fragments: Optional[List[set]] = None,
     n_rot_mono: int = 12,
-    n_rot_bi: int = 4,
-    passes: int = 2,
+    n_rot_bi: int = 12,
+    passes: int = 3,
 ):
     """Rotate each ligand fragment around its donor-metal axis to minimise
     inter-fragment clash while keeping donor atoms on their platonic
@@ -16305,21 +16305,37 @@ def _orient_ligands_on_polyhedron(
         def _clash_for_frag(frag_heavy, frag_pts):
             """Penalty between this fragment's non-donor atoms and every
             heavy atom of all OTHER fragments, plus the metal itself.
-            ``frag_pts`` is a mapping atom_idx -> (x,y,z) for this frag."""
+            ``frag_pts`` is a mapping atom_idx -> (x,y,z) for this frag.
+
+            The metal contact term uses an ``M-L`` bond-length reference
+            so a backbone atom that rotates into the coordination shell
+            (within ~0.65 x ideal M-donor distance) incurs a large
+            penalty — this prevents bidentate rotation from swinging the
+            chelate backbone through the metal centre.
+            """
             score = 0.0
             other_heavy = [
                 j for info in frag_info
                 if set(info["heavy"]) != set(frag_heavy)
                 for j in info["heavy"]
             ]
+            m_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
             for i, p in frag_pts.items():
                 ri = r_cov[i]
-                # metal contact
+                sym_i = mol.GetAtomWithIdx(i).GetSymbol()
+                # Metal intrusion: compare against the ideal M-donor
+                # distance for the atom's element.  A non-donor atom
+                # should stay clearly outside the first coordination
+                # shell; penalise hard if it sits inside 0.80 x ideal.
                 d = float(_np.linalg.norm(_np.asarray(p) - m_pos))
-                thr = 1.3 * (ri + r_cov[metal_idx])
-                if d < thr:
-                    score += (thr - d) ** 2
-                # inter-fragment contacts
+                try:
+                    ml_ref = float(_get_ml_bond_length(m_sym, sym_i))
+                except Exception:
+                    ml_ref = 2.2
+                thr_m = max(1.20, 0.80 * ml_ref)
+                if d < thr_m:
+                    score += 5.0 * (thr_m - d) ** 2
+                # Inter-fragment covalent-radius-based contacts.
                 for j in other_heavy:
                     rj = r_cov[j]
                     d = float(_np.linalg.norm(_np.asarray(p) - pts[j]))
@@ -16367,12 +16383,16 @@ def _orient_ligands_on_polyhedron(
                     axis = pts[d] - m_pos
                     pivot = m_pos
                     n_rot = n_rot_mono
+                elif len(donors) == 2:
+                    # Bidentate chelate: rotate around the donor-donor axis.
+                    # The metal-intrusion term in `_clash_for_frag` guards
+                    # against orientations that would swing the backbone
+                    # through the metal centre.
+                    axis = pts[donors[1]] - pts[donors[0]]
+                    pivot = 0.5 * (pts[donors[0]] + pts[donors[1]])
+                    n_rot = n_rot_bi
                 else:
-                    # Bidentate / multidentate placement is handled by the
-                    # Procrustes mirror-flip logic elsewhere; rotating
-                    # around the donor-donor axis here would swing the
-                    # chelate backbone into the metal coordination shell.
-                    continue
+                    continue  # tridentate+: no rigid-body rotational DoF
 
                 atom_pts = {i: tuple(pts[i]) for i in non_donor}
                 best_score = _clash_for_frag(heavy, atom_pts)
