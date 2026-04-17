@@ -17530,9 +17530,11 @@ def smiles_to_xyz_isomers(
                 pass
             if _n_metals_hapto <= 1:
                 return results_hapto, None
-            # Multi-metal hapto: set results and continue to augmentation.
-            # mol must be set for the sampling augmentation below.
-            mol = _mol_h
+            # Multi-metal hapto: the hapto builder already produced the
+            # best possible Cp geometry (perfectly planar rings). ETKDG
+            # sampling would produce conformers with broken Cp rings.
+            # Return the hapto results directly.
+            return results_hapto, None
 
     # Non-metal molecules: single geometry
     if not has_metal:
@@ -17925,11 +17927,11 @@ def smiles_to_xyz_isomers(
 
     # --- Multi-metal sampling augmentation ---
     # For multi-metallic systems: augment with extra ETKDG conformers.
-    # The topology enumerator can't build multi-metal 3D correctly
-    # (moves metals independently, breaks bridge ligands).  Instead,
-    # ETKDG naturally produces diverse M-bridge-M arrangements that
-    # preserve ligand topology.  M-D rescaling fixes distances.
-    if has_metal and _n_metals_total >= 2 and len(results) < max_isomers:
+    # EXCEPTION: hapto complexes — ETKDG can't build Cp rings correctly
+    # (they come out non-planar). The hapto builder already produced
+    # perfect Cp geometry, so skip ETKDG augmentation for hapto systems.
+    _skip_mm_augmentation = bool(hapto_groups and hapto_mode)
+    if has_metal and _n_metals_total >= 2 and len(results) < max_isomers and not _skip_mm_augmentation:
         try:
             _extra_seeds = [137, 251, 353, 461, 571, 683, 797, 911, 1013, 1117]
             _extra_ids: List[int] = []
@@ -19444,9 +19446,24 @@ def _build_coordination_constraints_from_xyz(
                 base["distances"].append((m_idx, d_idx, bl))
 
             # L-M-L angles are NOT constrained here — UFF should be free
-            # to optimize angles toward the ideal polyhedron.  Only the
-            # topology-enumerator path (_build_coordination_uff_constraints)
-            # pins angles to ideal values because it DEFINES the polyhedron.
+            # to optimize angles toward the ideal polyhedron.
+
+        # Hapto protection: fix hapto metal atoms + all Cp ring atoms
+        # during UFF. Without metal FF parameters, UFF treats the metal
+        # as empty space, allowing ring atoms to drift out of plane.
+        # Fixing these atoms preserves the hapto builder's geometry.
+        try:
+            hapto_groups = _find_hapto_groups(mol_template)
+            fixed = set()
+            for _hm, members in hapto_groups:
+                fixed.add(_hm)  # fix the hapto metal
+                for ci in members:
+                    fixed.add(ci)  # fix all ring atoms
+            for fi in sorted(fixed):
+                if fi not in base["fix_atoms"]:
+                    base["fix_atoms"].append(fi)
+        except Exception:
+            pass
 
     except Exception as exc:
         logger.debug("_build_coordination_constraints_from_xyz failed: %s", exc)
