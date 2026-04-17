@@ -13247,8 +13247,10 @@ def _verify_topology_from_graph(
                 if dsq < 0.49:  # 0.7²
                     return False
 
-        # Rule 4: Pi-ring planarity — reject if any ring with sp2 atoms
-        # has severe out-of-plane distortion (>0.5 Å).
+        # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
+        # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
+        # length.  The threshold scales with ring size instead of using a
+        # hardcoded Å number.
         try:
             ring_info = mol_template.GetRingInfo()
             if ring_info is not None:
@@ -13265,27 +13267,35 @@ def _verify_topology_from_graph(
                     )
                     if n_sp2 < len(ring) * 0.6:
                         continue  # not a pi ring
-                    # Compute planarity deviation via SVD
                     try:
                         import numpy as _np
                         pts = _np.array([coords[ri] for ri in ring])
+                        # Mean in-ring bond length sets the planarity scale.
+                        edges = _np.linalg.norm(
+                            _np.diff(
+                                _np.vstack([pts, pts[:1]]), axis=0
+                            ), axis=1
+                        )
+                        mean_bond = float(edges.mean()) if edges.size else 1.4
+                        planar_tol = 0.25 * mean_bond
                         centered = pts - pts.mean(axis=0)
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         deviations = _np.abs(centered @ vh[-1])
-                        if deviations.max() > 0.5:
+                        if deviations.max() > planar_tol:
                             return False
                     except Exception:
                         pass
         except Exception:
             pass
 
-        # Rule 5: Inter-ligand proximity — non-bonded heavy atoms from
-        # DIFFERENT ligand fragments must not be closer than 1.2 Å.
+        # Rule 5: Inter-ligand proximity — heavy atoms from different
+        # non-metal ligand fragments must not sit at bond-perception range.
+        # The threshold is per-pair 1.15 * (r_cov_i + r_cov_j), which is the
+        # usual bond-detection cutoff; a pair that violates this would be
+        # drawn as a bond by viewers (and by OB) and therefore breaks the
+        # intended topology downstream.  Every inter-fragment pair is
+        # checked — no window cap.
         try:
-            metal_idxs = {
-                a.GetIdx() for a in mol_template.GetAtoms()
-                if a.GetSymbol() in _METAL_SET
-            }
             non_metal = {
                 a.GetIdx() for a in mol_template.GetAtoms()
                 if a.GetSymbol() not in _METAL_SET and a.GetAtomicNum() > 1
@@ -13314,18 +13324,24 @@ def _verify_topology_from_graph(
                             stack.append(nb)
                 fid += 1
             if fid >= 2:
-                # Check inter-fragment heavy-atom distances
                 nm_list = sorted(non_metal)
+                nm_syms = {
+                    i: mol_template.GetAtomWithIdx(i).GetSymbol()
+                    for i in nm_list
+                }
                 for i in range(len(nm_list)):
                     fi = frag_id.get(nm_list[i], -1)
                     xi, yi, zi = coords[nm_list[i]]
-                    for j in range(i + 1, min(i + 30, len(nm_list))):
+                    ri = _COVALENT_RADII.get(nm_syms[nm_list[i]], 0.75)
+                    for j in range(i + 1, len(nm_list)):
                         fj = frag_id.get(nm_list[j], -1)
                         if fi == fj:
                             continue
                         xj, yj, zj = coords[nm_list[j]]
+                        rj = _COVALENT_RADII.get(nm_syms[nm_list[j]], 0.75)
+                        thresh = 1.15 * (ri + rj)
                         dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
-                        if dsq < 1.44:  # 1.2² = 1.44
+                        if dsq < thresh * thresh:
                             return False
         except Exception:
             pass
@@ -13844,12 +13860,87 @@ def _has_unphysical_oco_geometry(
     return False
 
 
+def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
+    """Project every non-metal sp2 3-coordinate atom onto its neighbours' plane.
+
+    UFF torsion constraints keep ring-junction atoms close to planar but do
+    not fully enforce planarity.  This post-UFF polish moves any such atom
+    exactly into the plane defined by its three heavy (non-metal) neighbours.
+    The shift is purely geometric and acts on each atom independently, so it
+    cannot introduce new topology, change ligand connectivity, or collapse
+    donors onto the metal — the largest possible move for a 30° pyramidal
+    deviation is below 0.25 Å for a typical 1.4 Å bond, well inside the
+    graph gate's own bond-distance window.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return xyz_delfin
+    try:
+        import numpy as np
+        lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_delfin
+        symbols: List[str] = []
+        coords_list: List[List[float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return xyz_delfin
+            symbols.append(parts[0])
+            coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        coords = np.array(coords_list, dtype=float)
+
+        for atom in mol_template.GetAtoms():
+            if atom.GetSymbol() in _METAL_SET:
+                continue
+            if atom.GetAtomicNum() <= 1:
+                continue
+            is_planar = (
+                atom.GetIsAromatic()
+                or atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2
+            )
+            if not is_planar:
+                continue
+            heavy_nbrs = [
+                n.GetIdx()
+                for n in atom.GetNeighbors()
+                if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
+            ]
+            if len(heavy_nbrs) != 3:
+                continue
+            idx = atom.GetIdx()
+            a, b, c = heavy_nbrs
+            pa, pb, pc = coords[a], coords[b], coords[c]
+            normal = np.cross(pb - pa, pc - pa)
+            n_norm = float(np.linalg.norm(normal))
+            if n_norm < 1e-9:
+                continue
+            normal = normal / n_norm
+            centroid = (pa + pb + pc) / 3.0
+            # Signed distance from X to plane(A,B,C)
+            d = float(np.dot(coords[idx] - centroid, normal))
+            coords[idx] = coords[idx] - d * normal
+
+        out_lines: List[str] = []
+        for sym, (x, y, z) in zip(symbols, coords):
+            out_lines.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(out_lines) + "\n"
+    except Exception as exc:
+        logger.debug("_flatten_sp2_atoms_xyz failed: %s", exc)
+        return xyz_delfin
+
+
 def _has_pi_ring_nonplanarity(
     mol,
     conf_id: int,
-    max_ring_rms: float = 0.35,
+    max_ring_rms: Optional[float] = None,
 ) -> bool:
-    """Return True if unsaturated 5-7 membered rings are strongly non-planar."""
+    """Return True if unsaturated 5-7 membered rings are strongly non-planar.
+
+    When ``max_ring_rms`` is ``None`` (the default going forward), the tolerance
+    scales with ring size as ``0.25 * mean_in-ring_bond_length``.  A literal
+    value can still be passed for call sites that want the historical absolute
+    threshold.
+    """
     if not RDKIT_AVAILABLE:
         return False
     try:
@@ -13910,7 +14001,15 @@ def _has_pi_ring_nonplanarity(
             n = n / n_norm
             d = np.abs(q @ n)
             rms = float(np.sqrt(np.mean(d * d)))
-            if rms > max_ring_rms:
+            if max_ring_rms is None:
+                edges = np.linalg.norm(
+                    np.diff(np.vstack([pts, pts[:1]]), axis=0), axis=1
+                )
+                mean_bond = float(edges.mean()) if edges.size else 1.4
+                tol = 0.25 * mean_bond
+            else:
+                tol = max_ring_rms
+            if rms > tol:
                 return True
     except Exception:
         return False
@@ -16929,6 +17028,11 @@ def _generate_topological_isomers(
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                # Post-UFF polish: project sp2 3-coordinate atoms onto
+                # their neighbours' plane to remove residual
+                # pyramidalisation that the torsion constraints could not
+                # fully eliminate.
+                xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol)
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
                     xyz_opt = xyz_pre
@@ -19738,6 +19842,43 @@ def _build_uff_constraints_from_template(
                     seen_tors.add(tors_key)
                     constraints["torsions"].append((a, b, c, d, _nearest_planar_target(a, b, c, d)))
 
+        # Sp2 planarity at every 3-coordinate planar atom.  A ring-wise loop
+        # alone cannot keep a fused-ring junction atom planar because the
+        # two rings' torsion sets are independent and allow the shared atom
+        # to fold between them.  Pinning one improper dihedral per sp2 atom
+        # (A-X-B-C with X central) forces its three heavy neighbours to
+        # stay coplanar with X for every ligand topology.
+        for atom in mol_template.GetAtoms():
+            if atom.GetSymbol() in _METAL_SET:
+                continue
+            if atom.GetAtomicNum() <= 1:
+                continue
+            is_planar = (
+                atom.GetIsAromatic()
+                or atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2
+            )
+            if not is_planar:
+                continue
+            heavy_nbrs = sorted(
+                n.GetIdx()
+                for n in atom.GetNeighbors()
+                if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
+            )
+            if len(heavy_nbrs) < 3:
+                continue
+            # Take the three lowest-index heavy neighbours as A, B, C.
+            a, b, c = heavy_nbrs[:3]
+            x = atom.GetIdx()
+            key = (a, x, b, c)
+            rev = (c, b, x, a)
+            tors_key = key if key <= rev else rev
+            if tors_key in seen_tors:
+                continue
+            seen_tors.add(tors_key)
+            constraints["torsions"].append(
+                (a, x, b, c, _nearest_planar_target(a, x, b, c))
+            )
+
         # Metal-metal bond distance constraints.
         for bond in mol_template.GetBonds():
             a1 = bond.GetBeginAtom()
@@ -20000,6 +20141,75 @@ def _build_coordination_constraints_from_xyz(
                                 continue
                             seen_tors[key] = 1
                             base["torsions"].append((a, b, c, d, 0.0))
+        except Exception:
+            pass
+
+        # Inter-fragment non-bonded repulsion.  Without this, the coordination
+        # constraints can pin metal--donor distances while two ligand
+        # fragments stay in bond-perception range of each other and UFF is
+        # not free to push them apart.  For every pair of heavy atoms from
+        # different non-metal fragments whose current distance is below
+        # 1.25 * (r_cov_i + r_cov_j), add a distance target at
+        # 1.40 * (r_cov_i + r_cov_j); OB's constraint system pushes them to
+        # that target on the next minimisation step.  Pairs that are
+        # already at or above the safe separation get no constraint, so
+        # the rest of the geometry is not touched.
+        try:
+            non_metal_heavy = [
+                a.GetIdx() for a in mol_template.GetAtoms()
+                if a.GetSymbol() not in _METAL_SET and a.GetAtomicNum() > 1
+            ]
+            adj_nm: Dict[int, set] = {i: set() for i in non_metal_heavy}
+            for bond in mol_template.GetBonds():
+                bi = bond.GetBeginAtomIdx()
+                bj = bond.GetEndAtomIdx()
+                if bi in adj_nm and bj in adj_nm:
+                    adj_nm[bi].add(bj)
+                    adj_nm[bj].add(bi)
+            visited: set = set()
+            frag_id: Dict[int, int] = {}
+            fid = 0
+            for start in sorted(non_metal_heavy):
+                if start in visited:
+                    continue
+                stack = [start]
+                while stack:
+                    node = stack.pop()
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    frag_id[node] = fid
+                    for nb in adj_nm.get(node, ()):
+                        if nb not in visited:
+                            stack.append(nb)
+                fid += 1
+            if fid >= 2:
+                for i_pos in range(len(non_metal_heavy)):
+                    ai = non_metal_heavy[i_pos]
+                    fi = frag_id[ai]
+                    si = mol_template.GetAtomWithIdx(ai).GetSymbol()
+                    ri = _COVALENT_RADII.get(si, 0.75)
+                    xi, yi, zi = coords[ai]
+                    for j_pos in range(i_pos + 1, len(non_metal_heavy)):
+                        aj = non_metal_heavy[j_pos]
+                        if frag_id[aj] == fi:
+                            continue
+                        sj = mol_template.GetAtomWithIdx(aj).GetSymbol()
+                        rj = _COVALENT_RADII.get(sj, 0.75)
+                        xj, yj, zj = coords[aj]
+                        d = math.sqrt(
+                            (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+                        )
+                        thresh = 1.25 * (ri + rj)
+                        if d >= thresh:
+                            continue
+                        key = tuple(sorted((ai, aj)))
+                        if key in seen_dist:
+                            continue
+                        seen_dist.add(key)
+                        base["distances"].append(
+                            (ai, aj, 1.40 * (ri + rj))
+                        )
         except Exception:
             pass
 
@@ -20274,6 +20484,14 @@ def _optimize_xyz_openbabel_safe(
     xyz_opt = _optimize_xyz_openbabel(xyz_delfin, steps=steps, constraints=constraints)
     if not xyz_opt or xyz_opt == xyz_delfin:
         return xyz_delfin
+
+    # Post-UFF polish: project every sp2 3-coordinate atom onto the plane
+    # of its three heavy non-metal neighbours.  OB-UFF torsion constraints
+    # keep such atoms near-planar but do not fully enforce planarity; this
+    # geometric step removes residual pyramidalisation at ring-junction
+    # atoms (e.g. the fused-bicycle C in triazolothiadiazine ligands).
+    if mol_template is not None and RDKIT_AVAILABLE:
+        xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol_template)
 
     # Fundamental check: UFF must not change the metal-donor connectivity.
     # If a donor drifted away or a non-donor collapsed onto the metal,
