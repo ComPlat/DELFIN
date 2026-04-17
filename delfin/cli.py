@@ -475,6 +475,10 @@ _SAFE_DIR_PATTERNS: tuple[str, ...] = (
 
 _PREFERRED_INDEX_RE = re.compile(r"(Preferred Index:\s*)(\d+)", re.IGNORECASE)
 _OVERRIDE_MARKER_RE = re.compile(r"^\(Manual Override.*\)\n?", re.MULTILINE)
+_FSPE_LINE_RE = re.compile(
+    r"^(FINAL SINGLE POINT ENERGY \((\d+)\)[^\n]*?)(\s*<--\s*(?:PREFERRED VALUE|OVERRIDE|was PREFERRED[^\n]*))?\s*$",
+    re.MULTILINE,
+)
 
 
 def _downstream_stages(folder_name: str, config: dict) -> list[str]:
@@ -615,6 +619,27 @@ def _apply_occupier_overrides(
             ok = False
             continue
 
+        # Capture the originally preferred index BEFORE rewriting, so we can
+        # still flag it in the FSPE listing (traceability: what was picked
+        # automatically vs. what the override forces).
+        original_preferred: int | None = None
+        _orig_marker = re.search(
+            r"FINAL SINGLE POINT ENERGY \((\d+)\)[^\n]*<--\s*PREFERRED VALUE",
+            content,
+        )
+        if _orig_marker:
+            try:
+                original_preferred = int(_orig_marker.group(1))
+            except ValueError:
+                original_preferred = None
+        if original_preferred is None:
+            _orig_idx_match = _PREFERRED_INDEX_RE.search(content)
+            if _orig_idx_match:
+                try:
+                    original_preferred = int(_orig_idx_match.group(2))
+                except ValueError:
+                    original_preferred = None
+
         new_content, count = _PREFERRED_INDEX_RE.subn(rf"\g<1>{preferred_index}", content, count=1)
         if count == 0:
             logger.error("Preferred Index line not found in %s; override skipped.", occ_path)
@@ -633,6 +658,22 @@ def _apply_occupier_overrides(
                     eol = "\n" if not line.endswith("\n") else ""
                     out_lines.append(override_marker + "\n")
             new_content = "".join(out_lines)
+
+            def _retag_fspe(match: re.Match) -> str:
+                head = match.group(1)
+                idx_str = match.group(2)
+                try:
+                    idx_val = int(idx_str)
+                except ValueError:
+                    return match.group(0)
+                if idx_val == preferred_index:
+                    return f"{head} <-- OVERRIDE"
+                if original_preferred is not None and idx_val == original_preferred:
+                    return f"{head} <-- was PREFERRED (pre-override)"
+                return head
+
+            new_content = _FSPE_LINE_RE.sub(_retag_fspe, new_content)
+
             try:
                 if new_content != content:
                     occ_path.write_text(new_content, encoding="utf-8")
@@ -653,7 +694,7 @@ def _apply_occupier_overrides(
                 config,
                 verbose=False,
                 preferred_index_override=preferred_index,
-                skip_file_copy=True,  # In recalc mode, preserve existing geometries
+                skip_file_copy=False,  # Override: refresh parent input_*_OCCUPIER.xyz/.gbw to preferred index
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Failed to refresh OCCUPIER artifacts for %s: %s", folder_name, exc)
@@ -676,15 +717,30 @@ def _apply_occupier_overrides(
         except Exception:
             override_map[folder_name] = preferred_index
 
-        # Remove existing INP file to force regeneration with new multiplicity/BrokenSym
+        # Wipe all top-level classic artefacts for this stage so the pipeline
+        # rebuilds `{base}.inp` with OPT+FREQ keywords and reruns ORCA on the
+        # new geometry/multiplicity/BS. The OCCUPIER folder only stores OPT
+        # results (frequency_calculation_OCCUPIER=no), so promoting those
+        # directly would strip Gibbs data needed for E_red/E_ox potentials.
+        # Instead, let `read_xyz_and_create_input3` (engine/occupier.py)
+        # regenerate the full OPT+FREQ input from the refreshed
+        # `input_{folder}.xyz`/`.gbw` (copied above via skip_file_copy=False).
         base_name = folder_name.replace("_OCCUPIER", "") if folder_name.endswith("_OCCUPIER") else folder_name
-        inp_path = workspace_root / f"{base_name}.inp"
-        if inp_path.exists():
+        for ext in ("inp", "inp.fprint", "out", "xyz", "gbw", "hess", "engrad", "opt", "property.txt", "densities", "densitiesinfo", "bibtex"):
+            p = workspace_root / f"{base_name}.{ext}"
+            if p.exists():
+                try:
+                    p.unlink()
+                    logger.info("[recalc] Removed stale %s (override → forces OPT+FREQ rerun)", p.name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[recalc] Could not remove %s: %s", p, exc)
+        # Trajectory file uses different naming
+        trj = workspace_root / f"{base_name}_trj.xyz"
+        if trj.exists():
             try:
-                inp_path.unlink()
-                logger.info("[recalc] Removed existing %s to force regeneration with override", inp_path.name)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[recalc] Could not remove %s: %s (will be overwritten)", inp_path.name, exc)
+                trj.unlink()
+            except Exception:
+                pass
 
     # Invalidate downstream stages so the entire chain gets recalculated
     for folder_name in overrides:
@@ -705,6 +761,49 @@ def _apply_occupier_overrides(
     # Store overrides for post-OCCUPIER reapplication
     if overrides:
         config["_occ_overrides_pending_rewrite"] = dict(overrides)
+
+    # CO2 coordination cascade: any override upstream of the CO2 species must
+    # force regeneration of the CO2 workspace (new multiplicity/charge/geom)
+    # and invalidate all ORCA outputs inside CO2_coordination/.
+    if overrides and _is_enabled_flag(config.get("co2_coordination", "off")):
+        try:
+            from delfin.co2.chain_setup import species_delta_to_name
+            delta = int(config.get("co2_species_delta", 0) or 0)
+            co2_species = species_delta_to_name(delta)
+        except Exception:
+            co2_species = None
+
+        def _folder_cascades_into(folder: str, target_species: str) -> bool:
+            base = folder[:-len("_OCCUPIER")] if folder.endswith("_OCCUPIER") else folder
+            if base == target_species:
+                return True
+            if base == "initial":
+                return True
+            if base.startswith("red_step_") and target_species.startswith("red_step_"):
+                try:
+                    return int(base.split("_")[-1]) <= int(target_species.split("_")[-1])
+                except ValueError:
+                    return False
+            if base.startswith("ox_step_") and target_species.startswith("ox_step_"):
+                try:
+                    return int(base.split("_")[-1]) <= int(target_species.split("_")[-1])
+                except ValueError:
+                    return False
+            return False
+
+        if co2_species and any(_folder_cascades_into(f, co2_species) for f in overrides):
+            co2_dir = workspace_root / "CO2_coordination"
+            if co2_dir.is_dir():
+                # Nuke the entire CO2 workspace — new multiplicity/charge/geometry
+                # propagate in, so every downstream scan (orientation, relaxed
+                # surface, final complex alignment) must be recomputed.
+                # `setup_co2_from_delfin` will rebuild it from scratch.
+                import shutil as _shutil
+                try:
+                    _shutil.rmtree(co2_dir)
+                    logger.info("[recalc] Deleted CO2_coordination/ entirely (override cascade — full rebuild)")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[recalc] Could not delete %s: %s", co2_dir, exc)
 
     return ok
 

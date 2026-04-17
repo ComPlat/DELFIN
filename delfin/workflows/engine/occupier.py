@@ -1310,6 +1310,34 @@ def build_occupier_jobs(
                 )
                 cores_opt_v = cores_opt_boosted
 
+        # Build a recalc-aware precomplete_check: skip this post-processing job
+        # when its outputs are already complete AND not forced to rerun. This
+        # prevents unnecessary ORCA runs for stages that weren't overridden
+        # (e.g. `occupier_initial` gets scheduled by AutoStageController even
+        # when an override only touched `red_step_2`).
+        def _make_precomplete_check(desc: JobDescriptor) -> Optional[Callable[[], bool]]:
+            from delfin import smart_recalc
+            if not smart_recalc.recalc_enabled():
+                return None
+            produces = {str(p) for p in desc.produces}
+            if not produces:
+                return None
+            workspace = _resolve_workspace_root()
+            out_artifacts = [workspace / a for a in produces if a.endswith(".out")]
+            if not out_artifacts:
+                return None
+
+            def _check() -> bool:
+                force_set = context.config.get("_recalc_force_outputs", set()) or set()
+                force_resolved = {Path(p).resolve() for p in force_set}
+                for out in out_artifacts:
+                    if out.resolve() in force_resolved:
+                        return False  # forced to rerun
+                    if not smart_recalc.has_ok_marker(out):
+                        return False  # incomplete → must run
+                return True
+            return _check
+
         jobs.append(
             WorkflowJob(
                 job_id=descriptor.job_id,
@@ -1319,6 +1347,7 @@ def build_occupier_jobs(
                 cores_min=cores_min_v,
                 cores_optimal=cores_opt_v,
                 cores_max=cores_max_v,
+                precomplete_check=_make_precomplete_check(descriptor),
             )
         )
 
