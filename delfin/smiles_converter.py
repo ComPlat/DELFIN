@@ -162,6 +162,9 @@ _COVALENT_RADII: Dict[str, float] = {
     'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57,
     'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Se': 1.20, 'Br': 1.20,
     'Te': 1.38, 'I': 1.39,
+    # Less common but legitimate coordinating main-group atoms
+    # (boryl, silyl, germyl, arsine, stiboranyl, etc.).  Cordero 2008.
+    'B': 0.84, 'Si': 1.11, 'Ge': 1.20, 'As': 1.19, 'Sb': 1.39,
 }
 
 # ---------------------------------------------------------------------------
@@ -15992,22 +15995,29 @@ def _best_chelate_conformer_coords(
     mol,
     frag_atom_indices,
     donor_atom_indices,
-    target_bite: float,
+    target_bite,
     n_trials: int = 20,
     accept_delta: float = 0.10,
 ):
-    """For a bidentate chelate fragment, return coordinates of the best
-    conformer whose donor-to-donor distance matches ``target_bite``.
+    """Return coordinates of the conformer whose donor-donor distance
+    pattern matches the polyhedron vertex-pair pattern.
 
-    The fragment is rebuilt as a standalone RDKit mol (non-metal atoms
-    of ``frag_atom_indices`` with their bonds) and run through ETKDG
-    with the project's deterministic seed schedule.  For each seed, the
-    donor-donor distance is compared against the platonic vertex-to-
-    vertex target.  The conformer that minimises ``|d_dd - target|`` is
-    returned as a dict ``{original_atom_idx: (x, y, z)}``.  If no seed
-    succeeds or the conformer does not improve beyond the template's
-    bite mismatch, ``None`` is returned so the caller can fall back to
-    the rigid path.
+    For a **bidentate** chelate (2 donors) the ``target_bite`` argument
+    is the single ``|vertex_i - vertex_j|`` scalar and the conformer
+    that minimises ``|d_dd - target_bite|`` is returned.
+
+    For **polydentate** (k ≥ 3) ligands, ``target_bite`` is expected to
+    be a ``(k, k)`` pairwise distance matrix (or any structure accepted
+    by ``numpy.asarray``) giving the polyhedron vertex-to-vertex
+    distance for every pair of donors in the same order as
+    ``donor_atom_indices``.  The conformer that minimises the RMS
+    deviation of its own pairwise donor distances from the target
+    matrix is returned.  This lets tridentate and higher ligands
+    select the ring / backbone conformation whose native donor
+    geometry matches the platonic polyhedron target.
+
+    Returns a dict ``{original_atom_idx: (x, y, z)}`` on success or
+    ``None`` if no seed succeeds.
     """
     if not RDKIT_AVAILABLE:
         return None
@@ -16021,8 +16031,17 @@ def _best_chelate_conformer_coords(
         return None
     old_to_new = {old: new for new, old in enumerate(frag_list)}
     donor_new = [old_to_new[d] for d in donor_atom_indices if d in old_to_new]
-    if len(donor_new) != 2:
+    if len(donor_new) < 2:
         return None
+
+    is_pairwise_matrix = not isinstance(target_bite, (int, float))
+    if is_pairwise_matrix:
+        try:
+            target_mat = _np.asarray(target_bite, dtype=float)
+        except Exception:
+            return None
+        if target_mat.shape != (len(donor_new), len(donor_new)):
+            return None
 
     rw = Chem.RWMol(Chem.Mol())
     for aidx in frag_list:
@@ -16094,14 +16113,27 @@ def _best_chelate_conformer_coords(
             used = frag_mol
 
         conf = used.GetConformer(cid)
-        p0 = conf.GetAtomPosition(donor_new[0])
-        p1 = conf.GetAtomPosition(donor_new[1])
-        d_dd = math.sqrt(
-            (p0.x - p1.x) ** 2
-            + (p0.y - p1.y) ** 2
-            + (p0.z - p1.z) ** 2
-        )
-        delta = abs(d_dd - target_bite)
+        donor_pts = _np.array([
+            [
+                conf.GetAtomPosition(idx).x,
+                conf.GetAtomPosition(idx).y,
+                conf.GetAtomPosition(idx).z,
+            ]
+            for idx in donor_new
+        ])
+        if is_pairwise_matrix:
+            # Pairwise distance matrix
+            diffs = donor_pts[:, None, :] - donor_pts[None, :, :]
+            d_mat = _np.linalg.norm(diffs, axis=-1)
+            n = len(donor_new)
+            n_pairs = n * (n - 1) / 2
+            ss = float(_np.triu((d_mat - target_mat) ** 2, k=1).sum())
+            delta = (ss / max(n_pairs, 1.0)) ** 0.5
+        else:
+            p0 = donor_pts[0]
+            p1 = donor_pts[1]
+            d_dd = float(_np.linalg.norm(p0 - p1))
+            delta = abs(d_dd - float(target_bite))
         if delta < best_delta:
             best_delta = delta
             coords_map = {
@@ -16171,14 +16203,20 @@ def _embed_fragment_procrustes(
     if not donor_new_indices:
         return False
 
-    # Bidentate chelate: let the chelate find its own native bite that
-    # matches the polyhedron vertex pair target.  See
-    # _best_chelate_conformer_coords for rationale.
-    if len(donor_new_indices) == 2 and len(target_positions) >= 2:
-        tp = np.asarray(target_positions[:2], dtype=float)
-        target_bite = float(np.linalg.norm(tp[0] - tp[1]))
+    # Chelate: let the ligand find its own native backbone geometry
+    # whose donor-donor distances match the polyhedron vertex pairs.
+    # Bidentate uses a scalar bite; tri-/tetradentate uses the full
+    # pairwise distance matrix.
+    if len(donor_new_indices) >= 2 and len(target_positions) >= len(donor_new_indices):
+        tp = np.asarray(target_positions[:len(donor_new_indices)], dtype=float)
+        if len(donor_new_indices) == 2:
+            target = float(np.linalg.norm(tp[0] - tp[1]))
+        else:
+            # full pairwise matrix, donor order matches frag_donor_indices
+            diffs = tp[:, None, :] - tp[None, :, :]
+            target = np.linalg.norm(diffs, axis=-1)
         coords_map = _best_chelate_conformer_coords(
-            mol, frag_atom_indices, frag_donor_indices, target_bite
+            mol, frag_atom_indices, frag_donor_indices, target
         )
         if coords_map is not None:
             frag_coords = np.array(
@@ -17012,28 +17050,50 @@ def _build_topology_xyz_from_template(
             if len(src) != len(tgt) or len(src) == 0:
                 continue
 
-            # Bidentate chelate: if the template's native donor-donor
-            # distance is far from the polyhedron target, re-embed the
-            # fragment alone with multiple ETKDG seeds and pick the
-            # conformer whose bite best matches.  This avoids rigidly
-            # stretching the chelate backbone against the graph-gate
-            # bond-length window.
-            if len(frag_donors) == 2:
-                template_bite = float(np.linalg.norm(src[0] - src[1]))
-                target_bite = float(np.linalg.norm(tgt[0] - tgt[1]))
-                if abs(template_bite - target_bite) > 0.25:
+            # Chelate (bidentate or polydentate): if the template's
+            # native donor-donor distance pattern is far from the
+            # polyhedron target pattern, re-embed the fragment alone
+            # with multiple ETKDG seeds and pick the conformer whose
+            # full pairwise donor geometry best matches.  This avoids
+            # rigidly stretching the chelate backbone against the
+            # graph-gate bond-length window.
+            if len(frag_donors) >= 2:
+                # Pairwise distance matrices (template vs target).
+                src_diffs = src[:, None, :] - src[None, :, :]
+                tgt_diffs = tgt[:, None, :] - tgt[None, :, :]
+                template_mat = np.linalg.norm(src_diffs, axis=-1)
+                target_mat = np.linalg.norm(tgt_diffs, axis=-1)
+                mismatch = float(
+                    np.sqrt(
+                        np.triu((template_mat - target_mat) ** 2, k=1).sum()
+                        / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
+                    )
+                )
+                if mismatch > 0.25:
+                    target_for_search = (
+                        float(target_mat[0, 1])
+                        if len(frag_donors) == 2
+                        else target_mat
+                    )
                     coords_map = _best_chelate_conformer_coords(
-                        mol, frag, frag_donors, target_bite
+                        mol, frag, frag_donors, target_for_search
                     )
                     if coords_map is not None:
                         new_frag_xyz = np.array(
                             [list(coords_map[old]) for old in frag_list],
                             dtype=float,
                         )
-                        # Only accept the re-embed if it improves the bite.
+                        # Only accept the re-embed if it improves the fit.
                         new_src = new_frag_xyz[donor_local, :]
-                        new_bite = float(np.linalg.norm(new_src[0] - new_src[1]))
-                        if abs(new_bite - target_bite) < abs(template_bite - target_bite):
+                        new_diffs = new_src[:, None, :] - new_src[None, :, :]
+                        new_mat = np.linalg.norm(new_diffs, axis=-1)
+                        new_mismatch = float(
+                            np.sqrt(
+                                np.triu((new_mat - target_mat) ** 2, k=1).sum()
+                                / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
+                            )
+                        )
+                        if new_mismatch < mismatch:
                             frag_xyz = new_frag_xyz
                             src = new_src
 
