@@ -13219,7 +13219,6 @@ def _verify_topology_from_graph(
                     return False
 
         # Rule 2+3: No collapsed heavy atoms or hydrogens.
-        # Check only a random subset for large molecules (O(N) not O(N²)).
         heavy_indices = [
             i for i in range(n_atoms)
             if mol_template.GetAtomWithIdx(i).GetAtomicNum() > 1
@@ -13229,8 +13228,91 @@ def _verify_topology_from_graph(
             for j in range(i + 1, min(i + 50, len(heavy_indices))):
                 xj, yj, zj = coords[heavy_indices[j]]
                 dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
-                if dsq < 0.49:  # 0.7² = 0.49
+                if dsq < 0.49:  # 0.7²
                     return False
+
+        # Rule 4: Pi-ring planarity — reject if any ring with sp2 atoms
+        # has severe out-of-plane distortion (>0.5 Å).
+        try:
+            ring_info = mol_template.GetRingInfo()
+            if ring_info is not None:
+                for ring in ring_info.AtomRings():
+                    if len(ring) < 5 or len(ring) > 7:
+                        continue
+                    # Check if ring has sp2 character (aromatic or conjugated)
+                    n_sp2 = sum(
+                        1 for ri in ring
+                        if mol_template.GetAtomWithIdx(ri).GetIsAromatic()
+                        or mol_template.GetAtomWithIdx(ri).GetHybridization()
+                        in (Chem.rdchem.HybridizationType.SP2,
+                            Chem.rdchem.HybridizationType.SP)
+                    )
+                    if n_sp2 < len(ring) * 0.6:
+                        continue  # not a pi ring
+                    # Compute planarity deviation via SVD
+                    try:
+                        import numpy as _np
+                        pts = _np.array([coords[ri] for ri in ring])
+                        centered = pts - pts.mean(axis=0)
+                        _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
+                        deviations = _np.abs(centered @ vh[-1])
+                        if deviations.max() > 0.5:
+                            return False
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Rule 5: Inter-ligand proximity — non-bonded heavy atoms from
+        # DIFFERENT ligand fragments must not be closer than 1.2 Å.
+        try:
+            metal_idxs = {
+                a.GetIdx() for a in mol_template.GetAtoms()
+                if a.GetSymbol() in _METAL_SET
+            }
+            non_metal = {
+                a.GetIdx() for a in mol_template.GetAtoms()
+                if a.GetSymbol() not in _METAL_SET and a.GetAtomicNum() > 1
+            }
+            adj_nm: Dict[int, set] = {i: set() for i in non_metal}
+            for bond in mol_template.GetBonds():
+                bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                if bi in non_metal and bj in non_metal:
+                    adj_nm[bi].add(bj)
+                    adj_nm[bj].add(bi)
+            visited: set = set()
+            frag_id: Dict[int, int] = {}
+            fid = 0
+            for start in sorted(non_metal):
+                if start in visited:
+                    continue
+                stack = [start]
+                while stack:
+                    node = stack.pop()
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    frag_id[node] = fid
+                    for nb in adj_nm.get(node, ()):
+                        if nb not in visited:
+                            stack.append(nb)
+                fid += 1
+            if fid >= 2:
+                # Check inter-fragment heavy-atom distances
+                nm_list = sorted(non_metal)
+                for i in range(len(nm_list)):
+                    fi = frag_id.get(nm_list[i], -1)
+                    xi, yi, zi = coords[nm_list[i]]
+                    for j in range(i + 1, min(i + 30, len(nm_list))):
+                        fj = frag_id.get(nm_list[j], -1)
+                        if fi == fj:
+                            continue
+                        xj, yj, zj = coords[nm_list[j]]
+                        dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+                        if dsq < 1.44:  # 1.2² = 1.44
+                            return False
+        except Exception:
+            pass
 
         return True
     except Exception:
