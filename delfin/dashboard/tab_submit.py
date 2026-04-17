@@ -753,12 +753,16 @@ def create_tab(ctx):
                 else:
                     # Interactive metal-complex conversion should prioritize
                     # isomer diversity over strict reproducibility.
+                    # Deterministic for non-hapto, non-deterministic for
+                    # hapto (hapto builder needs OB conformer diversity).
+                    from delfin.smiles_converter import _probe_hapto_groups_from_smiles
+                    _has_hapto = bool(_probe_hapto_groups_from_smiles(cleaned_data))
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
                         collapse_label_variants=False,
                         include_binding_mode_isomers=True,
-                        deterministic=True,
+                        deterministic=not _has_hapto,
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
