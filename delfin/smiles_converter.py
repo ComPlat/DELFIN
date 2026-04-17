@@ -19640,6 +19640,77 @@ def _build_coordination_constraints_from_xyz(
         except Exception:
             pass
 
+        # Linear M-C≡O carbonyl constraint: M-C-O angle = 180°.
+        # UFF without metal parameters bends CO ligands; this pins them.
+        try:
+            for atom in mol_template.GetAtoms():
+                if atom.GetAtomicNum() != 6:
+                    continue
+                # Is this a CO carbon? C bonded to metal AND to O via triple bond
+                metal_nbr = None
+                o_nbr = None
+                for nbr in atom.GetNeighbors():
+                    if nbr.GetSymbol() in _METAL_SET:
+                        metal_nbr = nbr
+                    elif nbr.GetAtomicNum() == 8:
+                        bond = mol_template.GetBondBetweenAtoms(
+                            atom.GetIdx(), nbr.GetIdx()
+                        )
+                        if bond is not None and bond.GetBondTypeAsDouble() >= 2.5:
+                            # Triple bond to O
+                            if len(list(nbr.GetNeighbors())) == 1:
+                                o_nbr = nbr
+                if metal_nbr is not None and o_nbr is not None:
+                    m_idx = metal_nbr.GetIdx()
+                    c_idx = atom.GetIdx()
+                    o_idx = o_nbr.GetIdx()
+                    akey = (m_idx, c_idx, o_idx)
+                    if akey not in {(a, b, c) for a, b, c, _t in base["angles"]}:
+                        base["angles"].append((m_idx, c_idx, o_idx, 180.0))
+        except Exception:
+            pass
+
+        # Sp2 ring planarity constraints — extended beyond aromatic-flagged.
+        # Pyridinium [N+] rings lose aromaticity flag but should stay planar.
+        try:
+            seen_tors = {
+                tuple(sorted([a, b, c, d])): 1
+                for a, b, c, d, _t in base["torsions"]
+            }
+            ring_info = mol_template.GetRingInfo()
+            if ring_info is not None:
+                for ring in ring_info.AtomRings():
+                    if len(ring) < 5 or len(ring) > 7:
+                        continue
+                    n_sp2 = sum(
+                        1 for ri in ring
+                        if mol_template.GetAtomWithIdx(ri).GetIsAromatic()
+                        or mol_template.GetAtomWithIdx(ri).GetHybridization()
+                        == Chem.rdchem.HybridizationType.SP2
+                    )
+                    if n_sp2 < len(ring) * 0.6:
+                        continue
+                    if any(
+                        mol_template.GetAtomWithIdx(ri).GetSymbol() in _METAL_SET
+                        for ri in ring
+                    ):
+                        continue
+                    n = len(ring)
+                    for i in range(n):
+                        a = ring[(i - 1) % n]
+                        b = ring[i]
+                        c = ring[(i + 1) % n]
+                        d = ring[(i + 2) % n]
+                        if len({a, b, c, d}) < 4:
+                            continue
+                        key = tuple(sorted([a, b, c, d]))
+                        if key in seen_tors:
+                            continue
+                        seen_tors[key] = 1
+                        base["torsions"].append((a, b, c, d, 0.0))
+        except Exception:
+            pass
+
     except Exception as exc:
         logger.debug("_build_coordination_constraints_from_xyz failed: %s", exc)
 
