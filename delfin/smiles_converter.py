@@ -1747,6 +1747,30 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     if found_neutral_metal and '[N]' in normalized and '[N-]' not in smiles:
         normalized = normalized.replace('[N]', '[N-]')
 
+    # Normalize CO ligand variants to canonical [C-]#[O+] form.
+    # Users write intuitive chemistry notation like O#[C][Fe] (CO through
+    # C) but RDKit rejects these due to valence. Convert all variants to
+    # the zwitterionic form that RDKit accepts.
+    if contains_metal(normalized):
+        # Variant 1: O#[C][M  → [C-]#[O+][M  (M-C bond, O terminal)
+        normalized = re.sub(
+            r'O#\[C\](?=\[[A-Z])', '[C-]#[O+]', normalized
+        )
+        # Variant 2: O#[C] at start with metal following
+        normalized = re.sub(
+            r'^O#\[C\](?=\[[A-Z])', '[C-]#[O+]', normalized
+        )
+        # Variant 3: [M]([C]#O  → [M]([C-]#[O+]  (C-M bond, after metal)
+        normalized = re.sub(
+            r'(\[[A-Z][a-z]?[+\-]?\d*\][(])?\[C\]#O', r'\1[C-]#[O+]', normalized
+        )
+        # Variant 4: bare [C]#O → [C-]#[O+]
+        normalized = re.sub(r'\[C\]#O\b', '[C-]#[O+]', normalized)
+        # Variant 5: nitrosyl [N]=O → [N+]=O when adjacent to metal
+        normalized = re.sub(
+            r'(\[[A-Z][a-z]?[+\-]?\d*\][(])?\[N\]=O', r'\1[N+]=O', normalized
+        )
+
     return normalized if normalized != smiles else None
 
 
@@ -15272,13 +15296,13 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
         if n_coord == 7:
             if len(elem_counts) == 1:
                 return ''
-            minority = min(elem_counts, key=elem_counts.get)
-            c = elem_counts[minority]
-            if c == 1:
-                return 'axial' if any(minority in p for p in trans_pairs) else 'equatorial'
-            if c == 2:
-                n_trans = same_trans.get(minority, 0)
-                return 'ax-ax' if n_trans >= 1 else 'ax-eq'
+            # For PBP: axial pair = first trans pair (only 1 real 180° pair)
+            axial_pair = tuple(sorted(trans_pairs[0])) if trans_pairs else ()
+            if axial_pair:
+                if axial_pair[0] == axial_pair[1]:
+                    return f'{axial_pair[0]}-{axial_pair[0]}-ax'
+                return f'{axial_pair[0]}-{axial_pair[1]}-ax'
+            return 'all-eq'
 
         # --- 8-coordinate patterns ---
         if n_coord == 8:
@@ -17365,11 +17389,12 @@ def _enumerate_hapto_sigma_isomers(
 ) -> List[Tuple[str, str]]:
     """Enumerate σ-donor permutations for hapto complexes.
 
-    The η-ring positions are kept fixed from ``base_xyz``.  Only the
-    σ-donor ligand fragments are permuted via rigid-body Procrustes
-    swaps, giving constitutionally distinct hapto isomers that differ
-    in which σ-donor occupies which coordination slot around the
-    η-ring(s).
+    For HAPTO metals: permute their σ-donors via rigid-body swaps
+    keeping η-rings fixed.
+
+    For NON-HAPTO metals in mixed complexes (e.g. Ni in CpFe-bridge-Ni):
+    permute their donors via the topology enumerator, using the hapto
+    XYZ as template. The hapto rings stay fixed.
     """
     if not RDKIT_AVAILABLE:
         return []
@@ -17393,11 +17418,79 @@ def _enumerate_hapto_sigma_isomers(
             return []
 
         hapto_atoms: set = set()
+        hapto_metals: set = set()
         for _midx, members in hapto_groups:
             hapto_atoms.update(members)
+            hapto_metals.add(_midx)
 
         results: List[Tuple[str, str]] = []
         dtype_map = _donor_type_map(mol)
+
+        # Step A: For NON-HAPTO metals, use the topology enumerator with
+        # the hapto XYZ as template. The hapto rings stay fixed (they are
+        # not in the non-hapto metal's donor list).
+        try:
+            for atom in mol.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    continue
+                m_idx = atom.GetIdx()
+                if m_idx in hapto_metals:
+                    continue  # handled by Step B below
+                donors = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
+                n_coord = len(donors)
+                if n_coord < 2 or n_coord > 9:
+                    continue
+                # Build donor labels.
+                dk = [dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset())) for d in donors]
+                uk = sorted(set(dk), key=lambda k: (k[0], tuple(sorted(k[1]))))
+                kc = {k: i for i, k in enumerate(uk)}
+                labels = [f"{k[0]}{kc[k]}" for k in dk]
+                if len(uk) <= 1:
+                    continue  # all donors equivalent
+                cp_pairs = _chelate_pairs(mol, m_idx, donors)
+                al = {ai: li for li, ai in enumerate(donors)}
+                clp = [
+                    frozenset([al[sorted(c)[0]], al[sorted(c)[1]]])
+                    for c in cp_pairs
+                    if sorted(c)[0] in al and sorted(c)[1] in al
+                ]
+                iso_list = _enumerate_topological_isomers(
+                    labels, n_coord, clp, metal_symbol=atom.GetSymbol(),
+                )
+                for cf, pm in iso_list[:max_isomers]:
+                    gn = cf[0]
+                    try:
+                        xyz_new = _build_topology_xyz(
+                            mol, m_idx, donors, pm, gn, False, conf_id=cid,
+                        )
+                        if xyz_new is None:
+                            continue
+                        if apply_uff:
+                            try:
+                                xyz_new = _optimize_xyz_openbabel_safe(
+                                    xyz_new, mol_template=mol
+                                )
+                            except Exception:
+                                pass
+                        if not _verify_topology_from_graph(xyz_new, mol):
+                            continue
+                        mt = Chem.RWMol(mol)
+                        mt.RemoveAllConformers()
+                        c2 = _xyz_to_rdkit_conformer(mt.GetMol(), xyz_new)
+                        if c2 is None:
+                            continue
+                        ci2 = mt.AddConformer(c2, assignId=True)
+                        fp = _compute_coordination_fingerprint(
+                            mt.GetMol(), ci2, dtype_map=dtype_map
+                        )
+                        lbl = _classify_isomer_label(fp, mt.GetMol())
+                        if not lbl:
+                            lbl = f'non-hapto-{gn}'
+                        results.append((xyz_new, lbl))
+                    except Exception:
+                        continue
+        except Exception as _ex:
+            logger.debug("Non-hapto topo enumeration failed: %s", _ex)
 
         for atom in mol.GetAtoms():
             if atom.GetSymbol() not in _METAL_SET:
