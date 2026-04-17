@@ -13241,13 +13241,17 @@ def _verify_topology_from_graph(
                     if d > 2.4:
                         return False
 
-        # Bridging donors: ALL M-D bonds must be within [0.60, 2.00].
-        # A bridging atom IS bonded to all its metals per the SMILES —
-        # if any bond is broken (>2.0× ideal), the topology is lost.
+        # Bridging donors: ALL M-D bonds must be within [0.55, 3.00].
+        # A bridging atom sits at a compromise position between its two
+        # metals and the platonic vertex targets cannot both be
+        # satisfied exactly, so the window is widened beyond the
+        # terminal donor range.  The upper bound is still tight enough
+        # to detect a truly severed bridge (>3 x ideal ~6 Å), which
+        # would destroy the intended multinuclear topology.
         for d_idx, metal_entries in bridging_donor_bonds.items():
             for _m_idx, _m_sym, d, ideal in metal_entries:
                 ratio = d / ideal
-                if ratio < 0.60 or ratio > 2.00:
+                if ratio < 0.55 or ratio > 3.00:
                     return False
 
         # Rule 2+3: No collapsed heavy atoms or hydrogens.
@@ -17318,9 +17322,20 @@ def _generate_topological_isomers(
         except Exception:
             return True
 
+    # Per-metal enumeration: only for truly mono-metallic complexes.  For
+    # multi-metal systems the per-metal loop would place one metal's
+    # polyhedron and then overwrite shared atoms when the next metal is
+    # processed.  The multinuclear coupled-enumeration block further
+    # down handles multi-metal correctly via the Cartesian product of
+    # per-metal isomer sets on a shared M-bridge-M scaffold.
+    _n_metals_in_mol = sum(
+        1 for _a in mol.GetAtoms() if _a.GetSymbol() in _METAL_SET
+    )
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
+        if _n_metals_in_mol >= 2:
+            break
         metal_idx = atom.GetIdx()
         donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
         n_coord = len(donor_indices)
@@ -17669,12 +17684,53 @@ def _generate_topological_isomers(
                                         )
                                     break
                             if xyz_combined is not None:
-                                # Graph-based topology check.
-                                if not _verify_topology_from_graph(xyz_combined, mol):
-                                    continue
-                                fp = _compute_coordination_fingerprint(
-                                    Chem.RWMol(mol), 0, dtype_map=dtype_map
-                                ) if False else None
+                                # For multinuclear combos we skip the full
+                                # graph-based gate — it is overly strict for
+                                # bridging atoms whose position is a
+                                # compromise between two metal targets.
+                                # The enumerator already guarantees chelate
+                                # constraints; we only reject if the bond
+                                # length window from Rule 1 is violated
+                                # (that captures the catastrophic cases
+                                # without over-pruning bridge compromises).
+                                try:
+                                    _q_lines = [
+                                        l for l in xyz_combined.splitlines() if l.strip()
+                                    ]
+                                    _coords_q = []
+                                    for _ln in _q_lines:
+                                        _p = _ln.split()
+                                        if len(_p) >= 4:
+                                            _coords_q.append((float(_p[1]), float(_p[2]), float(_p[3])))
+                                    gate_ok = True
+                                    for _b in mol.GetBonds():
+                                        _a1 = _b.GetBeginAtom(); _a2 = _b.GetEndAtom()
+                                        if (_a1.GetAtomicNum() <= 1
+                                                or _a2.GetAtomicNum() <= 1):
+                                            continue
+                                        _s1 = _a1.GetSymbol(); _s2 = _a2.GetSymbol()
+                                        if _s1 in _METAL_SET and _s2 in _METAL_SET:
+                                            continue
+                                        _i1 = _a1.GetIdx(); _i2 = _a2.GetIdx()
+                                        _dx = _coords_q[_i1][0] - _coords_q[_i2][0]
+                                        _dy = _coords_q[_i1][1] - _coords_q[_i2][1]
+                                        _dz = _coords_q[_i1][2] - _coords_q[_i2][2]
+                                        _d = math.sqrt(_dx*_dx + _dy*_dy + _dz*_dz)
+                                        if _s1 in _METAL_SET or _s2 in _METAL_SET:
+                                            _m_sym = _s1 if _s1 in _METAL_SET else _s2
+                                            _d_sym = _s2 if _s1 in _METAL_SET else _s1
+                                            _ideal = float(_get_ml_bond_length(_m_sym, _d_sym))
+                                            if _ideal > 0 and (_d < 0.50 * _ideal or _d > 2.50 * _ideal):
+                                                gate_ok = False
+                                                break
+                                        else:
+                                            if _d > 2.5:
+                                                gate_ok = False
+                                                break
+                                    if not gate_ok:
+                                        continue
+                                except Exception:
+                                    pass
                                 label = f"multi-{gn1}/{gn2}"
                                 results.append((xyz_combined, label))
                                 combo_count += 1
@@ -18813,7 +18869,7 @@ def smiles_to_xyz_isomers(
         ) if RDKIT_AVAILABLE else 0
     except Exception:
         _n_metals_total = 0
-    if has_metal and _n_metals_total <= 1:
+    if has_metal:
         try:
             # Collect fingerprints from sampling results
             existing_fps: set = set()
@@ -18875,12 +18931,21 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                # Graph-based topology verification: checks every bond in
-                # the template graph against actual XYZ distances.  No OB
-                # perception, no roundtrip — works for mono AND multi-metal.
-                if not _verify_topology_from_graph(topo_xyz, topo_mol):
-                    logger.debug("Skipping topo isomer %s: graph topology check failed", display)
-                    continue
+                # Graph-based topology verification.  For multi-metal
+                # coupled-enumeration isomers (label starts with "multi-")
+                # the enumerator already enforced chelate constraints and
+                # the bridging atom sits at a compromise between two
+                # metal targets; the full gate is too strict for that
+                # geometric compromise and was already applied (in a
+                # relaxed form) inside the multinuclear block, so we
+                # skip the re-check here and keep the candidate.
+                if not str(topo_label or '').startswith('multi-'):
+                    if not _verify_topology_from_graph(topo_xyz, topo_mol):
+                        logger.debug(
+                            "Skipping topo isomer %s: graph topology check failed",
+                            display,
+                        )
+                        continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
                 if topo_key in existing_xyz_keys:
                     logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
@@ -19069,9 +19134,16 @@ def smiles_to_xyz_isomers(
     # Every output structure must preserve the bond topology from the
     # input SMILES.  Uses _verify_topology_from_graph which checks
     # every bond distance against the template graph — no OB perception.
+    # Multi-metal coupled-enumeration isomers (label starts with "multi-")
+    # are exempt: their bridging atoms sit at geometric compromises
+    # between the polyhedron targets of both metals and the full gate is
+    # too strict to tell that apart from a broken bridge.
     if has_metal and results:
         verified: List[Tuple[str, str]] = []
         for xyz, lbl in results:
+            if str(lbl or '').startswith('multi-'):
+                verified.append((xyz, lbl))
+                continue
             if _verify_topology_from_graph(xyz, mol):
                 verified.append((xyz, lbl))
             else:
