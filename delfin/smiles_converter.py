@@ -1747,29 +1747,21 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     if found_neutral_metal and '[N]' in normalized and '[N-]' not in smiles:
         normalized = normalized.replace('[N]', '[N-]')
 
-    # Normalize CO ligand variants to canonical [C-]#[O+] form.
-    # Users write intuitive chemistry notation like O#[C][Fe] (CO through
-    # C) but RDKit rejects these due to valence. Convert all variants to
-    # the zwitterionic form that RDKit accepts.
+    # Normalize CO ligand variants: add charges to balance valence WITHOUT
+    # changing atom order. User notation O#[C][M] means O≡C-M (C bonded
+    # to metal, O terminal). We must preserve this order — just add [O+]
+    # and [C-] to make valences legal for RDKit.
     if contains_metal(normalized):
-        # Variant 1: O#[C][M  → [C-]#[O+][M  (M-C bond, O terminal)
+        # CO with O terminal, C bonded to metal: O#[C][M] → [O+]#[C-][M]
+        # Also handles O#[C] followed by ring closure digit before metal.
         normalized = re.sub(
-            r'O#\[C\](?=\[[A-Z])', '[C-]#[O+]', normalized
+            r'(?<![\[\w])O#\[C\](?=[\[\d])', '[O+]#[C-]', normalized
         )
-        # Variant 2: O#[C] at start with metal following
-        normalized = re.sub(
-            r'^O#\[C\](?=\[[A-Z])', '[C-]#[O+]', normalized
-        )
-        # Variant 3: [M]([C]#O  → [M]([C-]#[O+]  (C-M bond, after metal)
-        normalized = re.sub(
-            r'(\[[A-Z][a-z]?[+\-]?\d*\][(])?\[C\]#O', r'\1[C-]#[O+]', normalized
-        )
-        # Variant 4: bare [C]#O → [C-]#[O+]
-        normalized = re.sub(r'\[C\]#O\b', '[C-]#[O+]', normalized)
-        # Variant 5: nitrosyl [N]=O → [N+]=O when adjacent to metal
-        normalized = re.sub(
-            r'(\[[A-Z][a-z]?[+\-]?\d*\][(])?\[N\]=O', r'\1[N+]=O', normalized
-        )
+        # CO with C bonded to metal, O terminal: [M][C]#O or (...)[C]#O
+        # → replace [C]#O with [C-]#[O+] (C stays bonded to what came before)
+        normalized = re.sub(r'\[C\]#O(?![a-zA-Z])', '[C-]#[O+]', normalized)
+        # Nitrosyl terminal: [N]=O when adjacent to metal → [N+]=O
+        normalized = re.sub(r'\[N\]=O(?![a-zA-Z])', '[N+]=O', normalized)
 
     return normalized if normalized != smiles else None
 
