@@ -15669,9 +15669,10 @@ def _label_from_canonical_form(cf: tuple) -> str:
         pair_sig = ','.join(_pair(p) for p in base_pairs)
         return f'cap-{_strip(cap)}/{pair_sig}'
     if geom == 'SP':
-        pairs = cf[1]
-        same = sum(1 for p in pairs if p[0] == p[1])
-        return f'{same}-trans' if same else 'all-cis'
+        # cf = ('SP', apical_type, basal_pair_tuple)
+        apical, basal_pairs = cf[1], cf[2]
+        pair_sig = ','.join(_pair(p) for p in basal_pairs)
+        return f'ap-{_strip(apical)}/{pair_sig}'
     if geom == 'SAP':
         pairs = cf[1]
         same = sum(1 for p in pairs if p[0] == p[1])
