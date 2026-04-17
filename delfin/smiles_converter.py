@@ -15603,13 +15603,40 @@ def _label_from_canonical_form(cf: tuple) -> str:
         return ''
     geom = cf[0]
 
+    # First, scan the canonical form to find elements that appear with more
+    # than one Morgan-hash class (e.g. carbonyl-C and carbene-C are both
+    # "C" but with class indices "0" and "1").  When an element has multiple
+    # classes, the display label must keep the class digit; otherwise
+    # distinct constitutional isomers collapse into one label.
+    def _collect_labels(item):
+        out: List[str] = []
+        if isinstance(item, (tuple, list)):
+            for x in item:
+                out.extend(_collect_labels(x))
+        elif isinstance(item, str) and re.match(r'[A-Za-z]', item or ''):
+            out.append(item)
+        return out
+
+    _by_elem: Dict[str, set] = {}
+    for _lbl in _collect_labels(cf[1:]):
+        _m = re.match(r'([A-Za-z]+)(\d*)', _lbl)
+        if _m:
+            _by_elem.setdefault(_m.group(1), set()).add(_m.group(2) or '0')
+
     def _strip(symbol: str) -> str:
-        # Donor labels may be Morgan-hash enriched (e.g. 'N0', 'O1'); the
-        # display label should show only the element (e.g. 'N', 'O').
+        # Donor labels may be Morgan-hash enriched (e.g. 'N0', 'O1').  Drop
+        # the class digit only when its element has a single class in this
+        # canonical form; otherwise keep it so that e.g. carbonyl-C ('C0')
+        # and carbene-C ('C1') remain distinguishable in the label.
         if not symbol:
             return symbol
-        m = re.match(r'([A-Za-z]+)', str(symbol))
-        return m.group(1) if m else str(symbol)
+        m = re.match(r'([A-Za-z]+)(\d*)', str(symbol))
+        if not m:
+            return str(symbol)
+        elem, digit = m.group(1), m.group(2) or '0'
+        if elem in _by_elem and len(_by_elem[elem]) > 1:
+            return f'{elem}{digit}'
+        return elem
 
     def _pair(p: tuple) -> str:
         a, b = _strip(p[0]), _strip(p[1])
@@ -18459,17 +18486,18 @@ def smiles_to_xyz_isomers(
 
             # Energy bias: reject outliers whose ΔE from the lowest is
             # >50× the natural isomer spread (between lowest and median).
-            # Also reject any absolute energy > 1e5 kcal/mol (unphysical).
-            finite = [t for t in scored if t[0] < 1e5]
-            if len(finite) >= 2:
-                e_min = finite[0][0]
-                e_med = finite[len(finite) // 2][0]
+            # Absolute cutoffs are avoided on purpose: UFF can return very
+            # high energies for geometrically strained but topologically
+            # valid topo-placed starts (e.g. NHC/carbonyl complexes where
+            # Procrustes placement cannot avoid ring clashes). A relative
+            # cutoff keeps those isomers as long as they sit within the
+            # natural spread of the candidate pool.
+            if len(scored) >= 2:
+                e_min = scored[0][0]
+                e_med = scored[len(scored) // 2][0]
                 natural_spread = max(e_med - e_min, 1.0)
                 cutoff = e_min + max(50.0 * natural_spread, 5000.0)
                 scored = [t for t in scored if t[0] <= cutoff]
-            else:
-                # Only 0-1 finite-energy isomers: keep them all but warn
-                scored = [t for t in scored if t[0] < 1e5]
 
             if scored:
                 results = [(xyz, lbl) for _e, xyz, lbl in scored]
