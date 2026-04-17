@@ -15988,6 +15988,137 @@ def _enumerate_topological_isomers(
     return results
 
 
+def _best_chelate_conformer_coords(
+    mol,
+    frag_atom_indices,
+    donor_atom_indices,
+    target_bite: float,
+    n_trials: int = 20,
+    accept_delta: float = 0.10,
+):
+    """For a bidentate chelate fragment, return coordinates of the best
+    conformer whose donor-to-donor distance matches ``target_bite``.
+
+    The fragment is rebuilt as a standalone RDKit mol (non-metal atoms
+    of ``frag_atom_indices`` with their bonds) and run through ETKDG
+    with the project's deterministic seed schedule.  For each seed, the
+    donor-donor distance is compared against the platonic vertex-to-
+    vertex target.  The conformer that minimises ``|d_dd - target|`` is
+    returned as a dict ``{original_atom_idx: (x, y, z)}``.  If no seed
+    succeeds or the conformer does not improve beyond the template's
+    bite mismatch, ``None`` is returned so the caller can fall back to
+    the rigid path.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        import numpy as _np
+    except Exception:
+        return None
+
+    frag_list = sorted(frag_atom_indices)
+    if len(frag_list) < 3:
+        return None
+    old_to_new = {old: new for new, old in enumerate(frag_list)}
+    donor_new = [old_to_new[d] for d in donor_atom_indices if d in old_to_new]
+    if len(donor_new) != 2:
+        return None
+
+    rw = Chem.RWMol(Chem.Mol())
+    for aidx in frag_list:
+        atom = mol.GetAtomWithIdx(aidx)
+        new_idx = rw.AddAtom(Chem.Atom(atom.GetAtomicNum()))
+        rw.GetAtomWithIdx(new_idx).SetFormalCharge(atom.GetFormalCharge())
+        rw.GetAtomWithIdx(new_idx).SetNoImplicit(True)
+        rw.GetAtomWithIdx(new_idx).SetNumExplicitHs(atom.GetNumExplicitHs())
+    for bond in mol.GetBonds():
+        bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+        if bi in old_to_new and bj in old_to_new:
+            rw.AddBond(old_to_new[bi], old_to_new[bj], bond.GetBondType())
+    try:
+        Chem.SanitizeMol(rw)
+    except Exception:
+        try:
+            rw.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+    frag_mol = rw.GetMol()
+
+    _SEEDS = (31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
+              401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
+              4547, 5323)
+
+    def _try_embed(m, seed):
+        p = AllChem.ETKDGv3()
+        p.useRandomCoords = True
+        p.randomSeed = int(seed)
+        try:
+            return AllChem.EmbedMolecule(m, p)
+        except Exception:
+            return -1
+
+    best_delta = float("inf")
+    best_coords = None
+    fallback_mol = None
+
+    for seed in _SEEDS[:n_trials]:
+        cid = _try_embed(frag_mol, seed)
+        if cid < 0:
+            if fallback_mol is None:
+                try:
+                    rw2 = Chem.RWMol(frag_mol)
+                    for a in rw2.GetAtoms():
+                        if a.GetIsAromatic():
+                            a.SetIsAromatic(False)
+                    for b in rw2.GetBonds():
+                        if (
+                            b.GetIsAromatic()
+                            or b.GetBondType() == Chem.BondType.AROMATIC
+                        ):
+                            b.SetIsAromatic(False)
+                            b.SetBondType(Chem.BondType.SINGLE)
+                    fallback_mol = rw2.GetMol()
+                    try:
+                        fallback_mol.UpdatePropertyCache(strict=False)
+                    except Exception:
+                        pass
+                except Exception:
+                    fallback_mol = None
+            if fallback_mol is None:
+                continue
+            cid = _try_embed(fallback_mol, seed)
+            if cid < 0:
+                continue
+            used = fallback_mol
+        else:
+            used = frag_mol
+
+        conf = used.GetConformer(cid)
+        p0 = conf.GetAtomPosition(donor_new[0])
+        p1 = conf.GetAtomPosition(donor_new[1])
+        d_dd = math.sqrt(
+            (p0.x - p1.x) ** 2
+            + (p0.y - p1.y) ** 2
+            + (p0.z - p1.z) ** 2
+        )
+        delta = abs(d_dd - target_bite)
+        if delta < best_delta:
+            best_delta = delta
+            coords_map = {
+                old: (
+                    conf.GetAtomPosition(new).x,
+                    conf.GetAtomPosition(new).y,
+                    conf.GetAtomPosition(new).z,
+                )
+                for old, new in old_to_new.items()
+            }
+            best_coords = coords_map
+            if delta < accept_delta:
+                break
+
+    return best_coords
+
+
 def _embed_fragment_procrustes(
     mol,
     metal_idx: int,
@@ -16036,53 +16167,71 @@ def _embed_fragment_procrustes(
 
     frag_mol = rw.GetMol()
 
-    # Embed the fragment
-    params = AllChem.ETKDGv3()
-    params.useRandomCoords = True
-    params.randomSeed = 42
-    try:
-        cid = AllChem.EmbedMolecule(frag_mol, params)
-    except Exception:
-        cid = -1
-    if cid < 0:
-        # Fallback for problematic aromatic/charged fragments where ETKDG
-        # fails in kekulization preprocessing. We only need a geometric
-        # scaffold here, so a temporarily dearomatized embedding is fine.
-        try:
-            rw2 = Chem.RWMol(frag_mol)
-            for atom in rw2.GetAtoms():
-                if atom.GetIsAromatic():
-                    atom.SetIsAromatic(False)
-            for bond in rw2.GetBonds():
-                if bond.GetIsAromatic() or bond.GetBondType() == Chem.BondType.AROMATIC:
-                    bond.SetIsAromatic(False)
-                    bond.SetBondType(Chem.BondType.SINGLE)
-            frag_mol2 = rw2.GetMol()
-            try:
-                frag_mol2.UpdatePropertyCache(strict=False)
-            except Exception:
-                pass
-            cid2 = AllChem.EmbedMolecule(frag_mol2, params)
-            if cid2 < 0:
-                return False
-            frag_mol = frag_mol2
-            cid = cid2
-        except Exception:
-            return False
-
-    # Extract fragment coordinates
-    frag_conf = frag_mol.GetConformer(cid)
-    frag_coords = np.array([
-        [frag_conf.GetAtomPosition(i).x,
-         frag_conf.GetAtomPosition(i).y,
-         frag_conf.GetAtomPosition(i).z]
-        for i in range(frag_mol.GetNumAtoms())
-    ])
-
-    # Source: donor positions in the fragment embedding
     donor_new_indices = [old_to_new[d] for d in frag_donor_indices if d in old_to_new]
     if not donor_new_indices:
         return False
+
+    # Bidentate chelate: let the chelate find its own native bite that
+    # matches the polyhedron vertex pair target.  See
+    # _best_chelate_conformer_coords for rationale.
+    if len(donor_new_indices) == 2 and len(target_positions) >= 2:
+        tp = np.asarray(target_positions[:2], dtype=float)
+        target_bite = float(np.linalg.norm(tp[0] - tp[1]))
+        coords_map = _best_chelate_conformer_coords(
+            mol, frag_atom_indices, frag_donor_indices, target_bite
+        )
+        if coords_map is not None:
+            frag_coords = np.array(
+                [list(coords_map[old]) for old in frag_list],
+                dtype=float,
+            )
+        else:
+            frag_coords = None
+    else:
+        frag_coords = None
+
+    if frag_coords is None:
+        # Single-seed fragment ETKDG fallback (monodentate, higher-denticity,
+        # or bidentate chelate for which the conformer search failed).
+        params = AllChem.ETKDGv3()
+        params.useRandomCoords = True
+        params.randomSeed = 42
+        try:
+            cid = AllChem.EmbedMolecule(frag_mol, params)
+        except Exception:
+            cid = -1
+        if cid < 0:
+            try:
+                rw2 = Chem.RWMol(frag_mol)
+                for atom in rw2.GetAtoms():
+                    if atom.GetIsAromatic():
+                        atom.SetIsAromatic(False)
+                for bond in rw2.GetBonds():
+                    if (
+                        bond.GetIsAromatic()
+                        or bond.GetBondType() == Chem.BondType.AROMATIC
+                    ):
+                        bond.SetIsAromatic(False)
+                        bond.SetBondType(Chem.BondType.SINGLE)
+                frag_mol2 = rw2.GetMol()
+                try:
+                    frag_mol2.UpdatePropertyCache(strict=False)
+                except Exception:
+                    pass
+                cid2 = AllChem.EmbedMolecule(frag_mol2, params)
+                if cid2 < 0:
+                    return False
+                frag_mol = frag_mol2
+                cid = cid2
+            except Exception:
+                return False
+        frag_conf = frag_mol.GetConformer(cid)
+        frag_coords = np.array([
+            [frag_conf.GetAtomPosition(i).x,
+             frag_conf.GetAtomPosition(i).y,
+             frag_conf.GetAtomPosition(i).z]
+            for i in range(frag_mol.GetNumAtoms())
+        ])
 
     src = frag_coords[donor_new_indices]
     tgt = np.array(target_positions[:len(donor_new_indices)])
@@ -16862,6 +17011,31 @@ def _build_topology_xyz_from_template(
             tgt = np.array([donor_target_map[d] for d in frag_donors], dtype=float)
             if len(src) != len(tgt) or len(src) == 0:
                 continue
+
+            # Bidentate chelate: if the template's native donor-donor
+            # distance is far from the polyhedron target, re-embed the
+            # fragment alone with multiple ETKDG seeds and pick the
+            # conformer whose bite best matches.  This avoids rigidly
+            # stretching the chelate backbone against the graph-gate
+            # bond-length window.
+            if len(frag_donors) == 2:
+                template_bite = float(np.linalg.norm(src[0] - src[1]))
+                target_bite = float(np.linalg.norm(tgt[0] - tgt[1]))
+                if abs(template_bite - target_bite) > 0.25:
+                    coords_map = _best_chelate_conformer_coords(
+                        mol, frag, frag_donors, target_bite
+                    )
+                    if coords_map is not None:
+                        new_frag_xyz = np.array(
+                            [list(coords_map[old]) for old in frag_list],
+                            dtype=float,
+                        )
+                        # Only accept the re-embed if it improves the bite.
+                        new_src = new_frag_xyz[donor_local, :]
+                        new_bite = float(np.linalg.norm(new_src[0] - new_src[1]))
+                        if abs(new_bite - target_bite) < abs(template_bite - target_bite):
+                            frag_xyz = new_frag_xyz
+                            src = new_src
 
             if len(src) >= 2:
                 src_center = src.mean(axis=0)
