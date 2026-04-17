@@ -131,11 +131,17 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
+    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
-        XTB(multiplicity, charge, config)
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+        else:
+            XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        if _skip_xtb_goat_after_guppy(config):
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+        elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
             XTB_GOAT(multiplicity, charge, config)
@@ -458,11 +464,17 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
+    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
-        XTB(multiplicity, charge, config)
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+        else:
+            XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        if _skip_xtb_goat_after_guppy(config):
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+        elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
             XTB_GOAT(multiplicity, charge, config)
@@ -605,11 +617,17 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
     config = ctx.config
     multiplicity = config.get('multiplicity_0') or ctx.multiplicity
 
+    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
-        XTB(multiplicity, ctx.charge, config)
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+        else:
+            XTB(multiplicity, ctx.charge, config)
 
     if config['XTB_GOAT'] == "yes":
-        if _skip_xtb_goat_after_guppy(config):
+        if _override_skip:
+            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+        elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
             XTB_GOAT(multiplicity, ctx.charge, config)
@@ -1278,6 +1296,27 @@ def _skip_xtb_goat_after_guppy(config: Dict[str, Any]) -> bool:
     return _is_truthy_token(config.get("_guppy_goat_completed", "no"))
 
 
+def _skip_preprocessing_for_override(config: Dict[str, Any], workdir: Path) -> bool:
+    """Return True when an --occupier-override is active and upstream artefacts
+    (start.txt + initial ORCA output with OK marker) already exist. In that
+    case GUPPY/XTB/XTB_GOAT must not be rerun — the override only affects
+    downstream stages.
+    """
+    if not config.get("_occ_preferred_override"):
+        return False
+    start_txt = workdir / "start.txt"
+    initial_out = workdir / "initial.out"
+    if not (start_txt.exists() and initial_out.exists()):
+        return False
+    try:
+        from delfin import smart_recalc
+        if not smart_recalc.has_ok_marker(initial_out):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
     """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
 
@@ -1470,11 +1509,18 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
             logger.info("Using smiles_converter=%s for %s", converter, input_path.name)
 
             if converter == 'GUPPY':
-                try:
-                    _run_guppy_for_smiles(smiles_line, start_path, config)
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("GUPPY sampling failed: %s", exc)
-                    raise ValueError(f"GUPPY sampling failed: {exc}") from exc
+                if _skip_preprocessing_for_override(config, start_path.parent):
+                    logger.info(
+                        "[recalc] Skipping GUPPY sampling: --occupier-override active and "
+                        "start.txt + initial.out already exist (override is downstream-only)."
+                    )
+                    config['_guppy_goat_completed'] = 'yes'
+                else:
+                    try:
+                        _run_guppy_for_smiles(smiles_line, start_path, config)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error("GUPPY sampling failed: %s", exc)
+                        raise ValueError(f"GUPPY sampling failed: {exc}") from exc
             elif converter == 'QUICK':
                 xyz_content, error = smiles_to_xyz_quick(smiles_line)
 

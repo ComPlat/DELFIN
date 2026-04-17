@@ -335,6 +335,7 @@ class _WorkflowManager:
                 has_cycle(job_id)
 
     def add_job(self, job: WorkflowJob) -> None:
+        _precomplete_notify_id: Optional[str] = None
         with self._lock:
             if job.job_id in self._jobs:
                 raise ValueError(f"Duplicate workflow job id '{job.job_id}'")
@@ -383,28 +384,35 @@ class _WorkflowManager:
                 self._completed.add(job.job_id)
                 logger.info("[%s] Pre-marked %s as completed before scheduling", self.label, job.job_id)
                 self._event.set()
-                return
+                _precomplete_notify_id = job.job_id
+                # Fall through (out of with-lock) to notify completion listeners.
+                # Do NOT enqueue this job for scheduling — it is already done.
+            else:
+                # Accumulate job registration for batch logging
+                self._pending_job_registrations.append(job.job_id)
 
-            # Accumulate job registration for batch logging
-            self._pending_job_registrations.append(job.job_id)
+                # Detailed per-job logging only in DEBUG mode
+                logger.debug(
+                    "[%s] Registered job %s (%s); deps=%s",
+                    self.label,
+                    job.job_id,
+                    job.description,
+                    ",".join(sorted(job.dependencies)) or "none",
+                )
 
-            # Detailed per-job logging only in DEBUG mode
-            logger.debug(
-                "[%s] Registered job %s (%s); deps=%s",
-                self.label,
-                job.job_id,
-                job.description,
-                ",".join(sorted(job.dependencies)) or "none",
-            )
+                # Flush if we haven't logged in a while (500ms threshold)
+                # This ensures quick feedback while still batching rapid broken_sym
+                time_since_last_log = time.time() - self._last_registration_log_time
+                if time_since_last_log > 0.5:
+                    self._flush_pending_registrations()
 
-            # Flush if we haven't logged in a while (500ms threshold)
-            # This ensures quick feedback while still batching rapid broken_sym
-            time_since_last_log = time.time() - self._last_registration_log_time
-            if time_since_last_log > 0.5:
-                self._flush_pending_registrations()
+                # Wake up scheduler to process new job
+                self._event.set()
 
-            # Wake up scheduler to process new job
-            self._event.set()
+        # Outside lock: notify listeners for pre-completed jobs so
+        # dependency-driven controllers (AutoStageController) can advance.
+        if _precomplete_notify_id is not None:
+            self._notify_completion(_precomplete_notify_id)
 
     def _flush_pending_registrations(self) -> None:
         """Log accumulated job registrations in a consolidated message."""
