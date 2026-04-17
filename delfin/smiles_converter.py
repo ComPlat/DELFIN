@@ -1750,18 +1750,31 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     # Normalize CO ligand variants: add charges to balance valence WITHOUT
     # changing atom order. User notation O#[C][M] means O≡C-M (C bonded
     # to metal, O terminal). We must preserve this order — just add [O+]
-    # and [C-] to make valences legal for RDKit.
+    # and [C-] to make valences legal for RDKit.  The carbon may already
+    # carry any formal-charge label ([C], [C+], [C-]); those are all
+    # equivalent SMILES variants of the same coordinated CO motif and
+    # must canonicalise to the same zwitterion so downstream processing
+    # is invariant to the user's charge bookkeeping.
     if contains_metal(normalized):
-        # CO with O terminal, C bonded to metal: O#[C][M] → [O+]#[C-][M]
-        # Also handles O#[C] followed by ring closure digit before metal.
+        # CO with O terminal, C bonded to metal: O#[C{+,-,}][M] -> [O+]#[C-][M]
         normalized = re.sub(
-            r'(?<![\[\w])O#\[C\](?=[\[\d])', '[O+]#[C-]', normalized
+            r'(?<![\[\w])O#\[C[+-]?\](?=[\[\d])', '[O+]#[C-]', normalized
         )
-        # CO with C bonded to metal, O terminal: [M][C]#O or (...)[C]#O
-        # → replace [C]#O with [C-]#[O+] (C stays bonded to what came before)
-        normalized = re.sub(r'\[C\]#O(?![a-zA-Z])', '[C-]#[O+]', normalized)
-        # Nitrosyl terminal: [N]=O when adjacent to metal → [N+]=O
-        normalized = re.sub(r'\[N\]=O(?![a-zA-Z])', '[N+]=O', normalized)
+        # CO with C bonded to metal, O terminal: [M][C{+,-,}]#O -> [C-]#[O+]
+        normalized = re.sub(r'\[C[+-]?\]#O(?![a-zA-Z])', '[C-]#[O+]', normalized)
+        # Nitrosyl terminal: [N{+,-,}]=O adjacent to metal -> [N+]=O
+        normalized = re.sub(r'\[N[+-]?\]=O(?![a-zA-Z])', '[N+]=O', normalized)
+
+    # Metal formal-charge canonicalisation.  Writing the metal as [Fe-2],
+    # [Fe-3], [Fe-5] etc. is user-side bookkeeping of the neutral overall
+    # charge and should not alter the coordination topology.  Replace any
+    # non-canonical metal charge with the charge from ``metal_charges``
+    # when that table has an entry for the element; this keeps enumerator
+    # inputs invariant across SMILES variants of the same complex.
+    for metal, charge in metal_charges.items():
+        pattern = rf'\[{metal}[+-]\d*\]'
+        if re.search(pattern, normalized):
+            normalized = re.sub(pattern, f'[{metal}{charge}]', normalized)
 
     return normalized if normalized != smiles else None
 
@@ -15085,21 +15098,47 @@ def _donor_type_map(mol) -> Dict[int, tuple]:
     inequivalent atoms of the same element (e.g. N atoms in a tridentate
     terpyridine vs. a bidentate phenylpyridine).
 
+    The fingerprint is computed on a **charge-neutralised copy** of the
+    template molecule so that SMILES variants which differ only in formal
+    charge annotation (for example ``O#[C][Fe-2]([C]#O)(...)`` versus
+    ``O#[C+][Fe-3]([C+]#O)(...)``) produce identical donor hashes.  The
+    bonding pattern of every donor is preserved; only the annotation layer
+    that encodes user bookkeeping (formal charge) is ignored.  Donor
+    classes therefore track the chemical identity of the coordinating
+    environment (CO vs carbene vs pyridine N) rather than the SMILES
+    notation.
+
     Returns:
         Dict mapping atom index to ``(element_symbol, env_hash)`` where
         ``env_hash`` is a frozenset of Morgan bits unique to that
-        chemical environment.
+        chemical environment.  ``element_symbol`` is taken from the
+        original (still charged) molecule, but the hash is computed on
+        the neutralised copy.
     """
     result: Dict[int, tuple] = {}
     if not RDKIT_AVAILABLE:
         return result
 
-    # Compute Morgan fingerprint with bit info.
-    # Ensure ring info is initialized (required by Morgan FP; may be missing
-    # on partially-sanitized metal-complex mols).
+    # Charge-neutralised working copy.  Atom ordering is preserved by
+    # RDKit's RWMol copy constructor, so the atom index of every donor
+    # in ``neutral_mol`` matches its index in the caller's ``mol``.
+    try:
+        neutral_mol = Chem.RWMol(mol)
+        for _atom in neutral_mol.GetAtoms():
+            try:
+                _atom.SetFormalCharge(0)
+            except Exception:
+                pass
+        try:
+            neutral_mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+    except Exception:
+        neutral_mol = mol
+
     atom_bits: Dict[int, set] = {}
     try:
-        Chem.FastFindRings(mol)
+        Chem.FastFindRings(neutral_mol)
     except Exception:
         pass
     try:
@@ -15107,7 +15146,7 @@ def _donor_type_map(mol) -> Dict[int, tuple]:
         gen = rdFingerprintGenerator.GetMorganGenerator(radius=2)
         ao = rdFingerprintGenerator.AdditionalOutput()
         ao.AllocateBitInfoMap()
-        gen.GetFingerprint(mol, additionalOutput=ao)
+        gen.GetFingerprint(neutral_mol, additionalOutput=ao)
         for bit_id, entries in ao.GetBitInfoMap().items():
             for atom_idx, _radius in entries:
                 if atom_idx not in atom_bits:
@@ -15118,7 +15157,7 @@ def _donor_type_map(mol) -> Dict[int, tuple]:
         try:
             from rdkit.Chem import rdMolDescriptors
             fp_info: Dict[int, list] = {}
-            rdMolDescriptors.GetMorganFingerprint(mol, 2, bitInfo=fp_info)
+            rdMolDescriptors.GetMorganFingerprint(neutral_mol, 2, bitInfo=fp_info)
             for bit_id, entries in fp_info.items():
                 for atom_idx, _radius in entries:
                     if atom_idx not in atom_bits:
