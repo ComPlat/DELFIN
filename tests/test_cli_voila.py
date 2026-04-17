@@ -89,7 +89,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     assert f"--port=9001" in captured["cmd"]
     assert f"--Voila.root_dir={root_dir.resolve()}" in captured["cmd"]
     assert (
-        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico)"
+        "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)"
         in captured["cmd"]
     )
     assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]

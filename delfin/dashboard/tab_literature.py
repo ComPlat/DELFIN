@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -50,6 +51,24 @@ def _file_icon(path: Path) -> str:
     if path.is_dir():
         return '\U0001F4C2'  # 📂
     return _ICON_MAP.get(path.suffix.lower(), '\U0001F4C4')
+
+
+def _pdf_iframe_src(path: Path) -> str | None:
+    """Return a same-origin URL under Voila's root_dir, else None.
+
+    Voila serves files below ``--Voila.root_dir`` at ``/voila/files/<relpath>``.
+    Using that URL avoids the browser's block on PDF data: URIs in iframes.
+    """
+    root_raw = os.environ.get('DELFIN_VOILA_ROOT_DIR')
+    if not root_raw:
+        return None
+    try:
+        root = Path(root_raw).expanduser().resolve()
+        rel = path.resolve().relative_to(root)
+    except (ValueError, OSError):
+        return None
+    from urllib.parse import quote
+    return '/voila/files/' + quote(rel.as_posix())
 
 
 def _label_to_name(label: str) -> str:
@@ -717,7 +736,10 @@ def create_tab(ctx):
 
         suffix = path.suffix.lower()
 
-        # PDF — inline via base64 data URI iframe (with border frame)
+        # PDF — prefer Voila's /voila/files/ endpoint so browsers actually
+        # render it; browsers and JupyterLab both block PDFs from data: URIs
+        # in iframes. Fall back to a data URI if the file lives outside the
+        # Voila root_dir (e.g. when running under classic Jupyter for dev).
         if suffix == '.pdf':
             if size > _MAX_PDF_BYTES:
                 lit_content.value = (
@@ -725,11 +747,14 @@ def create_tab(ctx):
                     f"PDF too large to preview ({size_str})</div>"
                 )
                 return
+            src_url = _pdf_iframe_src(path)
             try:
-                data = base64.b64encode(path.read_bytes()).decode('ascii')
+                if src_url is None:
+                    data = base64.b64encode(path.read_bytes()).decode('ascii')
+                    src_url = f'data:application/pdf;base64,{data}'
                 lit_content.value = (
                     f"<div style='{_CONTENT_FRAME} padding:0;'>"
-                    f'<iframe src="data:application/pdf;base64,{data}" '
+                    f'<iframe src="{src_url}" '
                     f'style="width:100%;height:100%;min-height:600px;border:none;'
                     f'border-radius:2px;"></iframe></div>'
                 )
