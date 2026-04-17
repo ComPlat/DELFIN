@@ -16207,6 +16207,203 @@ def _build_multimetal_scaffold(
         return None
 
 
+def _orient_ligands_on_polyhedron(
+    coords,
+    mol,
+    metal_idx: int,
+    donor_atom_indices: List[int],
+    fragments: Optional[List[set]] = None,
+    n_rot_mono: int = 12,
+    n_rot_bi: int = 4,
+    passes: int = 2,
+):
+    """Rotate each ligand fragment around its donor-metal axis to minimise
+    inter-fragment clash while keeping donor atoms on their platonic
+    polyhedron vertices.
+
+    The polyhedron vertex positions (donor targets) are invariant under
+    this step: only the rotational degree of freedom *around* each vertex
+    (or around the donor-donor axis of a bidentate chelate) is exercised.
+    The clash penalty uses ``1.3 * (r_cov_i + r_cov_j)`` as the contact
+    threshold, which is the same covalent-radius criterion the pipeline
+    already uses for the graph-gate Rule 5 and the UFF inter-fragment
+    repulsion constraint.
+
+    Modifies ``coords`` in place.  ``coords`` may be a ``list`` of
+    ``(x, y, z)`` tuples (as in :func:`_build_topology_xyz`) or a
+    2-D numpy array (as in :func:`_build_topology_xyz_from_template`).
+    """
+    if not RDKIT_AVAILABLE or mol is None:
+        return coords
+    try:
+        import numpy as _np
+    except Exception:
+        return coords
+    try:
+        n_atoms = mol.GetNumAtoms()
+        if len(coords) != n_atoms:
+            return coords
+
+        # Normalise to a numpy working copy.
+        is_list = not isinstance(coords, _np.ndarray)
+        pts = _np.array([list(coords[i]) for i in range(n_atoms)], dtype=float)
+
+        # Fragment decomposition (non-metal connected components).
+        if fragments is None:
+            non_metal = {
+                a.GetIdx() for a in mol.GetAtoms()
+                if a.GetSymbol() not in _METAL_SET and a.GetAtomicNum() > 1
+            }
+            adj: Dict[int, set] = {i: set() for i in non_metal}
+            for bond in mol.GetBonds():
+                bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+                if bi in non_metal and bj in non_metal:
+                    adj[bi].add(bj)
+                    adj[bj].add(bi)
+            visited: set = set()
+            fragments = []
+            for start in sorted(non_metal):
+                if start in visited:
+                    continue
+                stack = [start]
+                frag: set = set()
+                while stack:
+                    node = stack.pop()
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    frag.add(node)
+                    for nb in adj.get(node, ()):
+                        if nb not in visited:
+                            stack.append(nb)
+                fragments.append(frag)
+
+        donor_set = set(donor_atom_indices)
+        # Per-fragment heavy atom list + donor list.
+        frag_info: List[dict] = []
+        for frag in fragments:
+            frag_heavy = sorted(
+                i for i in frag
+                if mol.GetAtomWithIdx(i).GetAtomicNum() > 1
+            )
+            frag_donors = [i for i in frag_heavy if i in donor_set]
+            if len(frag_heavy) <= len(frag_donors):
+                continue  # nothing to rotate
+            frag_info.append({
+                "heavy": frag_heavy,
+                "donors": frag_donors,
+            })
+
+        m_pos = pts[metal_idx]
+        r_cov = {
+            i: _COVALENT_RADII.get(
+                mol.GetAtomWithIdx(i).GetSymbol(), 0.75
+            )
+            for i in range(n_atoms)
+        }
+
+        def _clash_for_frag(frag_heavy, frag_pts):
+            """Penalty between this fragment's non-donor atoms and every
+            heavy atom of all OTHER fragments, plus the metal itself.
+            ``frag_pts`` is a mapping atom_idx -> (x,y,z) for this frag."""
+            score = 0.0
+            other_heavy = [
+                j for info in frag_info
+                if set(info["heavy"]) != set(frag_heavy)
+                for j in info["heavy"]
+            ]
+            for i, p in frag_pts.items():
+                ri = r_cov[i]
+                # metal contact
+                d = float(_np.linalg.norm(_np.asarray(p) - m_pos))
+                thr = 1.3 * (ri + r_cov[metal_idx])
+                if d < thr:
+                    score += (thr - d) ** 2
+                # inter-fragment contacts
+                for j in other_heavy:
+                    rj = r_cov[j]
+                    d = float(_np.linalg.norm(_np.asarray(p) - pts[j]))
+                    thr = 1.3 * (ri + rj)
+                    if d < thr:
+                        score += (thr - d) ** 2
+            return score
+
+        def _rotate_about(axis, pivot, angle_deg, atom_pts):
+            a = _np.asarray(axis, dtype=float)
+            an = float(_np.linalg.norm(a))
+            if an < 1e-10:
+                return atom_pts
+            u = a / an
+            c = math.cos(math.radians(angle_deg))
+            s = math.sin(math.radians(angle_deg))
+            ux, uy, uz = float(u[0]), float(u[1]), float(u[2])
+            R = _np.array([
+                [c + ux * ux * (1 - c),
+                 ux * uy * (1 - c) - uz * s,
+                 ux * uz * (1 - c) + uy * s],
+                [uy * ux * (1 - c) + uz * s,
+                 c + uy * uy * (1 - c),
+                 uy * uz * (1 - c) - ux * s],
+                [uz * ux * (1 - c) - uy * s,
+                 uz * uy * (1 - c) + ux * s,
+                 c + uz * uz * (1 - c)],
+            ])
+            pivot = _np.asarray(pivot, dtype=float)
+            out = {}
+            for idx, p in atom_pts.items():
+                out[idx] = tuple((_np.asarray(p) - pivot) @ R.T + pivot)
+            return out
+
+        for _pass in range(passes):
+            changed = False
+            for info in frag_info:
+                heavy = info["heavy"]
+                donors = info["donors"]
+                non_donor = [i for i in heavy if i not in donor_set]
+                if not non_donor:
+                    continue
+                if len(donors) == 1:
+                    d = donors[0]
+                    axis = pts[d] - m_pos
+                    pivot = m_pos
+                    n_rot = n_rot_mono
+                else:
+                    # Bidentate / multidentate placement is handled by the
+                    # Procrustes mirror-flip logic elsewhere; rotating
+                    # around the donor-donor axis here would swing the
+                    # chelate backbone into the metal coordination shell.
+                    continue
+
+                atom_pts = {i: tuple(pts[i]) for i in non_donor}
+                best_score = _clash_for_frag(heavy, atom_pts)
+                best_pts = atom_pts
+                step = 360.0 / max(1, n_rot)
+                for k in range(1, n_rot):
+                    angle = step * k
+                    candidate = _rotate_about(axis, pivot, angle, atom_pts)
+                    s = _clash_for_frag(heavy, candidate)
+                    if s < best_score - 1e-6:
+                        best_score = s
+                        best_pts = candidate
+                if best_pts is not atom_pts:
+                    for i, p in best_pts.items():
+                        pts[i] = _np.array(p, dtype=float)
+                    changed = True
+            if not changed:
+                break
+
+        # Write back.
+        if is_list:
+            for i in range(n_atoms):
+                coords[i] = (float(pts[i, 0]), float(pts[i, 1]), float(pts[i, 2]))
+        else:
+            coords[:] = pts
+        return coords
+    except Exception as exc:
+        logger.debug("_orient_ligands_on_polyhedron failed: %s", exc)
+        return coords
+
+
 def _build_topology_xyz(
     mol,
     metal_idx: int,
@@ -16390,6 +16587,17 @@ def _build_topology_xyz(
                 coords[nbr_idx] = (cx + dx, cy + dy, cz + dz)
                 placed.add(nbr_idx)
                 queue.append(nbr_idx)
+
+        # Polyhedron-preserving ligand rotation: rotate each monodentate
+        # fragment around its M-donor axis and each bidentate fragment
+        # around its donor-donor axis to minimise inter-fragment clash.
+        # Donor positions (platonic vertices) are invariant.
+        try:
+            _orient_ligands_on_polyhedron(
+                coords, mol, metal_idx, donor_atom_indices
+            )
+        except Exception as _orient_exc:
+            logger.debug("Ligand orientation failed: %s", _orient_exc)
 
         # Build XYZ string
         lines = []
@@ -16691,6 +16899,14 @@ def _build_topology_xyz_from_template(
         for i in range(n_atoms):
             if i not in placed:
                 coords[i] = orig[i]
+
+        # Polyhedron-preserving ligand rotation (see _orient_ligands_on_polyhedron).
+        try:
+            _orient_ligands_on_polyhedron(
+                coords, mol, metal_idx, donor_atom_indices
+            )
+        except Exception as _orient_exc:
+            logger.debug("Ligand orientation (template path) failed: %s", _orient_exc)
 
         lines = []
         for i in range(n_atoms):
