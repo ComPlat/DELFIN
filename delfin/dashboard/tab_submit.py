@@ -760,7 +760,7 @@ def create_tab(ctx):
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
-                        collapse_label_variants=False,
+                        collapse_label_variants=True,
                         include_binding_mode_isomers=True,
                         deterministic=not _has_hapto,
                     )

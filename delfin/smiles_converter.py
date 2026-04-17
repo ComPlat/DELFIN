@@ -13330,6 +13330,68 @@ def _verify_topology_from_graph(
         except Exception:
             pass
 
+        # Rule 6: Sp2 chelate backbone planarity. For every chelate pair
+        # whose non-metal path consists entirely of sp2/aromatic atoms,
+        # the metallacycle (metal + backbone) must lie nearly in a plane.
+        # A twisted chelate is chemically unrealistic.
+        try:
+            import numpy as _np
+            metal_idxs = [
+                a.GetIdx() for a in mol_template.GetAtoms()
+                if a.GetSymbol() in _METAL_SET
+            ]
+            for m_idx in metal_idxs:
+                donors = [
+                    nbr.GetIdx()
+                    for nbr in mol_template.GetAtomWithIdx(m_idx).GetNeighbors()
+                    if nbr.GetAtomicNum() > 1
+                    and nbr.GetSymbol() not in _METAL_SET
+                ]
+                for i in range(len(donors)):
+                    for j in range(i + 1, len(donors)):
+                        d1, d2 = donors[i], donors[j]
+                        # BFS from d1 to d2, blocking metal
+                        visited = {m_idx, d1}
+                        prev: Dict[int, int] = {d1: -1}
+                        queue = [d1]
+                        while queue:
+                            cur = queue.pop(0)
+                            if cur == d2:
+                                break
+                            for n in mol_template.GetAtomWithIdx(cur).GetNeighbors():
+                                ni = n.GetIdx()
+                                if ni in visited:
+                                    continue
+                                visited.add(ni)
+                                prev[ni] = cur
+                                queue.append(ni)
+                        if d2 not in prev:
+                            continue
+                        path: List[int] = []
+                        node = d2
+                        while node != -1:
+                            path.append(node)
+                            node = prev.get(node, -1)
+                        if len(path) < 3 or len(path) > 5:
+                            continue
+                        # All path atoms must be sp2/aromatic for planarity enforcement
+                        if not all(
+                            mol_template.GetAtomWithIdx(pi).GetIsAromatic()
+                            or mol_template.GetAtomWithIdx(pi).GetHybridization()
+                            == Chem.rdchem.HybridizationType.SP2
+                            for pi in path
+                        ):
+                            continue
+                        cycle = [m_idx] + path
+                        pts = _np.array([coords[ci] for ci in cycle])
+                        centered = pts - pts.mean(axis=0)
+                        _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
+                        dev = float(_np.abs(centered @ vh[-1]).max())
+                        if dev > 0.6:
+                            return False
+        except Exception:
+            pass
+
         return True
     except Exception:
         return False
@@ -17898,13 +17960,13 @@ def smiles_to_xyz_isomers(
                     continue
                 _lj, cid_j, sj = seen_fps[fps_list[j]]
                 base_j = _base_label(_lj)
-                # Only collapse near-duplicates within the same label class.
-                # Different labels (e.g. fac vs mer) are kept even at low RMSD.
-                if base_i != base_j:
-                    continue
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
-                if rmsd < 2.5:
-                    # Keep the conformer with the better geometry score
+                # Same-label: aggressive merge (RMSD < 2.5 Å)
+                # Cross-label: merge only if very similar (RMSD < 1.5 Å)
+                # — catches Morgan-hash artifacts that split identical
+                # structures into multiple "label" entries.
+                rmsd_threshold = 2.5 if base_i == base_j else 1.5
+                if rmsd < rmsd_threshold:
                     if si <= sj:
                         removed.add(j)
                     else:
@@ -18287,6 +18349,26 @@ def smiles_to_xyz_isomers(
                 )
         if verified:
             results = verified
+
+    # Sort isomers by UFF energy ascending (most realistic first).
+    # Compute energy per isomer via a quick constrained single-point UFF.
+    if has_metal and len(results) > 1 and OPENBABEL_AVAILABLE:
+        try:
+            scored: List[Tuple[float, str, str]] = []
+            for xyz, lbl in results:
+                try:
+                    cstr = _build_coordination_constraints_from_xyz(mol, xyz)
+                    _xyz_e, energy = _optimize_xyz_openbabel(
+                        xyz, steps=0, constraints=cstr, return_energy=True
+                    )
+                    e = energy if energy is not None else float("inf")
+                except Exception:
+                    e = float("inf")
+                scored.append((e, xyz, lbl))
+            scored.sort(key=lambda t: t[0])
+            results = [(xyz, lbl) for _e, xyz, lbl in scored]
+        except Exception as _sort_exc:
+            logger.debug("Energy-based sort failed: %s", _sort_exc)
 
     return results, None
 
@@ -19906,7 +19988,8 @@ def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
     constraints: Optional[Dict] = None,
-) -> str:
+    return_energy: bool = False,
+):
     """Optimize a DELFIN-format XYZ string using Open Babel's UFF force field.
 
     Open Babel's UFF implementation includes full parameters for transition
@@ -19924,18 +20007,19 @@ def _optimize_xyz_openbabel(
             - ``'torsions'``: list of ``(idx_a, idx_b, idx_c, idx_d, target_deg)``
 
     Returns:
-        Optimized DELFIN-format XYZ string, or the original string if
-        optimization fails for any reason.
+        Optimized DELFIN-format XYZ string.  If ``return_energy`` is True,
+        returns ``(xyz_str, energy_kcal_mol)`` tuple; energy is ``None``
+        when UFF setup fails.
     """
     if not OPENBABEL_AVAILABLE:
-        return xyz_delfin
+        return (xyz_delfin, None) if return_energy else xyz_delfin
 
     try:
         # Parse DELFIN lines (skip blank lines)
         lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
         n_atoms = len(lines)
         if n_atoms == 0:
-            return xyz_delfin
+            return (xyz_delfin, None) if return_energy else xyz_delfin
 
         # Build standard XYZ string (atom count + comment + coordinates)
         std_xyz = f"{n_atoms}\n\n"
@@ -19951,7 +20035,7 @@ def _optimize_xyz_openbabel(
         ff = pybel._forcefields["uff"]
         if not ff.Setup(ob_mol.OBMol):
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
-            return xyz_delfin
+            return (xyz_delfin, None) if return_energy else xyz_delfin
 
         # Apply constraints (if provided) to preserve coordination geometry
         if constraints:
@@ -19982,6 +20066,13 @@ def _optimize_xyz_openbabel(
         ff.ConjugateGradients(steps)
         ff.GetCoordinates(ob_mol.OBMol)
 
+        # Capture final UFF energy (kcal/mol)
+        energy: Optional[float] = None
+        try:
+            energy = float(ff.Energy())
+        except Exception:
+            energy = None
+
         # Convert back to DELFIN format
         opt_lines = []
         for ob_atom in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
@@ -19990,11 +20081,12 @@ def _optimize_xyz_openbabel(
             opt_lines.append(f"{symbol:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
 
         logger.debug("Open Babel UFF optimization completed (%d steps max)", steps)
-        return '\n'.join(opt_lines) + '\n'
+        xyz_out = '\n'.join(opt_lines) + '\n'
+        return (xyz_out, energy) if return_energy else xyz_out
 
     except Exception as e:
         logger.debug("Open Babel UFF optimization failed: %s", e)
-        return xyz_delfin
+        return (xyz_delfin, None) if return_energy else xyz_delfin
 
 
 def _optimize_xyz_openbabel_safe(
