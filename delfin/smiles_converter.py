@@ -15584,6 +15584,87 @@ def _canonical_ttp(types: tuple) -> tuple:
     return ('TTP', prism, caps)
 
 
+def _label_from_canonical_form(cf: tuple) -> str:
+    """Derive a display label directly from an enumerator canonical form.
+
+    Re-classifying post-UFF geometry via :func:`_classify_isomer_label`
+    loses information when UFF drifts an axial donor off the 180° line:
+    a deliberate N-N-axial PBP arrangement can be mis-read as N-O-ax,
+    collapsing three distinct constitutional isomers (N-N-ax, N-O-ax,
+    O-O-ax) into two.  Labelling from the enumerator's canonical form
+    preserves the intended topology regardless of UFF drift and lets
+    the energy-based sort decide which survives.
+
+    Returns an empty string for geometries where canonical-form labelling
+    is not informative (e.g. homoleptic TH/TP), so the caller can fall
+    back to classify-based labels.
+    """
+    if not cf:
+        return ''
+    geom = cf[0]
+
+    def _strip(symbol: str) -> str:
+        # Donor labels may be Morgan-hash enriched (e.g. 'N0', 'O1'); the
+        # display label should show only the element (e.g. 'N', 'O').
+        if not symbol:
+            return symbol
+        m = re.match(r'([A-Za-z]+)', str(symbol))
+        return m.group(1) if m else str(symbol)
+
+    def _pair(p: tuple) -> str:
+        a, b = _strip(p[0]), _strip(p[1])
+        return f'{a}-{b}' if a <= b else f'{b}-{a}'
+
+    if geom in ('PBP', 'TBP', 'SS'):
+        ax = cf[1]
+        return f'{_pair(ax)}-ax'
+    if geom == 'LIN':
+        t = cf[1]
+        a, b = _strip(t[0]), _strip(t[1])
+        return '' if a == b else f'{a}-{b}'
+    if geom == 'TS':
+        ax, uniq = cf[1], cf[2]
+        return f'{_pair(ax)}-ax/{_strip(uniq)}-eq'
+    if geom == 'OH':
+        pairs = cf[1]
+        same = [p for p in pairs if p[0] == p[1]]
+        if len(same) == 0:
+            return 'all-cis'
+        if len(same) == len(pairs):
+            return 'all-trans'
+        return f'{_strip(same[0][0])}-trans'
+    if geom == 'SQ':
+        pairs = cf[1]
+        same = sum(1 for p in pairs if p[0] == p[1])
+        return 'trans' if same >= 1 else 'cis'
+    if geom == 'COH':
+        base_pairs, cap = cf[1], cf[2]
+        pair_sig = ','.join(_pair(p) for p in base_pairs)
+        return f'cap-{_strip(cap)}/{pair_sig}'
+    if geom == 'SP':
+        pairs = cf[1]
+        same = sum(1 for p in pairs if p[0] == p[1])
+        return f'{same}-trans' if same else 'all-cis'
+    if geom == 'SAP':
+        pairs = cf[1]
+        same = sum(1 for p in pairs if p[0] == p[1])
+        return f'{same}-trans' if same else 'all-cis'
+    if geom == 'DD':
+        a_pairs, b_pairs = cf[1], cf[2]
+        same_a = sum(1 for p in a_pairs if p[0] == p[1])
+        same_b = sum(1 for p in b_pairs if p[0] == p[1])
+        return f'A{same_a}/B{same_b}-trans'
+    if geom == 'TPR':
+        combined = cf[1]
+        top, bottom = combined[0], combined[1]
+        return f'top-{"".join(_strip(s) for s in top)}/bot-{"".join(_strip(s) for s in bottom)}'
+    if geom == 'TTP':
+        prism, caps = cf[1], cf[2]
+        cap_sig = ''.join(_strip(s) for s in caps)
+        return f'caps-{cap_sig}'
+    return ''
+
+
 # Trans position pairs (indices into the geometry vector list) for each geometry
 _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'LIN': [(0, 1)],
@@ -16738,7 +16819,13 @@ def _generate_topological_isomers(
                 fp = _compute_coordination_fingerprint(
                     mt.GetMol(), ci, dtype_map=dtype_map
                 )
-                lbl = _classify_isomer_label(fp, mt.GetMol())
+                # Prefer canonical-form label: UFF can drift axial donors
+                # enough that _classify_isomer_label mis-reads the intended
+                # topology (e.g. N-N-ax → N-O-ax).  Fall back to classify
+                # for geometries where canonical-form labelling isn't set.
+                lbl = _label_from_canonical_form(cf)
+                if not lbl:
+                    lbl = _classify_isomer_label(fp, mt.GetMol())
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
@@ -16836,7 +16923,10 @@ def _generate_topological_isomers(
                 fp = _compute_coordination_fingerprint(
                     mt.GetMol(), ci, dtype_map=dtype_map
                 )
-                lbl = _classify_isomer_label(fp, mt.GetMol())
+                # Canonical-form label (see rationale above).
+                lbl = _label_from_canonical_form(cf)
+                if not lbl:
+                    lbl = _classify_isomer_label(fp, mt.GetMol())
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
@@ -18350,8 +18440,8 @@ def smiles_to_xyz_isomers(
         if verified:
             results = verified
 
-    # Sort isomers by UFF energy ascending (most realistic first).
-    # Compute energy per isomer via a quick constrained single-point UFF.
+    # Sort isomers by UFF energy ascending (most realistic first),
+    # and reject outliers whose energy is physically unrealistic.
     if has_metal and len(results) > 1 and OPENBABEL_AVAILABLE:
         try:
             scored: List[Tuple[float, str, str]] = []
@@ -18366,7 +18456,23 @@ def smiles_to_xyz_isomers(
                     e = float("inf")
                 scored.append((e, xyz, lbl))
             scored.sort(key=lambda t: t[0])
-            results = [(xyz, lbl) for _e, xyz, lbl in scored]
+
+            # Energy bias: reject outliers whose ΔE from the lowest is
+            # >50× the natural isomer spread (between lowest and median).
+            # Also reject any absolute energy > 1e5 kcal/mol (unphysical).
+            finite = [t for t in scored if t[0] < 1e5]
+            if len(finite) >= 2:
+                e_min = finite[0][0]
+                e_med = finite[len(finite) // 2][0]
+                natural_spread = max(e_med - e_min, 1.0)
+                cutoff = e_min + max(50.0 * natural_spread, 5000.0)
+                scored = [t for t in scored if t[0] <= cutoff]
+            else:
+                # Only 0-1 finite-energy isomers: keep them all but warn
+                scored = [t for t in scored if t[0] < 1e5]
+
+            if scored:
+                results = [(xyz, lbl) for _e, xyz, lbl in scored]
         except Exception as _sort_exc:
             logger.debug("Energy-based sort failed: %s", _sort_exc)
 
