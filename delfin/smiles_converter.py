@@ -15091,8 +15091,16 @@ def _compute_coordination_fingerprint(mol, conf_id: int, dtype_map: Optional[Dic
         trans_pairs = tuple(sorted(
             tuple(sorted((sa, sb))) for sa, sb in trans_pairs_raw
         ))
+        # Normalize donor-type tuples for sortable comparison:
+        # frozensets don't have total ordering, so convert to sorted tuples.
+        def _norm_donor_type(dt: tuple) -> tuple:
+            return tuple(
+                tuple(sorted(x)) if isinstance(x, (frozenset, set)) else x
+                for x in dt
+            )
         detailed_trans = tuple(sorted(
-            tuple(sorted((da, db))) for da, db in detailed_trans_raw
+            tuple(sorted((_norm_donor_type(da), _norm_donor_type(db))))
+            for da, db in detailed_trans_raw
         ))
 
         # Part 2: pairwise cis/trans pattern for ALL same-element donor
@@ -19700,6 +19708,81 @@ def _build_coordination_constraints_from_xyz(
                             continue
                         seen_tors[key] = 1
                         base["torsions"].append((a, b, c, d, 0.0))
+        except Exception:
+            pass
+
+        # Metallacycle planarity: RDKit's SSSR doesn't include metal-containing
+        # rings (M-L bonds aren't typed as ring bonds). For conjugated chelates
+        # like acac/salen, manually detect 5/6-membered metallacycles where
+        # all non-metal atoms are sp2, and add planarity torsion constraints.
+        try:
+            for atom in mol_template.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    continue
+                m_idx = atom.GetIdx()
+                donors = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
+                # For each pair of donors on this metal, find non-metal
+                # path between them (chelate backbone).
+                for i in range(len(donors)):
+                    for j in range(i + 1, len(donors)):
+                        d1, d2 = donors[i], donors[j]
+                        # BFS from d1 to d2, blocking the metal
+                        visited = {m_idx, d1}
+                        prev: Dict[int, int] = {d1: -1}
+                        queue = [d1]
+                        found = False
+                        while queue and not found:
+                            cur = queue.pop(0)
+                            if cur == d2:
+                                found = True
+                                break
+                            for n in mol_template.GetAtomWithIdx(cur).GetNeighbors():
+                                ni = n.GetIdx()
+                                if ni in visited:
+                                    continue
+                                visited.add(ni)
+                                prev[ni] = cur
+                                queue.append(ni)
+                                if ni == d2:
+                                    found = True
+                                    break
+                        if not found or d2 not in prev:
+                            continue
+                        # Reconstruct path d1 → d2
+                        path: List[int] = []
+                        node = d2
+                        while node != -1:
+                            path.append(node)
+                            node = prev.get(node, -1)
+                        path.reverse()
+                        # Only 3-5 atom paths (4-6 membered chelate including metal)
+                        if len(path) < 3 or len(path) > 5:
+                            continue
+                        # Check all path atoms are sp2 or aromatic
+                        all_sp2 = all(
+                            mol_template.GetAtomWithIdx(pi).GetIsAromatic()
+                            or mol_template.GetAtomWithIdx(pi).GetHybridization()
+                            == Chem.rdchem.HybridizationType.SP2
+                            for pi in path
+                        )
+                        if not all_sp2:
+                            continue
+                        # Add planarity torsion constraints including metal.
+                        # Full cycle: metal - d1 - path... - d2 - metal
+                        cycle = [m_idx] + path  # cycle is metal + path d1..d2
+                        n = len(cycle)
+                        for k in range(n):
+                            a = cycle[(k - 1) % n]
+                            b = cycle[k]
+                            c = cycle[(k + 1) % n]
+                            d = cycle[(k + 2) % n]
+                            if len({a, b, c, d}) < 4:
+                                continue
+                            key = tuple(sorted([a, b, c, d]))
+                            if key in seen_tors:
+                                continue
+                            seen_tors[key] = 1
+                            base["torsions"].append((a, b, c, d, 0.0))
         except Exception:
             pass
 
