@@ -16000,7 +16000,7 @@ def _best_chelate_conformer_coords(
     frag_atom_indices,
     donor_atom_indices,
     target_bite,
-    n_trials: int = 20,
+    n_trials: int = 40,
     accept_delta: float = 0.10,
 ):
     """Return coordinates of the conformer whose donor-donor distance
@@ -16067,9 +16067,19 @@ def _best_chelate_conformer_coords(
             pass
     frag_mol = rw.GetMol()
 
+    # Extended deterministic seed schedule.  The first block reuses the
+    # project-wide ETKDG seeds (shared with the sampling pool and the
+    # safety-net conformer step) so the chelate conformer choice is
+    # cache-coherent with the rest of the pipeline; the second block
+    # extends the search to 40 total seeds for heavy macrocycles and
+    # tridentate+ ligands where the native-bite matching has a wider
+    # conformational space to cover.
     _SEEDS = (31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
               401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
-              4547, 5323)
+              4547, 5323, 6199, 7069, 8101, 9203, 10253,
+              11329, 12409, 13499, 14591, 15683, 16787,
+              17891, 19001, 20113, 21227, 22343, 23459,
+              24571, 25703, 26821)
 
     def _try_embed(m, seed):
         p = AllChem.ETKDGv3()
@@ -16152,6 +16162,15 @@ def _best_chelate_conformer_coords(
             if delta < accept_delta:
                 break
 
+    # Quality gate: when even the best conformer's donor-geometry fit is
+    # poor (deviation from the target bite/matrix larger than ~0.5 A),
+    # return None so the caller falls back to its single-ETKDG path.
+    # Without this, Procrustes on a mismatched fragment can press a
+    # donor atom much closer to the metal than its ideal M-D bond
+    # length, producing a structure the graph gate rightly rejects.
+    reject_delta = 0.50
+    if best_coords is None or best_delta >= reject_delta:
+        return None
     return best_coords
 
 
@@ -18931,21 +18950,18 @@ def smiles_to_xyz_isomers(
                         display = f'{norm}-{suffix}'
                     else:
                         display = norm
-                # Graph-based topology verification.  For multi-metal
-                # coupled-enumeration isomers (label starts with "multi-")
-                # the enumerator already enforced chelate constraints and
-                # the bridging atom sits at a compromise between two
-                # metal targets; the full gate is too strict for that
-                # geometric compromise and was already applied (in a
-                # relaxed form) inside the multinuclear block, so we
-                # skip the re-check here and keep the candidate.
-                if not str(topo_label or '').startswith('multi-'):
-                    if not _verify_topology_from_graph(topo_xyz, topo_mol):
-                        logger.debug(
-                            "Skipping topo isomer %s: graph topology check failed",
-                            display,
-                        )
-                        continue
+                # Graph-based topology verification: checks every bond in
+                # the template graph against actual XYZ distances.  Applied
+                # uniformly to mono- and multi-metal isomers so no output
+                # structure has a broken topology.  (The bridging-atom
+                # bond-length window is already widened inside the gate
+                # for M-(mu-X)-M' cases.)
+                if not _verify_topology_from_graph(topo_xyz, topo_mol):
+                    logger.debug(
+                        "Skipping topo isomer %s: graph topology check failed",
+                        display,
+                    )
+                    continue
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
                 if topo_key in existing_xyz_keys:
                     logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
@@ -19134,16 +19150,9 @@ def smiles_to_xyz_isomers(
     # Every output structure must preserve the bond topology from the
     # input SMILES.  Uses _verify_topology_from_graph which checks
     # every bond distance against the template graph — no OB perception.
-    # Multi-metal coupled-enumeration isomers (label starts with "multi-")
-    # are exempt: their bridging atoms sit at geometric compromises
-    # between the polyhedron targets of both metals and the full gate is
-    # too strict to tell that apart from a broken bridge.
     if has_metal and results:
         verified: List[Tuple[str, str]] = []
         for xyz, lbl in results:
-            if str(lbl or '').startswith('multi-'):
-                verified.append((xyz, lbl))
-                continue
             if _verify_topology_from_graph(xyz, mol):
                 verified.append((xyz, lbl))
             else:
