@@ -13267,35 +13267,43 @@ def _verify_topology_from_graph(
                 if dsq < 0.49:  # 0.7²
                     return False
 
-        # Rule 4: Pi-ring planarity — reject any purely-organic ring of
-        # sp2/aromatic atoms whose max out-of-plane deviation exceeds
-        # 0.25 x the mean ring bond length.  The threshold scales with
-        # ring size instead of using a hardcoded Å number.  Rings that
-        # include a metal atom are **not** checked here: the metal
-        # naturally bends slightly out of the chelate's plane for
-        # geometric reasons (short M-D bonds anchored at polyhedron
-        # vertices) and Rule 6 below already enforces sp2-chelate
-        # metallacycle planarity with its own threshold suited to
-        # metal rings.
+        # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
+        # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
+        # length.  The sp2 character of each ring atom is derived from the
+        # RING BOND TOPOLOGY (does at least one of its ring bonds have order
+        # >= 1.5: aromatic, double, or kekulize-double?) rather than from
+        # RDKit's hybridisation flag, so the gate behaves identically
+        # regardless of the mol's sanitisation state — essential for the
+        # pipeline's internal gate and any post-hoc re-check to agree.
         try:
             ring_info = mol_template.GetRingInfo()
             if ring_info is not None:
                 for ring in ring_info.AtomRings():
                     if len(ring) < 5 or len(ring) > 7:
                         continue
-                    if any(
-                        mol_template.GetAtomWithIdx(ri).GetSymbol() in _METAL_SET
-                        for ri in ring
-                    ):
-                        continue  # metallacycles handled by Rule 6
-                    # Check if ring has sp2 character (aromatic or conjugated)
-                    n_sp2 = sum(
-                        1 for ri in ring
-                        if mol_template.GetAtomWithIdx(ri).GetIsAromatic()
-                        or mol_template.GetAtomWithIdx(ri).GetHybridization()
-                        in (Chem.rdchem.HybridizationType.SP2,
-                            Chem.rdchem.HybridizationType.SP)
-                    )
+                    ring_set = set(ring)
+                    # For each atom, check whether any of its ring bonds
+                    # carries order >= 1.5 (aromatic, double, or kekulised
+                    # double counts).
+                    n_sp2 = 0
+                    for ri in ring:
+                        atom_ri = mol_template.GetAtomWithIdx(ri)
+                        has_pi = False
+                        for b in atom_ri.GetBonds():
+                            other = b.GetOtherAtom(atom_ri).GetIdx()
+                            if other not in ring_set:
+                                continue
+                            bt = b.GetBondType()
+                            if (
+                                bt == Chem.BondType.AROMATIC
+                                or bt == Chem.BondType.DOUBLE
+                                or b.GetIsAromatic()
+                                or b.GetBondTypeAsDouble() >= 1.5
+                            ):
+                                has_pi = True
+                                break
+                        if has_pi:
+                            n_sp2 += 1
                     if n_sp2 < len(ring) * 0.6:
                         continue  # not a pi ring
                     try:
