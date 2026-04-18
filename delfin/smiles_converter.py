@@ -13267,16 +13267,27 @@ def _verify_topology_from_graph(
                 if dsq < 0.49:  # 0.7²
                     return False
 
-        # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
-        # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
-        # length.  The threshold scales with ring size instead of using a
-        # hardcoded Å number.
+        # Rule 4: Pi-ring planarity — reject any purely-organic ring of
+        # sp2/aromatic atoms whose max out-of-plane deviation exceeds
+        # 0.25 x the mean ring bond length.  The threshold scales with
+        # ring size instead of using a hardcoded Å number.  Rings that
+        # include a metal atom are **not** checked here: the metal
+        # naturally bends slightly out of the chelate's plane for
+        # geometric reasons (short M-D bonds anchored at polyhedron
+        # vertices) and Rule 6 below already enforces sp2-chelate
+        # metallacycle planarity with its own threshold suited to
+        # metal rings.
         try:
             ring_info = mol_template.GetRingInfo()
             if ring_info is not None:
                 for ring in ring_info.AtomRings():
                     if len(ring) < 5 or len(ring) > 7:
                         continue
+                    if any(
+                        mol_template.GetAtomWithIdx(ri).GetSymbol() in _METAL_SET
+                        for ri in ring
+                    ):
+                        continue  # metallacycles handled by Rule 6
                     # Check if ring has sp2 character (aromatic or conjugated)
                     n_sp2 = sum(
                         1 for ri in ring
@@ -15995,57 +16006,54 @@ def _enumerate_topological_isomers(
     return results
 
 
-def _best_chelate_conformer_coords(
+def _chelate_conformer_candidates(
     mol,
     frag_atom_indices,
     donor_atom_indices,
     target_bite,
     n_trials: int = 40,
     accept_delta: float = 0.10,
+    reject_delta: float = 0.50,
+    max_candidates: int = 5,
 ):
-    """Return coordinates of the conformer whose donor-donor distance
-    pattern matches the polyhedron vertex-pair pattern.
+    """Return a deterministic list of chelate conformer coordinates
+    whose donor-donor distance pattern matches the polyhedron
+    vertex-pair pattern, ordered by goodness of fit (best first).
 
-    For a **bidentate** chelate (2 donors) the ``target_bite`` argument
-    is the single ``|vertex_i - vertex_j|`` scalar and the conformer
-    that minimises ``|d_dd - target_bite|`` is returned.
-
-    For **polydentate** (k ≥ 3) ligands, ``target_bite`` is expected to
-    be a ``(k, k)`` pairwise distance matrix (or any structure accepted
-    by ``numpy.asarray``) giving the polyhedron vertex-to-vertex
-    distance for every pair of donors in the same order as
-    ``donor_atom_indices``.  The conformer that minimises the RMS
-    deviation of its own pairwise donor distances from the target
-    matrix is returned.  This lets tridentate and higher ligands
-    select the ring / backbone conformation whose native donor
-    geometry matches the platonic polyhedron target.
-
-    Returns a dict ``{original_atom_idx: (x, y, z)}`` on success or
-    ``None`` if no seed succeeds.
+    Each entry is a dict ``{original_atom_idx: (x, y, z)}``.  The list
+    never exceeds ``max_candidates``; every returned entry has
+    ``delta < reject_delta``.  For bidentate chelates ``target_bite``
+    is a scalar (``|vertex_i - vertex_j|``); for polydentate ligands
+    it is a ``(k, k)`` pairwise distance matrix.  Returning a list
+    (instead of only the best) lets the caller emit multiple ring
+    puckers / backbone conformations as distinct topology isomers,
+    which is essential for macrocyclic and tridentate+ ligands whose
+    natural backbone space contains several clash-free realisations
+    compatible with the same platonic polyhedron.
     """
     if not RDKIT_AVAILABLE:
-        return None
+        return []
     try:
         import numpy as _np
     except Exception:
-        return None
+        return []
 
     frag_list = sorted(frag_atom_indices)
     if len(frag_list) < 3:
-        return None
+        return []
     old_to_new = {old: new for new, old in enumerate(frag_list)}
     donor_new = [old_to_new[d] for d in donor_atom_indices if d in old_to_new]
     if len(donor_new) < 2:
-        return None
+        return []
 
     is_pairwise_matrix = not isinstance(target_bite, (int, float))
     if is_pairwise_matrix:
         try:
             target_mat = _np.asarray(target_bite, dtype=float)
         except Exception:
-            return None
+            return []
         if target_mat.shape != (len(donor_new), len(donor_new)):
-            return None
+            return []
 
     rw = Chem.RWMol(Chem.Mol())
     for aidx in frag_list:
@@ -16090,8 +16098,8 @@ def _best_chelate_conformer_coords(
         except Exception:
             return -1
 
-    best_delta = float("inf")
-    best_coords = None
+    # Collect every accepted (delta, coords_map) pair and sort by fit.
+    accepted: List[Tuple[float, Dict[int, tuple]]] = []
     fallback_mol = None
 
     for seed in _SEEDS[:n_trials]:
@@ -16136,7 +16144,6 @@ def _best_chelate_conformer_coords(
             for idx in donor_new
         ])
         if is_pairwise_matrix:
-            # Pairwise distance matrix
             diffs = donor_pts[:, None, :] - donor_pts[None, :, :]
             d_mat = _np.linalg.norm(diffs, axis=-1)
             n = len(donor_new)
@@ -16148,30 +16155,49 @@ def _best_chelate_conformer_coords(
             p1 = donor_pts[1]
             d_dd = float(_np.linalg.norm(p0 - p1))
             delta = abs(d_dd - float(target_bite))
-        if delta < best_delta:
-            best_delta = delta
-            coords_map = {
-                old: (
-                    conf.GetAtomPosition(new).x,
-                    conf.GetAtomPosition(new).y,
-                    conf.GetAtomPosition(new).z,
-                )
-                for old, new in old_to_new.items()
-            }
-            best_coords = coords_map
-            if delta < accept_delta:
-                break
+        if delta >= reject_delta:
+            continue
+        coords_map = {
+            old: (
+                conf.GetAtomPosition(new).x,
+                conf.GetAtomPosition(new).y,
+                conf.GetAtomPosition(new).z,
+            )
+            for old, new in old_to_new.items()
+        }
+        accepted.append((delta, coords_map))
 
-    # Quality gate: when even the best conformer's donor-geometry fit is
-    # poor (deviation from the target bite/matrix larger than ~0.5 A),
-    # return None so the caller falls back to its single-ETKDG path.
-    # Without this, Procrustes on a mismatched fragment can press a
-    # donor atom much closer to the metal than its ideal M-D bond
-    # length, producing a structure the graph gate rightly rejects.
-    reject_delta = 0.50
-    if best_coords is None or best_delta >= reject_delta:
-        return None
-    return best_coords
+    if not accepted:
+        return []
+
+    # Sort by fit quality (best first), cap at max_candidates.
+    accepted.sort(key=lambda item: item[0])
+    return [c for _d, c in accepted[:max_candidates]]
+
+
+def _best_chelate_conformer_coords(
+    mol,
+    frag_atom_indices,
+    donor_atom_indices,
+    target_bite,
+    n_trials: int = 40,
+    accept_delta: float = 0.10,
+):
+    """Thin wrapper that returns only the single best conformer
+    (backwards-compatible entry point for callers that do not want
+    multiple ligand puckers).  Equivalent to ``_chelate_conformer_candidates(...)[0]``
+    or ``None`` when no seed fits within ``reject_delta``.
+    """
+    cands = _chelate_conformer_candidates(
+        mol,
+        frag_atom_indices,
+        donor_atom_indices,
+        target_bite,
+        n_trials=n_trials,
+        accept_delta=accept_delta,
+        max_candidates=1,
+    )
+    return cands[0] if cands else None
 
 
 def _embed_fragment_procrustes(
