@@ -111,12 +111,6 @@ USER_SMILES = [
         min_isomers=1,
         required_label_fragments=[],
         forbidden_label_fragments=[],
-        # Bimetallic sampling augmentation is not fully deterministic
-        # yet (known open issue flagged by the user — multi-metal
-        # ETKDG path has non-deterministic ordering of fingerprint
-        # collision tiebreaking).  Flag so the test surface reports
-        # it clearly but does not block CI.
-        nondeterministic=True,
     ),
     dict(
         name="Fe(H2O)7 CN=7 homoleptic",
@@ -145,7 +139,6 @@ USER_SMILES = [
         min_isomers=1,
         required_label_fragments=[],
         forbidden_label_fragments=[],
-        nondeterministic=True,  # same multi-metal sampling issue
     ),
     dict(
         name="Cd MA2B2C2 octahedral (five OH isomers)",
@@ -231,17 +224,7 @@ def test_forbidden_labels_absent(entry):
     ids=[e["name"] for e in USER_SMILES],
 )
 def test_determinism_across_runs(entry):
-    """Two consecutive runs must return the same (sorted) label set and count.
-
-    Systems flagged ``nondeterministic=True`` document an open bug in
-    the multi-metal sampling augmentation; their failure is expected
-    until the coupled-enumeration path becomes fully deterministic.
-    """
-    if entry.get("nondeterministic"):
-        pytest.xfail(
-            "Known open issue: multi-metal ETKDG augmentation is not "
-            "fully deterministic (user flagged)."
-        )
+    """Two consecutive runs must return the same (sorted) label set and count."""
     r1 = _run(entry["smiles"])
     r2 = _run(entry["smiles"])
     s1 = sorted(l for _, l in r1)
