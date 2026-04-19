@@ -684,12 +684,42 @@ _EMBED_TIMEOUT: float = float(os.environ.get("DELFIN_EMBED_TIMEOUT", "10"))
 """Per-call timeout (seconds) for RDKit EmbedMolecule / stk embedding.
 
 Large metal complexes with highly connected ring systems can cause ETKDG
-distance-bounds calculation to hang indefinitely.  This timeout prevents
-the converter from blocking forever.  Override via env var if needed.
+distance-bounds calculation to hang indefinitely.  Override via env var
+(e.g. ``DELFIN_EMBED_TIMEOUT=20``) on heavy macrocycles if needed.
 """
 
 _OB_ROTOR_TIMEOUT: float = float(os.environ.get("DELFIN_OB_ROTOR_TIMEOUT", "15"))
 """Per-call timeout (seconds) for Open Babel rotor search."""
+
+_MULTIEMBED_TIMEOUT: float = float(os.environ.get("DELFIN_MULTIEMBED_TIMEOUT", "25"))
+"""Per-call timeout (seconds) for EmbedMultipleConfs.
+
+Running multiple seeds in parallel amortises the cost; a single slow
+seed should not strangle the whole pool.  Increase via env var on
+very large molecules.
+"""
+
+_CHELATE_EMBED_TIMEOUT: float = float(os.environ.get("DELFIN_CHELATE_EMBED_TIMEOUT", "6"))
+"""Per-seed timeout (seconds) for the chelate conformer search."""
+
+_PIPELINE_SEEDS: Tuple[int, ...] = (
+    31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
+    401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
+    4547, 5323, 6199, 7069, 8101, 9203, 10253,
+    11329, 12409, 13499, 14591, 15683, 16787,
+    17891, 19001, 20113, 21227, 22343, 23459,
+    24571, 25703, 26821,
+)
+"""Single deterministic seed schedule shared by every stage of the metal
+isomer pipeline (top-level conformer sampling, chelate conformer search,
+fragment embedding, legacy fallbacks).  Keeping one canonical source
+makes determinism guarantees hold end-to-end and lets cross-stage
+caches stay coherent.
+"""
+
+_TOP_LEVEL_SEEDS: Tuple[int, ...] = _PIPELINE_SEEDS[:12]
+"""Seeds used for top-level conformer sampling (12 is the historical
+default for ``smiles_to_xyz_isomers``)."""
 
 
 def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
@@ -741,6 +771,54 @@ def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
         raise exc_holder[0]
 
     return result[0]
+
+
+def _embed_multiple_confs_with_timeout(
+    mol,
+    num_confs: int,
+    params,
+    timeout: Optional[float] = None,
+) -> List[int]:
+    """Run AllChem.EmbedMultipleConfs with a hard wall-clock timeout.
+
+    The embed runs in a daemon thread; if it hasn't finished within *timeout*
+    seconds we return whatever conformers have already been added to *mol*.
+    RDKit continues executing in the background (threads are not killable),
+    but the caller is unblocked immediately.
+    """
+    if timeout is None:
+        timeout = _MULTIEMBED_TIMEOUT
+
+    before = {int(c.GetId()) for c in mol.GetConformers()}
+    result: List[int] = []
+    exc_holder: List[Optional[BaseException]] = [None]
+
+    def _do_embed():
+        try:
+            ids = list(
+                AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
+            )
+            result.extend(ids)
+        except BaseException as e:
+            exc_holder[0] = e
+
+    t = threading.Thread(target=_do_embed, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        logger.debug(
+            "EmbedMultipleConfs timed out after %.1fs (n_atoms=%d, n_bonds=%d); "
+            "returning partial conformer set.",
+            timeout, mol.GetNumAtoms(), mol.GetNumBonds(),
+        )
+        after = {int(c.GetId()) for c in mol.GetConformers()}
+        return sorted(after - before)
+
+    if exc_holder[0] is not None:
+        raise exc_holder[0]
+
+    return list(result)
 
 
 def _make_random_embed_params(seed: int = 42):
@@ -2606,7 +2684,7 @@ def _embed_hybrid_fragment(fragment_mol):
             params.randomSeed = seed
             params.useRandomCoords = True
             params.enforceChirality = False
-            result = AllChem.EmbedMolecule(work, params)
+            result = _embed_with_timeout(work, params)
         except Exception:
             result = -1
         if result == 0:
@@ -2615,7 +2693,10 @@ def _embed_hybrid_fragment(fragment_mol):
 
     if not embedded:
         try:
-            result = AllChem.EmbedMolecule(work, useRandomCoords=True, randomSeed=42)
+            fallback_params = AllChem.EmbedParameters()
+            fallback_params.useRandomCoords = True
+            fallback_params.randomSeed = 42
+            result = _embed_with_timeout(work, fallback_params)
         except Exception:
             result = -1
         embedded = result == 0
@@ -12215,8 +12296,8 @@ def _embed_multiple_confs_robust(
     # Primary embedding on the original molecule.
     primary_ids: List[int] = []
     try:
-        primary_ids = list(
-            AllChem.EmbedMultipleConfs(mol, numConfs=num_confs, params=_params_for_seed(seed))
+        primary_ids = _embed_multiple_confs_with_timeout(
+            mol, num_confs, _params_for_seed(seed)
         )
     except Exception as emb_exc:
         logger.debug("Primary ETKDG embedding failed (seed=%s): %s", seed, emb_exc)
@@ -12231,16 +12312,54 @@ def _embed_multiple_confs_robust(
                 pass
         return primary_ids
 
-    # Fallback: embed on a temporary de-aromatized copy and transfer coords.
+    # Fallback 1: embed on a temporary de-aromatized copy and transfer coords.
     tmp = _dearomatized_embedding_copy(mol)
-    if tmp is None:
-        return []
-    try:
-        tmp_ids = list(
-            AllChem.EmbedMultipleConfs(tmp, numConfs=num_confs, params=_params_for_seed(seed))
-        )
-    except Exception as emb_exc:
-        logger.debug("Fallback ETKDG embedding failed (seed=%s): %s", seed, emb_exc)
+    tmp_ids: List[int] = []
+    if tmp is not None:
+        try:
+            tmp_ids = _embed_multiple_confs_with_timeout(
+                tmp, num_confs, _params_for_seed(seed)
+            )
+        except Exception as emb_exc:
+            logger.debug(
+                "Dearomatized ETKDG embedding failed (seed=%s): %s",
+                seed, emb_exc,
+            )
+
+    # Fallback 2 (on stall): permissive distance-geometry without ETKDG
+    # torsion knowledge. Unlocks highly connected cage / metallacycle SMILES
+    # where the ETKDG bounds matrix does not converge. Runs on the
+    # dearomatized mol when available, else on the original.
+    if not tmp_ids:
+        base = tmp if tmp is not None else mol
+        try:
+            permissive = _make_random_embed_params(int(seed))
+            try:
+                permissive.clearConfs = False
+            except Exception:
+                pass
+            tmp_ids = _embed_multiple_confs_with_timeout(
+                base, num_confs, permissive
+            )
+        except Exception as emb_exc:
+            logger.debug(
+                "Permissive distance-geometry embedding failed (seed=%s): %s",
+                seed, emb_exc,
+            )
+        if tmp_ids and base is mol:
+            # Already on the target mol — rescale and return.
+            for cid in tmp_ids:
+                try:
+                    _rescale_metal_donor_distances(mol, cid)
+                except Exception:
+                    pass
+            logger.debug(
+                "Embedded %d conformer(s) via permissive distance-geometry fallback (seed=%s).",
+                len(tmp_ids), seed,
+            )
+            return list(tmp_ids)
+
+    if not tmp_ids:
         return []
 
     transferred: List[int] = []
@@ -12258,7 +12377,7 @@ def _embed_multiple_confs_robust(
             except Exception:
                 pass
         logger.debug(
-            "Embedded %d conformers via dearomatized fallback (seed=%s).",
+            "Embedded %d conformers via dearomatized/permissive fallback (seed=%s).",
             len(transferred), seed,
         )
     return transferred
@@ -13368,6 +13487,35 @@ def _verify_topology_from_graph(
                     i: mol_template.GetAtomWithIdx(i).GetSymbol()
                     for i in nm_list
                 }
+                # Pre-compute donor flag + bridging neighbourhood. Inter-
+                # fragment atom pairs where both sides sit in the inner
+                # coordination sphere of bridged metals are geometrically
+                # crowded by topology (two platonic polyhedra sharing an
+                # edge) and may not fit the 1.15·r_cov textbook cutoff.
+                # For those pairs we fall back to 1.00·r_cov, which still
+                # rejects real covalent-range clashes.
+                _metal_atoms = [
+                    a for a in mol_template.GetAtoms()
+                    if a.GetSymbol() in _METAL_SET
+                ]
+                _n_metals = len(_metal_atoms)
+                _bridging_set: set = set()
+                if _n_metals >= 2:
+                    for _a in mol_template.GetAtoms():
+                        if _a.GetAtomicNum() <= 1 or _a.GetSymbol() in _METAL_SET:
+                            continue
+                        _metal_nbrs = sum(
+                            1 for _n in _a.GetNeighbors()
+                            if _n.GetSymbol() in _METAL_SET
+                        )
+                        if _metal_nbrs >= 2:
+                            _bridging_set.add(_a.GetIdx())
+                _donor_set: set = set()
+                if _n_metals >= 2:
+                    for _m in _metal_atoms:
+                        for _n in _m.GetNeighbors():
+                            if _n.GetAtomicNum() > 1:
+                                _donor_set.add(_n.GetIdx())
                 for i in range(len(nm_list)):
                     fi = frag_id.get(nm_list[i], -1)
                     xi, yi, zi = coords[nm_list[i]]
@@ -13378,7 +13526,21 @@ def _verify_topology_from_graph(
                             continue
                         xj, yj, zj = coords[nm_list[j]]
                         rj = _COVALENT_RADII.get(nm_syms[nm_list[j]], 0.75)
-                        thresh = 1.15 * (ri + rj)
+                        # Softer threshold when both atoms sit in the
+                        # inner coordination sphere of a bridged cluster
+                        # (either as donor or as bridging donor), where
+                        # platonic vertex targets cannot be fully
+                        # reconciled.
+                        if (
+                            _n_metals >= 2
+                            and (nm_list[i] in _donor_set
+                                 or nm_list[i] in _bridging_set)
+                            and (nm_list[j] in _donor_set
+                                 or nm_list[j] in _bridging_set)
+                        ):
+                            thresh = 1.00 * (ri + rj)
+                        else:
+                            thresh = 1.15 * (ri + rj)
                         dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                         if dsq < thresh * thresh:
                             return False
@@ -13389,8 +13551,26 @@ def _verify_topology_from_graph(
         # whose non-metal path consists entirely of sp2/aromatic atoms,
         # the metallacycle (metal + backbone) must lie nearly in a plane.
         # A twisted chelate is chemically unrealistic.
+        #
+        # sp2 character is read from the bond graph (does the atom carry at
+        # least one bond of order >= 1.5?) rather than from the mol's
+        # hybridisation / aromaticity flags, so the gate behaves identically
+        # regardless of sanitisation state — essential for the pipeline's
+        # in-line gate and any post-hoc re-check to agree.
         try:
             import numpy as _np
+
+            def _is_sp2_graph(_atom):
+                for _b in _atom.GetBonds():
+                    if (
+                        _b.GetBondType() == Chem.BondType.AROMATIC
+                        or _b.GetBondType() == Chem.BondType.DOUBLE
+                        or _b.GetIsAromatic()
+                        or _b.GetBondTypeAsDouble() >= 1.5
+                    ):
+                        return True
+                return False
+
             metal_idxs = [
                 a.GetIdx() for a in mol_template.GetAtoms()
                 if a.GetSymbol() in _METAL_SET
@@ -13429,11 +13609,10 @@ def _verify_topology_from_graph(
                             node = prev.get(node, -1)
                         if len(path) < 3 or len(path) > 5:
                             continue
-                        # All path atoms must be sp2/aromatic for planarity enforcement
+                        # All path atoms must be sp2 (from graph) for
+                        # planarity enforcement.
                         if not all(
-                            mol_template.GetAtomWithIdx(pi).GetIsAromatic()
-                            or mol_template.GetAtomWithIdx(pi).GetHybridization()
-                            == Chem.rdchem.HybridizationType.SP2
+                            _is_sp2_graph(mol_template.GetAtomWithIdx(pi))
                             for pi in path
                         ):
                             continue
@@ -13928,16 +14107,25 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
         coords = np.array(coords_list, dtype=float)
 
+        def _is_sp2_graph(_atom):
+            for _b in _atom.GetBonds():
+                if (
+                    _b.GetBondType() == Chem.BondType.AROMATIC
+                    or _b.GetBondType() == Chem.BondType.DOUBLE
+                    or _b.GetIsAromatic()
+                    or _b.GetBondTypeAsDouble() >= 1.5
+                ):
+                    return True
+            return False
+
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() in _METAL_SET:
                 continue
             if atom.GetAtomicNum() <= 1:
                 continue
-            is_planar = (
-                atom.GetIsAromatic()
-                or atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2
-            )
-            if not is_planar:
+            # sp2 from bond graph rather than flags so flatten acts
+            # consistently on sanitised and unsanitised mols alike.
+            if not _is_sp2_graph(atom):
                 continue
             heavy_nbrs = [
                 n.GetIdx()
@@ -16083,28 +16271,28 @@ def _chelate_conformer_candidates(
             pass
     frag_mol = rw.GetMol()
 
-    # Extended deterministic seed schedule.  The first block reuses the
-    # project-wide ETKDG seeds (shared with the sampling pool and the
-    # safety-net conformer step) so the chelate conformer choice is
-    # cache-coherent with the rest of the pipeline; the second block
-    # extends the search to 40 total seeds for heavy macrocycles and
-    # tridentate+ ligands where the native-bite matching has a wider
-    # conformational space to cover.
-    _SEEDS = (31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
-              401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
-              4547, 5323, 6199, 7069, 8101, 9203, 10253,
-              11329, 12409, 13499, 14591, 15683, 16787,
-              17891, 19001, 20113, 21227, 22343, 23459,
-              24571, 25703, 26821)
+    # Shared pipeline seed schedule.  The first 12 entries coincide with
+    # the top-level conformer sampling seeds so the chelate conformer
+    # choice is cache-coherent with the rest of the pipeline; the tail
+    # extends the search for heavy macrocycles and tridentate+ ligands
+    # whose native-bite matching requires a wider conformational sweep.
+    _SEEDS = _PIPELINE_SEEDS
 
     def _try_embed(m, seed):
         p = AllChem.ETKDGv3()
         p.useRandomCoords = True
         p.randomSeed = int(seed)
         try:
-            return AllChem.EmbedMolecule(m, p)
+            return _embed_with_timeout(m, p, timeout=_CHELATE_EMBED_TIMEOUT)
         except Exception:
             return -1
+
+    def _preopt_fragment_conformer(_mol_obj, _cid) -> None:
+        """MMFF94/UFF pre-optimisation of an isolated ligand conformer.
+
+        DISABLED pending investigation of Ir(ppy)2(acac) all-cis regression.
+        """
+        return
 
     # Collect every accepted (delta, coords_map) pair and sort by fit.
     accepted: List[Tuple[float, Dict[int, tuple]]] = []
@@ -16141,6 +16329,15 @@ def _chelate_conformer_candidates(
             used = fallback_mol
         else:
             used = frag_mol
+
+        # Ligand-first: relax the isolated conformer with MMFF94/UFF
+        # before evaluating its donor pattern.  The brief pre-opt
+        # removes bonded-term strain baked into ETKDG's initial coords
+        # and gives a chemically sensible ligand shape that DFT can
+        # start from after placement.  On macrocycles this is the
+        # difference between a clean low-energy pucker and a ring
+        # with spurious kinks.
+        _preopt_fragment_conformer(used, cid)
 
         conf = used.GetConformer(cid)
         donor_pts = _np.array([
@@ -16190,11 +16387,16 @@ def _best_chelate_conformer_coords(
     target_bite,
     n_trials: int = 40,
     accept_delta: float = 0.10,
+    rank: int = 0,
+    max_candidates: int = 5,
 ):
-    """Thin wrapper that returns only the single best conformer
-    (backwards-compatible entry point for callers that do not want
-    multiple ligand puckers).  Equivalent to ``_chelate_conformer_candidates(...)[0]``
-    or ``None`` when no seed fits within ``reject_delta``.
+    """Return the ``rank``-th best chelate conformer (``rank=0`` is the best
+    fit).  When ``rank`` exceeds the number of accepted candidates, falls
+    back to the best available one so callers always receive a valid
+    placement when at least one conformer fits the target bite.
+
+    ``max_candidates`` limits how many conformers the underlying search
+    retains; keep it >= the highest ``rank`` the caller intends to query.
     """
     cands = _chelate_conformer_candidates(
         mol,
@@ -16203,9 +16405,13 @@ def _best_chelate_conformer_coords(
         target_bite,
         n_trials=n_trials,
         accept_delta=accept_delta,
-        max_candidates=1,
+        max_candidates=max(max_candidates, rank + 1),
     )
-    return cands[0] if cands else None
+    if not cands:
+        return None
+    if rank < 0 or rank >= len(cands):
+        return cands[0]
+    return cands[rank]
 
 
 def _embed_fragment_procrustes(
@@ -16215,6 +16421,7 @@ def _embed_fragment_procrustes(
     frag_donor_indices: List[int],
     target_positions: List[Tuple[float, float, float]],
     coords: List[Tuple[float, float, float]],
+    chelate_rank: int = 0,
 ) -> bool:
     """Embed a ligand fragment via RDKit ETKDG, then Procrustes-align donors to targets.
 
@@ -16273,7 +16480,8 @@ def _embed_fragment_procrustes(
             diffs = tp[:, None, :] - tp[None, :, :]
             target = np.linalg.norm(diffs, axis=-1)
         coords_map = _best_chelate_conformer_coords(
-            mol, frag_atom_indices, frag_donor_indices, target
+            mol, frag_atom_indices, frag_donor_indices, target,
+            rank=chelate_rank,
         )
         if coords_map is not None:
             frag_coords = np.array(
@@ -16292,7 +16500,7 @@ def _embed_fragment_procrustes(
         params.useRandomCoords = True
         params.randomSeed = 42
         try:
-            cid = AllChem.EmbedMolecule(frag_mol, params)
+            cid = _embed_with_timeout(frag_mol, params, timeout=_CHELATE_EMBED_TIMEOUT)
         except Exception:
             cid = -1
         if cid < 0:
@@ -16313,7 +16521,9 @@ def _embed_fragment_procrustes(
                     frag_mol2.UpdatePropertyCache(strict=False)
                 except Exception:
                     pass
-                cid2 = AllChem.EmbedMolecule(frag_mol2, params)
+                cid2 = _embed_with_timeout(
+                    frag_mol2, params, timeout=_CHELATE_EMBED_TIMEOUT
+                )
                 if cid2 < 0:
                     return False
                 frag_mol = frag_mol2
@@ -16747,6 +16957,7 @@ def _build_topology_xyz(
     geometry: str,
     apply_uff: bool,
     conf_id: Optional[int] = None,
+    chelate_rank: int = 0,
 ) -> Optional[str]:
     """Build a DELFIN XYZ for one topological arrangement.
 
@@ -16766,6 +16977,11 @@ def _build_topology_xyz(
             builder auto-selects the best-scoring conformer.  Callers iterating
             over multiple alternative binding modes can use this to avoid
             depending on a single (possibly poor) template.
+        chelate_rank: Which chelate conformer to use for polydentate
+            fragments.  Rank 0 is the tightest native-bite match; higher
+            ranks unlock additional backbone puckers for the same platonic
+            placement and yield genuinely distinct geometries that DFT
+            can discriminate.
 
     Returns:
         DELFIN-format XYZ string, or None on failure.
@@ -16852,7 +17068,8 @@ def _build_topology_xyz(
                     continue
                 try:
                     ok = _embed_fragment_procrustes(
-                        mol, metal_idx, frag, frag_donors, tgt_positions, coords
+                        mol, metal_idx, frag, frag_donors, tgt_positions, coords,
+                        chelate_rank=chelate_rank,
                     )
                 except Exception as frag_exc:
                     logger.debug(
@@ -17616,36 +17833,82 @@ def _generate_topological_isomers(
         # ProcessPoolExecutor is needed for real parallelism.
         # Strategy: build pre-UFF Procrustes XYZ in main process (fast),
         # batch all UFF calls through ProcessPool, then quality-check.
+        #
+        # For each (canonical_form, permutation) we also try additional
+        # chelate-conformer ranks when the fragment-procrustes builder
+        # is actually engaged — i.e. when no useful rigid template is
+        # available or template placement fails.  This yields distinct
+        # ligand puckers for systems that cannot reuse the template and
+        # keeps template-placed systems free of redundant duplicates
+        # (since the template ignores ``chelate_rank`` anyway).  Final
+        # dedup is by fingerprint + RMSD downstream.
+        _CHELATE_RANK_VARIANTS = 3 if chelate_ps else 1
         _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
         for cf, pm in feasible_isomers:
             if len(_pre_uff_batch) + len(results) >= max_isomers * 3:
                 break
             gn = cf[0]
+            # First attempt: default rank 0.  Since
+            # ``_build_topology_xyz`` prefers the rigid template when
+            # ``mol.GetNumConformers() > 0``, rank 0 is all we need in
+            # the common case.  Collect the XYZ signature so we can
+            # detect template-based builds and skip wasteful higher
+            # ranks that would regenerate identical output.
             try:
-                xyz = None
+                xyz0 = None
                 for _tc in topo_template_cids:
-                    xyz = _build_topology_xyz(
+                    xyz0 = _build_topology_xyz(
                         mol, metal_idx, donor_indices, pm, gn,
-                        False, conf_id=_tc,
+                        False, conf_id=_tc, chelate_rank=0,
                     )
-                    if xyz is not None:
+                    if xyz0 is not None:
                         break
-                if xyz is None:
-                    continue
-                # No pre-UFF clash gate — Procrustes can have transient
-                # overlaps that UFF resolves. Graph check after UFF.
-                # Build constraints for this permutation.
-                coord_c = None
-                if apply_uff:
-                    try:
-                        coord_c = _build_coordination_constraints_from_xyz(
-                            mol, xyz,
-                        )
-                    except Exception:
-                        pass
-                _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
+                if xyz0 is not None:
+                    coord_c = None
+                    if apply_uff:
+                        try:
+                            coord_c = _build_coordination_constraints_from_xyz(
+                                mol, xyz0,
+                            )
+                        except Exception:
+                            pass
+                    _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+                continue
+
+            # Additional ranks only when the rank-0 build clearly came
+            # from the fragment-procrustes branch (no usable template
+            # available) — otherwise we would spam duplicates.  That
+            # condition is equivalent to the mol having no conformers
+            # at all.
+            if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
+                continue
+            for _crank in range(1, _CHELATE_RANK_VARIANTS):
+                if len(_pre_uff_batch) + len(results) >= max_isomers * 3:
+                    break
+                try:
+                    xyz = None
+                    for _tc in topo_template_cids:
+                        xyz = _build_topology_xyz(
+                            mol, metal_idx, donor_indices, pm, gn,
+                            False, conf_id=_tc, chelate_rank=_crank,
+                        )
+                        if xyz is not None:
+                            break
+                    if xyz is None:
+                        continue
+                    coord_c = None
+                    if apply_uff:
+                        try:
+                            coord_c = _build_coordination_constraints_from_xyz(
+                                mol, xyz,
+                            )
+                        except Exception:
+                            pass
+                    _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
+                except Exception as exc:
+                    logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
 
         # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
         if apply_uff and _pre_uff_batch:
@@ -18736,15 +18999,70 @@ def smiles_to_xyz_isomers(
                     results_hapto.extend(hapto_sigma_iso)
             except Exception as _hse:
                 logger.debug("Hapto sigma enumeration failed: %s", _hse)
+
+            # Hapto diversity branch — explicitly user-authorised
+            # non-deterministic augmentation.  Cp/arene ring orientation has
+            # genuine rotational variety that a single deterministic
+            # build-up cannot capture; Open Babel's weighted-rotor
+            # WeightedRotorSearch explores that space.  Every OB conformer
+            # is re-run through the topology gate so nothing broken slips
+            # through.  σ-complexes stay on the deterministic path.
+            _mol_hapto_gate: Optional[object] = None
+            try:
+                _mol_hapto_gate = _prepare_mol_for_embedding(smiles, hapto_approx=True)
+            except Exception:
+                _mol_hapto_gate = None
+            if OPENBABEL_AVAILABLE:
+                try:
+                    _HAPTO_OB_RESTARTS = 4
+                    _HAPTO_OB_CONFS_PER_RUN = 30
+                    _seen_xyz_keys: set = {
+                        "\n".join(l.strip() for l in _xyz.splitlines() if l.strip())
+                        for _xyz, _lab in results_hapto
+                    }
+                    for _run in range(_HAPTO_OB_RESTARTS):
+                        _ob_blocks, _ob_err = _openbabel_generate_conformer_xyz(
+                            smiles,
+                            num_confs=_HAPTO_OB_CONFS_PER_RUN,
+                            deterministic=False,
+                        )
+                        if not _ob_blocks:
+                            continue
+                        for _block in _ob_blocks:
+                            _key = "\n".join(
+                                l.strip() for l in _block.splitlines() if l.strip()
+                            )
+                            if _key in _seen_xyz_keys:
+                                continue
+                            # Topology gate — reject anything that broke the
+                            # M-D graph or clashed fragments.
+                            if _mol_hapto_gate is not None:
+                                try:
+                                    if not _verify_topology_from_graph(
+                                        _block, _mol_hapto_gate
+                                    ):
+                                        continue
+                                except Exception:
+                                    pass
+                            _seen_xyz_keys.add(_key)
+                            results_hapto.append(
+                                (_block, f'hapto-diversity-{len(results_hapto):03d}')
+                            )
+                            if len(results_hapto) >= max_isomers:
+                                break
+                        if len(results_hapto) >= max_isomers:
+                            break
+                except Exception as _hd_exc:
+                    logger.debug("Hapto OB diversity branch failed: %s", _hd_exc)
+
             # For mixed hapto+regular multi-metal: DON'T early-return.
             # Fall through to multi-metal sampling augmentation so the
             # non-hapto metal's coordination isomers are explored.
             _n_metals_hapto = 0
             try:
-                _mol_h = _prepare_mol_for_embedding(smiles, hapto_approx=True)
-                if _mol_h:
+                if _mol_hapto_gate is not None:
                     _n_metals_hapto = sum(
-                        1 for a in _mol_h.GetAtoms()
+                        1 for a in _mol_hapto_gate.GetAtoms()
                         if a.GetSymbol() in _METAL_SET
                     )
             except Exception:
@@ -18817,7 +19135,7 @@ def smiles_to_xyz_isomers(
     # Embed multiple conformers with deterministic seed schedule.
     # Seeds are independent → parallelize with ThreadPoolExecutor.
     try:
-        seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
+        seeds = list(_TOP_LEVEL_SEEDS)
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         _n_workers = min(len(seeds), os.cpu_count() or 4)
@@ -19977,7 +20295,7 @@ def smiles_to_xyz(
             # --- RDKit ETKDG with 12 diverse fixed seeds (~17 confs/seed) ---
             # Use a thread-pool with a global timeout to prevent hangs on
             # complex metal ring systems where ETKDG can stall.
-            seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
+            seeds = list(_TOP_LEVEL_SEEDS)
             per_seed = max(1, 200 // len(seeds))
             _etkdg_deadline = _EMBED_TIMEOUT * 3  # total budget for all seeds
             _etkdg_start = __import__('time').monotonic()
