@@ -17375,20 +17375,23 @@ def _generate_topological_isomers(
         except Exception:
             return True
 
-    # Per-metal enumeration: only for truly mono-metallic complexes.  For
-    # multi-metal systems the per-metal loop would place one metal's
-    # polyhedron and then overwrite shared atoms when the next metal is
-    # processed.  The multinuclear coupled-enumeration block further
-    # down handles multi-metal correctly via the Cartesian product of
-    # per-metal isomer sets on a shared M-bridge-M scaffold.
+    # Per-metal constitutional enumeration.  Runs for every metal in
+    # the template including multi-metal systems: ``_build_topology_xyz``
+    # consults ``_build_topology_xyz_from_template`` first, which
+    # preserves every atom outside the current metal's own fragments —
+    # the other metal and any bridging donors stay at their template
+    # positions.  The strict graph gate downstream filters any build
+    # that did violate topology, so broader per-metal enumeration
+    # yields more CONSTITUTIONAL candidates without letting the
+    # old bimetallic-broken geometries through.  The multinuclear
+    # coupled-enumeration block further down still runs and adds the
+    # Cartesian product on top of the per-metal constitutional set.
     _n_metals_in_mol = sum(
         1 for _a in mol.GetAtoms() if _a.GetSymbol() in _METAL_SET
     )
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
-        if _n_metals_in_mol >= 2:
-            break
         metal_idx = atom.GetIdx()
         donor_indices = [nbr.GetIdx() for nbr in atom.GetNeighbors()]
         n_coord = len(donor_indices)
