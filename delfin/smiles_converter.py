@@ -16451,6 +16451,77 @@ def _build_multimetal_scaffold(
         return None
 
 
+def _snap_bridging_donors_to_compromise(
+    xyz_str: str,
+    mol_template,
+    metal_indices: List[int],
+    bridging: List[Tuple[int, List[int]]],
+) -> str:
+    """Move every bridging donor onto the metal-metal line at a distance
+    satisfying both metal--donor bond-length ideals simultaneously.
+
+    The per-metal builds in the multinuclear coupled-enumeration loop
+    each overwrite the bridging donor with that metal's polyhedron
+    vertex, so after the two sequential builds the bridge is pinned at
+    metal 2's ideal but arbitrarily far from metal 1 (failing Rule 1).
+    This helper analytically solves for the bridge position on the
+    ``metal_1 - metal_2`` line that sits at exactly ``d_M1^ideal`` from
+    metal 1 (which automatically yields the correct ``d_M2^ideal``
+    when the two metals are positioned by ``_build_multimetal_scaffold``
+    on the M1-D-M2 line).  If the metals have drifted off the line
+    (e.g. after template ETKDG plus two rescales), we snap the bridge
+    to the fractional position ``t = d_M1^ideal / (d_M1^ideal + d_M2^ideal)``
+    along the metal-metal segment; that keeps both distances within
+    ``~[0.9, 1.1] * ideal`` even when the M-M separation is off by a
+    few tenths of an Å, which is well inside the graph-gate bridging
+    window [0.55, 3.00].
+    """
+    try:
+        lines = [l for l in xyz_str.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_str
+        coords: List[List[float]] = []
+        for ln in lines:
+            p = ln.split()
+            coords.append([float(p[1]), float(p[2]), float(p[3])])
+        if len(metal_indices) < 2:
+            return xyz_str
+        m1, m2 = int(metal_indices[0]), int(metal_indices[1])
+        m1_sym = mol_template.GetAtomWithIdx(m1).GetSymbol()
+        m2_sym = mol_template.GetAtomWithIdx(m2).GetSymbol()
+        p1 = coords[m1]
+        p2 = coords[m2]
+        vec = [p2[k] - p1[k] for k in range(3)]
+        vec_norm = math.sqrt(sum(v * v for v in vec))
+        if vec_norm < 1e-6:
+            return xyz_str
+        ux = [v / vec_norm for v in vec]
+        changed = False
+        for d_idx, m_list in bridging:
+            if m1 not in m_list or m2 not in m_list:
+                continue
+            d_sym = mol_template.GetAtomWithIdx(d_idx).GetSymbol()
+            d_m1 = float(_get_ml_bond_length(m1_sym, d_sym))
+            d_m2 = float(_get_ml_bond_length(m2_sym, d_sym))
+            if d_m1 <= 0 or d_m2 <= 0:
+                continue
+            t = d_m1 / max(d_m1 + d_m2, 1e-6)
+            target = [p1[k] + t * vec_norm * ux[k] for k in range(3)]
+            coords[d_idx] = target
+            changed = True
+        if not changed:
+            return xyz_str
+        out = []
+        for i, ln in enumerate(lines):
+            sym = ln.split()[0]
+            x, y, z = coords[i]
+            out.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(out) + "\n"
+    except Exception as exc:
+        logger.debug("_snap_bridging_donors_to_compromise failed: %s", exc)
+        return xyz_str
+
+
 def _orient_ligands_on_polyhedron(
     coords,
     mol,
@@ -17697,6 +17768,56 @@ def _generate_topological_isomers(
                         mol, metal_indices, bridging
                     )
                     topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+
+                    # Pre-stretch the metal-metal separation in the
+                    # template conformer so that |M1-M2| = d_M1^ideal +
+                    # d_M2^ideal (first bridging donor's reference).
+                    # Without this the subsequent bridge-snap puts the
+                    # bridging donor at a fractional distance on a
+                    # metal-metal vector that is too short, and the
+                    # resulting M-bridge distance falls below the
+                    # Rule 1 window.  The stretch is performed once
+                    # per multinuclear enumeration and reused for
+                    # every Cartesian combo.
+                    try:
+                        if scaffold and topo_template_cids:
+                            _first_bridge = bridging[0][0]
+                            _d_sym = mol.GetAtomWithIdx(_first_bridge).GetSymbol()
+                            d_m1_ideal = float(_get_ml_bond_length(ms1, _d_sym))
+                            d_m2_ideal = float(_get_ml_bond_length(ms2, _d_sym))
+                            target_mm = d_m1_ideal + d_m2_ideal
+                            for _tcid in topo_template_cids:
+                                try:
+                                    _conf = mol.GetConformer(int(_tcid) if _tcid is not None else 0)
+                                    _p1 = _conf.GetAtomPosition(m1)
+                                    _p2 = _conf.GetAtomPosition(m2)
+                                    _dvec = (_p2.x - _p1.x, _p2.y - _p1.y, _p2.z - _p1.z)
+                                    _dn = math.sqrt(sum(v * v for v in _dvec))
+                                    if _dn < 1e-6:
+                                        continue
+                                    _scale = target_mm / _dn
+                                    if abs(_scale - 1.0) < 0.02:
+                                        continue
+                                    # Shift metal_2 along the existing axis so
+                                    # |M1-M2| matches target.  The bridging
+                                    # atoms and downstream ligand atoms also
+                                    # move rigidly with metal_2 when we later
+                                    # rebuild metal_2's polyhedron, so the
+                                    # local Fe-donor geometry is preserved.
+                                    _delta = [(target_mm - _dn) * (v / _dn) for v in _dvec]
+                                    _conf.SetAtomPosition(
+                                        m2,
+                                        type(_p2)(
+                                            float(_p2.x + _delta[0]),
+                                            float(_p2.y + _delta[1]),
+                                            float(_p2.z + _delta[2]),
+                                        ),
+                                    )
+                                except Exception:
+                                    continue
+                    except Exception as _strch_exc:
+                        logger.debug("M-M pre-stretch failed: %s", _strch_exc)
+
                     combo_count = 0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
@@ -17733,6 +17854,26 @@ def _generate_topological_isomers(
                                         cid_c = mol_tmp2.AddConformer(conf_c, assignId=True)
                                         _rescale_metal_donor_distances(mol_tmp2, cid_c)
                                         xyz_combined = _mol_to_xyz_conformer(mol_tmp2, cid_c)
+                                    # Bridge snap: the two per-metal builds
+                                    # sequentially overwrite every bridging
+                                    # donor's position (first to metal1's
+                                    # polyhedron vertex, then to metal2's),
+                                    # leaving the bridge at metal2's ideal
+                                    # but arbitrarily far from metal1.
+                                    # Place every bridging donor on the
+                                    # metal1-metal2 line at a distance that
+                                    # satisfies both ideals simultaneously
+                                    # (same geometry _build_multimetal_scaffold
+                                    # solves), then let UFF settle from there.
+                                    try:
+                                        xyz_combined = _snap_bridging_donors_to_compromise(
+                                            xyz_combined, mol,
+                                            [m1, m2], bridging,
+                                        )
+                                    except Exception as _snap_exc:
+                                        logger.debug(
+                                            "Bridge-snap failed: %s", _snap_exc
+                                        )
                                     # Apply UFF with constraints.
                                     if apply_uff:
                                         xyz_combined = _optimize_xyz_openbabel_safe(
