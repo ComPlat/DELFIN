@@ -870,12 +870,18 @@ def create_tab(ctx):
                     # hapto (hapto builder needs OB conformer diversity).
                     from delfin.smiles_converter import _probe_hapto_groups_from_smiles
                     _has_hapto = bool(_probe_hapto_groups_from_smiles(cleaned_data))
+                    # Dashboard button uses ``quality_mode='fast'`` by
+                    # default (12 seeds, 1 chelate rank, 1 template) so
+                    # interactive latency stays in the seconds range.
+                    # Batch / scripted callers can still get the deep
+                    # 40-seed ``'max'`` pool via the module API.
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
                         collapse_label_variants=True,
                         include_binding_mode_isomers=True,
                         deterministic=not _has_hapto,
+                        quality_mode="fast",
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
