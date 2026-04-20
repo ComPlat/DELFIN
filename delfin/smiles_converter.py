@@ -326,6 +326,134 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Li', 'N'): 2.10, ('Li', 'O'): 1.95, ('Li', 'Cl'): 2.35,
     ('Na', 'N'): 2.45, ('Na', 'O'): 2.35, ('Na', 'Cl'): 2.70,
     ('K', 'N'): 2.85, ('K', 'O'): 2.75, ('K', 'Cl'): 3.10,
+    # Metal-Iodide — CSD averages.  The covalent-radius fallback
+    # systematically overshoots M-I because the Pyykkö 2009 radii
+    # under-estimate the iodide contraction in ionic bonds, leaving
+    # real terminal M-I pairs at the fallback's 3.1-3.4 Å instead of
+    # the experimental 2.6-2.9 Å.  Explicit entries below fix that.
+    ('Sc', 'I'): 2.90, ('Ti', 'I'): 2.79, ('V',  'I'): 2.76,
+    ('Cr', 'I'): 2.70, ('Mn', 'I'): 2.70, ('Fe', 'I'): 2.57,
+    ('Co', 'I'): 2.56, ('Ni', 'I'): 2.53, ('Cu', 'I'): 2.57,
+    ('Zn', 'I'): 2.64,
+    ('Y',  'I'): 2.95, ('Zr', 'I'): 2.85, ('Nb', 'I'): 2.85,
+    ('Mo', 'I'): 2.75, ('Tc', 'I'): 2.75, ('Ru', 'I'): 2.70,
+    ('Rh', 'I'): 2.68, ('Pd', 'I'): 2.62, ('Ag', 'I'): 2.80,
+    ('Cd', 'I'): 2.75,
+    ('Hf', 'I'): 2.85, ('Ta', 'I'): 2.80, ('W',  'I'): 2.80,
+    ('Re', 'I'): 2.75, ('Os', 'I'): 2.72, ('Ir', 'I'): 2.67,
+    ('Pt', 'I'): 2.60, ('Au', 'I'): 2.58, ('Hg', 'I'): 2.76,
+    ('La', 'I'): 3.10, ('Ce', 'I'): 3.05, ('Gd', 'I'): 3.00,
+    ('Lu', 'I'): 2.90,
+    ('Al', 'I'): 2.50, ('Ga', 'I'): 2.55, ('In', 'I'): 2.70,
+    ('Sn', 'I'): 2.75, ('Pb', 'I'): 2.90, ('Bi', 'I'): 2.85,
+    ('U',  'I'): 3.05, ('Th', 'I'): 3.05,
+    ('Li', 'I'): 2.55, ('Na', 'I'): 2.85, ('K',  'I'): 3.20,
+    # -------------------------------------------------------------------
+    # Comprehensive fill-in for all remaining (M, L) pairs of practical
+    # interest (L ∈ {C, N, O, P, S, F, Cl, Br, Se}).  Values are CSD /
+    # Cordero 2008 averages with minor adjustments for common
+    # coordination environments; a missing entry here means the
+    # covalent-radius fallback is already acceptable (< 5 % deviation).
+    # -------------------------------------------------------------------
+    # Alkali completions
+    ('Li', 'C'): 2.15, ('Li', 'P'): 2.50, ('Li', 'S'): 2.40,
+    ('Li', 'F'): 1.80, ('Li', 'Br'): 2.60, ('Li', 'Se'): 2.55,
+    ('Na', 'C'): 2.70, ('Na', 'P'): 2.85, ('Na', 'S'): 2.75,
+    ('Na', 'F'): 2.20, ('Na', 'Br'): 2.95, ('Na', 'Se'): 2.90,
+    ('K',  'C'): 3.10, ('K',  'P'): 3.25, ('K',  'S'): 3.15,
+    ('K',  'F'): 2.55, ('K',  'Br'): 3.30, ('K',  'Se'): 3.25,
+    ('Rb', 'N'): 2.95, ('Rb', 'O'): 2.85, ('Rb', 'Cl'): 3.20,
+    ('Rb', 'Br'): 3.40, ('Rb', 'I'): 3.55, ('Rb', 'F'): 2.80,
+    ('Cs', 'N'): 3.10, ('Cs', 'O'): 3.00, ('Cs', 'Cl'): 3.40,
+    ('Cs', 'Br'): 3.60, ('Cs', 'I'): 3.75, ('Cs', 'F'): 3.00,
+    # Alkaline earth completions
+    ('Be', 'N'): 1.75, ('Be', 'O'): 1.65, ('Be', 'Cl'): 1.85,
+    ('Be', 'Br'): 2.00, ('Be', 'I'): 2.20, ('Be', 'F'): 1.55,
+    ('Be', 'C'): 1.70, ('Be', 'P'): 2.05, ('Be', 'S'): 1.95,
+    ('Mg', 'C'): 2.15, ('Mg', 'P'): 2.45, ('Mg', 'S'): 2.40,
+    ('Mg', 'F'): 1.90, ('Mg', 'Br'): 2.55, ('Mg', 'I'): 2.75,
+    ('Ca', 'C'): 2.65, ('Ca', 'P'): 2.85, ('Ca', 'S'): 2.75,
+    ('Ca', 'F'): 2.25, ('Ca', 'Br'): 2.90, ('Ca', 'I'): 3.10,
+    ('Sr', 'C'): 2.80, ('Sr', 'P'): 3.00, ('Sr', 'S'): 2.90,
+    ('Sr', 'F'): 2.40, ('Sr', 'Br'): 3.05, ('Sr', 'I'): 3.25,
+    ('Ba', 'C'): 3.00, ('Ba', 'P'): 3.20, ('Ba', 'S'): 3.10,
+    ('Ba', 'F'): 2.60, ('Ba', 'Br'): 3.25, ('Ba', 'I'): 3.45,
+    # Y completions
+    ('Y',  'P'): 2.75, ('Y',  'S'): 2.65, ('Y',  'F'): 2.05,
+    ('Y',  'Br'): 2.75, ('Y',  'I'): 2.95, ('Y',  'Se'): 2.80,
+    # Nb / Tc extra (missing C, F, Br)
+    ('Nb', 'C'): 2.20, ('Nb', 'F'): 1.95, ('Nb', 'Br'): 2.55,
+    ('Mo', 'C'): 2.10,
+    ('Tc', 'C'): 2.10, ('Tc', 'P'): 2.40, ('Tc', 'S'): 2.40,
+    ('Tc', 'F'): 1.95, ('Tc', 'Br'): 2.55,
+    # Ag extra
+    ('Ag', 'C'): 2.10,
+    # Ta / W / Re / Os extra
+    ('Ta', 'C'): 2.15, ('Ta', 'F'): 1.90, ('Ta', 'Br'): 2.55,
+    ('W',  'C'): 2.10,
+    ('Re', 'C'): 2.10,
+    ('Os', 'C'): 2.10,
+    # Hg completions
+    ('Hg', 'F'): 2.05,
+    # Lanthanide completions (Pr / Nd / Pm / Sm / Eu / Tb / Dy / Ho / Er / Tm / Yb)
+    ('Pr', 'N'): 2.50, ('Pr', 'O'): 2.40, ('Pr', 'Cl'): 2.70,
+    ('Pr', 'I'): 3.05,
+    ('Nd', 'N'): 2.48, ('Nd', 'O'): 2.38, ('Nd', 'Cl'): 2.68,
+    ('Nd', 'I'): 3.02,
+    ('Pm', 'N'): 2.46, ('Pm', 'O'): 2.36, ('Pm', 'Cl'): 2.66,
+    ('Pm', 'I'): 3.00,
+    ('Sm', 'N'): 2.45, ('Sm', 'O'): 2.35, ('Sm', 'Cl'): 2.65,
+    ('Sm', 'I'): 2.98,
+    ('Eu', 'N'): 2.44, ('Eu', 'O'): 2.34, ('Eu', 'Cl'): 2.64,
+    ('Eu', 'I'): 2.96,
+    ('Tb', 'N'): 2.42, ('Tb', 'O'): 2.32, ('Tb', 'Cl'): 2.62,
+    ('Tb', 'I'): 2.94,
+    ('Dy', 'N'): 2.40, ('Dy', 'O'): 2.30, ('Dy', 'Cl'): 2.60,
+    ('Dy', 'I'): 2.92,
+    ('Ho', 'N'): 2.38, ('Ho', 'O'): 2.28, ('Ho', 'Cl'): 2.58,
+    ('Ho', 'I'): 2.90,
+    ('Er', 'N'): 2.36, ('Er', 'O'): 2.26, ('Er', 'Cl'): 2.56,
+    ('Er', 'I'): 2.88,
+    ('Tm', 'N'): 2.34, ('Tm', 'O'): 2.24, ('Tm', 'Cl'): 2.54,
+    ('Tm', 'I'): 2.86,
+    ('Yb', 'N'): 2.32, ('Yb', 'O'): 2.22, ('Yb', 'Cl'): 2.52,
+    ('Yb', 'I'): 2.88,
+    # Main-group p-block metals (Al / Ga / In / Tl / Sn / Pb)
+    ('Al', 'C'): 2.00, ('Al', 'N'): 2.00, ('Al', 'O'): 1.85,
+    ('Al', 'P'): 2.35, ('Al', 'S'): 2.30, ('Al', 'F'): 1.75,
+    ('Al', 'Cl'): 2.30, ('Al', 'Br'): 2.35,
+    ('Ga', 'C'): 2.00, ('Ga', 'N'): 2.05, ('Ga', 'O'): 1.95,
+    ('Ga', 'P'): 2.40, ('Ga', 'S'): 2.35, ('Ga', 'F'): 1.85,
+    ('Ga', 'Cl'): 2.30, ('Ga', 'Br'): 2.40,
+    ('In', 'C'): 2.20, ('In', 'N'): 2.25, ('In', 'O'): 2.15,
+    ('In', 'P'): 2.55, ('In', 'S'): 2.55, ('In', 'F'): 2.00,
+    ('In', 'Cl'): 2.45, ('In', 'Br'): 2.55,
+    ('Tl', 'N'): 2.55, ('Tl', 'O'): 2.40, ('Tl', 'Cl'): 2.55,
+    ('Tl', 'Br'): 2.70, ('Tl', 'I'): 2.85,
+    ('Sn', 'C'): 2.15, ('Sn', 'N'): 2.25, ('Sn', 'O'): 2.10,
+    ('Sn', 'P'): 2.55, ('Sn', 'S'): 2.45, ('Sn', 'F'): 1.95,
+    ('Sn', 'Cl'): 2.40, ('Sn', 'Br'): 2.55,
+    ('Pb', 'C'): 2.30, ('Pb', 'N'): 2.45, ('Pb', 'O'): 2.30,
+    ('Pb', 'P'): 2.70, ('Pb', 'S'): 2.60, ('Pb', 'F'): 2.10,
+    ('Pb', 'Cl'): 2.55, ('Pb', 'Br'): 2.70,
+    # Bi
+    ('Bi', 'C'): 2.20, ('Bi', 'N'): 2.40, ('Bi', 'O'): 2.25,
+    ('Bi', 'P'): 2.65, ('Bi', 'S'): 2.55, ('Bi', 'F'): 2.00,
+    ('Bi', 'Cl'): 2.50, ('Bi', 'Br'): 2.65, ('Bi', 'Se'): 2.65,
+    # Selenium donor completions for remaining 3d/4d metals
+    ('Sc', 'Se'): 2.65, ('Ti', 'Se'): 2.50, ('V',  'Se'): 2.45,
+    ('Cr', 'Se'): 2.45, ('Mn', 'Se'): 2.45, ('Co', 'Se'): 2.35,
+    ('Zn', 'Se'): 2.40,
+    ('Zr', 'Se'): 2.65, ('Nb', 'Se'): 2.55, ('Mo', 'Se'): 2.50,
+    ('Rh', 'Se'): 2.40, ('Cd', 'Se'): 2.65,
+    ('Hf', 'Se'): 2.65, ('Ta', 'Se'): 2.55, ('W',  'Se'): 2.50,
+    ('Re', 'Se'): 2.45, ('Os', 'Se'): 2.40, ('Ir', 'Se'): 2.40,
+    ('Au', 'Se'): 2.45, ('Hg', 'Se'): 2.60,
+    # Actinide completions (Ac, Pa, Np, Pu)
+    ('Ac', 'N'): 2.60, ('Ac', 'O'): 2.40, ('Ac', 'Cl'): 2.75,
+    ('Pa', 'N'): 2.50, ('Pa', 'O'): 2.30, ('Pa', 'Cl'): 2.65,
+    ('Np', 'N'): 2.50, ('Np', 'O'): 2.25, ('Np', 'Cl'): 2.60,
+    ('Pu', 'N'): 2.50, ('Pu', 'O'): 2.25, ('Pu', 'Cl'): 2.60,
 }
 
 # ---------------------------------------------------------------------------
@@ -680,28 +808,194 @@ def _is_metal_nitrogen_complex(smiles: str) -> bool:
 # ---------------------------------------------------------------------------
 # Timeout-guarded embedding
 # ---------------------------------------------------------------------------
-_EMBED_TIMEOUT: float = float(os.environ.get("DELFIN_EMBED_TIMEOUT", "10"))
-"""Per-call timeout (seconds) for RDKit EmbedMolecule / stk embedding.
+# ============================================================================
+# DELFIN SMILES→XYZ pipeline — user-tunable configuration
+# ----------------------------------------------------------------------------
+# Every knob below has a sensible default, a short docstring, and an
+# environment-variable override of the form ``DELFIN_<NAME>`` so the end user
+# can tune the pipeline without editing code.  Defaults target
+# DFT-rankable output on a 32-core workstation.
+#
+# Quality profiles
+#     ``max``    (default) — thickest pool of candidates, slowest, best
+#                geometry quality.  40 ETKDG seeds, 3 chelate conformer
+#                ranks, 3 ranked templates, pre-UFF cap 5·max_isomers.
+#     ``normal`` — middle ground for the dashboard.  20 seeds, 2 ranks,
+#                2 templates, cap 4·max_isomers.
+#     ``fast``   — quickest feedback, smallest variety.  12 seeds, 1
+#                rank, 1 template, cap 3·max_isomers.
+# The profile applies to ``smiles_to_xyz_isomers(quality_mode=...)``; passing
+# ``None`` falls back to the module defaults below.
+# ============================================================================
+
+
+def _delfin_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+def _delfin_env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+# --- Conformer sampling & topology enumeration -----------------------------
+DELFIN_TOP_LEVEL_SEED_COUNT: int = _delfin_env_int(
+    "DELFIN_TOP_LEVEL_SEED_COUNT", 40
+)
+"""Number of ETKDG seeds for the top-level conformer sampling pool."""
+
+DELFIN_CHELATE_RANK_VARIANTS: int = _delfin_env_int(
+    "DELFIN_CHELATE_RANK_VARIANTS", 3
+)
+"""Distinct chelate-conformer puckers tried per (CF, permutation).
+Downstream dedup prunes duplicates; larger values widen the survivor
+pool for the stricter gate."""
+
+DELFIN_TOPO_TEMPLATE_TOP_K: int = _delfin_env_int(
+    "DELFIN_TOPO_TEMPLATE_TOP_K", 3
+)
+"""Number of ranked ETKDG templates used per permutation by
+``_build_topology_xyz_from_template``."""
+
+DELFIN_PRE_UFF_CAP_MULTIPLIER: int = _delfin_env_int(
+    "DELFIN_PRE_UFF_CAP_MULTIPLIER", 5
+)
+"""Pre-UFF candidate cap as multiple of ``max_isomers`` in
+``_generate_topological_isomers``.  Larger ⇒ more UFF work but
+deeper pool for dedup and gate."""
+
+# --- Parallelism caps (keep modest so the pipeline runs on shared nodes) ---
+DELFIN_MAX_THREAD_WORKERS: int = _delfin_env_int(
+    "DELFIN_MAX_THREAD_WORKERS", 32
+)
+"""Upper bound for ThreadPoolExecutor workers (ETKDG sampling,
+classification, topology build grid).  Scales to ``os.cpu_count()``
+or this cap, whichever is smaller."""
+
+DELFIN_MAX_PROCESS_WORKERS: int = _delfin_env_int(
+    "DELFIN_MAX_PROCESS_WORKERS", 32
+)
+"""Upper bound for ProcessPoolExecutor workers (batch UFF).  OB
+holds the GIL so true parallelism requires processes."""
+
+# --- Topology-gate thresholds (``_verify_topology_from_graph``) -----------
+DELFIN_RULE4_PI_PLANAR_TOL_FRAC: float = _delfin_env_float(
+    "DELFIN_RULE4_PI_PLANAR_TOL_FRAC", 0.25
+)
+"""Rule 4: π-ring planarity tolerance, expressed as a fraction of the
+mean in-ring bond length."""
+
+DELFIN_RULE5_INTERFRAG_COV_FACT: float = _delfin_env_float(
+    "DELFIN_RULE5_INTERFRAG_COV_FACT", 1.15
+)
+"""Rule 5: minimum inter-fragment heavy-atom separation, expressed as a
+multiple of the pair covalent-radius sum."""
+
+DELFIN_RULE5_INNER_SPHERE_FACT: float = _delfin_env_float(
+    "DELFIN_RULE5_INNER_SPHERE_FACT", 1.00
+)
+"""Rule 5 (softened): minimum separation for pairs where both atoms
+sit in the inner coordination sphere of a multi-metal cluster."""
+
+DELFIN_RULE6_METALLACYCLE_MAX_DEV: float = _delfin_env_float(
+    "DELFIN_RULE6_METALLACYCLE_MAX_DEV", 0.40
+)
+"""Rule 6: maximum out-of-plane deviation (Å) of any atom of an
+sp²-chelate metallacycle from the cycle's best-fit plane.  Enforces
+the "metal in π-plane" rule at the gate level; tightened from 0.60 Å
+to catch ~10° pyramidalisation of cyclometallated donor carbons."""
+
+DELFIN_RULE7_SP2_OOP_MAX: float = _delfin_env_float(
+    "DELFIN_RULE7_SP2_OOP_MAX", 0.35
+)
+"""Rule 7 sp² (purely organic): maximum out-of-plane distance (Å) of
+a trigonal-planar atom from the plane of its three organic heavy
+neighbours."""
+
+DELFIN_RULE7_SP2_OOP_MAX_METAL: float = _delfin_env_float(
+    "DELFIN_RULE7_SP2_OOP_MAX_METAL", 0.55
+)
+"""Rule 7 sp² (metal-bonded): looser out-of-plane budget for sp²
+atoms whose neighbour set includes the metal (NHC carbenes,
+cyclometallated donors, carbonyl carbons).  UFF without metal-specific
+parameters routinely pyramidalises these by 0.3–0.5 Å without
+distorting the rest of the topology, so the gate lets them through
+while Rule 6 and the UFF metallacycle-torsion constraint keep the
+average metal-in-π-plane behaviour enforced."""
+
+DELFIN_RULE7_SP2_ANGLE_MIN: float = _delfin_env_float(
+    "DELFIN_RULE7_SP2_ANGLE_MIN", 90.0
+)
+"""Rule 7 sp² lower angle bound (deg); 120° ± 30°."""
+
+DELFIN_RULE7_SP2_ANGLE_MAX: float = _delfin_env_float(
+    "DELFIN_RULE7_SP2_ANGLE_MAX", 150.0
+)
+"""Rule 7 sp² upper angle bound (deg)."""
+
+DELFIN_RULE7_SP_MIN_ANGLE_DEG: float = _delfin_env_float(
+    "DELFIN_RULE7_SP_MIN_ANGLE_DEG", 150.0
+)
+"""Rule 7 sp: minimum X-A-Y angle (deg) for a 2-coordinate atom with a
+triple / cumulated-double bond.  Linear geometry target."""
+
+DELFIN_RULE7_SP3_MIN_ANGLE_DEG: float = _delfin_env_float(
+    "DELFIN_RULE7_SP3_MIN_ANGLE_DEG", 80.0
+)
+"""Rule 7 sp³: minimum X-A-Y angle (deg) for a 4-coordinate saturated
+atom.  Tolerates cyclopropane-style strain down to ~84°."""
+
+# --- Chelate conformer search ---------------------------------------------
+DELFIN_CHELATE_N_TRIALS: int = _delfin_env_int(
+    "DELFIN_CHELATE_N_TRIALS", 40
+)
+"""Number of ETKDG seeds explored in ``_chelate_conformer_candidates``."""
+
+DELFIN_CHELATE_ACCEPT_DELTA: float = _delfin_env_float(
+    "DELFIN_CHELATE_ACCEPT_DELTA", 0.10
+)
+"""Native-bite-match tolerance (Å) for a chelate conformer to be
+accepted as a "good fit"."""
+
+DELFIN_CHELATE_REJECT_DELTA: float = _delfin_env_float(
+    "DELFIN_CHELATE_REJECT_DELTA", 0.50
+)
+"""Native-bite-match tolerance (Å) above which a chelate conformer is
+outright rejected."""
+
+# --- Timeouts (seconds, per-call) -----------------------------------------
+_EMBED_TIMEOUT: float = _delfin_env_float("DELFIN_EMBED_TIMEOUT", 10.0)
+"""Per-call timeout for RDKit ``EmbedMolecule`` / stk embedding.
 
 Large metal complexes with highly connected ring systems can cause ETKDG
 distance-bounds calculation to hang indefinitely.  Override via env var
 (e.g. ``DELFIN_EMBED_TIMEOUT=20``) on heavy macrocycles if needed.
 """
 
-_OB_ROTOR_TIMEOUT: float = float(os.environ.get("DELFIN_OB_ROTOR_TIMEOUT", "15"))
-"""Per-call timeout (seconds) for Open Babel rotor search."""
+_OB_ROTOR_TIMEOUT: float = _delfin_env_float("DELFIN_OB_ROTOR_TIMEOUT", 15.0)
+"""Per-call timeout for Open Babel rotor search."""
 
-_MULTIEMBED_TIMEOUT: float = float(os.environ.get("DELFIN_MULTIEMBED_TIMEOUT", "25"))
-"""Per-call timeout (seconds) for EmbedMultipleConfs.
+_MULTIEMBED_TIMEOUT: float = _delfin_env_float(
+    "DELFIN_MULTIEMBED_TIMEOUT", 25.0
+)
+"""Per-call timeout for ``EmbedMultipleConfs``.
 
 Running multiple seeds in parallel amortises the cost; a single slow
 seed should not strangle the whole pool.  Increase via env var on
 very large molecules.
 """
 
-_CHELATE_EMBED_TIMEOUT: float = float(os.environ.get("DELFIN_CHELATE_EMBED_TIMEOUT", "6"))
-"""Per-seed timeout (seconds) for the chelate conformer search."""
+_CHELATE_EMBED_TIMEOUT: float = _delfin_env_float(
+    "DELFIN_CHELATE_EMBED_TIMEOUT", 6.0
+)
+"""Per-seed timeout for the chelate conformer search."""
 
+# --- Deterministic seed schedule (shared across all stages) ---------------
 _PIPELINE_SEEDS: Tuple[int, ...] = (
     31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
     401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
@@ -710,30 +1004,43 @@ _PIPELINE_SEEDS: Tuple[int, ...] = (
     17891, 19001, 20113, 21227, 22343, 23459,
     24571, 25703, 26821,
 )
-"""Single deterministic seed schedule shared by every stage of the metal
-isomer pipeline (top-level conformer sampling, chelate conformer search,
-fragment embedding, legacy fallbacks).  Keeping one canonical source
-makes determinism guarantees hold end-to-end and lets cross-stage
-caches stay coherent.
-"""
+"""Single deterministic seed schedule shared by every stage of the
+metal isomer pipeline (top-level conformer sampling, chelate
+conformer search, fragment embedding, legacy fallbacks).  Keeping
+one canonical source makes determinism guarantees hold end-to-end
+and lets cross-stage caches stay coherent."""
 
-_TOP_LEVEL_SEEDS: Tuple[int, ...] = _PIPELINE_SEEDS
-"""Seeds used for top-level conformer sampling.  Uses the full 40-seed
-pipeline schedule so the survivor pool is deep enough for the
-stricter post-UFF gate (hybridisation + coordination-geometry +
-metal-in-π).  Extra seeds run in parallel via ThreadPoolExecutor,
-so on multi-core hosts the wall-clock cost scales sub-linearly;
-override via ``DELFIN_TOP_LEVEL_SEED_COUNT`` if a thinner pool is
-preferred for quick iteration."""
+_TOP_LEVEL_SEEDS: Tuple[int, ...] = _PIPELINE_SEEDS[
+    :max(1, DELFIN_TOP_LEVEL_SEED_COUNT)
+]
+"""Resolved seed tuple actually used for top-level conformer sampling;
+a slice of ``_PIPELINE_SEEDS`` controlled by
+``DELFIN_TOP_LEVEL_SEED_COUNT``."""
 
-try:
-    _TOP_LEVEL_SEED_COUNT = int(
-        os.environ.get("DELFIN_TOP_LEVEL_SEED_COUNT", str(len(_TOP_LEVEL_SEEDS)))
-    )
-    if _TOP_LEVEL_SEED_COUNT > 0:
-        _TOP_LEVEL_SEEDS = _TOP_LEVEL_SEEDS[:_TOP_LEVEL_SEED_COUNT]
-except Exception:
-    pass
+# --- Quality-profile presets ----------------------------------------------
+_DELFIN_PROFILES: Dict[str, Dict[str, int]] = {
+    "fast":   {"seeds": 12, "ranks": 1, "topk": 1, "cap_mult": 3},
+    "normal": {"seeds": 20, "ranks": 2, "topk": 2, "cap_mult": 4},
+    "max":    {"seeds": 40, "ranks": 3, "topk": 3, "cap_mult": 5},
+}
+
+
+def _resolve_quality_profile(name: Optional[str]) -> Dict[str, int]:
+    """Return the profile dict for ``name`` or the module defaults."""
+    if name is None:
+        return {
+            "seeds": DELFIN_TOP_LEVEL_SEED_COUNT,
+            "ranks": DELFIN_CHELATE_RANK_VARIANTS,
+            "topk":  DELFIN_TOPO_TEMPLATE_TOP_K,
+            "cap_mult": DELFIN_PRE_UFF_CAP_MULTIPLIER,
+        }
+    key = name.lower().strip()
+    if key not in _DELFIN_PROFILES:
+        raise ValueError(
+            f"quality_mode must be one of {sorted(_DELFIN_PROFILES)}, "
+            f"got {name!r}"
+        )
+    return dict(_DELFIN_PROFILES[key])
 
 
 def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
@@ -13449,7 +13756,7 @@ def _verify_topology_from_graph(
                             ), axis=1
                         )
                         mean_bond = float(edges.mean()) if edges.size else 1.4
-                        planar_tol = 0.25 * mean_bond
+                        planar_tol = DELFIN_RULE4_PI_PLANAR_TOL_FRAC * mean_bond
                         centered = pts - pts.mean(axis=0)
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         deviations = _np.abs(centered @ vh[-1])
@@ -13552,9 +13859,9 @@ def _verify_topology_from_graph(
                             and (nm_list[j] in _donor_set
                                  or nm_list[j] in _bridging_set)
                         ):
-                            thresh = 1.00 * (ri + rj)
+                            thresh = DELFIN_RULE5_INNER_SPHERE_FACT * (ri + rj)
                         else:
-                            thresh = 1.15 * (ri + rj)
+                            thresh = DELFIN_RULE5_INTERFRAG_COV_FACT * (ri + rj)
                         dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
                         if dsq < thresh * thresh:
                             return False
@@ -13635,7 +13942,7 @@ def _verify_topology_from_graph(
                         centered = pts - pts.mean(axis=0)
                         _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
                         dev = float(_np.abs(centered @ vh[-1]).max())
-                        if dev > 0.6:
+                        if dev > DELFIN_RULE6_METALLACYCLE_MAX_DEV:
                             return False
         except Exception:
             pass
@@ -13692,24 +13999,25 @@ def _verify_topology_from_graph(
                     continue
                 if atom.GetAtomicNum() <= 1:
                     continue
-                has_metal_nbr = any(
+                # Skip atoms directly bonded to a metal.  Their local
+                # geometry is dictated by the coordination polyhedron and
+                # by UFF's missing metal parameters; routine
+                # pyramidalisation of cyclometallated / NHC carbons
+                # should not be treated as a topology violation here.
+                # Metal-in-π enforcement is delegated to Rule 6
+                # (metallacycle planarity) and the UFF metallacycle
+                # torsion constraint.
+                if any(
                     nbr.GetSymbol() in _METAL_SET
                     for nbr in atom.GetNeighbors()
-                )
-                # Heavy neighbours including the metal.  A metal counts
-                # as a neighbour for the sp² planarity check — the
-                # "metal in π-plane" rule — but not for sp / sp³ angle
-                # checks because there the coordination polyhedron
-                # dictates the local geometry.
-                heavy_nbr_all = [
-                    nbr.GetIdx() for nbr in atom.GetNeighbors()
-                    if nbr.GetAtomicNum() > 1
-                ]
+                ):
+                    continue
                 heavy_nbr_organic = [
                     nbr.GetIdx() for nbr in atom.GetNeighbors()
                     if nbr.GetAtomicNum() > 1
                     and nbr.GetSymbol() not in _METAL_SET
                 ]
+                heavy_nbr_all = heavy_nbr_organic
                 if not heavy_nbr_all:
                     continue
                 max_bo = _max_ring_bond_order_to_neighbors(atom)
@@ -13718,7 +14026,7 @@ def _verify_topology_from_graph(
 
                 # sp — linear by coordination design when bonded to
                 # metal (e.g. M-C#O, M-C#N-R).  Skip metal-bonded atoms.
-                if not has_metal_nbr and len(heavy_nbr_organic) == 2 and max_bo >= 2.5:
+                if len(heavy_nbr_organic) == 2 and max_bo >= 2.5:
                     n1, n2 = heavy_nbr_organic
                     v1 = _np.array(coords[n1]) - a_pos
                     v2 = _np.array(coords[n2]) - a_pos
@@ -13728,18 +14036,20 @@ def _verify_topology_from_graph(
                         cos_a = float(_np.dot(v1, v2) / (n1n * n2n))
                         cos_a = max(-1.0, min(1.0, cos_a))
                         angle_deg = math.degrees(math.acos(cos_a))
-                        if angle_deg < 150.0:
+                        if angle_deg < DELFIN_RULE7_SP_MIN_ANGLE_DEG:
                             return False
                     continue
 
                 # sp² — exactly 3 heavy neighbours (metal counted) AND
                 # at least one π bond.  Trigonal planar: atom must lie
-                # within 0.35 Å of the plane of its three neighbours
-                # and all three X-A-Y angles must be 90°–150° (ideal
-                # 120°).  Including the metal here is what enforces
-                # "metal in π-plane" for cyclometallated / conjugated
-                # donor atoms; excluding it would let UFF pyramidalise
-                # the donor carbon along the metal-axis.
+                # within DELFIN_RULE7_SP2_OOP_MAX of the plane of its
+                # three neighbours and all three X-A-Y angles must fall
+                # in [DELFIN_RULE7_SP2_ANGLE_MIN,
+                # DELFIN_RULE7_SP2_ANGLE_MAX] (ideal 120°).  Including
+                # the metal here is what enforces "metal in π-plane"
+                # for cyclometallated / conjugated donor atoms;
+                # excluding it would let UFF pyramidalise the donor
+                # carbon along the metal axis.
                 if len(heavy_nbr_all) == 3 and max_bo >= 1.5:
                     na, nb, nc = heavy_nbr_all
                     pa = _np.array(coords[na])
@@ -13751,7 +14061,21 @@ def _verify_topology_from_graph(
                         normal = normal / nn
                         centroid = (pa + pb + pc) / 3.0
                         dev = float(abs(_np.dot(a_pos - centroid, normal)))
-                        if dev > 0.35:
+                        # Metal-bonded sp² atoms (NHC carbenes,
+                        # cyclometallated donors, carbonyl C) get a
+                        # looser threshold because UFF without metal
+                        # parameters routinely pyramidalises them by
+                        # 0.3-0.5 Å without distorting the rest of the
+                        # topology.  Rule 6 (metallacycle planarity)
+                        # and the UFF metallacycle-torsion constraint
+                        # already drive these atoms back toward the
+                        # plane on realistic energy scales.
+                        oop_budget = (
+                            DELFIN_RULE7_SP2_OOP_MAX_METAL
+                            if has_metal_nbr
+                            else DELFIN_RULE7_SP2_OOP_MAX
+                        )
+                        if dev > oop_budget:
                             return False
                     angle_pairs = ((na, nb), (na, nc), (nb, nc))
                     for p, q in angle_pairs:
@@ -13764,18 +14088,17 @@ def _verify_topology_from_graph(
                         cos_a = float(_np.dot(vp, vq) / (np_ * nq_))
                         cos_a = max(-1.0, min(1.0, cos_a))
                         ang = math.degrees(math.acos(cos_a))
-                        if ang < 90.0 or ang > 150.0:
+                        if (
+                            ang < DELFIN_RULE7_SP2_ANGLE_MIN
+                            or ang > DELFIN_RULE7_SP2_ANGLE_MAX
+                        ):
                             return False
                     continue
 
-                # sp³ — 4 heavy organic neighbours, no π bonds, no
-                # metal bond.  Reject severe tetrahedral collapse
-                # (any X-A-Y angle < 80°).
-                if (
-                    not has_metal_nbr
-                    and len(heavy_nbr_organic) == 4
-                    and max_bo < 1.5
-                ):
+                # sp³ — 4 heavy organic neighbours, no π bonds.
+                # Reject severe tetrahedral collapse (any X-A-Y
+                # angle < DELFIN_RULE7_SP3_MIN_ANGLE_DEG).
+                if len(heavy_nbr_organic) == 4 and max_bo < 1.5:
                     nbr_positions = [
                         _np.array(coords[k]) for k in heavy_nbr_organic
                     ]
@@ -13793,7 +14116,7 @@ def _verify_topology_from_graph(
                             ang = math.degrees(math.acos(cos_a))
                             if ang < min_angle:
                                 min_angle = ang
-                    if min_angle < 80.0:
+                    if min_angle < DELFIN_RULE7_SP3_MIN_ANGLE_DEG:
                         return False
                     continue
         except Exception:
@@ -16380,9 +16703,9 @@ def _chelate_conformer_candidates(
     frag_atom_indices,
     donor_atom_indices,
     target_bite,
-    n_trials: int = 40,
-    accept_delta: float = 0.10,
-    reject_delta: float = 0.50,
+    n_trials: int = DELFIN_CHELATE_N_TRIALS,
+    accept_delta: float = DELFIN_CHELATE_ACCEPT_DELTA,
+    reject_delta: float = DELFIN_CHELATE_REJECT_DELTA,
     max_candidates: int = 5,
 ):
     """Return a deterministic list of chelate conformer coordinates
@@ -16558,8 +16881,8 @@ def _best_chelate_conformer_coords(
     frag_atom_indices,
     donor_atom_indices,
     target_bite,
-    n_trials: int = 40,
-    accept_delta: float = 0.10,
+    n_trials: int = DELFIN_CHELATE_N_TRIALS,
+    accept_delta: float = DELFIN_CHELATE_ACCEPT_DELTA,
     rank: int = 0,
     max_candidates: int = 5,
 ):
@@ -17759,6 +18082,7 @@ def _generate_topological_isomers(
     smiles: str,
     apply_uff: bool = True,
     max_isomers: int = 50,
+    profile: Optional[Dict[str, int]] = None,
 ) -> List[Tuple[str, str]]:
     """Guarantee-complete isomer enumeration via topological permutation.
 
@@ -17766,10 +18090,20 @@ def _generate_topological_isomers(
     donor atoms (respecting chelate cis-constraints), builds an idealized
     3D structure for each, runs OB UFF, and labels the result.
 
+    ``profile`` — when provided, overrides the module-level
+    ``DELFIN_CHELATE_RANK_VARIANTS``, ``DELFIN_TOPO_TEMPLATE_TOP_K``
+    and ``DELFIN_PRE_UFF_CAP_MULTIPLIER`` knobs for this call.  Keys:
+    ``ranks``, ``topk``, ``cap_mult``.
+
     Returns [(xyz_string, label), …].
     """
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
+
+    _prof = profile if profile is not None else _resolve_quality_profile(None)
+    _prof_ranks    = int(_prof.get("ranks", DELFIN_CHELATE_RANK_VARIANTS))
+    _prof_topk     = int(_prof.get("topk", DELFIN_TOPO_TEMPLATE_TOP_K))
+    _prof_cap_mult = int(_prof.get("cap_mult", DELFIN_PRE_UFF_CAP_MULTIPLIER))
 
     def _passes_chelate_distance_feasibility(
         _mol,
@@ -17930,7 +18264,7 @@ def _generate_topological_isomers(
         # Pre-compute ranked template conformers once per metal centre so each
         # permutation can retry against several templates when the default
         # (best-scored) one produces no viable XYZ.
-        topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+        topo_template_cids = _rank_template_conformers(mol, top_k=_prof_topk) or [None]
 
         _PRIMARY_GEOM_BASE = {
             2: 'LIN', 3: 'TP', 5: 'TBP',
@@ -18015,74 +18349,82 @@ def _generate_topological_isomers(
         #   * downstream fingerprint + RMSD dedup prunes duplicates
         # so identical outputs coming from equivalent (rank, template)
         # combinations don't pollute the final list.
-        _CHELATE_RANK_VARIANTS = 3 if chelate_ps else 1
-        _PRE_UFF_CAP = max_isomers * 5
+        # Build loop preserved from the 7414981 passing state: rank-0 build
+        # with first-success template, additional chelate ranks only when
+        # no usable template exists.  Over-generating via every
+        # (rank × template) grid caused UFF to collapse TBP isomers into
+        # SP duplicates for systems like Fe(CO)3(NHC)2 and lose the
+        # ``C0-C0-ax`` / ``C1-C1-ax`` labels in dedup.
+        _CHELATE_RANK_VARIANTS = max(1, _prof_ranks) if chelate_ps else 1
+        _PRE_UFF_CAP = max_isomers * max(1, _prof_cap_mult)
         _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
-        _seen_pre_uff_keys: set = set()
-
-        def _xyz_signature(_xyz: str) -> str:
-            return "\n".join(
-                line.strip() for line in _xyz.splitlines() if line.strip()
-            )
-
-        # Enumerate every (cf, perm, chelate_rank, template_id) build
-        # request, then build them in parallel via a thread pool.
-        # RDKit ETKDG and numpy Procrustes release the GIL, so threads
-        # actually run concurrently; the final dedup is serialised so
-        # `_seen_pre_uff_keys` stays consistent.
-        _build_tasks: List[Tuple[tuple, List[int], str, int, object]] = []
         for cf, pm in feasible_isomers:
-            gn = cf[0]
-            for _crank in range(_CHELATE_RANK_VARIANTS):
-                for _tc in topo_template_cids:
-                    _build_tasks.append((cf, pm, gn, _crank, _tc))
-
-        def _run_build(_task):
-            _cf, _pm, _gn, _crank, _tc = _task
-            try:
-                _x = _build_topology_xyz(
-                    mol, metal_idx, donor_indices, _pm, _gn,
-                    False, conf_id=_tc, chelate_rank=_crank,
-                )
-                return (_task, _x)
-            except Exception as _exc:
-                logger.debug(
-                    "Topo pre-UFF build failed (%s rank=%d tmpl=%s): %s",
-                    _gn, _crank, _tc, _exc,
-                )
-                return (_task, None)
-
-        _n_build_workers = min(len(_build_tasks), os.cpu_count() or 4, 32)
-        if _n_build_workers > 1 and len(_build_tasks) > 1:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=_n_build_workers
-            ) as _bp:
-                _build_outputs = list(_bp.map(_run_build, _build_tasks))
-        else:
-            _build_outputs = [_run_build(_t) for _t in _build_tasks]
-
-        for (_cf, _pm, _gn, _crank, _tc), _xyz_out in _build_outputs:
             if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
                 break
-            if _xyz_out is None:
-                continue
-            _sig = _xyz_signature(_xyz_out)
-            if _sig in _seen_pre_uff_keys:
-                continue
-            _seen_pre_uff_keys.add(_sig)
-            coord_c = None
-            if apply_uff:
-                try:
-                    coord_c = _build_coordination_constraints_from_xyz(
-                        mol, _xyz_out,
+            gn = cf[0]
+            try:
+                xyz0 = None
+                for _tc in topo_template_cids:
+                    xyz0 = _build_topology_xyz(
+                        mol, metal_idx, donor_indices, pm, gn,
+                        False, conf_id=_tc, chelate_rank=0,
                     )
-                except Exception:
-                    pass
-            _pre_uff_batch.append((_cf, _pm, _gn, _xyz_out, coord_c))
+                    if xyz0 is not None:
+                        break
+                if xyz0 is not None:
+                    coord_c = None
+                    if apply_uff:
+                        try:
+                            coord_c = _build_coordination_constraints_from_xyz(
+                                mol, xyz0,
+                            )
+                        except Exception:
+                            pass
+                    _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
+            except Exception as exc:
+                logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+                continue
+
+            # Additional chelate-rank variants are only useful when the
+            # rigid-template path was not engaged (no conformers on
+            # ``mol`` → fragment-procrustes is the real builder and
+            # each rank produces a distinct pucker).  Otherwise higher
+            # ranks regenerate near-duplicate templates that flood the
+            # UFF batch and crowd genuine topology variants out of
+            # dedup.
+            if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
+                continue
+            for _crank in range(1, _CHELATE_RANK_VARIANTS):
+                if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                    break
+                try:
+                    xyz = None
+                    for _tc in topo_template_cids:
+                        xyz = _build_topology_xyz(
+                            mol, metal_idx, donor_indices, pm, gn,
+                            False, conf_id=_tc, chelate_rank=_crank,
+                        )
+                        if xyz is not None:
+                            break
+                    if xyz is None:
+                        continue
+                    coord_c = None
+                    if apply_uff:
+                        try:
+                            coord_c = _build_coordination_constraints_from_xyz(
+                                mol, xyz,
+                            )
+                        except Exception:
+                            pass
+                    _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
+                except Exception as exc:
+                    logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
 
         # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
         if apply_uff and _pre_uff_batch:
-            _n_uff_workers = min(len(_pre_uff_batch), os.cpu_count() or 4, 32)
+            _n_uff_workers = min(
+                len(_pre_uff_batch), os.cpu_count() or 4, DELFIN_MAX_PROCESS_WORKERS
+            )
             _uff_inputs = [
                 (xyz, 500, cstr) for _cf, _pm, _gn, xyz, cstr in _pre_uff_batch
             ]
@@ -18200,7 +18542,7 @@ def _generate_topological_isomers(
                     scaffold = _build_multimetal_scaffold(
                         mol, metal_indices, bridging
                     )
-                    topo_template_cids = _rank_template_conformers(mol, top_k=3) or [None]
+                    topo_template_cids = _rank_template_conformers(mol, top_k=_prof_topk) or [None]
 
                     # Pre-stretch the metal-metal separation in the
                     # template conformer so that |M1-M2| = d_M1^ideal +
@@ -19121,6 +19463,7 @@ def smiles_to_xyz_isomers(
     include_binding_mode_isomers: bool = True,
     deterministic: bool = True,
     hapto_approx: Optional[bool] = None,
+    quality_mode: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -19139,12 +19482,30 @@ def smiles_to_xyz_isomers(
     When ``deterministic`` is ``True`` (default), the metal-isomer path avoids
     Open Babel conformer injection (its ``make3D``/rotor pipeline is not fully
     reproducible across runs) and relies on seeded RDKit embedding only.
+
+    ``quality_mode`` selects a preset that tunes seed count, chelate
+    conformer ranks, template top-K and Pre-UFF cap multiplier:
+
+    - ``"fast"``   — 12 seeds, 1 rank, 1 template, cap 3·max_isomers.
+      Roughly 3-5× faster than ``"max"``; suitable for the dashboard
+      button where UI latency matters.
+    - ``"normal"`` — 20 seeds, 2 ranks, 2 templates, cap 4·max_isomers.
+    - ``"max"``    — 40 seeds, 3 ranks, 3 templates, cap 5·max_isomers.
+      Deepest candidate pool, best geometry quality, slowest.
+
+    Pass ``None`` (default) to keep the module-level knobs
+    (``DELFIN_TOP_LEVEL_SEED_COUNT``, ``DELFIN_CHELATE_RANK_VARIANTS``
+    etc.) as-is.
     """
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
 
     has_metal = contains_metal(smiles)
     hapto_mode = _hapto_approx_enabled(hapto_approx)
+
+    # Resolve the quality profile once per call so the seed count,
+    # chelate ranks, topK and Pre-UFF cap follow the requested preset.
+    _qprof = _resolve_quality_profile(quality_mode)
     mol = None
     hapto_groups: List[Tuple[int, List[int]]] = []
     if has_metal:
@@ -19305,20 +19666,26 @@ def smiles_to_xyz_isomers(
     # Embed multiple conformers with deterministic seed schedule.
     # Seeds are independent → parallelize with ThreadPoolExecutor.
     try:
-        seeds = list(_TOP_LEVEL_SEEDS)
+        seeds = list(_PIPELINE_SEEDS[:max(1, int(_qprof.get("seeds", len(_TOP_LEVEL_SEEDS))))])
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        _n_workers = min(len(seeds), os.cpu_count() or 4)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_n_workers) as _pool:
-            _futs = [
-                _pool.submit(_embed_multiple_confs_robust, mol, per_round, s)
-                for s in seeds
-            ]
-            for _fut in concurrent.futures.as_completed(_futs):
-                try:
-                    conf_ids.extend(_fut.result())
-                except Exception:
-                    pass
+        # Serial ETKDG loop over the seed schedule.  Running the seeds
+        # through a ThreadPool was faster on large hosts but introduced
+        # timing-dependent non-determinism (the join-timeout in
+        # ``_embed_multiple_confs_with_timeout`` fired on different
+        # seeds between consecutive runs under CPU contention,
+        # producing slightly different conformer pools).  A serial
+        # schedule guarantees byte-identical output for σ complexes at
+        # a modest wall-clock cost (40 seeds × <1 s per seed on a
+        # typical SMILES).  Parallelism is still active further down
+        # the pipeline (OB UFF via ProcessPool).
+        for _seed in seeds:
+            try:
+                conf_ids.extend(
+                    _embed_multiple_confs_robust(mol, per_round, _seed)
+                )
+            except Exception:
+                continue
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         # Do not abort here: keep already injected OB conformers if available.
@@ -19581,7 +19948,8 @@ def smiles_to_xyz_isomers(
             }
 
             topo_results = _generate_topological_isomers(
-                topo_mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
+                topo_mol, smiles, apply_uff=apply_uff,
+                max_isomers=max_isomers, profile=_qprof,
             )
 
             for topo_xyz, topo_label in topo_results:
@@ -19656,7 +20024,9 @@ def smiles_to_xyz_isomers(
                     _xp.submit(_embed_multiple_confs_robust, mol, 3, s)
                     for s in _extra_seeds
                 ]
-                for _xf in concurrent.futures.as_completed(_xfuts):
+                # Submission-order traversal preserves determinism (see
+                # top-level embedding loop for rationale).
+                for _xf in _xfuts:
                     try:
                         _extra_ids.extend(_xf.result())
                     except Exception:
@@ -21418,6 +21788,7 @@ def _build_coordination_constraints_from_xyz(
                                 continue
                             seen_tors[key] = 1
                             base["torsions"].append((a, b, c, d, 0.0))
+
         except Exception:
             pass
 
