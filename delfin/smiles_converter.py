@@ -1038,11 +1038,21 @@ a slice of ``_PIPELINE_SEEDS`` controlled by
 ``DELFIN_TOP_LEVEL_SEED_COUNT``."""
 
 # --- Quality-profile presets ----------------------------------------------
+# ``alt_tries`` caps the template-iteration count inside
+# ``_generate_alternative_binding_modes`` / linkage isomer generation so
+# the dashboard doesn't spend 30+ s churning through 8 templates for
+# alt-binding modes that never validate on cyclometallated / conjugated
+# ligand systems like Ir(ppy)2.
 _DELFIN_PROFILES: Dict[str, Dict[str, int]] = {
-    "fast":   {"seeds": 12, "ranks": 1, "topk": 1, "cap_mult": 3},
-    "normal": {"seeds": 20, "ranks": 2, "topk": 2, "cap_mult": 4},
-    "max":    {"seeds": 40, "ranks": 3, "topk": 3, "cap_mult": 5},
+    "fast":   {"seeds": 12, "ranks": 1, "topk": 1, "cap_mult": 3, "alt_tries": 0},
+    "normal": {"seeds": 20, "ranks": 2, "topk": 2, "cap_mult": 4, "alt_tries": 4},
+    "max":    {"seeds": 40, "ranks": 3, "topk": 3, "cap_mult": 5, "alt_tries": 8},
 }
+# ``alt_tries=0`` disables alt-binding-mode exploration entirely for
+# ``fast`` because iterating rewired donor candidates (e.g. ppy phenyl
+# meta/para carbons) is almost always rejected by the fragment-topology
+# gate on cyclometallated systems and costs 40-60 s per Ir(ppy)2-type
+# SMILES without adding output variety.
 
 
 def _resolve_quality_profile(name: Optional[str]) -> Dict[str, int]:
@@ -1053,6 +1063,7 @@ def _resolve_quality_profile(name: Optional[str]) -> Dict[str, int]:
             "ranks": DELFIN_CHELATE_RANK_VARIANTS,
             "topk":  DELFIN_TOPO_TEMPLATE_TOP_K,
             "cap_mult": DELFIN_PRE_UFF_CAP_MULTIPLIER,
+            "alt_tries": 8,
         }
     key = name.lower().strip()
     if key not in _DELFIN_PROFILES:
@@ -20113,7 +20124,10 @@ def smiles_to_xyz_isomers(
     # --- Linkage isomers ---
     if has_metal and include_binding_mode_isomers:
         try:
-            link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
+            link_results = _generate_linkage_isomers(
+                mol, smiles, apply_uff=apply_uff,
+                max_template_tries=int(_qprof.get("alt_tries", 8)),
+            )
             for _lxyz, _llabel in link_results:
                 if not _metal_donor_distances_realistic(_lxyz, mol):
                     logger.debug("Skipping linkage isomer %s: unphysical M-D distance", _llabel)
@@ -20126,12 +20140,14 @@ def smiles_to_xyz_isomers(
             logger.debug("Linkage isomer generation failed: %s", _link_exc)
 
     # --- Alternative binding-site exploration ---
-    if has_metal and include_binding_mode_isomers:
+    _alt_tries = int(_qprof.get("alt_tries", 8))
+    if has_metal and include_binding_mode_isomers and _alt_tries > 0:
         try:
             existing_displays = {display for _, display in results}
             existing_base = {re.sub(r'-\d+$', '', d) for d in existing_displays}
             alt_results = _generate_alternative_binding_modes(
-                mol, smiles, apply_uff=apply_uff
+                mol, smiles, apply_uff=apply_uff,
+                max_template_tries=_alt_tries,
             )
             for alt_xyz, alt_label in alt_results:
                 if alt_label not in existing_base:
