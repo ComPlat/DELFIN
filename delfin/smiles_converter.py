@@ -845,9 +845,19 @@ def _delfin_env_float(name: str, default: float) -> float:
 
 # --- Conformer sampling & topology enumeration -----------------------------
 DELFIN_TOP_LEVEL_SEED_COUNT: int = _delfin_env_int(
-    "DELFIN_TOP_LEVEL_SEED_COUNT", 40
+    "DELFIN_TOP_LEVEL_SEED_COUNT", 20
 )
-"""Number of ETKDG seeds for the top-level conformer sampling pool."""
+"""Number of ETKDG seeds for the top-level conformer sampling pool.
+
+Default 20 is the best tradeoff between pool depth and stability of
+the downstream topo-isomer builder:
+beyond ~24 seeds, ``_rank_template_conformers`` routinely picks only
+geometry-favoured SP-like templates for CN-5 systems (Fe(CO)3(NHC)2)
+and suppresses the TBP canonical-form labels that the enumerator
+otherwise emits.  Set ``DELFIN_TOP_LEVEL_SEED_COUNT=40`` or
+``quality_mode='max'`` to widen the pool for extremely difficult
+large ligand systems where more variety outweighs the template-bias
+effect."""
 
 DELFIN_CHELATE_RANK_VARIANTS: int = _delfin_env_int(
     "DELFIN_CHELATE_RANK_VARIANTS", 3
