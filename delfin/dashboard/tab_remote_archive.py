@@ -58,6 +58,7 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS,
     DEFAULT_3DMOL_ZOOM,
     coord_to_xyz,
+    measurement_bootstrap_js,
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
 )
@@ -581,6 +582,29 @@ def create_tab(ctx):
         button_style="success",
         layout=widgets.Layout(width="176px", min_width="176px", height="32px"),
     )
+    xyz_select_btn = widgets.ToggleButton(
+        value=False,
+        description="Select",
+        icon="crosshairs",
+        button_style="",
+        tooltip="Click atoms in the viewer — 2=distance, 3=angle, 4=dihedral",
+        layout=widgets.Layout(width="92px", height="32px"),
+    )
+    xyz_clear_sel_btn = widgets.Button(
+        description="Clear",
+        button_style="warning",
+        tooltip="Clear selected atoms",
+        layout=widgets.Layout(width="64px", height="32px"),
+    )
+    xyz_measure_html = widgets.HTML(
+        value=(
+            '<div class="delfin-xyz-measure-display" '
+            'style="color:#888;font-family:monospace;font-size:0.88em;'
+            'line-height:1.35;display:block;width:100%;word-break:break-word;">'
+            '— click atoms (2/3/4) —</div>'
+        ),
+        layout=widgets.Layout(flex="1 1 auto", min_width="0", overflow_x="hidden"),
+    )
     viewer_output = widgets.Output(
         layout=widgets.Layout(
             width="100%",
@@ -738,15 +762,20 @@ def create_tab(ctx):
         has_xyz = bool(frames) and view_toggle.value and state.get("visualize_kind") == "xyz"
         xyz_controls.layout.display = "flex" if has_xyz else "none"
         xyz_playback_row.layout.display = "flex" if has_xyz else "none"
+        xyz_measure_row.layout.display = "flex" if has_xyz else "none"
         xyz_tray_controls.layout.display = "flex" if has_xyz else "none"
         can_play = has_xyz and _traj_can_play()
         xyz_loop_checkbox.disabled = not can_play
         xyz_fps_input.disabled = not can_play
         xyz_play_btn.disabled = not can_play
         xyz_copy_btn.disabled = not has_xyz
+        xyz_select_btn.disabled = not has_xyz
+        xyz_clear_sel_btn.disabled = not has_xyz
         _update_loop_button_style()
         if not can_play:
             _stop_xyz_playback(update_button=True)
+        if not has_xyz and xyz_select_btn.value:
+            xyz_select_btn.value = False
 
     def _set_view_toggle(value, disabled=None):
         try:
@@ -1733,6 +1762,7 @@ def create_tab(ctx):
             _render_xyz_trajectory_viewer(initial_load=not state.get("traj_viewer_ready"))
         elif view_toggle.value:
             _render_xyz_in_viewer(_frame_to_xyz(frames[index]))
+        _refresh_measure_after_render()
 
     def _join_remote_relative(base_relative, child_relative):
         base = normalize_remote_relative_path(base_relative)
@@ -2676,6 +2706,53 @@ def create_tab(ctx):
         idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
         _copy_to_clipboard(_frame_to_xyz(frames[idx]).rstrip(), label=f"xyz frame {idx + 1}")
 
+    def _ensure_measure_js():
+        _run_js(measurement_bootstrap_js())
+
+    def _on_xyz_select_toggle(change):
+        if change.get("name") != "value":
+            return
+        active = bool(xyz_select_btn.value)
+        xyz_select_btn.button_style = "info" if active else ""
+        xyz_select_btn.description = "Selecting…" if active else "Select"
+        _ensure_measure_js()
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                if (!window.__delfinMeasure) return;
+                window.__delfinMeasure.setActive({scope_key_json}, {str(active).lower()});
+            }})();
+            """
+        )
+
+    def _on_xyz_clear_selection(_button=None):
+        _ensure_measure_js()
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                if (!window.__delfinMeasure) return;
+                window.__delfinMeasure.clear({scope_key_json});
+            }})();
+            """
+        )
+
+    def _refresh_measure_after_render():
+        if not xyz_select_btn.value:
+            return
+        _ensure_measure_js()
+        scope_key_json = json.dumps(scope_id)
+        _run_js(
+            f"""
+            setTimeout(function() {{
+                if (window.__delfinMeasure) {{
+                    window.__delfinMeasure.ensureAfterRender({scope_key_json});
+                }}
+            }}, 30);
+            """
+        )
+
     def _start_xyz_playback():
         if not _traj_can_play():
             _set_play_button_state(False, sync_value=True)
@@ -2879,6 +2956,7 @@ def create_tab(ctx):
             return
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
         _render_selected_frame()
+        _refresh_measure_after_render()
 
 
     # -- Search helpers ---------------------------------------------------------
@@ -4628,13 +4706,25 @@ def create_tab(ctx):
             justify_content="space-between",
         ),
     )
+    xyz_measure_row = widgets.HBox(
+        [xyz_select_btn, xyz_clear_sel_btn, xyz_measure_html],
+        layout=widgets.Layout(
+            display="none",
+            gap="8px",
+            align_items="flex-start",
+            width="100%",
+            flex_flow="row nowrap",
+            margin="4px 0 0 0",
+            overflow="hidden",
+        ),
+    )
     viewer_wrap = widgets.Box(
         [viewer_output],
         layout=widgets.Layout(flex="0 0 auto", min_width="0", width="auto"),
     )
     viewer_wrap.add_class("remote-mol-view-wrap")
     xyz_tray_controls = widgets.VBox(
-        [frame_label_html, xyz_controls, xyz_playback_row],
+        [frame_label_html, xyz_controls, xyz_playback_row, xyz_measure_row],
         layout=widgets.Layout(
             display="none",
             gap="14px",
@@ -4853,6 +4943,8 @@ def create_tab(ctx):
     xyz_loop_checkbox.observe(_on_xyz_loop_change, names="value")
     xyz_play_btn.observe(_on_xyz_play_change, names="value")
     xyz_copy_btn.on_click(_on_xyz_copy)
+    xyz_select_btn.observe(_on_xyz_select_toggle, names="value")
+    xyz_clear_sel_btn.on_click(_on_xyz_clear_selection)
     viewer_png_btn.on_click(_download_current_viewer_png)
 
     # Search event wiring

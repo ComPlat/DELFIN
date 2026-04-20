@@ -215,6 +215,207 @@ def patch_viewer_mouse_controls_js(viewer_var='viewer', viewer_element_var='null
     )
 
 
+MEASUREMENT_BOOTSTRAP_JS = r"""
+(function() {
+    if (window.__delfinMeasureReady) return;
+    window.__delfinMeasureReady = true;
+    window._delfinMeasurePicks = window._delfinMeasurePicks || {};
+    window._delfinMeasureActive = window._delfinMeasureActive || {};
+    window._delfinMeasureShapes = window._delfinMeasureShapes || {};
+
+    var VIEWER_MAPS = [
+        '_remoteTrajViewerByScope', '_remoteMolViewerByScope',
+        '_calcTrajViewerByScope', '_calcMolViewerByScope'
+    ];
+    var COLORS = ['#ffd54f', '#4fc3f7', '#81c784', '#f06292'];
+
+    function getViewer(scopeKey) {
+        for (var i = 0; i < VIEWER_MAPS.length; i++) {
+            var m = window[VIEWER_MAPS[i]];
+            if (m && m[scopeKey]) return m[scopeKey];
+        }
+        return null;
+    }
+    function sub(a, b){ return {x:a.x-b.x, y:a.y-b.y, z:a.z-b.z}; }
+    function dot(a, b){ return a.x*b.x + a.y*b.y + a.z*b.z; }
+    function norm(a){ return Math.sqrt(dot(a,a)); }
+    function cross(a, b){
+        return {x:a.y*b.z-a.z*b.y, y:a.z*b.x-a.x*b.z, z:a.x*b.y-a.y*b.x};
+    }
+    function scale(a, s){ return {x:a.x*s, y:a.y*s, z:a.z*s}; }
+    function dist(a, b){ var d = sub(a,b); return Math.sqrt(dot(d,d)); }
+    function angleDeg(a, b, c){
+        var u = sub(a,b), v = sub(c,b);
+        var nu = norm(u), nv = norm(v);
+        if (nu < 1e-9 || nv < 1e-9) return 0;
+        var c1 = Math.max(-1, Math.min(1, dot(u,v)/(nu*nv)));
+        return Math.acos(c1) * 180 / Math.PI;
+    }
+    function dihedralDeg(a, b, c, d){
+        var b1 = sub(b,a), b2 = sub(c,b), b3 = sub(d,c);
+        var nb2 = norm(b2);
+        if (nb2 < 1e-9) return 0;
+        var b2n = scale(b2, 1/nb2);
+        var n1 = cross(b1, b2), n2 = cross(b2, b3);
+        var m1 = cross(n1, b2n);
+        var x = dot(n1, n2), y = dot(m1, n2);
+        return Math.atan2(y, x) * 180 / Math.PI;
+    }
+    function getAtomBySerial(viewer, serial) {
+        try {
+            var atoms = viewer.selectedAtoms({serial: serial});
+            if (atoms && atoms.length) return atoms[0];
+        } catch (e) {}
+        try {
+            var model = viewer.getModel();
+            if (model) {
+                var atoms2 = model.selectedAtoms({serial: serial});
+                if (atoms2 && atoms2.length) return atoms2[0];
+            }
+        } catch (e) {}
+        return null;
+    }
+    function findDisplay(scopeKey) {
+        var root = document.querySelector('.' + scopeKey);
+        if (!root) return null;
+        return root.querySelector('.delfin-xyz-measure-display');
+    }
+    function updateDisplay(scopeKey) {
+        var el = findDisplay(scopeKey);
+        if (!el) return;
+        var picks = window._delfinMeasurePicks[scopeKey] || [];
+        if (!picks.length) {
+            el.innerHTML = '<span style="color:#888;">— click atoms (2/3/4) —</span>';
+            return;
+        }
+        var labels = picks.map(function(p){
+            var e = (p.atom.elem || p.atom.atom || '?');
+            return e + (p.atom.serial != null ? p.atom.serial : '?');
+        });
+        var coords = picks.map(function(p){ return {x:p.atom.x, y:p.atom.y, z:p.atom.z}; });
+        var lines = [];
+        lines.push(
+            '<div style="color:#555;font-size:0.9em;margin-bottom:2px;">[' +
+            labels.join(' → ') + ']</div>'
+        );
+        if (picks.length === 1) {
+            lines.push('<div style="color:#888;">pick more atoms…</div>');
+        }
+        for (var i = 0; i + 1 < picks.length; i++) {
+            var d = dist(coords[i], coords[i+1]).toFixed(3);
+            lines.push(
+                '<div><span style="color:#1976d2;font-weight:600;">d(' +
+                labels[i] + ',' + labels[i+1] + ')</span> = ' + d + ' Å</div>'
+            );
+        }
+        for (var j = 0; j + 2 < picks.length; j++) {
+            var a = angleDeg(coords[j], coords[j+1], coords[j+2]).toFixed(2);
+            lines.push(
+                '<div><span style="color:#2e7d32;font-weight:600;">∠(' +
+                labels[j] + ',' + labels[j+1] + ',' + labels[j+2] +
+                ')</span> = ' + a + '°</div>'
+            );
+        }
+        if (picks.length >= 4) {
+            var t = dihedralDeg(coords[0], coords[1], coords[2], coords[3]).toFixed(2);
+            lines.push(
+                '<div><span style="color:#c62828;font-weight:600;">τ(' +
+                labels[0] + ',' + labels[1] + ',' + labels[2] + ',' + labels[3] +
+                ')</span> = ' + t + '°</div>'
+            );
+        }
+        el.innerHTML = lines.join('');
+    }
+    function redraw(viewer, scopeKey) {
+        var prev = window._delfinMeasureShapes[scopeKey] || [];
+        prev.forEach(function(s){ try { viewer.removeShape(s); } catch (_){} });
+        var picks = window._delfinMeasurePicks[scopeKey] || [];
+        var shapes = [];
+        picks.forEach(function(p, i) {
+            var fresh = getAtomBySerial(viewer, p.atom.serial);
+            if (fresh) p.atom = fresh;
+            var sh = viewer.addSphere({
+                center: {x: p.atom.x, y: p.atom.y, z: p.atom.z},
+                radius: 0.78,
+                color: COLORS[i % COLORS.length],
+                opacity: 0.45
+            });
+            shapes.push(sh);
+        });
+        window._delfinMeasureShapes[scopeKey] = shapes;
+        try { viewer.render(); } catch (_){}
+        updateDisplay(scopeKey);
+    }
+    function attach(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return false;
+        try {
+            viewer.setClickable({}, true, function(atom) {
+                if (!window._delfinMeasureActive[scopeKey]) return;
+                if (!atom || atom.serial === undefined || atom.serial === null) return;
+                var picks = window._delfinMeasurePicks[scopeKey] = window._delfinMeasurePicks[scopeKey] || [];
+                var found = -1;
+                for (var i = 0; i < picks.length; i++) {
+                    if (picks[i].atom.serial === atom.serial) { found = i; break; }
+                }
+                if (found >= 0) {
+                    picks.splice(found, 1);
+                } else {
+                    if (picks.length >= 4) picks.shift();
+                    picks.push({atom: atom});
+                }
+                redraw(viewer, scopeKey);
+            });
+        } catch (e) { return false; }
+        return true;
+    }
+    function detach(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        try { viewer.setClickable({}, false, function(){}); } catch (e) {}
+    }
+    function clearPicks(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        var prev = window._delfinMeasureShapes[scopeKey] || [];
+        if (viewer) prev.forEach(function(s){ try { viewer.removeShape(s); } catch (_){} });
+        window._delfinMeasureShapes[scopeKey] = [];
+        window._delfinMeasurePicks[scopeKey] = [];
+        if (viewer) { try { viewer.render(); } catch (_){} }
+        updateDisplay(scopeKey);
+    }
+    function refresh(scopeKey) {
+        var viewer = getViewer(scopeKey);
+        if (!viewer) return;
+        redraw(viewer, scopeKey);
+    }
+    function setActive(scopeKey, active) {
+        window._delfinMeasureActive[scopeKey] = !!active;
+        if (active) { attach(scopeKey); refresh(scopeKey); }
+        else { detach(scopeKey); }
+    }
+    function ensureAfterRender(scopeKey) {
+        if (window._delfinMeasureActive[scopeKey]) {
+            attach(scopeKey);
+            refresh(scopeKey);
+        }
+    }
+    window.__delfinMeasure = {
+        attach: attach,
+        detach: detach,
+        clear: clearPicks,
+        refresh: refresh,
+        setActive: setActive,
+        ensureAfterRender: ensureAfterRender
+    };
+})();
+"""
+
+
+def measurement_bootstrap_js():
+    """Return the one-time JS that installs window.__delfinMeasure helpers."""
+    return MEASUREMENT_BOOTSTRAP_JS
+
+
 def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
     """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer."""
     if hasattr(view, 'startjs'):
