@@ -16,7 +16,7 @@ from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
-from .molecule_viewer import apply_molecule_view_style
+from .molecule_viewer import apply_molecule_view_style, submit_manip_bootstrap_js
 from .input_processing import (
     smiles_to_xyz, smiles_to_xyz_quick, smiles_to_xyz_quick_with_previews,
     append_hapto_previews_to_isomers,
@@ -363,6 +363,55 @@ def create_tab(ctx):
         border='2px solid #1976d2', width='100%', height=f'{SUBMIT_MOL_HEIGHT}px',
         overflow='hidden', box_sizing='border-box',
     ))
+    mol_output.add_class('submit-mol-output')
+
+    submit_scope_id = f'submit-scope-{abs(id(coords_widget))}'
+
+    submit_select_btn = widgets.ToggleButton(
+        value=False, description='Select', icon='crosshairs',
+        button_style='',
+        tooltip='Click atoms to pick/unpick. Hold Shift and drag to rectangle-select.',
+        layout=widgets.Layout(width='96px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_btn = widgets.ToggleButton(
+        value=False, description='Manipulate', icon='arrows',
+        button_style='',
+        tooltip='Left-drag: translate selected atoms. Right-click atom: set pivot. Right-drag: rotate around pivot.',
+        layout=widgets.Layout(width='112px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_clear_btn = widgets.Button(
+        description='Clear', button_style='warning',
+        tooltip='Clear selection & pivot',
+        layout=widgets.Layout(width='66px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_undo_btn = widgets.Button(
+        description='Undo', button_style='info', icon='undo',
+        tooltip='Undo last move/rotate (Ctrl-Z)',
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
+    submit_manip_status = widgets.HTML(
+        value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
+        layout=widgets.Layout(flex='1 1 auto', min_width='0', overflow_x='hidden'),
+    )
+    submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
+    submit_manip_sync.add_class('submit-manip-sync')
+
+    submit_manip_toolbar = widgets.HBox(
+        [
+            submit_select_btn, submit_manip_btn,
+            submit_manip_clear_btn, submit_manip_undo_btn,
+            submit_manip_status, submit_manip_sync,
+        ],
+        layout=widgets.Layout(
+            display='none', gap='6px', align_items='center',
+            width='100%', flex_flow='row nowrap',
+            margin='0 0 6px 0', overflow='hidden',
+        ),
+    )
 
     xyz_copy_btn = widgets.Button(
         description='\U0001f4cb Copy Coordinates', button_style='success',
@@ -460,6 +509,8 @@ def create_tab(ctx):
         'batch_preview_cache': {},
         'smiles_busy': False,
         'batch_preview_busy': False,
+        'manip_inflight': False,
+        'manip_bootstrap_done': False,
     }
 
     # -- handlers -------------------------------------------------------
@@ -529,6 +580,26 @@ def create_tab(ctx):
         view = py3Dmol.view(width='100%', height=SUBMIT_MOL_HEIGHT)
         view.addModel(xyz_data, 'xyz')
         apply_molecule_view_style(view)
+        scope_key_js = json.dumps(submit_scope_id)
+        registration = (
+            '\n'
+            + submit_manip_bootstrap_js()
+            + '\n(function(){\n'
+            '  try {\n'
+            '    window._submitMolViewerByScope = window._submitMolViewerByScope || {};\n'
+            f'    window._submitMolViewerByScope[{scope_key_js}] = viewer_UNIQUEID;\n'
+            '    var el = document.getElementById("3dmolviewer_UNIQUEID");\n'
+            '    var fire = function(){\n'
+            '      if (window.__delfinSubmitManip) {\n'
+            f'        window.__delfinSubmitManip.onViewerReady({scope_key_js}, el);\n'
+            '      }\n'
+            '    };\n'
+            '    setTimeout(fire, 80);\n'
+            '  } catch(e) {}\n'
+            '})();\n'
+        )
+        if hasattr(view, 'startjs'):
+            view.startjs += registration
         html_payload = view._make_html()
         return ({
             'output_type': 'display_data',
@@ -545,10 +616,34 @@ def create_tab(ctx):
     def _replace_mol_output_text(*lines):
         _set_mol_status(*lines)
         _clear_mol_output()
+        _set_manip_toolbar_enabled(False)
+
+    def _ensure_manip_bootstrap():
+        if state['manip_bootstrap_done']:
+            return
+        try:
+            ctx.run_js(submit_manip_bootstrap_js())
+            state['manip_bootstrap_done'] = True
+        except Exception:
+            pass
+
+    def _set_manip_toolbar_enabled(enabled):
+        submit_select_btn.disabled = not enabled
+        submit_manip_btn.disabled = not enabled
+        submit_manip_clear_btn.disabled = not enabled
+        submit_manip_undo_btn.disabled = not enabled
+        submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
+        if not enabled:
+            if submit_select_btn.value:
+                submit_select_btn.value = False
+            if submit_manip_btn.value:
+                submit_manip_btn.value = False
 
     def _replace_mol_output_view(xyz_data):
         _clear_mol_status()
+        _ensure_manip_bootstrap()
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
+        _set_manip_toolbar_enabled(True)
 
     def _apply_smiles_conversion_result(task_id, *, quick, cleaned_data, result):
         if task_id != state['smiles_task_id']:
@@ -590,6 +685,24 @@ def create_tab(ctx):
         _render_batch_preview(entry, preview_payload)
 
     def update_molecule_view(change=None):
+        if state.get('manip_inflight'):
+            # Change originated from JS-side atom manipulation: the 3Dmol viewer
+            # has already reflected the new coordinates. Update state/copy only.
+            raw = coords_widget.value.strip()
+            if raw:
+                cleaned_data, input_type = clean_input_data(raw)
+                if input_type != 'smiles':
+                    lines = [l for l in cleaned_data.split('\n') if l.strip()]
+                    xyz_data = (
+                        f'{len(lines)}\nEdited in DELFIN viewer\n{cleaned_data}'
+                    )
+                    state['current_xyz_for_copy'] = {'content': xyz_data}
+                    xyz_copy_btn.disabled = False
+                    xyz_copy_status.value = (
+                        '<span style="color:#388e3c;">XYZ ready to copy</span>'
+                    )
+            state['manip_inflight'] = False
+            return
         state['smiles_task_id'] += 1
         _set_smiles_conversion_busy(False)
         # User manually edited coords -> clear isomer navigation and reset convert toggle
@@ -2212,9 +2325,99 @@ def create_tab(ctx):
             except Exception as e:
                 print(f'Error creating job: {e}')
 
+    # -- atom-selection / manipulation handlers -------------------------
+    def _run_manip_js(code):
+        try:
+            ctx.run_js(code)
+        except Exception:
+            pass
+
+    def _apply_manip_mode_js(mode):
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            f'if(window.__delfinSubmitManip) '
+            f'window.__delfinSubmitManip.setMode({json.dumps(submit_scope_id)}, '
+            f'{json.dumps(mode)});'
+        )
+
+    def on_submit_select_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_select_btn.value)
+        submit_select_btn.button_style = 'info' if active else ''
+        if active and submit_manip_btn.value:
+            submit_manip_btn.value = False  # mutex (its observer will send 'off')
+        _apply_manip_mode_js('select' if active else 'off')
+
+    def on_submit_manip_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_manip_btn.value)
+        submit_manip_btn.button_style = 'info' if active else ''
+        if active and submit_select_btn.value:
+            submit_select_btn.value = False  # mutex
+        _apply_manip_mode_js('manipulate' if active else 'off')
+
+    def on_submit_manip_clear(_button=None):
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            f'if(window.__delfinSubmitManip) '
+            f'window.__delfinSubmitManip.clear({json.dumps(submit_scope_id)});'
+        )
+
+    def on_submit_manip_undo(_button=None):
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            f'if(window.__delfinSubmitManip) '
+            f'window.__delfinSubmitManip.undo({json.dumps(submit_scope_id)});'
+        )
+
+    def on_submit_manip_sync(change):
+        if change.get('name') != 'value':
+            return
+        new_xyz = submit_manip_sync.value
+        try:
+            ctx.run_js(
+                'console.log("delfin sync observer fired, len=",'
+                + str(len(new_xyz or ''))
+                + ');'
+            )
+        except Exception:
+            pass
+        if not new_xyz or not new_xyz.strip():
+            return
+        # Extract only the new coordinate lines; drop JS-side count + comment.
+        new_lines = new_xyz.splitlines()
+        if len(new_lines) >= 2:
+            try:
+                int(new_lines[0].strip())
+                coord_lines = new_lines[2:]
+            except ValueError:
+                coord_lines = new_lines
+        else:
+            coord_lines = new_lines
+        coord_body = '\n'.join(line for line in coord_lines if line.strip())
+        # Preserve the user's original header (atom count + comment line) if
+        # present in the current coords_widget value.
+        old_lines = coords_widget.value.splitlines()
+        header = ''
+        if len(old_lines) >= 2:
+            try:
+                int(old_lines[0].strip())
+                header = f'{old_lines[0]}\n{old_lines[1]}\n'
+            except ValueError:
+                pass
+        state['manip_inflight'] = True
+        coords_widget.value = header + coord_body
+
     # -- wiring ---------------------------------------------------------
     xyz_copy_btn.on_click(on_xyz_copy)
     coords_widget.observe(update_molecule_view, names='value')
+    submit_select_btn.observe(on_submit_select_toggle, names='value')
+    submit_manip_btn.observe(on_submit_manip_toggle, names='value')
+    submit_manip_clear_btn.on_click(on_submit_manip_clear)
+    submit_manip_undo_btn.on_click(on_submit_manip_undo)
+    submit_manip_sync.observe(on_submit_manip_sync, names='value')
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
@@ -2270,7 +2473,8 @@ def create_tab(ctx):
     ))
 
     submit_right = widgets.VBox([
-        widgets.HTML('<b>Molecule Preview:</b>'), mol_status, mol_output,
+        widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
+        submit_manip_toolbar, mol_output,
         isomer_nav_row,
         widgets.HBox([xyz_copy_btn, xyz_copy_status],
                      layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap')),
@@ -2314,6 +2518,7 @@ def create_tab(ctx):
         flex='1 1 0', min_width='0', padding='10px',
         box_sizing='border-box', overflow_x='hidden',
     ))
+    submit_right.add_class(submit_scope_id)
 
     tab_widget = widgets.HBox(
         [submit_left, submit_right],
