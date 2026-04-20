@@ -13626,6 +13626,153 @@ def _verify_topology_from_graph(
         except Exception:
             pass
 
+        # Rule 7: Hybridisation vs. coordination geometry.
+        # For every non-metal heavy atom NOT bonded to a metal we infer
+        # the expected hybridisation from the bond-order graph and
+        # compare it to the local 3D geometry.  Atoms coordinated to a
+        # metal are excluded because their local angles are dictated
+        # by the coordination polyhedron (a donor N on a square-planar
+        # Pd is intentionally non-tetrahedral).
+        #
+        # Predicates (bond-graph only, no RDKit flags):
+        #   sp   — 2 heavy non-metal neighbours AND at least one bond
+        #          of order >= 2.5 (triple / cumulated double).  Expect
+        #          near-linear X-A-Y angle (>= 150°).
+        #   sp²  — 3 heavy non-metal neighbours AND at least one bond
+        #          of order >= 1.5 (aromatic, double, kekulé-double).
+        #          Expect planar: the out-of-plane distance of A from
+        #          the plane of its three neighbours <= 0.35 Å.
+        #   sp³  — 4 heavy non-metal neighbours AND zero bonds of
+        #          order >= 1.5.  Expect tetrahedral: every angle
+        #          X-A-Y >= 80° (rejects severe distortion while
+        #          tolerating ring strain down to ~84° in cyclopropane).
+        #
+        # Each predicate is only applied when the neighbour count matches;
+        # atoms with H-only neighbours or unusual coordination are
+        # skipped.  The tolerances are intentionally generous so
+        # chemically reasonable geometry is never rejected — the gate
+        # targets UFF blow-ups and collapsed-ring artefacts only.
+        try:
+            import numpy as _np
+
+            def _bond_orders_sum(_atom):
+                total = 0.0
+                for _b in _atom.GetBonds():
+                    try:
+                        total += float(_b.GetBondTypeAsDouble())
+                    except Exception:
+                        pass
+                return total
+
+            def _max_ring_bond_order_to_neighbors(_atom):
+                m = 0.0
+                for _b in _atom.GetBonds():
+                    try:
+                        m = max(m, float(_b.GetBondTypeAsDouble()))
+                    except Exception:
+                        pass
+                return m
+
+            for atom in mol_template.GetAtoms():
+                if atom.GetSymbol() in _METAL_SET:
+                    continue
+                if atom.GetAtomicNum() <= 1:
+                    continue
+                # Skip atoms directly bonded to a metal — their local
+                # geometry is driven by the coordination polyhedron,
+                # not by the organic hybridisation.
+                if any(
+                    nbr.GetSymbol() in _METAL_SET
+                    for nbr in atom.GetNeighbors()
+                ):
+                    continue
+                heavy_nbr_idx = [
+                    nbr.GetIdx() for nbr in atom.GetNeighbors()
+                    if nbr.GetAtomicNum() > 1
+                    and nbr.GetSymbol() not in _METAL_SET
+                ]
+                if not heavy_nbr_idx:
+                    continue
+                max_bo = _max_ring_bond_order_to_neighbors(atom)
+                ai = atom.GetIdx()
+                a_pos = _np.array(coords[ai])
+
+                # sp — 2 heavy neighbours + triple/cumulated bond
+                if len(heavy_nbr_idx) == 2 and max_bo >= 2.5:
+                    n1, n2 = heavy_nbr_idx
+                    v1 = _np.array(coords[n1]) - a_pos
+                    v2 = _np.array(coords[n2]) - a_pos
+                    n1n = float(_np.linalg.norm(v1))
+                    n2n = float(_np.linalg.norm(v2))
+                    if n1n > 1e-6 and n2n > 1e-6:
+                        cos_a = float(_np.dot(v1, v2) / (n1n * n2n))
+                        cos_a = max(-1.0, min(1.0, cos_a))
+                        angle_deg = math.degrees(math.acos(cos_a))
+                        if angle_deg < 150.0:
+                            return False
+                    continue
+
+                # sp² — exactly 3 heavy neighbours AND at least one
+                # pi bond.  Trigonal planar: accept ring strain but
+                # reject pyramidal collapse (> 0.35 Å out of neighbour
+                # plane) AND reject angle distortion outside 90°–150°
+                # (trigonal planar ideal is 120°; ~30° window covers
+                # fused-ring strain without letting sp³-like pyramids
+                # pass).
+                if len(heavy_nbr_idx) == 3 and max_bo >= 1.5:
+                    na, nb, nc = heavy_nbr_idx
+                    pa = _np.array(coords[na])
+                    pb = _np.array(coords[nb])
+                    pc = _np.array(coords[nc])
+                    normal = _np.cross(pb - pa, pc - pa)
+                    nn = float(_np.linalg.norm(normal))
+                    if nn > 1e-9:
+                        normal = normal / nn
+                        centroid = (pa + pb + pc) / 3.0
+                        dev = float(abs(_np.dot(a_pos - centroid, normal)))
+                        if dev > 0.35:
+                            return False
+                    angle_pairs = ((na, nb), (na, nc), (nb, nc))
+                    for p, q in angle_pairs:
+                        vp = _np.array(coords[p]) - a_pos
+                        vq = _np.array(coords[q]) - a_pos
+                        np_ = float(_np.linalg.norm(vp))
+                        nq_ = float(_np.linalg.norm(vq))
+                        if np_ < 1e-6 or nq_ < 1e-6:
+                            continue
+                        cos_a = float(_np.dot(vp, vq) / (np_ * nq_))
+                        cos_a = max(-1.0, min(1.0, cos_a))
+                        ang = math.degrees(math.acos(cos_a))
+                        if ang < 90.0 or ang > 150.0:
+                            return False
+                    continue
+
+                # sp³ — 4 heavy neighbours, no pi bonds.  Reject severe
+                # tetrahedral collapse (any X-A-Y angle < 80°).
+                if len(heavy_nbr_idx) == 4 and max_bo < 1.5:
+                    nbr_positions = [
+                        _np.array(coords[k]) for k in heavy_nbr_idx
+                    ]
+                    min_angle = 360.0
+                    for i_ in range(4):
+                        for j_ in range(i_ + 1, 4):
+                            v_i = nbr_positions[i_] - a_pos
+                            v_j = nbr_positions[j_] - a_pos
+                            ni_ = float(_np.linalg.norm(v_i))
+                            nj_ = float(_np.linalg.norm(v_j))
+                            if ni_ < 1e-6 or nj_ < 1e-6:
+                                continue
+                            cos_a = float(_np.dot(v_i, v_j) / (ni_ * nj_))
+                            cos_a = max(-1.0, min(1.0, cos_a))
+                            ang = math.degrees(math.acos(cos_a))
+                            if ang < min_angle:
+                                min_angle = ang
+                    if min_angle < 80.0:
+                        return False
+                    continue
+        except Exception:
+            pass
+
         return True
     except Exception:
         return False
@@ -21157,8 +21304,29 @@ def _build_coordination_constraints_from_xyz(
 
         # Metallacycle planarity: RDKit's SSSR doesn't include metal-containing
         # rings (M-L bonds aren't typed as ring bonds). For conjugated chelates
-        # like acac/salen, manually detect 5/6-membered metallacycles where
-        # all non-metal atoms are sp2, and add planarity torsion constraints.
+        # like acac / salen / ppy, manually detect 5/6-membered metallacycles
+        # where all non-metal atoms are sp2, and add planarity torsion
+        # constraints that include the metal as the last ring vertex.  UFF
+        # then pulls the metal back onto the ring plane — the "metal in
+        # π-plane" rule that used to hold implicitly.
+        #
+        # sp² character is read from the bond graph (any bond of order
+        # >= 1.5) rather than from RDKit's hybridisation / aromaticity
+        # flags.  This is essential because ``_convert_metal_bonds_to_dative``
+        # zeros the bond to the metal and sometimes drops aromatic flags
+        # on the cyclometallated donor carbon, which used to silently
+        # disable this torsion block for ppy-type ligands.
+        def _is_sp2_graph_local(_atom):
+            for _b in _atom.GetBonds():
+                if (
+                    _b.GetBondType() == Chem.BondType.AROMATIC
+                    or _b.GetBondType() == Chem.BondType.DOUBLE
+                    or _b.GetIsAromatic()
+                    or _b.GetBondTypeAsDouble() >= 1.5
+                ):
+                    return True
+            return False
+
         try:
             for atom in mol_template.GetAtoms():
                 if atom.GetSymbol() not in _METAL_SET:
@@ -21202,11 +21370,11 @@ def _build_coordination_constraints_from_xyz(
                         # Only 3-5 atom paths (4-6 membered chelate including metal)
                         if len(path) < 3 or len(path) > 5:
                             continue
-                        # Check all path atoms are sp2 or aromatic
+                        # Bond-graph sp² check — consistent with Rule 4 / 6
+                        # in ``_verify_topology_from_graph`` and immune to
+                        # sanitisation/dative-bond side effects.
                         all_sp2 = all(
-                            mol_template.GetAtomWithIdx(pi).GetIsAromatic()
-                            or mol_template.GetAtomWithIdx(pi).GetHybridization()
-                            == Chem.rdchem.HybridizationType.SP2
+                            _is_sp2_graph_local(mol_template.GetAtomWithIdx(pi))
                             for pi in path
                         )
                         if not all_sp2:
