@@ -658,6 +658,112 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         } catch (e) {}
     }
 
+    function distV(a, b) {
+        var dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+        return Math.sqrt(dx*dx + dy*dy + dz*dz);
+    }
+    function angleV(a, b, c) {
+        var ux = a.x - b.x, uy = a.y - b.y, uz = a.z - b.z;
+        var vx = c.x - b.x, vy = c.y - b.y, vz = c.z - b.z;
+        var nu = Math.sqrt(ux*ux + uy*uy + uz*uz);
+        var nv = Math.sqrt(vx*vx + vy*vy + vz*vz);
+        if (nu < 1e-9 || nv < 1e-9) return 0;
+        var cs = (ux*vx + uy*vy + uz*vz) / (nu * nv);
+        cs = Math.max(-1, Math.min(1, cs));
+        return Math.acos(cs) * 180 / Math.PI;
+    }
+    function dihedralV(a, b, c, d) {
+        var b1x = b.x-a.x, b1y = b.y-a.y, b1z = b.z-a.z;
+        var b2x = c.x-b.x, b2y = c.y-b.y, b2z = c.z-b.z;
+        var b3x = d.x-c.x, b3y = d.y-c.y, b3z = d.z-c.z;
+        var nb2 = Math.sqrt(b2x*b2x + b2y*b2y + b2z*b2z);
+        if (nb2 < 1e-9) return 0;
+        var b2nx = b2x/nb2, b2ny = b2y/nb2, b2nz = b2z/nb2;
+        var n1x = b1y*b2z - b1z*b2y, n1y = b1z*b2x - b1x*b2z, n1z = b1x*b2y - b1y*b2x;
+        var n2x = b2y*b3z - b2z*b3y, n2y = b2z*b3x - b2x*b3z, n2z = b2x*b3y - b2y*b3x;
+        var m1x = n1y*b2nz - n1z*b2ny;
+        var m1y = n1z*b2nx - n1x*b2nz;
+        var m1z = n1x*b2ny - n1y*b2nx;
+        var x = n1x*n2x + n1y*n2y + n1z*n2z;
+        var y = m1x*n2x + m1y*n2y + m1z*n2z;
+        return Math.atan2(y, x) * 180 / Math.PI;
+    }
+
+    function ensureMeasureBox(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.measureBox) return state.measureBox;
+        if (!state.viewerEl) return null;
+        var box = document.createElement('div');
+        box.className = 'submit-manip-measure-box';
+        box.style.position = 'absolute';
+        box.style.top = '8px';
+        box.style.right = '8px';
+        box.style.maxWidth = '260px';
+        box.style.maxHeight = 'calc(100% - 16px)';
+        box.style.padding = '6px 9px';
+        box.style.background = 'rgba(255,255,255,0.92)';
+        box.style.border = '1px solid #cfd8dc';
+        box.style.borderRadius = '4px';
+        box.style.boxShadow = '0 1px 3px rgba(0,0,0,0.15)';
+        box.style.font = '12px/1.35 monospace';
+        box.style.color = '#37474f';
+        box.style.pointerEvents = 'auto';
+        box.style.overflowY = 'auto';
+        box.style.zIndex = '25';
+        box.style.display = 'none';
+        state.viewerEl.appendChild(box);
+        state.measureBox = box;
+        return box;
+    }
+    function updateMeasureBox(scopeKey) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        var box = ensureMeasureBox(scopeKey);
+        if (!box || !viewer) return;
+        var picks = state.picks || [];
+        if (!picks.length) {
+            box.style.display = 'none';
+            box.innerHTML = '';
+            return;
+        }
+        var byS = {};
+        var all = getAtoms(viewer);
+        for (var i = 0; i < all.length; i++) byS[all[i].serial] = all[i];
+        var pts = [], labels = [];
+        for (var j = 0; j < picks.length; j++) {
+            var a = byS[picks[j].serial];
+            if (!a) continue;
+            pts.push({x: a.x, y: a.y, z: a.z});
+            labels.push((a.elem || '?') + a.serial);
+        }
+        if (!pts.length) { box.style.display = 'none'; return; }
+        if (pts.length > 4) { box.style.display = 'none'; box.innerHTML = ''; return; }
+        var parts = ['<div style="color:#555;margin-bottom:2px;">[' + labels.join(' → ') + ']</div>'];
+        for (var k = 0; k + 1 < pts.length; k++) {
+            parts.push(
+                '<div><span style="color:#1976d2;font-weight:600;">d(' +
+                labels[k] + ',' + labels[k+1] + ')</span> = ' +
+                distV(pts[k], pts[k+1]).toFixed(3) + ' Å</div>'
+            );
+        }
+        for (var m = 0; m + 2 < pts.length; m++) {
+            parts.push(
+                '<div><span style="color:#2e7d32;font-weight:600;">∠(' +
+                labels[m] + ',' + labels[m+1] + ',' + labels[m+2] + ')</span> = ' +
+                angleV(pts[m], pts[m+1], pts[m+2]).toFixed(2) + '°</div>'
+            );
+        }
+        for (var q = 0; q + 3 < pts.length; q++) {
+            parts.push(
+                '<div><span style="color:#c62828;font-weight:600;">τ(' +
+                labels[q] + ',' + labels[q+1] + ',' + labels[q+2] + ',' + labels[q+3] + ')</span> = ' +
+                dihedralV(pts[q], pts[q+1], pts[q+2], pts[q+3]).toFixed(2) + '°</div>'
+            );
+        }
+        box.innerHTML = parts.join('');
+        box.style.display = 'block';
+    }
+
     function redrawHighlights(scopeKey) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return;
@@ -698,6 +804,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         try { viewer.render(); } catch (e) {}
         updateStatus(scopeKey);
+        updateMeasureBox(scopeKey);
     }
 
     function updateStatus(scopeKey) {
@@ -1243,6 +1350,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.overlay = null;
         state.rect = null;
         state.drag = null;
+        state.measureBox = null;
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
