@@ -193,34 +193,44 @@ for _m in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
 # Keyed as (metal_symbol, donor_element) → distance.
 # ---------------------------------------------------------------------------
 _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
-    # Iridium
-    ('Ir', 'C'): 2.02, ('Ir', 'N'): 2.15, ('Ir', 'O'): 2.12,
+    # Iridium — CSD averages for Ir(III) octahedral coordination.
+    # Ir-C and Ir-N are tuned to the cyclometallated regime (Ir(ppy)2
+    # type, 2.01/2.04 Å) because pure σ-amine Ir-N is very rare in
+    # output targets; Ir-O is the acac / β-diketonate range.
+    ('Ir', 'C'): 2.02, ('Ir', 'N'): 2.05, ('Ir', 'O'): 2.05,
     ('Ir', 'P'): 2.30, ('Ir', 'Cl'): 2.38, ('Ir', 'S'): 2.38,
-    # Ruthenium
-    ('Ru', 'C'): 2.00, ('Ru', 'N'): 2.10, ('Ru', 'O'): 2.08,
+    # Ruthenium — CSD averages for Ru(II) polypyridyl / cyclometallated
+    # complexes: Ru-C(Ph-pyridyl) ~2.02, Ru-N(bpy/ppy) ~2.05, Ru-O(acac) ~2.05.
+    ('Ru', 'C'): 2.02, ('Ru', 'N'): 2.06, ('Ru', 'O'): 2.06,
     ('Ru', 'P'): 2.30, ('Ru', 'Cl'): 2.40, ('Ru', 'S'): 2.35,
     # Rhodium
-    ('Rh', 'C'): 2.00, ('Rh', 'N'): 2.10, ('Rh', 'O'): 2.05,
+    # Rhodium — CSD averages (cyclometallated Rh(ppy)2 type: Rh-C 1.99,
+    # Rh-N(ppy trans) 2.04; reference [Rh(ppy)2Cl(CH3CN)]).
+    ('Rh', 'C'): 2.00, ('Rh', 'N'): 2.05, ('Rh', 'O'): 2.05,
     ('Rh', 'P'): 2.28, ('Rh', 'Cl'): 2.38,
-    # Platinum
-    ('Pt', 'C'): 2.00, ('Pt', 'N'): 2.05, ('Pt', 'O'): 2.02,
+    # Platinum — cyclometallated Pt(II) Pt-C ~2.01, Pt-N ~2.02.
+    ('Pt', 'C'): 2.01, ('Pt', 'N'): 2.03, ('Pt', 'O'): 2.02,
     ('Pt', 'P'): 2.25, ('Pt', 'Cl'): 2.30, ('Pt', 'S'): 2.30,
     ('Pt', 'Br'): 2.43,
-    # Palladium
-    ('Pd', 'C'): 2.00, ('Pd', 'N'): 2.05, ('Pd', 'O'): 2.02,
+    # Palladium — cyclometallated Pd(II) Pd-C ~1.99, Pd-N ~2.03 (Δ ~0.04 Å
+    # vs. longer values seen in non-cyclometallated amines).
+    ('Pd', 'C'): 1.99, ('Pd', 'N'): 2.03, ('Pd', 'O'): 2.02,
     ('Pd', 'P'): 2.28, ('Pd', 'Cl'): 2.30, ('Pd', 'S'): 2.30,
     # Gold
     ('Au', 'C'): 2.00, ('Au', 'N'): 2.05, ('Au', 'P'): 2.28,
     ('Au', 'Cl'): 2.28, ('Au', 'S'): 2.30,
-    # Iron
-    ('Fe', 'C'): 1.91, ('Fe', 'N'): 1.97, ('Fe', 'O'): 2.00,
+    # Iron — Fe-N(py/imine) 2.15 HS / 1.97 LS; 2.05 is the CSD average
+    # across coordination environments (low-spin carbene / high-spin py).
+    ('Fe', 'C'): 1.95, ('Fe', 'N'): 2.05, ('Fe', 'O'): 2.00,
     ('Fe', 'P'): 2.20, ('Fe', 'Cl'): 2.28, ('Fe', 'S'): 2.30,
-    # Cobalt
-    ('Co', 'C'): 1.90, ('Co', 'N'): 1.95, ('Co', 'O'): 1.95,
+    # Cobalt — Co(III) octahedral Co-N 1.97 LS / Co(II) 2.15 HS;
+    # 2.00 is a reasonable single-value average.
+    ('Co', 'C'): 1.95, ('Co', 'N'): 2.00, ('Co', 'O'): 1.95,
     ('Co', 'P'): 2.18, ('Co', 'Cl'): 2.25,
-    # Nickel
-    ('Ni', 'C'): 1.88, ('Ni', 'N'): 1.90, ('Ni', 'O'): 1.88,
-    ('Ni', 'P'): 2.15, ('Ni', 'Cl'): 2.20,
+    # Nickel — Ni(II)-N(pyridyl/amine) ~2.05 octahedral, 1.90 square-planar
+    # low-spin; 2.00 covers both regimes.
+    ('Ni', 'C'): 1.95, ('Ni', 'N'): 2.00, ('Ni', 'O'): 1.95,
+    ('Ni', 'P'): 2.18, ('Ni', 'Cl'): 2.25,
     # Copper
     ('Cu', 'C'): 1.95, ('Cu', 'N'): 2.00, ('Cu', 'O'): 1.97,
     ('Cu', 'P'): 2.20, ('Cu', 'Cl'): 2.25, ('Cu', 'S'): 2.30,
