@@ -1044,10 +1044,13 @@ a slice of ``_PIPELINE_SEEDS`` controlled by
 # alt-binding modes that never validate on cyclometallated / conjugated
 # ligand systems like Ir(ppy)2.
 _DELFIN_PROFILES: Dict[str, Dict[str, int]] = {
-    "fast":   {"seeds": 12, "ranks": 1, "topk": 1, "cap_mult": 3, "alt_tries": 0},
-    "normal": {"seeds": 20, "ranks": 2, "topk": 2, "cap_mult": 4, "alt_tries": 4},
+    "fast":   {"seeds": 12, "ranks": 3, "topk": 1, "cap_mult": 3, "alt_tries": 0},
+    "normal": {"seeds": 20, "ranks": 3, "topk": 2, "cap_mult": 4, "alt_tries": 4},
     "max":    {"seeds": 40, "ranks": 3, "topk": 3, "cap_mult": 5, "alt_tries": 8},
 }
+# ``ranks=3`` is shared across all profiles because ligand-conformer
+# variety (chair / boat / twist puckers on flexible chelates) is part
+# of the constitutional-isomer output the user needs in every mode.
 # ``alt_tries=0`` disables alt-binding-mode exploration entirely for
 # ``fast`` because iterating rewired donor candidates (e.g. ppy phenyl
 # meta/para carbons) is almost always rejected by the fragment-topology
