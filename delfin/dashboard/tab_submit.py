@@ -1442,23 +1442,20 @@ def create_tab(ctx):
     def _prepare_delfin_submit_input(raw_input, cache):
         """Return the exact payload DELFIN should receive in input.txt.
 
-        Dashboard conversions are previews only. DELFIN itself should decide
-        whether to run quick SMILES conversion or GUPPY based on the original
-        SMILES string that reached input.txt.
+        Any XYZ visible in the textarea (preview isomer, manual paste, or
+        Manipulate-edited geometry) is submitted verbatim. The cached SMILES
+        from a previous conversion is still returned so CONTROL.txt can be
+        annotated with it for charge auto-fill, but input.txt carries the
+        XYZ coordinates the user is actually looking at.
         """
         input_content, input_type = clean_input_data(raw_input)
-        cached_smiles = str((cache or {}).get('smiles') or '').strip()
-        cached_xyz = str((cache or {}).get('xyz') or '').strip()
+        cached_smiles = str((cache or {}).get('smiles') or '').strip() or None
 
         if input_type == 'smiles':
             submit_smiles = input_content.strip()
             return submit_smiles + '\n', 'smiles', submit_smiles
 
-        cleaned_xyz = str(input_content or '').strip()
-        if input_type == 'xyz' and cached_smiles and cached_xyz and cleaned_xyz == cached_xyz:
-            return cached_smiles + '\n', 'smiles', cached_smiles
-
-        return input_content, input_type, None
+        return input_content, input_type, cached_smiles
 
     def parse_batch_entries():
         """Parse mixed SMILES/XYZ batch textarea.
