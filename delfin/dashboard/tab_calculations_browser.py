@@ -36,6 +36,7 @@ from .molecule_viewer import (
     coord_to_xyz,
     parse_xyz_frames,
     DEFAULT_3DMOL_STYLE_JS,
+    measurement_bootstrap_js,
     patch_viewer_mouse_controls_js,
 )
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
@@ -801,6 +802,41 @@ def create_tab(ctx):
         description='📋 Copy Coordinates', button_style='success',
         layout=widgets.Layout(width='176px', min_width='176px', height='32px'),
     )
+    calc_xyz_select_btn = widgets.ToggleButton(
+        value=False,
+        description='Select',
+        icon='crosshairs',
+        button_style='',
+        tooltip='Click atoms in the viewer — 2=distance, 3=angle, 4=dihedral',
+        layout=widgets.Layout(width='92px', height='32px'),
+    )
+    calc_xyz_clear_sel_btn = widgets.Button(
+        description='Clear',
+        button_style='warning',
+        tooltip='Clear selected atoms',
+        layout=widgets.Layout(width='64px', height='32px'),
+    )
+    calc_xyz_measure_html = widgets.HTML(
+        value=(
+            '<div class="delfin-xyz-measure-display" '
+            'style="color:#888;font-family:monospace;font-size:0.88em;'
+            'line-height:1.35;display:block;width:100%;word-break:break-word;">'
+            '— click atoms (2/3/4) —</div>'
+        ),
+        layout=widgets.Layout(flex='1 1 auto', min_width='0', overflow_x='hidden'),
+    )
+    calc_xyz_measure_row = widgets.HBox(
+        [calc_xyz_select_btn, calc_xyz_clear_sel_btn, calc_xyz_measure_html],
+        layout=widgets.Layout(
+            display='none',
+            gap='8px',
+            align_items='flex-start',
+            width='100%',
+            flex_flow='row nowrap',
+            margin='4px 0 0 0',
+            overflow='hidden',
+        ),
+    )
     calc_xyz_png_btn = widgets.Button(
         description='🖼 PNG', button_style='warning',
         layout=widgets.Layout(width='112px', min_width='112px', height='32px'),
@@ -882,6 +918,7 @@ def create_tab(ctx):
                     gap='12px', align_items='center', width='100%', justify_content='space-between',
                 ),
             ),
+            calc_xyz_measure_row,
         ],
         layout=widgets.Layout(
             display='none',
@@ -3461,6 +3498,12 @@ def create_tab(ctx):
         calc_xyz_fps_input.disabled = not can_play
         calc_xyz_play_btn.disabled = not can_play
         calc_xyz_tray_controls.layout.display = 'flex' if show_tray else 'none'
+        measure_visible = xyz_controls_visible and n_frames >= 1
+        calc_xyz_measure_row.layout.display = 'flex' if measure_visible else 'none'
+        calc_xyz_select_btn.disabled = not measure_visible
+        calc_xyz_clear_sel_btn.disabled = not measure_visible
+        if not measure_visible and calc_xyz_select_btn.value:
+            calc_xyz_select_btn.value = False
         _calc_update_loop_button_style()
         if not can_play:
             _calc_stop_xyz_playback(update_button=True)
@@ -7194,12 +7237,14 @@ def create_tab(ctx):
                 # The JS above (v.setFrame(idx)) already updates the displayed
                 # frame; the Python-side Python frame tracker isn't used.
                 _calc_set_png_button_mode(main=True)
+            _calc_refresh_measure_after_render()
             return
 
         # Single frame: render with py3Dmol
         xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}\n"
         _render_3dmol(xyz_content)
         _calc_apply_traj_style()
+        _calc_refresh_measure_after_render()
 
     # -- ORCA terminated check ----------------------------------------------
     def calc_orca_terminated_normally(path):
@@ -8326,6 +8371,53 @@ def create_tab(ctx):
         except Exception:
             xyz_content = f"{n_atoms}\n{comment}\n{xyz_block}"
         _calc_copy_to_clipboard(xyz_content, label=f'xyz frame {idx + 1}')
+
+    def _calc_ensure_measure_js():
+        _run_js(measurement_bootstrap_js())
+
+    def calc_on_xyz_select_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(calc_xyz_select_btn.value)
+        calc_xyz_select_btn.button_style = 'info' if active else ''
+        calc_xyz_select_btn.description = 'Selecting…' if active else 'Select'
+        _calc_ensure_measure_js()
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                if (!window.__delfinMeasure) return;
+                window.__delfinMeasure.setActive({scope_key_json}, {str(active).lower()});
+            }})();
+            """
+        )
+
+    def calc_on_xyz_clear_selection(_button=None):
+        _calc_ensure_measure_js()
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            (function() {{
+                if (!window.__delfinMeasure) return;
+                window.__delfinMeasure.clear({scope_key_json});
+            }})();
+            """
+        )
+
+    def _calc_refresh_measure_after_render():
+        if not calc_xyz_select_btn.value:
+            return
+        _calc_ensure_measure_js()
+        scope_key_json = json.dumps(calc_scope_id)
+        _run_js(
+            f"""
+            setTimeout(function() {{
+                if (window.__delfinMeasure) {{
+                    window.__delfinMeasure.ensureAfterRender({scope_key_json});
+                }}
+            }}, 40);
+            """
+        )
 
     def calc_on_view_png(button):
         _calc_trigger_png_download()
@@ -11376,6 +11468,8 @@ def create_tab(ctx):
     calc_xyz_fps_input.observe(calc_on_xyz_fps_change, names='value')
     calc_xyz_play_btn.observe(calc_on_xyz_play_change, names='value')
     calc_xyz_copy_btn.on_click(calc_on_xyz_copy)
+    calc_xyz_select_btn.observe(calc_on_xyz_select_toggle, names='value')
+    calc_xyz_clear_sel_btn.on_click(calc_on_xyz_clear_selection)
     calc_xyz_png_btn.on_click(calc_on_view_png)
     calc_rmsd_run_btn.on_click(calc_on_rmsd_run)
     calc_rmsd_hide_btn.on_click(calc_on_rmsd_hide)
