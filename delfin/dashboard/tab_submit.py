@@ -2560,6 +2560,19 @@ def create_tab(ctx):
             padding: 0 !important;
             margin: 0 !important;
         }
+        .submit-mol-output,
+        .submit-mol-output .output_subarea,
+        .submit-mol-output .jp-OutputArea,
+        .submit-mol-output .jp-OutputArea-output,
+        .submit-mol-output .jp-OutputArea-child,
+        .submit-mol-output .output_area {
+            overflow: hidden !important;
+        }
+        .submit-mol-output [id^="3dmolviewer_"] {
+            overflow: hidden !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+        }
         </style>
         """
     )
