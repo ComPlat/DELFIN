@@ -717,9 +717,23 @@ makes determinism guarantees hold end-to-end and lets cross-stage
 caches stay coherent.
 """
 
-_TOP_LEVEL_SEEDS: Tuple[int, ...] = _PIPELINE_SEEDS[:12]
-"""Seeds used for top-level conformer sampling (12 is the historical
-default for ``smiles_to_xyz_isomers``)."""
+_TOP_LEVEL_SEEDS: Tuple[int, ...] = _PIPELINE_SEEDS
+"""Seeds used for top-level conformer sampling.  Uses the full 40-seed
+pipeline schedule so the survivor pool is deep enough for the
+stricter post-UFF gate (hybridisation + coordination-geometry +
+metal-in-π).  Extra seeds run in parallel via ThreadPoolExecutor,
+so on multi-core hosts the wall-clock cost scales sub-linearly;
+override via ``DELFIN_TOP_LEVEL_SEED_COUNT`` if a thinner pool is
+preferred for quick iteration."""
+
+try:
+    _TOP_LEVEL_SEED_COUNT = int(
+        os.environ.get("DELFIN_TOP_LEVEL_SEED_COUNT", str(len(_TOP_LEVEL_SEEDS)))
+    )
+    if _TOP_LEVEL_SEED_COUNT > 0:
+        _TOP_LEVEL_SEEDS = _TOP_LEVEL_SEEDS[:_TOP_LEVEL_SEED_COUNT]
+except Exception:
+    pass
 
 
 def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
@@ -13678,28 +13692,34 @@ def _verify_topology_from_graph(
                     continue
                 if atom.GetAtomicNum() <= 1:
                     continue
-                # Skip atoms directly bonded to a metal — their local
-                # geometry is driven by the coordination polyhedron,
-                # not by the organic hybridisation.
-                if any(
+                has_metal_nbr = any(
                     nbr.GetSymbol() in _METAL_SET
                     for nbr in atom.GetNeighbors()
-                ):
-                    continue
-                heavy_nbr_idx = [
+                )
+                # Heavy neighbours including the metal.  A metal counts
+                # as a neighbour for the sp² planarity check — the
+                # "metal in π-plane" rule — but not for sp / sp³ angle
+                # checks because there the coordination polyhedron
+                # dictates the local geometry.
+                heavy_nbr_all = [
+                    nbr.GetIdx() for nbr in atom.GetNeighbors()
+                    if nbr.GetAtomicNum() > 1
+                ]
+                heavy_nbr_organic = [
                     nbr.GetIdx() for nbr in atom.GetNeighbors()
                     if nbr.GetAtomicNum() > 1
                     and nbr.GetSymbol() not in _METAL_SET
                 ]
-                if not heavy_nbr_idx:
+                if not heavy_nbr_all:
                     continue
                 max_bo = _max_ring_bond_order_to_neighbors(atom)
                 ai = atom.GetIdx()
                 a_pos = _np.array(coords[ai])
 
-                # sp — 2 heavy neighbours + triple/cumulated bond
-                if len(heavy_nbr_idx) == 2 and max_bo >= 2.5:
-                    n1, n2 = heavy_nbr_idx
+                # sp — linear by coordination design when bonded to
+                # metal (e.g. M-C#O, M-C#N-R).  Skip metal-bonded atoms.
+                if not has_metal_nbr and len(heavy_nbr_organic) == 2 and max_bo >= 2.5:
+                    n1, n2 = heavy_nbr_organic
                     v1 = _np.array(coords[n1]) - a_pos
                     v2 = _np.array(coords[n2]) - a_pos
                     n1n = float(_np.linalg.norm(v1))
@@ -13712,15 +13732,16 @@ def _verify_topology_from_graph(
                             return False
                     continue
 
-                # sp² — exactly 3 heavy neighbours AND at least one
-                # pi bond.  Trigonal planar: accept ring strain but
-                # reject pyramidal collapse (> 0.35 Å out of neighbour
-                # plane) AND reject angle distortion outside 90°–150°
-                # (trigonal planar ideal is 120°; ~30° window covers
-                # fused-ring strain without letting sp³-like pyramids
-                # pass).
-                if len(heavy_nbr_idx) == 3 and max_bo >= 1.5:
-                    na, nb, nc = heavy_nbr_idx
+                # sp² — exactly 3 heavy neighbours (metal counted) AND
+                # at least one π bond.  Trigonal planar: atom must lie
+                # within 0.35 Å of the plane of its three neighbours
+                # and all three X-A-Y angles must be 90°–150° (ideal
+                # 120°).  Including the metal here is what enforces
+                # "metal in π-plane" for cyclometallated / conjugated
+                # donor atoms; excluding it would let UFF pyramidalise
+                # the donor carbon along the metal-axis.
+                if len(heavy_nbr_all) == 3 and max_bo >= 1.5:
+                    na, nb, nc = heavy_nbr_all
                     pa = _np.array(coords[na])
                     pb = _np.array(coords[nb])
                     pc = _np.array(coords[nc])
@@ -13747,11 +13768,16 @@ def _verify_topology_from_graph(
                             return False
                     continue
 
-                # sp³ — 4 heavy neighbours, no pi bonds.  Reject severe
-                # tetrahedral collapse (any X-A-Y angle < 80°).
-                if len(heavy_nbr_idx) == 4 and max_bo < 1.5:
+                # sp³ — 4 heavy organic neighbours, no π bonds, no
+                # metal bond.  Reject severe tetrahedral collapse
+                # (any X-A-Y angle < 80°).
+                if (
+                    not has_metal_nbr
+                    and len(heavy_nbr_organic) == 4
+                    and max_bo < 1.5
+                ):
                     nbr_positions = [
-                        _np.array(coords[k]) for k in heavy_nbr_idx
+                        _np.array(coords[k]) for k in heavy_nbr_organic
                     ]
                     min_angle = 360.0
                     for i_ in range(4):
@@ -17981,81 +18007,78 @@ def _generate_topological_isomers(
         # Strategy: build pre-UFF Procrustes XYZ in main process (fast),
         # batch all UFF calls through ProcessPool, then quality-check.
         #
-        # For each (canonical_form, permutation) we also try additional
-        # chelate-conformer ranks when the fragment-procrustes builder
-        # is actually engaged — i.e. when no useful rigid template is
-        # available or template placement fails.  This yields distinct
-        # ligand puckers for systems that cannot reuse the template and
-        # keeps template-placed systems free of redundant duplicates
-        # (since the template ignores ``chelate_rank`` anyway).  Final
-        # dedup is by fingerprint + RMSD downstream.
+        # To give the stricter post-UFF gate (topology + hybridisation
+        # + coordination-geometry) a large enough survivor pool we
+        # over-generate aggressively:
+        #   * every chelate conformer rank 0..K is tried
+        #   * every ranked template conformer 0..T is tried
+        #   * downstream fingerprint + RMSD dedup prunes duplicates
+        # so identical outputs coming from equivalent (rank, template)
+        # combinations don't pollute the final list.
         _CHELATE_RANK_VARIANTS = 3 if chelate_ps else 1
+        _PRE_UFF_CAP = max_isomers * 5
         _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
-        for cf, pm in feasible_isomers:
-            if len(_pre_uff_batch) + len(results) >= max_isomers * 3:
-                break
-            gn = cf[0]
-            # First attempt: default rank 0.  Since
-            # ``_build_topology_xyz`` prefers the rigid template when
-            # ``mol.GetNumConformers() > 0``, rank 0 is all we need in
-            # the common case.  Collect the XYZ signature so we can
-            # detect template-based builds and skip wasteful higher
-            # ranks that would regenerate identical output.
-            try:
-                xyz0 = None
-                for _tc in topo_template_cids:
-                    xyz0 = _build_topology_xyz(
-                        mol, metal_idx, donor_indices, pm, gn,
-                        False, conf_id=_tc, chelate_rank=0,
-                    )
-                    if xyz0 is not None:
-                        break
-                if xyz0 is not None:
-                    coord_c = None
-                    if apply_uff:
-                        try:
-                            coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz0,
-                            )
-                        except Exception:
-                            pass
-                    _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
-            except Exception as exc:
-                logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
-                continue
+        _seen_pre_uff_keys: set = set()
 
-            # Additional ranks only when the rank-0 build clearly came
-            # from the fragment-procrustes branch (no usable template
-            # available) — otherwise we would spam duplicates.  That
-            # condition is equivalent to the mol having no conformers
-            # at all.
-            if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
+        def _xyz_signature(_xyz: str) -> str:
+            return "\n".join(
+                line.strip() for line in _xyz.splitlines() if line.strip()
+            )
+
+        # Enumerate every (cf, perm, chelate_rank, template_id) build
+        # request, then build them in parallel via a thread pool.
+        # RDKit ETKDG and numpy Procrustes release the GIL, so threads
+        # actually run concurrently; the final dedup is serialised so
+        # `_seen_pre_uff_keys` stays consistent.
+        _build_tasks: List[Tuple[tuple, List[int], str, int, object]] = []
+        for cf, pm in feasible_isomers:
+            gn = cf[0]
+            for _crank in range(_CHELATE_RANK_VARIANTS):
+                for _tc in topo_template_cids:
+                    _build_tasks.append((cf, pm, gn, _crank, _tc))
+
+        def _run_build(_task):
+            _cf, _pm, _gn, _crank, _tc = _task
+            try:
+                _x = _build_topology_xyz(
+                    mol, metal_idx, donor_indices, _pm, _gn,
+                    False, conf_id=_tc, chelate_rank=_crank,
+                )
+                return (_task, _x)
+            except Exception as _exc:
+                logger.debug(
+                    "Topo pre-UFF build failed (%s rank=%d tmpl=%s): %s",
+                    _gn, _crank, _tc, _exc,
+                )
+                return (_task, None)
+
+        _n_build_workers = min(len(_build_tasks), os.cpu_count() or 4, 32)
+        if _n_build_workers > 1 and len(_build_tasks) > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=_n_build_workers
+            ) as _bp:
+                _build_outputs = list(_bp.map(_run_build, _build_tasks))
+        else:
+            _build_outputs = [_run_build(_t) for _t in _build_tasks]
+
+        for (_cf, _pm, _gn, _crank, _tc), _xyz_out in _build_outputs:
+            if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                break
+            if _xyz_out is None:
                 continue
-            for _crank in range(1, _CHELATE_RANK_VARIANTS):
-                if len(_pre_uff_batch) + len(results) >= max_isomers * 3:
-                    break
+            _sig = _xyz_signature(_xyz_out)
+            if _sig in _seen_pre_uff_keys:
+                continue
+            _seen_pre_uff_keys.add(_sig)
+            coord_c = None
+            if apply_uff:
                 try:
-                    xyz = None
-                    for _tc in topo_template_cids:
-                        xyz = _build_topology_xyz(
-                            mol, metal_idx, donor_indices, pm, gn,
-                            False, conf_id=_tc, chelate_rank=_crank,
-                        )
-                        if xyz is not None:
-                            break
-                    if xyz is None:
-                        continue
-                    coord_c = None
-                    if apply_uff:
-                        try:
-                            coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz,
-                            )
-                        except Exception:
-                            pass
-                    _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
-                except Exception as exc:
-                    logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+                    coord_c = _build_coordination_constraints_from_xyz(
+                        mol, _xyz_out,
+                    )
+                except Exception:
+                    pass
+            _pre_uff_batch.append((_cf, _pm, _gn, _xyz_out, coord_c))
 
         # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
         if apply_uff and _pre_uff_batch:
