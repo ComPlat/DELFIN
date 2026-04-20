@@ -315,10 +315,6 @@ def create_tab(ctx):
         style=COMMON_STYLE,
     )
 
-    submit_smiles_list_button = widgets.Button(
-        description='SUBMIT BATCH LIST', button_style='success',
-        layout=widgets.Layout(width='150px'),
-    )
     smiles_batch_output = widgets.Output()
 
     smiles_prev_button = widgets.Button(
@@ -1927,11 +1923,24 @@ def create_tab(ctx):
         _replace_mol_output_text('Please enter XYZ coordinates or SMILES.')
 
     def handle_submit(button):
+        raw_input = coords_widget.value.strip()
+        batch_text = smiles_batch_widget.value.strip()
+        if raw_input and batch_text:
+            with output_area:
+                clear_output()
+                print(
+                    'Warning: both the single-job input and the batch list '
+                    'are filled — submission cannot proceed. Please clear '
+                    'one of the two before submitting.'
+                )
+            return
+        if not raw_input and batch_text:
+            handle_submit_smiles_list(button)
+            return
         with output_area:
             clear_output()
             job_name = job_name_widget.value.strip()
             control_content = control_widget.value
-            raw_input = coords_widget.value.strip()
 
             if not job_name:
                 print('Error: Job name cannot be empty!')
@@ -2421,7 +2430,6 @@ def create_tab(ctx):
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
     guppy_submit_button.on_click(handle_guppy_submit)
-    submit_smiles_list_button.on_click(handle_submit_smiles_list)
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
 
@@ -2455,8 +2463,7 @@ def create_tab(ctx):
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
         widgets.HBox(
-            [smiles_prev_button, smiles_preview_label,
-             smiles_next_button, submit_smiles_list_button],
+            [smiles_prev_button, smiles_preview_label, smiles_next_button],
             layout=widgets.Layout(gap='2px', align_items='center', flex_wrap='wrap'),
         ),
         smiles_batch_output,
