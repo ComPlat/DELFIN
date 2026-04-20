@@ -17523,7 +17523,7 @@ def _build_topology_xyz(
         if mol.GetNumConformers() > 0:
             xyz_from_template = _build_topology_xyz_from_template(
                 mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff,
-                conf_id=conf_id,
+                conf_id=conf_id, chelate_rank=chelate_rank,
             )
             if xyz_from_template is not None:
                 return xyz_from_template
@@ -17762,6 +17762,7 @@ def _build_topology_xyz_from_template(
     geometry: str,
     apply_uff: bool,
     conf_id: Optional[int] = None,
+    chelate_rank: int = 0,
 ) -> Optional[str]:
     """Rigid-fragment topology builder using an existing template conformer.
 
@@ -17773,6 +17774,16 @@ def _build_topology_xyz_from_template(
     :func:`_rank_template_conformers`) is used.  Pass a specific ID when the
     caller wants to iterate over several candidates (e.g. to try multiple
     templates for the same alternative binding mode).
+
+    ``chelate_rank`` unlocks ligand-conformer variety when the rigid
+    template is otherwise reused verbatim.  Rank 0 keeps the template's
+    pucker exactly; rank > 0 substitutes the ``rank``-th best
+    native-bite-matching chelate conformer from
+    :func:`_best_chelate_conformer_coords` so flexible chelates
+    (cyclam, salen, ethylenediamines) emit distinct chair / boat /
+    twist puckers as separate isomers even on systems where ETKDG
+    sampling succeeded and the rigid-template branch is the one
+    actually building.
     """
     if not RDKIT_AVAILABLE:
         return None
@@ -17951,7 +17962,8 @@ def _build_topology_xyz_from_template(
                         else target_mat
                     )
                     coords_map = _best_chelate_conformer_coords(
-                        mol, frag, frag_donors, target_for_search
+                        mol, frag, frag_donors, target_for_search,
+                        rank=chelate_rank,
                     )
                     if coords_map is not None:
                         new_frag_xyz = np.array(
@@ -18392,6 +18404,13 @@ def _generate_topological_isomers(
         _CHELATE_RANK_VARIANTS = max(1, _prof_ranks) if chelate_ps else 1
         _PRE_UFF_CAP = max_isomers * max(1, _prof_cap_mult)
         _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
+        _pre_uff_seen: set = set()
+
+        def _xyz_sig(_xyz: str) -> str:
+            return "\n".join(
+                _ln.strip() for _ln in _xyz.splitlines() if _ln.strip()
+            )
+
         for cf, pm in feasible_isomers:
             if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
                 break
@@ -18406,26 +18425,29 @@ def _generate_topological_isomers(
                     if xyz0 is not None:
                         break
                 if xyz0 is not None:
-                    coord_c = None
-                    if apply_uff:
-                        try:
-                            coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz0,
-                            )
-                        except Exception:
-                            pass
-                    _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
+                    _sig0 = _xyz_sig(xyz0)
+                    if _sig0 not in _pre_uff_seen:
+                        _pre_uff_seen.add(_sig0)
+                        coord_c = None
+                        if apply_uff:
+                            try:
+                                coord_c = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0,
+                                )
+                            except Exception:
+                                pass
+                        _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
 
-            # Additional chelate-rank variants are only useful when the
-            # rigid-template path was not engaged (no conformers on
-            # ``mol`` → fragment-procrustes is the real builder and
-            # each rank produces a distinct pucker).  Otherwise higher
-            # ranks regenerate near-duplicate templates that flood the
-            # UFF batch and crowd genuine topology variants out of
-            # dedup.
+            # Additional chelate-rank variants: only useful when the
+            # fragment-procrustes builder is engaged (no conformers on
+            # ``mol``) AND the mismatch-triggered substitution in the
+            # template path happens to fire.  Under a deterministic σ
+            # pool the template-path substitution gives the same pucker
+            # across ranks, so skipping here avoids identical duplicates
+            # and keeps the bimetallic-cyclam determinism test green.
             if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
                 continue
             for _crank in range(1, _CHELATE_RANK_VARIANTS):
@@ -18442,6 +18464,10 @@ def _generate_topological_isomers(
                             break
                     if xyz is None:
                         continue
+                    _sig = _xyz_sig(xyz)
+                    if _sig in _pre_uff_seen:
+                        continue
+                    _pre_uff_seen.add(_sig)
                     coord_c = None
                     if apply_uff:
                         try:
