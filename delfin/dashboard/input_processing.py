@@ -130,18 +130,17 @@ def smiles_to_xyz_isomers(
     include_binding_mode_isomers=False,
     hapto_approx=None,
     deterministic=True,
-    quality_mode="fast",
+    quality_mode="extreme",
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
     Returns ``([(xyz_string, num_atoms, label), ...], error)``.
 
-    ``quality_mode`` defaults to ``"fast"`` (12 ETKDG seeds, 1 chelate
-    rank, 1 template) for the interactive dashboard so the
-    ``CONVERT SMILES + UFF`` button responds within seconds on typical
-    σ-complexes.  Pass ``"normal"`` (20 seeds) or ``"max"`` (40 seeds,
-    3 ranks, 3 templates) for scripted / batch workflows that can
-    afford the extra wall-clock time in exchange for a deeper
+    ``quality_mode`` defaults to ``"extreme"`` (60 ETKDG seeds, 5 chelate
+    ranks, 5 templates, 12 alt-binding tries).  The pipeline honours
+    ``DELFIN_MAX_PROCESS_WORKERS`` / ``_THREAD_WORKERS`` (default 64)
+    so CPU / RAM pressure stays bounded on smaller machines.  Pass
+    ``"max"`` / ``"normal"`` / ``"fast"`` for progressively cheaper
     candidate pool.
     """
     results, error = _delfin_smiles_to_xyz_isomers(

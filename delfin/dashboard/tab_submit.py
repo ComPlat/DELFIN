@@ -284,6 +284,23 @@ def create_tab(ctx):
         description='CONVERT SMILES + UFF', button_style='info',
         layout=widgets.Layout(width='185px'),
     )
+    convert_quality_dropdown = widgets.Dropdown(
+        options=[
+            ('fast (12 seeds)', 'fast'),
+            ('normal (20 seeds)', 'normal'),
+            ('max (40 seeds)', 'max'),
+            ('extreme (60 seeds)', 'extreme'),
+        ],
+        value='extreme',
+        description='Quality:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='210px'),
+        tooltip=(
+            'Trade-off between latency and isomer coverage.  '
+            'fast = seconds.  extreme = deep search (~minutes on '
+            'bimetallic systems).'
+        ),
+    )
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -866,18 +883,20 @@ def create_tab(ctx):
                     # hapto (hapto builder needs OB conformer diversity).
                     from delfin.smiles_converter import _probe_hapto_groups_from_smiles
                     _has_hapto = bool(_probe_hapto_groups_from_smiles(cleaned_data))
-                    # Dashboard button uses ``quality_mode='fast'`` by
-                    # default (12 seeds, 1 chelate rank, 1 template) so
-                    # interactive latency stays in the seconds range.
-                    # Batch / scripted callers can still get the deep
-                    # 40-seed ``'max'`` pool via the module API.
+                    # Dashboard lets the user pick the quality profile via
+                    # the "Quality" dropdown next to the button; default
+                    # is ``extreme`` (60 seeds, 5 chelate ranks, 5
+                    # templates).  The pipeline honours
+                    # ``DELFIN_MAX_PROCESS_WORKERS`` / ``_THREAD_WORKERS``
+                    # (default 64) so CPU / RAM pressure stays bounded.
+                    _quality = convert_quality_dropdown.value or "extreme"
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
                         collapse_label_variants=True,
                         include_binding_mode_isomers=True,
                         deterministic=not _has_hapto,
-                        quality_mode="fast",
+                        quality_mode=_quality,
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
@@ -2503,7 +2522,7 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
-                      convert_smiles_quick_button],
+                      convert_smiles_quick_button, convert_quality_dropdown],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),

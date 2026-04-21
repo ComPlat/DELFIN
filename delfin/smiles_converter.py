@@ -3042,7 +3042,7 @@ def _embed_hybrid_fragment(fragment_mol):
     except Exception:
         pass
 
-    seeds = [42, 1337, 7]
+    seeds = _PIPELINE_SEEDS[:3]
     embedded = False
     for seed in seeds:
         try:
@@ -18693,32 +18693,47 @@ def _generate_topological_isomers(
                 _ln.strip() for _ln in _xyz.splitlines() if _ln.strip()
             )
 
+        # Per-(cf, pm) variant counter so every distinct XYZ that passes
+        # dedup for the same coordination arrangement gets a ``-conf2``,
+        # ``-conf3`` etc. label suffix downstream, preserving backbone-
+        # pucker / chelate-conformer variety through the label-collapse
+        # step (otherwise all puckers share the CF label and only the
+        # best-scoring one survives).
+        _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
         for cf, pm in feasible_isomers:
             if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
                 break
             gn = cf[0]
+            # Iterate ALL template conformer CIDs (not break on first):
+            # each distinct template pucker is a candidate coordination
+            # conformer worth keeping.  Dedup via XYZ signature drops
+            # identical outputs deterministically.
             try:
-                xyz0 = None
                 for _tc in topo_template_cids:
+                    if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                        break
                     xyz0 = _build_topology_xyz(
                         mol, metal_idx, donor_indices, pm, gn,
                         False, conf_id=_tc, chelate_rank=0,
                     )
-                    if xyz0 is not None:
-                        break
-                if xyz0 is not None:
+                    if xyz0 is None:
+                        continue
                     _sig0 = _xyz_sig(xyz0)
-                    if _sig0 not in _pre_uff_seen:
-                        _pre_uff_seen.add(_sig0)
-                        coord_c = None
-                        if apply_uff:
-                            try:
-                                coord_c = _build_coordination_constraints_from_xyz(
-                                    mol, xyz0,
-                                )
-                            except Exception:
-                                pass
-                        _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
+                    if _sig0 in _pre_uff_seen:
+                        continue
+                    _pre_uff_seen.add(_sig0)
+                    coord_c = None
+                    if apply_uff:
+                        try:
+                            coord_c = _build_coordination_constraints_from_xyz(
+                                mol, xyz0,
+                            )
+                        except Exception:
+                            pass
+                    _key = (tuple(cf), tuple(pm))
+                    _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
+                    _conf_idx = _variant_counter[_key] - 1
+                    _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
@@ -18749,8 +18764,11 @@ def _generate_topological_isomers(
                                 )
                             except Exception:
                                 pass
+                        _key = (tuple(cf), tuple(pm))
+                        _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
+                        _conf_idx = _variant_counter[_key] - 1
                         _pre_uff_batch.append(
-                            (cf, pm, gn, xyz_bln, coord_c_bln)
+                            (cf, pm, gn, xyz_bln, coord_c_bln, _conf_idx)
                         )
             except Exception as bln_exc:
                 logger.debug(
@@ -18758,42 +18776,48 @@ def _generate_topological_isomers(
                     cf[0], pm, bln_exc,
                 )
 
-            # Additional chelate-rank variants: only useful when the
-            # fragment-procrustes builder is engaged (no conformers on
-            # ``mol``) AND the mismatch-triggered substitution in the
-            # template path happens to fire.  Under a deterministic σ
-            # pool the template-path substitution gives the same pucker
-            # across ranks, so skipping here avoids identical duplicates
-            # and keeps the bimetallic-cyclam determinism test green.
-            if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
+            # Additional chelate-rank variants: enumerate alternative
+            # chelate puckers (rank 1..N-1) for every (CF, perm).  The
+            # XYZ-signature dedup below drops identical outputs
+            # deterministically, so running across ranks cannot
+            # introduce non-determinism even when mol already has
+            # conformers.  Each surviving distinct XYZ becomes a
+            # ``-confN`` labelled variant in the output so flexible
+            # chelates (salen, cryptand, ethylenediamine) no longer
+            # collapse to a single best-scoring pucker.
+            if _CHELATE_RANK_VARIANTS <= 1:
                 continue
             for _crank in range(1, _CHELATE_RANK_VARIANTS):
                 if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
                     break
                 try:
-                    xyz = None
                     for _tc in topo_template_cids:
+                        if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                            break
                         xyz = _build_topology_xyz(
                             mol, metal_idx, donor_indices, pm, gn,
                             False, conf_id=_tc, chelate_rank=_crank,
                         )
-                        if xyz is not None:
-                            break
-                    if xyz is None:
-                        continue
-                    _sig = _xyz_sig(xyz)
-                    if _sig in _pre_uff_seen:
-                        continue
-                    _pre_uff_seen.add(_sig)
-                    coord_c = None
-                    if apply_uff:
-                        try:
-                            coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz,
-                            )
-                        except Exception:
-                            pass
-                    _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
+                        if xyz is None:
+                            continue
+                        _sig = _xyz_sig(xyz)
+                        if _sig in _pre_uff_seen:
+                            continue
+                        _pre_uff_seen.add(_sig)
+                        coord_c = None
+                        if apply_uff:
+                            try:
+                                coord_c = _build_coordination_constraints_from_xyz(
+                                    mol, xyz,
+                                )
+                            except Exception:
+                                pass
+                        _key = (tuple(cf), tuple(pm))
+                        _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
+                        _conf_idx = _variant_counter[_key] - 1
+                        _pre_uff_batch.append(
+                            (cf, pm, gn, xyz, coord_c, _conf_idx)
+                        )
                 except Exception as exc:
                     logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
 
@@ -18803,7 +18827,7 @@ def _generate_topological_isomers(
                 len(_pre_uff_batch), os.cpu_count() or 4, DELFIN_MAX_PROCESS_WORKERS
             )
             _uff_inputs = [
-                (xyz, 500, cstr) for _cf, _pm, _gn, xyz, cstr in _pre_uff_batch
+                (xyz, 500, cstr) for _cf, _pm, _gn, xyz, cstr, _ci in _pre_uff_batch
             ]
             try:
                 if _n_uff_workers > 1 and len(_uff_inputs) > 2:
@@ -18827,7 +18851,7 @@ def _generate_topological_isomers(
                     _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
                     for inp in _uff_inputs
                 ]
-            for idx, (cf, pm, gn, xyz_pre, _cstr) in enumerate(_pre_uff_batch):
+            for idx, (cf, pm, gn, xyz_pre, _cstr, _ci) in enumerate(_pre_uff_batch):
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
@@ -18839,11 +18863,11 @@ def _generate_topological_isomers(
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
                     xyz_opt = xyz_pre
-                _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr)
+                _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr, _ci)
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
         # checks that were too aggressive for topo-generated structures).
-        for cf, pm, gn, xyz, _cstr in _pre_uff_batch:
+        for cf, pm, gn, xyz, _cstr, _cidx in _pre_uff_batch:
             if len(results) >= max_isomers:
                 break
             try:
@@ -18865,6 +18889,11 @@ def _generate_topological_isomers(
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
+                # Conformer-variant suffix: second, third, ... distinct
+                # XYZ for the same (CF, perm) gets ``-conf2``, ``-conf3``
+                # so the downstream label-collapse keeps every pucker.
+                if _cidx and _cidx > 0:
+                    lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 results.append((xyz, lbl))
             except Exception as exc:
                 logger.debug("Topo post-UFF check failed (%s): %s", gn, exc)
@@ -20404,9 +20433,17 @@ def smiles_to_xyz_isomers(
     _skip_mm_augmentation = bool(hapto_groups and hapto_mode)
     if has_metal and _n_metals_total >= 2 and len(results) < max_isomers and not _skip_mm_augmentation:
         try:
-            _extra_seeds = [137, 251, 353, 461, 571, 683, 797, 911, 1013, 1117]
+            # Scale multi-metal seed count with the quality profile — the
+            # fixed 10-seed set was the single biggest search-space
+            # limitation for bimetallic systems: mono-metal paths use
+            # 12/20/40/60 seeds (fast/normal/max/extreme) while the
+            # multinuclear augmentation was capped at 10 regardless of
+            # profile.  Sharing the deterministic _PIPELINE_SEEDS pool
+            # keeps results reproducible across runs.
+            _extra_seed_count = int(_qprof.get("seeds", 10))
+            _extra_seeds = list(_PIPELINE_SEEDS[:max(10, _extra_seed_count)])
             _extra_ids: List[int] = []
-            _n_extra = min(len(_extra_seeds), os.cpu_count() or 4)
+            _n_extra = min(len(_extra_seeds), os.cpu_count() or 4, 64)
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_extra) as _xp:
                 _xfuts = [
                     _xp.submit(_embed_multiple_confs_robust, mol, 3, s)
@@ -21015,7 +21052,7 @@ def smiles_to_xyz(
             # SECONDARY: Two-phase ETKDG embedding
             # Phase 1: ETKDG + analytical hapto correction → fix hapto atoms
             # Phase 2: candidate selection via topology/geometry filter.
-            etkdg_seeds = [42, 1337, 2027, 7, 97, 13, 271, 911]
+            etkdg_seeds = _PIPELINE_SEEDS[:8]
             for seed in etkdg_seeds:
                 try:
                     mol_try = Chem.Mol(mol)
