@@ -317,6 +317,18 @@ def create_tab(ctx):
             'space at the cost of runtime (~linear).'
         ),
     )
+    convert_n_metal_smart_toggle = widgets.Checkbox(
+        value=True,
+        description='Smart N-metal (truncate k>=4)',
+        indent=False,
+        tooltip=(
+            'When enabled (default), N>=4 metal clusters use top-K '
+            "per-metal geometries instead of the full 4^N Cartesian "
+            'product.  K=2 for N=4, K=1 for N>=5.  Disable for full '
+            'combinatorial enumeration (slow on 5+ metals).'
+        ),
+        layout=widgets.Layout(width='330px'),
+    )
 
     def _toggle_seeds_slider(change):
         convert_seeds_slider.layout.display = (
@@ -929,6 +941,7 @@ def create_tab(ctx):
                         deterministic=not _has_hapto,
                         quality_mode=_quality,
                         seeds_override=_seeds_override,
+                        n_metal_smart=bool(convert_n_metal_smart_toggle.value),
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
@@ -2556,7 +2569,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button, convert_quality_dropdown],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([convert_seeds_slider],
+        widgets.HBox([convert_seeds_slider, convert_n_metal_smart_toggle],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),

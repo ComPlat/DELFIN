@@ -132,6 +132,7 @@ def smiles_to_xyz_isomers(
     deterministic=True,
     quality_mode="extreme",
     seeds_override=None,
+    n_metal_smart=True,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -156,6 +157,7 @@ def smiles_to_xyz_isomers(
         deterministic=deterministic,
         quality_mode=quality_mode,
         seeds_override=seeds_override,
+        n_metal_smart=n_metal_smart,
     )
     if error and hapto_approx is None and _is_hapto_failfast(error):
         results, error = _delfin_smiles_to_xyz_isomers(
@@ -167,6 +169,7 @@ def smiles_to_xyz_isomers(
             deterministic=deterministic,
             quality_mode=quality_mode,
             seeds_override=seeds_override,
+            n_metal_smart=n_metal_smart,
         )
     if error:
         return [], error

@@ -19217,6 +19217,25 @@ def _generate_topological_isomers(
                     _max_combos_n = max(1, max_isomers - len(results))
                     _topo_cids_n = _rank_template_conformers(mol, top_k=_prof_topk) or [None]
                     _n_ranks = max(1, _CHELATE_RANK_VARIANTS)
+                    # Smart-mode truncation: when ``n_metal_smart`` is
+                    # True AND N >= 4, trim the per-metal arrangements
+                    # list to keep the combinatorial product bounded
+                    # (K=2 for N=4, K=1 for N>=5).  Selection uses the
+                    # enumerator's native ordering which is already
+                    # sorted by metal-specific preferred geometry, so
+                    # the smart cut keeps the chemically most-likely
+                    # arrangements.  When n_metal_smart=False the full
+                    # Cartesian product runs — still bounded by
+                    # _N_ITER_BUDGET so pathological N>=6 systems
+                    # don't hang indefinitely.
+                    if n_metal_smart and _N >= 5:
+                        _per_metal_eff = [_pm[:1] for _pm in _per_metal]
+                    elif n_metal_smart and _N >= 4:
+                        _per_metal_eff = [_pm[:2] for _pm in _per_metal]
+                    else:
+                        _per_metal_eff = _per_metal
+                    _N_ITER_BUDGET = max(_max_combos_n * 40, 2000)
+                    _iter_count = 0
                     _combo_seen_n: set = set()
                     _variant_counter_n: Dict[Tuple[tuple, ...], int] = {}
                     _n_combo_count = 0
@@ -19224,7 +19243,14 @@ def _generate_topological_isomers(
                     # arrangements.  Cap total output at max_combos
                     # because N=4 with 4 geoms/metal is 4^4=256 base
                     # combos before templates x ranks.
-                    for _combo_tuple in _it.product(*_per_metal):
+                    for _combo_tuple in _it.product(*_per_metal_eff):
+                        _iter_count += 1
+                        if _iter_count > _N_ITER_BUDGET:
+                            logger.debug(
+                                "N-metal enum iteration budget %d reached at N=%d, stopping.",
+                                _N_ITER_BUDGET, _N,
+                            )
+                            break
                         if _n_combo_count >= _max_combos_n:
                             break
                         # Each _combo_tuple = ((cf_0, pm_0), (cf_1, pm_1), ...).
@@ -20111,6 +20137,7 @@ def smiles_to_xyz_isomers(
     hapto_approx: Optional[bool] = None,
     quality_mode: Optional[str] = None,
     seeds_override: Optional[int] = None,
+    n_metal_smart: bool = True,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
