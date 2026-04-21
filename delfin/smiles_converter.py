@@ -15146,6 +15146,30 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 dev_180 = abs(a - 180)
                 total_penalty += min(dev_90, dev_180)
 
+        # Symmetry bonus (additive penalty so smaller = better) —
+        # rewards structures where donor-donor angles cluster tightly
+        # around shared ideal values (90/109.5/120/180 deg).  For a
+        # fully symmetric polyhedron every angle sits exactly on the
+        # closest ideal, so per-bucket std-dev is near zero.  A
+        # distorted structure with jagged angles has wide buckets
+        # and a larger bonus value.  The contribution is intentionally
+        # mild (weight 0.5) so it tips ties between otherwise-equal
+        # candidates but does not override the primary polyhedron
+        # penalty above.  Homoleptic symmetric complexes win over
+        # equally-unfit distorted ones.
+        if angles:
+            _IDEAL_ANG = (72.0, 90.0, 109.5, 120.0, 144.0, 180.0)
+            _buckets: Dict[float, List[float]] = {t: [] for t in _IDEAL_ANG}
+            for a in angles:
+                _nearest = min(_IDEAL_ANG, key=lambda t: abs(a - t))
+                _buckets[_nearest].append(a)
+            for _ideal, _vals in _buckets.items():
+                if len(_vals) < 2:
+                    continue
+                _m = sum(_vals) / len(_vals)
+                _sd = math.sqrt(sum((x - _m) ** 2 for x in _vals) / len(_vals))
+                total_penalty += 0.5 * _sd
+
     # Chelate-ring planarity bonus: aromatic rings that coordinate to a metal
     # should be flat.  Penalize RMSD of ring atoms from the best-fit plane.
     try:
