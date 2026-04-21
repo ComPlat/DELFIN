@@ -131,6 +131,7 @@ def smiles_to_xyz_isomers(
     hapto_approx=None,
     deterministic=True,
     quality_mode="extreme",
+    seeds_override=None,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -142,6 +143,9 @@ def smiles_to_xyz_isomers(
     so CPU / RAM pressure stays bounded on smaller machines.  Pass
     ``"max"`` / ``"normal"`` / ``"fast"`` for progressively cheaper
     candidate pool.
+
+    ``seeds_override`` (int, optional) pins the seed count independently
+    of the quality profile — used by the dashboard's custom slider.
     """
     results, error = _delfin_smiles_to_xyz_isomers(
         smiles,
@@ -151,6 +155,7 @@ def smiles_to_xyz_isomers(
         hapto_approx=hapto_approx,
         deterministic=deterministic,
         quality_mode=quality_mode,
+        seeds_override=seeds_override,
     )
     if error and hapto_approx is None and _is_hapto_failfast(error):
         results, error = _delfin_smiles_to_xyz_isomers(
@@ -161,6 +166,7 @@ def smiles_to_xyz_isomers(
             hapto_approx=True,
             deterministic=deterministic,
             quality_mode=quality_mode,
+            seeds_override=seeds_override,
         )
     if error:
         return [], error
