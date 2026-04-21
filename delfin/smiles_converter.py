@@ -1021,14 +1021,44 @@ _CHELATE_EMBED_TIMEOUT: float = _delfin_env_float(
 """Per-seed timeout for the chelate conformer search."""
 
 # --- Deterministic seed schedule (shared across all stages) ---------------
-_PIPELINE_SEEDS: Tuple[int, ...] = (
-    31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
-    401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
-    4547, 5323, 6199, 7069, 8101, 9203, 10253,
-    11329, 12409, 13499, 14591, 15683, 16787,
-    17891, 19001, 20113, 21227, 22343, 23459,
-    24571, 25703, 26821,
-)
+def _generate_pipeline_seeds(n: int) -> Tuple[int, ...]:
+    """Generate ``n`` distinct, deterministic seeds for ETKDG.
+
+    The first 40 values match the hand-picked low-prime schedule that
+    earlier regressions relied on (mono-metal determinism tests pin
+    these exact integers).  Remaining values are drawn from a simple
+    primes-via-trial-division generator starting at the largest
+    hand-picked prime (26821), so every seed is a distinct positive
+    integer < 2³¹ that changes across slots.
+    """
+    base = [
+        31, 42, 7, 97, 13, 61, 83, 127, 211, 307,
+        401, 503, 1009, 1619, 2027, 2531, 3181, 3847,
+        4547, 5323, 6199, 7069, 8101, 9203, 10253,
+        11329, 12409, 13499, 14591, 15683, 16787,
+        17891, 19001, 20113, 21227, 22343, 23459,
+        24571, 25703, 26821,
+    ]
+    if n <= len(base):
+        return tuple(base[:n])
+    seen = set(base)
+    out = list(base)
+    candidate = base[-1] + 2  # odd numbers upward
+    while len(out) < n:
+        is_prime = True
+        r = int(candidate ** 0.5) + 1
+        for d in range(3, r, 2):
+            if candidate % d == 0:
+                is_prime = False
+                break
+        if is_prime and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+        candidate += 2
+    return tuple(out)
+
+
+_PIPELINE_SEEDS: Tuple[int, ...] = _generate_pipeline_seeds(1024)
 """Single deterministic seed schedule shared by every stage of the
 metal isomer pipeline (top-level conformer sampling, chelate
 conformer search, fragment embedding, legacy fallbacks).  Keeping
@@ -19870,6 +19900,7 @@ def smiles_to_xyz_isomers(
     deterministic: bool = True,
     hapto_approx: Optional[bool] = None,
     quality_mode: Optional[str] = None,
+    seeds_override: Optional[int] = None,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -19911,7 +19942,17 @@ def smiles_to_xyz_isomers(
 
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
-    _qprof = _resolve_quality_profile(quality_mode)
+    _qprof = dict(_resolve_quality_profile(quality_mode))
+    # Explicit seed count override (from dashboard slider, scripted
+    # benchmarks, etc.) takes precedence over the profile default.
+    # Clamped to [1, len(_PIPELINE_SEEDS)] so we never walk past the
+    # seed pool or pass <1 down to ETKDG.
+    if seeds_override is not None:
+        try:
+            _seeds_clamped = max(1, min(int(seeds_override), len(_PIPELINE_SEEDS)))
+            _qprof["seeds"] = _seeds_clamped
+        except Exception:
+            pass
     mol = None
     hapto_groups: List[Tuple[int, List[int]]] = []
     if has_metal:

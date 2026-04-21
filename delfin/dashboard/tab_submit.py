@@ -290,15 +290,31 @@ def create_tab(ctx):
             ('normal (20 seeds)', 'normal'),
             ('max (40 seeds)', 'max'),
             ('extreme (60 seeds)', 'extreme'),
+            ('custom (slider)', 'custom'),
         ],
         value='extreme',
         description='Quality:',
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='210px'),
+        layout=widgets.Layout(width='230px'),
         tooltip=(
             'Trade-off between latency and isomer coverage.  '
             'fast = seconds.  extreme = deep search (~minutes on '
-            'bimetallic systems).'
+            'bimetallic systems).  custom = use the seeds slider.'
+        ),
+    )
+    convert_seeds_slider = widgets.IntSlider(
+        value=60,
+        min=10,
+        max=1000,
+        step=10,
+        description='Seeds:',
+        continuous_update=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='300px'),
+        tooltip=(
+            'Number of ETKDG seeds.  Only used when Quality is '
+            "'custom'.  Larger values widen the conformer search "
+            'space at the cost of runtime (~linear).'
         ),
     )
 
@@ -883,13 +899,21 @@ def create_tab(ctx):
                     # hapto (hapto builder needs OB conformer diversity).
                     from delfin.smiles_converter import _probe_hapto_groups_from_smiles
                     _has_hapto = bool(_probe_hapto_groups_from_smiles(cleaned_data))
-                    # Dashboard lets the user pick the quality profile via
-                    # the "Quality" dropdown next to the button; default
-                    # is ``extreme`` (60 seeds, 5 chelate ranks, 5
-                    # templates).  The pipeline honours
+                    # Dashboard lets the user pick the quality profile
+                    # via the "Quality" dropdown; choosing ``custom``
+                    # forwards the explicit seed slider value which
+                    # overrides the profile default (range 10..1000).
+                    # The pipeline honours
                     # ``DELFIN_MAX_PROCESS_WORKERS`` / ``_THREAD_WORKERS``
                     # (default 64) so CPU / RAM pressure stays bounded.
                     _quality = convert_quality_dropdown.value or "extreme"
+                    _seeds_override = None
+                    if _quality == "custom":
+                        _quality = "extreme"  # use extreme ranks/topk
+                        try:
+                            _seeds_override = int(convert_seeds_slider.value)
+                        except Exception:
+                            _seeds_override = None
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
@@ -897,6 +921,7 @@ def create_tab(ctx):
                         include_binding_mode_isomers=True,
                         deterministic=not _has_hapto,
                         quality_mode=_quality,
+                        seeds_override=_seeds_override,
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
@@ -2523,6 +2548,8 @@ def create_tab(ctx):
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button, convert_quality_dropdown],
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        widgets.HBox([convert_seeds_slider],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
