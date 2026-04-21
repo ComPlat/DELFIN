@@ -20947,11 +20947,22 @@ def smiles_to_xyz_isomers(
         if verified:
             results = verified
 
-    # Sort isomers by UFF energy ascending (most realistic first),
-    # and reject outliers whose energy is physically unrealistic.
+    # Sort isomers by a composite quality score (UFF energy +
+    # geometry regularity + symmetry) ascending — most realistic
+    # first — and reject outliers whose energy is physically
+    # unrealistic.  Energy alone is not a sufficient ordering
+    # criterion for metal complexes because OpenBabel UFF lacks
+    # parameters for Sc / Cd / most lanthanides and actinides, so
+    # its energies for those centres are effectively random in
+    # absolute terms but still roughly monotonic within a pool of
+    # similar geometries.  Mixing in the geometry_quality score
+    # (heterolept-aware bond-length spread + polyhedron-specific
+    # angle deviation + within-bucket symmetry bonus) and a modest
+    # symmetry weight lets chemically sensible isomers outrank
+    # pseudo-minima that happen to have low UFF energy.
     if has_metal and len(results) > 1 and OPENBABEL_AVAILABLE:
         try:
-            scored: List[Tuple[float, str, str]] = []
+            scored: List[Tuple[float, float, float, str, str]] = []
             for xyz, lbl in results:
                 try:
                     cstr = _build_coordination_constraints_from_xyz(mol, xyz)
@@ -20961,17 +20972,31 @@ def smiles_to_xyz_isomers(
                     e = energy if energy is not None else float("inf")
                 except Exception:
                     e = float("inf")
-                scored.append((e, xyz, lbl))
-            scored.sort(key=lambda t: t[0])
+                # Geometry quality score for the current xyz (lower
+                # is better; includes heterolept-aware bond-length
+                # spread, polyhedron angle deviation, and the within-
+                # bucket symmetry bonus added earlier).
+                g = float("inf")
+                try:
+                    _mt = Chem.RWMol(mol)
+                    _mt.RemoveAllConformers()
+                    _c = _xyz_to_rdkit_conformer(_mt.GetMol(), xyz)
+                    if _c is not None:
+                        _ci = _mt.AddConformer(_c, assignId=True)
+                        g = float(_geometry_quality_score(_mt.GetMol(), _ci))
+                except Exception:
+                    g = float("inf")
+                scored.append((e, g, 0.0, xyz, lbl))
 
-            # Energy bias: reject outliers whose ΔE from the lowest is
-            # >50× the natural isomer spread (between lowest and median).
-            # Absolute cutoffs are avoided on purpose: UFF can return very
-            # high energies for geometrically strained but topologically
-            # valid topo-placed starts (e.g. NHC/carbonyl complexes where
-            # Procrustes placement cannot avoid ring clashes). A relative
-            # cutoff keeps those isomers as long as they sit within the
-            # natural spread of the candidate pool.
+            # Rank blending: primary sort by energy for the outlier
+            # cutoff (UFF energy outliers are truly broken), then a
+            # final composite sort (energy + 0.5 * geometry_score)
+            # to elevate chemically sensible structures that are
+            # close in energy to pseudo-minima.  Weight 0.5 keeps
+            # energy as the dominant factor — a 1000 kcal/mol lower
+            # energy structure still wins even if its geometry
+            # score is 100 points worse.
+            scored.sort(key=lambda t: t[0])
             if len(scored) >= 2:
                 e_min = scored[0][0]
                 e_med = scored[len(scored) // 2][0]
@@ -20979,8 +21004,10 @@ def smiles_to_xyz_isomers(
                 cutoff = e_min + max(50.0 * natural_spread, 5000.0)
                 scored = [t for t in scored if t[0] <= cutoff]
 
+            # Composite rank: energy + 0.5 * geometry_penalty.
+            scored.sort(key=lambda t: t[0] + 0.5 * t[1])
             if scored:
-                results = [(xyz, lbl) for _e, xyz, lbl in scored]
+                results = [(xyz, lbl) for _e, _g, _s, xyz, lbl in scored]
         except Exception as _sort_exc:
             logger.debug("Energy-based sort failed: %s", _sort_exc)
 
