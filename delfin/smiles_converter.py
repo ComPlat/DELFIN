@@ -891,17 +891,22 @@ deeper pool for dedup and gate."""
 
 # --- Parallelism caps (keep modest so the pipeline runs on shared nodes) ---
 DELFIN_MAX_THREAD_WORKERS: int = _delfin_env_int(
-    "DELFIN_MAX_THREAD_WORKERS", 32
+    "DELFIN_MAX_THREAD_WORKERS", 64
 )
 """Upper bound for ThreadPoolExecutor workers (ETKDG sampling,
 classification, topology build grid).  Scales to ``os.cpu_count()``
-or this cap, whichever is smaller."""
+or this cap, whichever is smaller.  Default raised from 32 → 64 to
+use more of the available CPU on batch / research runs; the per-call
+``num_confs`` and ``cap_mult`` quality-profile knobs keep total work
+bounded."""
 
 DELFIN_MAX_PROCESS_WORKERS: int = _delfin_env_int(
-    "DELFIN_MAX_PROCESS_WORKERS", 32
+    "DELFIN_MAX_PROCESS_WORKERS", 64
 )
 """Upper bound for ProcessPoolExecutor workers (batch UFF).  OB
-holds the GIL so true parallelism requires processes."""
+holds the GIL so true parallelism requires processes.  Default 64
+matches the thread cap; lower via env var on shared login nodes
+where 64 concurrent OB processes would saturate RAM."""
 
 # --- Topology-gate thresholds (``_verify_topology_from_graph``) -----------
 DELFIN_RULE4_PI_PLANAR_TOL_FRAC: float = _delfin_env_float(
@@ -1044,10 +1049,16 @@ a slice of ``_PIPELINE_SEEDS`` controlled by
 # alt-binding modes that never validate on cyclometallated / conjugated
 # ligand systems like Ir(ppy)2.
 _DELFIN_PROFILES: Dict[str, Dict[str, int]] = {
-    "fast":   {"seeds": 12, "ranks": 3, "topk": 1, "cap_mult": 3, "alt_tries": 0},
-    "normal": {"seeds": 20, "ranks": 3, "topk": 2, "cap_mult": 4, "alt_tries": 4},
-    "max":    {"seeds": 40, "ranks": 3, "topk": 3, "cap_mult": 5, "alt_tries": 8},
+    "fast":    {"seeds": 12, "ranks": 3, "topk": 1, "cap_mult": 3,  "alt_tries": 0},
+    "normal":  {"seeds": 20, "ranks": 3, "topk": 2, "cap_mult": 4,  "alt_tries": 4},
+    "max":     {"seeds": 40, "ranks": 4, "topk": 4, "cap_mult": 8,  "alt_tries": 8},
+    "extreme": {"seeds": 60, "ranks": 5, "topk": 5, "cap_mult": 12, "alt_tries": 12},
 }
+# ``extreme`` is for research / benchmark runs on a compute node with
+# spare CPU and RAM — it widens every knob so the dashboard's quality
+# cap does not stop the pipeline from covering every constitutional
+# isomer + every backbone pucker an LHC-size candidate pool might
+# turn up.  Stays fully deterministic (fixed seed schedule).
 # ``ranks=3`` is shared across all profiles because ligand-conformer
 # variety (chair / boat / twist puckers on flexible chelates) is part
 # of the constitutional-isomer output the user needs in every mode.
