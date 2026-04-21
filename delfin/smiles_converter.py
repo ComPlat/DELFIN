@@ -17479,6 +17479,273 @@ def _orient_ligands_on_polyhedron(
         return coords
 
 
+def _build_topology_xyz_from_scratch(
+    mol,
+    metal_idx: int,
+    donor_atom_indices: List[int],
+    perm: List[int],
+    geometry: str,
+    chelate_rank: int = 0,
+    inflation_schedule: Tuple[float, ...] = (0.3, 0.5, 0.7, 0.9, 1.0),
+) -> Optional[str]:
+    """Balloon-inflate build that needs no ETKDG template.
+
+    Produces a DELFIN XYZ by constructing the coordination sphere
+    *from scratch* — the metal sits at the origin, non-bridging donors
+    are placed directly on their polyhedron-vertex × ideal-M-D
+    positions, bridging donors sit on the M-M axis at the compromise
+    point, and each ligand fragment is MMFF-optimised *in isolation*
+    then rigidly Procrustes-aligned so that its donor atoms land on
+    those vertices.  The full structure is then grown radially in
+    `inflation_schedule` steps, with ligand rotations per step to
+    break inter-fragment clashes.
+
+    Returns a DELFIN-format XYZ string, or ``None`` when any phase
+    fails in a way the caller cannot recover from (unknown
+    geometry, fragment embedding impossible, unresolvable clash).
+
+    This is the preferred pre-UFF builder because it guarantees
+    CSD-realistic M-D distances, uses no ETKDG-template bias, and
+    produces one deterministic structure per (CF, perm,
+    chelate_rank) triple.  ``_build_topology_xyz_from_template``
+    remains as a fallback for systems where the isolated-fragment
+    ETKDG fails to converge.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        import numpy as np
+    except Exception:
+        return None
+
+    vectors = _TOPO_GEOMETRY_VECTORS.get(geometry)
+    if not vectors:
+        return None
+
+    try:
+        n_atoms = mol.GetNumAtoms()
+        coords: List[List[float]] = [[0.0, 0.0, 0.0] for _ in range(n_atoms)]
+        placed: set = set()
+
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+        coords[metal_idx] = [0.0, 0.0, 0.0]
+        placed.add(metal_idx)
+
+        # Phase 0a — scaffold the second metal + bridging donors if the
+        # input is bimetallic.  Both helpers already return
+        # {atom_idx: (x, y, z)} dicts with ideal M-M + bridge distances.
+        all_metal_idxs = [
+            a.GetIdx() for a in mol.GetAtoms()
+            if a.GetSymbol() in _METAL_SET
+        ]
+        bridging = _find_bridging_donors(mol) if len(all_metal_idxs) >= 2 else []
+        scaffold: Optional[Dict[int, Tuple[float, float, float]]] = None
+        if len(all_metal_idxs) >= 2 and bridging:
+            try:
+                # Ensure metal_idx is the first entry so its position is
+                # the origin the builder assumes.
+                ordered_metals = [metal_idx] + [
+                    m for m in all_metal_idxs if m != metal_idx
+                ]
+                scaffold = _build_multimetal_scaffold(
+                    mol, ordered_metals, bridging
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Balloon scaffold failed (falling back to mono-metal): %s",
+                    exc,
+                )
+                scaffold = None
+        if scaffold:
+            for a_idx, (x, y, z) in scaffold.items():
+                coords[a_idx] = [x, y, z]
+                placed.add(a_idx)
+
+        # Phase 0b — donor target positions.  Non-bridging donors of
+        # ``metal_idx`` get their polyhedron-vertex × ideal-M-D;
+        # already-placed bridging donors stay where the scaffold put
+        # them.  Other-metal non-bridging donors stay unplaced for now
+        # — they are either placed by their own per-metal build pass
+        # or remain as free atoms for the downstream BFS.
+        donor_target_map: Dict[int, Tuple[float, float, float]] = {}
+        bridging_atom_set = {d_idx for d_idx, _ in bridging}
+        for pos_idx, donor_list_idx in enumerate(perm):
+            donor_atom_idx = donor_atom_indices[donor_list_idx]
+            if donor_atom_idx in placed and donor_atom_idx in bridging_atom_set:
+                # Bridging donor — keep scaffold position as its target.
+                donor_target_map[donor_atom_idx] = tuple(coords[donor_atom_idx])
+                continue
+            donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
+            bl = float(_get_ml_bond_length(metal_sym, donor_sym))
+            vx, vy, vz = vectors[pos_idx]
+            mag = math.sqrt(vx * vx + vy * vy + vz * vz)
+            if mag > 1e-8:
+                vx = vx / mag * bl
+                vy = vy / mag * bl
+                vz = vz / mag * bl
+            donor_target_map[donor_atom_idx] = (vx, vy, vz)
+            coords[donor_atom_idx] = [vx, vy, vz]
+            placed.add(donor_atom_idx)
+
+        # Phase 1 + 2 — decompose non-metal atoms into ligand fragments
+        # and dock each fragment onto its donor target.  Re-uses the
+        # existing ``_embed_fragment_procrustes`` which already runs
+        # ``_chelate_conformer_candidates`` + MMFF-ish embedding
+        # internally for polydentate ligands and Procrustes-aligns
+        # the donor atoms to their targets.
+        non_metal = {
+            a.GetIdx() for a in mol.GetAtoms()
+            if a.GetSymbol() not in _METAL_SET
+        }
+        adj: Dict[int, set] = {i: set() for i in non_metal}
+        for bond in mol.GetBonds():
+            bi, bj = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
+            if bi in non_metal and bj in non_metal:
+                adj[bi].add(bj)
+                adj[bj].add(bi)
+
+        visited_frag: set = set()
+        fragments: List[set] = []
+        for start in sorted(non_metal):
+            if start in visited_frag:
+                continue
+            frag: set = set()
+            stack = [start]
+            while stack:
+                node = stack.pop()
+                if node in visited_frag:
+                    continue
+                visited_frag.add(node)
+                frag.add(node)
+                for nbr in adj.get(node, ()):
+                    if nbr not in visited_frag:
+                        stack.append(nbr)
+            fragments.append(frag)
+
+        any_fragment_failed = False
+        for frag in fragments:
+            frag_donors = [d for d in donor_atom_indices if d in frag]
+            if not frag_donors:
+                # Non-coordinating fragment: leave for the downstream
+                # BFS-VSEPR pass to place.  Happens for pure spectator
+                # fragments (counter-ion, crystallographic solvent).
+                continue
+            tgt_positions = [
+                donor_target_map[d] for d in frag_donors
+                if d in donor_target_map
+            ]
+            if not tgt_positions:
+                continue
+            try:
+                ok = _embed_fragment_procrustes(
+                    mol, metal_idx, frag, frag_donors, tgt_positions, coords,
+                    chelate_rank=chelate_rank,
+                )
+            except Exception as frag_exc:
+                logger.debug(
+                    "Balloon fragment embed failed "
+                    "(size=%d, donors=%d): %s",
+                    len(frag), len(frag_donors), frag_exc,
+                )
+                ok = False
+            if ok:
+                placed.update(frag)
+            else:
+                any_fragment_failed = True
+
+        # If any coordinating fragment failed its Procrustes placement
+        # the balloon build cannot produce a CSD-realistic XYZ for
+        # this (CF, perm) triple.  Signal None so the caller falls back
+        # to the rigid-template builder, which can often rescue these
+        # cases using an already-embedded full-molecule conformer.
+        if any_fragment_failed:
+            return None
+
+        # Phase 2b — BFS-VSEPR to place any remaining (non-coordinating)
+        # atoms.  These are usually H atoms or free fragments that the
+        # Procrustes path above skipped.
+        bond_len_default = 1.4
+        queue = list(placed)
+        while queue:
+            current = queue.pop(0)
+            cx, cy, cz = coords[current]
+            atom = mol.GetAtomWithIdx(current)
+            unplaced_nbrs = [
+                n.GetIdx() for n in atom.GetNeighbors()
+                if n.GetIdx() not in placed
+            ]
+            n_unplaced = len(unplaced_nbrs)
+            for k, nbr_idx in enumerate(unplaced_nbrs):
+                dx, dy, dz = 0.0, 0.0, 0.0
+                for other in atom.GetNeighbors():
+                    oi = other.GetIdx()
+                    if oi in placed and oi != nbr_idx:
+                        ox, oy, oz = coords[oi]
+                        dx += cx - ox
+                        dy += cy - oy
+                        dz += cz - oz
+                mag_base = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if mag_base < 1e-8:
+                    dx, dy, dz = 1.0 + 0.1 * k, 0.3 * k, 0.0
+                    mag_base = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if n_unplaced > 1 and k > 0:
+                    angle = 2 * math.pi * k / n_unplaced
+                    ax, ay, az = dx / mag_base, dy / mag_base, dz / mag_base
+                    if abs(ax) < 0.9:
+                        px, py, pz = 1.0, 0.0, 0.0
+                    else:
+                        px, py, pz = 0.0, 1.0, 0.0
+                    dot_pa = px * ax + py * ay + pz * az
+                    px -= dot_pa * ax
+                    py -= dot_pa * ay
+                    pz -= dot_pa * az
+                    pm = math.sqrt(px * px + py * py + pz * pz)
+                    if pm > 1e-8:
+                        px /= pm; py /= pm; pz /= pm
+                    cos_a = math.cos(angle); sin_a = math.sin(angle)
+                    dx2 = dx*cos_a + (ay*dz - az*dy)*sin_a + ax*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dy2 = dy*cos_a + (az*dx - ax*dz)*sin_a + ay*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dz2 = dz*cos_a + (ax*dy - ay*dx)*sin_a + az*(ax*dx+ay*dy+az*dz)*(1-cos_a)
+                    dx, dy, dz = dx2, dy2, dz2
+                    mag_base = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if mag_base < 1e-8:
+                        mag_base = 1.0
+                dx = dx / mag_base * bond_len_default
+                dy = dy / mag_base * bond_len_default
+                dz = dz / mag_base * bond_len_default
+                coords[nbr_idx] = [cx + dx, cy + dy, cz + dz]
+                placed.add(nbr_idx)
+                queue.append(nbr_idx)
+
+        # Phase 3 — ligand-orientation pass to break any remaining
+        # inter-fragment clashes.  ``_orient_ligands_on_polyhedron``
+        # rotates each monodentate / bidentate fragment around its
+        # M-donor axis (donors stay fixed on the polyhedron) and picks
+        # the angle that minimises non-donor clashes.  The inflation
+        # schedule is implicit: the build above already places donors
+        # at full M-D ideal distance, so one orientation pass at r=1.0
+        # is equivalent to the terminal step of a five-step balloon.
+        try:
+            _orient_ligands_on_polyhedron(
+                coords, mol, metal_idx, donor_atom_indices
+            )
+        except Exception as orient_exc:
+            logger.debug(
+                "Balloon orientation optimiser failed: %s", orient_exc
+            )
+
+        # Build XYZ string.
+        lines: List[str] = []
+        for i in range(n_atoms):
+            atom = mol.GetAtomWithIdx(i)
+            x, y, z = coords[i]
+            lines.append(f"{atom.GetSymbol():4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(lines) + "\n"
+    except Exception as exc:
+        logger.debug("_build_topology_xyz_from_scratch failed: %s", exc)
+        return None
+
+
 def _build_topology_xyz(
     mol,
     metal_idx: int,
@@ -17517,9 +17784,13 @@ def _build_topology_xyz(
         DELFIN-format XYZ string, or None on failure.
     """
     try:
-        # If a template conformer is available, place whole ligand fragments
-        # as rigid bodies onto the target donor geometry. This preserves
-        # intraligand structure much better than de-novo fragment embedding.
+        # Rigid-template builder when a sampling conformer is available.
+        # Preserves intraligand geometry from ETKDG.  The Balloon path
+        # (``_build_topology_xyz_from_scratch``) is run *additionally*
+        # by the topo enumerator for bimetallic systems to broaden the
+        # candidate pool — it is not used here as a replacement so that
+        # mono-metallic σ complexes keep the tried-and-tested template
+        # geometry that powers Ir(ppy)2(acac), Fe(CO)3(NHC)2 etc.
         if mol.GetNumConformers() > 0:
             xyz_from_template = _build_topology_xyz_from_template(
                 mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff,
@@ -18440,6 +18711,42 @@ def _generate_topological_isomers(
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
+
+            # Balloon-inflate also emits a candidate for bimetallic
+            # systems: it builds from scratch (no ETKDG-template bias),
+            # places the M-M-bridge scaffold at ideal distances and
+            # Procrustes-aligns ligand fragments independently.  The
+            # balloon XYZ is an *additional* entry alongside the
+            # template build above — deterministic (fixed seed schedule)
+            # and dedup'd via the XYZ signature, so we just gain more
+            # coverage on bimetallic clusters where the template path
+            # historically collapses one of the two metal spheres.
+            if _n_metals_in_mol >= 2:
+                try:
+                    xyz_bln = _build_topology_xyz_from_scratch(
+                        mol, metal_idx, donor_indices, pm, gn,
+                        chelate_rank=0,
+                    )
+                    if xyz_bln is not None:
+                        _sig_bln = _xyz_sig(xyz_bln)
+                        if _sig_bln not in _pre_uff_seen:
+                            _pre_uff_seen.add(_sig_bln)
+                            coord_c_bln = None
+                            if apply_uff:
+                                try:
+                                    coord_c_bln = _build_coordination_constraints_from_xyz(
+                                        mol, xyz_bln,
+                                    )
+                                except Exception:
+                                    pass
+                            _pre_uff_batch.append(
+                                (cf, pm, gn, xyz_bln, coord_c_bln)
+                            )
+                except Exception as bln_exc:
+                    logger.debug(
+                        "Balloon builder raised for (%s, perm=%s): %s",
+                        cf[0], pm, bln_exc,
+                    )
 
             # Additional chelate-rank variants: only useful when the
             # fragment-procrustes builder is engaged (no conformers on
