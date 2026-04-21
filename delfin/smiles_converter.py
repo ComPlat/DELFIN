@@ -19163,6 +19163,198 @@ def _generate_topological_isomers(
                         except Exception as _cexc:
                             logger.debug("Multinuclear combo build failed: %s", _cexc)
                             continue
+            elif len(metal_indices) >= 3:
+                # --- N-metal coupled enumeration (tri-/tetra-/... metallic) ---
+                # The 2-metal block above does bridge-snap and
+                # _build_multimetal_scaffold, both hardcoded for 2
+                # metals.  For N >= 3 we build each metal's polyhedron
+                # sequentially (each subsequent build uses the previous
+                # metal's xyz as the starting conformer) and rely on
+                # UFF + the mini-gate to settle the cluster.  The
+                # Cartesian product explodes rapidly (k^N with k ~= 4
+                # geoms per metal), so max_combos caps total output and
+                # an XYZ-signature dedup filters duplicates across the
+                # template/rank space.
+                import itertools as _it
+                _N = len(metal_indices)
+                _per_metal: List[List[Tuple[tuple, List[int]]]] = []
+                _mi_symbols: List[str] = []
+                _mi_donors: List[List[int]] = []
+                _mi_ok = True
+                for _mi in metal_indices:
+                    _di = [nbr.GetIdx() for nbr in mol.GetAtomWithIdx(_mi).GetNeighbors()]
+                    _ni = len(_di)
+                    if not (2 <= _ni <= 9):
+                        _mi_ok = False
+                        break
+                    _dki = [
+                        dtype_map.get(
+                            _d, (mol.GetAtomWithIdx(_d).GetSymbol(), frozenset())
+                        ) for _d in _di
+                    ]
+                    _uki = sorted(set(_dki), key=lambda k: (k[0], tuple(sorted(k[1]))))
+                    _kci = {_k: _i for _i, _k in enumerate(_uki)}
+                    _dli = [f"{_k[0]}{_kci[_k]}" for _k in _dki]
+                    _cpi = _chelate_pairs(mol, _mi, _di)
+                    _ali = {_aidx: _li for _li, _aidx in enumerate(_di)}
+                    _clpi = [
+                        frozenset([_ali[sorted(_cp)[0]], _ali[sorted(_cp)[1]]])
+                        for _cp in _cpi
+                        if sorted(_cp)[0] in _ali and sorted(_cp)[1] in _ali
+                    ]
+                    _msi = mol.GetAtomWithIdx(_mi).GetSymbol()
+                    _isoi = _enumerate_topological_isomers(
+                        _dli, _ni, _clpi, metal_symbol=_msi,
+                    )
+                    if not _isoi:
+                        _mi_ok = False
+                        break
+                    _per_metal.append(_isoi)
+                    _mi_symbols.append(_msi)
+                    _mi_donors.append(_di)
+
+                if _mi_ok and _per_metal:
+                    _max_combos_n = max(1, max_isomers - len(results))
+                    _topo_cids_n = _rank_template_conformers(mol, top_k=_prof_topk) or [None]
+                    _n_ranks = max(1, _CHELATE_RANK_VARIANTS)
+                    _combo_seen_n: set = set()
+                    _variant_counter_n: Dict[Tuple[tuple, ...], int] = {}
+                    _n_combo_count = 0
+                    # Cartesian product over all metals' (cf, pm)
+                    # arrangements.  Cap total output at max_combos
+                    # because N=4 with 4 geoms/metal is 4^4=256 base
+                    # combos before templates x ranks.
+                    for _combo_tuple in _it.product(*_per_metal):
+                        if _n_combo_count >= _max_combos_n:
+                            break
+                        # Each _combo_tuple = ((cf_0, pm_0), (cf_1, pm_1), ...).
+                        _gns = tuple(cf[0] for cf, _pm in _combo_tuple)
+                        _pms = tuple(tuple(pm) for _cf, pm in _combo_tuple)
+                        _cfs = tuple(tuple(cf) for cf, _pm in _combo_tuple)
+                        try:
+                            for _rank_tuple in _it.product(
+                                range(_n_ranks), repeat=_N
+                            ):
+                                if _n_combo_count >= _max_combos_n:
+                                    break
+                                for _tcid in _topo_cids_n:
+                                    if _n_combo_count >= _max_combos_n:
+                                        break
+                                    # Chain builds: first metal uses
+                                    # template conf, each subsequent
+                                    # metal uses the previous xyz
+                                    # injected as conformer.
+                                    _cur_mol = mol
+                                    _cur_cid = _tcid
+                                    _xyz_cur = None
+                                    _chain_ok = True
+                                    for _k, _mi in enumerate(metal_indices):
+                                        _cf_k, _pm_k = _combo_tuple[_k]
+                                        _gn_k = _cf_k[0]
+                                        _rank_k = _rank_tuple[_k]
+                                        _xyz_new = _build_topology_xyz(
+                                            _cur_mol, _mi, _mi_donors[_k],
+                                            _pm_k, _gn_k, False,
+                                            conf_id=_cur_cid,
+                                            chelate_rank=_rank_k,
+                                        )
+                                        if _xyz_new is None:
+                                            _chain_ok = False
+                                            break
+                                        _xyz_cur = _xyz_new
+                                        _mtmp_n = Chem.RWMol(mol)
+                                        _mtmp_n.RemoveAllConformers()
+                                        _conf_n = _xyz_to_rdkit_conformer(
+                                            _mtmp_n.GetMol(), _xyz_cur,
+                                        )
+                                        if _conf_n is None:
+                                            _chain_ok = False
+                                            break
+                                        _cid_n = _mtmp_n.AddConformer(
+                                            _conf_n, assignId=True,
+                                        )
+                                        _rescale_metal_donor_distances(_mtmp_n, _cid_n)
+                                        _cur_mol = _mtmp_n.GetMol()
+                                        _cur_cid = _cid_n
+                                        _xyz_cur = _mol_to_xyz_conformer(_mtmp_n, _cid_n)
+                                    if not _chain_ok or _xyz_cur is None:
+                                        continue
+                                    # Snap every bridging donor to the
+                                    # centroid of its connected metals
+                                    # (N-way generalisation of the
+                                    # 2-metal _snap_bridging_donors_to_compromise).
+                                    try:
+                                        _xyz_cur = _snap_bridging_donors_to_compromise(
+                                            _xyz_cur, mol, metal_indices, bridging,
+                                        )
+                                    except Exception as _snp_n:
+                                        logger.debug("N-metal bridge-snap failed: %s", _snp_n)
+                                    if apply_uff:
+                                        _xyz_cur = _optimize_xyz_openbabel_safe(
+                                            _xyz_cur, mol_template=mol,
+                                        )
+                                    _sig_n = _xyz_sig(_xyz_cur)
+                                    if _sig_n in _combo_seen_n:
+                                        continue
+                                    _combo_seen_n.add(_sig_n)
+                                    _vkey_n = (_cfs, _pms)
+                                    _variant_counter_n[_vkey_n] = (
+                                        _variant_counter_n.get(_vkey_n, 0) + 1
+                                    )
+                                    _v_idx_n = _variant_counter_n[_vkey_n] - 1
+                                    label_n = "multi-" + "/".join(_gns)
+                                    if _v_idx_n > 0:
+                                        label_n = f"{label_n}-conf{_v_idx_n + 1}"
+                                    # Same bond-length mini-gate as
+                                    # the 2-metal branch.
+                                    try:
+                                        _qln = [
+                                            l for l in _xyz_cur.splitlines() if l.strip()
+                                        ]
+                                        _cqn = []
+                                        for _ln in _qln:
+                                            _pp = _ln.split()
+                                            if len(_pp) >= 4:
+                                                _cqn.append((
+                                                    float(_pp[1]), float(_pp[2]), float(_pp[3])
+                                                ))
+                                        gate_n = True
+                                        for _b in mol.GetBonds():
+                                            _a1 = _b.GetBeginAtom()
+                                            _a2 = _b.GetEndAtom()
+                                            if (_a1.GetAtomicNum() <= 1
+                                                    or _a2.GetAtomicNum() <= 1):
+                                                continue
+                                            _s1 = _a1.GetSymbol()
+                                            _s2 = _a2.GetSymbol()
+                                            if _s1 in _METAL_SET and _s2 in _METAL_SET:
+                                                continue
+                                            _i1 = _a1.GetIdx()
+                                            _i2 = _a2.GetIdx()
+                                            _dx = _cqn[_i1][0] - _cqn[_i2][0]
+                                            _dy = _cqn[_i1][1] - _cqn[_i2][1]
+                                            _dz = _cqn[_i1][2] - _cqn[_i2][2]
+                                            _d = math.sqrt(_dx*_dx + _dy*_dy + _dz*_dz)
+                                            if _s1 in _METAL_SET or _s2 in _METAL_SET:
+                                                _msym = _s1 if _s1 in _METAL_SET else _s2
+                                                _dsym = _s2 if _s1 in _METAL_SET else _s1
+                                                _ideal = float(_get_ml_bond_length(_msym, _dsym))
+                                                if _ideal > 0 and (_d < 0.50 * _ideal or _d > 2.50 * _ideal):
+                                                    gate_n = False
+                                                    break
+                                            else:
+                                                if _d > 2.5:
+                                                    gate_n = False
+                                                    break
+                                        if not gate_n:
+                                            continue
+                                    except Exception:
+                                        pass
+                                    results.append((_xyz_cur, label_n))
+                                    _n_combo_count += 1
+                        except Exception as _nce:
+                            logger.debug("N-metal combo build failed: %s", _nce)
+                            continue
     except Exception as _mn_exc:
         logger.debug("Multinuclear enumeration failed: %s", _mn_exc)
 
