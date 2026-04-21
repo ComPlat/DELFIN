@@ -908,20 +908,6 @@ holds the GIL so true parallelism requires processes.  Default 64
 matches the thread cap; lower via env var on shared login nodes
 where 64 concurrent OB processes would saturate RAM."""
 
-DELFIN_BUILD_MD_STRETCH_FACTOR: float = _delfin_env_float(
-    "DELFIN_BUILD_MD_STRETCH_FACTOR", 1.10
-)
-"""Multiplier applied to the ideal M-D bond length when placing
-donors on the coordination polyhedron.  Default 1.10 (10 % longer
-than CSD-ideal).  Rationale: UFF without metal parameters tends to
-**shorten** M-D bonds; starting at the ideal distance often leads to
-UFF-collapsed outputs (Sc-O at 1.44 Å) that the Rule-1 gate rejects.
-Starting 10 % long gives UFF head-room to relax toward the ideal
-without overshooting below the Rule-1 lower bound (0.75 × ideal).
-Down-stream DFT / xTB will relax to the true equilibrium length
-anyway.  Set to 1.00 for strictly CSD-ideal builds; 1.15 or more
-for extra head-room at the cost of looser starting geometries."""
-
 # --- Topology-gate thresholds (``_verify_topology_from_graph``) -----------
 DELFIN_RULE4_PI_PLANAR_TOL_FRAC: float = _delfin_env_float(
     "DELFIN_RULE4_PI_PLANAR_TOL_FRAC", 0.25
@@ -17601,7 +17587,7 @@ def _build_topology_xyz_from_scratch(
                 donor_target_map[donor_atom_idx] = tuple(coords[donor_atom_idx])
                 continue
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = float(_get_ml_bond_length(metal_sym, donor_sym)) * DELFIN_BUILD_MD_STRETCH_FACTOR
+            bl = float(_get_ml_bond_length(metal_sym, donor_sym))
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx * vx + vy * vy + vz * vz)
             if mag > 1e-8:
@@ -17839,7 +17825,7 @@ def _build_topology_xyz(
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = _get_ml_bond_length(metal_sym, donor_sym) * DELFIN_BUILD_MD_STRETCH_FACTOR
+            bl = _get_ml_bond_length(metal_sym, donor_sym)
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
             if mag > 1e-8:
@@ -18116,7 +18102,7 @@ def _build_topology_xyz_from_template(
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = _get_ml_bond_length(metal_sym, donor_sym) * DELFIN_BUILD_MD_STRETCH_FACTOR
+            bl = _get_ml_bond_length(metal_sym, donor_sym)
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
             if mag > 1e-8:
@@ -18251,7 +18237,7 @@ def _build_topology_xyz_from_template(
                         / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                     )
                 )
-                if mismatch > 0.25 or chelate_rank > 0:
+                if mismatch > 0.25:
                     target_for_search = (
                         float(target_mat[0, 1])
                         if len(frag_donors) == 2
@@ -18266,34 +18252,19 @@ def _build_topology_xyz_from_template(
                             [list(coords_map[old]) for old in frag_list],
                             dtype=float,
                         )
+                        # Only accept the re-embed if it improves the fit.
                         new_src = new_frag_xyz[donor_local, :]
-                        if chelate_rank > 0:
-                            # Caller asked for a specific rank-k pucker
-                            # — accept the new coords unconditionally
-                            # because the goal is variety, not best fit.
+                        new_diffs = new_src[:, None, :] - new_src[None, :, :]
+                        new_mat = np.linalg.norm(new_diffs, axis=-1)
+                        new_mismatch = float(
+                            np.sqrt(
+                                np.triu((new_mat - target_mat) ** 2, k=1).sum()
+                                / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
+                            )
+                        )
+                        if new_mismatch < mismatch:
                             frag_xyz = new_frag_xyz
                             src = new_src
-                        else:
-                            # Only accept the re-embed if it improves
-                            # the fit.
-                            new_diffs = new_src[:, None, :] - new_src[None, :, :]
-                            new_mat = np.linalg.norm(new_diffs, axis=-1)
-                            new_mismatch = float(
-                                np.sqrt(
-                                    np.triu(
-                                        (new_mat - target_mat) ** 2, k=1
-                                    ).sum()
-                                    / max(
-                                        1,
-                                        len(frag_donors)
-                                        * (len(frag_donors) - 1)
-                                        // 2,
-                                    )
-                                )
-                            )
-                            if new_mismatch < mismatch:
-                                frag_xyz = new_frag_xyz
-                                src = new_src
 
             if len(src) >= 2:
                 src_center = src.mean(axis=0)
@@ -18714,16 +18685,8 @@ def _generate_topological_isomers(
         # ``C0-C0-ax`` / ``C1-C1-ax`` labels in dedup.
         _CHELATE_RANK_VARIANTS = max(1, _prof_ranks) if chelate_ps else 1
         _PRE_UFF_CAP = max_isomers * max(1, _prof_cap_mult)
-        _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict], int]] = []
+        _pre_uff_batch: List[Tuple[tuple, List[int], str, str, Optional[Dict]]] = []
         _pre_uff_seen: set = set()
-        # Per-(cf, pm) variant counter so we can suffix conformer labels
-        # with ``-conf2``, ``-conf3`` etc. when multiple distinct XYZs
-        # survive dedup for the same canonical form + permutation.  The
-        # downstream label-collapse would otherwise merge them because
-        # the CF label is identical; the user's requirement is to keep
-        # every distinct backbone pucker as its own isomer in the
-        # output (flexible chelates like cyclam, cryptand, salen).
-        _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
 
         def _xyz_sig(_xyz: str) -> str:
             return "\n".join(
@@ -18755,10 +18718,7 @@ def _generate_topological_isomers(
                                 )
                             except Exception:
                                 pass
-                        _key = (tuple(cf), tuple(pm))
-                        _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
-                        _conf_idx = _variant_counter[_key] - 1
-                        _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                        _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c))
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
@@ -18789,11 +18749,8 @@ def _generate_topological_isomers(
                                 )
                             except Exception:
                                 pass
-                        _key = (tuple(cf), tuple(pm))
-                        _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
-                        _conf_idx = _variant_counter[_key] - 1
                         _pre_uff_batch.append(
-                            (cf, pm, gn, xyz_bln, coord_c_bln, _conf_idx)
+                            (cf, pm, gn, xyz_bln, coord_c_bln)
                         )
             except Exception as bln_exc:
                 logger.debug(
@@ -18801,17 +18758,14 @@ def _generate_topological_isomers(
                     cf[0], pm, bln_exc,
                 )
 
-            # Additional chelate-rank variants: always tried when >= 2
-            # ranks are configured.  The template path respects
-            # ``chelate_rank`` (see ``_build_topology_xyz_from_template``)
-            # by substituting the rank-k ETKDG chelate conformer when
-            # the template's own pucker does not match the target
-            # polyhedron bite, so higher ranks now genuinely widen the
-            # survivor pool on flexible-chelate systems (cyclam,
-            # cryptand, ethylenediamines).  The XYZ-hash dedup above
-            # filters identical outputs deterministically, so re-running
-            # across ranks cannot introduce non-determinism.
-            if _CHELATE_RANK_VARIANTS <= 1:
+            # Additional chelate-rank variants: only useful when the
+            # fragment-procrustes builder is engaged (no conformers on
+            # ``mol``) AND the mismatch-triggered substitution in the
+            # template path happens to fire.  Under a deterministic σ
+            # pool the template-path substitution gives the same pucker
+            # across ranks, so skipping here avoids identical duplicates
+            # and keeps the bimetallic-cyclam determinism test green.
+            if _CHELATE_RANK_VARIANTS <= 1 or mol.GetNumConformers() > 0:
                 continue
             for _crank in range(1, _CHELATE_RANK_VARIANTS):
                 if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
@@ -18839,12 +18793,7 @@ def _generate_topological_isomers(
                             )
                         except Exception:
                             pass
-                    _key = (tuple(cf), tuple(pm))
-                    _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
-                    _conf_idx = _variant_counter[_key] - 1
-                    _pre_uff_batch.append(
-                        (cf, pm, gn, xyz, coord_c, _conf_idx)
-                    )
+                    _pre_uff_batch.append((cf, pm, gn, xyz, coord_c))
                 except Exception as exc:
                     logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
 
@@ -18878,7 +18827,7 @@ def _generate_topological_isomers(
                     _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
                     for inp in _uff_inputs
                 ]
-            for idx, (cf, pm, gn, xyz_pre, _cstr, _cidx) in enumerate(_pre_uff_batch):
+            for idx, (cf, pm, gn, xyz_pre, _cstr) in enumerate(_pre_uff_batch):
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
@@ -18890,11 +18839,11 @@ def _generate_topological_isomers(
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
                     xyz_opt = xyz_pre
-                _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr, _cidx)
+                _pre_uff_batch[idx] = (cf, pm, gn, xyz_opt, _cstr)
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
         # checks that were too aggressive for topo-generated structures).
-        for cf, pm, gn, xyz, _cstr, _cidx in _pre_uff_batch:
+        for cf, pm, gn, xyz, _cstr in _pre_uff_batch:
             if len(results) >= max_isomers:
                 break
             try:
@@ -18916,14 +18865,6 @@ def _generate_topological_isomers(
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
-                # Conformer-variant suffix: a second, third, ... distinct
-                # XYZ for the same (CF, perm) gets ``-conf2``, ``-conf3``
-                # etc. so the downstream label-collapse keeps it.  Per
-                # coordination arrangement we want every pucker /
-                # backbone conformer that passes the gate to survive
-                # into the DFT-rankable output list.
-                if _cidx and _cidx > 0:
-                    lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 results.append((xyz, lbl))
             except Exception as exc:
                 logger.debug("Topo post-UFF check failed (%s): %s", gn, exc)
