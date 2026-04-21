@@ -18712,41 +18712,40 @@ def _generate_topological_isomers(
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
 
-            # Balloon-inflate also emits a candidate for bimetallic
-            # systems: it builds from scratch (no ETKDG-template bias),
-            # places the M-M-bridge scaffold at ideal distances and
-            # Procrustes-aligns ligand fragments independently.  The
-            # balloon XYZ is an *additional* entry alongside the
-            # template build above — deterministic (fixed seed schedule)
-            # and dedup'd via the XYZ signature, so we just gain more
-            # coverage on bimetallic clusters where the template path
-            # historically collapses one of the two metal spheres.
-            if _n_metals_in_mol >= 2:
-                try:
-                    xyz_bln = _build_topology_xyz_from_scratch(
-                        mol, metal_idx, donor_indices, pm, gn,
-                        chelate_rank=0,
-                    )
-                    if xyz_bln is not None:
-                        _sig_bln = _xyz_sig(xyz_bln)
-                        if _sig_bln not in _pre_uff_seen:
-                            _pre_uff_seen.add(_sig_bln)
-                            coord_c_bln = None
-                            if apply_uff:
-                                try:
-                                    coord_c_bln = _build_coordination_constraints_from_xyz(
-                                        mol, xyz_bln,
-                                    )
-                                except Exception:
-                                    pass
-                            _pre_uff_batch.append(
-                                (cf, pm, gn, xyz_bln, coord_c_bln)
-                            )
-                except Exception as bln_exc:
-                    logger.debug(
-                        "Balloon builder raised for (%s, perm=%s): %s",
-                        cf[0], pm, bln_exc,
-                    )
+            # Balloon-inflate emits an additional candidate for every
+            # system (mono- and multi-metallic).  It builds from scratch
+            # (no ETKDG-template bias), places the M-M-bridge scaffold
+            # at ideal distances for bimetallics and Procrustes-aligns
+            # ligand fragments independently.  Because the XYZ is added
+            # alongside the template build above and dedup'd via the
+            # XYZ signature, no mono-metal variety is lost — balloon
+            # only increases the candidate pool.  Deterministic by
+            # construction (fixed chelate-conformer seed schedule).
+            try:
+                xyz_bln = _build_topology_xyz_from_scratch(
+                    mol, metal_idx, donor_indices, pm, gn,
+                    chelate_rank=0,
+                )
+                if xyz_bln is not None:
+                    _sig_bln = _xyz_sig(xyz_bln)
+                    if _sig_bln not in _pre_uff_seen:
+                        _pre_uff_seen.add(_sig_bln)
+                        coord_c_bln = None
+                        if apply_uff:
+                            try:
+                                coord_c_bln = _build_coordination_constraints_from_xyz(
+                                    mol, xyz_bln,
+                                )
+                            except Exception:
+                                pass
+                        _pre_uff_batch.append(
+                            (cf, pm, gn, xyz_bln, coord_c_bln)
+                        )
+            except Exception as bln_exc:
+                logger.debug(
+                    "Balloon builder raised for (%s, perm=%s): %s",
+                    cf[0], pm, bln_exc,
+                )
 
             # Additional chelate-rank variants: only useful when the
             # fragment-procrustes builder is engaged (no conformers on
