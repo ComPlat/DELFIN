@@ -15056,9 +15056,26 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             donor_symbols.append(nbr.GetSymbol())
 
         if dists:
-            mean_d = sum(dists) / len(dists)
-            std_d = math.sqrt(sum((d - mean_d)**2 for d in dists) / len(dists))
-            total_penalty += std_d * 10  # weight bond-length spread
+            # Heterolept-aware bond-length penalty: group distances by
+            # donor element (C, N, O, P, S, Cl, ...) and only penalise
+            # dispersion WITHIN each group.  On homoleptic complexes
+            # every donor shares one symbol so the sum collapses to
+            # the original global std_d * 10 (unchanged behaviour).
+            # On heteroleptic (e.g. Mn(CO)3(CO2R)(dppe) with C, O, P)
+            # the correct ideals are 1.84 / 2.1 / 2.35 A — penalising
+            # the cross-group spread would bias the collapse toward
+            # structures that accidentally compressed Mn-P onto
+            # Mn-C distance, which is chemically wrong.
+            from collections import defaultdict as _dd
+            _by_sym: Dict[str, List[float]] = _dd(list)
+            for _d, _s in zip(dists, donor_symbols):
+                _by_sym[_s].append(_d)
+            for _grp in _by_sym.values():
+                if len(_grp) < 2:
+                    continue
+                _mg = sum(_grp) / len(_grp)
+                _sg = math.sqrt(sum((_x - _mg) ** 2 for _x in _grp) / len(_grp))
+                total_penalty += _sg * 10  # weight bond-length spread
 
         # Angle regularity. For 4-coordinate centers, allow both tetrahedral
         # and square-planar patterns and keep the better one.
