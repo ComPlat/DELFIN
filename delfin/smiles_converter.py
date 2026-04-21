@@ -908,6 +908,20 @@ holds the GIL so true parallelism requires processes.  Default 64
 matches the thread cap; lower via env var on shared login nodes
 where 64 concurrent OB processes would saturate RAM."""
 
+DELFIN_BUILD_MD_STRETCH_FACTOR: float = _delfin_env_float(
+    "DELFIN_BUILD_MD_STRETCH_FACTOR", 1.10
+)
+"""Multiplier applied to the ideal M-D bond length when placing
+donors on the coordination polyhedron.  Default 1.10 (10 % longer
+than CSD-ideal).  Rationale: UFF without metal parameters tends to
+**shorten** M-D bonds; starting at the ideal distance often leads to
+UFF-collapsed outputs (Sc-O at 1.44 Å) that the Rule-1 gate rejects.
+Starting 10 % long gives UFF head-room to relax toward the ideal
+without overshooting below the Rule-1 lower bound (0.75 × ideal).
+Down-stream DFT / xTB will relax to the true equilibrium length
+anyway.  Set to 1.00 for strictly CSD-ideal builds; 1.15 or more
+for extra head-room at the cost of looser starting geometries."""
+
 # --- Topology-gate thresholds (``_verify_topology_from_graph``) -----------
 DELFIN_RULE4_PI_PLANAR_TOL_FRAC: float = _delfin_env_float(
     "DELFIN_RULE4_PI_PLANAR_TOL_FRAC", 0.25
@@ -17587,7 +17601,7 @@ def _build_topology_xyz_from_scratch(
                 donor_target_map[donor_atom_idx] = tuple(coords[donor_atom_idx])
                 continue
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = float(_get_ml_bond_length(metal_sym, donor_sym))
+            bl = float(_get_ml_bond_length(metal_sym, donor_sym)) * DELFIN_BUILD_MD_STRETCH_FACTOR
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx * vx + vy * vy + vz * vz)
             if mag > 1e-8:
@@ -17825,7 +17839,7 @@ def _build_topology_xyz(
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = _get_ml_bond_length(metal_sym, donor_sym)
+            bl = _get_ml_bond_length(metal_sym, donor_sym) * DELFIN_BUILD_MD_STRETCH_FACTOR
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
             if mag > 1e-8:
@@ -18102,7 +18116,7 @@ def _build_topology_xyz_from_template(
         for pos_idx, donor_list_idx in enumerate(perm):
             donor_atom_idx = donor_atom_indices[donor_list_idx]
             donor_sym = mol.GetAtomWithIdx(donor_atom_idx).GetSymbol()
-            bl = _get_ml_bond_length(metal_sym, donor_sym)
+            bl = _get_ml_bond_length(metal_sym, donor_sym) * DELFIN_BUILD_MD_STRETCH_FACTOR
             vx, vy, vz = vectors[pos_idx]
             mag = math.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
             if mag > 1e-8:
