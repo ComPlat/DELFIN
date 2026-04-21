@@ -19029,6 +19029,17 @@ def _generate_topological_isomers(
                     except Exception as _strch_exc:
                         logger.debug("M-M pre-stretch failed: %s", _strch_exc)
 
+                    # Full combinatorial enumeration: every
+                    # (cf1, pm1) x (cf2, pm2) pair gets combined with
+                    # every template conformer AND every chelate-rank
+                    # pucker variant on both sides.  Distinct XYZs
+                    # survive via signature dedup; the per-combo
+                    # variant counter adds a ``-confN`` suffix to the
+                    # label so the downstream label-collapse keeps
+                    # them.  Respects ``max_combos`` to avoid blowup.
+                    _combo_ranks = max(1, _CHELATE_RANK_VARIANTS)
+                    _combo_seen: set = set()
+                    _combo_variant_counter: Dict[Tuple[tuple, tuple, tuple, tuple], int] = {}
                     combo_count = 0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
@@ -19036,112 +19047,119 @@ def _generate_topological_isomers(
                         gn1 = cf1[0]
                         gn2 = cf2[0]
                         try:
-                            # Build each metal's donors on the template, keeping
-                            # the template's OTHER metal + bridge positions.
-                            for _tpl_cid in topo_template_cids:
-                                xyz1 = _build_topology_xyz(
-                                    mol, m1, d1, pm1, gn1, False, conf_id=_tpl_cid
-                                )
-                                if xyz1 is None:
-                                    continue
-                                mol_tmp = Chem.RWMol(mol)
-                                mol_tmp.RemoveAllConformers()
-                                conf_tmp = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz1)
-                                if conf_tmp is None:
-                                    continue
-                                cid_tmp = mol_tmp.AddConformer(conf_tmp, assignId=True)
-                                # Rescale M-D for Metal1's arrangement.
-                                _rescale_metal_donor_distances(mol_tmp, cid_tmp)
-                                xyz_combined = _build_topology_xyz(
-                                    mol_tmp.GetMol(), m2, d2, pm2, gn2, False,
-                                    conf_id=cid_tmp,
-                                )
-                                if xyz_combined is not None:
-                                    # Rescale M-D again for Metal2.
-                                    mol_tmp2 = Chem.RWMol(mol)
-                                    mol_tmp2.RemoveAllConformers()
-                                    conf_c = _xyz_to_rdkit_conformer(mol_tmp2.GetMol(), xyz_combined)
-                                    if conf_c is not None:
-                                        cid_c = mol_tmp2.AddConformer(conf_c, assignId=True)
-                                        _rescale_metal_donor_distances(mol_tmp2, cid_c)
-                                        xyz_combined = _mol_to_xyz_conformer(mol_tmp2, cid_c)
-                                    # Bridge snap: the two per-metal builds
-                                    # sequentially overwrite every bridging
-                                    # donor's position (first to metal1's
-                                    # polyhedron vertex, then to metal2's),
-                                    # leaving the bridge at metal2's ideal
-                                    # but arbitrarily far from metal1.
-                                    # Place every bridging donor on the
-                                    # metal1-metal2 line at a distance that
-                                    # satisfies both ideals simultaneously
-                                    # (same geometry _build_multimetal_scaffold
-                                    # solves), then let UFF settle from there.
-                                    try:
-                                        xyz_combined = _snap_bridging_donors_to_compromise(
-                                            xyz_combined, mol,
-                                            [m1, m2], bridging,
-                                        )
-                                    except Exception as _snap_exc:
-                                        logger.debug(
-                                            "Bridge-snap failed: %s", _snap_exc
-                                        )
-                                    # Apply UFF with constraints.
-                                    if apply_uff:
-                                        xyz_combined = _optimize_xyz_openbabel_safe(
-                                            xyz_combined, mol_template=mol
-                                        )
+                            for _crank1 in range(_combo_ranks):
+                                if combo_count >= max_combos:
                                     break
-                            if xyz_combined is not None:
-                                # For multinuclear combos we skip the full
-                                # graph-based gate — it is overly strict for
-                                # bridging atoms whose position is a
-                                # compromise between two metal targets.
-                                # The enumerator already guarantees chelate
-                                # constraints; we only reject if the bond
-                                # length window from Rule 1 is violated
-                                # (that captures the catastrophic cases
-                                # without over-pruning bridge compromises).
-                                try:
-                                    _q_lines = [
-                                        l for l in xyz_combined.splitlines() if l.strip()
-                                    ]
-                                    _coords_q = []
-                                    for _ln in _q_lines:
-                                        _p = _ln.split()
-                                        if len(_p) >= 4:
-                                            _coords_q.append((float(_p[1]), float(_p[2]), float(_p[3])))
-                                    gate_ok = True
-                                    for _b in mol.GetBonds():
-                                        _a1 = _b.GetBeginAtom(); _a2 = _b.GetEndAtom()
-                                        if (_a1.GetAtomicNum() <= 1
-                                                or _a2.GetAtomicNum() <= 1):
+                                for _crank2 in range(_combo_ranks):
+                                    if combo_count >= max_combos:
+                                        break
+                                    for _tpl_cid in topo_template_cids:
+                                        if combo_count >= max_combos:
+                                            break
+                                        xyz1 = _build_topology_xyz(
+                                            mol, m1, d1, pm1, gn1, False,
+                                            conf_id=_tpl_cid,
+                                            chelate_rank=_crank1,
+                                        )
+                                        if xyz1 is None:
                                             continue
-                                        _s1 = _a1.GetSymbol(); _s2 = _a2.GetSymbol()
-                                        if _s1 in _METAL_SET and _s2 in _METAL_SET:
+                                        mol_tmp = Chem.RWMol(mol)
+                                        mol_tmp.RemoveAllConformers()
+                                        conf_tmp = _xyz_to_rdkit_conformer(
+                                            mol_tmp.GetMol(), xyz1,
+                                        )
+                                        if conf_tmp is None:
                                             continue
-                                        _i1 = _a1.GetIdx(); _i2 = _a2.GetIdx()
-                                        _dx = _coords_q[_i1][0] - _coords_q[_i2][0]
-                                        _dy = _coords_q[_i1][1] - _coords_q[_i2][1]
-                                        _dz = _coords_q[_i1][2] - _coords_q[_i2][2]
-                                        _d = math.sqrt(_dx*_dx + _dy*_dy + _dz*_dz)
-                                        if _s1 in _METAL_SET or _s2 in _METAL_SET:
-                                            _m_sym = _s1 if _s1 in _METAL_SET else _s2
-                                            _d_sym = _s2 if _s1 in _METAL_SET else _s1
-                                            _ideal = float(_get_ml_bond_length(_m_sym, _d_sym))
-                                            if _ideal > 0 and (_d < 0.50 * _ideal or _d > 2.50 * _ideal):
-                                                gate_ok = False
-                                                break
-                                        else:
-                                            if _d > 2.5:
-                                                gate_ok = False
-                                                break
-                                    if not gate_ok:
-                                        continue
-                                except Exception:
-                                    pass
-                                label = f"multi-{gn1}/{gn2}"
-                                results.append((xyz_combined, label))
-                                combo_count += 1
+                                        cid_tmp = mol_tmp.AddConformer(conf_tmp, assignId=True)
+                                        _rescale_metal_donor_distances(mol_tmp, cid_tmp)
+                                        xyz_combined = _build_topology_xyz(
+                                            mol_tmp.GetMol(), m2, d2, pm2, gn2, False,
+                                            conf_id=cid_tmp,
+                                            chelate_rank=_crank2,
+                                        )
+                                        if xyz_combined is None:
+                                            continue
+                                        mol_tmp2 = Chem.RWMol(mol)
+                                        mol_tmp2.RemoveAllConformers()
+                                        conf_c = _xyz_to_rdkit_conformer(
+                                            mol_tmp2.GetMol(), xyz_combined,
+                                        )
+                                        if conf_c is not None:
+                                            cid_c = mol_tmp2.AddConformer(conf_c, assignId=True)
+                                            _rescale_metal_donor_distances(mol_tmp2, cid_c)
+                                            xyz_combined = _mol_to_xyz_conformer(mol_tmp2, cid_c)
+                                        try:
+                                            xyz_combined = _snap_bridging_donors_to_compromise(
+                                                xyz_combined, mol,
+                                                [m1, m2], bridging,
+                                            )
+                                        except Exception as _snap_exc:
+                                            logger.debug(
+                                                "Bridge-snap failed: %s", _snap_exc,
+                                            )
+                                        if apply_uff:
+                                            xyz_combined = _optimize_xyz_openbabel_safe(
+                                                xyz_combined, mol_template=mol,
+                                            )
+                                        # XYZ-signature dedup across
+                                        # (template, rank1, rank2).
+                                        _sig_cb = _xyz_sig(xyz_combined)
+                                        if _sig_cb in _combo_seen:
+                                            continue
+                                        _combo_seen.add(_sig_cb)
+                                        _cb_key = (tuple(cf1), tuple(pm1), tuple(cf2), tuple(pm2))
+                                        _combo_variant_counter[_cb_key] = (
+                                            _combo_variant_counter.get(_cb_key, 0) + 1
+                                        )
+                                        _cb_idx = _combo_variant_counter[_cb_key] - 1
+                                        label = f"multi-{gn1}/{gn2}"
+                                        if _cb_idx > 0:
+                                            label = f"{label}-conf{_cb_idx + 1}"
+                                        # Bond-length mini-gate (looser
+                                        # than the full graph gate —
+                                        # allows bridge-compromise
+                                        # geometry but rejects truly
+                                        # catastrophic collapses).
+                                        try:
+                                            _q_lines = [
+                                                l for l in xyz_combined.splitlines() if l.strip()
+                                            ]
+                                            _coords_q = []
+                                            for _ln in _q_lines:
+                                                _p = _ln.split()
+                                                if len(_p) >= 4:
+                                                    _coords_q.append((float(_p[1]), float(_p[2]), float(_p[3])))
+                                            gate_ok = True
+                                            for _b in mol.GetBonds():
+                                                _a1 = _b.GetBeginAtom(); _a2 = _b.GetEndAtom()
+                                                if (_a1.GetAtomicNum() <= 1
+                                                        or _a2.GetAtomicNum() <= 1):
+                                                    continue
+                                                _s1 = _a1.GetSymbol(); _s2 = _a2.GetSymbol()
+                                                if _s1 in _METAL_SET and _s2 in _METAL_SET:
+                                                    continue
+                                                _i1 = _a1.GetIdx(); _i2 = _a2.GetIdx()
+                                                _dx = _coords_q[_i1][0] - _coords_q[_i2][0]
+                                                _dy = _coords_q[_i1][1] - _coords_q[_i2][1]
+                                                _dz = _coords_q[_i1][2] - _coords_q[_i2][2]
+                                                _d = math.sqrt(_dx*_dx + _dy*_dy + _dz*_dz)
+                                                if _s1 in _METAL_SET or _s2 in _METAL_SET:
+                                                    _m_sym = _s1 if _s1 in _METAL_SET else _s2
+                                                    _d_sym = _s2 if _s1 in _METAL_SET else _s1
+                                                    _ideal = float(_get_ml_bond_length(_m_sym, _d_sym))
+                                                    if _ideal > 0 and (_d < 0.50 * _ideal or _d > 2.50 * _ideal):
+                                                        gate_ok = False
+                                                        break
+                                                else:
+                                                    if _d > 2.5:
+                                                        gate_ok = False
+                                                        break
+                                            if not gate_ok:
+                                                continue
+                                        except Exception:
+                                            pass
+                                        results.append((xyz_combined, label))
+                                        combo_count += 1
                         except Exception as _cexc:
                             logger.debug("Multinuclear combo build failed: %s", _cexc)
                             continue
