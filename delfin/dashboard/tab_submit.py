@@ -310,13 +310,20 @@ def create_tab(ctx):
         description='Seeds:',
         continuous_update=False,
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='300px'),
+        layout=widgets.Layout(width='300px', display='none'),
         tooltip=(
             'Number of ETKDG seeds.  Only used when Quality is '
             "'custom'.  Larger values widen the conformer search "
             'space at the cost of runtime (~linear).'
         ),
     )
+
+    def _toggle_seeds_slider(change):
+        convert_seeds_slider.layout.display = (
+            '' if change['new'] == 'custom' else 'none'
+        )
+
+    convert_quality_dropdown.observe(_toggle_seeds_slider, names='value')
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
