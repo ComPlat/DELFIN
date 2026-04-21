@@ -15170,6 +15170,79 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 _sd = math.sqrt(sum((x - _m) ** 2 for x in _vals) / len(_vals))
                 total_penalty += 0.5 * _sd
 
+        # Point-group / Cn-axis bonus: for each metal, test candidate
+        # rotation axes (each principal axis of the donor point cloud
+        # + the metal-centroid vector) at n = 6, 5, 4, 3, 2 and keep
+        # the highest n where the donor positions are invariant under
+        # rotation by 360/n within tolerance.  Higher n -> larger
+        # bonus (negative penalty).  Captures Oh / Td / D3h / C4 / C3
+        # symmetry of the local coordination sphere.  Weight 2.0 so
+        # a detected C6 axis shaves ~12 points off the total penalty
+        # (comparable to one 3-deg angle deviation improvement).
+        try:
+            if len(coord_positions) >= 2:
+                import numpy as _np
+                _pts = _np.array(
+                    [(p.x - metal_pos.x, p.y - metal_pos.y, p.z - metal_pos.z)
+                     for p in coord_positions],
+                    dtype=float,
+                )
+                _max_order = 1
+                # Candidate axes: each donor direction + centroid +
+                # the PCA principal axis of the donor cloud.
+                _cands: List[_np.ndarray] = []
+                _centroid = _pts.mean(axis=0)
+                _cn = float(_np.linalg.norm(_centroid))
+                if _cn > 1e-6:
+                    _cands.append(_centroid / _cn)
+                for _v in _pts:
+                    _vn = float(_np.linalg.norm(_v))
+                    if _vn > 1e-6:
+                        _cands.append(_v / _vn)
+                # PCA axes via SVD.
+                try:
+                    _u, _s, _vh = _np.linalg.svd(_pts, full_matrices=False)
+                    for _row in _vh:
+                        _rn = float(_np.linalg.norm(_row))
+                        if _rn > 1e-6:
+                            _cands.append(_row / _rn)
+                except Exception:
+                    pass
+                # Tolerance: 0.3 A on the invariance check.
+                _tol_sq = 0.09
+                for _axis in _cands:
+                    for _n in (6, 5, 4, 3, 2):
+                        _theta = 2.0 * math.pi / _n
+                        _c = math.cos(_theta)
+                        _sth = math.sin(_theta)
+                        # Rodrigues rotation matrix about _axis by _theta.
+                        _K = _np.array([
+                            [0.0, -_axis[2], _axis[1]],
+                            [_axis[2], 0.0, -_axis[0]],
+                            [-_axis[1], _axis[0], 0.0],
+                        ])
+                        _R = _np.eye(3) + _sth * _K + (1.0 - _c) * _K @ _K
+                        _rot = _pts @ _R.T
+                        # Every rotated donor must land near SOME
+                        # original donor (permutation invariance).
+                        _ok = True
+                        for _rp in _rot:
+                            _dists2 = ((_pts - _rp) ** 2).sum(axis=1)
+                            if float(_dists2.min()) > _tol_sq:
+                                _ok = False
+                                break
+                        if _ok and _n > _max_order:
+                            _max_order = _n
+                    if _max_order >= 6:
+                        break
+                if _max_order > 1:
+                    # Negative penalty -> bonus.  Oh/Td have C3/C4
+                    # max among candidate axes; D3h has C3; square-
+                    # planar C4.  Linear polymers would hit C2.
+                    total_penalty -= 2.0 * (_max_order - 1)
+        except Exception:
+            pass
+
     # Chelate-ring planarity bonus: aromatic rings that coordinate to a metal
     # should be flat.  Penalize RMSD of ring atoms from the best-fit plane.
     try:
