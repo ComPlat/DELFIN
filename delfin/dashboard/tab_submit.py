@@ -292,7 +292,7 @@ def create_tab(ctx):
             ('extreme (60 seeds)', 'extreme'),
             ('custom (slider)', 'custom'),
         ],
-        value='extreme',
+        value='normal',
         description='Quality:',
         style={'description_width': 'initial'},
         layout=widgets.Layout(width='230px'),
