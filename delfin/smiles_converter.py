@@ -15331,7 +15331,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                 _cn_axes: List[Tuple[_np.ndarray, int]] = []
                 for _axis in _uniq_axes:
                     _best_n_here = 1
-                    for _n in (6, 5, 4, 3, 2):
+                    for _n in (8, 6, 5, 4, 3, 2):
                         _theta = 2.0 * math.pi / _n
                         _c = math.cos(_theta)
                         _sth = math.sin(_theta)
@@ -15400,12 +15400,13 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                         if _is_invariant(_refl(_norm)):
                             _sigma_bonus += 5.0
 
-                # Improper rotations Sn: Cn followed by sigma-h.  Only
-                # test for n = 4, 6 (S4, S6 appear in Td, Oh).  S2 = i,
-                # S1 = sigma-h, already counted.
+                # Improper rotations Sn: Cn followed by sigma-h.  Test
+                # n = 4, 5, 6, 8 (S4 in Td/DD, S5 in Cp* PBP D5h, S6
+                # in Oh, S8 in SAP D4d).  S2 = i and S1 = sigma-h are
+                # already counted separately.
                 _sn_bonus = 0.0
                 for _axis, _n_cn in _cn_axes:
-                    for _n_s in (4, 6):
+                    for _n_s in (4, 5, 6, 8):
                         _theta = 2.0 * math.pi / _n_s
                         _c = math.cos(_theta)
                         _sth = math.sin(_theta)
