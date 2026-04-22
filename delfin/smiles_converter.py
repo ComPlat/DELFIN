@@ -13830,6 +13830,53 @@ def _verify_topology_from_graph(
                 if dsq < 0.49:  # 0.7²
                     return False
 
+        # Rule 10: Inter-ligand phantom-bond.  Every pair of non-metal
+        # heavy atoms that are NOT bonded in the SMILES graph must
+        # sit at least 1.10 x (r_cov_i + r_cov_j) apart in the XYZ
+        # — otherwise a new bond would be perceived by viewers /
+        # bond-perception tools and the ligand topology would have
+        # changed.  Catches the case where UFF allows two ligands
+        # to collide enough that a phenyl-C touches a carbonyl-C
+        # (phantom organic C-C bond) even though neither is close
+        # enough to the metal to trip Rule 1.  O(N^2) over heavy
+        # atoms — fine for typical complexes with <200 atoms.
+        try:
+            _INTER_LIGAND_FRAC = 1.10
+            _bonded_pairs: set = set()
+            for _b in mol_template.GetBonds():
+                _i1 = _b.GetBeginAtom().GetIdx()
+                _i2 = _b.GetEndAtom().GetIdx()
+                _bonded_pairs.add((min(_i1, _i2), max(_i1, _i2)))
+            for ii in range(len(heavy_indices)):
+                _i = heavy_indices[ii]
+                _ai = mol_template.GetAtomWithIdx(_i)
+                _si = _ai.GetSymbol()
+                # Skip metal-anything pairs — Rule 1 already covers them.
+                _si_is_metal = _si in _METAL_SET
+                _ri = _COVALENT_RADII.get(_si)
+                if _ri is None:
+                    continue
+                xi2, yi2, zi2 = coords[_i]
+                for jj in range(ii + 1, len(heavy_indices)):
+                    _j = heavy_indices[jj]
+                    _aj = mol_template.GetAtomWithIdx(_j)
+                    _sj = _aj.GetSymbol()
+                    if _si_is_metal or _sj in _METAL_SET:
+                        continue
+                    if (_i, _j) in _bonded_pairs:
+                        continue
+                    _rj = _COVALENT_RADII.get(_sj)
+                    if _rj is None:
+                        continue
+                    xj2, yj2, zj2 = coords[_j]
+                    _d = math.sqrt(
+                        (xi2 - xj2) ** 2 + (yi2 - yj2) ** 2 + (zi2 - zj2) ** 2
+                    )
+                    if _d < _INTER_LIGAND_FRAC * (_ri + _rj):
+                        return False
+        except Exception:
+            pass
+
         # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
         # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
         # length.  The sp2 character of each ring atom is derived from the
@@ -20657,11 +20704,15 @@ def smiles_to_xyz_isomers(
                 _lj, cid_j, sj = seen_fps[fps_list[j]]
                 base_j = _base_label(_lj)
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
-                # Same-label: aggressive merge (RMSD < 2.5 Å)
-                # Cross-label: merge only if very similar (RMSD < 1.5 Å)
-                # — catches Morgan-hash artifacts that split identical
-                # structures into multiple "label" entries.
-                rmsd_threshold = 2.5 if base_i == base_j else 1.5
+                # Same-label: aggressive merge (RMSD < 2.5 A) —
+                # these are supposed to be the same isomer anyway.
+                # Cross-label: only merge if effectively identical
+                # (RMSD < 0.8 A) to avoid false-positive merging of
+                # distinct isomers whose fingerprints collided or
+                # whose labels diverged due to borderline angles.
+                # Tightened from 1.5 -> 0.8 after reports of
+                # chemically different systems being wrongly merged.
+                rmsd_threshold = 2.5 if base_i == base_j else 0.8
                 if rmsd < rmsd_threshold:
                     if si <= sj:
                         removed.add(j)
