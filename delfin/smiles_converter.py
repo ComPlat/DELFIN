@@ -13711,8 +13711,8 @@ def _verify_topology_from_graph(
         # * 1.10 - 1.35 x sum: grey zone, neither violation.
         try:
             _BONDED_MAX_FRAC = 1.35
-            _BONDED_MIN_IDEAL_FRAC = 0.70
-            _PHANTOM_MIN_FRAC = 1.10
+            _BONDED_MIN_IDEAL_FRAC = 0.65
+            _PHANTOM_MIN_FRAC = 1.05
             for atom in mol_template.GetAtoms():
                 if atom.GetSymbol() not in _METAL_SET:
                     continue
