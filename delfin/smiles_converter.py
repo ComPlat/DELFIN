@@ -13831,41 +13831,37 @@ def _verify_topology_from_graph(
                     return False
 
         # Rule 10: Inter-ligand phantom-bond.  Every pair of non-metal
-        # heavy atoms that are NOT bonded in the SMILES graph must
-        # sit at least 1.10 x (r_cov_i + r_cov_j) apart in the XYZ
-        # — otherwise a new bond would be perceived by viewers /
-        # bond-perception tools and the ligand topology would have
-        # changed.  Catches the case where UFF allows two ligands
-        # to collide enough that a phenyl-C touches a carbonyl-C
-        # (phantom organic C-C bond) even though neither is close
-        # enough to the metal to trip Rule 1.  O(N^2) over heavy
-        # atoms — fine for typical complexes with <200 atoms.
+        # atoms (heavy + H) that are NOT bonded in the SMILES graph
+        # must sit at least 1.15 x (r_cov_i + r_cov_j) apart in the
+        # XYZ.  Catches UFF-induced ligand collisions where a new
+        # bond would be perceived — including O-H / C-H phantom
+        # contacts at ~1.1 A that are visually indistinguishable
+        # from a real O-H bond.  Metal-anything pairs are covered
+        # by Rule 1.  O(N^2) over all non-metal atoms.
         try:
-            _INTER_LIGAND_FRAC = 1.10
+            _INTER_LIGAND_FRAC = 1.15
             _bonded_pairs: set = set()
             for _b in mol_template.GetBonds():
                 _i1 = _b.GetBeginAtom().GetIdx()
                 _i2 = _b.GetEndAtom().GetIdx()
                 _bonded_pairs.add((min(_i1, _i2), max(_i1, _i2)))
-            for ii in range(len(heavy_indices)):
-                _i = heavy_indices[ii]
+            _nm_indices = [
+                a.GetIdx() for a in mol_template.GetAtoms()
+                if a.GetSymbol() not in _METAL_SET
+            ]
+            for ii in range(len(_nm_indices)):
+                _i = _nm_indices[ii]
                 _ai = mol_template.GetAtomWithIdx(_i)
-                _si = _ai.GetSymbol()
-                # Skip metal-anything pairs — Rule 1 already covers them.
-                _si_is_metal = _si in _METAL_SET
-                _ri = _COVALENT_RADII.get(_si)
+                _ri = _COVALENT_RADII.get(_ai.GetSymbol())
                 if _ri is None:
                     continue
                 xi2, yi2, zi2 = coords[_i]
-                for jj in range(ii + 1, len(heavy_indices)):
-                    _j = heavy_indices[jj]
-                    _aj = mol_template.GetAtomWithIdx(_j)
-                    _sj = _aj.GetSymbol()
-                    if _si_is_metal or _sj in _METAL_SET:
-                        continue
+                for jj in range(ii + 1, len(_nm_indices)):
+                    _j = _nm_indices[jj]
                     if (_i, _j) in _bonded_pairs:
                         continue
-                    _rj = _COVALENT_RADII.get(_sj)
+                    _aj = mol_template.GetAtomWithIdx(_j)
+                    _rj = _COVALENT_RADII.get(_aj.GetSymbol())
                     if _rj is None:
                         continue
                     xj2, yj2, zj2 = coords[_j]
@@ -15263,7 +15259,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     continue
                 _m = sum(_vals) / len(_vals)
                 _sd = math.sqrt(sum((x - _m) ** 2 for x in _vals) / len(_vals))
-                total_penalty += 2.0 * _sd
+                total_penalty += 5.0 * _sd
 
         # Point-group / Cn-axis bonus: for each metal, test candidate
         # rotation axes (each principal axis of the donor point cloud
@@ -15334,9 +15330,62 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     # Negative penalty -> bonus.  Oh/Td have C3/C4
                     # max among candidate axes; D3h has C3; square-
                     # planar C4.  Linear polymers would hit C2.
-                    total_penalty -= 5.0 * (_max_order - 1)
+                    total_penalty -= 15.0 * (_max_order - 1)
         except Exception:
             pass
+
+    # Inter-ligand soft close-contact penalty.  For every pair of
+    # non-bonded non-metal heavy atoms, a graduated penalty kicks
+    # in between r_cov_sum * 1.10 (Rule 10 hard threshold) and
+    # r_cov_sum * 1.50 (vdW-like contact cutoff).  Rewards
+    # structures where ligand fragments stay out of each other's
+    # way even when technically allowed by Rule 10.  Catches cases
+    # like NHC-methyl C 2.08 A from carbonyl-O — not a perceived
+    # bond, but visually clashing.  Penalty per pair is scaled so
+    # a single 2.0 A C-O contact adds ~2 pts, multiple clashes
+    # compound quickly and move the structure down in ranking.
+    try:
+        if RDKIT_AVAILABLE:
+            _CONTACT_SOFT_FRAC = 1.50
+            _CONTACT_WEIGHT = 5.0
+            _bonded_pairs: set = set()
+            for _b in mol.GetBonds():
+                _ii = _b.GetBeginAtom().GetIdx()
+                _jj = _b.GetEndAtom().GetIdx()
+                _bonded_pairs.add((min(_ii, _jj), max(_ii, _jj)))
+            _heavy = [
+                a for a in mol.GetAtoms()
+                if a.GetAtomicNum() > 1 and a.GetSymbol() not in _METAL_SET
+            ]
+            _conf_local = mol.GetConformer(conf_id)
+            for _i in range(len(_heavy)):
+                _ai = _heavy[_i]
+                _pi = _conf_local.GetAtomPosition(_ai.GetIdx())
+                _ri = _COVALENT_RADII.get(_ai.GetSymbol())
+                if _ri is None:
+                    continue
+                for _j in range(_i + 1, len(_heavy)):
+                    _aj = _heavy[_j]
+                    _pair = (
+                        min(_ai.GetIdx(), _aj.GetIdx()),
+                        max(_ai.GetIdx(), _aj.GetIdx()),
+                    )
+                    if _pair in _bonded_pairs:
+                        continue
+                    _rj = _COVALENT_RADII.get(_aj.GetSymbol())
+                    if _rj is None:
+                        continue
+                    _pj = _conf_local.GetAtomPosition(_aj.GetIdx())
+                    _dx = _pi.x - _pj.x
+                    _dy = _pi.y - _pj.y
+                    _dz = _pi.z - _pj.z
+                    _d = math.sqrt(_dx * _dx + _dy * _dy + _dz * _dz)
+                    _sum = _ri + _rj
+                    _cut = _CONTACT_SOFT_FRAC * _sum
+                    if _d < _cut:
+                        total_penalty += _CONTACT_WEIGHT * (_cut - _d) / _sum
+    except Exception:
+        pass
 
     # Chelate-ring planarity bonus: aromatic rings that coordinate to a metal
     # should be flat.  Penalize RMSD of ring atoms from the best-fit plane.
