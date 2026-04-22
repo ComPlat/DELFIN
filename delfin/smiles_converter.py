@@ -21121,8 +21121,16 @@ def smiles_to_xyz_isomers(
                 cutoff = e_min + max(50.0 * natural_spread, 5000.0)
                 scored = [t for t in scored if t[0] <= cutoff]
 
-            # Composite rank: energy + 0.5 * geometry_penalty.
-            scored.sort(key=lambda t: t[0] + 0.5 * t[1])
+            # Composite rank: energy + geometry_penalty * weight.
+            # Geometry weight 5.0 — the heterolept-aware score is on
+            # a scale of ~1-20 points for near-perfect geometry and
+            # ~30-100 for distorted pseudo-minima, while UFF energies
+            # differ by 10-1000 kcal between legitimate isomers.  A
+            # weight of 5 means a 10-point geometry penalty balances
+            # 50 kcal of energy advantage — enough that a structure
+            # with a phantom-bond pseudo-minimum cannot beat a
+            # chemically correct one on energy alone.
+            scored.sort(key=lambda t: t[0] + 5.0 * t[1])
             if scored:
                 results = [(xyz, lbl) for _e, _g, _s, xyz, lbl in scored]
         except Exception as _sort_exc:
