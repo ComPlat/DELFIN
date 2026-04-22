@@ -13836,13 +13836,14 @@ def _verify_topology_from_graph(
         # thresholds so bulky ligands with unavoidable close H-X
         # contacts are not over-rejected:
         #   * heavy-heavy: 1.10 x (r_cov_i + r_cov_j)
-        #   * H-involved:  0.95 x (r_cov_i + r_cov_j) (stricter!
-        #     catches O-H / C-H phantom contacts at ~1.0 A while
-        #     allowing legitimate close vdW contacts > 1.15 x sum)
+        #   * H-involved:  0.85 x (r_cov_i + r_cov_j) (only true
+        #     overlap — catches O-H collapses below 0.82 A, H-H
+        #     collapses below 0.53 A; legitimate close vdW contacts
+        #     >= 0.95 x sum stay allowed)
         # Metal-anything pairs are covered by Rule 1.
         try:
             _HEAVY_FRAC = 1.10
-            _H_FRAC = 0.95
+            _H_FRAC = 0.85
             _bonded_pairs: set = set()
             for _b in mol_template.GetBonds():
                 _i1 = _b.GetBeginAtom().GetIdx()
