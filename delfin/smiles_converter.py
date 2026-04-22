@@ -13904,6 +13904,13 @@ def _verify_topology_from_graph(
         # regardless of the mol's sanitisation state — essential for the
         # pipeline's internal gate and any post-hoc re-check to agree.
         try:
+            # Force ring perception so aromatic / pi-rings are always
+            # found even after dative-bond conversion stripped the
+            # default aromaticity flags.
+            try:
+                Chem.GetSymmSSSR(mol_template)
+            except Exception:
+                pass
             ring_info = mol_template.GetRingInfo()
             if ring_info is not None:
                 for ring in ring_info.AtomRings():
@@ -14148,8 +14155,17 @@ def _verify_topology_from_graph(
         # are NOT themselves bonded to the metal stay unconstrained.
         try:
             import numpy as _np
-            if ring_info is not None:
-                for ring in ring_info.AtomRings():
+            # Force ring perception — after dative-bond conversion the
+            # default ring info may be empty or missing aromatic rings.
+            # GetSymmSSSR populates the ring cache from the bond graph
+            # regardless of sanitisation state.
+            try:
+                Chem.GetSymmSSSR(mol_template)
+            except Exception:
+                pass
+            _ring_info_6b = mol_template.GetRingInfo()
+            if _ring_info_6b is not None:
+                for ring in _ring_info_6b.AtomRings():
                     if len(ring) < 5 or len(ring) > 7:
                         continue
                     ring_set = set(ring)
