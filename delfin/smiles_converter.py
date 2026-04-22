@@ -19334,7 +19334,14 @@ def _generate_topological_isomers(
                     # Use the ETKDG template as scaffold base (it has correct
                     # M-bridge-M topology from SMILES).
                     import itertools as _it
-                    max_combos = max(1, max_isomers - len(results))
+                    # Combo cap decoupled from max_isomers so the full
+                    # Cartesian product of per-metal (cf, pm) x
+                    # template x chelate_rank combinations is explored
+                    # before dedup + ranking trims down to max_isomers.
+                    # 3x max_isomers keeps total work bounded while
+                    # giving enough candidates for the ranking to pick
+                    # the geometrically best ones.
+                    max_combos = max(max_isomers * 3, 100)
                     scaffold = _build_multimetal_scaffold(
                         mol, metal_indices, bridging
                     )
@@ -19574,7 +19581,7 @@ def _generate_topological_isomers(
                     _mi_donors.append(_di)
 
                 if _mi_ok and _per_metal:
-                    _max_combos_n = max(1, max_isomers - len(results))
+                    _max_combos_n = max(max_isomers * 3, 100)
                     _topo_cids_n = _rank_template_conformers(mol, top_k=_prof_topk) or [None]
                     _n_ranks = max(1, _CHELATE_RANK_VARIANTS)
                     # Smart-mode truncation: when ``n_metal_smart`` is
