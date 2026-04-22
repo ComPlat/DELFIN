@@ -13821,58 +13821,57 @@ def _verify_topology_from_graph(
         except Exception:
             pass
 
-        # Rule 9: Coordination identity preserved.  For every metal M
-        # and every element type E present among M's SMILES neighbours,
-        # the CLOSEST E atom to M in the XYZ must be one of the
-        # SMILES-bonded E atoms.  If some other E atom (not bonded to
-        # M in the template) has crept closer to M, the coordination
-        # identity changed — even if distances are technically within
-        # the Rule 1 window.  Example: a methoxycarbonyl O-donor
-        # drifts from 2.0 to 2.3 A (still within Rule 1), while a
-        # phenyl C from dppe came to 2.1 A (still > 0.80 x ideal, so
-        # Rule 8 stays silent), but the CLOSEST C to Mn is now the
-        # phenyl C, not the SMILES-bonded carbonyl C -> reject.
+        # Rule 9: Coordination-sphere invariance under UFF.  For every
+        # metal M, the set of heavy atoms within the bond-perception
+        # distance (1.20 x (r_cov_M + r_cov_X)) in the XYZ must equal
+        # the set of M's SMILES-bonded heavy neighbours.  If ANY new
+        # atom appears inside that radius or an existing one falls
+        # outside it, the coordination sphere changed relative to the
+        # input SMILES and the structure is rejected.
+        #
+        # This is the universal, element-agnostic check — it uses the
+        # same covalent-radii cutoff that OpenBabel / RDKit / viewers
+        # apply during bond perception, so any discrepancy here would
+        # also be drawn as a different coordination sphere downstream.
+        # H atoms are skipped (M-H bonds are permissive in most force
+        # fields and the topology gate should be lenient there).
         try:
+            _PERCEIVE_FRAC = 1.20
             for atom in mol_template.GetAtoms():
                 if atom.GetSymbol() not in _METAL_SET:
                     continue
                 m_idx = atom.GetIdx()
+                m_sym = atom.GetSymbol()
                 mx, my, mz = coords[m_idx]
-                # Group SMILES-bonded neighbours by element, skipping H.
-                _bonded_by_el: Dict[str, List[int]] = {}
-                for nbr in atom.GetNeighbors():
-                    if nbr.GetAtomicNum() <= 1:
+                r_cov_m = _COVALENT_RADII.get(m_sym)
+                if r_cov_m is None:
+                    continue
+                smiles_nbrs = {
+                    nbr.GetIdx() for nbr in atom.GetNeighbors()
+                    if nbr.GetAtomicNum() > 1
+                    and nbr.GetSymbol() not in _METAL_SET
+                }
+                perceived_nbrs: set = set()
+                for other in mol_template.GetAtoms():
+                    o_idx = other.GetIdx()
+                    if o_idx == m_idx:
                         continue
-                    if nbr.GetSymbol() in _METAL_SET:
+                    if other.GetAtomicNum() <= 1:
                         continue
-                    _bonded_by_el.setdefault(
-                        nbr.GetSymbol(), []
-                    ).append(nbr.GetIdx())
-                for _el, _bonded_ids in _bonded_by_el.items():
-                    _bonded_set = set(_bonded_ids)
-                    # Collect distances from this metal to EVERY atom
-                    # of element _el in the molecule.
-                    _ranked: List[Tuple[float, int]] = []
-                    for other in mol_template.GetAtoms():
-                        o_idx = other.GetIdx()
-                        if o_idx == m_idx:
-                            continue
-                        if other.GetSymbol() != _el:
-                            continue
-                        if other.GetSymbol() in _METAL_SET:
-                            continue
-                        ox, oy, oz = coords[o_idx]
-                        _d = math.sqrt(
-                            (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
-                        )
-                        _ranked.append((_d, o_idx))
-                    _ranked.sort(key=lambda t: t[0])
-                    # Top-K (K = number of SMILES-bonded atoms of this
-                    # element) must be exactly the SMILES-bonded set.
-                    _k = len(_bonded_ids)
-                    _top_k_ids = {_oid for _, _oid in _ranked[:_k]}
-                    if _top_k_ids != _bonded_set:
-                        return False
+                    if other.GetSymbol() in _METAL_SET:
+                        continue
+                    r_cov_o = _COVALENT_RADII.get(other.GetSymbol())
+                    if r_cov_o is None:
+                        continue
+                    ox, oy, oz = coords[o_idx]
+                    _d = math.sqrt(
+                        (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
+                    )
+                    _cutoff = _PERCEIVE_FRAC * (r_cov_m + r_cov_o)
+                    if _d < _cutoff:
+                        perceived_nbrs.add(o_idx)
+                if perceived_nbrs != smiles_nbrs:
+                    return False
         except Exception:
             pass
 
