@@ -13822,19 +13822,20 @@ def _verify_topology_from_graph(
             pass
 
         # Rule 9: Coordination-sphere invariance under UFF.  For every
-        # metal M, the set of heavy atoms within the bond-perception
+        # metal M, the set of atoms within the bond-perception
         # distance (1.20 x (r_cov_M + r_cov_X)) in the XYZ must equal
-        # the set of M's SMILES-bonded heavy neighbours.  If ANY new
-        # atom appears inside that radius or an existing one falls
-        # outside it, the coordination sphere changed relative to the
-        # input SMILES and the structure is rejected.
+        # the set of M's SMILES-bonded neighbours.  If ANY new atom
+        # appears inside that radius or an existing one falls outside
+        # it, the coordination sphere changed relative to the input
+        # SMILES and the structure is rejected.
         #
-        # This is the universal, element-agnostic check — it uses the
-        # same covalent-radii cutoff that OpenBabel / RDKit / viewers
-        # apply during bond perception, so any discrepancy here would
-        # also be drawn as a different coordination sphere downstream.
-        # H atoms are skipped (M-H bonds are permissive in most force
-        # fields and the topology gate should be lenient there).
+        # Element-agnostic — uses the same covalent-radii cutoff that
+        # OpenBabel / RDKit / viewers apply during bond perception.
+        # H atoms ARE included: a phenyl-CH drifting onto a metal
+        # would otherwise slip through even though it visibly changes
+        # the coordination sphere.  Legitimate M-H hydrides stay
+        # allowed because they're already in the SMILES graph (and
+        # therefore in smiles_nbrs).
         try:
             _PERCEIVE_FRAC = 1.20
             for atom in mol_template.GetAtoms():
@@ -13848,15 +13849,12 @@ def _verify_topology_from_graph(
                     continue
                 smiles_nbrs = {
                     nbr.GetIdx() for nbr in atom.GetNeighbors()
-                    if nbr.GetAtomicNum() > 1
-                    and nbr.GetSymbol() not in _METAL_SET
+                    if nbr.GetSymbol() not in _METAL_SET
                 }
                 perceived_nbrs: set = set()
                 for other in mol_template.GetAtoms():
                     o_idx = other.GetIdx()
                     if o_idx == m_idx:
-                        continue
-                    if other.GetAtomicNum() <= 1:
                         continue
                     if other.GetSymbol() in _METAL_SET:
                         continue
