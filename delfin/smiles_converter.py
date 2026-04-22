@@ -14135,6 +14135,86 @@ def _verify_topology_from_graph(
         except Exception:
             pass
 
+        # Rule 6b: Sigma-coordinated aromatic rings must lie coplanar
+        # with the bonded metal.  For every aromatic ring with
+        # exactly one ring atom sigma-bonded to a metal, the metal
+        # must sit near the ring's best-fit plane.  The sp2 lone
+        # pair that forms the M-donor sigma bond extends IN-plane
+        # (pyridine Fe-N, thiophene Rh-S, imidazole Cu-N, ...), so a
+        # metal pushed out of that plane is chemically unrealistic
+        # for sigma coordination.  Universal: any 5/6/7-membered
+        # pi-ring, any metal-donor element pair — no element-specific
+        # cases.  Pendant aromatic substituents on the ligand that
+        # are NOT themselves bonded to the metal stay unconstrained.
+        try:
+            import numpy as _np
+            if ring_info is not None:
+                for ring in ring_info.AtomRings():
+                    if len(ring) < 5 or len(ring) > 7:
+                        continue
+                    ring_set = set(ring)
+                    # Majority-sp2 (pi-ring) via graph bond orders.
+                    _n_sp2 = 0
+                    for _ri in ring:
+                        _atom_ri = mol_template.GetAtomWithIdx(_ri)
+                        _has_pi = False
+                        for _b in _atom_ri.GetBonds():
+                            _other = _b.GetOtherAtom(_atom_ri).GetIdx()
+                            if _other not in ring_set:
+                                continue
+                            _bt = _b.GetBondType()
+                            if (
+                                _bt == Chem.BondType.AROMATIC
+                                or _bt == Chem.BondType.DOUBLE
+                                or _b.GetIsAromatic()
+                                or _b.GetBondTypeAsDouble() >= 1.5
+                            ):
+                                _has_pi = True
+                                break
+                        if _has_pi:
+                            _n_sp2 += 1
+                    if _n_sp2 < len(ring) * 0.6:
+                        continue
+                    # Collect metal indices bonded to a ring atom.
+                    _m_bonded_in_ring: List[int] = []
+                    for _ri in ring:
+                        _atom_ri = mol_template.GetAtomWithIdx(_ri)
+                        for _nbr in _atom_ri.GetNeighbors():
+                            if _nbr.GetSymbol() in _METAL_SET:
+                                _m_bonded_in_ring.append(_nbr.GetIdx())
+                                break
+                    # Apply only to single-point sigma coordination.
+                    # Multi-point (chelate via two ring atoms) is
+                    # already covered by Rule 6 metallacycle planarity.
+                    if len(set(_m_bonded_in_ring)) != 1:
+                        continue
+                    _m_idx_ring = _m_bonded_in_ring[0]
+                    _pts = _np.array([coords[_ri] for _ri in ring])
+                    _mean_bond = float(
+                        _np.linalg.norm(
+                            _np.diff(
+                                _np.vstack([_pts, _pts[:1]]), axis=0
+                            ), axis=1,
+                        ).mean()
+                    )
+                    if _mean_bond <= 0:
+                        continue
+                    _centered = _pts - _pts.mean(axis=0)
+                    _u, _s, _vh = _np.linalg.svd(_centered, full_matrices=False)
+                    _normal = _vh[-1]
+                    _m_pos = _np.array(coords[_m_idx_ring])
+                    _m_rel = _m_pos - _pts.mean(axis=0)
+                    _m_oop = float(abs(float(_np.dot(_m_rel, _normal))))
+                    # Tolerance = 0.35 x mean ring bond.  For a
+                    # 6-membered ring with mean bond ~1.40 A that
+                    # yields ~0.49 A — permissive enough for slight
+                    # puckering + hinge geometry, strict enough to
+                    # reject a metal ~1 A above the ring plane.
+                    if _m_oop > 0.35 * _mean_bond:
+                        return False
+        except Exception:
+            pass
+
         # Rule 7: Hybridisation vs. coordination geometry.
         # For every non-metal heavy atom NOT bonded to a metal we infer
         # the expected hybridisation from the bond-order graph and
