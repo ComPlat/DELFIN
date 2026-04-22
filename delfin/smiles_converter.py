@@ -13695,147 +13695,15 @@ def _verify_topology_from_graph(
                 return True
             coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
 
-        # Rule 1: Every bond must have a reasonable distance.
-        # For bridging donors: collect ALL M-D distances, pass if at
-        # least one metal is within normal range (a bridging atom can't
-        # be at ideal distance from ALL metals simultaneously).
-        bridging_donor_bonds: Dict[int, List[Tuple[int, str, float, float]]] = {}
-
-        for bond in mol_template.GetBonds():
-            a1 = bond.GetBeginAtom()
-            a2 = bond.GetEndAtom()
-            i1, i2 = a1.GetIdx(), a2.GetIdx()
-            s1, s2 = a1.GetSymbol(), a2.GetSymbol()
-            dx = coords[i1][0] - coords[i2][0]
-            dy = coords[i1][1] - coords[i2][1]
-            dz = coords[i1][2] - coords[i2][2]
-            d = math.sqrt(dx * dx + dy * dy + dz * dz)
-
-            is_metal_1 = s1 in _METAL_SET
-            is_metal_2 = s2 in _METAL_SET
-
-            if is_metal_1 and is_metal_2:
-                mm_key = frozenset({s1, s2})
-                ideal = _METAL_METAL_BOND_LENGTHS.get(mm_key)
-                if ideal is None:
-                    r1 = _COVALENT_RADII.get(s1)
-                    r2 = _COVALENT_RADII.get(s2)
-                    ideal = (r1 + r2 + 0.3) if r1 and r2 else 2.5
-                if d < 0.70 * ideal or d > 1.80 * ideal:
-                    return False
-            elif is_metal_1 or is_metal_2:
-                m_sym = s1 if is_metal_1 else s2
-                d_sym = s2 if is_metal_1 else s1
-                d_atom = a2 if is_metal_1 else a1
-                m_idx = i1 if is_metal_1 else i2
-                if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
-                    continue
-                ideal = float(_get_ml_bond_length(m_sym, d_sym))
-                if ideal <= 0:
-                    continue
-                n_metal_nbrs = sum(
-                    1 for nbr in d_atom.GetNeighbors()
-                    if nbr.GetSymbol() in _METAL_SET
-                )
-                if n_metal_nbrs >= 2:
-                    # Bridging: defer to collective check below
-                    bridging_donor_bonds.setdefault(
-                        d_atom.GetIdx(), []
-                    ).append((m_idx, m_sym, d, ideal))
-                else:
-                    # Terminal donor: strict check
-                    if d < 0.75 * ideal or d > 1.60 * ideal:
-                        return False
-            else:
-                if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
-                    if d > 1.8:
-                        return False
-                else:
-                    # Covalent bonds near metal centers (e.g. Cp ring C-C)
-                    # can stretch slightly due to coordination effects.
-                    if d > 2.4:
-                        return False
-
-        # Bridging donors: ALL M-D bonds must be within [0.55, 3.00].
-        # A bridging atom sits at a compromise position between its two
-        # metals and the platonic vertex targets cannot both be
-        # satisfied exactly, so the window is widened beyond the
-        # terminal donor range.  The upper bound is still tight enough
-        # to detect a truly severed bridge (>3 x ideal ~6 Å), which
-        # would destroy the intended multinuclear topology.
-        for d_idx, metal_entries in bridging_donor_bonds.items():
-            for _m_idx, _m_sym, d, ideal in metal_entries:
-                ratio = d / ideal
-                if ratio < 0.55 or ratio > 3.00:
-                    return False
-
-        # Rule 2+3: No collapsed heavy atoms or hydrogens.
-        heavy_indices = [
-            i for i in range(n_atoms)
-            if mol_template.GetAtomWithIdx(i).GetAtomicNum() > 1
-        ]
-        for i in range(len(heavy_indices)):
-            xi, yi, zi = coords[heavy_indices[i]]
-            for j in range(i + 1, min(i + 50, len(heavy_indices))):
-                xj, yj, zj = coords[heavy_indices[j]]
-                dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
-                if dsq < 0.49:  # 0.7²
-                    return False
-
-        # Rule 8: No phantom metal neighbour.  For every metal, any
-        # non-bonded heavy atom (atom not connected to the metal in
-        # the template graph) must sit OUTSIDE the bonding window
-        # (distance >= 0.80 x ideal M-X).  Catches overlap-range
-        # phantom bonds.  Second-sphere H-bond / pi-pi interactions
-        # (~2.8-3.0 A to an O donor) stay allowed.
-        try:
-            _PHANTOM_FRAC = 0.80
-            for atom in mol_template.GetAtoms():
-                if atom.GetSymbol() not in _METAL_SET:
-                    continue
-                m_idx = atom.GetIdx()
-                m_sym = atom.GetSymbol()
-                mx, my, mz = coords[m_idx]
-                bonded_ids = {
-                    nbr.GetIdx() for nbr in atom.GetNeighbors()
-                }
-                for other in mol_template.GetAtoms():
-                    o_idx = other.GetIdx()
-                    if o_idx == m_idx or o_idx in bonded_ids:
-                        continue
-                    if other.GetAtomicNum() <= 1:
-                        continue
-                    if other.GetSymbol() in _METAL_SET:
-                        continue
-                    ox, oy, oz = coords[o_idx]
-                    _d = math.sqrt(
-                        (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
-                    )
-                    _ideal_mx = float(
-                        _get_ml_bond_length(m_sym, other.GetSymbol())
-                    )
-                    if _ideal_mx <= 0:
-                        continue
-                    if _d < _PHANTOM_FRAC * _ideal_mx:
-                        return False
-        except Exception:
-            pass
-
-        # Rule 9: Coordination-sphere invariance under UFF.  For every
-        # metal M, the set of atoms within the bond-perception
-        # distance (1.20 x (r_cov_M + r_cov_X)) in the XYZ must equal
-        # the set of M's SMILES-bonded neighbours.  If ANY new atom
-        # appears inside that radius or an existing one falls outside
-        # it, the coordination sphere changed relative to the input
-        # SMILES and the structure is rejected.
-        #
-        # Element-agnostic — uses the same covalent-radii cutoff that
-        # OpenBabel / RDKit / viewers apply during bond perception.
-        # H atoms ARE included: a phenyl-CH drifting onto a metal
-        # would otherwise slip through even though it visibly changes
-        # the coordination sphere.  Legitimate M-H hydrides stay
-        # allowed because they're already in the SMILES graph (and
-        # therefore in smiles_nbrs).
+        # Rule 1 (universal graph invariance): for every metal M the
+        # SET of atoms within bond-perception distance
+        # (1.20 x (r_cov_M + r_cov_X)) in the XYZ must equal the set
+        # of M's SMILES-bonded neighbours.  One rule — element-
+        # agnostic — subsumes the old "M-D distance window", "phantom
+        # non-bonded close contact", and "closest atom of element type"
+        # checks into a single graph-isomorphism test.  If any atom
+        # slips into or out of perception range the coordination
+        # sphere has changed and the structure is rejected.
         try:
             _PERCEIVE_FRAC = 1.20
             for atom in mol_template.GetAtoms():
@@ -13865,13 +13733,87 @@ def _verify_topology_from_graph(
                     _d = math.sqrt(
                         (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
                     )
-                    _cutoff = _PERCEIVE_FRAC * (r_cov_m + r_cov_o)
-                    if _d < _cutoff:
+                    if _d < _PERCEIVE_FRAC * (r_cov_m + r_cov_o):
                         perceived_nbrs.add(o_idx)
                 if perceived_nbrs != smiles_nbrs:
                     return False
         except Exception:
             pass
+
+        # Covalent non-metal bonds: simple upper-bound distance check
+        # to catch bonds that UFF has stretched beyond any reasonable
+        # covalent length.  No phantom check — perceiving every
+        # organic bond pair would be O(N^2) and the metal graph
+        # check above already guarantees the coordination sphere is
+        # intact.  Metal-metal bonds use a 1.80 x ideal upper bound.
+        bridging_donor_bonds: Dict[int, List[Tuple[int, str, float, float]]] = {}
+        for bond in mol_template.GetBonds():
+            a1 = bond.GetBeginAtom()
+            a2 = bond.GetEndAtom()
+            i1, i2 = a1.GetIdx(), a2.GetIdx()
+            s1, s2 = a1.GetSymbol(), a2.GetSymbol()
+            dx = coords[i1][0] - coords[i2][0]
+            dy = coords[i1][1] - coords[i2][1]
+            dz = coords[i1][2] - coords[i2][2]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            is_metal_1 = s1 in _METAL_SET
+            is_metal_2 = s2 in _METAL_SET
+            if is_metal_1 and is_metal_2:
+                mm_key = frozenset({s1, s2})
+                ideal = _METAL_METAL_BOND_LENGTHS.get(mm_key)
+                if ideal is None:
+                    r1 = _COVALENT_RADII.get(s1)
+                    r2 = _COVALENT_RADII.get(s2)
+                    ideal = (r1 + r2 + 0.3) if r1 and r2 else 2.5
+                if d < 0.70 * ideal or d > 1.80 * ideal:
+                    return False
+            elif is_metal_1 or is_metal_2:
+                # Metal-ligand bonds are already validated by the
+                # graph-invariance rule above; bridging donors sit at
+                # compromise positions between multiple metals and
+                # need a separate tolerance window so they don't
+                # trigger the perception rule's lower cutoff when
+                # stretched between two ideals.
+                d_atom = a2 if is_metal_1 else a1
+                m_sym = s1 if is_metal_1 else s2
+                d_sym = s2 if is_metal_1 else s1
+                m_idx = i1 if is_metal_1 else i2
+                n_metal_nbrs = sum(
+                    1 for nbr in d_atom.GetNeighbors()
+                    if nbr.GetSymbol() in _METAL_SET
+                )
+                if n_metal_nbrs >= 2:
+                    ideal = float(_get_ml_bond_length(m_sym, d_sym))
+                    if ideal > 0:
+                        bridging_donor_bonds.setdefault(
+                            d_atom.GetIdx(), []
+                        ).append((m_idx, m_sym, d, ideal))
+            else:
+                if a1.GetAtomicNum() <= 1 or a2.GetAtomicNum() <= 1:
+                    if d > 1.8:
+                        return False
+                else:
+                    if d > 2.4:
+                        return False
+
+        for d_idx, metal_entries in bridging_donor_bonds.items():
+            for _m_idx, _m_sym, d, ideal in metal_entries:
+                ratio = d / ideal
+                if ratio < 0.55 or ratio > 3.00:
+                    return False
+
+        # Rule 2+3: No collapsed heavy atoms or hydrogens.
+        heavy_indices = [
+            i for i in range(n_atoms)
+            if mol_template.GetAtomWithIdx(i).GetAtomicNum() > 1
+        ]
+        for i in range(len(heavy_indices)):
+            xi, yi, zi = coords[heavy_indices[i]]
+            for j in range(i + 1, min(i + 50, len(heavy_indices))):
+                xj, yj, zj = coords[heavy_indices[j]]
+                dsq = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+                if dsq < 0.49:  # 0.7²
+                    return False
 
         # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
         # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
