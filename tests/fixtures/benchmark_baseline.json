@@ -15,8 +15,8 @@
     "mean_topo_penalty": 22.877,
     "n_distinct_base": 9,
     "n_output": 18,
-    "quality_weighted_coverage": 0.079,
-    "wall_seconds": 31.73
+    "quality_weighted_coverage": 0.08,
+    "wall_seconds": 32
   },
   "Cd-histidine(H2O)3": {
     "labels": [
@@ -35,7 +35,7 @@
     "n_distinct_base": 9,
     "n_output": 27,
     "quality_weighted_coverage": 0.09,
-    "wall_seconds": 61.92
+    "wall_seconds": 61
   },
   "Fe(CO)3(NHC)2": {
     "labels": [
@@ -51,7 +51,7 @@
     "n_distinct_base": 6,
     "n_output": 9,
     "quality_weighted_coverage": 0.06,
-    "wall_seconds": 7.12
+    "wall_seconds": 7
   },
   "Fe(pyOMe)(CO)3(SAr)(Br)": {
     "labels": [
@@ -64,8 +64,8 @@
     "mean_topo_penalty": 22.142,
     "n_distinct_base": 4,
     "n_output": 4,
-    "quality_weighted_coverage": 0.009,
-    "wall_seconds": 41.31
+    "quality_weighted_coverage": 0.01,
+    "wall_seconds": 44
   },
   "Fe(salen)(N-im)": {
     "labels": [
@@ -83,38 +83,45 @@
   "Fe(tBuPOCOP)Br2": {
     "labels": [
       "Br-N-ax",
+      "Br-P-ax",
       "Isomer 1",
       "Isomer 2",
       "P-P-ax",
       "square-pyramidal ap-Br/Br-N,P-P",
       "square-pyramidal ap-N/Br-Br,P-P"
     ],
-    "mean_geom_score": 234.08,
-    "mean_topo_penalty": 9.851,
-    "n_distinct_base": 6,
-    "n_output": 7,
-    "quality_weighted_coverage": 0.032,
-    "wall_seconds": 259.0
+    "mean_geom_score": 250.342,
+    "mean_topo_penalty": 10.535,
+    "n_distinct_base": 7,
+    "n_output": 8,
+    "quality_weighted_coverage": 0.04,
+    "wall_seconds": 272
   },
   "Fe-Sc(OTf)3(OH)(mu-O)(cyclam)": {
     "labels": [
       "Isomer 1",
       "Isomer 2",
-      "Isomer 3"
+      "Isomer 3",
+      "Isomer 4",
+      "Isomer 5",
+      "Isomer 6",
+      "Isomer 7",
+      "Isomer 8",
+      "multi-TPR/TBP"
     ],
-    "mean_geom_score": 559.649,
-    "mean_topo_penalty": 6.569,
-    "n_distinct_base": 3,
-    "n_output": 3,
-    "quality_weighted_coverage": 0.006,
-    "wall_seconds": 525.55
+    "mean_geom_score": 630.817,
+    "mean_topo_penalty": 23.237,
+    "n_distinct_base": 9,
+    "n_output": 9,
+    "quality_weighted_coverage": 0.02,
+    "wall_seconds": 525
   },
   "Fe2(mu-O)(bipy-macrocycle)": {
-    "error": "timeout_45min",
+    "error": "timeout",
     "n_output": 0
   },
   "Fe3(mu-O)3(salen-like)": {
-    "error": "timeout_45min",
+    "error": "timeout",
     "n_output": 0
   },
   "Ir(ppy)2(acac)": {
@@ -127,8 +134,8 @@
     "mean_topo_penalty": 23.112,
     "n_distinct_base": 3,
     "n_output": 3,
-    "quality_weighted_coverage": 0.008,
-    "wall_seconds": 111.89
+    "quality_weighted_coverage": 0.01,
+    "wall_seconds": 111
   },
   "Mn(CO)3(CO2Me)(dppe)": {
     "labels": [
@@ -139,7 +146,7 @@
     "mean_topo_penalty": 35.082,
     "n_distinct_base": 2,
     "n_output": 2,
-    "quality_weighted_coverage": 0.004,
-    "wall_seconds": 317.0
+    "quality_weighted_coverage": 0.0,
+    "wall_seconds": 316
   }
 }
