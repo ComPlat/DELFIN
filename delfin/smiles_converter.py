@@ -13831,15 +13831,18 @@ def _verify_topology_from_graph(
                     return False
 
         # Rule 10: Inter-ligand phantom-bond.  Every pair of non-metal
-        # atoms (heavy + H) that are NOT bonded in the SMILES graph
-        # must sit at least 1.15 x (r_cov_i + r_cov_j) apart in the
-        # XYZ.  Catches UFF-induced ligand collisions where a new
-        # bond would be perceived — including O-H / C-H phantom
-        # contacts at ~1.1 A that are visually indistinguishable
-        # from a real O-H bond.  Metal-anything pairs are covered
-        # by Rule 1.  O(N^2) over all non-metal atoms.
+        # atoms that are NOT bonded in the SMILES graph must sit
+        # outside the bond-perception threshold in the XYZ.  Two
+        # thresholds so bulky ligands with unavoidable close H-X
+        # contacts are not over-rejected:
+        #   * heavy-heavy: 1.10 x (r_cov_i + r_cov_j)
+        #   * H-involved:  0.95 x (r_cov_i + r_cov_j) (stricter!
+        #     catches O-H / C-H phantom contacts at ~1.0 A while
+        #     allowing legitimate close vdW contacts > 1.15 x sum)
+        # Metal-anything pairs are covered by Rule 1.
         try:
-            _INTER_LIGAND_FRAC = 1.15
+            _HEAVY_FRAC = 1.10
+            _H_FRAC = 0.95
             _bonded_pairs: set = set()
             for _b in mol_template.GetBonds():
                 _i1 = _b.GetBeginAtom().GetIdx()
@@ -13852,6 +13855,7 @@ def _verify_topology_from_graph(
             for ii in range(len(_nm_indices)):
                 _i = _nm_indices[ii]
                 _ai = mol_template.GetAtomWithIdx(_i)
+                _zi = _ai.GetAtomicNum()
                 _ri = _COVALENT_RADII.get(_ai.GetSymbol())
                 if _ri is None:
                     continue
@@ -13868,7 +13872,12 @@ def _verify_topology_from_graph(
                     _d = math.sqrt(
                         (xi2 - xj2) ** 2 + (yi2 - yj2) ** 2 + (zi2 - zj2) ** 2
                     )
-                    if _d < _INTER_LIGAND_FRAC * (_ri + _rj):
+                    _frac = (
+                        _H_FRAC
+                        if _zi <= 1 or _aj.GetAtomicNum() <= 1
+                        else _HEAVY_FRAC
+                    )
+                    if _d < _frac * (_ri + _rj):
                         return False
         except Exception:
             pass
