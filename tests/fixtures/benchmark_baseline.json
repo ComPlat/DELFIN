@@ -68,8 +68,17 @@
     "wall_seconds": 41.31
   },
   "Fe(salen)(N-im)": {
-    "error": "timeout",
-    "n_output": 0
+    "labels": [
+      "all-cis",
+      "fac",
+      "mer"
+    ],
+    "mean_geom_score": 353.071,
+    "mean_topo_penalty": 24.678,
+    "n_distinct_base": 3,
+    "n_output": 4,
+    "quality_weighted_coverage": 0.012,
+    "wall_seconds": 1045.1
   },
   "Fe(tBuPOCOP)Br2": {
     "labels": [
@@ -101,11 +110,11 @@
     "wall_seconds": 525.55
   },
   "Fe2(mu-O)(bipy-macrocycle)": {
-    "error": "timeout",
+    "error": "timeout_45min",
     "n_output": 0
   },
   "Fe3(mu-O)3(salen-like)": {
-    "error": "timeout",
+    "error": "timeout_45min",
     "n_output": 0
   },
   "Ir(ppy)2(acac)": {
