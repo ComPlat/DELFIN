@@ -15216,7 +15216,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     continue
                 _m = sum(_vals) / len(_vals)
                 _sd = math.sqrt(sum((x - _m) ** 2 for x in _vals) / len(_vals))
-                total_penalty += 0.5 * _sd
+                total_penalty += 2.0 * _sd
 
         # Point-group / Cn-axis bonus: for each metal, test candidate
         # rotation axes (each principal axis of the donor point cloud
@@ -15287,7 +15287,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     # Negative penalty -> bonus.  Oh/Td have C3/C4
                     # max among candidate axes; D3h has C3; square-
                     # planar C4.  Linear polymers would hit C2.
-                    total_penalty -= 2.0 * (_max_order - 1)
+                    total_penalty -= 5.0 * (_max_order - 1)
         except Exception:
             pass
 
@@ -21083,6 +21083,72 @@ def smiles_to_xyz_isomers(
     # pseudo-minima that happen to have low UFF energy.
     if has_metal and len(results) > 1 and OPENBABEL_AVAILABLE:
         try:
+            # Topology-preservation penalty helper — measures how
+            # faithful the actual XYZ bond lengths are to the SMILES
+            # bonds.  Complements geometry_quality_score (which
+            # measures polyhedron symmetry) by explicitly scoring
+            # how well the input bond topology is preserved after
+            # build + UFF.  Per-bond penalty = |d/ideal - 1| * 10.
+            def _topology_preservation_penalty(xyz_str: str) -> float:
+                try:
+                    lines = [l for l in xyz_str.strip().splitlines() if l.strip()]
+                    if len(lines) != mol.GetNumAtoms():
+                        try:
+                            mol_h = Chem.AddHs(mol)
+                            if len(lines) == mol_h.GetNumAtoms():
+                                _tmol = mol_h
+                            else:
+                                return 0.0
+                        except Exception:
+                            return 0.0
+                    else:
+                        _tmol = mol
+                    _coords: List[Tuple[float, float, float]] = []
+                    for _ln in lines:
+                        _p = _ln.split()
+                        if len(_p) < 4:
+                            return 0.0
+                        _coords.append((float(_p[1]), float(_p[2]), float(_p[3])))
+                    _pen = 0.0
+                    for _b in _tmol.GetBonds():
+                        _a1 = _b.GetBeginAtom()
+                        _a2 = _b.GetEndAtom()
+                        _s1 = _a1.GetSymbol()
+                        _s2 = _a2.GetSymbol()
+                        _i1 = _a1.GetIdx()
+                        _i2 = _a2.GetIdx()
+                        _dx = _coords[_i1][0] - _coords[_i2][0]
+                        _dy = _coords[_i1][1] - _coords[_i2][1]
+                        _dz = _coords[_i1][2] - _coords[_i2][2]
+                        _d = math.sqrt(_dx * _dx + _dy * _dy + _dz * _dz)
+                        _is_m1 = _s1 in _METAL_SET
+                        _is_m2 = _s2 in _METAL_SET
+                        if _is_m1 and _is_m2:
+                            _mmk = frozenset({_s1, _s2})
+                            _ideal = _METAL_METAL_BOND_LENGTHS.get(_mmk)
+                            if _ideal is None:
+                                _r1 = _COVALENT_RADII.get(_s1)
+                                _r2 = _COVALENT_RADII.get(_s2)
+                                _ideal = (_r1 + _r2 + 0.3) if _r1 and _r2 else 2.5
+                        elif _is_m1 or _is_m2:
+                            _ms = _s1 if _is_m1 else _s2
+                            _ds = _s2 if _is_m1 else _s1
+                            _ideal = float(_get_ml_bond_length(_ms, _ds))
+                            if _ideal <= 0:
+                                continue
+                        else:
+                            _r1 = _COVALENT_RADII.get(_s1)
+                            _r2 = _COVALENT_RADII.get(_s2)
+                            if _r1 is None or _r2 is None:
+                                continue
+                            _ideal = _r1 + _r2
+                        if _ideal <= 0:
+                            continue
+                        _pen += abs(_d / _ideal - 1.0) * 10.0
+                    return _pen
+                except Exception:
+                    return 0.0
+
             scored: List[Tuple[float, float, float, str, str]] = []
             for xyz, lbl in results:
                 try:
@@ -21093,10 +21159,6 @@ def smiles_to_xyz_isomers(
                     e = energy if energy is not None else float("inf")
                 except Exception:
                     e = float("inf")
-                # Geometry quality score for the current xyz (lower
-                # is better; includes heterolept-aware bond-length
-                # spread, polyhedron angle deviation, and the within-
-                # bucket symmetry bonus added earlier).
                 g = float("inf")
                 try:
                     _mt = Chem.RWMol(mol)
@@ -21107,16 +21169,12 @@ def smiles_to_xyz_isomers(
                         g = float(_geometry_quality_score(_mt.GetMol(), _ci))
                 except Exception:
                     g = float("inf")
-                scored.append((e, g, 0.0, xyz, lbl))
+                t_pen = _topology_preservation_penalty(xyz)
+                scored.append((e, g, t_pen, xyz, lbl))
 
-            # Rank blending: primary sort by energy for the outlier
-            # cutoff (UFF energy outliers are truly broken), then a
-            # final composite sort (energy + 0.5 * geometry_score)
-            # to elevate chemically sensible structures that are
-            # close in energy to pseudo-minima.  Weight 0.5 keeps
-            # energy as the dominant factor — a 1000 kcal/mol lower
-            # energy structure still wins even if its geometry
-            # score is 100 points worse.
+            # Energy outlier cut — purely energy-based so truly
+            # broken structures (runaway UFF energies, thousands of
+            # kcal above min) cannot poison the bucket sort below.
             scored.sort(key=lambda t: t[0])
             if len(scored) >= 2:
                 e_min = scored[0][0]
@@ -21125,18 +21183,27 @@ def smiles_to_xyz_isomers(
                 cutoff = e_min + max(50.0 * natural_spread, 5000.0)
                 scored = [t for t in scored if t[0] <= cutoff]
 
-            # Composite rank: energy + geometry_penalty * weight.
-            # Geometry weight 5.0 — the heterolept-aware score is on
-            # a scale of ~1-20 points for near-perfect geometry and
-            # ~30-100 for distorted pseudo-minima, while UFF energies
-            # differ by 10-1000 kcal between legitimate isomers.  A
-            # weight of 5 means a 10-point geometry penalty balances
-            # 50 kcal of energy advantage — enough that a structure
-            # with a phantom-bond pseudo-minimum cannot beat a
-            # chemically correct one on energy alone.
-            scored.sort(key=lambda t: t[0] + 5.0 * t[1])
+            # Energy-bucket sort — UFF absolute energies are not
+            # trustworthy for metals without parameters
+            # (Sc/Cd/lanthanides/actinides), but structures within
+            # ~15 kcal/mol of each other are indistinguishable to
+            # UFF and should be ordered by geometry+topology quality
+            # instead.  Bucket width is adaptive: max(15, 10% of
+            # natural spread).  Within a bucket, sort by
+            # (geometry_score + topology_penalty) then by energy
+            # (tie-break).
+            if len(scored) >= 2:
+                e_min = scored[0][0]
+                e_med = scored[len(scored) // 2][0]
+                natural_spread = max(e_med - e_min, 1.0)
+                bucket_width = max(15.0, 0.1 * natural_spread)
+                def _bucket_key(_t):
+                    _e, _g, _tp, _x, _l = _t
+                    _bucket = int((_e - e_min) / bucket_width)
+                    return (_bucket, _g + _tp, _e)
+                scored.sort(key=_bucket_key)
             if scored:
-                results = [(xyz, lbl) for _e, _g, _s, xyz, lbl in scored]
+                results = [(xyz, lbl) for _e, _g, _tp, xyz, lbl in scored]
         except Exception as _sort_exc:
             logger.debug("Energy-based sort failed: %s", _sort_exc)
 
