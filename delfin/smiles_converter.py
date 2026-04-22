@@ -20761,15 +20761,29 @@ def smiles_to_xyz_isomers(
             if r is not None
         ]
 
-    fp_label_pairs: List[Tuple[tuple, str, int, float]] = _collect_fp_label_pairs(
-        relax_hard_chem_filters=False
-    )
-    if not fp_label_pairs and conf_ids and has_metal:
-        logger.debug(
-            "Strict conformer filters rejected all sampled structures; "
-            "retrying with relaxed OCO/nonbonded penalties."
-        )
-        fp_label_pairs = _collect_fp_label_pairs(relax_hard_chem_filters=True)
+    # Two-pass sampling collection: strict first (catches truly broken
+    # structures with hard rejects), then relaxed (lets structures with
+    # minor OCO / nonbonded-contact issues through as penalty-scored
+    # candidates).  Before, the relaxed pass only ran when the strict
+    # pass emptied the list — on crowded bimetallic systems where 2-3
+    # strict-survivors appeared the relaxed pass stayed dormant and
+    # legitimate isomers that failed strict-but-would-pass-relaxed never
+    # reached fingerprint deduplication.  Union by fingerprint keeps
+    # the lowest-score representative per unique coordination pattern.
+    _strict = _collect_fp_label_pairs(relax_hard_chem_filters=False)
+    _relaxed = _collect_fp_label_pairs(relax_hard_chem_filters=True) if (
+        conf_ids and has_metal
+    ) else []
+    _merged: Dict[tuple, Tuple[str, int, float]] = {}
+    for fp, lbl, cid, sc in _strict:
+        if fp not in _merged or sc < _merged[fp][2]:
+            _merged[fp] = (lbl, cid, sc)
+    for fp, lbl, cid, sc in _relaxed:
+        if fp not in _merged or sc < _merged[fp][2]:
+            _merged[fp] = (lbl, cid, sc)
+    fp_label_pairs: List[Tuple[tuple, str, int, float]] = [
+        (fp, lbl, cid, sc) for fp, (lbl, cid, sc) in _merged.items()
+    ]
 
     # Second pass: deduplicate, keeping the best-scoring conformer per group.
     # fp -> (label, conf_id, score)
