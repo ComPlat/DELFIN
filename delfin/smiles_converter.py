@@ -13782,6 +13782,50 @@ def _verify_topology_from_graph(
                 if dsq < 0.49:  # 0.7²
                     return False
 
+        # Rule 8: No phantom metal neighbour.  For every metal, any
+        # non-bonded heavy atom (atom not connected to the metal in
+        # the template graph) must sit OUTSIDE the bonding window
+        # (distance >= 0.80 x ideal M-X).  An atom closer than that
+        # would be perceived as a bond by viewers / bond-perception
+        # algorithms and effectively change the metal's coordination
+        # sphere relative to the input SMILES — which is exactly the
+        # failure mode the topology gate is meant to catch.  The
+        # 0.80 threshold is deliberately conservative (well above the
+        # existing 0.55 unphysical-contact cutoff) so second-sphere
+        # H-bond / pi-pi interactions stay allowed.
+        try:
+            _PHANTOM_FRAC = 0.80
+            for atom in mol_template.GetAtoms():
+                if atom.GetSymbol() not in _METAL_SET:
+                    continue
+                m_idx = atom.GetIdx()
+                m_sym = atom.GetSymbol()
+                mx, my, mz = coords[m_idx]
+                bonded_ids = {
+                    nbr.GetIdx() for nbr in atom.GetNeighbors()
+                }
+                for other in mol_template.GetAtoms():
+                    o_idx = other.GetIdx()
+                    if o_idx == m_idx or o_idx in bonded_ids:
+                        continue
+                    if other.GetAtomicNum() <= 1:
+                        continue
+                    if other.GetSymbol() in _METAL_SET:
+                        continue
+                    ox, oy, oz = coords[o_idx]
+                    _d = math.sqrt(
+                        (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
+                    )
+                    _ideal_mx = float(
+                        _get_ml_bond_length(m_sym, other.GetSymbol())
+                    )
+                    if _ideal_mx <= 0:
+                        continue
+                    if _d < _PHANTOM_FRAC * _ideal_mx:
+                        return False
+        except Exception:
+            pass
+
         # Rule 4: Pi-ring planarity — reject any ring of sp2/aromatic atoms
         # whose max out-of-plane deviation exceeds 0.25 x the mean ring bond
         # length.  The sp2 character of each ring atom is derived from the
