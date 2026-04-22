@@ -15278,19 +15278,26 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                      for p in coord_positions],
                     dtype=float,
                 )
-                _max_order = 1
-                # Candidate axes: each donor direction + centroid +
-                # the PCA principal axis of the donor cloud.
+                # Tolerance: 0.3 A on the invariance check.
+                _tol_sq = 0.09
+
+                def _is_invariant(_transformed) -> bool:
+                    for _rp in _transformed:
+                        _dists2 = ((_pts - _rp) ** 2).sum(axis=1)
+                        if float(_dists2.min()) > _tol_sq:
+                            return False
+                    return True
+
+                # Candidate axes: donor directions + centroid + PCA.
                 _cands: List[_np.ndarray] = []
                 _centroid = _pts.mean(axis=0)
-                _cn = float(_np.linalg.norm(_centroid))
-                if _cn > 1e-6:
-                    _cands.append(_centroid / _cn)
+                _cn_norm = float(_np.linalg.norm(_centroid))
+                if _cn_norm > 1e-6:
+                    _cands.append(_centroid / _cn_norm)
                 for _v in _pts:
                     _vn = float(_np.linalg.norm(_v))
                     if _vn > 1e-6:
                         _cands.append(_v / _vn)
-                # PCA axes via SVD.
                 try:
                     _u, _s, _vh = _np.linalg.svd(_pts, full_matrices=False)
                     for _row in _vh:
@@ -15299,38 +15306,125 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                             _cands.append(_row / _rn)
                 except Exception:
                     pass
-                # Tolerance: 0.3 A on the invariance check.
-                _tol_sq = 0.09
+
+                # De-duplicate near-parallel axes.
+                _uniq_axes: List[_np.ndarray] = []
                 for _axis in _cands:
+                    _is_new = True
+                    for _ex in _uniq_axes:
+                        if abs(float(_np.dot(_axis, _ex))) > 0.99:
+                            _is_new = False
+                            break
+                    if _is_new:
+                        _uniq_axes.append(_axis)
+
+                # Symmetry operation bonus — count each detected
+                # operation (Cn rotations, sigma planes, inversion,
+                # improper rotations Sn) and scale the bonus by a
+                # per-op weight.  Higher-order point groups
+                # (Oh / Td / D3h) detect more operations than lower-
+                # order ones (C4v / C3v), so a structure with richer
+                # symmetry content earns a proportionally larger
+                # bonus without relying on the max Cn order alone.
+                _cn_bonus = 0.0
+                _max_order = 1
+                _cn_axes: List[Tuple[_np.ndarray, int]] = []
+                for _axis in _uniq_axes:
+                    _best_n_here = 1
                     for _n in (6, 5, 4, 3, 2):
                         _theta = 2.0 * math.pi / _n
                         _c = math.cos(_theta)
                         _sth = math.sin(_theta)
-                        # Rodrigues rotation matrix about _axis by _theta.
                         _K = _np.array([
                             [0.0, -_axis[2], _axis[1]],
                             [_axis[2], 0.0, -_axis[0]],
                             [-_axis[1], _axis[0], 0.0],
                         ])
                         _R = _np.eye(3) + _sth * _K + (1.0 - _c) * _K @ _K
-                        _rot = _pts @ _R.T
-                        # Every rotated donor must land near SOME
-                        # original donor (permutation invariance).
-                        _ok = True
-                        for _rp in _rot:
-                            _dists2 = ((_pts - _rp) ** 2).sum(axis=1)
-                            if float(_dists2.min()) > _tol_sq:
-                                _ok = False
-                                break
-                        if _ok and _n > _max_order:
-                            _max_order = _n
-                    if _max_order >= 6:
-                        break
-                if _max_order > 1:
-                    # Negative penalty -> bonus.  Oh/Td have C3/C4
-                    # max among candidate axes; D3h has C3; square-
-                    # planar C4.  Linear polymers would hit C2.
-                    total_penalty -= 15.0 * (_max_order - 1)
+                        if _is_invariant(_pts @ _R.T):
+                            if _n > _best_n_here:
+                                _best_n_here = _n
+                            # Found the highest divisor that works;
+                            # n=6 means C6 exists (also implies C3, C2).
+                            # Count this axis once at its max order.
+                    if _best_n_here > 1:
+                        _cn_axes.append((_axis, _best_n_here))
+                        _cn_bonus += 4.0 * (_best_n_here - 1)
+                        if _best_n_here > _max_order:
+                            _max_order = _best_n_here
+
+                # Inversion center: r -> -r invariance through the
+                # metal origin.  Present in Oh / D3d / Ci etc.
+                _inv_bonus = 0.0
+                if _is_invariant(-_pts):
+                    _inv_bonus = 15.0
+
+                # Mirror planes — sigma-h (perpendicular to each Cn
+                # axis) and sigma-v (containing Cn axis + crossing
+                # each donor).  Reflection across plane with
+                # normal n: r -> r - 2 (r dot n) n.
+                _sigma_bonus = 0.0
+                _tested_normals: List[_np.ndarray] = []
+                def _refl(_normal: _np.ndarray) -> _np.ndarray:
+                    _d = _pts @ _normal
+                    return _pts - 2.0 * _np.outer(_d, _normal)
+
+                def _dedup_normal(_normal: _np.ndarray) -> bool:
+                    for _ex in _tested_normals:
+                        if abs(float(_np.dot(_normal, _ex))) > 0.99:
+                            return False
+                    _tested_normals.append(_normal)
+                    return True
+
+                for _axis, _n in _cn_axes:
+                    # sigma-h: plane perpendicular to axis.
+                    if _dedup_normal(_axis):
+                        if _is_invariant(_refl(_axis)):
+                            _sigma_bonus += 10.0
+                    # sigma-v / sigma-d: plane containing the axis.
+                    # Build candidate normals perpendicular to axis
+                    # and to each donor projection onto the plane
+                    # perpendicular to the axis.
+                    for _v in _pts:
+                        _proj = _v - float(_np.dot(_v, _axis)) * _axis
+                        _pn = float(_np.linalg.norm(_proj))
+                        if _pn < 1e-6:
+                            continue
+                        _norm = _np.cross(_axis, _proj / _pn)
+                        _nl = float(_np.linalg.norm(_norm))
+                        if _nl < 1e-6:
+                            continue
+                        _norm = _norm / _nl
+                        if not _dedup_normal(_norm):
+                            continue
+                        if _is_invariant(_refl(_norm)):
+                            _sigma_bonus += 5.0
+
+                # Improper rotations Sn: Cn followed by sigma-h.  Only
+                # test for n = 4, 6 (S4, S6 appear in Td, Oh).  S2 = i,
+                # S1 = sigma-h, already counted.
+                _sn_bonus = 0.0
+                for _axis, _n_cn in _cn_axes:
+                    for _n_s in (4, 6):
+                        _theta = 2.0 * math.pi / _n_s
+                        _c = math.cos(_theta)
+                        _sth = math.sin(_theta)
+                        _K = _np.array([
+                            [0.0, -_axis[2], _axis[1]],
+                            [_axis[2], 0.0, -_axis[0]],
+                            [-_axis[1], _axis[0], 0.0],
+                        ])
+                        _R = _np.eye(3) + _sth * _K + (1.0 - _c) * _K @ _K
+                        _rotated = _pts @ _R.T
+                        _reflected = _rotated - 2.0 * _np.outer(
+                            _rotated @ _axis, _axis
+                        )
+                        if _is_invariant(_reflected):
+                            _sn_bonus += 8.0
+
+                total_penalty -= (
+                    _cn_bonus + _sigma_bonus + _inv_bonus + _sn_bonus
+                )
         except Exception:
             pass
 
