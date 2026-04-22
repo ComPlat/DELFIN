@@ -13695,23 +13695,23 @@ def _verify_topology_from_graph(
                 return True
             coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
 
-        # Rule 1 (universal graph invariance, two-cutoff).
+        # Rule 1 (universal graph invariance, three-cutoff).
         # Element-agnostic coordination-sphere check using the
-        # standard covalent-radii sum (r_cov_M + r_cov_X):
+        # standard covalent-radii sum (r_cov_M + r_cov_X) AND
+        # CSD-calibrated M-L ideal lengths for the lower bound:
         #
-        # * SMILES-bonded atoms: distance must be <= 1.35 x sum.
-        #   Tolerant upper bound lets UFF-stretched bonds (e.g.
-        #   Fe-Br ~2.9 A vs ideal 2.46) count as preserved.
-        # * NON-bonded atoms: distance must be >= 1.10 x sum.
-        #   Strict lower bound rejects overlap-range phantom
-        #   contacts that would be perceived as bonds.
-        # * 1.10 - 1.35 x sum: grey zone, neither violation
-        #   (prevents over-rejection at ambiguous distances).
-        #
-        # Covers the old Rule 1 / Rule 8 / Rule 9 scenarios with a
-        # single element-agnostic check — no per-element thresholds.
+        # * SMILES-bonded atoms:
+        #   - Upper bound: d <= 1.35 x (r_cov_M + r_cov_X)
+        #     (tolerant; lets Fe-Br ~2.9 A pass vs 2.46 A ideal)
+        #   - Lower bound: d >= 0.70 x _get_ml_bond_length(M, X)
+        #     (rejects collapsed bonds — Sc-O at 1.21 A is 0.59 x
+        #     ideal 2.05 -> rejected)
+        # * NON-bonded atoms: d >= 1.10 x sum
+        #   (phantom-bond reject)
+        # * 1.10 - 1.35 x sum: grey zone, neither violation.
         try:
             _BONDED_MAX_FRAC = 1.35
+            _BONDED_MIN_IDEAL_FRAC = 0.70
             _PHANTOM_MIN_FRAC = 1.10
             for atom in mol_template.GetAtoms():
                 if atom.GetSymbol() not in _METAL_SET:
@@ -13744,6 +13744,18 @@ def _verify_topology_from_graph(
                     _is_bonded = o_idx in smiles_nbr_ids
                     if _is_bonded:
                         if _d > _BONDED_MAX_FRAC * _cov_sum:
+                            _violation = True
+                            break
+                        # Lower bound: reject collapsed M-L bonds
+                        # (ratio < 0.70 vs CSD ideal).  Use the
+                        # lookup-table ideal, not covalent sum.
+                        try:
+                            _ml_ideal = float(
+                                _get_ml_bond_length(m_sym, other.GetSymbol())
+                            )
+                        except Exception:
+                            _ml_ideal = 0.0
+                        if _ml_ideal > 0 and _d < _BONDED_MIN_IDEAL_FRAC * _ml_ideal:
                             _violation = True
                             break
                     else:
@@ -15197,9 +15209,13 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
         if not angles:
             continue
 
+        # Polyhedron angle penalties weighted x2 globally so ideal-
+        # polyhedron adherence (Oh / TBP / Td / SAP / etc.) has
+        # enough magnitude to dominate within-bucket ranking.
+        _POLY_W = 2.0
         if len(neighbors) == 2 and len(angles) == 1:
             # CN=2 (linear): ideal angle = 180°
-            total_penalty += abs(angles[0] - 180.0)
+            total_penalty += _POLY_W * abs(angles[0] - 180.0)
         elif len(neighbors) == 3 and len(angles) == 3:
             # CN=3: best of trigonal-planar (all 120°) vs T-shaped (90°,90°,180°)
             tp_pen = sum(abs(a - 120.0) for a in angles)
@@ -15207,9 +15223,9 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             ts_pen = sum(
                 abs(a - t) for a, t in zip(sorted(angles), ts_targets)
             )
-            total_penalty += min(tp_pen, ts_pen)
+            total_penalty += _POLY_W * min(tp_pen, ts_pen)
         elif len(neighbors) == 4 and len(angles) == 6:
-            total_penalty += _preferred_cn4_geometry_score(
+            total_penalty += _POLY_W * _preferred_cn4_geometry_score(
                 atom.GetSymbol(),
                 donor_symbols,
                 metal_pos,
@@ -15218,28 +15234,34 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
             )
         elif len(neighbors) == 5:
             # CN=5: score against best of TBP or SP ideal angles.
-            # TBP (D3h): 1×180° (ax-ax), 6×90° (ax-eq), 3×120° (eq-eq)
             tbp_targets = sorted([90, 90, 90, 90, 90, 90, 120, 120, 120, 180])
-            # SP (C4v): 4×90° (cis-basal), 2×180° (trans-basal), 4×~100° (apical-basal)
             sp_targets = sorted([90, 90, 90, 90, 100, 100, 100, 100, 180, 180])
             sorted_a = sorted(angles)
             tbp_pen = sum(abs(a - t) for a, t in zip(sorted_a, tbp_targets))
             sp_pen = sum(abs(a - t) for a, t in zip(sorted_a, sp_targets))
-            total_penalty += min(tbp_pen, sp_pen)
+            total_penalty += _POLY_W * min(tbp_pen, sp_pen)
+        elif len(neighbors) == 6:
+            # CN=6: score against best of Oh or TPR (trigonal prism).
+            # Oh (Oh): 12x90 + 3x180 (15 pairs)
+            # TPR (D3h): 6x76 (cap-basal) + 3x82 (basal-basal) + 6x140 (cap-cap)
+            oh_targets = sorted([90] * 12 + [180] * 3)
+            tpr_targets = sorted([76] * 6 + [82] * 3 + [140] * 6)
+            sorted_a = sorted(angles)
+            oh_pen = sum(abs(a - t) for a, t in zip(sorted_a, oh_targets))
+            tpr_pen = sum(abs(a - t) for a, t in zip(sorted_a, tpr_targets))
+            total_penalty += _POLY_W * min(oh_pen, tpr_pen)
         elif len(neighbors) == 7:
             # CN=7 (PBP, D5h): penalize each angle against nearest of 72°/90°/144°/180°
             ideal_7 = [72.0, 90.0, 144.0, 180.0]
             for a in angles:
-                total_penalty += min(abs(a - t) for t in ideal_7)
+                total_penalty += _POLY_W * min(abs(a - t) for t in ideal_7)
         elif len(neighbors) == 8:
-            # CN=8: score against best of SAP (D4d) or DD (D2d)
-            # SAP: 8×~73° + 8×~118° + 4×~143° + 4×~70° + 4×~180° (28 pairs)
-            # Simplified: penalize each angle against nearest ideal
+            # CN=8: score against best of SAP (D4d) or DD (D2d).
             ideal_sap = [52.4, 73.1, 118.5, 143.1, 180.0]
             ideal_dd = [62.2, 73.7, 117.4, 143.6, 180.0]
             sap_pen = sum(min(abs(a - t) for t in ideal_sap) for a in angles)
             dd_pen = sum(min(abs(a - t) for t in ideal_dd) for a in angles)
-            total_penalty += min(sap_pen, dd_pen)
+            total_penalty += _POLY_W * min(sap_pen, dd_pen)
         else:
             # General: penalize distance from nearest ideal (90 or 180)
             for a in angles:
@@ -21223,6 +21245,7 @@ def smiles_to_xyz_isomers(
                         _d = math.sqrt(_dx * _dx + _dy * _dy + _dz * _dz)
                         _is_m1 = _s1 in _METAL_SET
                         _is_m2 = _s2 in _METAL_SET
+                        _is_ml = False
                         if _is_m1 and _is_m2:
                             _mmk = frozenset({_s1, _s2})
                             _ideal = _METAL_METAL_BOND_LENGTHS.get(_mmk)
@@ -21230,12 +21253,14 @@ def smiles_to_xyz_isomers(
                                 _r1 = _COVALENT_RADII.get(_s1)
                                 _r2 = _COVALENT_RADII.get(_s2)
                                 _ideal = (_r1 + _r2 + 0.3) if _r1 and _r2 else 2.5
+                            _is_ml = True  # M-M treated as coordination
                         elif _is_m1 or _is_m2:
                             _ms = _s1 if _is_m1 else _s2
                             _ds = _s2 if _is_m1 else _s1
                             _ideal = float(_get_ml_bond_length(_ms, _ds))
                             if _ideal <= 0:
                                 continue
+                            _is_ml = True
                         else:
                             _r1 = _COVALENT_RADII.get(_s1)
                             _r2 = _COVALENT_RADII.get(_s2)
@@ -21244,7 +21269,20 @@ def smiles_to_xyz_isomers(
                             _ideal = _r1 + _r2
                         if _ideal <= 0:
                             continue
-                        _pen += abs(_d / _ideal - 1.0) * 10.0
+                        # Quadratic penalty: small deviations stay
+                        # cheap, large deviations (broken topology)
+                        # get disproportionately penalized.
+                        #   5% dev -> 0.25 pt/bond
+                        #  15% dev -> 2.25 pt/bond
+                        #  30% dev -> 9.00 pt/bond
+                        #  50% dev -> 25.0 pt/bond
+                        # M-L bonds weighted 3x — coordination sphere
+                        # fidelity is more important than organic C-C.
+                        _dev = _d / _ideal - 1.0
+                        _contrib = (_dev * 10.0) ** 2
+                        if _is_ml:
+                            _contrib *= 3.0
+                        _pen += _contrib
                     return _pen
                 except Exception:
                     return 0.0
