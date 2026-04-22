@@ -13695,17 +13695,24 @@ def _verify_topology_from_graph(
                 return True
             coords.append((float(parts[1]), float(parts[2]), float(parts[3])))
 
-        # Rule 1 (universal graph invariance): for every metal M the
-        # SET of atoms within bond-perception distance
-        # (1.20 x (r_cov_M + r_cov_X)) in the XYZ must equal the set
-        # of M's SMILES-bonded neighbours.  One rule — element-
-        # agnostic — subsumes the old "M-D distance window", "phantom
-        # non-bonded close contact", and "closest atom of element type"
-        # checks into a single graph-isomorphism test.  If any atom
-        # slips into or out of perception range the coordination
-        # sphere has changed and the structure is rejected.
+        # Rule 1 (universal graph invariance, two-cutoff).
+        # Element-agnostic coordination-sphere check using the
+        # standard covalent-radii sum (r_cov_M + r_cov_X):
+        #
+        # * SMILES-bonded atoms: distance must be <= 1.35 x sum.
+        #   Tolerant upper bound lets UFF-stretched bonds (e.g.
+        #   Fe-Br ~2.9 A vs ideal 2.46) count as preserved.
+        # * NON-bonded atoms: distance must be >= 1.10 x sum.
+        #   Strict lower bound rejects overlap-range phantom
+        #   contacts that would be perceived as bonds.
+        # * 1.10 - 1.35 x sum: grey zone, neither violation
+        #   (prevents over-rejection at ambiguous distances).
+        #
+        # Covers the old Rule 1 / Rule 8 / Rule 9 scenarios with a
+        # single element-agnostic check — no per-element thresholds.
         try:
-            _PERCEIVE_FRAC = 1.20
+            _BONDED_MAX_FRAC = 1.35
+            _PHANTOM_MIN_FRAC = 1.10
             for atom in mol_template.GetAtoms():
                 if atom.GetSymbol() not in _METAL_SET:
                     continue
@@ -13715,11 +13722,11 @@ def _verify_topology_from_graph(
                 r_cov_m = _COVALENT_RADII.get(m_sym)
                 if r_cov_m is None:
                     continue
-                smiles_nbrs = {
+                smiles_nbr_ids = {
                     nbr.GetIdx() for nbr in atom.GetNeighbors()
                     if nbr.GetSymbol() not in _METAL_SET
                 }
-                perceived_nbrs: set = set()
+                _violation = False
                 for other in mol_template.GetAtoms():
                     o_idx = other.GetIdx()
                     if o_idx == m_idx:
@@ -13733,9 +13740,17 @@ def _verify_topology_from_graph(
                     _d = math.sqrt(
                         (mx - ox) ** 2 + (my - oy) ** 2 + (mz - oz) ** 2
                     )
-                    if _d < _PERCEIVE_FRAC * (r_cov_m + r_cov_o):
-                        perceived_nbrs.add(o_idx)
-                if perceived_nbrs != smiles_nbrs:
+                    _cov_sum = r_cov_m + r_cov_o
+                    _is_bonded = o_idx in smiles_nbr_ids
+                    if _is_bonded:
+                        if _d > _BONDED_MAX_FRAC * _cov_sum:
+                            _violation = True
+                            break
+                    else:
+                        if _d < _PHANTOM_MIN_FRAC * _cov_sum:
+                            _violation = True
+                            break
+                if _violation:
                     return False
         except Exception:
             pass
