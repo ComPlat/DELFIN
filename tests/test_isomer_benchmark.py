@@ -152,6 +152,16 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 6,
         "smiles": "[O+]#C[Re-5]1(C#[O+])([N+]2=CC=C(C=C2)C3=CC=[N+](C=C3)C4=CC=CC=C4)([N+]5=CC=CC=C5C6=CC=CC=[N+]61)C#[O+]",
     },
+    {
+        "id": "Cd(triazolopyrimidine)2(H2O)4",
+        "cn": 6,
+        "smiles": "CC1=CC(C)=NC2=[N+]([Cd-4]([OH2+])([OH2+])([OH2+])([OH2+])[N+]3=C4N=C(C)C=C(C)N4N=C3)C=NN12",
+    },
+    {
+        "id": "Zn(pyridyl-tetrazolate)2(H2O)2",
+        "cn": 6,  # defective on current HEAD per user
+        "smiles": "[OH2+][Zn-6]12([OH2+])([O][N+]3=CC=CC=C3C3=NN=N[N]31)[O][N+]1=CC=CC=C1C1=NN=N[N]12",
+    },
 ]
 
 
