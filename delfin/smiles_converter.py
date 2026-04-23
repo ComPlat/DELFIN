@@ -17603,7 +17603,82 @@ def _snap_bridging_donors_to_compromise(
         return xyz_str
 
 
-def _orient_ligands_on_polyhedron(
+def _compute_lp_tilt_rotation(
+    donors: List[int],
+    pts,
+    m_pos,
+    mol,
+):
+    """Return (R_tilt, pivot) that aligns donor's lone-pair anti-bisector
+    toward the metal, or ``None`` if tilt is not applicable (bidentate+,
+    bridging donor, atomic donor, already within 30 deg deadband, ...).
+
+    LP-direction uses the anti-bisector of D -> non-metal-neighbour
+    vectors: same universal rule for sp/sp2/sp3.  Partial correction
+    with 10 deg residual (avoids overshoot into the clash landscape).
+    """
+    try:
+        import numpy as _np
+    except Exception:
+        return None
+    if len(donors) != 1:
+        return None
+    d_idx = donors[0]
+    d_atom = mol.GetAtomWithIdx(d_idx)
+    n_metal_nbrs = sum(
+        1 for nb in d_atom.GetNeighbors() if nb.GetSymbol() in _METAL_SET
+    )
+    if n_metal_nbrs >= 2:
+        return None
+    non_metal_nbrs = [
+        nb.GetIdx() for nb in d_atom.GetNeighbors()
+        if nb.GetSymbol() not in _METAL_SET
+    ]
+    if not non_metal_nbrs:
+        return None
+    d_pos = pts[d_idx]
+    lp = _np.zeros(3)
+    for nb_idx in non_metal_nbrs:
+        v = pts[nb_idx] - d_pos
+        vn = _np.linalg.norm(v)
+        if vn > 1e-8:
+            lp += v / vn
+    lp_norm = _np.linalg.norm(lp)
+    if lp_norm < 1e-6:
+        return None
+    lp_unit = -lp / lp_norm
+    dm = m_pos - d_pos
+    dm_norm = _np.linalg.norm(dm)
+    if dm_norm < 1e-6:
+        return None
+    dm_unit = dm / dm_norm
+    cos_t = max(-1.0, min(1.0, float(_np.dot(lp_unit, dm_unit))))
+    theta_full = float(math.acos(cos_t))
+    if theta_full <= math.radians(30.0):
+        return None
+    theta = max(0.0, theta_full - math.radians(10.0))
+    axis = _np.cross(lp_unit, dm_unit)
+    axis_norm = _np.linalg.norm(axis)
+    if axis_norm < 1e-6:
+        tmp = _np.array([1.0, 0.0, 0.0])
+        if abs(float(_np.dot(lp_unit, tmp))) > 0.9:
+            tmp = _np.array([0.0, 1.0, 0.0])
+        axis = _np.cross(lp_unit, tmp)
+        axis_norm = _np.linalg.norm(axis)
+        if axis_norm < 1e-6:
+            return None
+    axis /= axis_norm
+    c = math.cos(theta); s = math.sin(theta)
+    K = _np.array([
+        [0.0, -axis[2], axis[1]],
+        [axis[2], 0.0, -axis[0]],
+        [-axis[1], axis[0], 0.0],
+    ])
+    R_tilt = _np.eye(3) + s * K + (1.0 - c) * K @ K
+    return R_tilt, d_pos
+
+
+def _align_and_orient_ligands(
     coords,
     mol,
     metal_idx: int,
@@ -17793,14 +17868,37 @@ def _orient_ligands_on_polyhedron(
                 atom_pts = {i: tuple(pts[i]) for i in non_donor}
                 best_score = _clash_for_frag(heavy, atom_pts)
                 best_pts = atom_pts
+                # Joint (tilt, spin) trial set: tilt corrects LP-direction
+                # hybridisation (sp/sp2/sp3 anti-bisector toward M) for
+                # monodentate ligands; spin rotates around M-D axis.  Both
+                # share the donor as an invariant, so compositions commute
+                # up to non-donor displacement.  Scoring with the global
+                # clash penalty picks the best joint orientation.
+                tilt = _compute_lp_tilt_rotation(donors, pts, m_pos, mol)
+                base_sets = [atom_pts]
+                if tilt is not None:
+                    R_tilt, tilt_pivot = tilt
+                    tilted = {
+                        i: tuple(
+                            R_tilt @ (_np.asarray(atom_pts[i]) - tilt_pivot)
+                            + tilt_pivot
+                        )
+                        for i in non_donor
+                    }
+                    base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
-                for k in range(1, n_rot):
-                    angle = step * k
-                    candidate = _rotate_about(axis, pivot, angle, atom_pts)
-                    s = _clash_for_frag(heavy, candidate)
-                    if s < best_score - 1e-6:
-                        best_score = s
-                        best_pts = candidate
+                for base in base_sets:
+                    s0 = _clash_for_frag(heavy, base)
+                    if s0 < best_score - 1e-6:
+                        best_score = s0
+                        best_pts = base
+                    for k in range(1, n_rot):
+                        angle = step * k
+                        candidate = _rotate_about(axis, pivot, angle, base)
+                        s = _clash_for_frag(heavy, candidate)
+                        if s < best_score - 1e-6:
+                            best_score = s
+                            best_pts = candidate
                 if best_pts is not atom_pts:
                     for i, p in best_pts.items():
                         pts[i] = _np.array(p, dtype=float)
@@ -17816,7 +17914,7 @@ def _orient_ligands_on_polyhedron(
             coords[:] = pts
         return coords
     except Exception as exc:
-        logger.debug("_orient_ligands_on_polyhedron failed: %s", exc)
+        logger.debug("_align_and_orient_ligands failed: %s", exc)
         return coords
 
 
@@ -18059,7 +18157,7 @@ def _build_topology_xyz_from_scratch(
                 queue.append(nbr_idx)
 
         # Phase 3 — ligand-orientation pass to break any remaining
-        # inter-fragment clashes.  ``_orient_ligands_on_polyhedron``
+        # inter-fragment clashes.  ``_align_and_orient_ligands``
         # rotates each monodentate / bidentate fragment around its
         # M-donor axis (donors stay fixed on the polyhedron) and picks
         # the angle that minimises non-donor clashes.  The inflation
@@ -18067,7 +18165,7 @@ def _build_topology_xyz_from_scratch(
         # at full M-D ideal distance, so one orientation pass at r=1.0
         # is equivalent to the terminal step of a five-step balloon.
         try:
-            _orient_ligands_on_polyhedron(
+            _align_and_orient_ligands(
                 coords, mol, metal_idx, donor_atom_indices
             )
         except Exception as orient_exc:
@@ -18287,7 +18385,7 @@ def _build_topology_xyz(
         # around its donor-donor axis to minimise inter-fragment clash.
         # Donor positions (platonic vertices) are invariant.
         try:
-            _orient_ligands_on_polyhedron(
+            _align_and_orient_ligands(
                 coords, mol, metal_idx, donor_atom_indices
             )
         except Exception as _orient_exc:
@@ -18653,9 +18751,9 @@ def _build_topology_xyz_from_template(
             if i not in placed:
                 coords[i] = orig[i]
 
-        # Polyhedron-preserving ligand rotation (see _orient_ligands_on_polyhedron).
+        # Polyhedron-preserving ligand rotation (see _align_and_orient_ligands).
         try:
-            _orient_ligands_on_polyhedron(
+            _align_and_orient_ligands(
                 coords, mol, metal_idx, donor_atom_indices
             )
         except Exception as _orient_exc:
