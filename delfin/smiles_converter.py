@@ -17561,6 +17561,161 @@ def _build_multimetal_scaffold(
         return None
 
 
+def _snap_aromatic_rings_to_plane(
+    mol,
+    conf_id: int = 0,
+    rms_threshold: float = 0.05,
+) -> bool:
+    """Project aromatic / unsaturated ring atoms onto their best-fit plane.
+
+    UFF relaxation can buckle 5-7 membered aromatic rings just enough that
+    the downstream planarity gate (``_has_pi_ring_nonplanarity``) rejects
+    otherwise-valid isomers.  Rather than relaxing the gate (which would
+    admit genuinely bad geometries), we project each such ring onto its
+    SVD best-fit plane.  The projection is *minimal-movement* (each atom
+    moves only the component perpendicular to the plane), so bond
+    lengths, bond angles in the plane, and the surrounding heavy-atom
+    positions are preserved to first order.
+
+    Only rings with >= 2 unsaturated (aromatic / double / triple) bonds
+    are touched, to avoid flattening chair / boat conformations of
+    saturated rings.  Rings containing a metal are skipped (metallacycles
+    have their own planarity handling).
+
+    Returns True if any ring was modified.
+    """
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        try:
+            Chem.GetSymmSSSR(mol)
+        except Exception:
+            pass
+        ri = mol.GetRingInfo()
+        if ri is None:
+            return False
+
+        changed = False
+        for ring in ri.AtomRings():
+            if len(ring) < 5 or len(ring) > 7:
+                continue
+            if any(
+                mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+                for i in ring
+            ):
+                continue
+            unsat = 0
+            for i in range(len(ring)):
+                a, b = ring[i], ring[(i + 1) % len(ring)]
+                bond = mol.GetBondBetweenAtoms(a, b)
+                if bond is None:
+                    continue
+                if bond.GetBondType() != Chem.BondType.SINGLE or bond.GetIsAromatic():
+                    unsat += 1
+            if unsat < 2:
+                continue
+
+            pts = np.array([
+                [conf.GetAtomPosition(i).x,
+                 conf.GetAtomPosition(i).y,
+                 conf.GetAtomPosition(i).z]
+                for i in ring
+            ])
+            centroid = pts.mean(axis=0)
+            centered = pts - centroid
+            try:
+                _, _, vh = np.linalg.svd(centered, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = vh[-1]
+            nn = np.linalg.norm(normal)
+            if nn < 1e-9:
+                continue
+            normal /= nn
+            # Out-of-plane deviations
+            offsets = centered @ normal
+            rms = float(np.sqrt(float((offsets * offsets).mean())))
+            if rms < rms_threshold:
+                continue  # already planar enough, skip
+            # Minimal-movement projection: subtract the normal-component
+            # from each ring atom.  Other heavy atoms (substituents) stay
+            # where UFF left them; only the ring's own atoms move.
+            for idx, atom_idx in enumerate(ring):
+                new_p = pts[idx] - offsets[idx] * normal
+                conf.SetAtomPosition(
+                    int(atom_idx),
+                    (float(new_p[0]), float(new_p[1]), float(new_p[2])),
+                )
+            changed = True
+        return changed
+    except Exception as exc:
+        logger.debug("_snap_aromatic_rings_to_plane failed: %s", exc)
+        return False
+
+
+def _snap_aromatic_rings_in_xyz(
+    xyz_str: str,
+    mol_template,
+    rms_threshold: float = 0.05,
+) -> str:
+    """Parse XYZ, call :func:`_snap_aromatic_rings_to_plane`, write XYZ back.
+
+    Used post-UFF so downstream planarity gates see rings that carry at
+    most ``rms_threshold`` of residual buckle per atom.  Hydrogens are
+    added to the template when needed so the conformer atom count
+    matches the XYZ.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return xyz_str
+    try:
+        lines = [l for l in xyz_str.strip().splitlines() if l.strip()]
+        if not lines:
+            return xyz_str
+        mol = Chem.RWMol(mol_template)
+        mol.RemoveAllConformers()
+        n = mol.GetNumAtoms()
+        if len(lines) == n:
+            mol_use = mol.GetMol()
+        else:
+            mol_h = Chem.AddHs(mol)
+            if len(lines) == mol_h.GetNumAtoms():
+                mol_use = mol_h
+            else:
+                return xyz_str
+        conf = Chem.Conformer(mol_use.GetNumAtoms())
+        for i, l in enumerate(lines):
+            parts = l.split()
+            if len(parts) < 4:
+                return xyz_str
+            conf.SetAtomPosition(
+                i, (float(parts[1]), float(parts[2]), float(parts[3]))
+            )
+        cid = mol_use.AddConformer(conf, assignId=True)
+        changed = _snap_aromatic_rings_to_plane(
+            mol_use, cid, rms_threshold=rms_threshold
+        )
+        if not changed:
+            return xyz_str
+        new_conf = mol_use.GetConformer(cid)
+        out = []
+        for i in range(mol_use.GetNumAtoms()):
+            atom = mol_use.GetAtomWithIdx(i)
+            p = new_conf.GetAtomPosition(i)
+            out.append(
+                f"{atom.GetSymbol():4s} {p.x:12.6f} {p.y:12.6f} {p.z:12.6f}"
+            )
+        return '\n'.join(out) + '\n'
+    except Exception as exc:
+        logger.debug("_snap_aromatic_rings_in_xyz failed: %s", exc)
+        return xyz_str
+
+
 def _snap_bridging_donors_to_compromise(
     xyz_str: str,
     mol_template,
@@ -18493,6 +18648,13 @@ def _build_topology_xyz(
                     mol_template=mol,
                     coord_constraints=coord_constraints,
                 )
+                # UFF can buckle aromatic rings just enough that the
+                # downstream planarity gate rejects genuinely valid
+                # isomers.  Snap each aromatic / unsaturated 5-7 ring
+                # onto its best-fit plane (minimal-movement projection)
+                # so the rule sees planar rings while keeping the rest
+                # of the structure untouched.
+                xyz = _snap_aromatic_rings_in_xyz(xyz, mol)
             except Exception as uff_exc:
                 # Keep the generated topology geometry when UFF fails.
                 # Dropping the isomer here can hide valid alternatives.
@@ -18858,6 +19020,10 @@ def _build_topology_xyz_from_template(
                     mol_template=mol,
                     coord_constraints=coord_constraints,
                 )
+                # Snap any UFF-buckled aromatic rings back to planar so
+                # the downstream pi-ring planarity gate doesn't reject
+                # otherwise valid isomers.
+                xyz_uff = _snap_aromatic_rings_in_xyz(xyz_uff, mol)
                 # Keep UFF only if topology survives.
                 if _verify_topology_from_graph(xyz_uff, mol):
                     xyz = xyz_uff
@@ -20140,6 +20306,7 @@ def _generate_linkage_isomers(
                     xyz = _optimize_xyz_openbabel_safe(
                         xyz, mol_template=alt_mol
                     )
+                    xyz = _snap_aromatic_rings_in_xyz(xyz, alt_mol)
                 results.append((xyz, type_label))
                 break
         except Exception as e:
