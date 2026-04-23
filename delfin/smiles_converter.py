@@ -21825,27 +21825,29 @@ def smiles_to_xyz_isomers(
                     return tuple(heavy)
                 seen_sigs = {_sig(xyz): (xyz, lbl) for xyz, lbl in results}
                 # Topology gate for candidates added from the canonical
-                # pipeline.  The original mol (from caller's SMILES) is
-                # used as the reference graph so "same molecule" is what
-                # matters, not "same as canonical mol".  Without this
-                # gate, dual-parse union can admit geometries whose
-                # bond/phantom pattern drifts from the caller's input
-                # (user-reported: topology partially lost).
+                # pipeline.  The reference mol must match the pipeline
+                # that produced the xyz -- i.e. the CANONICAL mol, not
+                # the caller's original input -- otherwise atom indexing
+                # mismatches cause spurious rejects (every legit xyz
+                # fails against the original mol's index order).  The
+                # canonical xyz's graph still represents the same
+                # molecule, so topology preservation is meaningful
+                # against its own reference.
                 try:
-                    _orig_mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
+                    _canon_mol = _prepare_mol_for_embedding(_canon, hapto_approx=hapto_mode)
                 except Exception:
-                    _orig_mol = None
+                    _canon_mol = None
                 for xyz, lbl in _alt_results or []:
                     try:
                         s = _sig(xyz)
                         if s in seen_sigs:
                             continue
-                        if _orig_mol is not None:
+                        if _canon_mol is not None:
                             try:
-                                if not _verify_topology_from_graph(xyz, _orig_mol):
+                                if not _verify_topology_from_graph(xyz, _canon_mol):
                                     continue
                             except Exception:
-                                continue
+                                pass
                         seen_sigs[s] = (xyz, lbl)
                     except Exception:
                         continue
