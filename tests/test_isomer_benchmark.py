@@ -137,6 +137,11 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 5,
         "smiles": "COCC[N+]12CC[O+](C)[IrH-3]13([Cl])[C]1=C(C=CC(OC)=C1O[P+]3(C(C)C)C(C)C)C2",
     },
+    {
+        "id": "Fe(CNMe)2(dmpe)2",
+        "cn": 6,
+        "smiles": "CC#[N+][Fe-4]12([P+](C)(CC[P+]1(C)C)C)([P+](C)(CC[P+]2(C)C)C)[N+]#CC",
+    },
 ]
 
 
