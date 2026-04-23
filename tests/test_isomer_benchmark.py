@@ -142,6 +142,16 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 6,
         "smiles": "CC#[N+][Fe-4]12([P+](C)(CC[P+]1(C)C)C)([P+](C)(CC[P+]2(C)C)C)[N+]#CC",
     },
+    {
+        "id": "W(alkylidene-alkoxide-amide-dipyrrolide)",
+        "cn": 5,
+        "smiles": "CC1=CC=C(N1[W+]([N-]C2=C(C=CC=C2C(C)C)C(C)C)(OC3=C(C(F)=C(C(F)=C3F)F)F)(N4C(C)=CC=C4C)[CH-]C(C)(C5=CC=CC=C5)C)C",
+    },
+    {
+        "id": "Re(CO)3(bipy)(pyridyl-phenyl)",
+        "cn": 6,
+        "smiles": "[O+]#C[Re-5]1(C#[O+])([N+]2=CC=C(C=C2)C3=CC=[N+](C=C3)C4=CC=CC=C4)([N+]5=CC=CC=C5C6=CC=CC=[N+]61)C#[O+]",
+    },
 ]
 
 
