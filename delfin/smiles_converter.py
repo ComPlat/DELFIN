@@ -20838,6 +20838,7 @@ def smiles_to_xyz_isomers(
     quality_mode: Optional[str] = None,
     seeds_override: Optional[int] = None,
     n_metal_smart: bool = True,
+    _dual_parse_done: bool = False,
 ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -21778,6 +21779,61 @@ def smiles_to_xyz_isomers(
                 results = [(xyz, lbl) for _e, _g, _tp, xyz, lbl in scored]
         except Exception as _sort_exc:
             logger.debug("Energy-based sort failed: %s", _sort_exc)
+
+    # Dual-parse augmentation: some SMILES encodings (bare vs bracketed
+    # atoms on the same molecule) parse into RDKit mols with divergent
+    # aromatic-flag patterns, which propagates to the enumerator and the
+    # builder and yields disjoint isomer sets (e.g. Cd-his: bare 28 vs
+    # canonical 52; Zn-bracket: bracket 30 vs canonical 10).  A single
+    # canonical normalisation helps one group and hurts the other.
+    # Running both parses and union-ing by XYZ signature captures every
+    # isomer either encoding can produce.  Doubled runtime for SMILES
+    # where canonical != input; pass ``_dual_parse_done=True`` to skip
+    # (e.g. inside the second invocation of this function).
+    if has_metal and not _dual_parse_done and RDKIT_AVAILABLE:
+        try:
+            _probe = Chem.MolFromSmiles(smiles)
+            _canon = Chem.MolToSmiles(_probe) if _probe is not None else None
+            if _canon and _canon != smiles:
+                _alt_results, _ = smiles_to_xyz_isomers(
+                    _canon,
+                    num_confs=num_confs,
+                    max_isomers=max_isomers,
+                    apply_uff=apply_uff,
+                    collapse_label_variants=collapse_label_variants,
+                    include_binding_mode_isomers=include_binding_mode_isomers,
+                    deterministic=deterministic,
+                    hapto_approx=hapto_approx,
+                    quality_mode=quality_mode,
+                    seeds_override=seeds_override,
+                    n_metal_smart=n_metal_smart,
+                    _dual_parse_done=True,
+                )
+                # Union by XYZ-heavy-atom signature (ignores H / index
+                # ordering so equivalent geometries don't double-count).
+                def _sig(xyz_str):
+                    lines = [
+                        ln.split() for ln in xyz_str.strip().splitlines()
+                        if ln.strip()
+                    ]
+                    heavy = sorted(
+                        (p[0], round(float(p[1]), 2), round(float(p[2]), 2),
+                         round(float(p[3]), 2))
+                        for p in lines
+                        if len(p) >= 4 and p[0] not in ('H', 'h')
+                    )
+                    return tuple(heavy)
+                seen_sigs = {_sig(xyz): (xyz, lbl) for xyz, lbl in results}
+                for xyz, lbl in _alt_results or []:
+                    try:
+                        s = _sig(xyz)
+                        if s not in seen_sigs:
+                            seen_sigs[s] = (xyz, lbl)
+                    except Exception:
+                        continue
+                results = list(seen_sigs.values())
+        except Exception as _dual_exc:
+            logger.debug("Dual-parse union failed: %s", _dual_exc)
 
     return results, None
 
