@@ -16484,11 +16484,39 @@ def _classify_isomer_label(fingerprint: tuple, mol) -> str:
                         return 'mer'
                 return ''
 
-            # MA4B2: cis/trans based on minority element (count==2)
+            # MA4B2: cis/trans based on minority element (count==2).
+            # When the majority 4-atom set splits into two Morgan-hash
+            # subclasses (e.g. quinoline-N + imine-N for a hexadentate
+            # bis-Schiff base), further distinguish the otherwise-generic
+            # "cis" bucket by whether the majority subclasses stand trans
+            # or cis to each other.  Without this, the X-twist / mer-mer
+            # crossed topology collapses onto the same "cis" label as
+            # truly all-cis arrangements and gets fingerprint-dedupped
+            # before the caller ever sees it.
             if count_signature == [2, 4]:
                 minority = [s for s, c in elem_counts.items() if c == 2][0]
+                majority = [s for s, c in elem_counts.items() if c == 4][0]
                 if same_trans.get(minority, 0) >= 1:
                     return 'trans'
+                if len(metal_fp) > 2:
+                    detailed = metal_fp[2]
+                    same_sub = 0
+                    cross_sub = 0
+                    for pair in detailed:
+                        if (
+                            isinstance(pair[0], tuple) and isinstance(pair[1], tuple)
+                            and pair[0][0] == majority and pair[1][0] == majority
+                        ):
+                            if pair[0][1] == pair[1][1]:
+                                same_sub += 1
+                            else:
+                                cross_sub += 1
+                    if cross_sub >= 1 and same_sub == 0:
+                        return f'cis-cross-{majority}'
+                    if same_sub >= 1 and cross_sub == 0:
+                        return f'cis-same-{majority}'
+                    if same_sub >= 1 and cross_sub >= 1:
+                        return f'cis-mixed-{majority}'
                 return 'cis'
 
             # MA3B3: fac/mer
