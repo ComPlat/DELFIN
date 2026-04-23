@@ -1,6 +1,10 @@
 """Input processing helpers: SMILES wrappers, resource parsing, sanitisation."""
 
+import json
+import os
 import re
+import subprocess
+import sys
 
 from delfin.smiles_converter import (
     smiles_to_xyz as _delfin_smiles_to_xyz,
@@ -9,6 +13,60 @@ from delfin.smiles_converter import (
     is_smiles_string as _delfin_is_smiles_string,
     contains_metal,
 )
+
+
+# Subprocess-isolation of isomers calls: each conversion runs in a
+# fresh Python process so the Voila / Jupyter kernel never accumulates
+# RDKit / OpenBabel memory across calls.  Enabled by default; set
+# ``DELFIN_UI_INLINE=1`` to bypass (e.g. when profiling or for
+# cooperative debugging).
+_UI_ISOLATE_DEFAULT = os.environ.get("DELFIN_UI_INLINE", "0") != "1"
+_UI_ISOLATE_TIMEOUT = int(os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "1800"))
+
+
+def _run_isomers_subprocess(smiles, kwargs, timeout=None):
+    """Run ``smiles_to_xyz_isomers`` in a fresh subprocess.
+
+    Returns ``(results, error)`` where ``results`` is a list of
+    ``(xyz_string, label)`` tuples and ``error`` is an optional string.
+    Subprocess exits after returning -> all RDKit / OB memory is
+    released back to the OS, which keeps the Voila kernel's RSS
+    bounded across many conversions.
+
+    Input ``kwargs`` are JSON-serialised, so only primitives / lists
+    are accepted.  Output XYZ strings + labels are also JSON-safe.
+    """
+    timeout = timeout or _UI_ISOLATE_TIMEOUT
+    payload = json.dumps({"smiles": smiles, "kwargs": kwargs})
+    script = (
+        "import json, sys\n"
+        "from delfin.smiles_converter import smiles_to_xyz_isomers\n"
+        "req = json.loads(sys.stdin.read())\n"
+        "res, err = smiles_to_xyz_isomers(req['smiles'], **req['kwargs'])\n"
+        "out = {'r': [list(t) for t in (res or [])], 'e': err}\n"
+        "sys.stdout.write('__DELFIN_RESULT__' + json.dumps(out))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return [], f"Subprocess timed out after {timeout}s"
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").splitlines()[-10:]
+        return [], f"Subprocess failed (exit {proc.returncode}): {' | '.join(tail)}"
+    marker = "__DELFIN_RESULT__"
+    for line in proc.stdout.splitlines():
+        idx = line.find(marker)
+        if idx >= 0:
+            j = json.loads(line[idx + len(marker):])
+            results = [tuple(x) for x in j.get("r", [])]
+            return results, j.get("e")
+    return [], "Subprocess returned no result marker"
 try:
     from delfin.smiles_converter import (
         smiles_to_xyz_quick_hapto_previews as _delfin_smiles_to_xyz_quick_hapto_previews,
@@ -148,8 +206,7 @@ def smiles_to_xyz_isomers(
     ``seeds_override`` (int, optional) pins the seed count independently
     of the quality profile — used by the dashboard's custom slider.
     """
-    results, error = _delfin_smiles_to_xyz_isomers(
-        smiles,
+    base_kwargs = dict(
         apply_uff=apply_uff,
         collapse_label_variants=collapse_label_variants,
         include_binding_mode_isomers=include_binding_mode_isomers,
@@ -159,18 +216,16 @@ def smiles_to_xyz_isomers(
         seeds_override=seeds_override,
         n_metal_smart=n_metal_smart,
     )
-    if error and hapto_approx is None and _is_hapto_failfast(error):
-        results, error = _delfin_smiles_to_xyz_isomers(
-            smiles,
-            apply_uff=apply_uff,
-            collapse_label_variants=collapse_label_variants,
-            include_binding_mode_isomers=include_binding_mode_isomers,
-            hapto_approx=True,
-            deterministic=deterministic,
-            quality_mode=quality_mode,
-            seeds_override=seeds_override,
-            n_metal_smart=n_metal_smart,
-        )
+    if _UI_ISOLATE_DEFAULT:
+        results, error = _run_isomers_subprocess(smiles, base_kwargs)
+        if error and hapto_approx is None and _is_hapto_failfast(error):
+            retry_kwargs = dict(base_kwargs, hapto_approx=True)
+            results, error = _run_isomers_subprocess(smiles, retry_kwargs)
+    else:
+        results, error = _delfin_smiles_to_xyz_isomers(smiles, **base_kwargs)
+        if error and hapto_approx is None and _is_hapto_failfast(error):
+            retry_kwargs = dict(base_kwargs, hapto_approx=True)
+            results, error = _delfin_smiles_to_xyz_isomers(smiles, **retry_kwargs)
     if error:
         return [], error
     out = []
