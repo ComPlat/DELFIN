@@ -21824,11 +21824,29 @@ def smiles_to_xyz_isomers(
                     )
                     return tuple(heavy)
                 seen_sigs = {_sig(xyz): (xyz, lbl) for xyz, lbl in results}
+                # Topology gate for candidates added from the canonical
+                # pipeline.  The original mol (from caller's SMILES) is
+                # used as the reference graph so "same molecule" is what
+                # matters, not "same as canonical mol".  Without this
+                # gate, dual-parse union can admit geometries whose
+                # bond/phantom pattern drifts from the caller's input
+                # (user-reported: topology partially lost).
+                try:
+                    _orig_mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
+                except Exception:
+                    _orig_mol = None
                 for xyz, lbl in _alt_results or []:
                     try:
                         s = _sig(xyz)
-                        if s not in seen_sigs:
-                            seen_sigs[s] = (xyz, lbl)
+                        if s in seen_sigs:
+                            continue
+                        if _orig_mol is not None:
+                            try:
+                                if not _verify_topology_from_graph(xyz, _orig_mol):
+                                    continue
+                            except Exception:
+                                continue
+                        seen_sigs[s] = (xyz, lbl)
                     except Exception:
                         continue
                 results = list(seen_sigs.values())
