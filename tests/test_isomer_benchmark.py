@@ -109,6 +109,29 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 6,
         "smiles": "COC1=CC=CC=[N+]1[Fe-4](C#[O+])(C#[O+])(C#[O+])(SC2=C(C=CC=C2C3=C(C=C(C=C3C)C)C)C4=C(C=C(C=C4C)C)C)Br",
     },
+    # Control pool: user-reported regressions or edge cases — kept
+    # to detect future alignment / orient regressions on specific
+    # motifs that the main 12-system pool does not cover.
+    {
+        "id": "Fe-salen-thiolate-Cl",
+        "cn": 6,
+        "smiles": "Cl[Fe]123=[S-]C(C=CC=C4)=C4C=[N+]1C5=CC=C(S(=O)([O-])=O)C=C5[N+]2=CC6=CC=CC=C6[S-]=3",
+    },
+    {
+        "id": "Fe(citrate)3",
+        "cn": 6,
+        "smiles": "O=C1C(CC(O)=O)(CC(O)=O)O[Fe]23(OC(C(CC(O)=O)(CC(O)=O)O2)=O)(OC(CC(O)=O)(CC(O)=O)C(O3)=O)O1",
+    },
+    {
+        "id": "Cr(CN)2(cyclam)",
+        "cn": 6,
+        "smiles": "N#C[Cr+]123([NH]4CCC[NH]1CC[NH]2CCC[NH]3CC4)C#N",
+    },
+    {
+        "id": "Fe(bis-Schiff-base-dimethoxy)",
+        "cn": 4,
+        "smiles": "COC1=CC=C2O[Fe+3]345([N]6=CC=CC7=C6C([N-]5=CC2=C1)=CC=C7)OC8=C(C=[N-]3C9=CC=CC%10=C9[N]4=CC=C%10)C=C(OC)C=C8",
+    },
 ]
 
 
