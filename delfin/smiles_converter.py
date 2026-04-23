@@ -17429,19 +17429,48 @@ def _embed_fragment_procrustes(
         sign_matrix = np.diag([1, 1, 1 if d > 0 else -1])
         R = Vt.T @ sign_matrix @ U.T
     else:
-        # Single donor: align fragment-donor→COM vector to target direction
-        frag_center = frag_coords.mean(axis=0)
-        src_dir = src[0] - frag_center
-        tgt_dir = tgt[0] - np.zeros(3)  # target from origin (metal)
-        src_norm = np.linalg.norm(src_dir)
-        tgt_norm = np.linalg.norm(tgt_dir)
-        if src_norm < 1e-8 or tgt_norm < 1e-8:
+        # Single donor: align the donor's lone-pair direction (anti-bisector
+        # of donor -> heavy-neighbour vectors) with the donor -> metal
+        # direction.  This locks the ring plane in a chemically-correct
+        # orientation (LP points at M) instead of the earlier heuristic
+        # that only aligned "centroid -> donor" (which left the ring
+        # plane under-constrained and forced the post-build orient step
+        # to fix LP alignment at clash cost).
+        d_new = donor_new_indices[0]
+        d_atom = frag_mol.GetAtomWithIdx(d_new)
+        nbr_idx = [
+            nb.GetIdx() for nb in d_atom.GetNeighbors()
+            if nb.GetAtomicNum() > 1
+        ]
+        src_dir = None
+        if nbr_idx:
+            d_pos_src = frag_coords[d_new]
+            lp = np.zeros(3)
+            for ni in nbr_idx:
+                v = frag_coords[ni] - d_pos_src
+                vn = np.linalg.norm(v)
+                if vn > 1e-8:
+                    lp += v / vn
+            lp_n = np.linalg.norm(lp)
+            if lp_n > 1e-6:
+                # Anti-bisector: away from neighbours, toward lone pair.
+                src_dir = -lp / lp_n
+        if src_dir is None:
+            # Atomic donor (no ring/chain neighbours): fall back to the
+            # original centroid heuristic.
+            frag_center = frag_coords.mean(axis=0)
+            raw = src[0] - frag_center
+            rn = np.linalg.norm(raw)
+            src_dir = raw / rn if rn > 1e-8 else np.array([1.0, 0.0, 0.0])
+        # Target LP direction: donor -> metal (metal is at origin).
+        tgt_dir = -tgt[0]
+        tn = np.linalg.norm(tgt_dir)
+        if tn < 1e-8:
             R = np.eye(3)
         else:
-            src_dir /= src_norm
-            tgt_dir /= tgt_norm
+            tgt_dir = tgt_dir / tn
             v = np.cross(src_dir, tgt_dir)
-            c = np.dot(src_dir, tgt_dir)
+            c = float(np.dot(src_dir, tgt_dir))
             if np.linalg.norm(v) < 1e-8:
                 R = np.eye(3) if c > 0 else -np.eye(3)
             else:
@@ -17603,39 +17632,42 @@ def _snap_bridging_donors_to_compromise(
         return xyz_str
 
 
-def _compute_lp_tilt_rotation(
+def _compute_lp_tilt_rotations(
     donors: List[int],
     pts,
     m_pos,
     mol,
+    levels=(0.5, 0.9),
 ):
-    """Return (R_tilt, pivot) that aligns donor's lone-pair anti-bisector
-    toward the metal, or ``None`` if tilt is not applicable (bidentate+,
-    bridging donor, atomic donor, already within 30 deg deadband, ...).
+    """Return a list of (R_tilt, pivot) for partial LP-alignment corrections.
+
+    Multiple correction levels let the optimiser find a compromise between
+    LP-alignment (which demands rotation toward M) and inter-fragment
+    clash-avoidance (which may prefer a slightly misaligned LP over a
+    colliding backbone).  Each level k in (0,1] rotates by
+    ``k * (theta_full - residual_10deg)``; 0 is equivalent to no tilt
+    (omitted from the returned list, handled by the caller).
 
     LP-direction uses the anti-bisector of D -> non-metal-neighbour
-    vectors: same universal rule for sp/sp2/sp3.  Partial correction
-    with 10 deg residual (avoids overshoot into the clash landscape).
+    vectors: same universal rule for sp/sp2/sp3.  Only applicable to
+    monodentate non-bridging donors that have ring/atom neighbours.
     """
     try:
         import numpy as _np
     except Exception:
-        return None
+        return []
     if len(donors) != 1:
-        return None
+        return []
     d_idx = donors[0]
     d_atom = mol.GetAtomWithIdx(d_idx)
-    n_metal_nbrs = sum(
-        1 for nb in d_atom.GetNeighbors() if nb.GetSymbol() in _METAL_SET
-    )
-    if n_metal_nbrs >= 2:
-        return None
+    if sum(1 for nb in d_atom.GetNeighbors() if nb.GetSymbol() in _METAL_SET) >= 2:
+        return []
     non_metal_nbrs = [
         nb.GetIdx() for nb in d_atom.GetNeighbors()
         if nb.GetSymbol() not in _METAL_SET
     ]
     if not non_metal_nbrs:
-        return None
+        return []
     d_pos = pts[d_idx]
     lp = _np.zeros(3)
     for nb_idx in non_metal_nbrs:
@@ -17645,18 +17677,17 @@ def _compute_lp_tilt_rotation(
             lp += v / vn
     lp_norm = _np.linalg.norm(lp)
     if lp_norm < 1e-6:
-        return None
+        return []
     lp_unit = -lp / lp_norm
     dm = m_pos - d_pos
     dm_norm = _np.linalg.norm(dm)
     if dm_norm < 1e-6:
-        return None
+        return []
     dm_unit = dm / dm_norm
     cos_t = max(-1.0, min(1.0, float(_np.dot(lp_unit, dm_unit))))
     theta_full = float(math.acos(cos_t))
-    if theta_full <= math.radians(30.0):
-        return None
-    theta = max(0.0, theta_full - math.radians(10.0))
+    if theta_full <= math.radians(15.0):
+        return []
     axis = _np.cross(lp_unit, dm_unit)
     axis_norm = _np.linalg.norm(axis)
     if axis_norm < 1e-6:
@@ -17666,16 +17697,23 @@ def _compute_lp_tilt_rotation(
         axis = _np.cross(lp_unit, tmp)
         axis_norm = _np.linalg.norm(axis)
         if axis_norm < 1e-6:
-            return None
+            return []
     axis /= axis_norm
-    c = math.cos(theta); s = math.sin(theta)
-    K = _np.array([
-        [0.0, -axis[2], axis[1]],
-        [axis[2], 0.0, -axis[0]],
-        [-axis[1], axis[0], 0.0],
-    ])
-    R_tilt = _np.eye(3) + s * K + (1.0 - c) * K @ K
-    return R_tilt, d_pos
+    theta_target = max(0.0, theta_full - math.radians(10.0))
+    out = []
+    for k in levels:
+        theta = theta_target * float(k)
+        if theta < 1e-4:
+            continue
+        c = math.cos(theta); s = math.sin(theta)
+        K = _np.array([
+            [0.0, -axis[2], axis[1]],
+            [axis[2], 0.0, -axis[0]],
+            [-axis[1], axis[0], 0.0],
+        ])
+        R_tilt = _np.eye(3) + s * K + (1.0 - c) * K @ K
+        out.append((R_tilt, d_pos))
+    return out
 
 
 def _align_and_orient_ligands(
@@ -17686,23 +17724,20 @@ def _align_and_orient_ligands(
     fragments: Optional[List[set]] = None,
     n_rot_mono: int = 12,
     n_rot_bi: int = 12,
-    passes: int = 3,
+    passes: int = 5,
+    lp_weight: float = 0.0,
+    sym_weight: float = 0.0,
 ):
-    """Rotate each ligand fragment around its donor-metal axis to minimise
-    inter-fragment clash while keeping donor atoms on their platonic
-    polyhedron vertices.
+    """Rotate each ligand fragment so donor stays at its polyhedron vertex
+    and the rest of the fragment is oriented to jointly minimise:
+      (a) inter-fragment clash (existing covalent-radius term + M-intrusion),
+      (b) lone-pair / M-D misalignment for monodentate sp/sp2/sp3 donors.
 
-    The polyhedron vertex positions (donor targets) are invariant under
-    this step: only the rotational degree of freedom *around* each vertex
-    (or around the donor-donor axis of a bidentate chelate) is exercised.
-    The clash penalty uses ``1.3 * (r_cov_i + r_cov_j)`` as the contact
-    threshold, which is the same covalent-radius criterion the pipeline
-    already uses for the graph-gate Rule 5 and the UFF inter-fragment
-    repulsion constraint.
+    Trials per fragment = {no-tilt, tilt@50%, tilt@90%} x {N spin angles}.
+    Passes iterate in alternating fragment order (approximate simultaneous
+    optimisation -- breaks the greedy "first fragment wins" bias).
 
-    Modifies ``coords`` in place.  ``coords`` may be a ``list`` of
-    ``(x, y, z)`` tuples (as in :func:`_build_topology_xyz`) or a
-    2-D numpy array (as in :func:`_build_topology_xyz_from_template`).
+    Modifies ``coords`` in place.  Accepts ``list`` of tuples or numpy array.
     """
     if not RDKIT_AVAILABLE or mol is None:
         return coords
@@ -17776,13 +17811,6 @@ def _align_and_orient_ligands(
         def _clash_for_frag(frag_heavy, frag_pts):
             """Penalty between this fragment's non-donor atoms and every
             heavy atom of all OTHER fragments, plus the metal itself.
-            ``frag_pts`` is a mapping atom_idx -> (x,y,z) for this frag.
-
-            The metal contact term uses an ``M-L`` bond-length reference
-            so a backbone atom that rotates into the coordination shell
-            (within ~0.65 x ideal M-donor distance) incurs a large
-            penalty — this prevents bidentate rotation from swinging the
-            chelate backbone through the metal centre.
             """
             score = 0.0
             other_heavy = [
@@ -17794,10 +17822,6 @@ def _align_and_orient_ligands(
             for i, p in frag_pts.items():
                 ri = r_cov[i]
                 sym_i = mol.GetAtomWithIdx(i).GetSymbol()
-                # Metal intrusion: compare against the ideal M-donor
-                # distance for the atom's element.  A non-donor atom
-                # should stay clearly outside the first coordination
-                # shell; penalise hard if it sits inside 0.80 x ideal.
                 d = float(_np.linalg.norm(_np.asarray(p) - m_pos))
                 try:
                     ml_ref = float(_get_ml_bond_length(m_sym, sym_i))
@@ -17806,7 +17830,6 @@ def _align_and_orient_ligands(
                 thr_m = max(1.20, 0.80 * ml_ref)
                 if d < thr_m:
                     score += 5.0 * (thr_m - d) ** 2
-                # Inter-fragment covalent-radius-based contacts.
                 for j in other_heavy:
                     rj = r_cov[j]
                     d = float(_np.linalg.norm(_np.asarray(p) - pts[j]))
@@ -17814,6 +17837,57 @@ def _align_and_orient_ligands(
                     if d < thr:
                         score += (thr - d) ** 2
             return score
+
+        def _lp_penalty_for_frag(donors, frag_pts):
+            """LP-M misalignment penalty for a monodentate donor.
+
+            Reads the donor's non-metal ring/chain neighbour positions from
+            the candidate ``frag_pts`` (the rest of the fragment), builds
+            the anti-bisector lone-pair vector, and penalises large angular
+            deviation from the D->M direction.  15 deg deadband; quadratic
+            in excess so small tilts don't dominate the clash landscape.
+            """
+            if len(donors) != 1:
+                return 0.0
+            d_idx = donors[0]
+            d_atom = mol.GetAtomWithIdx(d_idx)
+            if sum(1 for nb in d_atom.GetNeighbors()
+                   if nb.GetSymbol() in _METAL_SET) >= 2:
+                return 0.0
+            nbrs = [nb.GetIdx() for nb in d_atom.GetNeighbors()
+                    if nb.GetSymbol() not in _METAL_SET]
+            if not nbrs:
+                return 0.0
+            d_pos = pts[d_idx]
+            lp = _np.zeros(3)
+            for nb_idx in nbrs:
+                if nb_idx in frag_pts:
+                    p = _np.asarray(frag_pts[nb_idx])
+                else:
+                    p = pts[nb_idx]
+                v = p - d_pos
+                vn = _np.linalg.norm(v)
+                if vn > 1e-8:
+                    lp += v / vn
+            lp_norm = _np.linalg.norm(lp)
+            if lp_norm < 1e-6:
+                return 0.0
+            lp_unit = -lp / lp_norm
+            dm = m_pos - d_pos
+            dm_norm = _np.linalg.norm(dm)
+            if dm_norm < 1e-6:
+                return 0.0
+            dm_unit = dm / dm_norm
+            cos_t = max(-1.0, min(1.0, float(_np.dot(lp_unit, dm_unit))))
+            ang = math.acos(cos_t)
+            excess = max(0.0, ang - math.radians(15.0))
+            return lp_weight * excess * excess
+
+        def _frag_score(heavy, donors, frag_pts):
+            return (
+                _clash_for_frag(heavy, frag_pts)
+                + _lp_penalty_for_frag(donors, frag_pts)
+            )
 
         def _rotate_about(axis, pivot, angle_deg, atom_pts):
             a = _np.asarray(axis, dtype=float)
@@ -17841,9 +17915,15 @@ def _align_and_orient_ligands(
                 out[idx] = tuple((_np.asarray(p) - pivot) @ R.T + pivot)
             return out
 
+        frag_count = len(frag_info)
         for _pass in range(passes):
             changed = False
-            for info in frag_info:
+            # Alternate fragment order each pass so no single fragment
+            # dominates the greedy cascade.  On even passes, forward;
+            # odd passes, reverse.  Deterministic, no RNG.
+            order = range(frag_count) if _pass % 2 == 0 else range(frag_count - 1, -1, -1)
+            for idx in order:
+                info = frag_info[idx]
                 heavy = info["heavy"]
                 donors = info["donors"]
                 non_donor = [i for i in heavy if i not in donor_set]
@@ -17855,29 +17935,22 @@ def _align_and_orient_ligands(
                     pivot = m_pos
                     n_rot = n_rot_mono
                 elif len(donors) == 2:
-                    # Bidentate chelate: rotate around the donor-donor axis.
-                    # The metal-intrusion term in `_clash_for_frag` guards
-                    # against orientations that would swing the backbone
-                    # through the metal centre.
                     axis = pts[donors[1]] - pts[donors[0]]
                     pivot = 0.5 * (pts[donors[0]] + pts[donors[1]])
                     n_rot = n_rot_bi
                 else:
-                    continue  # tridentate+: no rigid-body rotational DoF
+                    continue
 
                 atom_pts = {i: tuple(pts[i]) for i in non_donor}
-                best_score = _clash_for_frag(heavy, atom_pts)
+                best_score = _frag_score(heavy, donors, atom_pts)
                 best_pts = atom_pts
-                # Joint (tilt, spin) trial set: tilt corrects LP-direction
-                # hybridisation (sp/sp2/sp3 anti-bisector toward M) for
-                # monodentate ligands; spin rotates around M-D axis.  Both
-                # share the donor as an invariant, so compositions commute
-                # up to non-donor displacement.  Scoring with the global
-                # clash penalty picks the best joint orientation.
-                tilt = _compute_lp_tilt_rotation(donors, pts, m_pos, mol)
+                # Multi-level tilt: 50% + 90% of the ideal LP->M correction.
+                # Combined with the no-tilt base gives three starting points
+                # for the spin-search, so the optimiser can trade clash
+                # against LP-alignment in finer steps than binary on/off.
+                tilts = _compute_lp_tilt_rotations(donors, pts, m_pos, mol)
                 base_sets = [atom_pts]
-                if tilt is not None:
-                    R_tilt, tilt_pivot = tilt
+                for (R_tilt, tilt_pivot) in tilts:
                     tilted = {
                         i: tuple(
                             R_tilt @ (_np.asarray(atom_pts[i]) - tilt_pivot)
@@ -17888,14 +17961,14 @@ def _align_and_orient_ligands(
                     base_sets.append(tilted)
                 step = 360.0 / max(1, n_rot)
                 for base in base_sets:
-                    s0 = _clash_for_frag(heavy, base)
+                    s0 = _frag_score(heavy, donors, base)
                     if s0 < best_score - 1e-6:
                         best_score = s0
                         best_pts = base
                     for k in range(1, n_rot):
                         angle = step * k
                         candidate = _rotate_about(axis, pivot, angle, base)
-                        s = _clash_for_frag(heavy, candidate)
+                        s = _frag_score(heavy, donors, candidate)
                         if s < best_score - 1e-6:
                             best_score = s
                             best_pts = candidate
