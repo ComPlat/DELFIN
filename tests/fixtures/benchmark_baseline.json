@@ -98,6 +98,7 @@
     "wall_seconds": 272
   },
   "Fe-Sc(OTf)3(OH)(mu-O)(cyclam)": {
+    "error": "",
     "labels": [
       "Isomer 1",
       "Isomer 2",
@@ -112,13 +113,14 @@
     "mean_geom_score": 630.817,
     "mean_topo_penalty": 23.237,
     "n_distinct_base": 9,
-    "n_output": 9,
+    "n_output": 8,
     "quality_weighted_coverage": 0.02,
-    "wall_seconds": 525
+    "wall_seconds": 365.0
   },
   "Fe2(mu-O)(bipy-macrocycle)": {
-    "error": "timeout",
-    "n_output": 0
+    "error": "",
+    "n_output": 30,
+    "wall_seconds": 583.4
   },
   "Fe3(mu-O)3(salen-like)": {
     "error": "timeout",
