@@ -158,9 +158,17 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "smiles": "CC1=CC(C)=NC2=[N+]([Cd-4]([OH2+])([OH2+])([OH2+])([OH2+])[N+]3=C4N=C(C)C=C(C)N4N=C3)C=NN12",
     },
     {
-        "id": "Zn(pyridyl-tetrazolate)2(H2O)2",
-        "cn": 6,  # ligand planarity broken on current HEAD per user
+        "id": "Zn(pyridyl-tetrazolate)2(H2O)2-bare",
+        "cn": 6,  # bare O/N notation: RDKit aromaticity perception triggers
         "smiles": "[OH2+][Zn-4]12(O[N+]3=CC=CC=C3C4=NN=NN41)(O[N+]5=CC=CC=C5C6=NN=NN62)[OH2+]",
+    },
+    {
+        "id": "Zn(pyridyl-tetrazolate)2(H2O)2-bracketed",
+        "cn": 6,  # same molecule with [O]/[N] brackets: non-aromatic perception
+        # Reproducibility control: this variant must eventually yield
+        # identical isomer counts to the 'bare' variant above (currently
+        # diverges N=30 vs N=1 -- a universal fix is pending).
+        "smiles": "[OH2+][Zn-6]12([OH2+])([O][N+]3=CC=CC=C3C3=NN=N[N]31)[O][N+]1=CC=CC=C1C1=NN=N[N]12",
     },
     {
         "id": "Ir(phosphine-N-O-H)Cl-bicyclic",
