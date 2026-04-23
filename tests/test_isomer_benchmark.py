@@ -229,6 +229,18 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 6,
         "smiles": "Cl[Ir-4]([N+]1=C2C=C(C(C)(C)C)C=C1)([N+]3=C4C=C(C(C)(C)C)C=C32)([N+]5=CC(OC)=CC=C56)([N+]7=CC=C(C(C)(C)C)C=C74)C8=C6C(F)=C(F)C(F)=C8F",
     },
+    # Diverse chemical-space coverage: sampled from Batch.txt (CSD).
+    # Different metals, coordination numbers, ligand types.
+    {"id": "DUHJUO-Ag-pyz-OTf",    "cn": 5, "smiles": "CC1=CC=C(S(=O)(=O)N2C=CC3=[N+]2[Ag-3]2([O]S(=O)(=O)C(F)(F)F)[N+]4=C(C(C)C)C=C(C(C)C)N4C3N3C(C(C)C)=CC(C(C)C)=[N+]32)C=C1"},
+    {"id": "ABUWEA-Co-salophen",   "cn": 4, "smiles": "CCN(CC)C1=CC=C2C=[N+](C3=CC=C([N+](=O)[O-])C=C3)[Co-2]3([O]C2=C1)[O]C1=CC(N(CC)CC)=CC=C1C=[N+]3C1=CC=C([N+](=O)[O-])C=C1"},
+    {"id": "ABUWAW-Cu-salophen",   "cn": 4, "smiles": "CCN(CC)C1=CC=C2C=[N+](C3=CC=C([N+](=O)[O-])C=C3)[Cu-2]3([O]C2=C1)[O]C1=CC(N(CC)CC)=CC=C1C=[N+]3C1=CC=C([N+](=O)[O-])C=C1"},
+    {"id": "MAVHIB-Hg-NH-thia-NO3","cn": 6, "smiles": "CC1(C)N(O)C2=[N+](C1(C)C)[Hg-4]1([O][N+](=O)[O-])([O][N+](=O)[O-])([N+]3=C2SC=C3)[N+]2=C(SC=C2)C2=[N+]1C(C)(C)C(C)(C)N2O"},
+    {"id": "ADEHIB-Mn-phen-COO",   "cn": 6, "smiles": "O=C([O][Mn-4]12([OH2+])([N+]3=CC=CC4=CC=C5C=CC=[N+]1C5=C43)[N+]1=CC=CC3=CC=C4C=CC=[N+]2C4=C31)C1=CC=CC(S(=O)(=O)[O-])=C1"},
+    {"id": "BEXXOR-Mo-CNMe-dppe",  "cn": 6, "smiles": "C[N+]#[C][Mo-5]1([C]#[N+]C)([C]#[N+]C)([C]#[N+]C)([C]#[N+]C)[P+](C2=CC=CC=C2)(C2=CC=CC=C2)C[P+]1(C1=CC=CC=C1)C1=CC=CC=C1"},
+    {"id": "ABUVUP-Ni-salophen",   "cn": 4, "smiles": "CCN(CC)C1=CC=C2C=[N+](C3=CC=C([N+](=O)[O-])C=C3)[Ni-2]3([O]C2=C1)[O]C1=CC(N(CC)CC)=CC=C1C=[N+]3C1=CC=C([N+](=O)[O-])C=C1"},
+    {"id": "AJOBAF-Rh-pincer-PNP", "cn": 4, "smiles": "CC1=CC(C)=C([P+]2(C3=C(C)C=C(C)C=C3C)CC3=CC=CC4=[N+]3[Rh-3]2([Cl])[P+](C2=C(C)C=C(C)C=C2C)(C2=C(C)C=C(C)C=C2C)C4)C(C)=C1"},
+    {"id": "FOLZEM-Sc-aminal-silyl","cn": 6, "smiles": "CC(C)C1COC2=[N+]1[Sc-3]1([CH2][Si](C)(C)C)([CH2][Si](C)(C)C)([CH2][Si](C)(C)C)[N+]3=C(OCC3C(C)C)C2(C)C2=[N+]1C(C(C)C)CO2"},
+    {"id": "BEFFOJ-Ti-phenolate-N2","cn": 6, "smiles": "ClC1=CC(Cl)=C2[O][Ti-2]3456[O]C7=C(Cl)C=C(Cl)C=C7C[N+]3(CC[N+]4(CC3=CC(Cl)=CC(Cl)=C3[O]5)CC3=CC(Cl)=CC(Cl)=C3[O]6)CC2=C1"},
 ]
 
 
