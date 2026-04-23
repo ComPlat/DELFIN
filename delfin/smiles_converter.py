@@ -19348,8 +19348,17 @@ def _generate_topological_isomers(
                     _combo_seen: set = set()
                     _combo_variant_counter: Dict[Tuple[tuple, tuple, tuple, tuple], int] = {}
                     combo_count = 0
+                    import time as _time_2m
+                    _2m_start = _time_2m.time()
+                    _2M_WALL_BUDGET = 240.0
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
+                            break
+                        if _time_2m.time() - _2m_start > _2M_WALL_BUDGET:
+                            logger.debug(
+                                "2-metal enum wall-clock budget %.0fs exceeded, stopping.",
+                                _2M_WALL_BUDGET,
+                            )
                             break
                         gn1 = cf1[0]
                         gn2 = cf2[0]
@@ -19541,7 +19550,17 @@ def _generate_topological_isomers(
                         _per_metal_eff = [_pm[:2] for _pm in _per_metal]
                     else:
                         _per_metal_eff = _per_metal
+                    # Wall-clock budget of 90 s per multinuclear call —
+                    # the N-metal Cartesian product explodes exponentially
+                    # and each UFF call can take 1-5 s.  Without this
+                    # bound Fe3 (salen-like)-type systems TLE at 3 h+
+                    # because the inner loop iterates 5000+ combos.
+                    # Sampling augmentation further down the pipeline
+                    # still runs and provides coverage.
                     _N_ITER_BUDGET = max(_max_combos_n * 40, 2000)
+                    import time as _time
+                    _n_metal_start = _time.time()
+                    _N_WALL_BUDGET = 90.0
                     _iter_count = 0
                     _combo_seen_n: set = set()
                     _variant_counter_n: Dict[Tuple[tuple, ...], int] = {}
@@ -19556,6 +19575,12 @@ def _generate_topological_isomers(
                             logger.debug(
                                 "N-metal enum iteration budget %d reached at N=%d, stopping.",
                                 _N_ITER_BUDGET, _N,
+                            )
+                            break
+                        if _time.time() - _n_metal_start > _N_WALL_BUDGET:
+                            logger.debug(
+                                "N-metal enum wall-clock budget %.0fs exceeded at N=%d, stopping.",
+                                _N_WALL_BUDGET, _N,
                             )
                             break
                         if _n_combo_count >= _max_combos_n:
