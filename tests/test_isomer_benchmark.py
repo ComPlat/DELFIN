@@ -159,8 +159,8 @@ SMILES_POOL: List[Dict[str, Any]] = [
     },
     {
         "id": "Zn(pyridyl-tetrazolate)2(H2O)2",
-        "cn": 6,  # defective on current HEAD per user
-        "smiles": "[OH2+][Zn-6]12([OH2+])([O][N+]3=CC=CC=C3C3=NN=N[N]31)[O][N+]1=CC=CC=C1C1=NN=N[N]12",
+        "cn": 6,  # ligand planarity broken on current HEAD per user
+        "smiles": "[OH2+][Zn-4]12(O[N+]3=CC=CC=C3C4=NN=NN41)(O[N+]5=CC=CC=C5C6=NN=NN62)[OH2+]",
     },
 ]
 
