@@ -162,6 +162,11 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 6,  # ligand planarity broken on current HEAD per user
         "smiles": "[OH2+][Zn-4]12(O[N+]3=CC=CC=C3C4=NN=NN41)(O[N+]5=CC=CC=C5C6=NN=NN62)[OH2+]",
     },
+    {
+        "id": "Ir(phosphine-N-O-H)Cl-bicyclic",
+        "cn": 5,  # Cl decoord + unrealistic on HEAD per user
+        "smiles": "COCC[N+]12CC[O+]([IrH-3]13(C4=C(C2)C=CC(OC)=C4O[P+]3(C(C)C)C(C)C)Cl)C",
+    },
 ]
 
 

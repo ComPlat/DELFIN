@@ -12416,6 +12416,23 @@ def _prepare_mol_for_embedding(smiles: str, hapto_approx: bool = False):
     if not RDKIT_AVAILABLE:
         return None
 
+    # SMILES canonicalisation: two syntactically different SMILES for the
+    # same molecule (e.g. bracketed ``[O]``/``[N]`` vs bare ``O``/``N``
+    # on the same tetrazolate) parse into mols whose aromatic-flag
+    # patterns differ, which in turn makes the three embed strategies
+    # below (stk / partial-sanitise / unsanitised) choose different
+    # branches.  Canonicalising first collapses these variants onto a
+    # single representative string so the downstream pipeline sees the
+    # same input regardless of how the caller wrote it.
+    try:
+        _probe = Chem.MolFromSmiles(smiles)
+        if _probe is not None:
+            _canon = Chem.MolToSmiles(_probe)
+            if _canon and _canon != smiles:
+                smiles = _canon
+    except Exception:
+        pass
+
     has_metal = contains_metal(smiles)
     is_metal_n = _is_metal_nitrogen_complex(smiles)
 
@@ -12473,6 +12490,23 @@ def _prepare_mol_for_embedding(smiles: str, hapto_approx: bool = False):
 
     if mol is None:
         return None
+
+    # Aromaticity normalisation: the three parse strategies above (stk,
+    # partial-sanitise, unsanitised) can leave the Mol with different
+    # aromatic flag patterns for chemically identical inputs (e.g. a
+    # tetrazolate written as ``C=NN=N[N]`` lands non-aromatic while the
+    # same ring written as ``C=NN=NN`` lands aromatic, because RDKit's
+    # implicit-H rules differ for bare vs bracketed atoms).  That
+    # divergence propagates into ETKDG distance bounds and the
+    # downstream topo-enumerator, giving wildly different isomer counts
+    # (N=1 vs N=30 on the same molecule).  Kekulise + clear aromatic
+    # flags produces a single deterministic representation.  Silently
+    # accept kekulisation failures (rings that genuinely can't kekulise
+    # such as some tetrazolates keep their aromatic perception).
+    try:
+        Chem.Kekulize(mol, clearAromaticFlags=True)
+    except Exception:
+        pass
 
     # Optional eta/hapto approximation: collapse contiguous metal-bound carbon
     # donor blocks to a single representative anchor bond per block.

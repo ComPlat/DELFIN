@@ -47,12 +47,20 @@ def _run_isomers_subprocess(smiles, kwargs, timeout=None):
         "sys.stdout.write('__DELFIN_RESULT__' + json.dumps(out))\n"
     )
     try:
+        # Fixed PYTHONHASHSEED in the child so set / dict iteration order
+        # is stable across invocations.  Without this, the same SMILES can
+        # produce wildly different isomer counts (e.g. 1 vs 9 vs 30) between
+        # runs because the enumerator's candidate-retention order depends
+        # on Python hash randomisation.
+        env = dict(os.environ)
+        env.setdefault("PYTHONHASHSEED", "0")
         proc = subprocess.run(
             [sys.executable, "-c", script],
             input=payload,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return [], f"Subprocess timed out after {timeout}s"
