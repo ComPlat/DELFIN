@@ -217,7 +217,7 @@ SMILES_POOL: List[Dict[str, Any]] = [
     {
         "id": "Ni(pincer-tBu-imid)",
         "cn": 4,
-        "smiles": "CC(C)(C)C1=CC2=[N+]3C(C4=CC(C(C)(C)C)=CC(C5=CC=CC6=C5N7C=C6)=[N+]4[Ni-2]37N8C9=C2C=CC=C9C=C8)=C1",
+        "smiles": "CC(C)(C)C1=CC(C2=CC(C=CC=C3)=C3N24)=[N+]5C(C6=CC(C(C)(C)C)=CC7=[N+]6[Ni-2]54N8C7=CC9=C8C=CC=C9)=C1",
     },
     {
         "id": "Ir(pincer-imidazolide-tBu)",
