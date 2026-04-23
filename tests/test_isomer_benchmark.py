@@ -129,7 +129,10 @@ SMILES_POOL: List[Dict[str, Any]] = [
     },
     {
         "id": "Fe(bis-Schiff-base-dimethoxy)",
-        "cn": 4,
+        "cn": 6,  # hexadentate: 2 phenolate-O + 2 quinoline-N + 2 imine-N
+        # User expects >= 3 topologies (trans / cis / X-twist); HEAD
+        # currently yields only 2 -- the X-twist (crossed Schiff arms,
+        # N-O trans across backbone) is missing.
         "smiles": "COC1=CC=C2O[Fe+3]345([N]6=CC=CC7=C6C([N-]5=CC2=C1)=CC=C7)OC8=C(C=[N-]3C9=CC=CC%10=C9[N]4=CC=C%10)C=C(OC)C=C8",
     },
     {
