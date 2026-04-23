@@ -178,6 +178,57 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 5,  # Cl decoord + unrealistic on HEAD per user
         "smiles": "COCC[N+]12CC[O+]([IrH-3]13(C4=C(C2)C=CC(OC)=C4O[P+]3(C(C)C)C(C)C)Cl)C",
     },
+    # Terpyridine / tris-chelate complexes — user reports X-shape missing
+    {
+        "id": "Ir(ppy)3",
+        "cn": 6,
+        "smiles": "[N+]12=CC=CC=C1C(C=CC=C3)=C3[Ir-3]24([N+]5=CC=CC=C5C6=C4C=CC=C6)([N+]7=CC=CC=C78)C9=C8C=CC=C9",
+    },
+    {
+        "id": "Ir-Cl(tBu-py)4",
+        "cn": 6,
+        "smiles": "Cl[Ir-3]([N+]1=C2C=C(C(C)(C)C)C=C1)([N+]3=C4C=C(C(C)(C)C)C=C32)([N+]5=CC(C)=CC=C56)([N+]7=CC=C(C(C)(C)C)C=C74)C8=C6C=CC=C8",
+    },
+    {
+        "id": "Cu(salen-Ph)(biphep)",
+        "cn": 5,
+        "smiles": "CC(C=C1C2=CC=CC=C2)=[N+]3C4=C1C=CC5=C4[N+]([Cu-3]36[P+]7(C8=C(C=CC(C)=C8)OC9=C7C=C(C)C=C9)C%10=CC=CC%11=C%10OC%12=C(C=CC=C%12[P+]6%13C(C=C(C)C=C%14)=C%14OC%15=C%13C=C(C)C=C%15)C%11(C)C)=C(C)C=C5C%16=CC=CC=C%16",
+    },
+    {
+        "id": "Os(terpy)(py-Ph)",
+        "cn": 6,
+        "smiles": "C1(C2=CC(C3=CC=CC=[N+]3[Os-4]4567[N+](C=CC=C8)=C8C9=CC(C%10=CC=CC=C%10)=CC(C%11=CC=CC=[N+]%117)=[N+]96)=[N+]5C(C%12=[N+]4C=CC=C%12)=C2)=CC=CC=C1",
+    },
+    {
+        "id": "Os(terpy)(py-tBu)",
+        "cn": 6,
+        "smiles": "CC(C)(C)C1=CC(C2=CC=CC=[N+]2[Os-4]3456[N+](C=CC=C7)=C7C8=CC(C(C)(C)C)=CC(C9=CC=CC=[N+]96)=[N+]85)=[N+]4C(C%10=[N+]3C=CC=C%10)=C1",
+    },
+    {
+        "id": "Fe(terpy)(py-p-tolyl)",
+        "cn": 6,
+        "smiles": "CC1=CC=C(C2=CC(C3=CC=CC=[N+]3[Fe-4]4567[N+](C=CC=C8)=C8C9=CC(C%10=CC=C(C)C=C%10)=CC(C%11=CC=CC=[N+]%117)=[N+]96)=[N+]5C(C%12=[N+]4C=CC=C%12)=C2)C=C1",
+    },
+    {
+        "id": "Fe(terpy-NMe2)2",
+        "cn": 6,
+        "smiles": "CC1=CC(N(C)C)=CC2=[N+]1[Fe-6]345([N+]6=C(C7=CC(N(C)C)=CC(C)=[N+]75)C=CC=C62)[N+](C(C)=CC(N(C)C)=C8)=C8C9=CC=CC(C%10=CC(N(C)C)=CC(C)=[N+]%104)=[N+]93",
+    },
+    {
+        "id": "Ni(pincer-tBu-imid)",
+        "cn": 4,
+        "smiles": "CC(C)(C)C1=CC2=[N+]3C(C4=CC(C(C)(C)C)=CC(C5=CC=CC6=C5N7C=C6)=[N+]4[Ni-2]37N8C9=C2C=CC=C9C=C8)=C1",
+    },
+    {
+        "id": "Ir(pincer-imidazolide-tBu)",
+        "cn": 4,
+        "smiles": "CC(C)(C)C1=CC([Ir-3]23([N+]4=CC=CN4C5=CC=CC=C35)([N+]6=CC=CC=C67)[N+]8=CC=CN8C9=C2C=CC=C9)=[N+]7C=C1",
+    },
+    {
+        "id": "Ir-Cl(tBu-py)4-OMe-F4-aryl",
+        "cn": 6,
+        "smiles": "Cl[Ir-4]([N+]1=C2C=C(C(C)(C)C)C=C1)([N+]3=C4C=C(C(C)(C)C)C=C32)([N+]5=CC(OC)=CC=C56)([N+]7=CC=C(C(C)(C)C)C=C74)C8=C6C(F)=C(F)C(F)=C8F",
+    },
 ]
 
 
