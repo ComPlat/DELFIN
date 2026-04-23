@@ -132,6 +132,11 @@ SMILES_POOL: List[Dict[str, Any]] = [
         "cn": 4,
         "smiles": "COC1=CC=C2O[Fe+3]345([N]6=CC=CC7=C6C([N-]5=CC2=C1)=CC=C7)OC8=C(C=[N-]3C9=CC=CC%10=C9[N]4=CC=C%10)C=C(OC)C=C8",
     },
+    {
+        "id": "Ir(carbenyl-phosphine-N-O)Cl",
+        "cn": 5,
+        "smiles": "COCC[N+]12CC[O+](C)[IrH-3]13([Cl])[C]1=C(C=CC(OC)=C1O[P+]3(C(C)C)C(C)C)C2",
+    },
 ]
 
 
