@@ -22178,55 +22178,55 @@ def smiles_to_xyz_isomers(
             ]
 
     # --- Symmetry-aware cross-label dedup ---
-    # The final-label dedup above collapses ``trans-1`` / ``trans-2`` but
-    # "Isomer N" entries use spaces and slip through — a topo enumerator
-    # pass can emit 4–6 "Isomer 1..6" that are rotameric siblings of the
-    # same coordination isomer.  Here we:
-    #   1. compute per-metal ideal-polyhedron angle deviation for each entry
-    #   2. bin by (polyhedron-dev rounded to 2°, coord fingerprint)
-    #   3. within each bin, collapse pairs whose heavy-atom RMSD < threshold
-    #      and keep the one with the lowest polyhedron deviation (i.e. the
-    #      most textbook-symmetric representative).
-    # Conservative default threshold 1.0 Å; tighter than the cross-label
-    # 0.8 Å already used earlier but applied on the final result pool only.
+    # Collapses duplicate rotameric entries that slipped through earlier
+    # dedup passes (e.g. topology-enumerator and linkage-isomer branches
+    # append without fingerprint dedup).  Fundamental principle: two
+    # entries with different coordination fingerprints (``fac`` vs
+    # ``mer``, ``cis`` vs ``trans``) MUST NEVER be collapsed here.  We
+    # therefore require fingerprint-equality as a necessary condition
+    # for RMSD-based collapse; within a fingerprint bucket we keep the
+    # entry with the lowest ideal-polyhedron deviation (= most textbook-
+    # symmetric representative).
     if has_metal and len(results) > 1:
         try:
-            # Compute a signature per entry: (sum of polyhedron deviations,
-            # rounded to nearest 2°).  Equivalent-symmetry isomers end up in
-            # the same bucket.
-            def _sym_sig(xyz: str) -> Tuple[int, float]:
+            def _entry_fp_and_sym(xyz: str) -> Tuple[Optional[tuple], float]:
+                """Return (fingerprint, polyhedron_total_dev) for an XYZ."""
                 try:
                     mt = Chem.RWMol(mol)
                     mt.RemoveAllConformers()
                     conf = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
                     if conf is None:
-                        return (0, float("inf"))
+                        return (None, float("inf"))
                     cid = mt.AddConformer(conf, assignId=True)
+                    fp = _compute_coordination_fingerprint(
+                        mt.GetMol(), cid, dtype_map=dtype_map
+                    )
                     devs = _ideal_polyhedron_angle_dev_per_metal(mt.GetMol(), cid)
-                    if not devs:
-                        return (0, float("inf"))
-                    total = sum(devs.values())
-                    return (int(round(total / 2.0)), total)
+                    total = sum(devs.values()) if devs else float("inf")
+                    return (fp, total)
                 except Exception:
-                    return (0, float("inf"))
+                    return (None, float("inf"))
 
-            sigs = [_sym_sig(xyz) for xyz, _ in results]
-            # Collapse near-duplicate pairs across labels
+            entry_info = [_entry_fp_and_sym(xyz) for xyz, _ in results]
             removed: set = set()
-            _RMSD_SAME_SIG = 1.0  # Å, heavy-atom RMSD
+            _RMSD_SAME_FP = 1.0  # Å, heavy-atom RMSD
             for i in range(len(results)):
                 if i in removed:
                     continue
-                bin_i, tot_i = sigs[i]
+                fp_i, tot_i = entry_info[i]
+                if fp_i is None:
+                    continue
                 for j in range(i + 1, len(results)):
                     if j in removed:
                         continue
-                    bin_j, tot_j = sigs[j]
-                    if bin_i != bin_j:
+                    fp_j, tot_j = entry_info[j]
+                    # HARD RULE: different fingerprints ⇒ never collapse.
+                    # fac vs mer, cis vs trans, linkage isomers all live
+                    # in distinct fingerprints and must survive.
+                    if fp_j is None or fp_i != fp_j:
                         continue
                     rmsd = _heavy_atom_rmsd_xyz(results[i][0], results[j][0])
-                    if rmsd < _RMSD_SAME_SIG:
-                        # Keep whichever has lower polyhedron total dev
+                    if rmsd < _RMSD_SAME_FP:
                         if tot_i <= tot_j:
                             removed.add(j)
                         else:
@@ -22234,8 +22234,8 @@ def smiles_to_xyz_isomers(
                             break
             if removed:
                 logger.debug(
-                    "Symmetry-aware dedup removed %d near-duplicate(s) by polyhedron-sig + RMSD<%.1f",
-                    len(removed), _RMSD_SAME_SIG,
+                    "Symmetry-aware dedup removed %d within-fingerprint dup(s) (RMSD<%.1f)",
+                    len(removed), _RMSD_SAME_FP,
                 )
                 results = [
                     r for idx, r in enumerate(results) if idx not in removed
@@ -22243,65 +22243,23 @@ def smiles_to_xyz_isomers(
         except Exception as _sym_exc:
             logger.debug("Symmetry-aware dedup skipped: %s", _sym_exc)
 
-    # --- Combinatorial upper-bound check ---
-    # If N_output wildly exceeds the Pólya-estimated bound, the
-    # existing dedup has failed to collapse rotameric/label duplicates.
-    # Rerun symmetry-aware dedup with a tighter RMSD threshold (0.5 Å)
-    # and keep collapsing until N <= 1.5 * bound or no more progress.
+    # --- Combinatorial upper-bound check (log only) ---
+    # If N_output wildly exceeds the Pólya-estimated bound, log a warning
+    # so the user can investigate.  Collapse is NOT applied here because
+    # the Pólya bound cannot distinguish chemically distinct isomers that
+    # share a bound ceiling (e.g. fac vs mer both count toward the same 2,
+    # and we would lose one if we collapse by RMSD alone).  The within-
+    # fingerprint dedup above already removes true duplicates safely.
     if has_metal and len(results) > 1:
         try:
             _bound = _estimate_isomer_upper_bound(mol, dtype_map=dtype_map)
-            if _bound is not None:
-                _target = max(1, int(round(1.5 * _bound)))
-                if len(results) > _target:
-                    logger.info(
-                        "Combinatorial-excess: %d isomers vs bound %d — tightening dedup",
-                        len(results), _bound,
-                    )
-                    for _rmsd_thr in (1.0, 0.7, 0.5):
-                        if len(results) <= _target:
-                            break
-                        _sigs = []
-                        for xyz, _ in results:
-                            try:
-                                _mt = Chem.RWMol(mol)
-                                _mt.RemoveAllConformers()
-                                _c = _xyz_to_rdkit_conformer(_mt.GetMol(), xyz)
-                                if _c is None:
-                                    _sigs.append((0, float("inf")))
-                                    continue
-                                _ci = _mt.AddConformer(_c, assignId=True)
-                                _devs = _ideal_polyhedron_angle_dev_per_metal(_mt.GetMol(), _ci)
-                                _tot = sum(_devs.values()) if _devs else float("inf")
-                                _sigs.append((int(round(_tot / 3.0)), _tot))
-                            except Exception:
-                                _sigs.append((0, float("inf")))
-                        _removed: set = set()
-                        for i in range(len(results)):
-                            if i in _removed:
-                                continue
-                            for j in range(i + 1, len(results)):
-                                if j in _removed:
-                                    continue
-                                if _sigs[i][0] != _sigs[j][0]:
-                                    continue
-                                _rmsd = _heavy_atom_rmsd_xyz(results[i][0], results[j][0])
-                                if _rmsd < _rmsd_thr:
-                                    if _sigs[i][1] <= _sigs[j][1]:
-                                        _removed.add(j)
-                                    else:
-                                        _removed.add(i)
-                                        break
-                        if _removed:
-                            results = [
-                                r for idx, r in enumerate(results) if idx not in _removed
-                            ]
-                            logger.debug(
-                                "Combinatorial-dedup (rmsd<%.1f): -%d → %d",
-                                _rmsd_thr, len(_removed), len(results),
-                            )
+            if _bound is not None and len(results) > max(10, 3 * _bound):
+                logger.info(
+                    "Combinatorial-excess: %d isomers vs bound %d — review for dupes",
+                    len(results), _bound,
+                )
         except Exception as _comb_exc:
-            logger.debug("Combinatorial-bound dedup skipped: %s", _comb_exc)
+            logger.debug("Combinatorial-bound check skipped: %s", _comb_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
