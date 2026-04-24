@@ -17221,6 +17221,20 @@ def _chelate_conformer_candidates(
     accepted: List[Tuple[float, Dict[int, tuple]]] = []
     fallback_mol = None
 
+    # Scale number of trials with fragment size.  Huge polydentate
+    # ligands (terpyridine-NMe2, salen-biphep phosphine backbone,
+    # phos-terpy) have ETKDG wall-clocks measured in seconds per seed,
+    # so the default 40 trials × 6 s timeout accumulates into minutes
+    # of wall-time — and with orphan thread pile-up starves the
+    # subprocess long before the first isomer is written.  Cap trials
+    # at 15 for >60-atom fragments, 8 for >90-atom fragments so the
+    # pipeline keeps making forward progress even on the hardest cases.
+    _frag_n = frag_mol.GetNumAtoms()
+    if _frag_n > 90:
+        n_trials = min(n_trials, 8)
+    elif _frag_n > 60:
+        n_trials = min(n_trials, 15)
+
     for seed in _SEEDS[:n_trials]:
         cid = _try_embed(frag_mol, seed)
         if cid < 0:
@@ -17294,6 +17308,14 @@ def _chelate_conformer_candidates(
             for old, new in old_to_new.items()
         }
         accepted.append((delta, coords_map))
+        # Early-exit once we have ``max_candidates`` "good" fits
+        # (delta < accept_delta).  Every extra seed after this point
+        # can only replace an already-good candidate with a slightly
+        # better one — not worth the 6 s per-seed wall-time on the
+        # heaviest ligands where every seed costs real time.
+        good = sum(1 for d, _c in accepted if d < accept_delta)
+        if good >= max_candidates:
+            break
 
     if not accepted:
         return []
