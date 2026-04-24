@@ -1365,57 +1365,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         updateStatus(scopeKey);
         if (state.mode === 'select') {
             attachClickable(scopeKey);
-            drawDebugDots(scopeKey);  // show projection dots so user can verify
         } else {
             detachClickable(scopeKey);
-            clearDebugDots(scopeKey);
         }
     }
 
-    function clearDebugDots(scopeKey) {
-        var state = getState(scopeKey);
-        if (!state.debugDots) return;
-        try {
-            if (state.overlay) state.overlay.removeChild(state.debugDots);
-        } catch (e) {}
-        state.debugDots = null;
-    }
-    function drawDebugDots(scopeKey) {
-        var state = getState(scopeKey);
-        var viewer = getViewer(scopeKey);
-        if (!viewer || !state.overlay || !state.canvas) return;
-        clearDebugDots(scopeKey);
-        var container = document.createElement('div');
-        container.style.position = 'absolute';
-        container.style.left = '0'; container.style.top = '0';
-        container.style.right = '0'; container.style.bottom = '0';
-        container.style.pointerEvents = 'none';
-        state.overlay.appendChild(container);
-        state.debugDots = container;
-        var cRect = state.canvas.getBoundingClientRect();
-        var oRect = state.overlay.getBoundingClientRect();
-        var offX = cRect.left - oRect.left;
-        var offY = cRect.top - oRect.top;
-        var atoms = getAtoms(viewer);
-        var ok = 0;
-        for (var i = 0; i < atoms.length; i++) {
-            var p = modelToScreen(viewer, state.canvas, atoms[i]);
-            if (!p || !isFinite(p.x) || !isFinite(p.y)) continue;
-            ok++;
-            var dot = document.createElement('div');
-            dot.style.position = 'absolute';
-            dot.style.left = (p.x + offX - 3) + 'px';
-            dot.style.top = (p.y + offY - 3) + 'px';
-            dot.style.width = '6px';
-            dot.style.height = '6px';
-            dot.style.borderRadius = '50%';
-            dot.style.background = 'rgba(229,57,53,0.8)';
-            dot.style.border = '1px solid white';
-            dot.style.boxShadow = '0 0 2px rgba(0,0,0,0.5)';
-            container.appendChild(dot);
-        }
-        try { console.log('delfin projection:', ok, 'of', atoms.length, 'atoms projected'); } catch (e) {}
-    }
 
     function clearPicks(scopeKey) {
         var state = getState(scopeKey);
@@ -1517,6 +1471,117 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (e.key === 'Shift') { propagateShift(false); }
         }, true);
         window.addEventListener('blur', function() { propagateShift(false); }, true);
+    }
+
+    // Fullscreen: on toggle, move viewer + toolbar + isomer nav + copy row into
+    // a floating overlay; on exit, put them back where they were. No layout
+    // changes to the default DOM, so canvas alignment stays intact.
+    if (!window.__delfinSubmitFullscreenBound) {
+        window.__delfinSubmitFullscreenBound = true;
+        window._submitFsByScope = window._submitFsByScope || {};
+
+        function findScope(el) {
+            while (el && el.classList) {
+                for (var i = 0; i < el.classList.length; i++) {
+                    if (el.classList[i].indexOf('submit-scope-') === 0) {
+                        return el.classList[i];
+                    }
+                }
+                el = el.parentElement;
+            }
+            return null;
+        }
+        function resizeScopeViewer(scopeKey) {
+            try {
+                var viewer = (window._submitMolViewerByScope || {})[scopeKey];
+                if (!viewer) return;
+                [60, 250].forEach(function(delay) {
+                    setTimeout(function() {
+                        try {
+                            if (typeof viewer.resize === 'function') viewer.resize();
+                            if (typeof viewer.render === 'function') viewer.render();
+                        } catch (e) {}
+                    }, delay);
+                });
+            } catch (e) {}
+        }
+        function setFsIcon(btn, active) {
+            if (!btn) return;
+            var icon = btn.querySelector('i.fa');
+            if (!icon) return;
+            icon.classList.remove('fa-expand');
+            icon.classList.remove('fa-compress');
+            icon.classList.add(active ? 'fa-compress' : 'fa-expand');
+            btn.setAttribute('title', active ? 'Exit fullscreen (Esc)' : 'Toggle fullscreen (Esc to exit)');
+        }
+        function enterFullscreen(scopeKey) {
+            var root = document.querySelector('.' + scopeKey);
+            if (!root) return;
+            var selectors = [
+                '.submit-fs-member-toolbar',
+                '.submit-fs-member-viewer',
+                '.submit-fs-member-isomer',
+                '.submit-fs-member-copyrow'
+            ];
+            var members = [];
+            for (var i = 0; i < selectors.length; i++) {
+                var el = root.querySelector(selectors[i]);
+                if (el) members.push(el);
+            }
+            if (!members.length) return;
+            var overlay = document.createElement('div');
+            overlay.className = 'submit-fs-overlay ' + scopeKey;
+            var restore = members.map(function(el) {
+                return { el: el, parent: el.parentNode, next: el.nextSibling };
+            });
+            members.forEach(function(el) { overlay.appendChild(el); });
+            document.body.appendChild(overlay);
+            window._submitFsByScope[scopeKey] = { overlay: overlay, restore: restore };
+            var btn = overlay.querySelector('.submit-fullscreen-btn');
+            setFsIcon(btn, true);
+            resizeScopeViewer(scopeKey);
+        }
+        function exitFullscreen(scopeKey) {
+            var entry = window._submitFsByScope[scopeKey];
+            if (!entry) return;
+            // Restore in reverse so each element's recorded nextSibling is
+            // already back in the original parent before we insertBefore.
+            for (var i = entry.restore.length - 1; i >= 0; i--) {
+                var r = entry.restore[i];
+                try {
+                    if (r.next && r.next.parentNode === r.parent) {
+                        r.parent.insertBefore(r.el, r.next);
+                    } else {
+                        r.parent.appendChild(r.el);
+                    }
+                } catch (e) {}
+            }
+            try { entry.overlay.parentNode.removeChild(entry.overlay); } catch (e) {}
+            delete window._submitFsByScope[scopeKey];
+            var root = document.querySelector('.' + scopeKey);
+            var btn = root && root.querySelector('.submit-fullscreen-btn');
+            setFsIcon(btn, false);
+            resizeScopeViewer(scopeKey);
+        }
+        document.addEventListener('click', function(e) {
+            var t = e.target;
+            if (!t || !t.closest) return;
+            var btn = t.closest('.submit-fullscreen-btn');
+            if (!btn) return;
+            var scopeKey = findScope(btn);
+            if (!scopeKey) return;
+            if (window._submitFsByScope[scopeKey]) {
+                exitFullscreen(scopeKey);
+            } else {
+                enterFullscreen(scopeKey);
+            }
+        }, true);
+        document.addEventListener('keydown', function(e) {
+            if (e.key !== 'Escape') return;
+            var keys = Object.keys(window._submitFsByScope || {});
+            if (!keys.length) return;
+            exitFullscreen(keys[0]);
+        }, true);
     }
 
     window.__delfinSubmitManip = {

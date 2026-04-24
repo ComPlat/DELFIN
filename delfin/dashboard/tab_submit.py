@@ -363,6 +363,14 @@ def create_tab(ctx):
 
     submit_scope_id = f'submit-scope-{abs(id(coords_widget))}'
 
+    submit_fullscreen_btn = widgets.Button(
+        description='', icon='expand',
+        tooltip='Toggle fullscreen (Esc to exit)',
+        layout=widgets.Layout(width='40px', height='30px'),
+        disabled=True,
+    )
+    submit_fullscreen_btn.add_class('submit-fullscreen-btn')
+
     submit_select_btn = widgets.ToggleButton(
         value=False, description='Select', icon='crosshairs',
         button_style='',
@@ -398,6 +406,7 @@ def create_tab(ctx):
 
     submit_manip_toolbar = widgets.HBox(
         [
+            submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn,
             submit_manip_clear_btn, submit_manip_undo_btn,
             submit_manip_status, submit_manip_sync,
@@ -624,6 +633,7 @@ def create_tab(ctx):
             pass
 
     def _set_manip_toolbar_enabled(enabled):
+        submit_fullscreen_btn.disabled = not enabled
         submit_select_btn.disabled = not enabled
         submit_manip_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
@@ -2476,12 +2486,18 @@ def create_tab(ctx):
         box_sizing='border-box', overflow_x='hidden',
     ))
 
+    xyz_copy_row = widgets.HBox(
+        [xyz_copy_btn, xyz_copy_status],
+        layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+    )
+    xyz_copy_row.add_class('submit-fs-member-copyrow')
+    submit_manip_toolbar.add_class('submit-fs-member-toolbar')
+    mol_output.add_class('submit-fs-member-viewer')
+    isomer_nav_row.add_class('submit-fs-member-isomer')
+
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'), mol_status,
-        submit_manip_toolbar, mol_output,
-        isomer_nav_row,
-        widgets.HBox([xyz_copy_btn, xyz_copy_status],
-                     layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap')),
+        submit_manip_toolbar, mol_output, isomer_nav_row, xyz_copy_row,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
         widgets.VBox([
@@ -2576,6 +2592,46 @@ def create_tab(ctx):
             overflow: hidden !important;
             max-width: 100% !important;
             max-height: 100% !important;
+        }
+        .submit-fs-overlay {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            bottom: 0 !important;
+            z-index: 9999 !important;
+            background: #ffffff !important;
+            padding: 8px !important;
+            margin: 0 !important;
+            overflow: hidden !important;
+            box-sizing: border-box !important;
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 6px;
+        }
+        .submit-fs-overlay .submit-fs-member-viewer {
+            flex: 1 1 auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+            width: 100% !important;
+        }
+        .submit-fs-overlay .submit-fs-member-viewer .output_area,
+        .submit-fs-overlay .submit-fs-member-viewer .output_subarea,
+        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea,
+        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea-output,
+        .submit-fs-overlay .submit-fs-member-viewer .jp-OutputArea-child {
+            height: 100% !important;
+            width: 100% !important;
+        }
+        .submit-fs-overlay .submit-fs-member-viewer [id^="3dmolviewer_"] {
+            width: 100% !important;
+            height: 100% !important;
+            max-width: none !important;
+            max-height: none !important;
+        }
+        .submit-fs-overlay .submit-fs-member-viewer [id^="3dmolviewer_"] canvas {
+            width: 100% !important;
+            height: 100% !important;
         }
         </style>
         """
