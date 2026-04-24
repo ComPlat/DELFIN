@@ -22187,7 +22187,7 @@ def smiles_to_xyz_isomers(
     # for RMSD-based collapse; within a fingerprint bucket we keep the
     # entry with the lowest ideal-polyhedron deviation (= most textbook-
     # symmetric representative).
-    if has_metal and len(results) > 1:
+    if has_metal and len(results) > 1 and _delfin_env_int("DELFIN_SYM_DEDUP_ENABLED", 1):
         try:
             def _entry_fp_and_sym(xyz: str) -> Tuple[Optional[tuple], float]:
                 """Return (fingerprint, polyhedron_total_dev) for an XYZ."""
@@ -22400,13 +22400,23 @@ def smiles_to_xyz_isomers(
             # Energy outlier cut — purely energy-based so truly
             # broken structures (runaway UFF energies, thousands of
             # kcal above min) cannot poison the bucket sort below.
+            # Fundamental principle: UFF energies for metals without
+            # valid atom types (W, Cd, Sc, lanthanides, actinides) are
+            # unreliable — a whole cluster of legit isomers can land
+            # at ~1e11 kcal/mol just because UFF missed the type.  When
+            # the MEDIAN energy exceeds a plausibility floor (~1e5),
+            # skip the cut entirely — we cannot distinguish broken
+            # from merely-unparametrised with this metric, so let
+            # downstream geometry/topology checks decide.
             scored.sort(key=lambda t: t[0])
             if len(scored) >= 2:
                 e_min = scored[0][0]
                 e_med = scored[len(scored) // 2][0]
-                natural_spread = max(e_med - e_min, 1.0)
-                cutoff = e_min + max(50.0 * natural_spread, 5000.0)
-                scored = [t for t in scored if t[0] <= cutoff]
+                _UFF_PLAUSIBLE_MAX = 1e5
+                if e_med <= _UFF_PLAUSIBLE_MAX:
+                    natural_spread = max(e_med - e_min, 1.0)
+                    cutoff = e_min + max(50.0 * natural_spread, 5000.0)
+                    scored = [t for t in scored if t[0] <= cutoff]
 
             # Energy-bucket sort — UFF absolute energies are not
             # trustworthy for metals without parameters
