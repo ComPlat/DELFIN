@@ -16360,6 +16360,70 @@ def _angle_class(pos_metal, pos_a, pos_b) -> str:
     return 'cis' if angle_deg < 135 else 'trans'
 
 
+def _estimate_isomer_upper_bound(
+    mol, dtype_map: Optional[Dict[int, tuple]] = None
+) -> Optional[int]:
+    """Conservative upper bound on the number of distinct coordination isomers.
+
+    Uses the standard Pólya counting simplification:  for a metal with
+    coordination number CN and donor-type multiset :math:`k_1, k_2, \\dots`,
+    the number of arrangements on a polyhedron of order :math:`|G|` is
+    bounded above by
+
+        CN! / (k_1! · k_2! · …) / max(1, CN // 2)
+
+    The CN//2 divisor approximates the polyhedron rotation symmetry
+    (Td: 12, D3h: 6, Oh: 24); this is intentionally generous so legitimate
+    isomer counts pass.  For multi-metallic systems the per-metal bounds
+    are multiplied and then clipped to an absolute ceiling.  When the
+    bound cannot be computed (unusual CN, unclassifiable donors) returns
+    ``None`` so callers skip enforcement.
+
+    Intended use: log / soft-cap excess duplicates that the existing
+    fingerprint dedup failed to collapse.  Not a hard reject — the
+    symmetry-aware dedup and RMSD passes do the actual collapsing.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    try:
+        if dtype_map is None:
+            dtype_map = _donor_type_map(mol)
+        import math as _m
+        metals = [a for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET]
+        if not metals:
+            return None
+        per_metal: List[int] = []
+        for m in metals:
+            nbrs = [nb.GetIdx() for nb in m.GetNeighbors()]
+            cn = len(nbrs)
+            if cn < 2:
+                per_metal.append(1)
+                continue
+            # Group donors by type
+            type_counts: Dict[tuple, int] = {}
+            for nb in nbrs:
+                t = dtype_map.get(nb, (mol.GetAtomWithIdx(nb).GetSymbol(), frozenset()))
+                type_counts[t] = type_counts.get(t, 0) + 1
+            # CN! / product(k_i!)
+            arrangements = _m.factorial(cn)
+            for k in type_counts.values():
+                arrangements //= _m.factorial(k)
+            # Divide by approximate polyhedron order
+            denom = max(1, cn // 2)
+            bound = max(1, arrangements // denom)
+            per_metal.append(bound)
+        # Multi-metallic: multiply but cap
+        product = 1
+        for b in per_metal:
+            product *= b
+            if product > 500:
+                product = 500
+                break
+        return int(product)
+    except Exception:
+        return None
+
+
 def _donor_type_map(mol) -> Dict[int, tuple]:
     """Compute a donor type for each atom based on its chemical environment.
 
@@ -22178,6 +22242,66 @@ def smiles_to_xyz_isomers(
                 ]
         except Exception as _sym_exc:
             logger.debug("Symmetry-aware dedup skipped: %s", _sym_exc)
+
+    # --- Combinatorial upper-bound check ---
+    # If N_output wildly exceeds the Pólya-estimated bound, the
+    # existing dedup has failed to collapse rotameric/label duplicates.
+    # Rerun symmetry-aware dedup with a tighter RMSD threshold (0.5 Å)
+    # and keep collapsing until N <= 1.5 * bound or no more progress.
+    if has_metal and len(results) > 1:
+        try:
+            _bound = _estimate_isomer_upper_bound(mol, dtype_map=dtype_map)
+            if _bound is not None:
+                _target = max(1, int(round(1.5 * _bound)))
+                if len(results) > _target:
+                    logger.info(
+                        "Combinatorial-excess: %d isomers vs bound %d — tightening dedup",
+                        len(results), _bound,
+                    )
+                    for _rmsd_thr in (1.0, 0.7, 0.5):
+                        if len(results) <= _target:
+                            break
+                        _sigs = []
+                        for xyz, _ in results:
+                            try:
+                                _mt = Chem.RWMol(mol)
+                                _mt.RemoveAllConformers()
+                                _c = _xyz_to_rdkit_conformer(_mt.GetMol(), xyz)
+                                if _c is None:
+                                    _sigs.append((0, float("inf")))
+                                    continue
+                                _ci = _mt.AddConformer(_c, assignId=True)
+                                _devs = _ideal_polyhedron_angle_dev_per_metal(_mt.GetMol(), _ci)
+                                _tot = sum(_devs.values()) if _devs else float("inf")
+                                _sigs.append((int(round(_tot / 3.0)), _tot))
+                            except Exception:
+                                _sigs.append((0, float("inf")))
+                        _removed: set = set()
+                        for i in range(len(results)):
+                            if i in _removed:
+                                continue
+                            for j in range(i + 1, len(results)):
+                                if j in _removed:
+                                    continue
+                                if _sigs[i][0] != _sigs[j][0]:
+                                    continue
+                                _rmsd = _heavy_atom_rmsd_xyz(results[i][0], results[j][0])
+                                if _rmsd < _rmsd_thr:
+                                    if _sigs[i][1] <= _sigs[j][1]:
+                                        _removed.add(j)
+                                    else:
+                                        _removed.add(i)
+                                        break
+                        if _removed:
+                            results = [
+                                r for idx, r in enumerate(results) if idx not in _removed
+                            ]
+                            logger.debug(
+                                "Combinatorial-dedup (rmsd<%.1f): -%d → %d",
+                                _rmsd_thr, len(_removed), len(results),
+                            )
+        except Exception as _comb_exc:
+            logger.debug("Combinatorial-bound dedup skipped: %s", _comb_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
