@@ -21631,6 +21631,13 @@ def smiles_to_xyz_isomers(
                     ):
                         relaxed_fragment_results.append((xyz, display))
                     continue
+            # Universal severe-distortion gate: catches C-H-C bridges,
+            # unphysical bond stretches and atom overlaps that slip
+            # past the fragment-topology graph check.  Same helper used
+            # throughout the pipeline so one threshold = one rule.
+            if not _xyz_passes_final_geometry_checks(xyz, mol, skip_angle_check=True):
+                logger.debug("Skipping conformer %d: severe covalent distortion", cid)
+                continue
             results.append((xyz, display))
 
         if not results:
@@ -21836,6 +21843,9 @@ def smiles_to_xyz_isomers(
                     logger.debug("Skipping linkage isomer %s: unphysical M-D distance", _llabel)
                     continue
                 if _fragment_topology_ok(_lxyz, smiles):
+                    if not _xyz_passes_final_geometry_checks(_lxyz, mol, skip_angle_check=True):
+                        logger.debug("Skipping linkage isomer %s: severe covalent distortion", _llabel)
+                        continue
                     results.append((_lxyz, _llabel))
                 else:
                     logger.debug("Skipping linkage isomer %s: fragment topology mismatch", _llabel)
@@ -21862,6 +21872,9 @@ def smiles_to_xyz_isomers(
                         continue
                     if not _fragment_topology_ok(alt_xyz, smiles):
                         logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
+                        continue
+                    if not _xyz_passes_final_geometry_checks(alt_xyz, mol, skip_angle_check=True):
+                        logger.debug("Skipping alt-binding isomer %s: severe covalent distortion", alt_label)
                         continue
                     results.append((alt_xyz, alt_label))
                     existing_base.add(alt_label)
@@ -22953,6 +22966,20 @@ def smiles_to_xyz(
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
+
+        # Post-UFF universal sp2 flatten: RDKit UFF leaves residual
+        # pyramidalisation at every 3-coordinate sp2 atom (carbonyl-C
+        # of DMF/amides, carbamate-C, enamine-N, oxime-N, ring-junction
+        # carbons of fused aromatics).  The same helper was already
+        # applied in the metal UFF path via _optimize_xyz_openbabel_safe;
+        # extending it here keeps every sp2 center planar regardless of
+        # which UFF path produced the XYZ — one helper, one rule, no
+        # per-system tuning.
+        if apply_uff and not has_metal and RDKIT_AVAILABLE:
+            try:
+                xyz_content = _flatten_sp2_atoms_xyz(xyz_content, mol)
+            except Exception as exc:
+                logger.debug("Non-metal sp2 flatten skipped: %s", exc)
 
         # For metal complexes: UFF with universal coordination constraints.
         if apply_uff and has_metal:
