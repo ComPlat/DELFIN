@@ -19560,8 +19560,8 @@ def _generate_topological_isomers(
         _perm: List[int],
         _geom_name: str,
         _chelate_atom_pairs: List[FrozenSet],
-        abs_tol: float = 0.7,
-        rel_tol: float = 0.35,
+        abs_tol: Optional[float] = None,
+        rel_tol: Optional[float] = None,
     ) -> bool:
         """Reject geometrically impossible chelate placements.
 
@@ -19569,7 +19569,21 @@ def _generate_topological_isomers(
         conformer to the idealized target distance implied by geometry+perm.
         If they differ too much, this arrangement is likely non-physical for
         the ligand bite and tends to collapse into unrealistic structures.
+
+        Tolerances are env-tunable via DELFIN_CHELATE_FEAS_ABS_TOL (default
+        1.2 Å) and DELFIN_CHELATE_FEAS_REL_TOL (default 0.5).  The defaults
+        were widened from (0.7, 0.35) after Mn(CO)3(CO2Me)(dppe) showed
+        all 3 TPR arrangements rejected because the template's dppe P-P
+        bite conformer (~3.0 Å) did not fit any TPR idealized P-P bucket
+        within the tighter tolerance — even though a TPR structure can be
+        built and UFF-refined successfully in the downstream builder.
         """
+        if abs_tol is None:
+            abs_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_ABS_TOL", 1.2)
+        if rel_tol is None:
+            rel_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_REL_TOL", 0.5)
+        if not _delfin_env_int("DELFIN_CHELATE_FEAS_ENABLED", 1):
+            return True
         try:
             if _mol.GetNumConformers() == 0:
                 return True
@@ -19754,7 +19768,13 @@ def _generate_topological_isomers(
                     return None
                 ci = mt.AddConformer(c, assignId=True)
                 try:
-                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.3):
+                    # Pre-UFF clash threshold is 0.2 Å (true atom overlap).
+                    # Raising from 0.3 lets TPR / high-CN arrangements with
+                    # big ligands (dppe phenyls, salen-biphep) survive to
+                    # UFF, which relaxes the close contacts.  Downstream
+                    # _has_unphysical_metal_nonbonded_contact + post-UFF
+                    # gates still catch genuine broken structures.
+                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.2):
                         return None
                     if _has_unphysical_metal_nonbonded_contact(mt.GetMol(), ci):
                         return None
