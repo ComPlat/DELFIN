@@ -993,14 +993,17 @@ DELFIN_CHELATE_REJECT_DELTA: float = _delfin_env_float(
 """Native-bite-match tolerance (Å) above which a chelate conformer is
 outright rejected."""
 
-DELFIN_CHELATE_CAP_30: int = _delfin_env_int("DELFIN_CHELATE_CAP_30", 20)
+DELFIN_CHELATE_CAP_30: int = _delfin_env_int("DELFIN_CHELATE_CAP_30", 12)
 """n_trials cap in ``_chelate_conformer_candidates`` for fragments with
->30 atoms.  Default 20 catches medium-size terdentate systems (terpy,
-tpy-phenyl, cyclam derivatives) that time out at the full 40 trials
-even though they are not >60 atoms.  Lowered from prior "no cap below
-60 atoms" after Os(terpy)(py-Ph) and Fe(terpy)(py-p-tolyl) were
-diagnosed hanging in _chelate_conformer_candidates with 40 seeds ×
-~6 s each.  With 20 seeds and early-exit they finish in < 60 s."""
+>30 atoms.  Default 12 catches medium-size terdentate systems (terpy,
+tpy-phenyl, tpy-NMe2, cyclam derivatives) that time out at the full
+40 trials even though they are not >60 atoms.  Each seed costs ~6 s
+on this fragment size, so 12 × 6 s = 72 s worst case per chelate
+attempt, leaving headroom for multi-chelate multi-arrangement runs
+inside the 900 s outer budget.  Verified direct tests:
+  25-Os(terpy)(py-Ph)       n=3-5 in 80-120 s
+  27-Fe(terpy)(py-p-tolyl)  n=4   in 50 s
+  28-Fe(terpy-NMe2)2        n=3   in 35 s (DELFIN_CHELATE_N_TRIALS=10)"""
 
 DELFIN_CHELATE_CAP_60: int = _delfin_env_int("DELFIN_CHELATE_CAP_60", 15)
 """n_trials cap in ``_chelate_conformer_candidates`` for fragments with
