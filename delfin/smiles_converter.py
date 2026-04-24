@@ -1138,6 +1138,16 @@ def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
             return AllChem.EmbedMolecule(mol, params)
         return AllChem.EmbedMolecule(mol)
 
+    # Scale timeout with mol size: large hexadentate / fused-ring ligands
+    # (Cu-salen-biphep, Fe-terpy-NMe2, Pt-phos-terpy) need much more than
+    # the default 10 s to finish a single ETKDG embedding pass.  Without
+    # this scaling, every attempt times out, the background thread is
+    # orphaned (still running ETKDG in C++), the pipeline retries with
+    # a new seed, and orphan threads accumulate until the whole
+    # subprocess hits the caller's wall-clock timeout.
+    if n_atoms > 50:
+        timeout = max(timeout, 10.0 + 0.5 * (n_atoms - 50))
+
     result = [-1]
     exc_holder = [None]
 
@@ -1184,6 +1194,18 @@ def _embed_multiple_confs_with_timeout(
     """
     if timeout is None:
         timeout = _MULTIEMBED_TIMEOUT
+
+    # Scale timeout + num_confs with mol size.  For huge fused-ring
+    # ligands (>80 atoms) the default 25 s default cannot finish even
+    # a single conformer; shrinking num_confs while extending timeout
+    # lets one attempt finish and avoids the orphan-thread pile-up.
+    n_atoms = mol.GetNumAtoms()
+    if n_atoms > 80:
+        timeout = max(timeout, 25.0 + 1.0 * (n_atoms - 80))
+        num_confs = min(num_confs, 3)
+    elif n_atoms > 50:
+        timeout = max(timeout, 25.0 + 0.5 * (n_atoms - 50))
+        num_confs = min(num_confs, 5)
 
     before = {int(c.GetId()) for c in mol.GetConformers()}
     result: List[int] = []
@@ -17591,6 +17613,139 @@ def _build_multimetal_scaffold(
         return None
 
 
+def _snap_fused_aromatic_groups_to_plane(
+    mol,
+    conf_id: int = 0,
+    rms_threshold: float = 0.03,
+) -> bool:
+    """Project *fused* aromatic ring systems onto a common best-fit plane.
+
+    A fused aromatic group = set of atoms that belong to two or more
+    rings which share at least one edge, where each ring is aromatic
+    (or has >= 2 unsaturated bonds).  Examples: carbazole (5+6+6),
+    fluorene (5+6+6), naphthalene (6+6), indole (5+6).  Individually
+    every member ring is planar but UFF can bend the ring-ring
+    dihedral, leaving the collective pi-system "knickt".
+
+    Approach per fused group:
+      1. Collect all heavy atoms of all member rings.
+      2. SVD best-fit plane.
+      3. Minimal-movement projection (each atom shifted only by its
+         component perpendicular to the plane).
+
+    Biaryls (aryl-aryl linked by a single bond but NOT sharing an
+    edge) stay unaffected: their rings are NOT fused and remain free
+    to rotate.
+
+    Returns True if any group was modified.
+    """
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        try:
+            Chem.GetSymmSSSR(mol)
+        except Exception:
+            pass
+        ri = mol.GetRingInfo()
+        if ri is None:
+            return False
+
+        # Qualifying rings: 5-7 members, >=2 unsat bonds, no metal, no H.
+        rings = []
+        for r in ri.AtomRings():
+            if len(r) < 5 or len(r) > 7:
+                continue
+            if any(
+                mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+                for i in r
+            ):
+                continue
+            unsat = 0
+            for i in range(len(r)):
+                a, b = r[i], r[(i + 1) % len(r)]
+                bond = mol.GetBondBetweenAtoms(a, b)
+                if bond is None:
+                    continue
+                if bond.GetBondType() != Chem.BondType.SINGLE or bond.GetIsAromatic():
+                    unsat += 1
+            if unsat < 2:
+                continue
+            rings.append(set(r))
+
+        if not rings:
+            return False
+
+        # Union-find: rings that share at least one atom belong to one group.
+        parent = list(range(len(rings)))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for i in range(len(rings)):
+            for j in range(i + 1, len(rings)):
+                if rings[i] & rings[j]:
+                    union(i, j)
+
+        groups: Dict[int, set] = {}
+        for i in range(len(rings)):
+            key = find(i)
+            groups.setdefault(key, set()).update(rings[i])
+
+        changed = False
+        for atoms in groups.values():
+            if len(atoms) < 8:
+                # Single ring - handled by per-ring snap.
+                continue
+            idxs = sorted(atoms)
+            pts = np.array([
+                [conf.GetAtomPosition(i).x,
+                 conf.GetAtomPosition(i).y,
+                 conf.GetAtomPosition(i).z]
+                for i in idxs
+            ])
+            centroid = pts.mean(axis=0)
+            cp = pts - centroid
+            try:
+                _, _, vh = np.linalg.svd(cp, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = vh[-1]
+            nn = np.linalg.norm(normal)
+            if nn < 1e-9:
+                continue
+            normal /= nn
+            offsets = cp @ normal
+            rms = float(np.sqrt(float((offsets * offsets).mean())))
+            if rms < rms_threshold:
+                continue
+            # Project atoms onto plane (minimal movement).
+            for idx, aidx in enumerate(idxs):
+                newp = pts[idx] - offsets[idx] * normal
+                conf.SetAtomPosition(
+                    int(aidx),
+                    (float(newp[0]), float(newp[1]), float(newp[2])),
+                )
+            changed = True
+        return changed
+    except Exception as exc:
+        logger.debug("_snap_fused_aromatic_groups_to_plane failed: %s", exc)
+        return False
+
+
 def _snap_aromatic_rings_to_plane(
     mol,
     conf_id: int = 0,
@@ -17727,9 +17882,16 @@ def _snap_aromatic_rings_in_xyz(
                 i, (float(parts[1]), float(parts[2]), float(parts[3]))
             )
         cid = mol_use.AddConformer(conf, assignId=True)
-        changed = _snap_aromatic_rings_to_plane(
+        # Fused-group snap FIRST (collective plane for carbazole-style
+        # fused aromatics), then per-ring snap as a second pass so any
+        # residual single-ring buckle is also removed.
+        changed_fused = _snap_fused_aromatic_groups_to_plane(
+            mol_use, cid, rms_threshold=rms_threshold,
+        )
+        changed_rings = _snap_aromatic_rings_to_plane(
             mol_use, cid, rms_threshold=rms_threshold
         )
+        changed = bool(changed_fused or changed_rings)
         if not changed:
             return xyz_str
         new_conf = mol_use.GetConformer(cid)
@@ -20826,6 +20988,133 @@ def _enumerate_hapto_sigma_isomers(
     return results
 
 
+def _heavy_atom_rmsd_xyz(xyz_a: str, xyz_b: str) -> float:
+    """Symmetry-free heavy-atom RMSD (no alignment) between two XYZ blocks.
+
+    Requires identical atom count and order (which holds when both XYZs
+    are emitted from the same RDKit mol).  Skips hydrogens.  Returns a
+    large value on any parse error so the caller conservatively treats
+    the pair as distinct.
+    """
+    try:
+        la = [l for l in xyz_a.strip().splitlines() if l.strip()]
+        lb = [l for l in xyz_b.strip().splitlines() if l.strip()]
+        if len(la) != len(lb) or not la:
+            return 1e9
+        import numpy as _np
+        pa, pb = [], []
+        for ra, rb in zip(la, lb):
+            pa_parts = ra.split()
+            pb_parts = rb.split()
+            if len(pa_parts) < 4 or len(pb_parts) < 4:
+                return 1e9
+            if pa_parts[0] != pb_parts[0]:
+                return 1e9
+            if pa_parts[0].upper() == "H":
+                continue
+            pa.append([float(pa_parts[1]), float(pa_parts[2]), float(pa_parts[3])])
+            pb.append([float(pb_parts[1]), float(pb_parts[2]), float(pb_parts[3])])
+        if not pa:
+            return 1e9
+        A = _np.asarray(pa); B = _np.asarray(pb)
+        A -= A.mean(axis=0); B -= B.mean(axis=0)
+        H = A.T @ B
+        U, _, Vt = _np.linalg.svd(H)
+        d = _np.sign(_np.linalg.det(Vt.T @ U.T))
+        D = _np.diag([1.0, 1.0, d])
+        R = Vt.T @ D @ U.T
+        Aaln = A @ R.T
+        return float(_np.sqrt(_np.mean(_np.sum((Aaln - B) ** 2, axis=1))))
+    except Exception:
+        return 1e9
+
+
+def _organic_conformer_pool(
+    smiles: str,
+    base_xyz: Optional[str],
+    *,
+    max_pool: int = 8,
+    rmsd_threshold: float = 0.5,
+    apply_uff: bool = True,
+) -> List[Tuple[str, str]]:
+    """Deterministic ETKDG pool for non-metal SMILES.
+
+    Returns ``[(xyz, label), ...]`` where the first entry (if provided)
+    is ``base_xyz`` with label ``"conf-1"``.  Extra conformers are
+    embedded from seeded ETKDG parameters drawn from ``_PIPELINE_SEEDS``,
+    UFF-polished, fused-ring-snapped, and accepted only when their
+    heavy-atom RMSD exceeds ``rmsd_threshold`` against every previously
+    accepted conformer.  Never raises.
+    """
+    if not RDKIT_AVAILABLE:
+        return [(base_xyz, "")] if base_xyz else []
+    pool: List[Tuple[str, str]] = []
+    if base_xyz:
+        pool.append((base_xyz, "conf-1"))
+    try:
+        mol = _prepare_mol_for_embedding(smiles, hapto_approx=False)
+    except Exception:
+        mol = None
+    if mol is None:
+        return pool
+    try:
+        mol_h = Chem.AddHs(mol)
+    except Exception:
+        mol_h = mol
+    try:
+        n_atoms = mol_h.GetNumAtoms()
+    except Exception:
+        return pool
+    # Cap seed count by molecule size — huge fused-ring systems blow up
+    # ETKDG wall-time; keep pool generation under a few seconds.
+    if n_atoms > 120:
+        seed_count = min(max_pool, 3)
+    elif n_atoms > 80:
+        seed_count = min(max_pool, 5)
+    else:
+        seed_count = max_pool
+    seeds = list(_PIPELINE_SEEDS[: max(1, seed_count)])
+    for seed in seeds:
+        if len(pool) >= max_pool:
+            break
+        try:
+            mol_try = Chem.Mol(mol_h)
+            params = AllChem.ETKDGv3()
+            params.randomSeed = int(seed)
+            params.useRandomCoords = True
+            params.enforceChirality = False
+            cid = _embed_with_timeout(mol_try, params)
+            if cid is None or cid < 0:
+                continue
+            conf = mol_try.GetConformer(cid)
+            lines = []
+            for i in range(mol_try.GetNumAtoms()):
+                atom = mol_try.GetAtomWithIdx(i)
+                p = conf.GetAtomPosition(i)
+                lines.append(
+                    f"{atom.GetSymbol():4s} {p.x:12.6f} {p.y:12.6f} {p.z:12.6f}"
+                )
+            xyz = "\n".join(lines) + "\n"
+            if apply_uff:
+                try:
+                    xyz = _optimize_xyz_openbabel_safe(xyz, mol_template=mol_h)
+                except Exception:
+                    pass
+            try:
+                xyz = _snap_aromatic_rings_in_xyz(xyz, mol_h, rms_threshold=0.05)
+            except Exception:
+                pass
+            if not xyz or not xyz.strip():
+                continue
+            if any(_heavy_atom_rmsd_xyz(xyz, x) < rmsd_threshold for x, _ in pool):
+                continue
+            pool.append((xyz, f"conf-{len(pool) + 1}"))
+        except Exception as exc:
+            logger.debug("Organic conformer seed %s failed: %s", seed, exc)
+            continue
+    return pool
+
+
 def smiles_to_xyz_isomers(
     smiles: str,
     num_confs: int = 200,
@@ -20991,12 +21280,24 @@ def smiles_to_xyz_isomers(
             # Return the hapto results directly.
             return results_hapto, None
 
-    # Non-metal molecules: single geometry
+    # Non-metal molecules: deterministic conformer pool.  Organic
+    # ligands have no coordination-isomer axis, but different rotamer
+    # / ring-pucker minima are still genuinely distinct low-energy
+    # geometries.  Seed pool from _PIPELINE_SEEDS so results are
+    # reproducible; de-duplicate by heavy-atom RMSD.
     if not has_metal:
         xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
         if err:
             return [], err
-        return [(xyz, '')], None
+        _max_pool = max(1, min(int(max_isomers), 8))
+        pool = _organic_conformer_pool(
+            smiles, xyz, max_pool=_max_pool, apply_uff=apply_uff,
+        )
+        if not pool:
+            return [(xyz, '')], None
+        if collapse_label_variants and len(pool) == 1:
+            return [(pool[0][0], '')], None
+        return pool, None
 
     # Prepare molecule for embedding (skip if already set by hapto multi-metal path)
     if mol is None:
@@ -22636,6 +22937,18 @@ def smiles_to_xyz(
             xyz_content = _optimize_xyz_openbabel_safe(
                 xyz_content, mol_template=mol
             )
+        # For non-metal molecules RDKit UFF above often leaves fused
+        # aromatic cores with residual buckle (perylenediimide, carbazole,
+        # acridine, …).  Snap each π-system onto its best-fit plane so
+        # downstream conformer-pool de-duplication compares planar cores
+        # and Avogadro renders them as users expect.
+        elif apply_uff and RDKIT_AVAILABLE:
+            try:
+                xyz_content = _snap_aromatic_rings_in_xyz(
+                    xyz_content, mol, rms_threshold=0.05,
+                )
+            except Exception as exc:
+                logger.debug("Non-metal aromatic-plane snap skipped: %s", exc)
 
         # Check if molecule contains metals and warn about geometry quality
         has_metals = any(atom.GetAtomicNum() in range(21, 31) or  # 3d metals: Sc-Zn
@@ -23880,6 +24193,14 @@ def _optimize_xyz_openbabel_safe(
                 return xyz_delfin
         except Exception:
             pass
+
+    if mol_template is not None and RDKIT_AVAILABLE:
+        try:
+            xyz_opt = _snap_aromatic_rings_in_xyz(
+                xyz_opt, mol_template, rms_threshold=0.05
+            )
+        except Exception as exc:
+            logger.debug("Post-UFF aromatic-plane snap skipped: %s", exc)
 
     return xyz_opt
 
