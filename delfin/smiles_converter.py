@@ -19579,9 +19579,9 @@ def _generate_topological_isomers(
         built and UFF-refined successfully in the downstream builder.
         """
         if abs_tol is None:
-            abs_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_ABS_TOL", 1.2)
+            abs_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_ABS_TOL", 0.7)
         if rel_tol is None:
-            rel_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_REL_TOL", 0.5)
+            rel_tol = _delfin_env_float("DELFIN_CHELATE_FEAS_REL_TOL", 0.35)
         if not _delfin_env_int("DELFIN_CHELATE_FEAS_ENABLED", 1):
             return True
         try:
@@ -19768,13 +19768,7 @@ def _generate_topological_isomers(
                     return None
                 ci = mt.AddConformer(c, assignId=True)
                 try:
-                    # Pre-UFF clash threshold is 0.2 Å (true atom overlap).
-                    # Raising from 0.3 lets TPR / high-CN arrangements with
-                    # big ligands (dppe phenyls, salen-biphep) survive to
-                    # UFF, which relaxes the close contacts.  Downstream
-                    # _has_unphysical_metal_nonbonded_contact + post-UFF
-                    # gates still catch genuine broken structures.
-                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.2):
+                    if _has_atom_clash(mt.GetMol(), ci, min_dist=0.3):
                         return None
                     if _has_unphysical_metal_nonbonded_contact(mt.GetMol(), ci):
                         return None
