@@ -993,6 +993,61 @@ DELFIN_CHELATE_REJECT_DELTA: float = _delfin_env_float(
 """Native-bite-match tolerance (Å) above which a chelate conformer is
 outright rejected."""
 
+DELFIN_CHELATE_CAP_60: int = _delfin_env_int("DELFIN_CHELATE_CAP_60", 15)
+"""n_trials cap in ``_chelate_conformer_candidates`` for fragments with
+>60 atoms.  Default 15 is the conservative post-b32856f value; raise
+to widen the chelate-pose search for heavy polydentate ligands at the
+cost of wall-time (each seed costs ~6 s on >60-atom fragments)."""
+
+DELFIN_CHELATE_CAP_90: int = _delfin_env_int("DELFIN_CHELATE_CAP_90", 8)
+"""n_trials cap in ``_chelate_conformer_candidates`` for fragments with
+>90 atoms.  Default 8 is the conservative post-b32856f value; raise
+for regressions where the correct chelate pose never makes it into
+the cap-8 subset."""
+
+# --- Final-result geometry gate (smiles_to_xyz_isomers) -------------------
+DELFIN_SEVERE_DIST_MAX_ABS: float = _delfin_env_float(
+    "DELFIN_SEVERE_DIST_MAX_ABS", 2.4
+)
+"""Absolute upper bound (Å) on any non-metal covalent bond length used
+by ``_has_severe_covalent_distortion``.  Raise for SMILES with legitimate
+long bonds (I-I ~2.67, Te-Te ~2.72) that the default falsely rejects."""
+
+DELFIN_SEVERE_DIST_MAX_SCALE: float = _delfin_env_float(
+    "DELFIN_SEVERE_DIST_MAX_SCALE", 1.8
+)
+"""Maximum bond length relative to the sum of covalent radii, used by
+``_has_severe_covalent_distortion``.  Raise to tolerate UFF-overstretched
+bonds that still describe the correct topology."""
+
+DELFIN_FINAL_GATE_ENABLED: int = _delfin_env_int("DELFIN_FINAL_GATE_ENABLED", 1)
+"""When 1 (default), the three ``_xyz_passes_final_geometry_checks``
+guards in ``smiles_to_xyz_isomers`` (main conformer loop, linkage
+isomer append, alt-binding append) reject structures that pass fragment-
+topology but fail the severe-distortion check.  Set to 0 to bypass the
+gate when diagnosing regressions where it is over-rejecting."""
+
+# --- Symmetry / ideal-polyhedron scoring ---------------------------------
+DELFIN_SYMMETRY_WEIGHT: float = _delfin_env_float(
+    "DELFIN_SYMMETRY_WEIGHT", 1.0
+)
+"""Multiplier on the symmetry-bonus term inside
+``_geometry_quality_score``.  Default 1.0 preserves legacy scoring;
+raise (e.g. 2.0) to promote highly symmetric polyhedra above distorted
+lookalikes.  Kept conservative by default so sweep data stays
+comparable across commits; raise per-run for targeted ranking."""
+
+DELFIN_IDEAL_POLYHEDRON_MAX_DEV: float = _delfin_env_float(
+    "DELFIN_IDEAL_POLYHEDRON_MAX_DEV", 0.0
+)
+"""Maximum single-angle deviation (degrees) from the nearest ideal
+polyhedron (Td / Oh / TBP / SP / PBP / SAP / TPR) that a conformer
+may exhibit before ``_has_bad_geometry`` rejects it.  Default 0.0
+disables the additional polyhedron-fidelity gate; set to e.g. 20.0
+so a Jahn-Teller distortion (~5-10°) passes but a 25° broken
+octahedron is rejected.  Measured per metal — any metal that exceeds
+the threshold marks the whole structure bad."""
+
 # --- Timeouts (seconds, per-call) -----------------------------------------
 _EMBED_TIMEOUT: float = _delfin_env_float("DELFIN_EMBED_TIMEOUT", 10.0)
 """Per-call timeout for RDKit ``EmbedMolecule`` / stk embedding.
@@ -14974,12 +15029,22 @@ def _has_pi_ring_nonplanarity(
 def _has_severe_covalent_distortion(
     mol,
     conf_id: int,
-    max_abs_bond: float = 2.4,
-    max_covalent_scale: float = 1.8,
+    max_abs_bond: Optional[float] = None,
+    max_covalent_scale: Optional[float] = None,
 ) -> bool:
-    """Return True if non-metal covalent bonds are unrealistically stretched."""
+    """Return True if non-metal covalent bonds are unrealistically stretched.
+
+    Thresholds default to the module-level ``DELFIN_SEVERE_DIST_MAX_ABS``
+    and ``DELFIN_SEVERE_DIST_MAX_SCALE`` env-tunable constants so the
+    gate can be relaxed or tightened without touching code.  Explicit
+    overrides still win.
+    """
     if not RDKIT_AVAILABLE:
         return False
+    if max_abs_bond is None:
+        max_abs_bond = DELFIN_SEVERE_DIST_MAX_ABS
+    if max_covalent_scale is None:
+        max_covalent_scale = DELFIN_SEVERE_DIST_MAX_SCALE
     try:
         conf = mol.GetConformer(conf_id)
         pt = Chem.GetPeriodicTable()
@@ -15102,6 +15167,91 @@ def _preferred_cn4_geometry_score(
     return min(tetra_pen, square_pen)
 
 
+def _ideal_polyhedron_angle_dev_per_metal(
+    mol, conf_id: int
+) -> Dict[int, float]:
+    """Return {metal_idx: max-angle-deviation-deg} vs nearest ideal polyhedron.
+
+    Pure helper — does NOT reject anything, just measures how far each
+    metal's L-M-L angles are from the closest textbook polyhedron for
+    its coordination number.  Ideal angles by CN:
+
+    - 2  → LIN (180)
+    - 3  → TP / TS (120 / 90·2+180)
+    - 4  → Td / SP  (109.47 / 90·4+180·2)
+    - 5  → TBP / SPY (90·6+120·3+180 / 90·8+180·2)
+    - 6  → Oh / TPR  (90·12+180·3 / 76·6+82·3+140·6)
+    - 7  → PBP       (72·5+90·10+144·5+180)
+    - 8  → SAP / DD  (52.4·4+73.1·4+118.5·4+143.1·4+180·2 / etc.)
+
+    For each L-M-L pair we compute angle, measure distance to the nearest
+    ideal target for the CN, and track the maximum for that metal.  The
+    returned per-metal number in degrees is compared against
+    ``DELFIN_IDEAL_POLYHEDRON_MAX_DEV``.  Used by ``_has_bad_geometry``
+    (gate) and available for ranking / reporting.
+    """
+    out: Dict[int, float] = {}
+    if not RDKIT_AVAILABLE:
+        return out
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return out
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        metal_idx = atom.GetIdx()
+        metal_pos = conf.GetAtomPosition(metal_idx)
+        neighbors = list(atom.GetNeighbors())
+        cn = len(neighbors)
+        if cn < 2:
+            continue
+        coord_positions = [conf.GetAtomPosition(nb.GetIdx()) for nb in neighbors]
+        angles: List[float] = []
+        for i in range(cn):
+            for j in range(i + 1, cn):
+                pa, pb = coord_positions[i], coord_positions[j]
+                v1 = (pa.x - metal_pos.x, pa.y - metal_pos.y, pa.z - metal_pos.z)
+                v2 = (pb.x - metal_pos.x, pb.y - metal_pos.y, pb.z - metal_pos.z)
+                mag1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2 + v1[2] ** 2)
+                mag2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2 + v2[2] ** 2)
+                if mag1 < 1e-8 or mag2 < 1e-8:
+                    continue
+                dot = v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]
+                cos_a = max(-1.0, min(1.0, dot / (mag1 * mag2)))
+                angles.append(math.degrees(math.acos(cos_a)))
+        if not angles:
+            continue
+        # Per-CN ideal angle targets, picked best-of over competing
+        # polyhedra at the same CN.
+        if cn == 2:
+            ideals_list = [[180.0]]
+        elif cn == 3:
+            ideals_list = [[120.0], [90.0, 180.0]]
+        elif cn == 4:
+            ideals_list = [[109.47], [90.0, 180.0]]
+        elif cn == 5:
+            ideals_list = [[90.0, 120.0, 180.0], [90.0, 180.0]]
+        elif cn == 6:
+            ideals_list = [[90.0, 180.0], [76.0, 82.0, 140.0]]
+        elif cn == 7:
+            ideals_list = [[72.0, 90.0, 144.0, 180.0]]
+        elif cn == 8:
+            ideals_list = [
+                [52.4, 73.1, 118.5, 143.1, 180.0],
+                [62.2, 73.7, 117.4, 143.6, 180.0],
+            ]
+        else:
+            ideals_list = [[90.0, 180.0]]
+        best_max_dev = float("inf")
+        for ideals in ideals_list:
+            max_dev = max(min(abs(a - t) for t in ideals) for a in angles)
+            if max_dev < best_max_dev:
+                best_max_dev = max_dev
+        out[metal_idx] = best_max_dev
+    return out
+
+
 def _has_bad_geometry(mol, conf_id: int) -> bool:
     """Return True if the conformer has unrealistic metal-ligand geometry.
 
@@ -15112,6 +15262,9 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
        may be as small as 40°; all other L-M-L pairs must be >=50°.
        This correctly allows 5- and 6-membered chelate ring bite angles
        (~55-70°) while still rejecting collapsed non-chelate geometries.
+    3. Optional (env-gated): max single-angle deviation from the nearest
+       ideal polyhedron must be ≤ ``DELFIN_IDEAL_POLYHEDRON_MAX_DEV``
+       degrees.  Disabled when the env-var is 0.0 (default).
     """
     conf = mol.GetConformer(conf_id)
     if _has_unphysical_metal_nonbonded_contact(mol, conf_id):
@@ -15120,6 +15273,10 @@ def _has_bad_geometry(mol, conf_id: int) -> bool:
         return True
     if _has_pi_ring_nonplanarity(mol, conf_id):
         return True
+    if DELFIN_IDEAL_POLYHEDRON_MAX_DEV > 0.0:
+        devs = _ideal_polyhedron_angle_dev_per_metal(mol, conf_id)
+        if any(dev > DELFIN_IDEAL_POLYHEDRON_MAX_DEV for dev in devs.values()):
+            return True
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
@@ -15256,7 +15413,10 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
         # Polyhedron angle penalties weighted x2 globally so ideal-
         # polyhedron adherence (Oh / TBP / Td / SAP / etc.) has
         # enough magnitude to dominate within-bucket ranking.
-        _POLY_W = 2.0
+        # Multiplied by DELFIN_SYMMETRY_WEIGHT (default 1.0) so callers
+        # can amplify the polyhedron-fidelity pressure without touching
+        # code — raise to 2.0+ when quality trumps diversity.
+        _POLY_W = 2.0 * DELFIN_SYMMETRY_WEIGHT
         if len(neighbors) == 2 and len(angles) == 1:
             # CN=2 (linear): ideal angle = 180°
             total_penalty += _POLY_W * abs(angles[0] - 180.0)
@@ -15335,7 +15495,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     continue
                 _m = sum(_vals) / len(_vals)
                 _sd = math.sqrt(sum((x - _m) ** 2 for x in _vals) / len(_vals))
-                total_penalty += 5.0 * _sd
+                total_penalty += 5.0 * DELFIN_SYMMETRY_WEIGHT * _sd
 
         # Point-group / Cn-axis bonus: for each metal, test candidate
         # rotation axes (each principal axis of the donor point cloud
@@ -15396,7 +15556,7 @@ def _geometry_quality_score(mol, conf_id: int) -> float:
                     if _max_order >= 6:
                         break
                 if _max_order > 1:
-                    total_penalty -= 5.0 * (_max_order - 1)
+                    total_penalty -= 5.0 * DELFIN_SYMMETRY_WEIGHT * (_max_order - 1)
         except Exception:
             pass
 
@@ -17226,14 +17386,15 @@ def _chelate_conformer_candidates(
     # phos-terpy) have ETKDG wall-clocks measured in seconds per seed,
     # so the default 40 trials × 6 s timeout accumulates into minutes
     # of wall-time — and with orphan thread pile-up starves the
-    # subprocess long before the first isomer is written.  Cap trials
-    # at 15 for >60-atom fragments, 8 for >90-atom fragments so the
-    # pipeline keeps making forward progress even on the hardest cases.
+    # subprocess long before the first isomer is written.  Caps are
+    # exposed as DELFIN_CHELATE_CAP_{60,90} so regressions where the
+    # correct pose lives past the 8-/15-seed window can be recovered
+    # by raising the cap for that run.
     _frag_n = frag_mol.GetNumAtoms()
     if _frag_n > 90:
-        n_trials = min(n_trials, 8)
+        n_trials = min(n_trials, DELFIN_CHELATE_CAP_90)
     elif _frag_n > 60:
-        n_trials = min(n_trials, 15)
+        n_trials = min(n_trials, DELFIN_CHELATE_CAP_60)
 
     for seed in _SEEDS[:n_trials]:
         cid = _try_embed(frag_mol, seed)
@@ -21518,7 +21679,7 @@ def smiles_to_xyz_isomers(
         def _base_label(lbl: str) -> str:
             if not lbl:
                 return ''
-            return re.sub(r'-\d+$', '', str(lbl))
+            return re.sub(r'-(conf)?\d+$', '',str(lbl))
 
         fps_list = list(seen_fps.keys())
         removed: set = set()
@@ -21635,7 +21796,10 @@ def smiles_to_xyz_isomers(
             # unphysical bond stretches and atom overlaps that slip
             # past the fragment-topology graph check.  Same helper used
             # throughout the pipeline so one threshold = one rule.
-            if not _xyz_passes_final_geometry_checks(xyz, mol, skip_angle_check=True):
+            # Toggle via DELFIN_FINAL_GATE_ENABLED for regression diagnosis.
+            if DELFIN_FINAL_GATE_ENABLED and not _xyz_passes_final_geometry_checks(
+                xyz, mol, skip_angle_check=True
+            ):
                 logger.debug("Skipping conformer %d: severe covalent distortion", cid)
                 continue
             results.append((xyz, display))
@@ -21843,7 +22007,9 @@ def smiles_to_xyz_isomers(
                     logger.debug("Skipping linkage isomer %s: unphysical M-D distance", _llabel)
                     continue
                 if _fragment_topology_ok(_lxyz, smiles):
-                    if not _xyz_passes_final_geometry_checks(_lxyz, mol, skip_angle_check=True):
+                    if DELFIN_FINAL_GATE_ENABLED and not _xyz_passes_final_geometry_checks(
+                        _lxyz, mol, skip_angle_check=True
+                    ):
                         logger.debug("Skipping linkage isomer %s: severe covalent distortion", _llabel)
                         continue
                     results.append((_lxyz, _llabel))
@@ -21857,7 +22023,7 @@ def smiles_to_xyz_isomers(
     if has_metal and include_binding_mode_isomers and _alt_tries > 0:
         try:
             existing_displays = {display for _, display in results}
-            existing_base = {re.sub(r'-\d+$', '', d) for d in existing_displays}
+            existing_base = {re.sub(r'-(conf)?\d+$', '',d) for d in existing_displays}
             alt_results = _generate_alternative_binding_modes(
                 mol, smiles, apply_uff=apply_uff,
                 max_template_tries=_alt_tries,
@@ -21873,7 +22039,9 @@ def smiles_to_xyz_isomers(
                     if not _fragment_topology_ok(alt_xyz, smiles):
                         logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
                         continue
-                    if not _xyz_passes_final_geometry_checks(alt_xyz, mol, skip_angle_check=True):
+                    if DELFIN_FINAL_GATE_ENABLED and not _xyz_passes_final_geometry_checks(
+                        alt_xyz, mol, skip_angle_check=True
+                    ):
                         logger.debug("Skipping alt-binding isomer %s: severe covalent distortion", alt_label)
                         continue
                     results.append((alt_xyz, alt_label))
@@ -21911,7 +22079,7 @@ def smiles_to_xyz_isomers(
             base_best: Dict[str, Tuple[int, float]] = {}
             scored_cache: List[float] = []
             for idx, (xyz, lbl) in enumerate(results):
-                base = re.sub(r'-\d+$', '', lbl) if lbl else ''
+                base = re.sub(r'-(conf)?\d+$', '',lbl) if lbl else ''
                 score = _score_xyz(xyz)
                 scored_cache.append(score)
                 if base not in base_best or score < base_best[base][1]:
@@ -21924,26 +22092,92 @@ def smiles_to_xyz_isomers(
                     logger.debug(
                         "Final dedup: dropping %r (base=%r, score=%.3f) — better kept",
                         lbl,
-                        re.sub(r'-\d+$', '', lbl) if lbl else '',
+                        re.sub(r'-(conf)?\d+$', '',lbl) if lbl else '',
                         scored_cache[idx],
                     )
                     continue
-                new_results.append((xyz, re.sub(r'-\d+$', '', lbl) if lbl else lbl))
+                new_results.append((xyz, re.sub(r'-(conf)?\d+$', '',lbl) if lbl else lbl))
             results = new_results
         except Exception as _dedup_exc:
             logger.debug("Geometry-based dedup failed, falling back to first-keep: %s", _dedup_exc)
             _seen_base: Dict[str, int] = {}
             _keep: List[bool] = [True] * len(results)
             for _idx, (_, _lbl) in enumerate(results):
-                _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
+                _base = re.sub(r'-(conf)?\d+$', '',_lbl) if _lbl else ''
                 if _base in _seen_base:
                     _keep[_idx] = False
                 else:
                     _seen_base[_base] = _idx
             results = [
-                (xyz, re.sub(r'-\d+$', '', lbl))
+                (xyz, re.sub(r'-(conf)?\d+$', '',lbl))
                 for (xyz, lbl), keep in zip(results, _keep) if keep
             ]
+
+    # --- Symmetry-aware cross-label dedup ---
+    # The final-label dedup above collapses ``trans-1`` / ``trans-2`` but
+    # "Isomer N" entries use spaces and slip through — a topo enumerator
+    # pass can emit 4–6 "Isomer 1..6" that are rotameric siblings of the
+    # same coordination isomer.  Here we:
+    #   1. compute per-metal ideal-polyhedron angle deviation for each entry
+    #   2. bin by (polyhedron-dev rounded to 2°, coord fingerprint)
+    #   3. within each bin, collapse pairs whose heavy-atom RMSD < threshold
+    #      and keep the one with the lowest polyhedron deviation (i.e. the
+    #      most textbook-symmetric representative).
+    # Conservative default threshold 1.0 Å; tighter than the cross-label
+    # 0.8 Å already used earlier but applied on the final result pool only.
+    if has_metal and len(results) > 1:
+        try:
+            # Compute a signature per entry: (sum of polyhedron deviations,
+            # rounded to nearest 2°).  Equivalent-symmetry isomers end up in
+            # the same bucket.
+            def _sym_sig(xyz: str) -> Tuple[int, float]:
+                try:
+                    mt = Chem.RWMol(mol)
+                    mt.RemoveAllConformers()
+                    conf = _xyz_to_rdkit_conformer(mt.GetMol(), xyz)
+                    if conf is None:
+                        return (0, float("inf"))
+                    cid = mt.AddConformer(conf, assignId=True)
+                    devs = _ideal_polyhedron_angle_dev_per_metal(mt.GetMol(), cid)
+                    if not devs:
+                        return (0, float("inf"))
+                    total = sum(devs.values())
+                    return (int(round(total / 2.0)), total)
+                except Exception:
+                    return (0, float("inf"))
+
+            sigs = [_sym_sig(xyz) for xyz, _ in results]
+            # Collapse near-duplicate pairs across labels
+            removed: set = set()
+            _RMSD_SAME_SIG = 1.0  # Å, heavy-atom RMSD
+            for i in range(len(results)):
+                if i in removed:
+                    continue
+                bin_i, tot_i = sigs[i]
+                for j in range(i + 1, len(results)):
+                    if j in removed:
+                        continue
+                    bin_j, tot_j = sigs[j]
+                    if bin_i != bin_j:
+                        continue
+                    rmsd = _heavy_atom_rmsd_xyz(results[i][0], results[j][0])
+                    if rmsd < _RMSD_SAME_SIG:
+                        # Keep whichever has lower polyhedron total dev
+                        if tot_i <= tot_j:
+                            removed.add(j)
+                        else:
+                            removed.add(i)
+                            break
+            if removed:
+                logger.debug(
+                    "Symmetry-aware dedup removed %d near-duplicate(s) by polyhedron-sig + RMSD<%.1f",
+                    len(removed), _RMSD_SAME_SIG,
+                )
+                results = [
+                    r for idx, r in enumerate(results) if idx not in removed
+                ]
+        except Exception as _sym_exc:
+            logger.debug("Symmetry-aware dedup skipped: %s", _sym_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
@@ -23504,16 +23738,36 @@ def _build_uff_constraints_from_template(
         # to fold between them.  Pinning one improper dihedral per sp2 atom
         # (A-X-B-C with X central) forces its three heavy neighbours to
         # stay coplanar with X for every ligand topology.
+        #
+        # Planarity alone however does not constrain which *angles* the
+        # three neighbours make with X — a degenerate sp2 (e.g. nitrate
+        # where two Os stack to close a 4-ring with the metal) can be
+        # strictly coplanar yet have O-N-O angles of 0°/125°/126° instead
+        # of 3 × 120°.  Adding pairwise angle constraints (120° for sp2,
+        # 109.5° for sp3 X with ≥3 same-element neighbours) forces a
+        # regular triangle/tetrahedron and generalises the carboxyl
+        # O-C-O rule above to every rigid anion / cation (NO3-, SO4²-,
+        # PO4³-, CO3²-, carbamate, urea, guanidinium, ...).
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() in _METAL_SET:
                 continue
             if atom.GetAtomicNum() <= 1:
                 continue
-            is_planar = (
+            is_sp2 = (
                 atom.GetIsAromatic()
                 or atom.GetHybridization() == Chem.rdchem.HybridizationType.SP2
             )
-            if not is_planar:
+            is_sp3_four_same = False
+            if not is_sp2:
+                hyb = atom.GetHybridization()
+                if hyb == Chem.rdchem.HybridizationType.SP3:
+                    _o_nbrs = [
+                        n for n in atom.GetNeighbors()
+                        if n.GetAtomicNum() == 8 and n.GetSymbol() not in _METAL_SET
+                    ]
+                    if len(_o_nbrs) >= 3:
+                        is_sp3_four_same = True
+            if not (is_sp2 or is_sp3_four_same):
                 continue
             heavy_nbrs = sorted(
                 n.GetIdx()
@@ -23522,18 +23776,28 @@ def _build_uff_constraints_from_template(
             )
             if len(heavy_nbrs) < 3:
                 continue
-            # Take the three lowest-index heavy neighbours as A, B, C.
-            a, b, c = heavy_nbrs[:3]
             x = atom.GetIdx()
-            key = (a, x, b, c)
-            rev = (c, b, x, a)
-            tors_key = key if key <= rev else rev
-            if tors_key in seen_tors:
-                continue
-            seen_tors.add(tors_key)
-            constraints["torsions"].append(
-                (a, x, b, c, _nearest_planar_target(a, x, b, c))
-            )
+            if is_sp2:
+                # Improper dihedral → planarity
+                a, b, c = heavy_nbrs[:3]
+                key = (a, x, b, c)
+                rev = (c, b, x, a)
+                tors_key = key if key <= rev else rev
+                if tors_key not in seen_tors:
+                    seen_tors.add(tors_key)
+                    constraints["torsions"].append(
+                        (a, x, b, c, _nearest_planar_target(a, x, b, c))
+                    )
+            # Pairwise angle constraints on every heavy-heavy pair.
+            target_angle = 120.0 if is_sp2 else 109.5
+            for i in range(len(heavy_nbrs)):
+                for j in range(i + 1, len(heavy_nbrs)):
+                    ai, aj = heavy_nbrs[i], heavy_nbrs[j]
+                    angle_key = (ai, x, aj)
+                    if angle_key in seen_angle:
+                        continue
+                    seen_angle.add(angle_key)
+                    constraints["angles"].append((ai, x, aj, target_angle))
 
         # Metal-metal bond distance constraints.
         for bond in mol_template.GetBonds():
