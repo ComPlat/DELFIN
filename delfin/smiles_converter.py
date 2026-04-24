@@ -993,6 +993,15 @@ DELFIN_CHELATE_REJECT_DELTA: float = _delfin_env_float(
 """Native-bite-match tolerance (Å) above which a chelate conformer is
 outright rejected."""
 
+DELFIN_CHELATE_CAP_30: int = _delfin_env_int("DELFIN_CHELATE_CAP_30", 20)
+"""n_trials cap in ``_chelate_conformer_candidates`` for fragments with
+>30 atoms.  Default 20 catches medium-size terdentate systems (terpy,
+tpy-phenyl, cyclam derivatives) that time out at the full 40 trials
+even though they are not >60 atoms.  Lowered from prior "no cap below
+60 atoms" after Os(terpy)(py-Ph) and Fe(terpy)(py-p-tolyl) were
+diagnosed hanging in _chelate_conformer_candidates with 40 seeds ×
+~6 s each.  With 20 seeds and early-exit they finish in < 60 s."""
+
 DELFIN_CHELATE_CAP_60: int = _delfin_env_int("DELFIN_CHELATE_CAP_60", 15)
 """n_trials cap in ``_chelate_conformer_candidates`` for fragments with
 >60 atoms.  Default 15 is the conservative post-b32856f value; raise
@@ -17459,6 +17468,8 @@ def _chelate_conformer_candidates(
         n_trials = min(n_trials, DELFIN_CHELATE_CAP_90)
     elif _frag_n > 60:
         n_trials = min(n_trials, DELFIN_CHELATE_CAP_60)
+    elif _frag_n > 30:
+        n_trials = min(n_trials, DELFIN_CHELATE_CAP_30)
 
     for seed in _SEEDS[:n_trials]:
         cid = _try_embed(frag_mol, seed)
