@@ -21824,31 +21824,79 @@ def smiles_to_xyz_isomers(
                     )
                     return tuple(heavy)
                 seen_sigs = {_sig(xyz): (xyz, lbl) for xyz, lbl in results}
-                # Topology gate for candidates added from the canonical
-                # pipeline.  The reference mol must match the pipeline
-                # that produced the xyz -- i.e. the CANONICAL mol, not
-                # the caller's original input -- otherwise atom indexing
-                # mismatches cause spurious rejects (every legit xyz
-                # fails against the original mol's index order).  The
-                # canonical xyz's graph still represents the same
-                # molecule, so topology preservation is meaningful
-                # against its own reference.
+                # The canonical-pipeline xyz carries the canonical mol's
+                # atom ordering, which usually differs from the caller
+                # mol's ordering.  We need the final output to reference
+                # the caller's atom order (so downstream tools that read
+                # the XYZ alongside the caller's SMILES see matching
+                # bonds).  Build a caller -> canonical atom-index map
+                # via RDKit substructure match, then reorder each
+                # alt-candidate's XYZ.  Candidates that cannot be
+                # mapped (different mol shape, matching failed) are
+                # dropped -- keeps topology-safety tight.
+                try:
+                    _caller_mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
+                except Exception:
+                    _caller_mol = None
                 try:
                     _canon_mol = _prepare_mol_for_embedding(_canon, hapto_approx=hapto_mode)
                 except Exception:
                     _canon_mol = None
+
+                # caller_idx[i] = canonical atom index that corresponds
+                # to caller atom i.  Built once per SMILES.
+                caller_to_canon = None
+                if _caller_mol is not None and _canon_mol is not None:
+                    try:
+                        match = _canon_mol.GetSubstructMatch(_caller_mol, useChirality=False)
+                        if match and len(match) == _caller_mol.GetNumAtoms():
+                            caller_to_canon = list(match)
+                    except Exception:
+                        caller_to_canon = None
+
+                def _reorder_xyz(xyz_str, perm):
+                    """perm[i] = index in source xyz for caller atom i.
+                    Returns xyz with lines permuted so row i == caller atom i."""
+                    lines = [l for l in xyz_str.strip().splitlines() if l.strip()]
+                    if len(lines) != len(perm):
+                        # Account for explicit H count mismatch
+                        return None
+                    reordered = [lines[perm[i]] for i in range(len(perm))]
+                    return "\n".join(reordered) + "\n"
+
                 for xyz, lbl in _alt_results or []:
                     try:
                         s = _sig(xyz)
                         if s in seen_sigs:
                             continue
-                        if _canon_mol is not None:
+
+                        reordered_xyz = xyz
+                        if caller_to_canon is not None and _caller_mol is not None:
+                            new_xyz = _reorder_xyz(xyz, caller_to_canon)
+                            if new_xyz is not None:
+                                reordered_xyz = new_xyz
+
+                        # Topology gate against caller mol (now with
+                        # matching atom order).  Fall back to canonical
+                        # mol check if caller reorder failed.
+                        ok = False
+                        if _caller_mol is not None and reordered_xyz is not xyz:
                             try:
-                                if not _verify_topology_from_graph(xyz, _canon_mol):
-                                    continue
+                                ok = bool(_verify_topology_from_graph(reordered_xyz, _caller_mol))
                             except Exception:
-                                pass
-                        seen_sigs[s] = (xyz, lbl)
+                                ok = False
+                        if not ok and _canon_mol is not None:
+                            try:
+                                ok = bool(_verify_topology_from_graph(xyz, _canon_mol))
+                            except Exception:
+                                ok = False
+                        if not ok:
+                            continue
+
+                        # Store reordered xyz (matches caller mol ordering
+                        # whenever the mapping succeeded) so downstream
+                        # consumers see consistent atom indices.
+                        seen_sigs[s] = (reordered_xyz, lbl)
                     except Exception:
                         continue
                 results = list(seen_sigs.values())
