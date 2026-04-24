@@ -22191,16 +22191,16 @@ def smiles_to_xyz_isomers(
                 for (xyz, lbl), keep in zip(results, _keep) if keep
             ]
 
-    # --- Symmetry-aware cross-label dedup ---
-    # Collapses duplicate rotameric entries that slipped through earlier
-    # dedup passes (e.g. topology-enumerator and linkage-isomer branches
-    # append without fingerprint dedup).  Fundamental principle: two
-    # entries with different coordination fingerprints (``fac`` vs
-    # ``mer``, ``cis`` vs ``trans``) MUST NEVER be collapsed here.  We
-    # therefore require fingerprint-equality as a necessary condition
-    # for RMSD-based collapse; within a fingerprint bucket we keep the
-    # entry with the lowest ideal-polyhedron deviation (= most textbook-
-    # symmetric representative).
+    # --- Symmetry-aware within-label dedup ---
+    # Collapses duplicate rotameric entries that share the same base
+    # label AND the same coordination fingerprint AND are within RMSD
+    # 1.0 Å.  Fundamental principle: two entries with different labels
+    # (``fac`` vs ``mer``, ``trans`` vs ``see-saw O-O-ax`` etc.) or
+    # different fingerprints MUST NEVER be collapsed here — the
+    # classifier already said they are distinct isomers.  Cross-label
+    # collapse is handled by the earlier RMSD pass at 0.8 Å threshold
+    # inside ``seen_fps``.  Keep the entry with the lowest ideal-
+    # polyhedron deviation (= most textbook-symmetric representative).
     if has_metal and len(results) > 1 and _delfin_env_int("DELFIN_SYM_DEDUP_ENABLED", 1):
         try:
             def _entry_fp_and_sym(xyz: str) -> Tuple[Optional[tuple], float]:
@@ -22222,25 +22222,32 @@ def smiles_to_xyz_isomers(
                     return (None, float("inf"))
 
             entry_info = [_entry_fp_and_sym(xyz) for xyz, _ in results]
+            # Base label (strip trailing -conf\d+, -\d+).
+            def _base_lbl(_l: str) -> str:
+                return re.sub(r'-(conf)?\d+$', '', _l) if _l else ''
+            labels_base = [_base_lbl(l) for _, l in results]
             removed: set = set()
-            _RMSD_SAME_FP = 1.0  # Å, heavy-atom RMSD
+            _RMSD_SAME_LBL_FP = 1.0  # Å, heavy-atom RMSD
             for i in range(len(results)):
                 if i in removed:
                     continue
                 fp_i, tot_i = entry_info[i]
+                lbl_i = labels_base[i]
                 if fp_i is None:
                     continue
                 for j in range(i + 1, len(results)):
                     if j in removed:
                         continue
                     fp_j, tot_j = entry_info[j]
-                    # HARD RULE: different fingerprints ⇒ never collapse.
-                    # fac vs mer, cis vs trans, linkage isomers all live
-                    # in distinct fingerprints and must survive.
-                    if fp_j is None or fp_i != fp_j:
+                    lbl_j = labels_base[j]
+                    # HARD RULE: different labels OR different fingerprints
+                    # ⇒ never collapse.  fac vs mer, cis vs trans, see-saw
+                    # vs trans, and linkage isomers all have distinct
+                    # labels/fingerprints and must survive.
+                    if fp_j is None or fp_i != fp_j or lbl_i != lbl_j:
                         continue
                     rmsd = _heavy_atom_rmsd_xyz(results[i][0], results[j][0])
-                    if rmsd < _RMSD_SAME_FP:
+                    if rmsd < _RMSD_SAME_LBL_FP:
                         if tot_i <= tot_j:
                             removed.add(j)
                         else:
@@ -22248,8 +22255,8 @@ def smiles_to_xyz_isomers(
                             break
             if removed:
                 logger.debug(
-                    "Symmetry-aware dedup removed %d within-fingerprint dup(s) (RMSD<%.1f)",
-                    len(removed), _RMSD_SAME_FP,
+                    "Symmetry-aware dedup removed %d within-label+fp dup(s) (RMSD<%.1f)",
+                    len(removed), _RMSD_SAME_LBL_FP,
                 )
                 results = [
                     r for idx, r in enumerate(results) if idx not in removed
