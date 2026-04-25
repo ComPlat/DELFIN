@@ -21390,6 +21390,290 @@ def _organic_conformer_pool(
     return pool
 
 
+def _emit_all_trans_by_type_arrangements(
+    mol,
+    results: List[Tuple[str, str]],
+    dtype_map: Dict[int, tuple],
+    apply_uff: bool,
+    max_isomers: int,
+) -> int:
+    """Append explicit "all-trans-by-type" coordination arrangements to ``results``.
+
+    For every metal centre with a coordination number whose geometry has
+    a non-empty ``_TOPO_TRANS_POSITIONS`` list, enumerate every way to
+    assign donor types to trans-pairs such that EVERY trans-pair contains
+    two donors of the SAME chemical type (e.g. H₂O–H₂O trans simultaneously
+    with O–O trans and N–N trans).  Build the corresponding XYZ via
+    ``_build_topology_xyz`` and append it iff its heavy-atom XYZ signature
+    is not already present in ``results``.
+
+    Pure ADDITIVE pass — never sorts, drops, or modifies existing entries.
+    Designed to ensure the chemically-central trans-effect arrangements
+    appear in the output even when the main pipeline's UFF + fingerprint-
+    dedup converges them with already-emitted candidates.
+
+    Returns the number of new entries appended.
+    """
+    if not RDKIT_AVAILABLE:
+        return 0
+    if not _delfin_env_int("DELFIN_TRANS_PASS_ENABLED", 1):
+        return 0
+
+    # Build heavy-atom XYZ signature set of existing results so we don't
+    # duplicate.  Same shape as the dual-parse union signature.
+    def _sig(xyz_str: str) -> tuple:
+        try:
+            lines = [
+                ln.split() for ln in xyz_str.strip().splitlines()
+                if ln.strip()
+            ]
+            heavy = sorted(
+                (p[0], round(float(p[1]), 2), round(float(p[2]), 2),
+                 round(float(p[3]), 2))
+                for p in lines
+                if len(p) >= 4 and p[0] not in ('H', 'h')
+            )
+            return tuple(heavy)
+        except Exception:
+            return tuple()
+
+    seen_sigs = {_sig(xyz) for xyz, _ in results}
+    n_added = 0
+
+    # Topology-template conformer for builder context.  Reuse if mol has
+    # any conformer; otherwise builder falls back to its own placement.
+    try:
+        _topo_cid = _rank_template_conformers(mol, top_k=1)
+        topo_template_cid = _topo_cid[0] if _topo_cid else None
+    except Exception:
+        topo_template_cid = None
+
+    import itertools as _it
+
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        if len(results) + n_added >= max_isomers:
+            break
+
+        metal_idx = atom.GetIdx()
+        donor_indices = [nb.GetIdx() for nb in atom.GetNeighbors()]
+        n_coord = len(donor_indices)
+        if n_coord < 2:
+            continue
+
+        # Donor labels (Morgan-class) per donor atom.
+        donor_keys = [
+            dtype_map.get(d, (mol.GetAtomWithIdx(d).GetSymbol(), frozenset()))
+            for d in donor_indices
+        ]
+        uniq_keys = sorted(
+            set(donor_keys),
+            key=lambda k: (k[0], tuple(sorted(k[1]))),
+        )
+        key_to_class = {k: i for i, k in enumerate(uniq_keys)}
+        donor_labels = [f"{k[0]}{key_to_class[k]}" for k in donor_keys]
+
+        # Donor-type counts.  All-trans-by-type requires every type to
+        # appear an even number of times so it can be paired across one
+        # or more trans-positions.
+        from collections import Counter as _Ctr
+        type_counts = _Ctr(donor_labels)
+        if any(c % 2 != 0 for c in type_counts.values()):
+            continue
+
+        # Geometry candidates with non-empty trans-position lists.
+        # Universal: covers EVERY CN that has at least one geometry with
+        # a 180° pair in `_TOPO_TRANS_POSITIONS` (LIN, TS, SQ, SS, TBP,
+        # SP, OH, PBP, COH, SAP, DD).  CN=3 trigonal-planar (TP) and
+        # CN=6 trigonal-prismatic (TPR), CN=9 TTP have no trans pairs
+        # by definition and are correctly skipped.
+        _CN_GEOM_FOR_TRANS = {
+            2: ['LIN'],
+            3: ['TS'],          # T-shaped has 1 trans pair (0-1)
+            4: ['SQ', 'SS'],    # square-planar 2 trans, see-saw 1 trans
+            5: ['TBP', 'SP'],   # TBP axial-axial; SP basal cross
+            6: ['OH'],          # 3 trans pairs
+            7: ['PBP', 'COH'],  # axial pair / oct-base trans pairs
+            8: ['SAP', 'DD'],   # antiprism / dodecahedron 4 trans pairs
+        }
+        geom_list = _CN_GEOM_FOR_TRANS.get(n_coord, [])
+        if not geom_list:
+            continue
+
+        # Chelate constraints: pairs of donor-list-indices that must
+        # never sit at trans positions.
+        chelate_atom_ps = _chelate_pairs(mol, metal_idx, donor_indices)
+        atom_to_listidx = {ai: li for li, ai in enumerate(donor_indices)}
+        chelate_pairs = []
+        for cp in chelate_atom_ps:
+            pp = sorted(cp)
+            if len(pp) == 2 and pp[0] in atom_to_listidx and pp[1] in atom_to_listidx:
+                chelate_pairs.append(frozenset([
+                    atom_to_listidx[pp[0]], atom_to_listidx[pp[1]]
+                ]))
+
+        for geom in geom_list:
+            trans_pos = _TOPO_TRANS_POSITIONS.get(geom, [])
+            if not trans_pos:
+                continue
+            n_trans_pairs = len(trans_pos)
+
+            # Each donor-type must contribute at least one trans-pair.
+            # Total trans-positions = 2 * n_trans_pairs.  Donors covered
+            # by trans-pairs = 2 * n_trans_pairs.  Donors not on a trans
+            # position (e.g. SP equatorial cap) get assigned freely
+            # afterwards.
+            covered_positions = sorted({p for ta, tb in trans_pos for p in (ta, tb)})
+            uncovered_positions = [
+                p for p in range(n_coord) if p not in covered_positions
+            ]
+
+            # Compute every way to choose which donor-type goes on which
+            # trans-pair: this is a multiset partition.  For type counts
+            # {O1:2, O3:2, O2:2, N0:2} on 4 trans-pairs, that's 4!=24
+            # bijections of types-onto-pairs — manageable.  We treat it
+            # as: which donor-list-index pairs (same-type) sit at each
+            # trans-pair-position.
+            #
+            # Strategy: pre-group donor-list-indices by type, then assign
+            # one same-type pair per geometric trans-pair.  Each
+            # assignment yields a partial perm; remaining donors fill
+            # uncovered_positions.
+            type_to_donors: Dict[str, list] = {}
+            for li, lbl in enumerate(donor_labels):
+                type_to_donors.setdefault(lbl, []).append(li)
+
+            # Need: at least n_trans_pairs distinct (type, pair-of-donors)
+            # available.  If only 2 types each with 2 donors and 4
+            # geometric trans-pairs, we cannot fill all trans-pairs same-
+            # type → skip this geom.
+            available_type_pairs = []
+            for t, dlist in type_to_donors.items():
+                if len(dlist) < 2:
+                    continue
+                # Take all C(n,2) within-type donor-index pairs
+                for di, dj in _it.combinations(dlist, 2):
+                    available_type_pairs.append((t, (di, dj)))
+
+            if len(available_type_pairs) < n_trans_pairs:
+                continue
+
+            # Enumerate ways to pick `n_trans_pairs` disjoint donor-pairs
+            # such that every donor-list-index is used at most once and
+            # every trans-pair gets one same-type donor pair.  Capped at
+            # 12 partitions per (metal, geom) to keep wall-time bounded.
+            _MAX_PARTITIONS = 12
+            partitions = []
+
+            def _backtrack(used_donors, partial):
+                if len(partial) == n_trans_pairs:
+                    partitions.append(list(partial))
+                    return len(partitions) >= _MAX_PARTITIONS
+                if len(partitions) >= _MAX_PARTITIONS:
+                    return True
+                for t, (di, dj) in available_type_pairs:
+                    if di in used_donors or dj in used_donors:
+                        continue
+                    # Avoid duplicate partitions: only consider ordered
+                    # additions (next pair has minimum di > previous min).
+                    if partial and (di, dj) <= partial[-1][1]:
+                        continue
+                    partial.append((t, (di, dj)))
+                    used_donors.add(di); used_donors.add(dj)
+                    if _backtrack(used_donors, partial):
+                        return True
+                    used_donors.remove(di); used_donors.remove(dj)
+                    partial.pop()
+                return False
+
+            _backtrack(set(), [])
+            if not partitions:
+                continue
+
+            # For each partition, assign donor-pairs onto geometric trans
+            # pairs (n_trans_pairs! orderings).  Cap to 6 orderings per
+            # partition to bound work.
+            for partition in partitions:
+                if len(results) + n_added >= max_isomers:
+                    break
+                _ordering_count = 0
+                for ordered in _it.permutations(partition):
+                    if _ordering_count >= 6:
+                        break
+                    _ordering_count += 1
+                    perm = [None] * n_coord
+                    used = set()
+                    for (ta, tb), (_t, (di, dj)) in zip(trans_pos, ordered):
+                        perm[ta] = di
+                        perm[tb] = dj
+                        used.add(di); used.add(dj)
+                    # Fill uncovered positions with remaining donors in
+                    # ascending list-index order (deterministic).
+                    remaining = [li for li in range(n_coord) if li not in used]
+                    for pos, li in zip(uncovered_positions, remaining):
+                        perm[pos] = li
+                    if any(p is None for p in perm):
+                        continue
+
+                    # Chelate-cis check: skip if any chelate pair lands
+                    # on a geometric trans-position pair.
+                    ch_violation = False
+                    for chp in chelate_pairs:
+                        a, b = list(chp)
+                        pa, pb = perm.index(a), perm.index(b)
+                        for ta, tb in trans_pos:
+                            if (pa == ta and pb == tb) or (pa == tb and pb == ta):
+                                ch_violation = True
+                                break
+                        if ch_violation:
+                            break
+                    if ch_violation:
+                        continue
+
+                    # Build XYZ.
+                    try:
+                        xyz = _build_topology_xyz(
+                            mol, metal_idx, donor_indices, perm, geom,
+                            apply_uff, conf_id=topo_template_cid,
+                        )
+                    except Exception:
+                        xyz = None
+                    if not xyz:
+                        continue
+
+                    # Final-output topology gate (ensures consistency
+                    # with main pipeline's last gate).
+                    try:
+                        if not _verify_topology_from_graph(xyz, mol):
+                            continue
+                    except Exception:
+                        continue
+
+                    # Heavy-atom signature dedup against existing pool.
+                    sig = _sig(xyz)
+                    if sig in seen_sigs:
+                        continue
+                    seen_sigs.add(sig)
+
+                    # Build label: "trans-{geom} {types}|{types}|..."
+                    type_str = "|".join(
+                        f"{t}+{t}" for t, _ in ordered
+                    )
+                    label = f"trans-{geom} {type_str}"
+                    results.append((xyz, label))
+                    n_added += 1
+                    if len(results) >= max_isomers:
+                        break
+
+    if n_added:
+        logger.debug(
+            "Trans-effect pass added %d explicit all-trans-by-type entries",
+            n_added,
+        )
+    return n_added
+
+
 def smiles_to_xyz_isomers(
     smiles: str,
     num_confs: int = 200,
@@ -22295,6 +22579,22 @@ def smiles_to_xyz_isomers(
                 )
         except Exception as _comb_exc:
             logger.debug("Combinatorial-bound check skipped: %s", _comb_exc)
+
+    # --- Additive trans-effect pass ---
+    # Explicit "all-trans-by-type" coordination arrangements are central
+    # in coordination chemistry (trans-effect, σ-donor / π-acceptor
+    # competition).  The main pipeline's UFF + fingerprint-dedup
+    # converges them with already-emitted candidates, so here we append
+    # idealised pre-UFF placements that keep the trans symmetry intact.
+    # Pure additive: never touches existing entries, only appends new
+    # XYZ-signature-distinct ones.  Toggle via DELFIN_TRANS_PASS_ENABLED.
+    if has_metal:
+        try:
+            _emit_all_trans_by_type_arrangements(
+                mol, results, dtype_map, apply_uff, max_isomers,
+            )
+        except Exception as _trans_exc:
+            logger.debug("Trans-effect pass skipped: %s", _trans_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
