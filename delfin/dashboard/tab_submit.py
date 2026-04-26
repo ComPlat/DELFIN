@@ -850,11 +850,24 @@ def create_tab(ctx):
         state['isomer_index'] = index
         xyz_string, num_atoms, label = isomers[index]
 
-        # Update navigation label and visibility
+        # Update navigation label and visibility.
+        # Highlight chemically-central labels:
+        #   - trans- → gold (trans-effect coordination, cf. 4d8ceb4)
+        #   - η     → teal (first-class hapto coordination, cf. fa50abe)
+        #   - pucker- → grey/italic (chelate-ring conformer variant)
         if len(isomers) > 1:
             display_label = label or f'Isomer {index + 1}'
+            _lbl_lower = (display_label or '').lower()
+            if _lbl_lower.startswith('trans-') or 'trans-' in _lbl_lower[:8]:
+                _style = 'font-size:13px; color:#d4a017; font-weight:bold;'
+            elif 'η' in display_label:
+                _style = 'font-size:13px; color:#0e8074; font-weight:bold;'
+            elif _lbl_lower.startswith('pucker-'):
+                _style = 'font-size:13px; color:#666; font-style:italic;'
+            else:
+                _style = 'font-size:13px;'
             isomer_label.value = (
-                f'<span style="font-size:13px;">'
+                f'<span style="{_style}">'
                 f'{display_label} ({index + 1}/{len(isomers)})</span>'
             )
             isomer_nav_row.layout.display = ''
