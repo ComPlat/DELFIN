@@ -2663,11 +2663,46 @@ def contains_metal(smiles: str) -> bool:
 
 
 def _hapto_approx_enabled(flag: Optional[bool] = None) -> bool:
-    """Return True when the experimental hapto approximation is enabled."""
+    """Return True when the experimental hapto approximation is enabled.
+
+    Returns True when:
+      - explicit flag is True, OR
+      - DELFIN_HAPTO_APPROX env var is truthy, OR
+      - DELFIN_HAPTO_FIRST_CLASS env var is truthy (which auto-enables
+        the approx path so hapto SMILES produce η-labelled output
+        instead of fail-fast).
+    """
     if flag is not None:
         return bool(flag)
     env = os.environ.get("DELFIN_HAPTO_APPROX", "").strip().lower()
-    return env in {"1", "true", "yes", "on"}
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    env_fc = os.environ.get("DELFIN_HAPTO_FIRST_CLASS", "").strip().lower()
+    return env_fc in {"1", "true", "yes", "on"}
+
+
+def _hapto_label_for_group(mol, c_indices: List[int]) -> str:
+    """Build canonical η{n}-{ring_type} label for a hapto donor block.
+
+    n = number of metal-bound C atoms in the contiguous block.
+    ring_type heuristic:
+      n == 2  → 'η2-alkene' (or 'η2-π')
+      n == 3  → 'η3-allyl'
+      n == 4  → 'η4-diene'
+      n == 5  → 'η5-Cp' (cyclopentadienyl-like)
+      n == 6  → 'η6-arene'
+      n == 7  → 'η7-cycloheptatrienyl'
+      n == 8  → 'η8-cyclooctatetraenyl'
+    Universal — driven only by atom count of the contiguous block,
+    not by SMILES patterns.
+    """
+    n = len(c_indices)
+    name_map = {
+        2: 'alkene', 3: 'allyl', 4: 'diene',
+        5: 'Cp', 6: 'arene', 7: 'cht', 8: 'cot',
+    }
+    suffix = name_map.get(n, f'C{n}')
+    return f'η{n}-{suffix}'
 
 
 def _find_hapto_groups(mol) -> List[Tuple[int, List[int]]]:
@@ -21954,14 +21989,40 @@ def smiles_to_xyz_isomers(
             )
             if err:
                 return [], err
-            results_hapto: List[Tuple[str, str]] = [(xyz, 'hapto-approx')]
+            # First-class η-label per detected hapto group.
+            # `hapto_groups` is a list of (metal_idx, [c_indices]).  When
+            # multiple groups exist (e.g. ferrocene Fe(η5-Cp)(η5-Cp))
+            # join their canonical η-labels with '/'.
+            try:
+                _hapto_pre_mol = _prepare_mol_for_embedding(smiles, hapto_approx=True)
+                if _hapto_pre_mol is not None:
+                    _eta_labels = []
+                    for _m_idx, _c_idxs in _find_hapto_groups(_hapto_pre_mol):
+                        _eta_labels.append(_hapto_label_for_group(_hapto_pre_mol, _c_idxs))
+                    _eta_combined = '/'.join(_eta_labels) if _eta_labels else 'hapto'
+                else:
+                    _eta_combined = 'hapto'
+            except Exception:
+                _eta_combined = 'hapto'
+            results_hapto: List[Tuple[str, str]] = [(xyz, _eta_combined)]
             # Enumerate σ-donor permutations around fixed η-positions.
             try:
                 hapto_sigma_iso = _enumerate_hapto_sigma_isomers(
                     smiles, xyz, apply_uff=apply_uff
                 )
                 if hapto_sigma_iso:
-                    results_hapto.extend(hapto_sigma_iso)
+                    # Relabel hapto-sigma-N to η{n}-{type} σ-N for clarity.
+                    _relabeled = []
+                    for _hsx, _hsl in hapto_sigma_iso:
+                        if isinstance(_hsl, str) and _hsl.startswith('hapto-sigma'):
+                            _suffix = _hsl[len('hapto-sigma'):].lstrip('-')
+                            _relabeled.append((
+                                _hsx,
+                                f'{_eta_combined} σ-{_suffix}' if _suffix else _eta_combined,
+                            ))
+                        else:
+                            _relabeled.append((_hsx, _hsl))
+                    results_hapto.extend(_relabeled)
             except Exception as _hse:
                 logger.debug("Hapto sigma enumeration failed: %s", _hse)
 
@@ -22011,7 +22072,7 @@ def smiles_to_xyz_isomers(
                                     pass
                             _seen_xyz_keys.add(_key)
                             results_hapto.append(
-                                (_block, f'hapto-diversity-{len(results_hapto):03d}')
+                                (_block, f'{_eta_combined} rot-{len(results_hapto):03d}')
                             )
                             if len(results_hapto) >= max_isomers:
                                 break
