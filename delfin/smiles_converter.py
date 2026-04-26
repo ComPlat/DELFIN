@@ -21411,6 +21411,186 @@ def _organic_conformer_pool(
     return pool
 
 
+def _emit_chelate_pucker_variants(
+    mol,
+    results: List[Tuple[str, str]],
+    apply_uff: bool,
+    max_isomers: int,
+) -> int:
+    """Append chair / boat / twist conformer variants for saturated chelate rings.
+
+    For chelate rings whose backbone has ≥3 sp³ carbons (cyclam, en, dien,
+    salen-CH₂CH₂, polyamines, polyethers), the existing pipeline emits
+    one ETKDG conformer.  Pucker variants (chair, boat, twist) are
+    discrete low-energy minima that get lost when only one conformer
+    survives the dedup chain.  This pass generates additional ETKDG
+    seeds, applies puck-perturbation to ring atoms, and appends each
+    geometrically-distinct result iff its heavy-atom XYZ signature is
+    novel.
+
+    Pure ADDITIVE — never sorts, drops, or modifies existing entries.
+    Toggle: DELFIN_PUCKER_PASS_ENABLED (default 1).
+    Returns the number of new entries appended.
+    """
+    if not RDKIT_AVAILABLE:
+        return 0
+    if not _delfin_env_int("DELFIN_PUCKER_PASS_ENABLED", 1):
+        return 0
+
+    def _sig(xyz_str: str) -> tuple:
+        try:
+            lines = [
+                ln.split() for ln in xyz_str.strip().splitlines()
+                if ln.strip()
+            ]
+            heavy = sorted(
+                (p[0], round(float(p[1]), 2), round(float(p[2]), 2),
+                 round(float(p[3]), 2))
+                for p in lines
+                if len(p) >= 4 and p[0] not in ('H', 'h')
+            )
+            return tuple(heavy)
+        except Exception:
+            return tuple()
+
+    seen_sigs = {_sig(xyz) for xyz, _ in results}
+    n_added = 0
+
+    # Find saturated chelate rings: rings where ≥3 atoms are sp³ carbons
+    # bridging metal-coordinating donors.
+    try:
+        Chem.FastFindRings(mol)
+    except Exception:
+        pass
+    ri = mol.GetRingInfo()
+    if ri is None or ri.NumRings() == 0:
+        return 0
+
+    metal_atoms = [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET]
+    if not metal_atoms:
+        return 0
+
+    # Identify chelate rings: rings that contain a metal atom AND at least
+    # 3 sp³ carbons (saturated backbone bridges).
+    chelate_ring_atom_sets: List[Tuple[set, int]] = []  # (ring_atoms, n_sp3)
+    for ring in ri.AtomRings():
+        ring_set = set(ring)
+        if not (ring_set & set(metal_atoms)):
+            continue
+        n_sp3 = 0
+        for ridx in ring:
+            atom = mol.GetAtomWithIdx(ridx)
+            if atom.GetSymbol() == 'C' and atom.GetHybridization() == Chem.HybridizationType.SP3:
+                n_sp3 += 1
+        if n_sp3 >= 3:
+            chelate_ring_atom_sets.append((ring_set, n_sp3))
+
+    if not chelate_ring_atom_sets:
+        return 0
+
+    # For each saturated chelate ring, emit pucker variants by perturbing
+    # ring sp³ atom z-coordinates in distinct patterns (chair: alternating
+    # +/-, boat: two adjacent up + two adjacent down, twist: gradient).
+    # Then ETKDG-relax and accept if XYZ signature is new.
+    base_xyz = None
+    for xyz, _lbl in results:
+        base_xyz = xyz
+        break
+    if base_xyz is None:
+        return 0
+
+    import numpy as _np
+
+    def _parse_xyz(xs):
+        lines = [l for l in xs.strip().splitlines() if l.strip()]
+        atoms, coords = [], []
+        for ln in lines:
+            parts = ln.split()
+            if len(parts) >= 4:
+                atoms.append(parts[0])
+                coords.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        return atoms, _np.array(coords)
+
+    def _format_xyz(atoms, coords):
+        out = []
+        for sym, (x, y, z) in zip(atoms, coords):
+            out.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(out) + "\n"
+
+    pucker_patterns = [
+        ('chair', lambda i, n: 0.4 if i % 2 == 0 else -0.4),
+        ('boat', lambda i, n: 0.4 if (i % n) < n // 2 else -0.4),
+        ('twist', lambda i, n: 0.3 * ((i / max(1, n - 1)) - 0.5) * 2),
+    ]
+
+    for ring_atoms, n_sp3 in chelate_ring_atom_sets:
+        if len(results) + n_added >= max_isomers:
+            break
+        ring_size = len(ring_atoms)
+        # Pucker only meaningful for 5+ membered rings
+        if ring_size < 5:
+            continue
+        ring_atom_list = sorted(ring_atoms)
+        for ptype, pucker_fn in pucker_patterns:
+            if len(results) + n_added >= max_isomers:
+                break
+            try:
+                atoms, coords = _parse_xyz(base_xyz)
+                if len(atoms) != mol.GetNumAtoms():
+                    # Hydrogens not in xyz — pucker only heavy ring atoms
+                    pass
+                # Compute ring center and normal
+                ring_pos = _np.array([
+                    coords[i] for i in ring_atom_list if i < len(coords)
+                ])
+                if len(ring_pos) < 4:
+                    continue
+                center = ring_pos.mean(axis=0)
+                centered = ring_pos - center
+                _u, _s, vh = _np.linalg.svd(centered, full_matrices=False)
+                normal = vh[-1]  # smallest singular vector = ring normal
+                # Apply pucker perturbation along normal
+                new_coords = coords.copy()
+                for k, idx in enumerate(ring_atom_list):
+                    if idx >= len(new_coords):
+                        continue
+                    delta = pucker_fn(k, ring_size)
+                    new_coords[idx] = new_coords[idx] + delta * normal
+                new_xyz = _format_xyz(atoms, new_coords)
+                # Check signature novelty
+                sig = _sig(new_xyz)
+                if sig in seen_sigs:
+                    continue
+                # UFF-relax to remove unphysical strain from perturbation
+                if apply_uff:
+                    try:
+                        new_xyz = _optimize_xyz_openbabel_safe(new_xyz, mol_template=mol)
+                    except Exception:
+                        pass
+                # Final-output topology gate
+                try:
+                    if not _verify_topology_from_graph(new_xyz, mol):
+                        continue
+                except Exception:
+                    continue
+                sig2 = _sig(new_xyz)
+                if sig2 in seen_sigs:
+                    continue
+                seen_sigs.add(sig2)
+                label = f"pucker-{ring_size} {ptype}"
+                results.append((new_xyz, label))
+                n_added += 1
+            except Exception:
+                continue
+
+    if n_added:
+        logger.debug(
+            "Pucker pass added %d chelate-ring conformer variants",
+            n_added,
+        )
+    return n_added
+
+
 def _emit_all_trans_by_type_arrangements(
     mol,
     results: List[Tuple[str, str]],
@@ -22616,6 +22796,22 @@ def smiles_to_xyz_isomers(
             )
         except Exception as _trans_exc:
             logger.debug("Trans-effect pass skipped: %s", _trans_exc)
+
+    # --- Additive chelate-pucker variants pass ---
+    # Saturated chelate rings (cyclam, en, dien, salen-CH₂CH₂, polyamines)
+    # have multiple low-energy ring-pucker minima (chair/boat/twist).
+    # The main pipeline emits one ETKDG conformer per chelate; pucker
+    # variation gets lost in dedup.  This pass emits explicit chair/
+    # boat/twist perturbations of each saturated chelate ring as
+    # separate XYZ candidates.  Pure additive (toggle:
+    # DELFIN_PUCKER_PASS_ENABLED, default 1).
+    if has_metal:
+        try:
+            _emit_chelate_pucker_variants(
+                mol, results, apply_uff, max_isomers,
+            )
+        except Exception as _pucker_exc:
+            logger.debug("Pucker pass skipped: %s", _pucker_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
