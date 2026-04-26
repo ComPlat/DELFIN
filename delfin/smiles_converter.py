@@ -21985,6 +21985,41 @@ def smiles_to_xyz_isomers(
             _qprof["seeds"] = _seeds_clamped
         except Exception:
             pass
+
+    # Size-aware seed auto-cap: huge polycyclic-cage / heavy-polydentate
+    # complexes (≥80 heavy atoms, e.g. polyamine cages, terpy-NMe₂
+    # bisthelates, biphep-salen) hang at the full 20-seed × 25 s embed
+    # timeout × multiple chelate ranks budget.  Cap the per-call seed
+    # count proportionally to molecule size so the outer per-SMILES
+    # wall-clock budget (typically 600-900 s) is respected.  Universal —
+    # purely heavy-atom-count driven, no SMILES-specific shortcuts.
+    # Override via DELFIN_AUTOSCALE_SEEDS=0 to keep the fixed quality-
+    # profile count.
+    if _delfin_env_int("DELFIN_AUTOSCALE_SEEDS", 1):
+        try:
+            _probe_mol = Chem.MolFromSmiles(smiles, sanitize=False)
+            if _probe_mol is not None:
+                _heavy_n = sum(
+                    1 for _a in _probe_mol.GetAtoms() if _a.GetAtomicNum() > 1
+                )
+                _orig = int(_qprof.get("seeds", 20))
+                if _heavy_n >= 120:
+                    _capped = min(_orig, 3)
+                elif _heavy_n >= 80:
+                    _capped = min(_orig, 5)
+                elif _heavy_n >= 60:
+                    _capped = min(_orig, 10)
+                else:
+                    _capped = _orig
+                if _capped < _orig:
+                    _qprof["seeds"] = _capped
+                    logger.debug(
+                        "Size-aware seed cap: %d heavy atoms → seeds %d→%d",
+                        _heavy_n, _orig, _capped,
+                    )
+        except Exception:
+            pass
+
     mol = None
     hapto_groups: List[Tuple[int, List[int]]] = []
     if has_metal:
