@@ -1889,15 +1889,22 @@ def _openbabel_generate_conformer_xyz(
             errors.append(f"forcefield({ff_name}): {exc}")
             continue
 
-        # Run rotor search.  Skip for large molecules where
-        # SystematicRotorSearch is combinatorially explosive and holds the
-        # GIL, making thread-based timeouts ineffective.
+        # Run rotor search.  Skip for large molecules OR many-rotor
+        # molecules where SystematicRotorSearch is combinatorially
+        # explosive and holds the GIL, making thread-based timeouts
+        # ineffective.  The rotor count check also catches small but
+        # heavily decorated complexes (Pt-phosphine-tBu, V-phenolate-
+        # alkoxy, Mn-phosphazene) which have ≤50 atoms but ≥10 rotors.
         n_heavy = sum(1 for a in pybel.ob.OBMolAtomIter(ob_mol.OBMol)
                        if a.GetAtomicNum() > 1)
-        if n_heavy > 50:
+        try:
+            n_rotors = int(ob_mol.OBMol.NumRotors())
+        except Exception:
+            n_rotors = 0
+        if n_heavy > 50 or n_rotors > 8:
             logger.debug(
-                "Skipping OB rotor search for large molecule (%d heavy atoms), "
-                "using initial make3D geometry", n_heavy,
+                "Skipping OB rotor search (%d heavy atoms, %d rotors)",
+                n_heavy, n_rotors,
             )
         else:
             try:
@@ -22401,7 +22408,10 @@ def smiles_to_xyz_isomers(
     if not seen_fps:
         # Sampling failed — get a single fallback geometry and still allow
         # the topological enumerator / linkage detector to augment it below.
-        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+        _fb_xyz, _fb_err = smiles_to_xyz(
+            smiles, apply_uff=apply_uff, hapto_approx=hapto_mode,
+            deterministic=deterministic,
+        )
         if _fb_err:
             return [], _fb_err
         results = [(_fb_xyz, '')]
@@ -22494,7 +22504,10 @@ def smiles_to_xyz_isomers(
                 )
                 results = relaxed_fragment_results
             else:
-                _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+                _fb_xyz, _fb_err = smiles_to_xyz(
+                    smiles, apply_uff=apply_uff, hapto_approx=hapto_mode,
+                    deterministic=deterministic,
+                )
                 if _fb_err:
                     return [], _fb_err
                 results = [(_fb_xyz, '')]
@@ -23285,6 +23298,7 @@ def smiles_to_xyz(
     output_path: Optional[str] = None,
     apply_uff: bool = True,
     hapto_approx: Optional[bool] = None,
+    deterministic: bool = True,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES string to XYZ coordinates using RDKit.
 
@@ -23778,8 +23792,17 @@ def smiles_to_xyz(
             all_conf_ids: List[int] = []
 
             # --- OB conformers (Avogadro-equivalent pipeline) ---
+            # Skipped in deterministic mode: OpenBabel's
+            # SystematicRotorSearch holds the GIL and can hang
+            # indefinitely on heavily-decorated complexes (Pt-phosphine-
+            # tBu, V-phenolate-THF, Mn-phosphazene-Te, etc.) where the
+            # rotor count is small enough to bypass the rotor-cap guard
+            # in _openbabel_generate_conformer_xyz but the search tree
+            # is still combinatorially explosive.  RDKit ETKDG below
+            # provides deterministic conformer diversity without this
+            # hazard.
             ob_injection_ok = False
-            if OPENBABEL_AVAILABLE:
+            if OPENBABEL_AVAILABLE and not deterministic:
                 try:
                     _n_ob_r = 3
                     _per_ob_r = max(10, 200 // _n_ob_r)
