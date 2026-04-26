@@ -1889,22 +1889,24 @@ def _openbabel_generate_conformer_xyz(
             errors.append(f"forcefield({ff_name}): {exc}")
             continue
 
-        # Run rotor search.  Skip for large molecules OR many-rotor
-        # molecules where SystematicRotorSearch is combinatorially
-        # explosive and holds the GIL, making thread-based timeouts
-        # ineffective.  The rotor count check also catches small but
-        # heavily decorated complexes (Pt-phosphine-tBu, V-phenolate-
-        # alkoxy, Mn-phosphazene) which have ≤50 atoms but ≥10 rotors.
+        # Run rotor search.  SystematicRotorSearch (deterministic path)
+        # is combinatorially explosive in NumRotors() and holds the GIL,
+        # so cap at >8 rotors there.  WeightedRotorSearch (non-
+        # deterministic path) is bounded by its step argument so the
+        # rotor cap does NOT apply — that branch is hang-free and
+        # provides essential rotational diversity for the hapto rot-NNN
+        # label loop.
         n_heavy = sum(1 for a in pybel.ob.OBMolAtomIter(ob_mol.OBMol)
                        if a.GetAtomicNum() > 1)
         try:
             n_rotors = int(ob_mol.OBMol.NumRotors())
         except Exception:
             n_rotors = 0
-        if n_heavy > 50 or n_rotors > 8:
+        skip_rotor_search = n_heavy > 50 or (deterministic and n_rotors > 8)
+        if skip_rotor_search:
             logger.debug(
-                "Skipping OB rotor search (%d heavy atoms, %d rotors)",
-                n_heavy, n_rotors,
+                "Skipping OB rotor search (%d heavy atoms, %d rotors, det=%s)",
+                n_heavy, n_rotors, deterministic,
             )
         else:
             try:
