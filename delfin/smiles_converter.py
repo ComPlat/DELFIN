@@ -16659,7 +16659,28 @@ def _compute_coordination_fingerprint(mol, conf_id: int, dtype_map: Optional[Dic
                 cls = 'cis' if angle < 135 else 'trans'
                 same_elem_pattern.append((sa, cls))
         same_elem_pattern.sort()
-        fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans))
+
+        # Optional refined fingerprint (DELFIN_FP_REFINED=1, default 0):
+        # additionally encode the multiset of CIS-pair Morgan-types so
+        # arrangements that share trans-pair-types but differ in cis-
+        # pair-types (e.g. DD A-trapezoid vs B-trapezoid type assignment,
+        # or TBP axial-vs-equatorial donor placements) get distinct
+        # fingerprints.  Defaults off because the existing dedup-pipeline
+        # is iteration-order-sensitive and any fingerprint refinement
+        # cascades into Cd-histidine-class regressions; safe to enable
+        # opt-in for users who need finer stereochemistry distinction.
+        if _delfin_env_int("DELFIN_FP_REFINED", 0):
+            cis_detailed_raw: List[Tuple[tuple, tuple]] = []
+            for angle, _sa, _sb, ia, ib in angle_pairs:
+                if angle >= 135.0:
+                    continue  # trans, already encoded above
+                ta = _norm_donor_type(dtype_map.get(ia, (mol.GetAtomWithIdx(ia).GetSymbol(),)))
+                tb = _norm_donor_type(dtype_map.get(ib, (mol.GetAtomWithIdx(ib).GetSymbol(),)))
+                cis_detailed_raw.append(tuple(sorted((ta, tb))))
+            cis_detailed = tuple(sorted(cis_detailed_raw))
+            fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans, cis_detailed))
+        else:
+            fp_parts.append((trans_pairs, tuple(same_elem_pattern), detailed_trans))
 
     return tuple(sorted(fp_parts))
 
