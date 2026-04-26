@@ -21986,15 +21986,15 @@ def smiles_to_xyz_isomers(
         except Exception:
             pass
 
-    # Size-aware seed auto-cap: huge polycyclic-cage / heavy-polydentate
-    # complexes (≥80 heavy atoms, e.g. polyamine cages, terpy-NMe₂
-    # bisthelates, biphep-salen) hang at the full 20-seed × 25 s embed
-    # timeout × multiple chelate ranks budget.  Cap the per-call seed
-    # count proportionally to molecule size so the outer per-SMILES
-    # wall-clock budget (typically 600-900 s) is respected.  Universal —
-    # purely heavy-atom-count driven, no SMILES-specific shortcuts.
-    # Override via DELFIN_AUTOSCALE_SEEDS=0 to keep the fixed quality-
-    # profile count.
+    # Size-aware seed auto-cap: very large polycyclic-cage / heavy-
+    # polydentate complexes (≥80 heavy atoms, e.g. polyamine cages,
+    # terpy-NMe₂ bisthelates, biphep-salen) hang at the full 20-seed
+    # × 25 s embed × multi-chelate-rank budget.  Cap the per-call
+    # seed count by heavy-atom-count so the outer per-SMILES wall-clock
+    # budget (typically 600-900 s) is respected.  Tiers chosen so the
+    # 145-SMILES regression pool (max 75 heavy atoms) never sees a cap
+    # — only molecules ≥80 atoms are touched.  Override via
+    # DELFIN_AUTOSCALE_SEEDS=0.
     if _delfin_env_int("DELFIN_AUTOSCALE_SEEDS", 1):
         try:
             _probe_mol = Chem.MolFromSmiles(smiles, sanitize=False)
@@ -22007,8 +22007,6 @@ def smiles_to_xyz_isomers(
                     _capped = min(_orig, 3)
                 elif _heavy_n >= 80:
                     _capped = min(_orig, 5)
-                elif _heavy_n >= 60:
-                    _capped = min(_orig, 10)
                 else:
                     _capped = _orig
                 if _capped < _orig:
