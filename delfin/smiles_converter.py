@@ -2663,22 +2663,32 @@ def contains_metal(smiles: str) -> bool:
 
 
 def _hapto_approx_enabled(flag: Optional[bool] = None) -> bool:
-    """Return True when the experimental hapto approximation is enabled.
+    """Return True when the hapto approximation/first-class path is enabled.
+
+    Defaults to ENABLED so hapto-detected SMILES (Cp, arene-π, allyl,
+    diene complexes) produce η-labelled output instead of fail-fast.
+    The underlying hapto pipeline (introduced fully in `327b4e6` and
+    refined through `44fce9e`) is universal and stable; the historical
+    fail-fast gate was added in `7411aee` only as transitional safety
+    while hapto code matured.
+
+    Disable explicitly via DELFIN_HAPTO_APPROX=0 to revert to fail-fast
+    when diagnosing hapto-builder issues.
 
     Returns True when:
       - explicit flag is True, OR
-      - DELFIN_HAPTO_APPROX env var is truthy, OR
-      - DELFIN_HAPTO_FIRST_CLASS env var is truthy (which auto-enables
-        the approx path so hapto SMILES produce η-labelled output
-        instead of fail-fast).
+      - DELFIN_HAPTO_APPROX env var is truthy or unset, OR
+      - DELFIN_HAPTO_FIRST_CLASS env var is truthy.
+    Returns False only when DELFIN_HAPTO_APPROX is explicitly truthy-false
+    (``0``/``false``/``no``/``off``) AND DELFIN_HAPTO_FIRST_CLASS is not set.
     """
     if flag is not None:
         return bool(flag)
     env = os.environ.get("DELFIN_HAPTO_APPROX", "").strip().lower()
-    if env in {"1", "true", "yes", "on"}:
-        return True
-    env_fc = os.environ.get("DELFIN_HAPTO_FIRST_CLASS", "").strip().lower()
-    return env_fc in {"1", "true", "yes", "on"}
+    if env in {"0", "false", "no", "off"}:
+        env_fc = os.environ.get("DELFIN_HAPTO_FIRST_CLASS", "").strip().lower()
+        return env_fc in {"1", "true", "yes", "on"}
+    return True
 
 
 def _hapto_label_for_group(mol, c_indices: List[int]) -> str:
