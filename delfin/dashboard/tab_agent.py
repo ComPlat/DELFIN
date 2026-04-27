@@ -1613,8 +1613,14 @@ def create_tab(ctx):
         layout=widgets.Layout(width="70px"),
         tooltip="Delete the selected session",
     )
+    fork_session_btn = widgets.Button(
+        description="Fork",
+        button_style="warning",
+        layout=widgets.Layout(width="70px"),
+        tooltip="Duplicate the selected session under a new ID",
+    )
     session_row = widgets.HBox(
-        [session_dropdown, load_session_btn, delete_session_btn],
+        [session_dropdown, load_session_btn, fork_session_btn, delete_session_btn],
         layout=widgets.Layout(margin="0 0 6px 0"),
     )
 
@@ -7736,6 +7742,27 @@ def create_tab(ctx):
             _on_new_cycle(button)
         _refresh_session_dropdown()
 
+    def _on_fork_session(button):
+        sid = session_dropdown.value
+        if not sid or state["streaming"]:
+            return
+        try:
+            from delfin.agent.session_store import fork_session
+            new_sid = fork_session(sid)
+        except Exception as exc:
+            _append_system_message(f"Fork failed: {exc}")
+            return
+        if not new_sid:
+            _append_system_message(f"Could not fork session '{sid}'.")
+            return
+        _refresh_session_dropdown()
+        session_dropdown.value = new_sid
+        _load_saved_session(new_sid)
+        _append_system_message(
+            f"Forked session '{sid[:8]}…' → '{new_sid}'. "
+            "You are now editing the fork; the original is unchanged."
+        )
+
     # -- wire events -------------------------------------------------------
     send_btn.on_click(_on_send)
     stop_btn.on_click(_on_stop)
@@ -7748,6 +7775,7 @@ def create_tab(ctx):
     inspector_detail_dropdown.observe(_on_inspector_detail_change, names="value")
     load_session_btn.on_click(_on_load_session)
     delete_session_btn.on_click(_on_delete_session)
+    fork_session_btn.on_click(_on_fork_session)
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)

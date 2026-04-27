@@ -13,6 +13,19 @@ from pathlib import Path
 import ipywidgets as widgets
 
 from delfin.agent.outcome_tracker import CycleOutcome, load_outcomes
+from delfin.dashboard.claude_hooks import discover_hooks, render_hooks_html
+from delfin.dashboard.claude_settings import (
+    discover_settings,
+    render_settings_html,
+)
+from delfin.dashboard.git_worktrees import (
+    list_worktrees,
+    render_worktrees_html,
+)
+from delfin.dashboard.schedules import (
+    discover_schedules,
+    render_schedules_html,
+)
 from delfin.dashboard.mcp_overview import (
     discover_mcp_servers,
     render_overview_html as render_mcp_overview_html,
@@ -271,6 +284,10 @@ def create_tab(ctx, history_path: Path | None = None):
     summary_html = widgets.HTML(value="")
     timeline_html = widgets.HTML(value="")
     mcp_html = widgets.HTML(value="")
+    hooks_html = widgets.HTML(value="")
+    settings_html = widgets.HTML(value="")
+    worktrees_html = widgets.HTML(value="")
+    schedules_html = widgets.HTML(value="")
 
     # ---- state ---------------------------------------------------------
     state: dict = {"all_outcomes": []}
@@ -288,6 +305,32 @@ def create_tab(ctx, history_path: Path | None = None):
             mcp_html.value = render_mcp_overview_html(servers)
         except Exception:
             mcp_html.value = ""
+        # Refresh Claude hook inventory (read-only).
+        try:
+            project_path = (Path.cwd() / ".claude" / "settings.json")
+            hooks = discover_hooks(project_path=project_path)
+            hooks_html.value = render_hooks_html(hooks)
+        except Exception:
+            hooks_html.value = ""
+        # Refresh Claude settings inventory (read-only).
+        try:
+            project_path = (Path.cwd() / ".claude" / "settings.json")
+            views = discover_settings(project_path=project_path)
+            settings_html.value = render_settings_html(views)
+        except Exception:
+            settings_html.value = ""
+        # Refresh git worktree inventory (read-only).
+        try:
+            wts = list_worktrees(Path.cwd())
+            worktrees_html.value = render_worktrees_html(wts)
+        except Exception:
+            worktrees_html.value = ""
+        # Refresh scheduled-task inventory (read-only).
+        try:
+            scheds = discover_schedules()
+            schedules_html.value = render_schedules_html(scheds)
+        except Exception:
+            schedules_html.value = ""
         _render()
 
     def _render() -> None:
@@ -313,7 +356,8 @@ def create_tab(ctx, history_path: Path | None = None):
         layout=widgets.Layout(gap="8px", flex_flow="row wrap"),
     )
     return widgets.VBox(
-        [title, filter_row, summary_html, timeline_html, mcp_html],
+        [title, filter_row, summary_html, timeline_html,
+         mcp_html, hooks_html, settings_html, worktrees_html, schedules_html],
         layout=widgets.Layout(padding="8px"),
     )
 

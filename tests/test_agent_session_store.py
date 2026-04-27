@@ -9,6 +9,7 @@ import pytest
 
 from delfin.agent.session_store import (
     delete_session,
+    fork_session,
     list_sessions,
     load_session,
     save_session,
@@ -152,3 +153,96 @@ def test_corrupt_file_skipped(sessions_dir):
 def test_load_corrupt_returns_none(sessions_dir):
     (sessions_dir / "broken.json").write_text("{invalid")
     assert load_session("broken") is None
+
+
+# ---------------------------------------------------------------------------
+# fork_session
+# ---------------------------------------------------------------------------
+
+def test_fork_creates_new_id(sessions_dir):
+    save_session("src-1",
+                 chat_messages=[{"role": "user", "content": "hello"}],
+                 cost_usd=0.42, title="Original")
+    new_id = fork_session("src-1")
+    assert new_id is not None
+    assert new_id != "src-1"
+    # Both files exist
+    assert (sessions_dir / "src-1.json").exists()
+    assert (sessions_dir / f"{new_id}.json").exists()
+
+
+def test_fork_preserves_chat_and_cost(sessions_dir):
+    save_session("src-2",
+                 chat_messages=[{"role": "user", "content": "hi"},
+                                {"role": "assistant", "content": "hey"}],
+                 cost_usd=1.23, token_usage={"input": 100, "output": 50})
+    new_id = fork_session("src-2")
+    forked = load_session(new_id)
+    assert forked["chat_messages"] == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hey"},
+    ]
+    assert forked["cost_usd"] == 1.23
+    assert forked["token_usage"] == {"input": 100, "output": 50}
+
+
+def test_fork_records_forked_from_link(sessions_dir):
+    save_session("origin",
+                 chat_messages=[{"role": "user", "content": "x"}])
+    new_id = fork_session("origin")
+    forked = load_session(new_id)
+    assert forked["forked_from"] == "origin"
+    # session_id is the new one, not the source
+    assert forked["session_id"] == new_id
+
+
+def test_fork_appends_title_suffix(sessions_dir):
+    save_session("titled",
+                 chat_messages=[{"role": "user", "content": "x"}],
+                 title="My Original Work")
+    new_id = fork_session("titled")
+    forked = load_session(new_id)
+    assert forked["title"] == "My Original Work (fork)"
+
+
+def test_fork_does_not_double_suffix(sessions_dir):
+    """Forking a fork must not append the suffix twice."""
+    save_session("src",
+                 chat_messages=[{"role": "user", "content": "x"}],
+                 title="Work (fork)")
+    new_id = fork_session("src")
+    forked = load_session(new_id)
+    # Title still contains exactly one "(fork)"
+    assert forked["title"] == "Work (fork)"
+
+
+def test_fork_unknown_source_returns_none(sessions_dir):
+    assert fork_session("does-not-exist") is None
+
+
+def test_fork_with_explicit_new_id(sessions_dir):
+    save_session("origin",
+                 chat_messages=[{"role": "user", "content": "x"}])
+    new_id = fork_session("origin", new_id="my-fork")
+    assert new_id == "my-fork"
+    assert (sessions_dir / "my-fork.json").exists()
+
+
+def test_fork_resets_timestamps(sessions_dir):
+    save_session("origin",
+                 chat_messages=[{"role": "user", "content": "x"}])
+    # Manually back-date the source's updated_at
+    src_data = json.loads((sessions_dir / "origin.json").read_text())
+    src_data["updated_at"] = src_data["created_at"] = 1000.0
+    (sessions_dir / "origin.json").write_text(json.dumps(src_data, indent=1))
+
+    new_id = fork_session("origin")
+    forked = load_session(new_id)
+    # Fork's timestamps are recent, not 1000.0
+    assert forked["created_at"] > 1000.0
+    assert forked["updated_at"] > 1000.0
+
+
+def test_fork_corrupt_source_returns_none(sessions_dir):
+    (sessions_dir / "corrupt.json").write_text("{not valid")
+    assert fork_session("corrupt") is None
