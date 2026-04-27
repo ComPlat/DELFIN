@@ -1141,6 +1141,76 @@ def _text_requests_confirmation(agent_text: str) -> bool:
     return any(p in haystack for p in _CONFIRMATION_PATTERNS)
 
 
+def _render_molecule_to_png_b64(
+    mol_or_smiles, *, size: tuple[int, int] = (320, 240)
+) -> str | None:
+    """Render an RDKit Mol or SMILES string to a base64 PNG.
+
+    Returns ``None`` if RDKit is unavailable or the molecule is invalid.
+    Used by the artifact renderer to draw 2D structures inline in the chat.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import Draw, AllChem
+    except ImportError:
+        return None
+    try:
+        if isinstance(mol_or_smiles, str):
+            mol = Chem.MolFromSmiles(mol_or_smiles)
+        else:
+            mol = mol_or_smiles
+        if mol is None:
+            return None
+        # Compute 2D coords if missing (XYZ-derived mols often lack them)
+        if mol.GetNumConformers() == 0 or not mol.GetConformer().Is3D() is False:
+            try:
+                AllChem.Compute2DCoords(mol)
+            except Exception:
+                pass
+        img = Draw.MolToImage(mol, size=size)
+        import base64, io
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
+def _render_xyz_summary(path) -> tuple[int, str] | None:
+    """Parse an XYZ file and return ``(atom_count, summary_string)``.
+
+    Summary is a compact "C12 H10 O2"-style formula plus first three
+    atom lines.  Returns None for unreadable / non-XYZ files.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    try:
+        n_atoms = int(lines[0].strip().split()[0])
+    except (ValueError, IndexError):
+        return None
+    # Skip comment line (second line) and parse atoms
+    atom_lines = lines[2:2 + n_atoms]
+    if not atom_lines:
+        return None
+    counts: dict[str, int] = {}
+    for raw in atom_lines:
+        parts = raw.strip().split()
+        if not parts:
+            continue
+        sym = parts[0]
+        counts[sym] = counts.get(sym, 0) + 1
+    formula = " ".join(
+        f"{sym}{n}" if n > 1 else sym
+        for sym, n in sorted(counts.items())
+    )
+    return n_atoms, formula
+
+
 def _render_artifact_inline(path) -> str | None:
     """Render a workspace artifact as inline HTML for the chat.
 
@@ -1262,6 +1332,80 @@ def _render_artifact_inline(path) -> str | None:
             f'<thead><tr>{head_html}</tr></thead>'
             f'<tbody>{"".join(body_html_rows)}</tbody></table></div>'
             f'{more}</div>'
+        )
+
+    # ---- SMILES file (single SMILES per line) --------------------------
+    if suffix == ".smi":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if not text:
+            return None
+        first = text.splitlines()[0].split()[0]
+        b64 = _render_molecule_to_png_b64(first)
+        if b64 is None:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'🧪 <code>{name_html}</code> SMILES: '
+                f'<code>{_html.escape(first[:120])}</code></div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🧪 <code>{name_html}</code> '
+            f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="display:block;border-radius:4px;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- 2D structure files (.mol, .sdf) --------------------------------
+    if suffix in (".mol", ".sdf"):
+        try:
+            from rdkit import Chem
+        except ImportError:
+            return None
+        try:
+            if suffix == ".sdf":
+                supplier = Chem.SDMolSupplier(str(p))
+                mol = next((m for m in supplier if m is not None), None)
+            else:
+                mol = Chem.MolFromMolFile(str(p))
+        except Exception:
+            mol = None
+        if mol is None:
+            return None
+        b64 = _render_molecule_to_png_b64(mol)
+        if b64 is None:
+            return None
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🧪 <code>{name_html}</code> '
+            f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="display:block;border-radius:4px;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- XYZ coordinates: formula summary + first atoms -----------------
+    if suffix == ".xyz":
+        summary = _render_xyz_summary(p)
+        if summary is None:
+            return None
+        n_atoms, formula = summary
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'⚛️ <code>{name_html}</code> '
+            f'({n_atoms} atoms)</div>'
+            f'<div style="font-size:13px;color:#1f2937;font-family:monospace;'
+            f'padding:4px 0;">{_html.escape(formula)}</div></div>'
         )
 
     # ---- JSON pretty-print ---------------------------------------------

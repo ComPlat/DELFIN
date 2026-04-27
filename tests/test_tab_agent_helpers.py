@@ -11,9 +11,11 @@ from delfin.dashboard.tab_agent import (
     _filter_slash_commands,
     _format_solo_domain_state,
     _render_artifact_inline,
+    _render_molecule_to_png_b64,
     _render_slash_palette_html,
     _render_subagent_pane_html,
     _render_todo_pane_html,
+    _render_xyz_summary,
     _text_requests_confirmation,
 )
 
@@ -643,6 +645,130 @@ def test_artifact_json_huge_skipped(tmp_path):
     assert html is not None
     assert "too large" in html
     assert "<pre" not in html
+
+
+# ---------------------------------------------------------------------------
+# Molecule artifacts (SMI / MOL / SDF / XYZ)
+# ---------------------------------------------------------------------------
+
+import pytest as _pt
+
+_HAS_RDKIT = True
+try:
+    from rdkit import Chem  # noqa: F401
+except Exception:
+    _HAS_RDKIT = False
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_molecule_to_png_smiles_valid():
+    b64 = _render_molecule_to_png_b64("c1ccccc1")
+    assert b64 is not None
+    assert len(b64) > 100  # actual PNG bytes
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_molecule_to_png_invalid_smiles_returns_none():
+    assert _render_molecule_to_png_b64("not_a_smiles_!!!") is None
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_artifact_smi_renders_with_image(tmp_path):
+    p = tmp_path / "benzene.smi"
+    p.write_text("c1ccccc1 benzene")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "data:image/png;base64," in html
+    assert "c1ccccc1" in html
+    assert "benzene.smi" in html
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_artifact_smi_invalid_falls_back_to_text(tmp_path):
+    """Invalid SMILES still produce a labelled stub instead of None."""
+    p = tmp_path / "bad.smi"
+    p.write_text("nonsense_!!!")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "bad.smi" in html
+    # No PNG, since rendering failed
+    assert "data:image/png;base64," not in html
+
+
+def test_artifact_smi_empty_returns_none(tmp_path):
+    p = tmp_path / "empty.smi"
+    p.write_text("")
+    assert _render_artifact_inline(p) is None
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_artifact_mol_renders_image(tmp_path):
+    """Generate a real .mol file and verify it renders."""
+    from rdkit import Chem
+    mol = Chem.MolFromSmiles("CCO")  # ethanol
+    p = tmp_path / "ethanol.mol"
+    Chem.MolToMolFile(mol, str(p))
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "data:image/png;base64," in html
+    assert "atoms" in html  # atom-count label
+
+
+@_pt.mark.skipif(not _HAS_RDKIT, reason="RDKit not installed")
+def test_artifact_sdf_renders_first_molecule(tmp_path):
+    from rdkit import Chem
+    writer = Chem.SDWriter(str(tmp_path / "set.sdf"))
+    for smi in ("CCO", "c1ccccc1"):
+        writer.write(Chem.MolFromSmiles(smi))
+    writer.close()
+    html = _render_artifact_inline(tmp_path / "set.sdf")
+    assert html is not None
+    assert "data:image/png;base64," in html
+
+
+def test_artifact_mol_invalid_returns_none(tmp_path):
+    p = tmp_path / "bad.mol"
+    p.write_text("not a valid mol file")
+    assert _render_artifact_inline(p) is None
+
+
+def test_xyz_summary_basic(tmp_path):
+    p = tmp_path / "water.xyz"
+    p.write_text("3\nwater molecule\nO 0.0 0.0 0.0\nH 0.0 0.7 0.6\nH 0.0 -0.7 0.6\n")
+    out = _render_xyz_summary(p)
+    assert out is not None
+    n_atoms, formula = out
+    assert n_atoms == 3
+    assert "H2" in formula
+    assert "O" in formula
+
+
+def test_xyz_summary_invalid_first_line(tmp_path):
+    p = tmp_path / "bad.xyz"
+    p.write_text("not a number\ncomment\nO 0 0 0\n")
+    assert _render_xyz_summary(p) is None
+
+
+def test_xyz_summary_empty(tmp_path):
+    p = tmp_path / "empty.xyz"
+    p.write_text("")
+    assert _render_xyz_summary(p) is None
+
+
+def test_artifact_xyz_renders_summary_block(tmp_path):
+    p = tmp_path / "h2o.xyz"
+    p.write_text("3\nwater\nO 0 0 0\nH 0 1 0\nH 1 0 0\n")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "h2o.xyz" in html
+    assert "3 atoms" in html
+    assert "H2" in html
+
+
+def test_artifact_xyz_malformed_returns_none(tmp_path):
+    p = tmp_path / "bad.xyz"
+    p.write_text("garbage\n")
+    assert _render_artifact_inline(p) is None
 
 
 def test_artifact_filename_escaped(tmp_path):
