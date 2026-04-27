@@ -24672,8 +24672,21 @@ def _build_coordination_constraints_from_xyz(
                 bl = float(_get_ml_bond_length(m_sym, d_sym))
                 base["distances"].append((m_idx, d_idx, bl))
 
-            # L-M-L angles are NOT constrained here — UFF should be free
-            # to optimize angles toward the ideal polyhedron.
+            # FREEZE metal + 1st-coordination-sphere donors during UFF.
+            # The topology builder placed donors at the ideal symmetric
+            # _TOPO_GEOMETRY_VECTORS positions (Oh/Td/D4h/D3h/SAP/...).
+            # RDKit/OB UFF have no good parameters for transition metals,
+            # so leaving the L-M-L angles free lets UFF distort the
+            # ideal polyhedron by 10°-30° (verified empirically).
+            # Freezing M + donor atoms keeps the high-symmetry polyhedron
+            # exactly intact while still letting UFF relax ligand
+            # internals (ring planarity, torsions, bond lengths beyond
+            # the donor).
+            if m_idx not in base["fix_atoms"]:
+                base["fix_atoms"].append(m_idx)
+            for d_idx in donor_indices:
+                if d_idx not in base["fix_atoms"]:
+                    base["fix_atoms"].append(d_idx)
 
         # Hapto protection: fix hapto metal atoms + all Cp ring atoms
         # during UFF. Without metal FF parameters, UFF treats the metal
