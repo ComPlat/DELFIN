@@ -7,11 +7,14 @@ from __future__ import annotations
 
 from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
+    _extract_action_commands,
     _filter_slash_commands,
     _format_solo_domain_state,
+    _render_artifact_inline,
     _render_slash_palette_html,
     _render_subagent_pane_html,
     _render_todo_pane_html,
+    _text_requests_confirmation,
 )
 
 
@@ -431,6 +434,229 @@ def test_solo_domain_state_handles_non_dict_control_gracefully():
     assert "calc_dir: /c" in out
     # No control line emitted
     assert "control:" not in out
+
+
+# ---------------------------------------------------------------------------
+# D1 — confirmation extraction helpers
+# ---------------------------------------------------------------------------
+
+def test_extract_no_actions_returns_empty():
+    assert _extract_action_commands("") == []
+    assert _extract_action_commands("just plain text") == []
+
+
+def test_extract_single_action():
+    text = "Klar, ich mache das.\nACTION: /control key functional BP86\nFertig."
+    assert _extract_action_commands(text) == ["/control key functional BP86"]
+
+
+def test_extract_multiple_actions_in_order():
+    text = (
+        "Plan:\n"
+        "ACTION: /control key functional PBE0\n"
+        "ACTION: /control key main_basisset def2-TZVP\n"
+        "ACTION: /control key PAL 8\n"
+        "Done."
+    )
+    out = _extract_action_commands(text)
+    assert out == [
+        "/control key functional PBE0",
+        "/control key main_basisset def2-TZVP",
+        "/control key PAL 8",
+    ]
+
+
+def test_extract_strips_whitespace():
+    text = "ACTION:    /submit   "
+    assert _extract_action_commands(text) == ["/submit"]
+
+
+def test_extract_ignores_lines_without_slash_command():
+    text = "ACTION: not a command\nACTION: /jobs"
+    assert _extract_action_commands(text) == ["/jobs"]
+
+
+def test_extract_only_top_of_line_triggers():
+    """Inline 'ACTION:' inside prose should NOT be picked up."""
+    text = "I would do ACTION: /jobs but actually no."
+    assert _extract_action_commands(text) == []
+
+
+def test_confirmation_detection_german():
+    assert _text_requests_confirmation("Soll ich das submitten?")
+    assert _text_requests_confirmation("Möchtest du weitermachen?")
+    assert _text_requests_confirmation("Darf ich den Job abschicken?")
+
+
+def test_confirmation_detection_english():
+    assert _text_requests_confirmation("Should I proceed with the recalc?")
+    assert _text_requests_confirmation("Shall we go ahead?")
+    assert _text_requests_confirmation("Do you want me to continue?")
+
+
+def test_confirmation_detection_case_insensitive():
+    assert _text_requests_confirmation("SHOULD I CONTINUE?")
+    assert _text_requests_confirmation("Soll Ich Weitermachen?")
+
+
+def test_no_confirmation_for_plain_status():
+    assert not _text_requests_confirmation("")
+    assert not _text_requests_confirmation("Done. Job 123 submitted.")
+    assert not _text_requests_confirmation("Reading the file now.")
+
+
+def test_no_confirmation_for_question_without_intent():
+    """A plain '?' or rhetorical question is not a confirmation request."""
+    assert not _text_requests_confirmation("Why does this happen?")
+
+
+# ---------------------------------------------------------------------------
+# Workspace artifact renderer (D4 — inline visualisation)
+# ---------------------------------------------------------------------------
+
+# A 1x1 transparent PNG (smallest valid PNG) for image tests
+_TINY_PNG_BYTES = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452"
+    "0000000100000001080600000000"  # IHDR — 1x1 RGBA
+    "1f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+)
+
+
+def test_artifact_unsupported_returns_none(tmp_path):
+    p = tmp_path / "thing.bin"
+    p.write_bytes(b"\x00\x01\x02")
+    assert _render_artifact_inline(p) is None
+
+
+def test_artifact_missing_path_returns_none(tmp_path):
+    assert _render_artifact_inline(tmp_path / "nope.png") is None
+
+
+def test_artifact_png_renders_base64_img(tmp_path):
+    p = tmp_path / "plot.png"
+    p.write_bytes(_TINY_PNG_BYTES)
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "<img" in html
+    assert "data:image/png;base64," in html
+    assert "plot.png" in html
+
+
+def test_artifact_jpg_uses_jpeg_mime(tmp_path):
+    """JPG and JPEG suffix both map to image/jpeg mime."""
+    p = tmp_path / "x.jpg"
+    p.write_bytes(b"\xff\xd8\xff\xe0fake")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "data:image/jpeg;base64," in html
+
+
+def test_artifact_huge_png_skipped(tmp_path, monkeypatch):
+    """Files over the 2 MB cap render a placeholder instead of inlining."""
+    p = tmp_path / "big.png"
+    p.write_bytes(b"x" * 2_500_000)
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "too large" in html
+    # Real bytes must NOT be embedded
+    assert "data:image/png;base64," not in html
+
+
+def test_artifact_svg_inline(tmp_path):
+    p = tmp_path / "fig.svg"
+    p.write_text(
+        "<?xml version='1.0'?>"
+        "<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>"
+    )
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "<svg" in html
+    assert "<?xml" not in html  # XML declaration is stripped
+    assert "fig.svg" in html
+
+
+def test_artifact_csv_table_with_header(tmp_path):
+    p = tmp_path / "energies.csv"
+    p.write_text("name,energy\nA,-1.23\nB,-2.34\nC,-3.45\n")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "<table" in html
+    assert "<thead" in html
+    assert "name" in html and "energy" in html
+    assert "-1.23" in html
+    assert "energies.csv" in html
+
+
+def test_artifact_csv_truncates_long_files(tmp_path):
+    rows = ["col1,col2"] + [f"r{i},v{i}" for i in range(50)]
+    p = tmp_path / "big.csv"
+    p.write_text("\n".join(rows))
+    html = _render_artifact_inline(p)
+    assert html is not None
+    # Caps at 12 rows
+    assert "r0,v0" not in html.replace(" ", "")
+    assert "r10" in html  # within cap
+    assert "more rows" in html
+
+
+def test_artifact_tsv_uses_tab_separator(tmp_path):
+    p = tmp_path / "x.tsv"
+    p.write_text("a\tb\nc\td\n")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "a" in html and "b" in html
+    # Must not have split on commas
+    assert "<td" in html
+
+
+def test_artifact_csv_escapes_html():
+    """CSV cells with HTML special chars must be escaped."""
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", delete=False, encoding="utf-8",
+    ) as f:
+        f.write("name,value\n<script>,&hack\n")
+        path = f.name
+    try:
+        html = _render_artifact_inline(path)
+        assert html is not None
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+    finally:
+        os.unlink(path)
+
+
+def test_artifact_json_pretty(tmp_path):
+    p = tmp_path / "data.json"
+    p.write_text('{"key": "value", "n": 42}')
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "<pre" in html
+    assert "key" in html
+    assert "data.json" in html
+
+
+def test_artifact_json_huge_skipped(tmp_path):
+    p = tmp_path / "big.json"
+    p.write_text("x" * 7000)
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "too large" in html
+    assert "<pre" not in html
+
+
+def test_artifact_filename_escaped(tmp_path):
+    p = tmp_path / "weird<name>.png"
+    # Some filesystems may reject this; if so skip the test
+    try:
+        p.write_bytes(_TINY_PNG_BYTES)
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("filesystem rejected weird filename")
+    html = _render_artifact_inline(p)
+    assert html is not None
+    assert "<name>" not in html
+    assert "&lt;name&gt;" in html
 
 
 def test_solo_domain_state_full_snapshot_well_formed():

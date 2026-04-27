@@ -468,3 +468,157 @@ def test_solo_mode_prompt_includes_full_project_context(agent_tree):
     # Lines beyond the old 18-line cutoff must now be present
     assert "line 30" in prompt
     assert "line 39" in prompt
+
+
+# ---------------------------------------------------------------------------
+# External Memory bridge (S2 — read ~/.claude/projects/<slug>/memory/...)
+# ---------------------------------------------------------------------------
+
+def test_external_memory_missing_returns_empty(agent_tree, tmp_path):
+    """No memory directory → empty string, no exception."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=tmp_path / "missing")
+    assert out == ""
+
+
+def test_external_memory_reads_index(agent_tree, tmp_path):
+    """MEMORY.md alone is enough — referenced files are optional."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(
+        "# Project Memory\n- Some standalone fact about the user.\n"
+    )
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=mem)
+    assert "MEMORY.md" in out
+    assert "standalone fact" in out
+
+
+def test_external_memory_follows_markdown_links(agent_tree, tmp_path):
+    """Linked files referenced from MEMORY.md are concatenated."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(
+        "# Project Memory\n"
+        "- [User role](user.md) — brief\n"
+        "- [Coding style](style.md) — terse diffs\n"
+    )
+    (mem / "user.md").write_text("---\nname: user\n---\nThe user is a chemist.")
+    (mem / "style.md").write_text("---\nname: style\n---\nTerse diffs only.")
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=mem)
+    assert "MEMORY.md" in out
+    assert "user.md" in out
+    assert "style.md" in out
+    assert "chemist" in out
+    assert "Terse diffs only" in out
+
+
+def test_external_memory_skips_missing_referenced_files(agent_tree, tmp_path):
+    """Broken links don't crash the bridge."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text("- [Missing](nope.md)\n- [Real](real.md)")
+    (mem / "real.md").write_text("Real content here.")
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=mem)
+    assert "Real content here" in out
+    # No crash — and broken link doesn't appear as content
+    assert "Missing" in out  # title shows up in MEMORY.md text
+    assert "nope.md" not in out.split("# Real")[1] if "# Real" in out else True
+
+
+def test_external_memory_truncates_to_max_chars(agent_tree, tmp_path):
+    """Big memories are capped — never blow up the prompt."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text("- [Big](big.md)\n")
+    (mem / "big.md").write_text("x" * 50_000)
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(
+        memory_root=mem, max_chars=2_000,
+    )
+    assert len(out) <= 2_100  # cap + truncation marker
+    assert "truncated" in out
+
+
+def test_external_memory_dedupes_repeated_links(agent_tree, tmp_path):
+    """If a file is linked twice, it's read once."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(
+        "- [A](a.md)\n- [Also A](a.md)\n"
+    )
+    (mem / "a.md").write_text("Body of A")
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=mem)
+    assert out.count("Body of A") == 1
+
+
+def test_external_memory_blocks_path_traversal(agent_tree, tmp_path):
+    """Links that escape the memory directory must be rejected."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    secret = tmp_path / "secret.md"
+    secret.write_text("PASSWORD")
+    (mem / "MEMORY.md").write_text("- [Bad](../secret.md)\n")
+
+    loader = PromptLoader(agent_tree)
+    out = loader._load_external_memory_context(memory_root=mem)
+    # Title still appears in MEMORY.md text, but the secret content does NOT
+    assert "PASSWORD" not in out
+
+
+def test_solo_prompt_includes_external_memory_when_present(
+    agent_tree, tmp_path, monkeypatch,
+):
+    """End-to-end: solo build picks up the external memory layer."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    (agent_tree / "pack" / "agents" / "solo_agent.md").write_text(
+        "# Solo Agent\nYou are the solo agent."
+    )
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(
+        "# Project Memory\n- The user prefers terse diffs.\n"
+    )
+
+    # Force the loader to look at our temp memory directory
+    loader = PromptLoader(agent_tree)
+    monkeypatch.setattr(
+        loader, "_load_external_memory_context",
+        lambda max_chars=6000, memory_root=None:
+            loader.__class__._load_external_memory_context(
+                loader, memory_root=mem, max_chars=max_chars,
+            ),
+    )
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+    )
+    assert "External Memory" in prompt
+    assert "terse diffs" in prompt

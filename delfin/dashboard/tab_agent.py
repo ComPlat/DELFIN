@@ -1091,6 +1091,205 @@ def _render_slash_palette_html(
     )
 
 
+# ---------------------------------------------------------------------------
+# D1 — confirmation extraction helpers
+# ---------------------------------------------------------------------------
+
+# German + English phrases that signal the agent is asking the user to
+# confirm before it proceeds.  Used to surface Approve/Deny buttons
+# instead of waiting for a free-text "yes".
+_CONFIRMATION_PATTERNS: tuple[str, ...] = (
+    "soll ich", "soll das", "darf ich",
+    "should i", "shall i",
+    "okay so?", "okay so",
+    "willst du", "möchtest du",
+    "weitermachen?", "ausführen?", "submitten?", "submit?",
+    "proceed?", "confirm?", "go ahead?",
+    "shall we", "do you want",
+)
+
+
+def _extract_action_commands(agent_text: str) -> list[str]:
+    """Pull every ``ACTION: /command`` line out of an agent response.
+
+    Returns the bare slash-commands (no ``ACTION:`` prefix), in original
+    order.  Only single-line ACTIONs are recognised (matches the existing
+    dispatcher in ``_dashboard_auto_exec``).
+    """
+    if not agent_text:
+        return []
+    out: list[str] = []
+    for raw in agent_text.splitlines():
+        line = raw.rstrip()
+        if line.startswith("ACTION:"):
+            cmd = line[len("ACTION:"):].strip()
+            if cmd.startswith("/"):
+                out.append(cmd)
+    return out
+
+
+def _text_requests_confirmation(agent_text: str) -> bool:
+    """Heuristic: does the agent's text invite explicit user confirmation?
+
+    Trigger phrases match common German + English question patterns that
+    follow proposed actions.  Used to decide whether to show
+    Approve/Deny buttons instead of streaming auto-execution.
+    """
+    if not agent_text:
+        return False
+    haystack = agent_text.lower()
+    return any(p in haystack for p in _CONFIRMATION_PATTERNS)
+
+
+def _render_artifact_inline(path) -> str | None:
+    """Render a workspace artifact as inline HTML for the chat.
+
+    Supported types:
+        - PNG / JPG / GIF: base64 ``<img>`` (Voila-safe — no file:// link)
+        - SVG: inline SVG (kept under 200kB to avoid blowing up the DOM)
+        - CSV / TSV: first 12 rows as a compact table
+        - JSON: pretty-printed up to 6kB inside ``<pre>``
+
+    Returns ``None`` for unsupported types or unreadable files so the
+    caller can simply skip them.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return None
+    except OSError:
+        return None
+
+    suffix = p.suffix.lower()
+    name_html = _html.escape(p.name)
+
+    # ---- Images via base64 ---------------------------------------------
+    if suffix in (".png", ".jpg", ".jpeg", ".gif"):
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return None
+        # Cap raster images at ~2 MB to keep the chat snappy
+        if len(data) > 2_000_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'📷 <code>{name_html}</code> ({len(data) // 1024} KB) — '
+                f'too large to embed inline.</div>'
+            )
+        import base64
+        b64 = base64.b64encode(data).decode("ascii")
+        mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix[1:]}"
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📷 <code>{name_html}</code></div>'
+            f'<img src="data:{mime};base64,{b64}" '
+            f'style="max-width:100%;border-radius:4px;display:block;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- Inline SVG ----------------------------------------------------
+    if suffix == ".svg":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if len(text) > 200_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'🎨 <code>{name_html}</code> ({len(text) // 1024} KB) — '
+                f'too large to embed inline.</div>'
+            )
+        # Strip a leading XML declaration for clean inline embedding
+        if text.lstrip().startswith("<?xml"):
+            text = text.split("?>", 1)[-1]
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🎨 <code>{name_html}</code></div>'
+            f'<div style="max-width:100%;overflow:auto;">{text}</div></div>'
+        )
+
+    # ---- CSV / TSV preview ---------------------------------------------
+    if suffix in (".csv", ".tsv"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        sep = "\t" if suffix == ".tsv" else ","
+        all_lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not all_lines:
+            return None
+        rows = [ln.split(sep) for ln in all_lines[:12]]
+        max_cols = max(len(r) for r in rows)
+        header = rows[0]
+        body = rows[1:]
+        head_html = "".join(
+            f'<th style="background:#f3f4f6;padding:4px 8px;'
+            f'text-align:left;font-size:11px;color:#374151;'
+            f'border-bottom:1px solid #e5e7eb;">{_html.escape(c)}</th>'
+            for c in header
+        )
+        body_html_rows: list[str] = []
+        for row in body:
+            cells = "".join(
+                f'<td style="padding:4px 8px;font-size:11px;color:#1f2937;'
+                f'border-bottom:1px solid #f3f4f6;">{_html.escape(c)}</td>'
+                for c in row
+            )
+            body_html_rows.append(f'<tr>{cells}</tr>')
+        more = ""
+        if len(all_lines) > 12:
+            more = (
+                f'<div style="font-size:10px;color:#9ca3af;'
+                f'padding:4px 0 0 0;">'
+                f'… {len(all_lines) - 12} more rows</div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📊 <code>{name_html}</code> '
+            f'({max_cols} cols, {len(all_lines)} rows)</div>'
+            f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;'
+            f'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+            f'<thead><tr>{head_html}</tr></thead>'
+            f'<tbody>{"".join(body_html_rows)}</tbody></table></div>'
+            f'{more}</div>'
+        )
+
+    # ---- JSON pretty-print ---------------------------------------------
+    if suffix == ".json":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if len(text) > 6_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'📄 <code>{name_html}</code> ({len(text) // 1024} KB JSON) — '
+                f'too large to inline; open the file directly.</div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📄 <code>{name_html}</code></div>'
+            f'<pre style="margin:0;padding:6px;background:#f9fafb;'
+            f'border-radius:4px;font-size:11px;max-height:240px;'
+            f'overflow:auto;">{_html.escape(text)}</pre></div>'
+        )
+
+    return None
+
+
 def _format_solo_domain_state(snapshot: dict) -> str:
     """Render a compact ``[Domain state]`` block for the solo-mode prompt.
 
@@ -1375,6 +1574,7 @@ def create_tab(ctx):
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
         "current_todos": [],      # latest TodoWrite payload (list of {content, status, activeForm})
         "subagent_calls": [],     # active/completed Agent tool calls for the subagent panel
+        "_ws_known_files": set(),  # snapshot of agent_workspace at turn start (D4)
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -6809,6 +7009,33 @@ def create_tab(ctx):
                             f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
                         )
 
+                def _emit_new_workspace_artifacts() -> None:
+                    """D4: scan agent_workspace for newly created files and
+                    append inline previews (PNG/SVG/CSV/JSON) to the chat."""
+                    try:
+                        before = state.get("_ws_known_files") or set()
+                        current = {
+                            p.name: p for p in ctx.agent_dir.iterdir()
+                            if p.is_file()
+                        }
+                    except Exception:
+                        return
+                    new_names = set(current.keys()) - set(before)
+                    if not new_names:
+                        return
+                    for name in sorted(new_names):
+                        path = current.get(name)
+                        if path is None:
+                            continue
+                        try:
+                            html_block = _render_artifact_inline(path)
+                        except Exception:
+                            html_block = None
+                        if html_block:
+                            _append_tool_message(html_block)
+                    # Update the snapshot so we don't re-emit the same artifact.
+                    state["_ws_known_files"] = set(current.keys())
+
                 def _on_tool_result(tool_name, tool_output):
                     """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
@@ -6858,6 +7085,12 @@ def create_tab(ctx):
                             f'<span style="color:#9ca3af;">'
                             f'{_html.escape(output)}</span>'
                         )
+
+                    # D4: After file-creating tools, surface any new artifacts
+                    # in the chat so the user sees plots/CSVs without
+                    # leaving the conversation.
+                    if tool_name in ("Write", "Edit", "Bash", "NotebookEdit"):
+                        _emit_new_workspace_artifacts()
 
                 def _on_permission_denied(description):
                     if chunks:
@@ -6931,6 +7164,17 @@ def create_tab(ctx):
                         current_msg = user_text
                 else:
                     current_msg = user_text
+
+                # D4: snapshot agent_workspace before the turn so we can
+                # diff and inline-render any new artifacts the agent
+                # creates (PNG/SVG/CSV/JSON).
+                try:
+                    state["_ws_known_files"] = {
+                        p.name for p in ctx.agent_dir.iterdir() if p.is_file()
+                    }
+                except Exception:
+                    state["_ws_known_files"] = set()
+
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
 

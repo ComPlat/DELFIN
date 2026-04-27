@@ -169,6 +169,68 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _load_external_memory_context(
+        self,
+        max_chars: int = 6000,
+        memory_root: Path | None = None,
+    ) -> str:
+        """Load the user's Claude Code memory for the current repo.
+
+        Looks at ``~/.claude/projects/<slug>/memory/MEMORY.md`` and the
+        ``[Title](file.md)`` references inside it.  Returns a flat
+        markdown string suitable for prompt injection, capped at
+        ``max_chars`` so it can never blow up the context.
+
+        The repo is mapped to a slug by replacing ``/`` with ``-`` —
+        Claude Code's own convention.  Empty string if nothing is found.
+
+        Failures (no home dir, missing files, encoding issues) degrade
+        silently to an empty string — this is best-effort context.
+        """
+        try:
+            home = Path.home()
+        except Exception:
+            return ""
+        repo_root = Path(self.repo_root).resolve()
+        slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+        base = (
+            memory_root if memory_root is not None
+            else home / ".claude" / "projects" / slug / "memory"
+        )
+        index = base / "MEMORY.md"
+        if not index.exists():
+            return ""
+
+        try:
+            index_text = index.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+        chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
+        # Pull in every "[Title](file.md)" target referenced from MEMORY.md
+        import re as _re
+        seen: set[str] = set()
+        for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
+            title, rel = match.group(1), match.group(2).strip()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            target = (base / rel).resolve()
+            try:
+                if not target.is_file():
+                    continue
+                # Defence-in-depth: don't read outside the memory dir
+                target.relative_to(base.resolve())
+                body = target.read_text(encoding="utf-8", errors="replace").strip()
+            except (OSError, ValueError):
+                continue
+            chunks.append(f"# {title} ({rel})\n{body}")
+
+        joined = "\n\n".join(chunks).strip()
+        if len(joined) <= max_chars:
+            return joined
+        return joined[:max_chars] + f"\n\n... [truncated, {len(joined) - max_chars} chars omitted]"
+
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
 
@@ -614,6 +676,17 @@ class PromptLoader:
                 if not self._should_skip_section("memory", role_id):
                     sections.append(f"--- Project Memory ---\n{memory_context}")
                     injected.append("memory")
+
+            # Layer 3b: External Memory — bridge to the user's
+            # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
+            # solo mode inherits the same memories the terminal CLI uses.
+            try:
+                ext_mem = self._load_external_memory_context()
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
 
             # Attention anchor (always last — recency bias)
             sections.append(self._build_critical_anchor(role_id))
