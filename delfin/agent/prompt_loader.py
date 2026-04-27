@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,51 @@ class PromptLoader:
             )
         except Exception:
             return ""
+
+    def _build_session_env_block(self) -> str:
+        """Build a CLI-style environment summary for the system prompt.
+
+        Mirrors what the Claude Code CLI injects at session start:
+        cwd, git branch, short status, and recent commits.  Keeps the
+        block under ~12 lines so it doesn't crowd the prompt.
+
+        Failures (no git, detached HEAD, etc.) are degraded gracefully.
+        """
+        repo = self.repo_root
+        lines: list[str] = [f"cwd: {repo}"]
+
+        def _git(*args: str) -> str:
+            try:
+                out = subprocess.run(
+                    ["git", *args], cwd=str(repo),
+                    capture_output=True, text=True, timeout=2.0,
+                )
+                if out.returncode == 0:
+                    return out.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                pass
+            return ""
+
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch and branch != "HEAD":
+            lines.append(f"branch: {branch}")
+
+        status = _git("status", "--porcelain")
+        if status:
+            entries = [ln for ln in status.splitlines() if ln.strip()]
+            preview = ", ".join(entries[:5])
+            tail = f" (+{len(entries) - 5} more)" if len(entries) > 5 else ""
+            lines.append(f"status: {len(entries)} change(s) — {preview}{tail}")
+        else:
+            lines.append("status: clean")
+
+        commits = _git("log", "--oneline", "-5")
+        if commits:
+            lines.append("recent commits:")
+            for line in commits.splitlines()[:5]:
+                lines.append(f"  {line}")
+
+        return "\n".join(lines)
 
     def _load_repo_map_context(self, task_text: str) -> str:
         """Load a compact task-scoped repository map."""
@@ -522,14 +568,17 @@ class PromptLoader:
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 sections.append(role_prompt)
+
+            # CLI-style environment block: cwd, branch, status, recent commits
+            env_block = self._build_session_env_block()
+            if env_block:
+                sections.append(f"--- Session Environment ---\n{env_block}")
+
             ctx_text = self._cached_read(
                 self.agent_dir / "shared" / "delfin_context.md"
             )
             if ctx_text:
-                lines = ctx_text.splitlines()
-                sections.append(
-                    "--- Project Context ---\n" + "\n".join(lines[:18])
-                )
+                sections.append(f"--- Project Context ---\n{ctx_text}")
 
             # Layer 1: Task-aware (briefing + decomposition for complex tasks)
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):

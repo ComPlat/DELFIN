@@ -229,6 +229,8 @@ _DASHBOARD_TOOLS = frozenset({
 # MCP documentation server tools — allowed for ALL roles so every agent
 # can look up ORCA manual sections, xTB docs, methodology, etc.
 _DOC_TOOL_PREFIX = "mcp__delfin-docs__"
+_OPS_TOOL_PREFIX = "mcp__delfin-ops__"
+_MCP_TOOL_PREFIXES = (_DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX)
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -493,8 +495,8 @@ class AgentEngine:
                     role_id = self.route[self.current_role_index] if self.route else ""
                     allowed = _ROLE_TOOL_WHITELIST.get(role_id)
                     if allowed is not None and event.tool_name not in allowed:
-                        # Allow MCP doc server tools for all roles
-                        if not event.tool_name.startswith(_DOC_TOOL_PREFIX):
+                        # Allow MCP doc + ops server tools for all roles
+                        if not event.tool_name.startswith(_MCP_TOOL_PREFIXES):
                             # Block unauthorized tool — don't call on_tool_use
                             continue
                     # Defense-in-depth: dashboard_agent Write restricted to workspace

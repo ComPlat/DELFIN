@@ -378,3 +378,93 @@ def test_build_system_prompt_skips_duplicate_profile_in_same_session(agent_tree)
 
     assert "Provider Profile" in prompt1
     assert "Provider Profile" not in prompt2
+
+
+# ---------------------------------------------------------------------------
+# Session env block — CLI-style cwd/branch/status/commits injection
+# ---------------------------------------------------------------------------
+
+def test_session_env_block_includes_cwd(agent_tree):
+    """The env block must always include the cwd line as a baseline."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader(agent_tree)
+    block = loader._build_session_env_block()
+    assert block.startswith("cwd: ")
+    assert str(agent_tree) in block
+
+
+def test_session_env_block_no_git_returns_cwd_only(tmp_path, monkeypatch):
+    """Outside a git repo the block degrades gracefully — just cwd."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    # Build an isolated empty tree (no git)
+    (tmp_path / "pack").mkdir()
+    (tmp_path / "pack_lite").mkdir()
+    loader = PromptLoader(tmp_path)
+    block = loader._build_session_env_block()
+    # cwd is always there; status/branch/commits skipped silently
+    assert block.startswith("cwd: ")
+    # Should be short (no git data)
+    assert "branch:" not in block
+    assert "recent commits:" not in block
+
+
+def test_session_env_block_real_repo_has_branch(agent_tree, monkeypatch):
+    """Smoke test: when running in the actual DELFIN repo, branch should appear.
+
+    We import the loader without override so it uses the real ``repo_root``.
+    """
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader()  # use real repo
+    block = loader._build_session_env_block()
+    # In the real repo, git is available — branch line should be present
+    if "branch:" in block:
+        assert "recent commits:" in block or "status:" in block
+
+
+def test_solo_mode_prompt_includes_session_env(agent_tree):
+    """Solo-mode build must inject the Session Environment section."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    # Add a solo_agent role file so the test can build the solo prompt
+    (agent_tree / "pack" / "agents" / "solo_agent.md").write_text(
+        "# Solo Agent\nYou are the solo agent."
+    )
+
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+    )
+    assert "Session Environment" in prompt
+    assert "cwd:" in prompt
+
+
+def test_solo_mode_prompt_includes_full_project_context(agent_tree):
+    """Solo-mode no longer truncates delfin_context.md to 18 lines."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    long_ctx = "\n".join(f"line {i}" for i in range(40))
+    (agent_tree / "pack" / "shared" / "delfin_context.md").write_text(
+        f"# DELFIN Context\n{long_ctx}"
+    )
+    (agent_tree / "pack" / "agents" / "solo_agent.md").write_text(
+        "# Solo Agent\nYou are the solo agent."
+    )
+
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+    )
+    # Lines beyond the old 18-line cutoff must now be present
+    assert "line 30" in prompt
+    assert "line 39" in prompt

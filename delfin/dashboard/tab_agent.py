@@ -923,6 +923,303 @@ def _md_to_html(text: str) -> str:
     return escaped
 
 
+# ---------------------------------------------------------------------------
+# Slash-command catalog (used by the discoverable command palette)
+# ---------------------------------------------------------------------------
+
+# Each tuple: (category, command, summary, has_args)
+# - command: literal prefix to insert into the input (no trailing space → user
+#   completes; trailing space → ready to type args)
+# - has_args: True means the command takes arguments — palette adds a trailing
+#   space so the user starts typing immediately
+_SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
+    # Session
+    ("Session", "/help", "Show this help", False),
+    ("Session", "/clear", "Clear chat history", False),
+    ("Session", "/cost", "Show token usage & cost", False),
+    ("Session", "/usage", "Detailed token usage & session stats", False),
+    ("Session", "/status", "Show engine status", False),
+    ("Session", "/compact", "Summarize context to reduce tokens", False),
+    ("Session", "/undo", "Undo last agent turn (drop from context)", False),
+    ("Session", "/retry", "Regenerate last response", False),
+    ("Session", "/stop", "Stop current generation", False),
+    ("Session", "/reset", "Reset engine for new cycle", False),
+    ("Session", "/export", "Export chat as Markdown", False),
+    ("Session", "/search", "Search in chat history", True),
+    # Engine config
+    ("Engine", "/provider", "Switch provider (claude/openai/kit)", True),
+    ("Engine", "/model", "Switch model (depends on provider)", True),
+    ("Engine", "/effort", "Set effort (low/medium/high/xhigh)", True),
+    ("Engine", "/mode", "Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)", True),
+    ("Engine", "/perms", "Show or set permission profile", True),
+    ("Engine", "/perm-cycle", "Cycle through permission profiles", False),
+    # Git
+    ("Git", "/git status", "Show git status", False),
+    ("Git", "/git diff", "Show staged/unstaged changes", False),
+    ("Git", "/git log", "Show recent commits", False),
+    ("Git", "/git branch", "Show branches", False),
+    # Memory
+    ("Memory", "/remember", "Save a persistent memory", True),
+    ("Memory", "/memories", "List all memories", False),
+    ("Memory", "/forget", "Delete a memory by index", True),
+    # Workspace (agent_workspace/)
+    ("Workspace", "/workspace ls", "List files in agent workspace", False),
+    ("Workspace", "/workspace read", "Read a workspace file", True),
+    ("Workspace", "/workspace clean", "Remove all workspace files", False),
+    # Dashboard navigation
+    ("Dashboard", "/tab", "Switch tab (submit/orca/jobs/calc/settings)", True),
+    ("Dashboard", "/jobs", "Switch to Job Status tab", False),
+    ("Dashboard", "/ui list", "List all controllable widgets", False),
+    ("Dashboard", "/ui", "Manipulate a widget (show/click/value/...)", True),
+    # CONTROL
+    ("CONTROL", "/control show", "Show CONTROL content from Submit tab", False),
+    ("CONTROL", "/control set", "Replace entire CONTROL content", True),
+    ("CONTROL", "/control key", "Set one CONTROL key (e.g. functional BP86)", True),
+    ("CONTROL", "/control validate", "Validate CONTROL syntax", False),
+    # ORCA Builder
+    ("ORCA", "/orca show", "Show ORCA Builder settings", False),
+    ("ORCA", "/orca set", "Set an ORCA Builder param", True),
+    ("ORCA", "/orca submit", "Submit ORCA job", False),
+    # Submit
+    ("Submit", "/submit", "Submit job from current Submit tab state", False),
+    # Calculations / archive browsing
+    ("Calc", "/calc ls", "List directories/files", True),
+    ("Calc", "/calc cd", "Navigate calc folder (syncs browser)", True),
+    ("Calc", "/calc select", "Select file in browser", True),
+    ("Calc", "/calc read", "Read a calc file", True),
+    ("Calc", "/calc tail", "Read last 8KB (convergence check)", True),
+    ("Calc", "/calc info", "Show folder summary & status", True),
+    ("Calc", "/calc tree", "Show directory tree", True),
+    ("Calc", "/calc search", "Search files by glob pattern", True),
+    # Analysis
+    ("Analysis", "/analyze", "Full analysis (energy + convergence + errors)", True),
+    ("Analysis", "/analyze energy", "Extract Gibbs/ZPE/electronic energies", True),
+    ("Analysis", "/analyze convergence", "Check SCF convergence", True),
+    ("Analysis", "/analyze errors", "Scan for ORCA error patterns", True),
+    ("Analysis", "/analyze status", "Overview of all calc folders", False),
+    # Recalc / cancel (destructive — confirmations enforced)
+    ("Recalc", "/recalc check", "Check if recalc needed (safe)", True),
+    ("Recalc", "/recalc check-all", "Scan all folders (safe)", False),
+    ("Recalc", "/recalc", "Submit recalc (confirms first)", True),
+    ("Recalc", "/recalc auto", "Recalc all that need it (confirms first)", False),
+    ("Recalc", "/cancel", "Cancel a job (confirms first)", True),
+    ("Recalc", "/cancel all", "Cancel all active jobs (confirms first)", False),
+    # Batch
+    ("Batch", "/batch from-calc", "Build batch from calc folders (optional glob)", True),
+    ("Batch", "/batch add", "Add one entry (Name;SMILES;...)", True),
+    ("Batch", "/batch show", "Show current batch content", False),
+    ("Batch", "/batch clear", "Clear batch field", False),
+)
+
+
+def _filter_slash_commands(
+    commands: tuple[tuple[str, str, str, bool], ...],
+    query: str,
+) -> list[tuple[str, str, str, bool]]:
+    """Case-insensitive filter on command + summary + category.
+
+    An empty query returns everything in catalog order.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return list(commands)
+    out: list[tuple[str, str, str, bool]] = []
+    for entry in commands:
+        category, cmd, summary, _ = entry
+        haystack = f"{cmd} {summary} {category}".lower()
+        if q in haystack:
+            out.append(entry)
+    return out
+
+
+def _render_slash_palette_html(
+    commands: list[tuple[str, str, str, bool]],
+    query: str = "",
+) -> str:
+    """Render the slash-command palette as grouped HTML.
+
+    The output is wrapped in ``<div class="delfin-slash-palette">`` and each
+    command row carries a ``data-command`` attribute so a click handler can
+    insert it into the input.  Inline styling keeps the palette portable.
+    """
+    if not commands:
+        q = _html.escape(query)
+        return (
+            '<div class="delfin-slash-palette" '
+            'style="padding:10px;background:#fff;border:1px solid #e5e7eb;'
+            'border-radius:6px;color:#6b7280;font-size:12px;">'
+            f'No commands match <code>{q}</code>.</div>'
+        )
+
+    grouped: dict[str, list[tuple[str, str, str, bool]]] = {}
+    for entry in commands:
+        grouped.setdefault(entry[0], []).append(entry)
+
+    sections: list[str] = []
+    for category, entries in grouped.items():
+        rows: list[str] = []
+        for cat, cmd, summary, has_args in entries:
+            insert = cmd + (" " if has_args else "")
+            rows.append(
+                '<div class="slash-row" '
+                f'data-command="{_html.escape(insert)}" '
+                'style="display:flex;gap:10px;padding:5px 8px;cursor:pointer;'
+                'border-radius:4px;">'
+                f'<code style="color:#3b82f6;font-size:12px;font-weight:600;'
+                'min-width:160px;">'
+                f'{_html.escape(cmd)}</code>'
+                f'<span style="color:#374151;font-size:12px;">'
+                f'{_html.escape(summary)}</span>'
+                '</div>'
+            )
+        sections.append(
+            f'<div style="margin-bottom:8px;">'
+            f'<div style="font-size:10px;font-weight:700;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:0.4px;'
+            f'padding:3px 8px;">{_html.escape(category)}</div>'
+            + "".join(rows) +
+            '</div>'
+        )
+
+    return (
+        '<div class="delfin-slash-palette" '
+        'style="max-height:340px;overflow-y:auto;background:#f9fafb;'
+        'border:1px solid #e5e7eb;border-radius:6px;padding:6px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + "".join(sections) +
+        '</div>'
+    )
+
+
+def _render_subagent_pane_html(calls: list[dict]) -> str:
+    """Render the active/completed subagent calls as a compact panel.
+
+    Each call dict has: ``subagent_type`` (str), ``description`` (str),
+    ``prompt`` (str), ``status`` ("running" | "done"), ``output`` (str).
+    Returns empty string if there are no calls — caller hides the widget.
+    """
+    if not calls:
+        return ""
+    n_running = sum(1 for c in calls if c.get("status") == "running")
+    rows: list[str] = []
+    for call in calls:
+        status = call.get("status", "running")
+        if status == "running":
+            glyph, color = "↻", "#3b82f6"
+        else:
+            glyph, color = "✓", "#10b981"
+        sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+        desc = _html.escape(str(call.get("description") or "")[:80])
+        prompt_preview = _html.escape(
+            str(call.get("prompt") or "")[:200].replace("\n", " ").strip()
+        )
+        output = call.get("output") or ""
+        details = ""
+        if output:
+            output_preview = _html.escape(str(output)[:600])
+            details = (
+                '<details style="margin-top:4px;">'
+                '<summary style="cursor:pointer;font-size:11px;color:#6b7280;">'
+                f'Result ({len(str(output))} chars)</summary>'
+                '<pre style="margin:4px 0 0 0;padding:6px 8px;'
+                'background:#f3f4f6;border-radius:4px;font-size:11px;'
+                'white-space:pre-wrap;max-height:160px;overflow-y:auto;">'
+                f'{output_preview}</pre></details>'
+            )
+        rows.append(
+            f'<li style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">'
+            f'<div style="display:flex;gap:8px;align-items:center;">'
+            f'<span style="color:{color};font-weight:700;">{glyph}</span>'
+            f'<span style="background:#dbeafe;color:#1e40af;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:8px;'
+            f'text-transform:uppercase;">{sub_type}</span>'
+            f'<span style="color:#1f2937;font-size:12px;font-weight:600;">'
+            f'{desc}</span></div>'
+            + (f'<div style="font-size:11px;color:#6b7280;margin-top:2px;'
+               f'padding-left:24px;">{prompt_preview}…</div>' if prompt_preview else '')
+            + details
+            + '</li>'
+        )
+
+    n_total = len(calls)
+    header = (
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'gap:8px;margin-bottom:6px;">'
+        f'<div style="font-size:11px;font-weight:700;color:#374151;'
+        f'text-transform:uppercase;letter-spacing:0.4px;">Sub-Agents</div>'
+        f'<div style="font-size:11px;color:#6b7280;">'
+        f'{n_total} call(s)'
+        + (f' · {n_running} running' if n_running else '')
+        + '</div></div>'
+    )
+    return (
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#fff;padding:10px 12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + header
+        + '<ul style="list-style:none;margin:0;padding:0;">'
+        + "".join(rows) + '</ul></div>'
+    )
+
+
+def _render_todo_pane_html(todos: list[dict]) -> str:
+    """Render the TodoWrite plan as a persistent sidebar HTML block.
+
+    Returns an empty string if there are no todos — the caller should
+    hide the widget.  Each todo carries ``content``, ``status``, and
+    ``activeForm`` (shown while ``status == "in_progress"``).
+    """
+    if not todos:
+        return ""
+    n_done = sum(1 for t in todos if t.get("status") == "completed")
+    n_total = len(todos)
+    n_in_progress = sum(1 for t in todos if t.get("status") == "in_progress")
+
+    rows: list[str] = []
+    for t in todos:
+        status = t.get("status", "pending")
+        if status == "completed":
+            glyph, color, opacity = "✓", "#10b981", "0.55"
+            text = t.get("content", "")
+        elif status == "in_progress":
+            glyph, color, opacity = "→", "#3b82f6", "1.0"
+            text = t.get("activeForm") or t.get("content", "")
+        else:
+            glyph, color, opacity = "○", "#9ca3af", "0.85"
+            text = t.get("content", "")
+        text = _html.escape(str(text)[:160])
+        rows.append(
+            f'<li style="display:flex;gap:8px;padding:4px 0;opacity:{opacity};">'
+            f'<span style="color:{color};font-weight:700;flex:0 0 16px;">{glyph}</span>'
+            f'<span style="color:#1f2937;font-size:12px;line-height:1.4;">{text}</span>'
+            '</li>'
+        )
+
+    progress_pct = int((n_done / n_total) * 100) if n_total else 0
+    header = (
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'gap:8px;margin-bottom:6px;">'
+        f'<div style="font-size:11px;font-weight:700;color:#374151;'
+        f'text-transform:uppercase;letter-spacing:0.4px;">Plan</div>'
+        f'<div style="font-size:11px;color:#6b7280;">'
+        f'{n_done}/{n_total} done'
+        + (f' · {n_in_progress} active' if n_in_progress else '')
+        + '</div></div>'
+        f'<div style="height:3px;background:#e5e7eb;border-radius:2px;'
+        f'overflow:hidden;margin-bottom:8px;">'
+        f'<div style="height:100%;width:{progress_pct}%;'
+        f'background:linear-gradient(90deg,#3b82f6,#10b981);"></div></div>'
+    )
+    return (
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#f9fafb;padding:10px 12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + header
+        + '<ul style="list-style:none;margin:0;padding:0;">'
+        + "".join(rows) + '</ul></div>'
+    )
+
+
 def _record_solo_turn_outcome(
     engine,
     user_task: str,
@@ -991,6 +1288,8 @@ def create_tab(ctx):
         "_generation_id": 0,      # monotonic counter — prevents stale worker cleanup
         "active_session_id": "",  # currently loaded CLI session ID
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
+        "current_todos": [],      # latest TodoWrite payload (list of {content, status, activeForm})
+        "subagent_calls": [],     # active/completed Agent tool calls for the subagent panel
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -1164,12 +1463,13 @@ def create_tab(ctx):
             ("Low", "low"),
             ("Medium", "medium"),
             ("High", "high"),
+            ("Extra High", "xhigh"),
         ],
         value="medium",
         description="Effort:",
         layout=widgets.Layout(width="155px"),
         style={"description_width": "42px"},
-        tooltip="Thinking budget (only works with API backend; CLI manages thinking internally)",
+        tooltip="Thinking budget multiplier. xhigh = 3× base (capped at 200k tokens).",
     )
 
     # Unified permission profile selector
@@ -1204,7 +1504,7 @@ def create_tab(ctx):
         if _saved_model in _valid_models:
             model_dropdown.value = _saved_model
         _saved_effort = _saved.get("effort", "")
-        if _saved_effort in ("low", "medium", "high"):
+        if _saved_effort in ("low", "medium", "high", "xhigh"):
             effort_dropdown.value = _saved_effort
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
         # Migrate old permission names to new profiles
@@ -1458,11 +1758,103 @@ def create_tab(ctx):
     )
     inspector_detail_box.add_class("delfin-cycle-detail-box")
 
+    # TodoWrite pane — persistent plan visible while the agent works.
+    # Hidden by default; revealed on the first TodoWrite tool call.
+    todo_pane_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(display="none", margin="0 0 6px 0"),
+    )
+
+    # Sub-agent pane — surface ``Agent`` tool calls (general-purpose, Explore,
+    # Plan, …) with their status and result.  Hidden until first call.
+    subagent_pane_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(display="none", margin="0 0 6px 0"),
+    )
+
     # Chat display
     chat_html = widgets.HTML(
         value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
         layout=widgets.Layout(min_height="200px"),
     )
+
+    # ----- Slash-command palette (discoverable command browser) -----
+    palette_toggle_btn = widgets.Button(
+        description="/", icon="terminal",
+        layout=widgets.Layout(width="40px", height="32px"),
+        tooltip="Show / browse slash commands",
+    )
+    palette_search = widgets.Text(
+        placeholder="Filter commands… (e.g. control, recalc, git)",
+        layout=widgets.Layout(width="100%", height="32px", display="none"),
+    )
+    palette_select = widgets.Select(
+        options=[],
+        rows=10,
+        layout=widgets.Layout(width="100%", display="none", margin="4px 0"),
+    )
+    palette_row = widgets.HBox(
+        [palette_toggle_btn, palette_search],
+        layout=widgets.Layout(gap="6px", align_items="center"),
+    )
+
+    def _palette_format_options(query: str = "") -> list[tuple[str, str]]:
+        """Return Select options: ('/cmd  —  summary', insert-text).
+
+        Built-in slash commands first, then any installed skills as
+        ``/skill <name>`` entries (filtered by the same query).
+        """
+        items = _filter_slash_commands(_SLASH_COMMANDS, query)
+        out: list[tuple[str, str]] = [
+            (f"{cmd:<22}  {summary}",
+             cmd + (" " if has_args else ""))
+            for _category, cmd, summary, has_args in items
+        ]
+        # Append discovered skills, filtered by the same query.
+        try:
+            from delfin.agent.skills import discover_skills
+            q = (query or "").strip().lower()
+            for skill in discover_skills():
+                hay = f"/skill {skill.name} {skill.title} {skill.description}".lower()
+                if not q or q in hay:
+                    label = f"/skill {skill.name:<14}  {skill.title}"
+                    out.append((label, skill.slash_command))
+        except Exception:
+            pass
+        if not out:
+            return [("(no matches)", "")]
+        return out
+
+    def _palette_set_visible(visible: bool) -> None:
+        palette_search.layout.display = "block" if visible else "none"
+        palette_select.layout.display = "block" if visible else "none"
+        if visible:
+            palette_search.value = ""
+            palette_select.options = _palette_format_options("")
+        else:
+            palette_select.value = None
+
+    def _on_palette_toggle(_btn) -> None:
+        _palette_set_visible(palette_select.layout.display == "none")
+
+    def _on_palette_search(change) -> None:
+        palette_select.options = _palette_format_options(change.get("new", ""))
+
+    def _on_palette_select(change) -> None:
+        insert = change.get("new", "")
+        if not insert:
+            return
+        # Insert at start of input (palette is for starting commands)
+        input_textarea.value = insert
+        _palette_set_visible(False)
+        try:
+            input_textarea.focus()
+        except Exception:
+            pass
+
+    palette_toggle_btn.on_click(_on_palette_toggle)
+    palette_search.observe(_on_palette_search, names="value")
+    palette_select.observe(_on_palette_select, names="value")
 
     # Input area
     input_textarea = widgets.Textarea(
@@ -1760,7 +2152,9 @@ def create_tab(ctx):
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, chat_html, working_html, queue_html, approval_row, question_row, input_row],
+         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
+         todo_pane_html, subagent_pane_html, chat_html, working_html, queue_html, approval_row, question_row,
+         palette_row, palette_select, input_row],
     )
 
     if not _yaml_ok:
@@ -1955,10 +2349,17 @@ def create_tab(ctx):
 
             # Auto-inject doc server MCP config if docs are enabled
             try:
-                from delfin.doc_server.config import ensure_mcp_config
-                _mcp_cfg = ensure_mcp_config(_mcp_cfg)
+                from delfin.doc_server.config import ensure_mcp_config as _ensure_docs_mcp
+                _mcp_cfg = _ensure_docs_mcp(_mcp_cfg)
             except ImportError:
                 pass  # doc_server or mcp not installed
+
+            # Auto-inject ops server MCP config (typed DELFIN workflow tools)
+            try:
+                from delfin.ops_server.config import ensure_mcp_config as _ensure_ops_mcp
+                _mcp_cfg = _ensure_ops_mcp(_mcp_cfg, workspace=str(repo_dir))
+            except ImportError:
+                pass  # ops_server or mcp not installed
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
@@ -2862,6 +3263,36 @@ def create_tab(ctx):
             _append_system_message(block_msg)
             return True
 
+        # /skill <name>  — expand a skill markdown into the input field
+        if cmd.startswith("/skill "):
+            try:
+                from delfin.agent.skills import (
+                    find_skill, format_skill_message, discover_skills,
+                )
+            except Exception as exc:  # pragma: no cover
+                _append_system_message(f"Skill system unavailable: {exc}")
+                return True
+            name = cmd[len("/skill "):].strip()
+            if not name:
+                names = [s.name for s in discover_skills()]
+                _append_system_message(
+                    "Available skills:\n  " + "\n  ".join(names) if names
+                    else "No skills installed in delfin/agent/pack/skills/."
+                )
+                return True
+            skill = find_skill(name)
+            if skill is None:
+                _append_system_message(f"Unknown skill '{name}'.")
+                return True
+            # Inline-expand: load the skill body into the input so the user
+            # can review / edit before sending.
+            input_textarea.value = format_skill_message(skill)
+            _append_system_message(
+                f"Skill '{skill.title}' loaded into the input. "
+                "Review and press Send to run it."
+            )
+            return True
+
         if cmd == "/help":
             _append_system_message(
                 "Available commands:\n"
@@ -2883,7 +3314,7 @@ def create_tab(ctx):
                 "  /git branch      — Show branches\n"
                 "  /provider <name> — Switch provider (claude/openai)\n"
                 "  /model <name>    — Switch model (depends on provider)\n"
-                "  /effort <lvl>    — Set effort (low/medium/high)\n"
+                "  /effort <lvl>    — Set effort (low/medium/high/xhigh)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
                 "  /perms [profile] — Show/set permission profile (plan/ask_all/repo_free/all_free)\n"
                 "  /reset           — Reset engine for new cycle\n"
@@ -3231,10 +3662,10 @@ def create_tab(ctx):
                 )
             return True
 
-        # /effort <level>
+        # /effort <level>  — accepts low/medium/high/xhigh
         if cmd.startswith("/effort "):
             level = cmd[8:].strip()
-            valid = {"low", "medium", "high"}
+            valid = {"low", "medium", "high", "xhigh"}
             if level in valid:
                 effort_dropdown.value = level
                 _append_system_message(f"Effort set to {level}.")
@@ -6087,9 +6518,23 @@ def create_tab(ctx):
                     elif tool_name == "Agent":
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
+                        sub_type = parsed.get("subagent_type", "general-purpose")
+                        # Append to subagent panel state and refresh widget.
+                        state["subagent_calls"].append({
+                            "subagent_type": sub_type,
+                            "description": desc,
+                            "prompt": parsed.get("prompt", ""),
+                            "status": "running",
+                            "output": "",
+                        })
+                        _pane_html = _render_subagent_pane_html(state["subagent_calls"])
+                        if _pane_html:
+                            subagent_pane_html.value = _pane_html
+                            subagent_pane_html.layout.display = "block"
+                        # Keep the inline tool message for chat-history continuity
                         _append_tool_message(
                             f'<span class="tool-name">Agent</span>  '
-                            f'<span class="tool-param">{_e(desc)}</span>'
+                            f'<span class="tool-param">[{_e(sub_type)}] {_e(desc)}</span>'
                             + (f'\n  {_e(prompt)}...' if prompt else '')
                         )
 
@@ -6106,6 +6551,56 @@ def create_tab(ctx):
                             f'<span class="tool-name">WebFetch</span>  '
                             f'<span class="tool-path">{_e(url[:100])}</span>'
                         )
+
+                    elif tool_name == "TodoWrite":
+                        todos = parsed.get("todos") or []
+                        # Persist current todo plan for inspectors / status line
+                        state["current_todos"] = todos
+                        # Update the persistent plan pane (visible while agent works)
+                        _pane_html = _render_todo_pane_html(todos)
+                        if _pane_html:
+                            todo_pane_html.value = _pane_html
+                            todo_pane_html.layout.display = "block"
+                        else:
+                            todo_pane_html.value = ""
+                            todo_pane_html.layout.display = "none"
+                        if not todos:
+                            _append_tool_message(
+                                '<span class="tool-name">TodoWrite</span>  '
+                                '<span class="tool-param">cleared</span>'
+                            )
+                        else:
+                            _STATUS_GLYPH = {
+                                "completed":   "[x]",
+                                "in_progress": "[~]",
+                                "pending":     "[ ]",
+                            }
+                            _STATUS_COLOR = {
+                                "completed":   "tool-diff-new",
+                                "in_progress": "tool-name",
+                                "pending":     "tool-param",
+                            }
+                            n_done = sum(1 for t in todos if t.get("status") == "completed")
+                            n_total = len(todos)
+                            lines = [
+                                f'<span class="tool-name">TodoWrite</span>  '
+                                f'<span class="tool-param">{n_done}/{n_total} done</span>'
+                            ]
+                            for t in todos:
+                                status = t.get("status", "pending")
+                                glyph = _STATUS_GLYPH.get(status, "[ ]")
+                                cls = _STATUS_COLOR.get(status, "tool-param")
+                                # Show activeForm while running, content otherwise
+                                if status == "in_progress":
+                                    text = t.get("activeForm") or t.get("content", "")
+                                else:
+                                    text = t.get("content", "")
+                                text = text[:120]
+                                lines.append(
+                                    f'  <span class="{cls}">{_e(glyph)}</span> '
+                                    f'<span class="tool-param">{_e(text)}</span>'
+                                )
+                            _append_tool_message("\n".join(lines))
 
                     else:
                         # Generic: show first meaningful param
@@ -6126,6 +6621,17 @@ def create_tab(ctx):
                     """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
                         return
+                    # Subagent panel: mark the next running call as done.
+                    if tool_name == "Agent":
+                        for entry in state["subagent_calls"]:
+                            if entry.get("status") == "running":
+                                entry["status"] = "done"
+                                entry["output"] = tool_output
+                                break
+                        _pane_html = _render_subagent_pane_html(state["subagent_calls"])
+                        if _pane_html:
+                            subagent_pane_html.value = _pane_html
+                            subagent_pane_html.layout.display = "block"
                     # Truncate for display
                     output = tool_output
                     _MAX_LINES = 8
@@ -6201,9 +6707,11 @@ def create_tab(ctx):
                     # Show approval buttons for interactive approval
                     _show_approval_prompt(denied_raw, denied_raw)
 
-                # Effort multiplier: scales the role-specific budget
-                _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0}
+                # Effort multiplier: scales the role-specific budget.
+                # xhigh applies an aggressive multiplier and a higher cap.
+                _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0, "xhigh": 3.0}
                 _mult = _effort_mult.get(effort_dropdown.value, 1.0)
+                _budget_cap = 200_000 if effort_dropdown.value == "xhigh" else 128_000
 
                 # Store original user task for handoff messages
                 original_task = user_text
@@ -6244,7 +6752,7 @@ def create_tab(ctx):
                             _cur_role,
                             task_class=_task_class,
                         )
-                        _budget = min(int(_base_budget * _mult), 128000)
+                        _budget = min(int(_base_budget * _mult), _budget_cap)
 
                     # Per-role model: switch to optimal model (Claude only)
                     _effective_model = model_dropdown.value

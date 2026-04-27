@@ -114,6 +114,8 @@ delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
 delfin-pipeline = "delfin.cli_pipeline:main"
 delfin-docs-index = "delfin.doc_server.indexer:main"
+delfin-docs-server = "delfin.doc_server.__main__:main"
+delfin-ops-server = "delfin.ops_server.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -137,7 +139,7 @@ include = ["delfin*"]
     "ai_tools/*.txt",
     "submit_templates/*.sh",
 ]
-"delfin.agent.pack" = ["**/*.md", "**/*.yaml"]
+"delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]
 
