@@ -8,6 +8,7 @@ from __future__ import annotations
 from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
     _filter_slash_commands,
+    _format_solo_domain_state,
     _render_slash_palette_html,
     _render_subagent_pane_html,
     _render_todo_pane_html,
@@ -322,3 +323,134 @@ def test_subagent_pane_handles_missing_keys_gracefully():
     assert "1 call(s)" in html
     # Default subagent_type is shown
     assert "agent" in html.lower()
+
+
+# ---------------------------------------------------------------------------
+# Solo-mode domain-state formatter
+# ---------------------------------------------------------------------------
+
+def test_solo_domain_state_empty_returns_empty_string():
+    assert _format_solo_domain_state({}) == ""
+
+
+def test_solo_domain_state_skips_empty_values():
+    """Snapshot with only empty/None values yields no block."""
+    snap = {
+        "calc_dir": "",
+        "selected": None,
+        "control": {},
+        "orca_builder": {},
+        "job_summary": "",
+        "workspace_files": [],
+        "active_tab": "",
+        "perm_profile": "",
+    }
+    assert _format_solo_domain_state(snap) == ""
+
+
+def test_solo_domain_state_starts_with_header():
+    out = _format_solo_domain_state({"calc_dir": "/c"})
+    assert out.startswith("--- Domain State ---")
+    assert "calc_dir: /c" in out
+
+
+def test_solo_domain_state_renders_calc_and_selected():
+    out = _format_solo_domain_state({
+        "calc_dir": "/home/user/calc",
+        "selected": "Jerome/complexes_1_200/job1",
+    })
+    assert "calc_dir: /home/user/calc" in out
+    assert "selected: Jerome/complexes_1_200/job1" in out
+
+
+def test_solo_domain_state_renders_control_compact():
+    out = _format_solo_domain_state({
+        "control": {
+            "functional": "PBE0",
+            "main_basisset": "def2-TZVP",
+            "PAL": 40,
+            "charge": 0,
+            "multiplicity": 1,
+            "solvent": "DMSO",
+        },
+    })
+    # Compact "FUNC/BASIS" plus key=value
+    assert "control: PBE0/def2-TZVP" in out
+    assert "PAL=40" in out
+    assert "multiplicity=1" in out
+    assert "solvent=DMSO" in out
+    # charge=0 is the default and should be SKIPPED (treated as empty)
+    assert "charge=0" not in out
+
+
+def test_solo_domain_state_renders_orca_builder():
+    out = _format_solo_domain_state({
+        "orca_builder": {"method": "BP86", "basis": "def2-SVP", "mult": 3},
+    })
+    assert "orca_builder: BP86/def2-SVP" in out
+    assert "mult=3" in out
+
+
+def test_solo_domain_state_method_only_no_basis():
+    out = _format_solo_domain_state({
+        "control": {"functional": "PBE0"},
+    })
+    assert "control: PBE0" in out
+    # No slash because no basis
+    assert "PBE0/" not in out
+
+
+def test_solo_domain_state_renders_job_summary():
+    out = _format_solo_domain_state({"job_summary": "2 RUNNING, 5 PENDING"})
+    assert "jobs: 2 RUNNING, 5 PENDING" in out
+
+
+def test_solo_domain_state_workspace_files_truncated_at_eight():
+    files = [f"file_{i}.csv" for i in range(15)]
+    out = _format_solo_domain_state({"workspace_files": files})
+    assert "file_0.csv" in out
+    assert "file_7.csv" in out
+    assert "file_8.csv" not in out
+    assert "(+7 more)" in out
+
+
+def test_solo_domain_state_active_tab_and_perms():
+    out = _format_solo_domain_state({
+        "active_tab": "DELFIN Agent",
+        "perm_profile": "ask_all",
+    })
+    assert "active_tab: DELFIN Agent" in out
+    assert "perms: ask_all" in out
+
+
+def test_solo_domain_state_handles_non_dict_control_gracefully():
+    """If control isn't a dict (corrupt state), the formatter must not crash."""
+    out = _format_solo_domain_state({
+        "calc_dir": "/c", "control": "not a dict",
+    })
+    assert "calc_dir: /c" in out
+    # No control line emitted
+    assert "control:" not in out
+
+
+def test_solo_domain_state_full_snapshot_well_formed():
+    out = _format_solo_domain_state({
+        "calc_dir": "/calc",
+        "selected": "job_x/orca.out",
+        "control": {"functional": "PBE0", "main_basisset": "def2-TZVP", "PAL": 8},
+        "orca_builder": {"method": "BP86", "basis": "def2-SVP"},
+        "job_summary": "1 RUNNING",
+        "workspace_files": ["a.csv", "b.png"],
+        "active_tab": "Calculations",
+        "perm_profile": "repo_free",
+    })
+    # All eight lines are present in order
+    expected_keys = [
+        "calc_dir:", "selected:", "control:", "orca_builder:",
+        "jobs:", "workspace:", "active_tab:", "perms:",
+    ]
+    last_index = -1
+    for key in expected_keys:
+        idx = out.find(key)
+        assert idx > last_index, f"missing or out-of-order: {key}"
+        last_index = idx

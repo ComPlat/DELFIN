@@ -1091,6 +1091,91 @@ def _render_slash_palette_html(
     )
 
 
+def _format_solo_domain_state(snapshot: dict) -> str:
+    """Render a compact ``[Domain state]`` block for the solo-mode prompt.
+
+    Empty values are skipped.  The block is intentionally short — solo
+    mode focuses on code, not UI; this is just the *background* state
+    so the agent doesn't have to ask "what folder are you in?".
+
+    ``snapshot`` keys (all optional):
+        - ``calc_dir`` (str): root of the active calculations folder
+        - ``selected`` (str): currently selected file/folder, relative to calc_dir
+        - ``control`` (dict): {functional, basis, pal, charge, mult, ...}
+        - ``orca_builder`` (dict): {method, basis, charge, mult, ...}
+        - ``job_summary`` (str): one-line job overview ("2 RUNNING, 5 PENDING")
+        - ``workspace_files`` (list[str]): file names in agent_workspace/
+        - ``active_tab`` (str): currently open dashboard tab
+        - ``perm_profile`` (str): active permission profile
+    """
+    if not snapshot:
+        return ""
+
+    lines: list[str] = []
+
+    calc_dir = (snapshot.get("calc_dir") or "").strip()
+    if calc_dir:
+        lines.append(f"calc_dir: {calc_dir}")
+
+    selected = (snapshot.get("selected") or "").strip()
+    if selected:
+        lines.append(f"selected: {selected}")
+
+    control = snapshot.get("control") or {}
+    if isinstance(control, dict):
+        ctl_parts: list[str] = []
+        functional = control.get("functional")
+        basis = control.get("main_basisset") or control.get("basis")
+        if functional and basis:
+            ctl_parts.append(f"{functional}/{basis}")
+        elif functional:
+            ctl_parts.append(str(functional))
+        for k in ("PAL", "charge", "multiplicity", "solvent"):
+            v = control.get(k)
+            if v not in (None, "", 0):
+                ctl_parts.append(f"{k}={v}")
+        if ctl_parts:
+            lines.append("control: " + ", ".join(ctl_parts))
+
+    builder = snapshot.get("orca_builder") or {}
+    if isinstance(builder, dict):
+        b_parts: list[str] = []
+        m = builder.get("method")
+        b = builder.get("basis")
+        if m and b:
+            b_parts.append(f"{m}/{b}")
+        elif m:
+            b_parts.append(str(m))
+        for k in ("charge", "mult", "pal"):
+            v = builder.get(k)
+            if v not in (None, "", 0):
+                b_parts.append(f"{k}={v}")
+        if b_parts:
+            lines.append("orca_builder: " + ", ".join(b_parts))
+
+    job_summary = (snapshot.get("job_summary") or "").strip()
+    if job_summary:
+        lines.append(f"jobs: {job_summary}")
+
+    ws = snapshot.get("workspace_files") or []
+    if isinstance(ws, list) and ws:
+        preview = ", ".join(str(f) for f in ws[:8])
+        tail = f" (+{len(ws) - 8} more)" if len(ws) > 8 else ""
+        lines.append(f"workspace: {preview}{tail}")
+
+    active_tab = (snapshot.get("active_tab") or "").strip()
+    if active_tab:
+        lines.append(f"active_tab: {active_tab}")
+
+    perm = (snapshot.get("perm_profile") or "").strip()
+    if perm:
+        lines.append(f"perms: {perm}")
+
+    if not lines:
+        return ""
+    return "--- Domain State ---\n" + "\n".join(lines)
+
+
 def _render_subagent_pane_html(calls: list[dict]) -> str:
     """Render the active/completed subagent calls as a compact panel.
 
@@ -4996,6 +5081,107 @@ def create_tab(ctx):
 
     # -- dashboard mode helpers --------------------------------------------
 
+    def _collect_solo_domain_snapshot() -> dict:
+        """Collect a compact dict of dashboard/calc state for solo mode.
+
+        Pure data — handed to the module-level :func:`_format_solo_domain_state`
+        for rendering.  Each lookup is wrapped so a missing widget never
+        breaks the snapshot.
+        """
+        snap: dict = {"calc_dir": str(ctx.calc_dir)}
+
+        # Selected file / folder in the calc browser
+        try:
+            cb = ctx.calc_browser_refs or {}
+            cur_path = state.get("_agent_calc_path", "") or ""
+            sel_widget = cb.get("calc_selected") or cb.get("calc_search")
+            sel = ""
+            if sel_widget is not None and getattr(sel_widget, "value", ""):
+                sel = str(sel_widget.value)
+            if cur_path:
+                snap["selected"] = (
+                    f"{cur_path}/{sel}".strip("/") if sel else cur_path
+                )
+        except Exception:
+            pass
+
+        # CONTROL keys parsed from the Submit tab textarea
+        try:
+            cw = ctx.submit_refs.get("control_widget")
+            text = (cw.value if cw else "") or ""
+            ctl: dict[str, str] = {}
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                ctl[k.strip()] = v.strip()
+            if ctl:
+                snap["control"] = ctl
+        except Exception:
+            pass
+
+        # ORCA Builder (dropdown values)
+        try:
+            refs = ctx.orca_builder_refs or {}
+            builder: dict = {}
+            for key, snap_key in (
+                ("orca_method", "method"), ("orca_basis", "basis"),
+                ("orca_charge", "charge"), ("orca_mult", "mult"),
+                ("orca_pal", "pal"),
+            ):
+                w = refs.get(key)
+                if w is not None and getattr(w, "value", "") not in ("", None):
+                    builder[snap_key] = w.value
+            if builder:
+                snap["orca_builder"] = builder
+        except Exception:
+            pass
+
+        # Job summary (compact "N RUNNING, M PENDING" string)
+        try:
+            jrefs = ctx.job_status_refs or {}
+            counts = jrefs.get("status_counts")
+            if isinstance(counts, dict) and counts:
+                parts = [
+                    f"{n} {st}" for st, n in sorted(counts.items()) if n
+                ]
+                if parts:
+                    snap["job_summary"] = ", ".join(parts)
+        except Exception:
+            pass
+
+        # Workspace inventory (small)
+        try:
+            files = sorted(
+                p.name for p in ctx.agent_dir.iterdir() if p.is_file()
+            )
+            if files:
+                snap["workspace_files"] = files[:20]
+        except Exception:
+            pass
+
+        # Active tab title for cross-tab awareness
+        try:
+            tabs = ctx.tabs_widget
+            if tabs is not None and ctx.tab_indices:
+                idx = tabs.selected_index
+                title = next(
+                    (t for t, i in ctx.tab_indices.items() if i == idx),
+                    "",
+                )
+                if title:
+                    snap["active_tab"] = title
+        except Exception:
+            pass
+
+        # Permission profile
+        perm = state.get("_perm_profile", "")
+        if perm:
+            snap["perm_profile"] = perm
+
+        return snap
+
     def _build_dashboard_context() -> str:
         """Build current dashboard state as context for the dashboard agent."""
         parts = []
@@ -6729,6 +6915,20 @@ def create_tab(ctx):
                         f"[Dashboard state]\n{_ctx_text}\n\n"
                         f"[User request]\n{user_text}"
                     )
+                elif mode_dropdown.value == "solo":
+                    # Solo mode: prepend a compact domain-state block so
+                    # the agent inherits the user's UI context (active
+                    # calc folder, CONTROL values, jobs, workspace files)
+                    # without having to ask. Empty snapshot → no block.
+                    try:
+                        _solo_snap = _collect_solo_domain_snapshot()
+                        _solo_block = _format_solo_domain_state(_solo_snap)
+                    except Exception:
+                        _solo_block = ""
+                    if _solo_block:
+                        current_msg = f"{_solo_block}\n\n[User request]\n{user_text}"
+                    else:
+                        current_msg = user_text
                 else:
                     current_msg = user_text
                 _turn_start_time = time.monotonic()
