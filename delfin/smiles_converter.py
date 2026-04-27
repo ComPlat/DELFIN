@@ -22370,7 +22370,7 @@ def smiles_to_xyz_isomers(
         def _base_label(lbl: str) -> str:
             if not lbl:
                 return ''
-            return re.sub(r'-(conf)?\d+$', '',str(lbl))
+            return re.sub(r'-\d+$', '',str(lbl))
 
         fps_list = list(seen_fps.keys())
         removed: set = set()
@@ -22720,7 +22720,7 @@ def smiles_to_xyz_isomers(
     if has_metal and include_binding_mode_isomers and _alt_tries > 0:
         try:
             existing_displays = {display for _, display in results}
-            existing_base = {re.sub(r'-(conf)?\d+$', '',d) for d in existing_displays}
+            existing_base = {re.sub(r'-\d+$', '',d) for d in existing_displays}
             alt_results = _generate_alternative_binding_modes(
                 mol, smiles, apply_uff=apply_uff,
                 max_template_tries=_alt_tries,
@@ -22776,7 +22776,7 @@ def smiles_to_xyz_isomers(
             base_best: Dict[str, Tuple[int, float]] = {}
             scored_cache: List[float] = []
             for idx, (xyz, lbl) in enumerate(results):
-                base = re.sub(r'-(conf)?\d+$', '',lbl) if lbl else ''
+                base = re.sub(r'-\d+$', '',lbl) if lbl else ''
                 score = _score_xyz(xyz)
                 scored_cache.append(score)
                 if base not in base_best or score < base_best[base][1]:
@@ -22789,24 +22789,24 @@ def smiles_to_xyz_isomers(
                     logger.debug(
                         "Final dedup: dropping %r (base=%r, score=%.3f) — better kept",
                         lbl,
-                        re.sub(r'-(conf)?\d+$', '',lbl) if lbl else '',
+                        re.sub(r'-\d+$', '',lbl) if lbl else '',
                         scored_cache[idx],
                     )
                     continue
-                new_results.append((xyz, re.sub(r'-(conf)?\d+$', '',lbl) if lbl else lbl))
+                new_results.append((xyz, re.sub(r'-\d+$', '',lbl) if lbl else lbl))
             results = new_results
         except Exception as _dedup_exc:
             logger.debug("Geometry-based dedup failed, falling back to first-keep: %s", _dedup_exc)
             _seen_base: Dict[str, int] = {}
             _keep: List[bool] = [True] * len(results)
             for _idx, (_, _lbl) in enumerate(results):
-                _base = re.sub(r'-(conf)?\d+$', '',_lbl) if _lbl else ''
+                _base = re.sub(r'-\d+$', '',_lbl) if _lbl else ''
                 if _base in _seen_base:
                     _keep[_idx] = False
                 else:
                     _seen_base[_base] = _idx
             results = [
-                (xyz, re.sub(r'-(conf)?\d+$', '',lbl))
+                (xyz, re.sub(r'-\d+$', '',lbl))
                 for (xyz, lbl), keep in zip(results, _keep) if keep
             ]
 
@@ -22843,7 +22843,7 @@ def smiles_to_xyz_isomers(
             entry_info = [_entry_fp_and_sym(xyz) for xyz, _ in results]
             # Base label (strip trailing -conf\d+, -\d+).
             def _base_lbl(_l: str) -> str:
-                return re.sub(r'-(conf)?\d+$', '', _l) if _l else ''
+                return re.sub(r'-\d+$', '', _l) if _l else ''
             labels_base = [_base_lbl(l) for _, l in results]
             removed: set = set()
             _RMSD_SAME_LBL_FP = 1.0  # Å, heavy-atom RMSD
