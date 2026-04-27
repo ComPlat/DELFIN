@@ -969,6 +969,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     # Dashboard navigation
     ("Dashboard", "/tab", "Switch tab (submit/orca/jobs/calc/settings)", True),
     ("Dashboard", "/jobs", "Switch to Job Status tab", False),
+    ("Dashboard", "/jobs check", "Check for new job-state events now", False),
     ("Dashboard", "/ui list", "List all controllable widgets", False),
     ("Dashboard", "/ui", "Manipulate a widget (show/click/value/...)", True),
     # CONTROL
@@ -1719,6 +1720,9 @@ def create_tab(ctx):
         "current_todos": [],      # latest TodoWrite payload (list of {content, status, activeForm})
         "subagent_calls": [],     # active/completed Agent tool calls for the subagent panel
         "_ws_known_files": set(),  # snapshot of agent_workspace at turn start (D4)
+        "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
+        "_job_event_thread": None,  # background watcher (D5)
+        "_job_event_thread_stop": False,
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -2880,6 +2884,79 @@ def create_tab(ctx):
         .tool-name, .tool-path, .tool-param CSS classes.
         """
         _append_chat_message("tool", html_content)
+
+    def _check_job_events_once() -> int:
+        """D5: poll the backend, diff against last-seen statuses, and
+        inject system messages for notable transitions.
+
+        Returns the number of system messages emitted (0 when nothing
+        changed or no backend).  Safe to call from the UI thread.
+        """
+        from delfin.dashboard.job_events import (
+            diff_job_states, format_job_event_message,
+            is_notable_event, snapshot_jobs,
+        )
+        backend = getattr(ctx, "backend", None)
+        if backend is None:
+            return 0
+        try:
+            jobs = backend.list_jobs()
+        except Exception:
+            return 0
+        current = snapshot_jobs(jobs)
+        previous = state.get("_job_states_seen") or {}
+        events = diff_job_states(previous, current)
+        emitted = 0
+        for event in events:
+            if not is_notable_event(event):
+                continue
+            try:
+                msg = format_job_event_message(event)
+            except Exception:
+                continue
+            _append_system_message(msg)
+            emitted += 1
+        # Update snapshot to a tiny status-only dict so we don't pin
+        # JobInfo references in memory.
+        state["_job_states_seen"] = {
+            jid: getattr(info, "status", "") or info.get("status", "")
+            if isinstance(info, dict) else getattr(info, "status", "")
+            for jid, info in current.items()
+        }
+        return emitted
+
+    def _start_job_event_watcher(interval: float = 30.0) -> None:
+        """Launch a daemon thread that calls _check_job_events_once()
+        every ``interval`` seconds. Idempotent — a second call is a no-op
+        while a watcher is already running."""
+        if state.get("_job_event_thread") is not None:
+            return
+        if getattr(ctx, "backend", None) is None:
+            return
+        state["_job_event_thread_stop"] = False
+
+        def _loop() -> None:
+            while not state.get("_job_event_thread_stop"):
+                try:
+                    _check_job_events_once()
+                except Exception:
+                    pass
+                # Cooperative sleep so stop is responsive
+                slept = 0.0
+                while slept < interval and not state.get(
+                    "_job_event_thread_stop"
+                ):
+                    time.sleep(0.5)
+                    slept += 0.5
+            state["_job_event_thread"] = None
+
+        t = threading.Thread(target=_loop, daemon=True, name="delfin-jobs-watch")
+        state["_job_event_thread"] = t
+        t.start()
+
+    def _stop_job_event_watcher() -> None:
+        """Signal the watcher loop to exit; safe to call multiple times."""
+        state["_job_event_thread_stop"] = True
 
     def _record_cycle_event(kind: str, title: str, detail: str = "", role: str = ""):
         history = state.setdefault("_cycle_history", [])
@@ -4734,6 +4811,19 @@ def create_tab(ctx):
                     pass
             ctx.select_tab("Job Status")
             _append_system_message("Switched to Job Status tab.")
+            return True
+
+        # /jobs check — D5: manually trigger the proactive watcher once
+        if cmd == "/jobs check":
+            try:
+                emitted = _check_job_events_once()
+            except Exception as exc:
+                _append_system_message(f"Job event check failed: {exc}")
+                return True
+            if emitted == 0:
+                _append_system_message(
+                    "No job-state changes since the last check."
+                )
             return True
 
         # -- Calculations browsing (all SAFE) --------------------------------
@@ -8384,6 +8474,20 @@ def create_tab(ctx):
     _update_status()
     _update_button_states()
     _refresh_session_dropdown()
+
+    # D5: prime the job-state snapshot so the first real transition we
+    # observe doesn't get reported as a "first time seen" non-event.
+    try:
+        _check_job_events_once()
+    except Exception:
+        pass
+    # Start the periodic watcher so users see job transitions without
+    # actively polling /jobs.  The thread is a daemon and exits with
+    # the Python session.
+    try:
+        _start_job_event_watcher()
+    except Exception:
+        pass
 
     # Apply solo-minimal UI at startup (default mode is dashboard)
     _init_mode = mode_dropdown.value
