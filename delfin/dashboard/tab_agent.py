@@ -1129,6 +1129,88 @@ def _extract_action_commands(agent_text: str) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# D2 — context-aware suggestion when the user switches dashboard tabs
+# ---------------------------------------------------------------------------
+
+# Tab-name → one-shot suggestion the agent surfaces when the user lands
+# on that tab.  Keys match the titles registered in
+# ``delfin/dashboard/__init__.py``'s tab_specs.  Empty value means
+# "never suggest anything for this tab".
+_TAB_SUGGESTIONS: dict[str, str] = {
+    "Submit Job":
+        "Soll ich die aktuellen CONTROL-Werte validieren oder einen Submit "
+        "vorbereiten?",
+    "Recalc":
+        "Soll ich `/recalc check-all` laufen lassen, um Folder mit "
+        "fehlgeschlagenen oder unvollständigen Jobs zu finden?",
+    "Job Status":
+        "Soll ich die letzten Job-Events prüfen (`/jobs check`) und "
+        "fehlgeschlagene Jobs analysieren?",
+    "Calculations":
+        "Soll ich eine Energie-Tabelle für alle Folder hier erzeugen "
+        "(`/skill energy-table`)?",
+    "Literature":
+        "Soll ich nach einem Thema in der DELFIN-Literatur (search_docs) "
+        "suchen — z. B. Funktional/Basis für dein aktuelles System?",
+    "ORCA Builder":
+        "Soll ich aus dem aktuellen Builder-State eine ORCA-Input-Datei "
+        "generieren oder die Parameter prüfen?",
+    "Agent Activity": "",
+    "DELFIN Agent": "",
+    "Archive": "",
+    "Remote Archive": "",
+    "Settings": "",
+}
+
+
+def _suggestion_for_tab(tab_name: str) -> str | None:
+    """Return the one-shot suggestion for ``tab_name`` or ``None``.
+
+    Unknown tabs and tabs explicitly mapped to "" return ``None`` so
+    the caller knows there's nothing to show.
+    """
+    if not tab_name:
+        return None
+    suggestion = _TAB_SUGGESTIONS.get(tab_name)
+    if suggestion:
+        return suggestion
+    return None
+
+
+def _should_show_action_confirmation(agent_text: str) -> bool:
+    """Decision rule for the D1 confirm-buttons: agent proposed
+    ``ACTION:`` lines AND its prose explicitly invites confirmation.
+
+    Returns False if either signal is missing — auto-exec then runs
+    normally and the user types "ja"/"nein" as before.
+    """
+    if not agent_text:
+        return False
+    if not _extract_action_commands(agent_text):
+        return False
+    return _text_requests_confirmation(agent_text)
+
+
+def _render_action_confirmation_html(commands: list[str]) -> str:
+    """Render the proposed ACTION list as a compact preview."""
+    if not commands:
+        return ""
+    rows = "".join(
+        f'<li style="font-family:monospace;font-size:11px;color:#92400e;'
+        f'padding:2px 0;">{_html.escape(cmd[:160])}</li>'
+        for cmd in commands
+    )
+    return (
+        '<div style="flex:1;min-width:0;">'
+        '<div style="font-size:11px;font-weight:700;color:#92400e;'
+        'margin-bottom:4px;">'
+        f'Soll ich diese {len(commands)} Aktion(en) ausführen?</div>'
+        '<ul style="list-style:disc;margin:0;padding-left:20px;">'
+        + rows + '</ul></div>'
+    )
+
+
 def _text_requests_confirmation(agent_text: str) -> bool:
     """Heuristic: does the agent's text invite explicit user confirmation?
 
@@ -1723,6 +1805,9 @@ def create_tab(ctx):
         "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
         "_job_event_thread": None,  # background watcher (D5)
         "_job_event_thread_stop": False,
+        "_seen_tab_suggestions": set(),  # tab names that already had a suggestion (D2)
+        "_pending_action_text": "",      # raw agent text awaiting Approve/Deny (D1)
+        "_pending_action_commands": [],  # parsed commands awaiting Approve/Deny (D1)
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -2093,6 +2178,29 @@ def create_tab(ctx):
         ),
     )
     approval_row.add_class("delfin-agent-approval-row")
+
+    # D1: Action-confirmation row — shown when the agent proposes ACTION:
+    # commands AND ends with a confirmation question.  Lets the user
+    # Approve/Deny via clicks instead of typing "ja".
+    action_confirm_html = widgets.HTML(value="")
+    action_approve_btn = widgets.Button(
+        description="Ausführen",
+        button_style="success",
+        layout=widgets.Layout(width="120px", height="34px"),
+    )
+    action_deny_btn = widgets.Button(
+        description="Abbrechen",
+        button_style="danger",
+        layout=widgets.Layout(width="110px", height="34px"),
+    )
+    action_confirm_row = widgets.HBox(
+        [action_confirm_html, action_approve_btn, action_deny_btn],
+        layout=widgets.Layout(
+            margin="4px 0", padding="6px 10px",
+            display="none", flex_flow="row wrap", gap="6px",
+        ),
+    )
+    action_confirm_row.add_class("delfin-agent-approval-row")
 
     # Interactive question widgets (option buttons shown when agent asks)
     question_hint_html = widgets.HTML(value="")
@@ -2592,7 +2700,8 @@ def create_tab(ctx):
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         todo_pane_html, subagent_pane_html, chat_html, working_html, queue_html, approval_row, question_row,
+         todo_pane_html, subagent_pane_html, chat_html, working_html, queue_html,
+         approval_row, action_confirm_row, question_row,
          palette_row, palette_select, input_row],
     )
 
@@ -2884,6 +2993,81 @@ def create_tab(ctx):
         .tool-name, .tool-path, .tool-param CSS classes.
         """
         _append_chat_message("tool", html_content)
+
+    def _show_action_confirmation(agent_text: str, commands: list[str]) -> None:
+        """D1: surface Approve/Deny buttons for a list of pending ACTIONs.
+
+        Stores the originating agent text so Approve can re-run
+        ``_dashboard_auto_exec`` without re-prompting the model.
+        """
+        action_confirm_html.value = _render_action_confirmation_html(commands)
+        action_confirm_row.layout.display = "flex"
+        state["_pending_action_text"] = agent_text
+        state["_pending_action_commands"] = list(commands)
+
+    def _hide_action_confirmation() -> None:
+        action_confirm_html.value = ""
+        action_confirm_row.layout.display = "none"
+        state["_pending_action_text"] = ""
+        state["_pending_action_commands"] = []
+
+    def _on_actions_approve(_btn=None) -> None:
+        text = state.get("_pending_action_text") or ""
+        _hide_action_confirmation()
+        if not text:
+            return
+        try:
+            results = _dashboard_auto_exec(text, force_no_confirm=True)
+        except Exception as exc:
+            _append_system_message(f"Action execution failed: {exc}")
+            return
+        if results:
+            _append_system_message(
+                f"User approved → executed {len(results)} action(s)."
+            )
+
+    def _on_actions_deny(_btn=None) -> None:
+        commands = list(state.get("_pending_action_commands") or [])
+        _hide_action_confirmation()
+        _append_system_message(
+            "User declined → actions NOT executed: "
+            + (", ".join(commands[:3]) + ("..." if len(commands) > 3 else ""))
+        )
+        # Feed the refusal back to the agent so it knows to plan differently.
+        try:
+            input_textarea.value = "Bitte die Aktionen NICHT ausführen — anderen Vorschlag machen."
+        except Exception:
+            pass
+
+    def _on_dashboard_tab_change(change=None) -> None:
+        """D2: when the user switches tabs, surface a one-shot suggestion
+        from the agent perspective.  Triggers at most once per tab per
+        session (tracked in ``state["_seen_tab_suggestions"]``)."""
+        tabs = getattr(ctx, "tabs_widget", None)
+        if tabs is None or not ctx.tab_indices:
+            return
+        try:
+            idx = tabs.selected_index
+            tab_name = next(
+                (t for t, i in ctx.tab_indices.items() if i == idx),
+                "",
+            )
+        except Exception:
+            return
+        if not tab_name:
+            return
+        seen = state.setdefault("_seen_tab_suggestions", set())
+        if tab_name in seen:
+            return
+        suggestion = _suggestion_for_tab(tab_name)
+        if not suggestion:
+            return
+        seen.add(tab_name)
+        # Only inject if the engine is initialised (otherwise we'd queue
+        # messages that confuse a fresh session).
+        if state.get("engine") is None:
+            return
+        _append_system_message(f"💡 [{tab_name}] {suggestion}")
 
     def _check_job_events_once() -> int:
         """D5: poll the backend, diff against last-seen statuses, and
@@ -5896,7 +6080,7 @@ def create_tab(ctx):
         "komplett", "gesamt",
     )
 
-    def _dashboard_auto_exec(agent_text: str):
+    def _dashboard_auto_exec(agent_text: str, force_no_confirm: bool = False):
         """Scan agent output for ACTION: /command lines and execute them.
 
         Safety enforcement (code-level, not prompt-level):
@@ -5904,7 +6088,23 @@ def create_tab(ctx):
           archive/remote_archive=read-only (writes blocked, reads allowed), unknown=blocked
         - Tier 3: max 1 per response, bulk ops need explicit user intent
         - Workspace zone: tier 3 skips confirmation gate
+
+        D1 — when the agent ends its response with a confirmation question
+        and proposes ACTIONs, surface Approve/Deny buttons instead of
+        running auto-exec.  ``force_no_confirm=True`` bypasses this gate
+        (used by the Approve handler).
         """
+        # D1 short-circuit: agent is asking for confirmation → show
+        # Approve/Deny buttons and skip auto-exec until the user clicks.
+        if (
+            not force_no_confirm
+            and _should_show_action_confirmation(agent_text)
+        ):
+            commands_preview = _extract_action_commands(agent_text)
+            if commands_preview:
+                _show_action_confirmation(agent_text, commands_preview)
+                return []  # nothing executed — wait for the user
+
         import re as _re
 
         lines = agent_text.split("\n")
@@ -8454,6 +8654,8 @@ def create_tab(ctx):
     load_session_btn.on_click(_on_load_session)
     delete_session_btn.on_click(_on_delete_session)
     fork_session_btn.on_click(_on_fork_session)
+    action_approve_btn.on_click(_on_actions_approve)
+    action_deny_btn.on_click(_on_actions_deny)
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)
@@ -8488,6 +8690,21 @@ def create_tab(ctx):
         _start_job_event_watcher()
     except Exception:
         pass
+
+    # D2: observe dashboard tab changes for one-shot context suggestions.
+    # ctx.tabs_widget is created later in delfin.dashboard.__init__ — it
+    # may already be set or arrive shortly after.  We re-attempt on first
+    # send if it's not ready yet.
+    def _try_attach_tab_observer() -> None:
+        tabs = getattr(ctx, "tabs_widget", None)
+        if tabs is None:
+            return
+        try:
+            tabs.observe(_on_dashboard_tab_change, names="selected_index")
+        except Exception:
+            pass
+
+    _try_attach_tab_observer()
 
     # Apply solo-minimal UI at startup (default mode is dashboard)
     _init_mode = mode_dropdown.value

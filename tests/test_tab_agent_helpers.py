@@ -7,15 +7,19 @@ from __future__ import annotations
 
 from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
+    _TAB_SUGGESTIONS,
     _extract_action_commands,
     _filter_slash_commands,
     _format_solo_domain_state,
+    _render_action_confirmation_html,
     _render_artifact_inline,
     _render_molecule_to_png_b64,
     _render_slash_palette_html,
     _render_subagent_pane_html,
     _render_todo_pane_html,
     _render_xyz_summary,
+    _should_show_action_confirmation,
+    _suggestion_for_tab,
     _text_requests_confirmation,
 )
 
@@ -510,6 +514,138 @@ def test_no_confirmation_for_plain_status():
 def test_no_confirmation_for_question_without_intent():
     """A plain '?' or rhetorical question is not a confirmation request."""
     assert not _text_requests_confirmation("Why does this happen?")
+
+
+def test_should_show_confirmation_when_actions_and_question():
+    text = (
+        "Plan: setze BP86.\n"
+        "ACTION: /control key functional BP86\n"
+        "Soll ich das ausführen?"
+    )
+    assert _should_show_action_confirmation(text) is True
+
+
+def test_should_show_confirmation_skipped_without_question():
+    text = (
+        "Setze BP86.\n"
+        "ACTION: /control key functional BP86\n"
+        "Fertig."
+    )
+    # No confirmation phrase → auto-exec runs, no buttons shown
+    assert _should_show_action_confirmation(text) is False
+
+
+def test_should_show_confirmation_skipped_without_actions():
+    """Confirmation phrase alone — without ACTIONs — never shows buttons."""
+    text = "Soll ich weitermachen?"
+    assert _should_show_action_confirmation(text) is False
+
+
+def test_should_show_confirmation_empty_text():
+    assert _should_show_action_confirmation("") is False
+
+
+def test_should_show_confirmation_multiple_actions():
+    text = (
+        "Mein Plan:\n"
+        "ACTION: /control key functional PBE0\n"
+        "ACTION: /control key main_basisset def2-TZVP\n"
+        "Should I proceed?"
+    )
+    assert _should_show_action_confirmation(text) is True
+
+
+def test_render_action_confirmation_lists_commands():
+    html = _render_action_confirmation_html([
+        "/control key functional BP86",
+        "/orca submit",
+    ])
+    assert "2 Aktion" in html
+    assert "/control key functional BP86" in html
+    assert "/orca submit" in html
+
+
+def test_render_action_confirmation_empty_returns_empty_string():
+    assert _render_action_confirmation_html([]) == ""
+
+
+def test_render_action_confirmation_escapes_user_text():
+    html = _render_action_confirmation_html([
+        "/control set <script>alert('x')</script>",
+    ])
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_render_action_confirmation_truncates_very_long_commands():
+    """Very long commands are capped so the row stays scannable."""
+    long_cmd = "/control set " + "x" * 500
+    html = _render_action_confirmation_html([long_cmd])
+    assert "x" * 200 not in html  # cap is at 160 chars
+
+
+# ---------------------------------------------------------------------------
+# D2 — tab-change suggestions
+# ---------------------------------------------------------------------------
+
+def test_suggestion_known_actionable_tab():
+    out = _suggestion_for_tab("Submit Job")
+    assert out is not None
+    assert "CONTROL" in out
+
+
+def test_suggestion_recalc_tab():
+    out = _suggestion_for_tab("Recalc")
+    assert out is not None
+    assert "recalc" in out.lower()
+
+
+def test_suggestion_job_status_tab():
+    out = _suggestion_for_tab("Job Status")
+    assert out is not None
+    assert "/jobs check" in out or "Job-Events" in out
+
+
+def test_suggestion_calculations_tab_offers_skill():
+    out = _suggestion_for_tab("Calculations")
+    assert out is not None
+    assert "/skill energy-table" in out
+
+
+def test_suggestion_orca_builder_tab():
+    out = _suggestion_for_tab("ORCA Builder")
+    assert out is not None
+    assert "Input" in out or "Builder" in out
+
+
+def test_suggestion_silent_tabs_return_none():
+    # Tabs intentionally mapped to "" → no suggestion noise
+    for tab in ("Settings", "Archive", "Remote Archive",
+                "DELFIN Agent", "Agent Activity"):
+        assert _suggestion_for_tab(tab) is None, f"{tab} should be silent"
+
+
+def test_suggestion_unknown_tab_returns_none():
+    assert _suggestion_for_tab("Some Future Tab") is None
+
+
+def test_suggestion_empty_or_falsy_returns_none():
+    assert _suggestion_for_tab("") is None
+    assert _suggestion_for_tab(None) is None  # type: ignore[arg-type]
+
+
+def test_tab_suggestions_table_is_complete():
+    """Every dashboard tab the user can land on must be either in the
+    suggestion table or explicitly silenced (empty string)."""
+    # If new tabs appear in the dashboard, they should be added to
+    # _TAB_SUGGESTIONS so this test stays meaningful.
+    must_have = {
+        "Submit Job", "Recalc", "Job Status", "Calculations",
+        "Literature", "ORCA Builder", "Settings",
+        "Archive", "DELFIN Agent", "Agent Activity",
+    }
+    missing = must_have - _TAB_SUGGESTIONS.keys()
+    assert missing == set(), f"missing suggestions for: {missing}"
 
 
 # ---------------------------------------------------------------------------
