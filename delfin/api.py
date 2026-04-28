@@ -1046,6 +1046,17 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "scancel one job by id (mutating)."},
     {"name": "list_active_calculations", "category": "jobs",
      "summary": "Live SLURM/local job list with status."},
+    # delfin-ops — calc folder management (mutating, allow_mutate gates)
+    {"name": "rename_calc_folder", "category": "calc-fs",
+     "summary": "Rename one calc folder in place (mutating)."},
+    {"name": "create_calc_folder", "category": "calc-fs",
+     "summary": "mkdir a new sub-folder in calc/ (mutating)."},
+    {"name": "move_calc_folder", "category": "calc-fs",
+     "summary": "Move one calc folder to another calc/ location (mutating)."},
+    {"name": "move_to_archive", "category": "calc-fs",
+     "summary": "Move a calc folder calc/ -> archive/ (mutating)."},
+    {"name": "delete_calc_folder", "category": "calc-fs",
+     "summary": "rmtree a calc folder (3-lock destructive)."},
     # delfin-ops — literature management
     {"name": "check_orca_manual_indexed", "category": "literature",
      "summary": "Is the ORCA manual indexed for search_docs?"},
@@ -1558,6 +1569,357 @@ def cancel_calculation(
         return {"ok": bool(ok), "message": msg, "job_id": job_id}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# Calculations-tab folder management (rename / new / move / archive / delete)
+# ---------------------------------------------------------------------------
+#
+# These mirror the operations behind the Calculations browser tab, exposed
+# as typed Python so the agent can drive them without /ui-clicking. All
+# mutating ops require ``allow_mutate=True`` AND fall under the directory-
+# permissions rule (calculations/ writable only via ACTION:, archives are
+# read-only). The ``allowed_roots`` parameter is a sanity wall so the agent
+# never moves something outside the project tree by accident.
+
+
+def _resolve_within_roots(path: str, allowed_roots: list[str]) -> "Path":
+    """Resolve ``path`` and require it sits inside one of ``allowed_roots``.
+
+    Raises ValueError if it doesn't. Both sides are real-path resolved.
+    """
+    from pathlib import Path as _P
+    resolved = _P(path).expanduser().resolve()
+    for root in allowed_roots:
+        try:
+            r = _P(root).expanduser().resolve()
+        except Exception:
+            continue
+        try:
+            resolved.relative_to(r)
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError(
+        f"path {resolved} is outside allowed roots {allowed_roots}"
+    )
+
+
+def _default_calc_roots() -> list[str]:
+    """Best-effort default for the (calc, archive) roots in the cwd."""
+    from pathlib import Path as _P
+    cwd = _P.cwd()
+    candidates = []
+    for name in ("calculations", "calc", "archive", "remote_archive"):
+        p = cwd / name
+        if p.exists() and p.is_dir():
+            candidates.append(str(p))
+    return candidates
+
+
+def _check_destructive_dirs(
+    *,
+    block_archive: bool,
+    paths: list[str],
+) -> str | None:
+    """Refuse mutating ops that would touch read-only roots."""
+    from pathlib import Path as _P
+    if not block_archive:
+        return None
+    for raw in paths:
+        try:
+            p = _P(raw).expanduser().resolve()
+        except Exception:
+            continue
+        for marker in ("archive", "remote_archive"):
+            if marker in p.parts:
+                # Allow targeting "...archive/..." only as an explicit
+                # destination from a calc/ source (move_to_archive). The
+                # caller distinguishes via block_archive.
+                return (
+                    f"Refusing to mutate inside read-only root '{marker}/' "
+                    f"(path: {p})."
+                )
+    return None
+
+
+def rename_calc_folder(
+    src: str,
+    new_name: str,
+    *,
+    allowed_roots: list[str] | None = None,
+    allow_mutate: bool = False,
+) -> dict:
+    """Rename a calculation folder in place (destructive).
+
+    ``new_name`` is a basename — it cannot contain path separators.
+    Refuses to overwrite an existing target. Use only inside the
+    ``calculations/`` tree; calls outside it raise ValueError.
+
+    Returns a dict with ``ok``, ``src``, ``dst``, ``message``.
+    """
+    from pathlib import Path as _P
+    roots = allowed_roots or _default_calc_roots()
+    if not roots:
+        return {
+            "ok": False,
+            "error": "no allowed_roots and none could be inferred",
+        }
+    if "/" in new_name or "\\" in new_name or not new_name.strip():
+        return {"ok": False, "error": "new_name must be a basename"}
+    try:
+        src_p = _resolve_within_roots(src, roots)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not src_p.exists():
+        return {"ok": False, "error": f"source missing: {src_p}"}
+    block = _check_destructive_dirs(block_archive=True, paths=[str(src_p)])
+    if block:
+        return {"ok": False, "error": block}
+    dst_p = src_p.parent / new_name.strip()
+    if dst_p.exists():
+        return {"ok": False, "error": f"target already exists: {dst_p}"}
+    if not allow_mutate:
+        return {
+            "ok": False,
+            "skipped": True,
+            "src": str(src_p),
+            "dst": str(dst_p),
+            "message": (
+                f"Would rename {src_p.name} -> {dst_p.name}. Confirm "
+                f"with the user, then call again with allow_mutate=True."
+            ),
+        }
+    try:
+        src_p.rename(dst_p)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True, "src": str(src_p), "dst": str(dst_p),
+        "message": f"Renamed to {dst_p.name}.",
+    }
+
+
+def create_calc_folder(
+    parent: str,
+    name: str,
+    *,
+    allowed_roots: list[str] | None = None,
+    allow_mutate: bool = False,
+) -> dict:
+    """Create a new sub-folder inside ``parent`` (destructive)."""
+    from pathlib import Path as _P
+    roots = allowed_roots or _default_calc_roots()
+    if not roots:
+        return {"ok": False, "error": "no allowed_roots inferred"}
+    if "/" in name or "\\" in name or not name.strip():
+        return {"ok": False, "error": "name must be a basename"}
+    try:
+        parent_p = _resolve_within_roots(parent, roots)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not parent_p.is_dir():
+        return {"ok": False, "error": f"parent is not a directory: {parent_p}"}
+    block = _check_destructive_dirs(
+        block_archive=True, paths=[str(parent_p)],
+    )
+    if block:
+        return {"ok": False, "error": block}
+    dst_p = parent_p / name.strip()
+    if dst_p.exists():
+        return {"ok": False, "error": f"already exists: {dst_p}"}
+    if not allow_mutate:
+        return {
+            "ok": False, "skipped": True, "dst": str(dst_p),
+            "message": (
+                f"Would create {dst_p}. Confirm and re-run with "
+                f"allow_mutate=True."
+            ),
+        }
+    try:
+        dst_p.mkdir(parents=False, exist_ok=False)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "dst": str(dst_p), "message": f"Created {dst_p}."}
+
+
+def move_calc_folder(
+    src: str,
+    dst_parent: str,
+    *,
+    allowed_roots: list[str] | None = None,
+    allow_mutate: bool = False,
+) -> dict:
+    """Move ``src`` into ``dst_parent`` (both must be inside calc roots).
+
+    Use this for calc-to-calc moves (re-organizing the tree). For
+    sending things to ``archive/`` use :func:`move_to_archive`, which
+    enforces the calc → archive direction.
+    """
+    from pathlib import Path as _P
+    import shutil as _sh
+    roots = allowed_roots or _default_calc_roots()
+    if not roots:
+        return {"ok": False, "error": "no allowed_roots inferred"}
+    try:
+        src_p = _resolve_within_roots(src, roots)
+        dst_parent_p = _resolve_within_roots(dst_parent, roots)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not src_p.exists():
+        return {"ok": False, "error": f"source missing: {src_p}"}
+    if not dst_parent_p.is_dir():
+        return {
+            "ok": False,
+            "error": f"destination parent is not a directory: {dst_parent_p}",
+        }
+    block = _check_destructive_dirs(
+        block_archive=True, paths=[str(src_p), str(dst_parent_p)],
+    )
+    if block:
+        return {"ok": False, "error": block}
+    dst_p = dst_parent_p / src_p.name
+    if dst_p.exists():
+        return {"ok": False, "error": f"target already exists: {dst_p}"}
+    if dst_p == src_p or str(dst_parent_p).startswith(str(src_p) + "/"):
+        return {
+            "ok": False, "error": "cannot move a folder into itself",
+        }
+    if not allow_mutate:
+        return {
+            "ok": False, "skipped": True,
+            "src": str(src_p), "dst": str(dst_p),
+            "message": "Would move (calc -> calc). Re-run with allow_mutate=True.",
+        }
+    try:
+        _sh.move(str(src_p), str(dst_p))
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True, "src": str(src_p), "dst": str(dst_p),
+        "message": f"Moved {src_p.name} -> {dst_p}.",
+    }
+
+
+def move_to_archive(
+    src: str,
+    archive_root: str = "",
+    *,
+    allowed_roots: list[str] | None = None,
+    allow_mutate: bool = False,
+) -> dict:
+    """Move a calc folder from ``calculations/`` into ``archive/``.
+
+    Direction is enforced: ``src`` must NOT already be under archive,
+    and ``archive_root`` must be the project's archive directory. With
+    an empty ``archive_root`` the function infers the cwd's archive/.
+    """
+    from pathlib import Path as _P
+    import shutil as _sh
+    cwd = _P.cwd()
+    if not archive_root:
+        # Default: ./archive next to the working directory
+        cand = cwd / "archive"
+        archive_root = str(cand)
+    arc_p = _P(archive_root).expanduser()
+    if not arc_p.exists():
+        return {
+            "ok": False,
+            "error": f"archive_root does not exist: {arc_p}",
+        }
+    arc_resolved = arc_p.resolve()
+    if "archive" not in arc_resolved.parts:
+        return {
+            "ok": False,
+            "error": (
+                "archive_root must contain a path segment named "
+                "'archive' (got " + str(arc_resolved) + ")"
+            ),
+        }
+    # Source must be in calc/, not in archive/
+    roots = allowed_roots or _default_calc_roots()
+    if not roots:
+        return {"ok": False, "error": "no allowed_roots inferred"}
+    try:
+        src_p = _resolve_within_roots(src, roots)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if "archive" in src_p.parts:
+        return {
+            "ok": False,
+            "error": "source is already inside archive/",
+        }
+    dst_p = arc_resolved / src_p.name
+    if dst_p.exists():
+        return {"ok": False, "error": f"target already exists: {dst_p}"}
+    if not allow_mutate:
+        return {
+            "ok": False, "skipped": True,
+            "src": str(src_p), "dst": str(dst_p),
+            "message": "Would move calc -> archive. Re-run with allow_mutate=True.",
+        }
+    try:
+        arc_resolved.mkdir(parents=True, exist_ok=True)
+        _sh.move(str(src_p), str(dst_p))
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True, "src": str(src_p), "dst": str(dst_p),
+        "message": f"Archived {src_p.name}.",
+    }
+
+
+def delete_calc_folder(
+    folder: str,
+    *,
+    confirm_token: str = "",
+    allowed_roots: list[str] | None = None,
+    allow_mutate: bool = False,
+) -> dict:
+    """Permanently delete a calc folder (DESTRUCTIVE — extra-strict gate).
+
+    Three locks: ``allow_mutate=True``, target must be inside calc/
+    roots (NOT archive/), and ``confirm_token`` must equal the folder's
+    basename verbatim. Any one missing → refusal.
+    """
+    from pathlib import Path as _P
+    import shutil as _sh
+    roots = allowed_roots or _default_calc_roots()
+    if not roots:
+        return {"ok": False, "error": "no allowed_roots inferred"}
+    try:
+        target = _resolve_within_roots(folder, roots)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not target.exists():
+        return {"ok": False, "error": f"missing: {target}"}
+    block = _check_destructive_dirs(block_archive=True, paths=[str(target)])
+    if block:
+        return {"ok": False, "error": block}
+    if confirm_token != target.name:
+        return {
+            "ok": False, "skipped": True,
+            "message": (
+                f"To delete '{target}', call again with "
+                f"confirm_token='{target.name}' AND allow_mutate=True."
+            ),
+        }
+    if not allow_mutate:
+        return {
+            "ok": False, "skipped": True,
+            "message": "confirm_token correct, still need allow_mutate=True.",
+        }
+    try:
+        if target.is_dir():
+            _sh.rmtree(target)
+        else:
+            target.unlink()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {
+        "ok": True, "deleted": str(target),
+        "message": f"Deleted {target.name}.",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2799,6 +3161,12 @@ __all__ = [
     "submit_calculation",
     "cancel_calculation",
     "list_active_calculations",
+    # Calc folder management
+    "rename_calc_folder",
+    "create_calc_folder",
+    "move_calc_folder",
+    "move_to_archive",
+    "delete_calc_folder",
     # ORCA-manual lookup helpers
     "check_orca_manual_indexed",
     "index_new_pdf",

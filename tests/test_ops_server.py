@@ -1271,3 +1271,218 @@ def test_tool_list_literature_files_missing_folder(tmp_path):
     txt = ops_server.tool_list_literature_files(folder=str(tmp_path / "nope"))
     rows = json.loads(txt)
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Phase B — calc folder management (rename / create / move / archive / delete)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def calc_tree(tmp_path):
+    """A minimal project tree: calc/foo, calc/bar, archive/."""
+    calc = tmp_path / "calc"
+    arch = tmp_path / "archive"
+    (calc / "foo").mkdir(parents=True)
+    (calc / "bar").mkdir(parents=True)
+    arch.mkdir()
+    (calc / "foo" / "calc.out").write_text("done\n")
+    (calc / "bar" / "calc.out").write_text("done\n")
+    return {"root": tmp_path, "calc": calc, "arch": arch}
+
+
+def test_tool_rename_calc_folder_blocks_without_allow(calc_tree):
+    """Default-blocked: returns 'would rename' hint, no actual rename."""
+    src = calc_tree["calc"] / "foo"
+    txt = ops_server.tool_rename_calc_folder(
+        str(src), "renamed",
+        allowed_roots=str(calc_tree["calc"]),
+    )
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert data["skipped"] is True
+    assert "Would rename" in data["message"]
+    assert src.exists()
+    assert not (calc_tree["calc"] / "renamed").exists()
+
+
+def test_tool_rename_calc_folder_executes(calc_tree):
+    src = calc_tree["calc"] / "foo"
+    txt = ops_server.tool_rename_calc_folder(
+        str(src), "renamed",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    )
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert not src.exists()
+    assert (calc_tree["calc"] / "renamed").exists()
+
+
+def test_tool_rename_calc_folder_rejects_slash(calc_tree):
+    src = calc_tree["calc"] / "foo"
+    data = json.loads(ops_server.tool_rename_calc_folder(
+        str(src), "renamed/sub",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "basename" in data["error"]
+
+
+def test_tool_rename_calc_folder_rejects_archive(calc_tree):
+    """Refuses to operate on anything inside archive/."""
+    inside_arc = calc_tree["arch"] / "stale"
+    inside_arc.mkdir()
+    data = json.loads(ops_server.tool_rename_calc_folder(
+        str(inside_arc), "moved",
+        # NOTE we deliberately allow the archive root here so the path-
+        # check passes, then the destructive-dir check should still kick in.
+        allowed_roots=str(calc_tree["arch"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "archive" in data["error"]
+
+
+def test_tool_rename_calc_folder_rejects_outside_roots(calc_tree, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    data = json.loads(ops_server.tool_rename_calc_folder(
+        str(outside), "x",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "outside allowed roots" in data["error"]
+
+
+def test_tool_create_calc_folder_executes(calc_tree):
+    txt = ops_server.tool_create_calc_folder(
+        str(calc_tree["calc"]), "newone",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    )
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert (calc_tree["calc"] / "newone").is_dir()
+
+
+def test_tool_create_calc_folder_blocks_dup(calc_tree):
+    data = json.loads(ops_server.tool_create_calc_folder(
+        str(calc_tree["calc"]), "foo",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "already exists" in data["error"]
+
+
+def test_tool_move_calc_folder_executes(calc_tree):
+    src = calc_tree["calc"] / "foo"
+    dst_parent = calc_tree["calc"] / "bar"
+    txt = ops_server.tool_move_calc_folder(
+        str(src), str(dst_parent),
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    )
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert not src.exists()
+    assert (dst_parent / "foo").is_dir()
+
+
+def test_tool_move_calc_folder_blocks_dup(calc_tree):
+    """Target already exists at destination → refusal."""
+    (calc_tree["calc"] / "bar" / "foo").mkdir()
+    data = json.loads(ops_server.tool_move_calc_folder(
+        str(calc_tree["calc"] / "foo"),
+        str(calc_tree["calc"] / "bar"),
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "already exists" in data["error"]
+
+
+def test_tool_move_to_archive_executes(calc_tree):
+    src = calc_tree["calc"] / "foo"
+    txt = ops_server.tool_move_to_archive(
+        str(src),
+        archive_root=str(calc_tree["arch"]),
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    )
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert not src.exists()
+    assert (calc_tree["arch"] / "foo").is_dir()
+
+
+def test_tool_move_to_archive_blocks_when_already_archived(calc_tree):
+    """Refuse to 're-archive' something already inside archive/."""
+    src = calc_tree["arch"] / "old"
+    src.mkdir()
+    data = json.loads(ops_server.tool_move_to_archive(
+        str(src),
+        archive_root=str(calc_tree["arch"]),
+        allowed_roots=str(calc_tree["arch"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "already inside archive" in data["error"]
+
+
+def test_tool_delete_calc_folder_three_lock(calc_tree):
+    """All three locks (path, allow_mutate, confirm_token) must align."""
+    target = calc_tree["calc"] / "foo"
+
+    # Lock 1: missing confirm_token
+    data = json.loads(ops_server.tool_delete_calc_folder(
+        str(target),
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert target.exists()
+
+    # Lock 2: confirm_token wrong
+    data = json.loads(ops_server.tool_delete_calc_folder(
+        str(target), confirm_token="bar",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert target.exists()
+
+    # Lock 3: confirm_token right but allow_mutate missing
+    data = json.loads(ops_server.tool_delete_calc_folder(
+        str(target), confirm_token="foo",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=False,
+    ))
+    assert data["ok"] is False
+    assert target.exists()
+
+    # All three: actually deletes
+    data = json.loads(ops_server.tool_delete_calc_folder(
+        str(target), confirm_token="foo",
+        allowed_roots=str(calc_tree["calc"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is True
+    assert not target.exists()
+
+
+def test_tool_delete_calc_folder_refuses_archive(calc_tree):
+    """Cannot delete anything inside archive/, no matter the locks."""
+    target = calc_tree["arch"] / "old"
+    target.mkdir()
+    data = json.loads(ops_server.tool_delete_calc_folder(
+        str(target), confirm_token="old",
+        allowed_roots=str(calc_tree["arch"]),
+        allow_mutate=True,
+    ))
+    assert data["ok"] is False
+    assert "archive" in data["error"]
+    assert target.exists()

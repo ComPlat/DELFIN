@@ -432,6 +432,153 @@ def tool_cancel_calculation(
     )
 
 
+# ---------------------------------------------------------------------------
+# Calculations-tab folder management (mutating, allow_mutate-gated)
+# ---------------------------------------------------------------------------
+
+
+def _split_csv(value: str) -> list[str]:
+    return [v.strip() for v in (value or "").split(",") if v.strip()]
+
+
+def tool_rename_calc_folder(
+    src: str,
+    new_name: str,
+    allowed_roots: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Rename one calc folder in place (DESTRUCTIVE).
+
+    new_name must be a basename (no slashes). Default-blocks until
+    allow_mutate=True; first call returns a "would rename" hint with
+    src/dst so you can confirm with the user.
+
+    Args:
+        src: absolute path to the folder.
+        new_name: new basename (no slashes, no spaces).
+        allowed_roots: comma-separated list of writable roots. Empty =
+            inferred from cwd (calculations/ + calc/, never archive/).
+        allow_mutate: must be True for the actual rename.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.rename_calc_folder(
+            src, new_name,
+            allowed_roots=_split_csv(allowed_roots) or None,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_create_calc_folder(
+    parent: str,
+    name: str,
+    allowed_roots: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """mkdir one new sub-folder under ``parent`` (DESTRUCTIVE).
+
+    Args:
+        parent: absolute path to the parent directory.
+        name: new folder basename.
+        allowed_roots: comma-separated writable roots. Empty = inferred.
+        allow_mutate: required for actual mkdir.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.create_calc_folder(
+            parent, name,
+            allowed_roots=_split_csv(allowed_roots) or None,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_move_calc_folder(
+    src: str,
+    dst_parent: str,
+    allowed_roots: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Move one calc folder into another calc/ location (DESTRUCTIVE).
+
+    Use for re-organizing the calculations tree. For sending things to
+    archive use ``move_to_archive`` instead — it enforces direction.
+
+    Args:
+        src: absolute path to the folder being moved.
+        dst_parent: absolute path to the new parent directory.
+        allowed_roots: comma-separated writable roots. Empty = inferred.
+        allow_mutate: must be True for the actual move.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.move_calc_folder(
+            src, dst_parent,
+            allowed_roots=_split_csv(allowed_roots) or None,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_move_to_archive(
+    src: str,
+    archive_root: str = "",
+    allowed_roots: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Move a folder calc/ -> archive/ (DESTRUCTIVE, direction enforced).
+
+    Args:
+        src: absolute path to the folder being archived.
+        archive_root: absolute path to the archive directory. Empty =
+            uses ``./archive`` next to the cwd.
+        allowed_roots: comma-separated source-side roots. Empty = inferred.
+        allow_mutate: required for the actual move.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.move_to_archive(
+            src, archive_root=archive_root,
+            allowed_roots=_split_csv(allowed_roots) or None,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_delete_calc_folder(
+    folder: str,
+    confirm_token: str = "",
+    allowed_roots: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Permanently delete a calc folder (DESTRUCTIVE — 3-lock gate).
+
+    Three locks: ``allow_mutate=True``, target inside calc roots
+    (NEVER archive/), and ``confirm_token`` MUST equal the folder's
+    basename verbatim. Missing any lock → safe refusal.
+
+    Args:
+        folder: absolute path to the folder.
+        confirm_token: must equal the folder's basename.
+        allowed_roots: comma-separated writable roots.
+        allow_mutate: must be True for actual rmtree.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.delete_calc_folder(
+            folder, confirm_token=confirm_token,
+            allowed_roots=_split_csv(allowed_roots) or None,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
 def tool_read_pdf(
     path: str,
     pages: str = "",
@@ -956,6 +1103,12 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_list_active_calculations)
     mcp.tool()(tool_submit_calculation)
     mcp.tool()(tool_cancel_calculation)
+    # Calc folder management (mutating, allow_mutate-gated)
+    mcp.tool()(tool_rename_calc_folder)
+    mcp.tool()(tool_create_calc_folder)
+    mcp.tool()(tool_move_calc_folder)
+    mcp.tool()(tool_move_to_archive)
+    mcp.tool()(tool_delete_calc_folder)
     # ORCA-manual lookup + literature indexing
     mcp.tool()(tool_check_orca_manual_indexed)
     mcp.tool()(tool_index_new_pdf)
