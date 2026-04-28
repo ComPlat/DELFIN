@@ -1,8 +1,22 @@
 """Run a single user query through the dashboard agent in plan-mode.
 
-Mutations are blocked by ``--permission-mode plan``; the model still
-emits the tool-use blocks it WANTS to call, which is exactly what we
-want to assert on.
+Safety guarantees (FOUR layers — the agent CANNOT damage the host):
+
+1. ``--permission-mode plan`` — Bash, Edit, Write, NotebookEdit are
+   hard-blocked by the CLI. The model emits tool-use blocks but the
+   CLI denies their execution before they hit the OS.
+2. Every mutating MCP tool listed by name in ``_hard_blocked_mcp`` is
+   added to ``--disallowed-tools``, so even if a future tool ships
+   with ``allow_mutate=True`` defaulted, plan-mode still blocks it.
+3. ``--add-dir`` is restricted to the temporary sandbox only. The
+   real DELFIN repo + the user's calc/ + archive/ are NOT in the
+   writable surface; even read-only tools can't see them.
+4. A pre-flight wall in ``run_agent_dryrun`` REFUSES to run if cwd
+   sits inside the real DELFIN repo. A typo can't redirect writes at
+   the user's actual source tree.
+
+The agent still emits the tool_use blocks it WANTS to call — that's
+exactly what we assert on.
 """
 
 from __future__ import annotations
@@ -114,6 +128,23 @@ def run_agent_dryrun(
             "claude CLI not found on $PATH — cannot run dry-run tests"
         )
 
+    # SAFETY WALL — never let the agent run with the real DELFIN repo as
+    # cwd. Every dry-run test must be inside a tmp sandbox. Without this
+    # wall a typo could send writes/reads at the user's actual code.
+    effective_cwd = cwd or sandbox_root
+    if effective_cwd:
+        cwd_real = Path(effective_cwd).resolve()
+        repo_real = Path(__file__).resolve().parents[2]  # delfin repo root
+        try:
+            cwd_real.relative_to(repo_real)
+            raise RuntimeError(
+                f"REFUSING dry-run: cwd '{cwd_real}' is inside the real "
+                f"DELFIN repo '{repo_real}'. Use a tmp sandbox via "
+                f"tests.agent_dryrun.sandbox.sandboxed()."
+            )
+        except ValueError:
+            pass  # cwd is outside the repo — exactly what we want
+
     effective_root = sandbox_root or cwd
     system_prompt = _load_dashboard_prompt(sandbox_root=effective_root)
     mcp_config = _ensure_ops_mcp_config()
@@ -135,8 +166,38 @@ def run_agent_dryrun(
     # hard-blocks mutations, but extra layered safety doesn't hurt).
     if sandbox_root:
         cmd.extend(["--add-dir", sandbox_root])
+
+    # Defense-in-depth: even though plan-mode hard-blocks Bash/Edit/Write,
+    # an MCP tool with allow_mutate=True default would slip past plan-mode
+    # because the CLI doesn't see "mutating" as part of its permission
+    # model. Pre-deny EVERY mutating MCP tool by name so the test machine
+    # can't be touched even if a future tool ships with allow_mutate=True
+    # by accident. Read-only and dry-run-default tools stay enabled.
+    _hard_blocked_mcp = [
+        "mcp__delfin-ops__cleanup",
+        "mcp__delfin-ops__stop",
+        "mcp__delfin-ops__pipeline_run",
+        "mcp__delfin-ops__pipeline_prepare",
+        "mcp__delfin-ops__run_orca_input",
+        "mcp__delfin-ops__co2",
+        "mcp__delfin-ops__tadf_xtb",
+        "mcp__delfin-ops__hyperpol",
+        "mcp__delfin-ops__submit_calculation",
+        "mcp__delfin-ops__cancel_calculation",
+        "mcp__delfin-ops__rename_calc_folder",
+        "mcp__delfin-ops__create_calc_folder",
+        "mcp__delfin-ops__move_calc_folder",
+        "mcp__delfin-ops__move_to_archive",
+        "mcp__delfin-ops__delete_calc_folder",
+        "mcp__delfin-ops__kill_all_user_jobs",
+        "mcp__delfin-ops__prepare_recalc",
+        "mcp__delfin-ops__run_calc_option",
+        "mcp__delfin-ops__index_new_pdf",
+    ]
+    blocked = list(_hard_blocked_mcp)
     if extra_disallowed_tools:
-        cmd.extend(["--disallowed-tools", ",".join(extra_disallowed_tools)])
+        blocked.extend(extra_disallowed_tools)
+    cmd.extend(["--disallowed-tools", ",".join(blocked)])
 
     env = dict(os.environ)
     # Remove any auto-loaded API key so we go through the CLI's OAuth path

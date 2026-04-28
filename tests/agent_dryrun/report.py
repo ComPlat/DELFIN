@@ -121,6 +121,52 @@ def _list_tools(res: AgentDryRunResult) -> tuple[bool, str]:
     return False, "missed"
 
 
+def _make_picks(*names: str):
+    """Factory: builds an assertion that passes if ANY of the named tools
+    were attempted (substring match, case-insensitive). Falls back to
+    text-mention so the assertion isn't punished by plan-mode blocks."""
+    def _check(res: AgentDryRunResult) -> tuple[bool, str]:
+        if has_tool_call(res, *names):
+            return True, names[0]
+        text_low = res.all_text.lower()
+        for n in names:
+            if n in text_low:
+                return True, f"named:{n}"
+        return False, "missed"
+    return _check
+
+
+_thermo = _make_picks("extract_thermochem")
+_dipole = _make_picks("extract_dipole")
+_energy_table = _make_picks("extract_energy_table", "find_calculation_extreme")
+_find_errors = _make_picks("find_orca_errors")
+_lowest_gibbs = _make_picks("find_calculation_extreme", "extract_energy_table")
+_diff_two = _make_picks("compare_calculations", "compare_across_functionals")
+_validate_inp = _make_picks("validate_orca_input")
+_submit = _make_picks("submit_calculation")
+_list_jobs = _make_picks("list_active_calculations")
+_get_pattern = _make_picks("get_dashboard_pattern", "list_dashboard_patterns")
+_widgets = _make_picks("list_dashboard_widgets", "get_widget_options")
+_explain_feature = _make_picks("explain_delfin_feature", "list_delfin_features")
+_orca_manual = _make_picks(
+    "check_orca_manual_indexed",
+    "search_docs",
+    "read_pdf",
+)
+_pdf_read = _make_picks("read_pdf", "search_pdf_local", "extract_pdf_section")
+_calc_options = _make_picks("list_calc_options")
+_create_folder = _make_picks("create_calc_folder")
+_move_calc = _make_picks("move_calc_folder")
+_delete_folder = _make_picks("delete_calc_folder")
+_plot_distribution = _make_picks("plot_energy_distribution")
+_plot_correlation = _make_picks("plot_energy_correlation")
+_plot_orbital_diag = _make_picks("plot_orbital_diagram")
+_pipeline_run = _make_picks("pipeline_run", "pipeline_prepare")
+_cleanup = _make_picks("cleanup")
+_describe_tool = _make_picks("describe_tool")
+_ssh_jobs = _make_picks("list_ssh_transfer_jobs")
+
+
 CASES = [
     ("imag-freq → extract_imaginary_frequencies",
      "Hat die Rechnung in {calc}/test_a noch imaginäre Frequenzen "
@@ -166,6 +212,103 @@ CASES = [
      "Welche typed-MCP-Tools für Output-Parsing hast du? "
      "Such bitte im Tool-Katalog statt aus dem Gedächtnis.",
      _list_tools),
+    # ---------- Phase A extras ----------
+    ("thermochem question → extract_thermochem",
+     "Gib mir die Thermochemie (T, P, ZPE, Enthalpie, Entropie, G) "
+     "von {calc}/test_a.",
+     _thermo),
+    ("dipole question → extract_dipole",
+     "Wie groß ist das Dipolmoment der Rechnung in {calc}/test_a "
+     "(Vektor + Magnitude in Debye)?",
+     _dipole),
+    ("multi-folder energy table → extract_energy_table",
+     "Gib mir eine Tabelle mit Gibbs- und Single-Point-Energien für "
+     "{calc}/bp86, {calc}/pbe0, {calc}/b3lyp, {calc}/test_a.",
+     _energy_table),
+    ("ORCA error scan → find_orca_errors",
+     "Such in {calc}/test_a nach bekannten ORCA-Fehlern (SCF-Diverge, "
+     "OOM, Multiplicity, …).",
+     _find_errors),
+    ("lowest-Gibbs question → find_calculation_extreme",
+     "Welcher Ordner unter {calc}/bp86, {calc}/pbe0, {calc}/b3lyp "
+     "hat die niedrigste Gibbs-Energie?",
+     _lowest_gibbs),
+    ("two-folder diff → compare_calculations",
+     "Vergleiche {calc}/bp86 und {calc}/pbe0 head-to-head: gleicher "
+     "Functional? gleiche Basis? Δ Gibbs in kcal/mol?",
+     _diff_two),
+    # ---------- ORCA-Builder + lifecycle ----------
+    ("INP validation → validate_orca_input",
+     "Prüf bitte einen ORCA-Input-Block:\n"
+     "! BP86 def2-SVP Opt Freq\n%pal nprocs 8 end\n%maxcore 2000\n"
+     "*xyz 0 1\nH 0 0 0\nH 0 0 0.74\n*\n"
+     "Gibt es Probleme?",
+     _validate_inp),
+    ("submit one folder → submit_calculation",
+     "Submitte den Ordner {calc}/bp86 als ORCA-Job (nur erklären "
+     "welches Tool — keine Mutation).",
+     _submit),
+    ("list active jobs → list_active_calculations",
+     "Welche meiner Jobs laufen gerade auf SLURM?",
+     _list_jobs),
+    ("ssh transfer status → list_ssh_transfer_jobs",
+     "Welche SSH-Transfers laufen gerade ins Remote-Archiv?",
+     _ssh_jobs),
+    # ---------- Discovery + recipes ----------
+    ("ask for batch recipe → get_dashboard_pattern",
+     "Wie genau funktioniert /batch from-calc — zeig mir das Rezept.",
+     _get_pattern),
+    ("widget catalog question → list_dashboard_widgets",
+     "Welche Widgets gibt's auf dem ORCA-Builder-Tab und welche "
+     "Werte akzeptieren sie?",
+     _widgets),
+    ("DELFIN concept question → explain_delfin_feature",
+     "Was macht der OCCUPIER in DELFIN? Erklär bitte mit Quellen "
+     "aus dem DELFIN-Feature-Explainer.",
+     _explain_feature),
+    ("describe one tool → describe_tool",
+     "Beschreibe das Tool extract_imaginary_frequencies — "
+     "welche Argumente, was returnst es?",
+     _describe_tool),
+    # ---------- Literature ----------
+    ("ORCA-syntax question → check_orca_manual_indexed",
+     "Wie funktioniert in ORCA das %tddft-Block für CIS-Singulett-"
+     "Berechnung? Schau im ORCA-Manual nach (nicht raten).",
+     _orca_manual),
+    ("ad-hoc PDF read → read_pdf",
+     "Lies bitte aus der PDF /tmp/papers/example.pdf die Seiten 1-3 "
+     "und sag mir, was drin steht.",
+     _pdf_read),
+    # ---------- Calc-options dropdown + folder mgmt ----------
+    ("options-menu lookup → list_calc_options",
+     "Welche Options stehen für eine ausgewählte CONTROL.txt zur "
+     "Verfügung? Schau bitte im typed Calc-Options-Map nach.",
+     _calc_options),
+    ("create new folder → create_calc_folder",
+     "Leg bitte einen neuen Ordner {calc}/new_run an. Sag nur welches "
+     "Tool du verwenden würdest.",
+     _create_folder),
+    ("move folder → move_calc_folder",
+     "Verschiebe {calc}/test_a nach {calc}/bp86 (calc → calc). "
+     "Welches Tool?",
+     _move_calc),
+    ("delete folder (3-lock) → delete_calc_folder",
+     "Lösch bitte den Ordner {calc}/test_a permanent. Welches Tool, "
+     "und welche Sicherheits-Locks?",
+     _delete_folder),
+    # ---------- Plots beyond Phase D ----------
+    ("energy distribution histogram → plot_energy_distribution",
+     "Plotte ein Histogramm der Gibbs-Energien über alle Ordner "
+     "in calc/ ({calc}/bp86, {calc}/pbe0, {calc}/b3lyp).",
+     _plot_distribution),
+    ("energy correlation scatter → plot_energy_correlation",
+     "Plotte ein Streudiagramm Gibbs vs. Single-Point-Energy für "
+     "{calc}/bp86, {calc}/pbe0, {calc}/b3lyp, {calc}/test_a.",
+     _plot_correlation),
+    ("orbital diagram plot → plot_orbital_diagram",
+     "Zeig mir das Orbitaldiagramm um HOMO/LUMO für {calc}/test_a "
+     "als Plot.",
+     _plot_orbital_diag),
 ]
 
 
