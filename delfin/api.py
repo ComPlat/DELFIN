@@ -386,6 +386,356 @@ def hyperpol(
 
 
 # ---------------------------------------------------------------------------
+# P1 — Output parsing (read-only structured returns for the agent)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OrcaParseResult:
+    """Structured ORCA-output snapshot.
+
+    Numeric fields are ``None`` when the corresponding pattern wasn't
+    found in the output. ``scf_converged`` / ``opt_converged`` are
+    tri-state via ``None`` when the marker is absent — don't mistake
+    "no marker" for "did not converge".
+    """
+    path: str
+    final_single_point: float | None = None
+    gibbs_free_energy: float | None = None
+    zpe: float | None = None
+    scf_converged: bool | None = None
+    opt_converged: bool | None = None
+    imag_freq_count: int | None = None
+    walltime_s: float | None = None
+    n_atoms: int | None = None
+    functional: str = ""
+    basis: str = ""
+    error_summary: str = ""
+
+
+def parse_orca_output(path: str) -> OrcaParseResult:
+    """Parse one ORCA output file and return a structured snapshot.
+
+    Wraps the per-property helpers in :mod:`delfin.energies` so the
+    agent can ask "what happened in this run?" with a single tool
+    call instead of grepping the .out file line by line.
+
+    Missing fields → ``None`` (not zero — distinguishes "absent"
+    from "found but zero-valued"). Read errors don't raise; the
+    result's ``error_summary`` carries the diagnosis.
+    """
+    from pathlib import Path as _P
+    from delfin import energies as _e
+    p = _P(path)
+    if not p.exists():
+        return OrcaParseResult(path=str(p), error_summary="file not found")
+    if not p.is_file():
+        return OrcaParseResult(path=str(p), error_summary="not a file")
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return OrcaParseResult(path=str(p), error_summary=f"read error: {exc}")
+
+    out = OrcaParseResult(path=str(p))
+    try:
+        out.final_single_point = _e.find_electronic_energy(str(p))
+    except Exception:
+        pass
+    try:
+        out.gibbs_free_energy = _e.find_gibbs_energy(str(p))
+    except Exception:
+        pass
+    try:
+        out.zpe = _e.find_ZPE(str(p))
+    except Exception:
+        pass
+
+    # SCF convergence: ORCA writes a positive marker on success.
+    if "SCF CONVERGED AFTER" in text or "SCF CONVERGED" in text:
+        out.scf_converged = True
+    elif "SCF NOT CONVERGED" in text or "SCF iterations did not converge" in text:
+        out.scf_converged = False
+
+    # Optimization convergence (geom_opt jobs only).
+    if ("OPTIMIZATION RUN DONE" in text
+            or "THE OPTIMIZATION HAS CONVERGED" in text):
+        out.opt_converged = True
+    elif ("OPTIMIZATION DID NOT CONVERGE" in text
+            or "FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION" in text):
+        out.opt_converged = False
+
+    # Imaginary frequency count.
+    import re as _re
+    m_imag = _re.search(
+        r"Number of imaginary frequencies\s*\.\.\.\s*(\d+)", text,
+    )
+    if m_imag:
+        out.imag_freq_count = int(m_imag.group(1))
+    else:
+        # Count negative-frequency lines: "  4:    -123.45 cm**-1"
+        imag_lines = _re.findall(
+            r"^\s*\d+:\s+(-\d+\.\d+)\s+cm\*\*-1", text, _re.MULTILINE,
+        )
+        if imag_lines:
+            out.imag_freq_count = len(imag_lines)
+
+    # Number of atoms.
+    m_atoms = _re.search(r"Number of atoms\s+\.\.\.\s+(\d+)", text)
+    if m_atoms:
+        out.n_atoms = int(m_atoms.group(1))
+
+    # Walltime: "TOTAL RUN TIME: 0 days 1 hours 23 minutes 45 seconds 678 msec"
+    m_wall = _re.search(
+        r"TOTAL RUN TIME:\s+(\d+)\s+days\s+(\d+)\s+hours\s+(\d+)\s+minutes\s+"
+        r"(\d+)\s+seconds\s+(\d+)\s+msec",
+        text,
+    )
+    if m_wall:
+        d, h, mi, s, ms = (int(g) for g in m_wall.groups())
+        out.walltime_s = d * 86400 + h * 3600 + mi * 60 + s + ms / 1000.0
+
+    # Functional / basis from the input keyword line.
+    m_kw = _re.search(r"^\s*\|\s*\d+>\s*!\s*(.+)$", text, _re.MULTILINE)
+    if m_kw:
+        for token in m_kw.group(1).split():
+            T = token.upper()
+            if T in ("BP86", "PBE0", "B3LYP", "TPSS", "WB97X", "WB97X-D3",
+                    "CAM-B3LYP", "R2SCAN", "PBE", "M06", "M062X", "BLYP",
+                    "REVTPSS"):
+                out.functional = token
+            if ("DEF2-" in T or "PCSSEG" in T or "MA-DEF2-" in T
+                    or "SARC-" in T or "X2C-" in T):
+                out.basis = token
+
+    if (out.final_single_point is None
+            and out.scf_converged is not True
+            and "ABORTING THE RUN" in text):
+        out.error_summary = "ORCA aborted the run"
+
+    return out
+
+
+@dataclass
+class OrcaError:
+    """One detected error pattern in an ORCA output."""
+    type: str
+    message: str
+    line_number: int | None = None
+    suggestion: str = ""
+
+
+_ORCA_ERROR_PATTERNS: list[tuple[str, str, str]] = [
+    (r"SCF NOT CONVERGED|SCF iterations did not converge",
+     "scf_diverge",
+     "Add SlowConv or tighten SCFconv; try DIIS off or KDIIS; check spin guess."),
+    (r"oom_kill|Killed by signal 9|out of memory",
+     "oom",
+     "Increase --mem (sbatch) or lower %maxcore in the .inp."),
+    (r"Number of basis functions.*exceeds",
+     "basis",
+     "Reduce basis (def2-TZVP → def2-SVP) or split atom regions."),
+    (r"Wrong multiplicity|Multiplicity\s+\d+\s+impossible",
+     "multiplicity",
+     "Recheck charge/multiplicity — total electrons must match."),
+    (r"MPI ERROR|MPI_ABORT|orterun.*detected.*aborted",
+     "mpi",
+     "MPI process died — check sbatch --ntasks vs nprocs in %pal."),
+    (r"DUE TO TIME LIMIT|Job exceeded|TIMEOUT",
+     "timeout",
+     "Bump SLURM time limit; or restart from .gbw + .opt with maxiter=N."),
+    (r"FATAL ERROR|ABORTING THE RUN",
+     "other",
+     "ORCA aborted — read the output around this line for the cause."),
+]
+
+
+def find_orca_errors(folder: str) -> list[OrcaError]:
+    """Scan ``*.out`` files in ``folder`` for known ORCA error patterns.
+
+    Non-recursive (one folder at a time keeps results focused). Each
+    match yields an OrcaError with a short suggestion. An empty list
+    is NOT proof of success — use ``parse_orca_output`` for that.
+    """
+    from pathlib import Path as _P
+    import re as _re
+    errors: list[OrcaError] = []
+    p = _P(folder)
+    if not p.exists() or not p.is_dir():
+        return errors
+    for out_file in sorted(p.glob("*.out")):
+        try:
+            lines = out_file.read_text(
+                encoding="utf-8", errors="replace",
+            ).splitlines()
+        except Exception:
+            continue
+        for ln_no, line in enumerate(lines, start=1):
+            for pat, etype, suggestion in _ORCA_ERROR_PATTERNS:
+                if _re.search(pat, line, _re.IGNORECASE):
+                    errors.append(OrcaError(
+                        type=etype,
+                        message=line.strip()[:200],
+                        line_number=ln_no,
+                        suggestion=suggestion,
+                    ))
+                    break
+    return errors
+
+
+@dataclass
+class ThermochemResult:
+    """Thermochemistry block extracted from an ORCA Freq output."""
+    path: str
+    temperature_k: float | None = None
+    pressure_atm: float | None = None
+    zpe: float | None = None
+    thermal_corr: float | None = None
+    enthalpy_corr: float | None = None
+    entropy_total: float | None = None
+    gibbs_corr: float | None = None
+    final_gibbs: float | None = None
+
+
+def extract_thermochem(folder: str) -> ThermochemResult:
+    """Extract the full thermochemistry block from an ORCA Freq output.
+
+    Picks the first ``*.out`` containing thermochemistry data in the
+    folder. All energies in Hartree, T in K, P in atm.
+    """
+    from pathlib import Path as _P
+    import re as _re
+    p = _P(folder)
+    if not p.exists():
+        return ThermochemResult(path=str(p))
+    out_files = sorted(p.glob("*.out")) if p.is_dir() else [p]
+    for out_file in out_files:
+        try:
+            text = out_file.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if "THERMOCHEMISTRY" not in text.upper():
+            continue
+        result = ThermochemResult(path=str(out_file))
+        FLOAT = r"(-?\d+\.\d+)"
+        for attr, pattern in [
+            ("temperature_k",  rf"Temperature\s+\.\.\.\s+{FLOAT}\s*K"),
+            ("pressure_atm",   rf"Pressure\s+\.\.\.\s+{FLOAT}\s*atm"),
+            ("zpe",            rf"Zero point energy\s+\.\.\.\s+{FLOAT}\s*Eh"),
+            ("thermal_corr",   rf"Total thermal correction\s+{FLOAT}\s*Eh"),
+            ("enthalpy_corr",  rf"Total Enthalpy\s+\.\.\.\s+{FLOAT}\s*Eh"),
+            ("entropy_total",  rf"Final entropy term\s+\.\.\.\s+{FLOAT}\s*Eh"),
+            ("gibbs_corr",     rf"G-E\(el\)\s+\.\.\.\s+{FLOAT}\s*Eh"),
+            ("final_gibbs",
+             rf"Final Gibbs free energy\s+\.\.\.\s+{FLOAT}\s*Eh"),
+        ]:
+            m = _re.search(pattern, text)
+            if m:
+                setattr(result, attr, float(m.group(1)))
+        return result
+    return ThermochemResult(path=str(p))
+
+
+def extract_energy_table(
+    folders: list[str] | str,
+    properties: list[str] | None = None,
+) -> list[dict]:
+    """Walk a list of folders and collect energies into rows.
+
+    Each row is a dict with at least ``folder`` and ``status`` plus
+    one entry per requested property. Defaults to
+    ``["gibbs", "zpe", "single_point"]``.
+
+    Recognised properties: ``gibbs``, ``zpe``, ``single_point``,
+    ``scf_converged``, ``opt_converged``, ``imag_freqs``,
+    ``walltime_s``.
+
+    Folders without ORCA output get ``status="no_output"`` and
+    ``None`` for every property — easier to filter than missing rows.
+    """
+    if properties is None:
+        properties = ["gibbs", "zpe", "single_point"]
+    if isinstance(folders, str):
+        folders = [folders]
+
+    from pathlib import Path as _P
+    rows: list[dict] = []
+    for folder in folders:
+        p = _P(folder)
+        if not p.exists() or not p.is_dir():
+            row: dict = {"folder": str(folder), "status": "missing"}
+            for prop in properties:
+                row[prop] = None
+            rows.append(row)
+            continue
+        out_files = sorted(p.glob("*.out"))
+        if not out_files:
+            row = {"folder": str(folder), "status": "no_output"}
+            for prop in properties:
+                row[prop] = None
+            rows.append(row)
+            continue
+        target = max(out_files, key=lambda f: f.stat().st_size)
+        parsed = parse_orca_output(str(target))
+        row = {
+            "folder": str(folder),
+            "status": "ok",
+            "output_file": target.name,
+        }
+        for prop in properties:
+            if prop == "gibbs":
+                row[prop] = parsed.gibbs_free_energy
+            elif prop == "zpe":
+                row[prop] = parsed.zpe
+            elif prop == "single_point":
+                row[prop] = parsed.final_single_point
+            elif prop == "scf_converged":
+                row[prop] = parsed.scf_converged
+            elif prop == "opt_converged":
+                row[prop] = parsed.opt_converged
+            elif prop == "imag_freqs":
+                row[prop] = parsed.imag_freq_count
+            elif prop == "walltime_s":
+                row[prop] = parsed.walltime_s
+            else:
+                row[prop] = None
+        rows.append(row)
+    return rows
+
+
+def find_calculation_extreme(
+    folders: list[str] | str,
+    *,
+    property: str = "gibbs",
+    extreme: str = "min",
+    n: int = 5,
+) -> list[dict]:
+    """Return the N folders with the lowest/highest value of a property.
+
+    Direct answer to "open the .out with the lowest Gibbs energy"
+    type questions: pass the candidate folders, get back the top
+    ``n`` rows sorted ascending (``extreme="min"``) or descending
+    (``extreme="max"``).
+
+    Folders that fail to parse the property are excluded from the
+    ranking.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        property: one of ``gibbs``, ``zpe``, ``single_point``,
+            ``imag_freqs``, ``walltime_s``.
+        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
+        n: how many top rows to return (clipped to len(rows)).
+    """
+    rows = extract_energy_table(folders, properties=[property])
+    valid = [r for r in rows if r.get(property) is not None]
+    if not valid:
+        return []
+    reverse = (str(extreme).lower() == "max")
+    valid.sort(key=lambda r: float(r[property]), reverse=reverse)
+    return valid[: max(1, int(n))]
+
+
+# ---------------------------------------------------------------------------
 # On-demand operational-pattern lookup
 # ---------------------------------------------------------------------------
 #
@@ -522,6 +872,9 @@ def get_dashboard_pattern(name: str) -> str:
 
 __all__ = [
     "CommandResult",
+    "OrcaParseResult",
+    "OrcaError",
+    "ThermochemResult",
     "run",
     "prepare",
     "pipeline_run",
@@ -539,4 +892,10 @@ __all__ = [
     "hyperpol",
     "list_dashboard_patterns",
     "get_dashboard_pattern",
+    # P1 — output parsing
+    "parse_orca_output",
+    "find_orca_errors",
+    "extract_thermochem",
+    "extract_energy_table",
+    "find_calculation_extreme",
 ]

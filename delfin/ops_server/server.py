@@ -147,6 +147,137 @@ def tool_get_dashboard_pattern(name: str) -> str:
     return delfin_api.get_dashboard_pattern(name)
 
 
+# ---------------------------------------------------------------------------
+# P1 — Output parsing tools (read-only, structured returns)
+# ---------------------------------------------------------------------------
+
+
+def _orca_parse_to_dict(parsed) -> dict:
+    """Render an OrcaParseResult as a stable JSON-friendly dict."""
+    return {
+        "path": parsed.path,
+        "final_single_point": parsed.final_single_point,
+        "gibbs_free_energy": parsed.gibbs_free_energy,
+        "zpe": parsed.zpe,
+        "scf_converged": parsed.scf_converged,
+        "opt_converged": parsed.opt_converged,
+        "imag_freq_count": parsed.imag_freq_count,
+        "walltime_s": parsed.walltime_s,
+        "n_atoms": parsed.n_atoms,
+        "functional": parsed.functional,
+        "basis": parsed.basis,
+        "error_summary": parsed.error_summary,
+    }
+
+
+def tool_parse_orca_output(path: str) -> str:
+    """Parse one ORCA .out file and return a structured snapshot.
+
+    Returns a JSON object with: final_single_point (Hartree),
+    gibbs_free_energy (Hartree), zpe (Hartree), scf_converged (bool),
+    opt_converged (bool), imag_freq_count (int), walltime_s (float),
+    n_atoms (int), functional (str), basis (str), error_summary (str).
+    Missing values are null. Use this BEFORE writing a Python script
+    to grep the file — one tool call replaces dozens of regexes.
+
+    Args:
+        path: absolute path to the ORCA .out file.
+    """
+    import json as _json
+    parsed = delfin_api.parse_orca_output(path)
+    return _json.dumps(_orca_parse_to_dict(parsed), indent=2)
+
+
+def tool_find_orca_errors(folder: str) -> str:
+    """Scan all *.out files in ``folder`` for known ORCA error patterns.
+
+    Returns a JSON list of {type, message, line_number, suggestion}
+    entries. Empty list = no patterns matched (NOT proof of success —
+    use parse_orca_output for that).
+
+    Detected error types: scf_diverge, oom, basis, multiplicity, mpi,
+    timeout, other.
+
+    Args:
+        folder: absolute path to the calc folder containing .out files.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    errors = delfin_api.find_orca_errors(folder)
+    return _json.dumps([_asdict(e) for e in errors], indent=2)
+
+
+def tool_extract_thermochem(folder: str) -> str:
+    """Extract the full thermochemistry block from an ORCA Freq output.
+
+    Picks the first .out in ``folder`` containing thermochemistry data.
+    Returns JSON with: temperature_k, pressure_atm, zpe, thermal_corr,
+    enthalpy_corr, entropy_total, gibbs_corr, final_gibbs (all in
+    Hartree except T and P).
+
+    Args:
+        folder: absolute path to a calc folder.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    result = delfin_api.extract_thermochem(folder)
+    return _json.dumps(_asdict(result), indent=2)
+
+
+def tool_extract_energy_table(
+    folders: str,
+    properties: str = "",
+) -> str:
+    """Walk a list of folders and collect energies into rows.
+
+    Returns a JSON list of rows. Each row has ``folder``, ``status``
+    ("ok" / "missing" / "no_output"), and one entry per requested
+    property. Rows with status != "ok" carry None for properties.
+
+    Recognised properties: gibbs, zpe, single_point, scf_converged,
+    opt_converged, imag_freqs, walltime_s.
+
+    Args:
+        folders: comma-separated absolute paths (or a single path).
+        properties: comma-separated property names. Empty → defaults
+            to "gibbs,zpe,single_point".
+    """
+    import json as _json
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    prop_list = [p.strip() for p in properties.split(",") if p.strip()]
+    rows = delfin_api.extract_energy_table(
+        folder_list, properties=prop_list or None,
+    )
+    return _json.dumps(rows, indent=2)
+
+
+def tool_find_calculation_extreme(
+    folders: str,
+    property: str = "gibbs",
+    extreme: str = "min",
+    n: int = 5,
+) -> str:
+    """Return the N folders with the lowest/highest value of a property.
+
+    Direct answer to "find the .out with the lowest Gibbs energy"
+    type questions. Folders that fail to parse the property are
+    excluded from the ranking, so a clean list is returned.
+
+    Args:
+        folders: comma-separated absolute paths.
+        property: gibbs (default) | zpe | single_point | imag_freqs |
+            walltime_s.
+        extreme: "min" (lowest, default) or "max" (highest).
+        n: how many top entries to return (default 5).
+    """
+    import json as _json
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    rows = delfin_api.find_calculation_extreme(
+        folder_list, property=property, extreme=extreme, n=int(n),
+    )
+    return _json.dumps(rows, indent=2)
+
+
 def tool_stop_dry_run(workspace: str) -> str:
     """List DELFIN processes that would be signaled (no actual signal sent)."""
     rc = delfin_api.stop(workspace=workspace, dry_run=True)
@@ -319,6 +450,12 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_analysis_check)
     mcp.tool()(tool_list_dashboard_patterns)
     mcp.tool()(tool_get_dashboard_pattern)
+    # P1 — output parsing (read-only, structured returns)
+    mcp.tool()(tool_parse_orca_output)
+    mcp.tool()(tool_find_orca_errors)
+    mcp.tool()(tool_extract_thermochem)
+    mcp.tool()(tool_extract_energy_table)
+    mcp.tool()(tool_find_calculation_extreme)
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)
