@@ -702,6 +702,305 @@ def extract_energy_table(
     return rows
 
 
+def _default_plot_dir() -> str:
+    """Return the agent_workspace/ directory the dashboard auto-renders."""
+    from pathlib import Path as _P
+    cand = _P.home() / "agent_workspace"
+    if cand.exists():
+        return str(cand)
+    return str(_P.cwd())
+
+
+@dataclass
+class PlotResult:
+    """Outcome of a plot helper call.
+
+    Carrying the path lets the agent reference it in the chat so the
+    inline-render hook can pick it up and embed the PNG.
+    """
+    path: str = ""
+    n_points: int = 0
+    title: str = ""
+    properties: list[str] = field(default_factory=list)
+    statistics: dict = field(default_factory=dict)
+    error: str = ""
+
+
+def plot_energy_distribution(
+    folders: list[str] | str,
+    *,
+    properties: list[str] | None = None,
+    output_path: str = "",
+    plot_type: str = "histogram",
+    title: str = "",
+    bins: int = 30,
+) -> PlotResult:
+    """Extract energies across folders and write a statistical plot.
+
+    Reads ``properties`` from each folder's largest ``*.out`` (via
+    :func:`extract_energy_table`) and produces:
+
+    - ``plot_type="histogram"`` — one histogram per property, stacked
+      vertically (default).
+    - ``plot_type="bar"`` — bar chart per folder (sorted by the first
+      property), useful for small N.
+    - ``plot_type="boxplot"`` — distribution summary across folders.
+
+    The PNG lands in ``agent_workspace/`` by default so the dashboard's
+    inline-artifact hook picks it up automatically. ``PlotResult.path``
+    tells the agent where it ended up; mention that path in chat and
+    the user sees the image.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        properties: subset of ``gibbs``, ``zpe``, ``single_point``.
+            Default ``["gibbs", "single_point"]``.
+        output_path: explicit PNG location. Empty → auto-generated
+            inside ``agent_workspace/``.
+        plot_type: ``histogram`` | ``bar`` | ``boxplot``.
+        title: figure title (auto-generated if empty).
+        bins: histogram bin count.
+    """
+    if properties is None:
+        properties = ["gibbs", "single_point"]
+    if isinstance(folders, str):
+        folders = [folders]
+    rows = extract_energy_table(folders, properties=properties)
+    valid_rows = [
+        r for r in rows
+        if any(r.get(p) is not None for p in properties)
+    ]
+    if not valid_rows:
+        return PlotResult(
+            error=f"No folder produced parseable values for {properties}.",
+            properties=list(properties),
+            n_points=0,
+        )
+
+    try:
+        import matplotlib  # noqa
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError as exc:
+        return PlotResult(
+            error=f"matplotlib/numpy missing: {exc}",
+            properties=list(properties),
+        )
+
+    series: dict[str, list[float]] = {p: [] for p in properties}
+    labels: list[str] = []
+    for r in valid_rows:
+        labels.append(_short_folder_label(r["folder"]))
+        for p in properties:
+            v = r.get(p)
+            if v is not None:
+                series[p].append(float(v))
+
+    n_points = max(len(v) for v in series.values()) if series else 0
+    if not title:
+        prop_label = " + ".join(properties)
+        title = f"{prop_label} across {n_points} calculations ({plot_type})"
+
+    out_path = output_path or str(
+        _new_workspace_png_path(prefix=f"energy_{plot_type}")
+    )
+
+    plot_type_norm = plot_type.lower().strip()
+    statistics: dict = {}
+    if plot_type_norm == "bar":
+        # One row per folder; bars side-by-side per property.
+        n_props = len(properties)
+        x = np.arange(len(labels))
+        width = 0.8 / max(1, n_props)
+        fig, ax = plt.subplots(
+            figsize=(max(6, len(labels) * 0.4 + 2), 5),
+        )
+        for i, p in enumerate(properties):
+            vals = [r.get(p) if r.get(p) is not None else float("nan")
+                    for r in valid_rows]
+            ax.bar(x + (i - n_props / 2 + 0.5) * width, vals,
+                   width=width, label=p)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=70, ha="right", fontsize=8)
+        ax.set_ylabel("Energy / Hartree")
+        ax.set_title(title)
+        ax.legend(loc="best")
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    elif plot_type_norm == "boxplot":
+        fig, ax = plt.subplots(figsize=(2 + 1.5 * len(properties), 5))
+        data = [series[p] for p in properties]
+        ax.boxplot(data, tick_labels=list(properties))
+        ax.set_ylabel("Energy / Hartree")
+        ax.set_title(title)
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    else:  # histogram (default)
+        fig, axes = plt.subplots(
+            len(properties), 1,
+            figsize=(7, 2.5 * len(properties)),
+            sharex=False,
+        )
+        if len(properties) == 1:
+            axes = [axes]
+        for ax, p in zip(axes, properties):
+            data = series[p]
+            if not data:
+                ax.text(0.5, 0.5, f"no data for {p}",
+                        transform=ax.transAxes, ha="center")
+                ax.set_axis_off()
+                continue
+            ax.hist(data, bins=bins, color="#6366f1", edgecolor="white")
+            ax.set_xlabel(f"{p} / Hartree")
+            ax.set_ylabel("count")
+            ax.set_title(f"{p} (N={len(data)})", fontsize=11)
+            ax.axvline(np.mean(data), color="#ef4444",
+                       linestyle="--", label=f"mean={np.mean(data):.4f}")
+            ax.axvline(np.median(data), color="#10b981",
+                       linestyle=":", label=f"median={np.median(data):.4f}")
+            ax.legend(loc="best", fontsize=8)
+        fig.suptitle(title, fontsize=12)
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+
+    for p in properties:
+        data = series.get(p, [])
+        if data:
+            statistics[p] = {
+                "n": len(data),
+                "min": float(min(data)),
+                "max": float(max(data)),
+                "mean": float(sum(data) / len(data)),
+                "range": float(max(data) - min(data)),
+            }
+
+    return PlotResult(
+        path=out_path,
+        n_points=n_points,
+        title=title,
+        properties=list(properties),
+        statistics=statistics,
+    )
+
+
+def plot_energy_correlation(
+    folders: list[str] | str,
+    *,
+    x: str = "single_point",
+    y: str = "gibbs",
+    output_path: str = "",
+    title: str = "",
+) -> PlotResult:
+    """Scatter plot one energy property against another across folders.
+
+    Pearson correlation + best-fit line are drawn on top so the user
+    can see at a glance whether ``y`` tracks ``x`` linearly.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        x, y: two of ``gibbs``, ``zpe``, ``single_point``.
+        output_path: explicit PNG location.
+        title: figure title (auto-generated if empty).
+    """
+    if isinstance(folders, str):
+        folders = [folders]
+    rows = extract_energy_table(folders, properties=[x, y])
+    pairs = [(r.get(x), r.get(y)) for r in rows
+             if r.get(x) is not None and r.get(y) is not None]
+    if not pairs:
+        return PlotResult(
+            error=f"No folder has both {x} and {y}.",
+            properties=[x, y],
+        )
+
+    try:
+        import matplotlib  # noqa
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError as exc:
+        return PlotResult(
+            error=f"matplotlib/numpy missing: {exc}",
+            properties=[x, y],
+        )
+
+    xs = np.array([p[0] for p in pairs], dtype=float)
+    ys = np.array([p[1] for p in pairs], dtype=float)
+    fig, ax = plt.subplots(figsize=(7, 6))
+    ax.scatter(xs, ys, s=24, color="#6366f1", alpha=0.7,
+               edgecolor="white", linewidth=0.5)
+    if len(xs) >= 2:
+        slope, intercept = np.polyfit(xs, ys, 1)
+        x_line = np.linspace(xs.min(), xs.max(), 50)
+        ax.plot(x_line, slope * x_line + intercept,
+                color="#ef4444", linestyle="--", linewidth=1.2,
+                label=f"y = {slope:.4f}·x + {intercept:.4f}")
+        # Pearson r
+        if xs.std() and ys.std():
+            r = float(np.corrcoef(xs, ys)[0, 1])
+        else:
+            r = 0.0
+    else:
+        slope = intercept = r = 0.0
+    ax.set_xlabel(f"{x} / Hartree")
+    ax.set_ylabel(f"{y} / Hartree")
+    if not title:
+        title = f"{y} vs {x}  (N={len(xs)}, r={r:.3f})"
+    ax.set_title(title)
+    if len(xs) >= 2:
+        ax.legend(loc="best", fontsize=9)
+    plt.tight_layout()
+
+    out_path = output_path or str(
+        _new_workspace_png_path(prefix=f"energy_corr_{x}_vs_{y}")
+    )
+    plt.savefig(out_path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+    return PlotResult(
+        path=out_path,
+        n_points=len(xs),
+        title=title,
+        properties=[x, y],
+        statistics={
+            "n": len(xs),
+            "pearson_r": float(r),
+            "slope": float(slope),
+            "intercept": float(intercept),
+        },
+    )
+
+
+def _short_folder_label(folder: str) -> str:
+    """Return a 24-char-max label for a folder path (last 1-2 components)."""
+    from pathlib import Path as _P
+    p = _P(folder)
+    if not p.parts:
+        return folder
+    # Use last two components if available
+    if len(p.parts) >= 2:
+        cand = "/".join(p.parts[-2:])
+    else:
+        cand = p.name
+    if len(cand) > 24:
+        cand = cand[:11] + "…" + cand[-12:]
+    return cand
+
+
+def _new_workspace_png_path(prefix: str = "plot") -> "Path":
+    """Return a non-clobbering PNG path in agent_workspace/."""
+    from pathlib import Path as _P
+    base = _P(_default_plot_dir())
+    base.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime as _dt
+    stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+    return base / f"{prefix}_{stamp}.png"
+
+
 def find_calculation_extreme(
     folders: list[str] | str,
     *,
@@ -875,6 +1174,7 @@ __all__ = [
     "OrcaParseResult",
     "OrcaError",
     "ThermochemResult",
+    "PlotResult",
     "run",
     "prepare",
     "pipeline_run",
@@ -898,4 +1198,7 @@ __all__ = [
     "extract_thermochem",
     "extract_energy_table",
     "find_calculation_extreme",
+    # P1 — statistical plots (PNG → agent_workspace, auto-shown in chat)
+    "plot_energy_distribution",
+    "plot_energy_correlation",
 ]

@@ -251,6 +251,74 @@ def tool_extract_energy_table(
     return _json.dumps(rows, indent=2)
 
 
+def tool_plot_energy_distribution(
+    folders: str,
+    properties: str = "gibbs,single_point",
+    plot_type: str = "histogram",
+    title: str = "",
+    bins: int = 30,
+) -> str:
+    """Plot energy distributions across calculations and write a PNG.
+
+    Reads ``properties`` from each folder's largest .out, then renders:
+    - histogram (default) — one panel per property with mean + median lines.
+    - bar — one bar per folder per property (good for small N).
+    - boxplot — distribution summary side-by-side.
+
+    Output PNG lands in agent_workspace/ where the dashboard's inline-
+    artifact hook displays it in the chat automatically. Returns JSON
+    with: path, n_points, title, properties, statistics (per-property
+    {n, min, max, mean, range}), error.
+
+    Args:
+        folders: comma-separated absolute paths.
+        properties: comma-separated subset of gibbs/zpe/single_point.
+        plot_type: histogram | bar | boxplot.
+        title: figure title (auto-generated if empty).
+        bins: histogram bin count (only used for plot_type=histogram).
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    prop_list = [p.strip() for p in properties.split(",") if p.strip()]
+    result = delfin_api.plot_energy_distribution(
+        folder_list,
+        properties=prop_list or None,
+        plot_type=plot_type,
+        title=title,
+        bins=int(bins),
+    )
+    return _json.dumps(_asdict(result), indent=2)
+
+
+def tool_plot_energy_correlation(
+    folders: str,
+    x: str = "single_point",
+    y: str = "gibbs",
+    title: str = "",
+) -> str:
+    """Scatter plot one energy property against another across folders.
+
+    Pearson correlation + linear best-fit line are drawn on top so the
+    user can see at a glance whether ``y`` tracks ``x`` linearly.
+    Returns JSON with path, n_points, title, properties=[x, y], and
+    statistics={n, pearson_r, slope, intercept}.
+
+    Args:
+        folders: comma-separated absolute paths.
+        x: gibbs | zpe | single_point.
+        y: gibbs | zpe | single_point.
+        title: figure title (auto-generated if empty).
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    result = delfin_api.plot_energy_correlation(
+        folder_list, x=x, y=y, title=title,
+    )
+    return _json.dumps(_asdict(result), indent=2)
+
+
 def tool_find_calculation_extreme(
     folders: str,
     property: str = "gibbs",
@@ -456,6 +524,9 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_extract_thermochem)
     mcp.tool()(tool_extract_energy_table)
     mcp.tool()(tool_find_calculation_extreme)
+    # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
+    mcp.tool()(tool_plot_energy_distribution)
+    mcp.tool()(tool_plot_energy_correlation)
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)

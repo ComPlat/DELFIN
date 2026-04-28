@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from delfin import api as delfin_api
 from delfin.ops_server import server as ops_server
 from delfin.ops_server import config as ops_config
 
@@ -463,3 +464,118 @@ def test_tool_find_calculation_extreme_excludes_unparseable(tmp_path):
     rows = json.loads(txt)
     assert len(rows) == 1
     assert rows[0]["folder"] == str(good)
+
+
+# ---------------------------------------------------------------------------
+# P1 — statistical plot tools (PNG output, auto-displayed in chat)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_calc_folders(tmp_path):
+    """Five fake calc folders with varying Gibbs / FSPE."""
+    folders = []
+    for name, gibbs, spe in [
+        ("a", -100.5, -101.0),
+        ("b", -150.0, -151.2),
+        ("c", -120.7, -121.3),
+        ("d", -110.0, -110.4),
+        ("e", -135.5, -136.1),
+    ]:
+        folder = tmp_path / name
+        folder.mkdir()
+        (folder / "calc.out").write_text(
+            f"  *** SCF CONVERGED ***\n"
+            f"FINAL SINGLE POINT ENERGY    {spe}\n"
+            f"Final Gibbs free energy            ...    {gibbs} Eh\n",
+            encoding="utf-8",
+        )
+        folders.append(folder)
+    return folders
+
+
+def test_tool_plot_energy_distribution_writes_png(fake_calc_folders, tmp_path,
+                                                   monkeypatch):
+    """Default histogram plot lands in agent_workspace and reports stats."""
+    # Redirect the workspace dir into tmp_path so we don't pollute $HOME.
+    monkeypatch.setattr(
+        delfin_api, "_default_plot_dir",
+        lambda: str(tmp_path / "ws"),
+    )
+    folders_csv = ",".join(str(f) for f in fake_calc_folders)
+    txt = ops_server.tool_plot_energy_distribution(folders_csv)
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert data["path"].endswith(".png")
+    assert Path(data["path"]).exists()
+    assert data["n_points"] == 5
+    # Statistics for both properties (defaults: gibbs + single_point)
+    assert data["statistics"]["gibbs"]["n"] == 5
+    assert data["statistics"]["gibbs"]["min"] == pytest.approx(-150.0)
+    assert data["statistics"]["gibbs"]["max"] == pytest.approx(-100.5)
+
+
+def test_tool_plot_energy_distribution_custom_props_and_type(
+        fake_calc_folders, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        delfin_api, "_default_plot_dir",
+        lambda: str(tmp_path / "ws"),
+    )
+    folders_csv = ",".join(str(f) for f in fake_calc_folders)
+    txt = ops_server.tool_plot_energy_distribution(
+        folders_csv, properties="gibbs", plot_type="boxplot",
+    )
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert "energy_boxplot" in data["path"]
+    assert Path(data["path"]).exists()
+    assert data["properties"] == ["gibbs"]
+
+
+def test_tool_plot_energy_distribution_no_data(tmp_path, monkeypatch):
+    """No parseable folders → error message, no PNG written."""
+    monkeypatch.setattr(
+        delfin_api, "_default_plot_dir",
+        lambda: str(tmp_path / "ws"),
+    )
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    txt = ops_server.tool_plot_energy_distribution(str(empty))
+    data = json.loads(txt)
+    assert data["error"] != ""
+    assert data["path"] == ""
+    assert data["n_points"] == 0
+
+
+def test_tool_plot_energy_correlation_writes_png(fake_calc_folders, tmp_path,
+                                                  monkeypatch):
+    """Scatter plot includes Pearson r in the result statistics."""
+    monkeypatch.setattr(
+        delfin_api, "_default_plot_dir",
+        lambda: str(tmp_path / "ws"),
+    )
+    folders_csv = ",".join(str(f) for f in fake_calc_folders)
+    txt = ops_server.tool_plot_energy_correlation(
+        folders_csv, x="single_point", y="gibbs",
+    )
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    assert data["properties"] == ["single_point", "gibbs"]
+    assert data["n_points"] == 5
+    # spe and gibbs are nearly proportional → r close to 1
+    assert data["statistics"]["pearson_r"] > 0.95
+
+
+def test_tool_plot_energy_correlation_no_overlap(tmp_path, monkeypatch):
+    """If no folder has BOTH x and y set, return error not exception."""
+    monkeypatch.setattr(
+        delfin_api, "_default_plot_dir",
+        lambda: str(tmp_path / "ws"),
+    )
+    empty = tmp_path / "nada"
+    empty.mkdir()
+    txt = ops_server.tool_plot_energy_correlation(str(empty))
+    data = json.loads(txt)
+    assert data["error"] != ""
+    assert data["path"] == ""

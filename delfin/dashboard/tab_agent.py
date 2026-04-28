@@ -7917,8 +7917,16 @@ def create_tab(ctx):
 
                     # D4: After file-creating tools, surface any new artifacts
                     # in the chat so the user sees plots/CSVs without
-                    # leaving the conversation.
-                    if tool_name in ("Write", "Edit", "Bash", "NotebookEdit"):
+                    # leaving the conversation. The MCP plot tool writes
+                    # PNGs straight into agent_workspace/, so it qualifies
+                    # too; check the tool-name suffix because MCP tools
+                    # are namespaced as ``mcp__<server>__<name>``.
+                    _is_file_creating_tool = (
+                        tool_name in ("Write", "Edit", "Bash", "NotebookEdit")
+                        or tool_name.endswith("__plot_energy_distribution")
+                        or tool_name.endswith("__plot_energy_correlation")
+                    )
+                    if _is_file_creating_tool:
                         _emit_new_workspace_artifacts()
 
                 def _on_permission_denied(description):
