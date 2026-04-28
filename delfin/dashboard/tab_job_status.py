@@ -12,6 +12,7 @@ from IPython.display import clear_output
 
 from .constants import STATUS_COLORS, JOB_TABLE_CSS
 from .backend_base import JobInfo
+from .input_processing import parse_inp_resources
 
 
 def create_tab(ctx):
@@ -87,18 +88,10 @@ def create_tab(ctx):
         return pal, maxcore, time_limit
 
     def _parse_orca_resources(text):
-        pal = None
-        maxcore = None
-        # %pal nprocs N
-        m = re.search(r'^\s*%pal\b.*?nprocs\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
-        if m:
-            pal = int(m.group(1))
-        # %maxcore N or maxcore N
-        m = re.search(r'^\s*%maxcore\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
-        if m:
-            maxcore = int(m.group(1))
-        else:
-            m = re.search(r'^\s*maxcore\s+(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
+        pal, maxcore = parse_inp_resources(text)
+        # tab_job_status historically also accepted bare "maxcore N" without "%".
+        if maxcore is None:
+            m = re.search(r'^\s*maxcore\s*=?\s*(\d+)', text, flags=re.IGNORECASE | re.MULTILINE)
             if m:
                 maxcore = int(m.group(1))
         return pal, maxcore

@@ -1102,9 +1102,11 @@ def create_tab(ctx):
         state['last_auto_keywords'] = new_kw
 
         new_pal = f'%pal\n  nprocs {orca_pal.value}\nend'
-        text = re.sub(r'%pal\s*\n\s*nprocs\s+\d+\s*\n\s*end',
-                      new_pal, text, count=1, flags=re.IGNORECASE)
-        text = re.sub(r'^%maxcore\s+\d+', f'%maxcore {orca_maxcore.value}',
+        # Match the entire %pal block in either form: inline (%pal nprocs N end)
+        # or multi-line (%pal\n nprocs N\nend), with optional '=' syntax. (?s)
+        # makes '.' span newlines so the multi-line form is also covered.
+        text = re.sub(r'(?is)%pal\b.*?\bend\b', new_pal, text, count=1)
+        text = re.sub(r'^%maxcore\s*=?\s*\d+', f'%maxcore {orca_maxcore.value}',
                       text, count=1, flags=re.MULTILINE | re.IGNORECASE)
 
         new_output = _build_output_block()
