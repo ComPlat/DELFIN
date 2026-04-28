@@ -74,6 +74,16 @@ DEFAULT_SETTINGS = {
         "backend": "cli",
         "model": "sonnet",
         "max_tokens": 4096,
+        # When mid-conversation compaction triggers (>12 messages on
+        # solo/dashboard), should we tear down the CLI subprocess and
+        # restart it with the trimmed history? Default True preserves
+        # the original behaviour (compaction actually shrinks the API
+        # request size). Set False to keep the subprocess + session
+        # cache alive and accept that compaction is local-RAM only.
+        "compact_resets_cli": True,
+        # Soft warning when cumulative session cost crosses this USD
+        # mark. The agent shows a banner; nothing is blocked.
+        "cost_soft_limit_usd": 5.0,
         "role_models": {
             "dashboard_agent": "auto",
             "session_manager": "auto",
