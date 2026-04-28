@@ -1748,3 +1748,30 @@ def test_tool_run_calc_option_unknown_option(tmp_path):
     assert data["ok"] is False
     assert "Unknown option" in data["error"]
     assert "list_calc_options" in data["error"]
+
+
+def test_tool_list_ssh_transfer_jobs_returns_list(monkeypatch):
+    fake_jobs = [
+        {"job_id": "ssh-001", "status": "running", "updated_at": "2026-04-28T12:00:00Z"},
+        {"job_id": "ssh-002", "status": "done", "updated_at": "2026-04-28T11:30:00Z"},
+    ]
+    monkeypatch.setattr(
+        "delfin.ssh_transfer_jobs.list_transfer_jobs",
+        lambda *, limit=8: list(fake_jobs[: limit]),
+    )
+    txt = ops_server.tool_list_ssh_transfer_jobs(limit=10)
+    rows = json.loads(txt)
+    assert len(rows) == 2
+    assert rows[0]["job_id"] == "ssh-001"
+
+
+def test_tool_list_ssh_transfer_jobs_handles_failure(monkeypatch):
+    """Backend exception → single error row, not a crash."""
+    def boom(*, limit=8):
+        raise RuntimeError("ssh control socket missing")
+    monkeypatch.setattr(
+        "delfin.ssh_transfer_jobs.list_transfer_jobs", boom,
+    )
+    rows = json.loads(ops_server.tool_list_ssh_transfer_jobs())
+    assert len(rows) == 1
+    assert "ssh control socket missing" in rows[0]["error"]

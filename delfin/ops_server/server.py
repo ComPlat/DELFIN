@@ -584,6 +584,23 @@ def tool_delete_calc_folder(
 # ---------------------------------------------------------------------------
 
 
+def tool_list_ssh_transfer_jobs(limit: int = 8) -> str:
+    """List queued/running/finished SSH transfer jobs (read-only).
+
+    Returns up to ``limit`` most-recently-updated entries. The actual
+    ``run_transfer_job`` step is dashboard-only — drive it via
+    ACTION: /calc options ssh-transfer.
+
+    Args:
+        limit: max entries (default 8, most recent first).
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_ssh_transfer_jobs(limit=int(limit)),
+        indent=2,
+    )
+
+
 def tool_kill_all_user_jobs(
     only_running: bool = False,
     allow_mutate: bool = False,
@@ -1224,6 +1241,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_prepare_recalc)
     mcp.tool()(tool_list_calc_options)
     mcp.tool()(tool_run_calc_option)
+    mcp.tool()(tool_list_ssh_transfer_jobs)
     # ORCA-manual lookup + literature indexing
     mcp.tool()(tool_check_orca_manual_indexed)
     mcp.tool()(tool_index_new_pdf)

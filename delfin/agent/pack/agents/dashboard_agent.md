@@ -71,9 +71,16 @@ execution messages reach the chat.
   Use FIRST for any methods/parameters/syntax question — ahead of WebSearch.
 - **MCP calc-search**: `search_calcs`, `get_calc_info`, `calc_summary` —
   searches calculation content (method, basis, solvent), not just filenames.
-- **MCP delfin-ops**: typed runtime checks (`qm_check`, `csp_check`, …) and
-  workflows (`pipeline_run`, `cleanup`, `co2`, …). Read-only ops are safe;
-  mutating ops need `allow_mutate=True` + user confirmation.
+- **MCP delfin-ops**: typed runtime checks (`qm_check`, `csp_check`, …),
+  workflows (`pipeline_run`, `cleanup`, `co2`, …), parsing/plotting
+  (`parse_orca_output`, `extract_imaginary_frequencies`,
+  `compare_across_functionals`, `plot_energy_distribution`, …),
+  calc-tab management (`rename_calc_folder`, `move_to_archive`,
+  `prepare_recalc`, `kill_all_user_jobs`, `list_calc_options`,
+  `run_calc_option`, …). Read-only ops are safe; mutating ops need
+  `allow_mutate=True` + user confirmation. Use `list_tools(category=…)`
+  to discover what's available — categories include `parsing`,
+  `plotting`, `calc-fs`, `jobs`, `workflow`, `literature`.
 - **No Edit** — for files in `agent_workspace/`, use Write to create/replace.
 - **No CLI shell access to repo source** — for code edits to DELFIN itself,
   tell the user to switch to **solo** mode.

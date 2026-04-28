@@ -1060,6 +1060,8 @@ _TOOL_CATALOG: list[dict] = [
     # delfin-ops — bulk job control + recalc preparation
     {"name": "kill_all_user_jobs", "category": "jobs",
      "summary": "scancel every active job for the user (mutating)."},
+    {"name": "list_ssh_transfer_jobs", "category": "jobs",
+     "summary": "List queued/running/finished SSH transfer jobs."},
     {"name": "prepare_recalc", "category": "workflow",
      "summary": "Pre-flight + submit Smart/classic/Override recalc."},
     # delfin-ops — calc-options dropdown
@@ -1935,6 +1937,23 @@ def delete_calc_folder(
 # ---------------------------------------------------------------------------
 # Job lifecycle helpers (bulk cancel) + recalc preparation
 # ---------------------------------------------------------------------------
+
+
+def list_ssh_transfer_jobs(limit: int = 8) -> list[dict]:
+    """List queued/running/finished SSH transfer jobs (read-only).
+
+    Wraps :func:`delfin.ssh_transfer_jobs.list_transfer_jobs`. The
+    actual ``run_transfer_job`` step is left to the dashboard's
+    Calculations tab — too much SSH-state to drive headlessly.
+    """
+    try:
+        from delfin.ssh_transfer_jobs import list_transfer_jobs
+    except Exception as exc:
+        return [{"error": f"ssh_transfer_jobs unavailable: {exc}"}]
+    try:
+        return list(list_transfer_jobs(limit=int(limit)))
+    except Exception as exc:
+        return [{"error": str(exc)}]
 
 
 def kill_all_user_jobs(
@@ -3556,6 +3575,7 @@ __all__ = [
     "move_to_archive",
     "delete_calc_folder",
     "kill_all_user_jobs",
+    "list_ssh_transfer_jobs",
     "RecalcPlan",
     "prepare_recalc",
     "list_calc_options",
