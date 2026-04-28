@@ -24607,6 +24607,40 @@ def _build_uff_constraints_from_template(
     return constraints
 
 
+def _detect_chelate_donors(mol, metal_idx: int, donor_indices: List[int]) -> set:
+    """Return the subset of ``donor_indices`` that share a ligand body
+    with another donor of the same metal (i.e. chelate donors).
+
+    A donor is chelate if, after removing the metal, another donor in
+    ``donor_indices`` is still reachable through the molecular graph.
+    Such donors are constrained by their ring closure and must NOT be
+    frozen during UFF, otherwise UFF cannot relax ring internals and a
+    ligand atom often gets dragged into the metal coordination sphere.
+    """
+    if not donor_indices:
+        return set()
+    donor_set = set(donor_indices)
+    chelate: set = set()
+    n_atoms = mol.GetNumAtoms()
+    for start in donor_indices:
+        if start in chelate:
+            continue
+        visited = {start, metal_idx}
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+                ni = nbr.GetIdx()
+                if ni in visited or ni == metal_idx:
+                    continue
+                visited.add(ni)
+                stack.append(ni)
+                if ni in donor_set and ni != start:
+                    chelate.add(start)
+                    chelate.add(ni)
+    return chelate
+
+
 def _build_coordination_constraints_from_xyz(
     mol_template,
     xyz_delfin: str,
@@ -24672,19 +24706,32 @@ def _build_coordination_constraints_from_xyz(
                 bl = float(_get_ml_bond_length(m_sym, d_sym))
                 base["distances"].append((m_idx, d_idx, bl))
 
-            # FREEZE metal + 1st-coordination-sphere donors during UFF.
+            # FREEZE metal + monodentate-donor atoms during UFF.
             # The topology builder placed donors at the ideal symmetric
             # _TOPO_GEOMETRY_VECTORS positions (Oh/Td/D4h/D3h/SAP/...).
-            # RDKit/OB UFF have no good parameters for transition metals,
-            # so leaving the L-M-L angles free lets UFF distort the
-            # ideal polyhedron by 10°-30° (verified empirically).
-            # Freezing M + donor atoms keeps the high-symmetry polyhedron
+            # Freezing M + donors keeps the high-symmetry polyhedron
             # exactly intact while still letting UFF relax ligand
             # internals (ring planarity, torsions, bond lengths beyond
             # the donor).
+            #
+            # CHELATE EXCEPTION: a donor that shares a ligand body with
+            # another donor of the same metal must NOT be frozen.  The
+            # topology builder's chelate-ring placement is geometric-
+            # constraint-driven (ring closure), not pure ideal-polyhedron;
+            # freezing leaves UFF unable to relax ring internals around
+            # the fixed donor, and a ligand atom often gets dragged into
+            # the metal coordination sphere, producing a spurious bond
+            # and topology break.  Verified on D-IROWUK_4d_Rh_CN2
+            # (tetrapyridyl): freeze causes max_dev 60°, no-freeze gives
+            # max_dev 12.7° on Oh.
+            chelate_donors = _detect_chelate_donors(
+                mol_template, m_idx, donor_indices
+            )
             if m_idx not in base["fix_atoms"]:
                 base["fix_atoms"].append(m_idx)
             for d_idx in donor_indices:
+                if d_idx in chelate_donors:
+                    continue
                 if d_idx not in base["fix_atoms"]:
                     base["fix_atoms"].append(d_idx)
 
