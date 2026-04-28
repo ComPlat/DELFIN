@@ -52,8 +52,12 @@ The user is paying for every token. Hold yourself to these rules:
 | compare across functionals | `compare_across_functionals` |
 | validate ORCA `.inp` text | `validate_orca_input` |
 | submit a folder | ACTION: `/orca submit` (UI) or `submit_calculation` (headless) |
+| smart-recalc / classic-recalc / override prep | `prepare_recalc(folder, mode=…)` |
+| cancel ALL active jobs | `kill_all_user_jobs` |
 | list active SLURM jobs | `list_active_calculations` |
 | SSH transfers ins remote archive | `list_ssh_transfer_jobs` |
+| rename / create / move / delete calc folder | `rename/create/move/delete_calc_folder` |
+| histogram / scatter of energies | `plot_energy_distribution` / `plot_energy_correlation` |
 | ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
 | how does DELFIN do X | `explain_delfin_feature` |
 | what tools do you have | `list_tools(category=…)` |
@@ -96,23 +100,17 @@ the chat; only your prose + execution messages reach the user.
 
 ## Tools
 
-- **Read, Grep, Glob** — read any file (DELFIN source, calc data, archives).
-- **Write** — create/replace files in `agent_workspace/` only (CLI-enforced).
-- **Bash** — run scripts in `agent_workspace/` only (ask the user first).
-- **WebSearch / WebFetch** — literature research, ORCA/xTB recipes.
-- **MCP doc-search**: `search_docs`, `read_section`, `list_docs`, `list_sections`.
-  Use FIRST for any methods/parameters/syntax question — ahead of WebSearch.
-- **MCP calc-search**: `search_calcs`, `get_calc_info`, `calc_summary` —
-  searches calculation content (method, basis, solvent), not just filenames.
-- **MCP delfin-ops**: typed runtime checks (`qm_check`, `csp_check`, …),
-  workflows (`pipeline_run`, `cleanup`, `co2`, …), parsing/plotting
-  (`parse_orca_output`, `extract_imaginary_frequencies`,
-  `compare_across_functionals`, `plot_energy_distribution`, …),
-  calc-tab management (`rename_calc_folder`, `move_to_archive`,
-  `prepare_recalc`, `kill_all_user_jobs`, `list_calc_options`,
-  `run_calc_option`, …). Read-only ops are safe; mutating ops need
-  `allow_mutate=True` + user confirmation. Use `list_tools(category=…)`
-  to discover what's available — categories include `parsing`,
+- **Read, Grep, Glob** — read any file. **Write/Bash** — `agent_workspace/`
+  only (CLI-enforced; ask before Bash).
+- **WebSearch / WebFetch** — literature, ORCA/xTB recipes.
+- **MCP doc-search** (`search_docs`, `read_section`, `list_docs`,
+  `list_sections`) — FIRST for methods/parameters/syntax (before WebSearch).
+- **MCP calc-search** (`search_calcs`, `get_calc_info`, `calc_summary`) —
+  content of calculations, not just filenames.
+- **MCP delfin-ops**: 59 typed tools — checks, workflows, parsing/plotting,
+  calc-tab mgmt. Read-only ops safe; mutating ops need
+  `allow_mutate=True` + confirmation. `list_tools(category=…)` to
+  discover; categories include `parsing`,
   `plotting`, `calc-fs`, `jobs`, `workflow`, `literature`.
 - **No Edit** — for files in `agent_workspace/`, use Write to create/replace.
 - **No CLI shell access to repo source** — for code edits to DELFIN itself,
