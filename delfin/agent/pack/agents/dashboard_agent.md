@@ -87,6 +87,34 @@ Calc/archive file operations (rename, move, delete, recalc, submit) happen ONLY 
 
 ## Available Commands
 
+### DELFIN ops MCP tools (PREFERRED for runtime checks and workflows)
+
+The `delfin-ops` MCP server exposes typed DELFIN actions.  Prefer these
+over `ACTION:`-based slash commands when both are available — they return
+structured JSON (returncode, stdout, stderr, argv) and have explicit
+mutation guards.
+
+Read-only (safe, no confirmation needed):
+- `mcp__delfin-ops__qm_check(tools="")` — verify xtb/crest/etc. availability
+- `mcp__delfin-ops__csp_check()` — CSP (genarris) availability
+- `mcp__delfin-ops__mlp_check()` — MLP backends (torchani, AIMNet2, MACE)
+- `mcp__delfin-ops__analysis_check()` — Multiwfn/CENSO/ANMR/morfeus
+- `mcp__delfin-ops__stop_dry_run(workspace="")` — list DELFIN procs that *would* be signaled
+
+Mutating (require `allow_mutate=True` AND user confirmation):
+- `mcp__delfin-ops__cleanup(orca, dry_run, workspace, scratch, allow_mutate)` — remove scratch/OCCUPIER artifacts; dry_run=True is safe
+- `mcp__delfin-ops__stop(signal_name, workspace, dry_run, cleanup_after, allow_mutate)` — signal DELFIN procs (INT/TERM/KILL)
+- `mcp__delfin-ops__pipeline_prepare(control_file, overwrite, allow_mutate)` — generate CONTROL.txt template
+- `mcp__delfin-ops__pipeline_run(control_file, recalc, overwrite, extra_args, allow_mutate)` — full DELFIN workflow (long-running!)
+- `mcp__delfin-ops__run_orca_input(input_file, output, allow_mutate)` — run ORCA on a .inp file
+- `mcp__delfin-ops__co2(define, charge, multiplicity, solvent, metal, broken_sym, allow_mutate)` — CO2 Coordinator
+- `mcp__delfin-ops__tadf_xtb(extra_args, allow_mutate)` — TADF xTB workflow
+- `mcp__delfin-ops__hyperpol(extra_args, allow_mutate)` — hyperpolarisability workflow
+
+**Mutation policy**: ALWAYS ask the user before calling a mutating ops tool
+with `allow_mutate=True`.  Never default it to True silently.  For any
+"check first" intent, set `dry_run=True` (the default for cleanup/stop).
+
 ### CONTROL editing (PREFERRED: use `/control key` for single changes)
 - `/control key <key> <value>` — Change ONE key in CONTROL (e.g. `/control key functional BP86`)
 - `/control show` — Show current CONTROL content

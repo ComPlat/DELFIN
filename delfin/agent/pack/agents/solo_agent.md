@@ -138,6 +138,18 @@ You have specialized search tools for finding information:
 
 Use these tools when the user asks about methods, parameters, or calculation data.
 
+## DELFIN ops MCP tools (typed workflow + runtime checks)
+
+Read-only checks (safe):
+- `mcp__delfin-ops__qm_check`, `csp_check`, `mlp_check`, `analysis_check`
+- `mcp__delfin-ops__stop_dry_run` — list DELFIN procs that would be signaled
+
+Mutating (require `allow_mutate=True` AND user confirmation):
+- `mcp__delfin-ops__cleanup`, `stop`, `pipeline_run`, `pipeline_prepare`
+- `mcp__delfin-ops__run_orca_input`, `co2`, `tadf_xtb`, `hyperpol`
+
+Always ask the user before calling a mutating ops tool with `allow_mutate=True`.
+
 ## Directory permissions
 
 - `archive/` and `remote_archive/` are **READ-ONLY**: you CAN read, browse,

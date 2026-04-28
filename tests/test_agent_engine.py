@@ -259,6 +259,80 @@ def test_engine_tool_use_callback(agent_tree):
     assert tools_used[0][0] == "Read"
 
 
+def test_mcp_tool_prefixes_cover_docs_and_ops():
+    """Both MCP server prefixes must be present, so role-whitelists allow them."""
+    from delfin.agent.engine import _MCP_TOOL_PREFIXES, _DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX
+
+    assert _DOC_TOOL_PREFIX == "mcp__delfin-docs__"
+    assert _OPS_TOOL_PREFIX == "mcp__delfin-ops__"
+    assert _DOC_TOOL_PREFIX in _MCP_TOOL_PREFIXES
+    assert _OPS_TOOL_PREFIX in _MCP_TOOL_PREFIXES
+
+
+def test_engine_allows_mcp_ops_tool_through_whitelist(agent_tree):
+    """A role whose whitelist excludes a tool should still permit MCP ops/docs tools."""
+    from delfin.agent.api_client import StreamEvent
+    from delfin.agent.engine import AgentEngine
+
+    def stream_with_mcp_tool(system, messages, max_tokens=4096, session_id="", thinking_budget=0):
+        # mcp__delfin-ops__qm_check is NOT in any role's static whitelist —
+        # it must pass via the MCP-prefix exception.
+        yield StreamEvent(
+            type="tool_use",
+            tool_name="mcp__delfin-ops__qm_check",
+            tool_input='{"tools": ""}',
+        )
+        yield StreamEvent(type="text_delta", text="ok")
+        yield StreamEvent(type="message_delta", output_tokens=5)
+
+    client = MagicMock()
+    client.stream_message = MagicMock(side_effect=stream_with_mcp_tool)
+
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    seen: list[tuple[str, str]] = []
+    engine.stream_response(
+        "check qm tools",
+        on_tool_use=lambda name, inp: seen.append((name, inp)),
+    )
+
+    # The ops tool must NOT be blocked by the role whitelist.
+    assert any(name.startswith("mcp__delfin-ops__") for name, _ in seen), (
+        "ops MCP tool was filtered out by role whitelist"
+    )
+
+
+def test_engine_blocks_unknown_tool_outside_mcp(agent_tree):
+    """A non-whitelisted, non-MCP tool must still be blocked."""
+    from delfin.agent.api_client import StreamEvent
+    from delfin.agent.engine import AgentEngine
+
+    def stream_with_bogus_tool(system, messages, max_tokens=4096, session_id="", thinking_budget=0):
+        yield StreamEvent(type="tool_use", tool_name="EvilTool", tool_input="{}")
+        yield StreamEvent(type="text_delta", text="ok")
+        yield StreamEvent(type="message_delta", output_tokens=5)
+
+    client = MagicMock()
+    client.stream_message = MagicMock(side_effect=stream_with_bogus_tool)
+
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    seen: list[tuple[str, str]] = []
+    engine.stream_response(
+        "do something",
+        on_tool_use=lambda name, inp: seen.append((name, inp)),
+    )
+
+    # EvilTool is neither in session_manager whitelist nor MCP-prefixed → blocked.
+    assert not any(name == "EvilTool" for name, _ in seen)
+
+
 def test_engine_session_persistence(agent_tree):
     """Test that session_id is preserved across calls."""
     from delfin.agent.api_client import StreamEvent
