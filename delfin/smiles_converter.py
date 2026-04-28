@@ -1529,6 +1529,176 @@ def _smiles_to_xyz_no_valence_check(smiles: str) -> Tuple[Optional[str], Optiona
         return None, f"No-valence-check error: {e}"
 
 
+def _fix_h_geometry_via_smiles(xyz: str, smiles: str) -> str:
+    """Apply ``_fix_h_geometry_universal`` using a SMILES-derived mol.
+
+    Parses the SMILES, adds H, attempts to align the atom order with
+    the XYZ (greedy element-aware), then runs the universal H-fix.
+    Returns the original xyz unchanged if alignment fails.
+    """
+    if not RDKIT_AVAILABLE or not xyz or not smiles:
+        return xyz
+    try:
+        # Parse the SMILES leniently (matches the converter's tolerance)
+        mol = None
+        for sanitize_flag in (True, False):
+            try:
+                if sanitize_flag:
+                    mol = Chem.MolFromSmiles(smiles)
+                else:
+                    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+                if mol is not None:
+                    break
+            except Exception:
+                continue
+        if mol is None:
+            return xyz
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        try:
+            mol = Chem.AddHs(mol)
+        except Exception:
+            return xyz
+        # Verify atom count matches (XYZ should already include H)
+        n_atoms_xyz = sum(
+            1 for line in xyz.strip().splitlines()
+            if line.strip() and len(line.split()) >= 4
+        )
+        if n_atoms_xyz != mol.GetNumAtoms():
+            return xyz
+        return _fix_h_geometry_universal(xyz, mol)
+    except Exception:
+        return xyz
+
+
+def _fix_h_geometry_universal(xyz: str, mol) -> str:
+    """Re-place H atoms via VSEPR rules (universal — neighbour count only).
+
+    For every non-H atom with at least one H neighbour, replaces all H
+    positions with ideal sp3-Td (109.5°) / sp2-trigonal (120°) / sp-
+    linear (180°) positions derived from the heavy-atom positions.
+
+    Why: OB UFF (used as final refinement on metal complexes) lacks
+    proper transition-metal parameters and frequently places H atoms
+    on orthogonal x/y/z axes (90°/180° H-C-H) — physically nonsensical
+    but topology-intact, so it slips through the topology gate.  This
+    function fixes it as a final post-process.
+
+    Heavy-atom positions are NEVER touched.  Bond lengths use 1.09 Å
+    (C-H), 1.01 Å (N-H), 0.96 Å (O-H), 1.34 Å (S-H), else 1.10 Å.
+    """
+    if not RDKIT_AVAILABLE or not xyz or mol is None:
+        return xyz
+
+    h_bond_len = {
+        "C": 1.09, "N": 1.01, "O": 0.96, "S": 1.34, "P": 1.42,
+        "B": 1.19, "Si": 1.48, "F": 0.92, "Cl": 1.27, "Br": 1.41,
+    }
+
+    try:
+        # Parse xyz
+        lines = [l for l in xyz.strip().splitlines() if l.strip()]
+        positions: List[List[float]] = []
+        syms: List[str] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+                syms.append(parts[0])
+            except ValueError:
+                continue
+        n = len(positions)
+        if n != mol.GetNumAtoms():
+            return xyz  # mismatch, give up
+
+        # For each heavy atom with H neighbours, recompute H positions
+        for atom in mol.GetAtoms():
+            ci = atom.GetIdx()
+            if syms[ci] == "H":
+                continue
+            h_nbrs = [
+                n.GetIdx() for n in atom.GetNeighbors()
+                if syms[n.GetIdx()] == "H"
+            ]
+            non_h_nbrs = [
+                n.GetIdx() for n in atom.GetNeighbors()
+                if syms[n.GetIdx()] != "H"
+            ]
+            if not h_nbrs:
+                continue
+
+            total = len(h_nbrs) + len(non_h_nbrs)
+            if total < 2 or total > 4:
+                continue
+
+            # Skip if atom has unrecognized total nbr count
+            if total >= 4:
+                expected_angle = 109.47
+            elif total == 3:
+                expected_angle = 120.0
+            else:
+                expected_angle = 180.0
+
+            cx, cy, cz = positions[ci]
+            # Build axis from heavy nbrs back to centre
+            ax = ay = az = 0.0
+            for oi in non_h_nbrs:
+                ox, oy, oz = positions[oi]
+                ax += cx - ox
+                ay += cy - oy
+                az += cz - oz
+            axis_mag = math.sqrt(ax * ax + ay * ay + az * az)
+            if axis_mag < 1e-8 or not non_h_nbrs:
+                # No reference axis — keep original H positions
+                continue
+            ax /= axis_mag; ay /= axis_mag; az /= axis_mag
+
+            # Build orthonormal basis perpendicular to axis
+            if abs(az) < 0.9:
+                ux, uy, uz = -ay, ax, 0.0
+            else:
+                ux, uy, uz = 1.0, 0.0, 0.0
+            dot = ux * ax + uy * ay + uz * az
+            ux -= dot * ax; uy -= dot * ay; uz -= dot * az
+            u_mag = math.sqrt(ux * ux + uy * uy + uz * uz)
+            if u_mag < 1e-8:
+                ux, uy, uz = 1.0, 0.0, 0.0; u_mag = 1.0
+            ux /= u_mag; uy /= u_mag; uz /= u_mag
+            vx = ay * uz - az * uy
+            vy = az * ux - ax * uz
+            vz = ax * uy - ay * ux
+
+            cos_h = math.cos(math.pi - math.radians(expected_angle))
+            sin_h = math.sin(math.pi - math.radians(expected_angle))
+            n_h = len(h_nbrs)
+            phase_step = 2 * math.pi / max(n_h, 1)
+            bl = h_bond_len.get(syms[ci], 1.10)
+
+            for k, hi in enumerate(h_nbrs):
+                phase = k * phase_step
+                cp, sp = math.cos(phase), math.sin(phase)
+                perp_x = cp * ux + sp * vx
+                perp_y = cp * uy + sp * vy
+                perp_z = cp * uz + sp * vz
+                dx = (cos_h * ax + sin_h * perp_x) * bl
+                dy = (cos_h * ay + sin_h * perp_y) * bl
+                dz = (cos_h * az + sin_h * perp_z) * bl
+                positions[hi] = [cx + dx, cy + dy, cz + dz]
+
+        # Reassemble xyz
+        out_lines = []
+        for i in range(n):
+            x, y, z = positions[i]
+            out_lines.append(f"{syms[i]:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(out_lines) + "\n"
+    except Exception:
+        return xyz
+
+
 def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
     """Last-resort fallback: manually construct coordinates for metal complexes.
 
@@ -1630,56 +1800,134 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                     local_coords[nbr_idx] = (mx + vx, vy, vz)
                     local_placed.add(nbr_idx)
 
-            # BFS to place remaining atoms
+            # BFS to place remaining atoms — VSEPR-aware: distribute
+            # unplaced neighbours according to hybridization (sp/sp2/sp3)
+            # derived from total neighbour count.  Universal — no
+            # SMILES/element-specific logic, only geometry.
             bond_len_default = 1.4
-            _bfs_counter = [0]  # mutable counter for unique directions
+            _bfs_counter = [0]
             queue = list(local_placed)
             while queue:
                 current = queue.pop(0)
                 cx, cy, cz = local_coords[current]
+                c_pos = (cx, cy, cz)
                 atom = mol.GetAtomWithIdx(current)
+                placed_nbrs = [
+                    n.GetIdx() for n in atom.GetNeighbors()
+                    if n.GetIdx() in local_placed
+                ]
                 unplaced_nbrs = [
                     n.GetIdx() for n in atom.GetNeighbors()
                     if n.GetIdx() not in local_placed
                 ]
+                if not unplaced_nbrs:
+                    continue
+
+                total_nbrs = len(placed_nbrs) + len(unplaced_nbrs)
+                # Hybridization expectation by total neighbour count
+                if total_nbrs >= 4:
+                    expected_angle = 109.47
+                elif total_nbrs == 3:
+                    expected_angle = 120.0
+                elif total_nbrs == 2:
+                    expected_angle = 180.0
+                else:
+                    expected_angle = 120.0  # safe default
+                cos_target = math.cos(math.radians(expected_angle))
+
+                # Build "axis" = mean direction from placed nbrs back to centre.
+                ax = ay = az = 0.0
+                for oi in placed_nbrs:
+                    ox, oy, oz = local_coords[oi]
+                    ax += cx - ox
+                    ay += cy - oy
+                    az += cz - oz
+                axis_mag = math.sqrt(ax * ax + ay * ay + az * az)
+                if axis_mag < 1e-8 or not placed_nbrs:
+                    # No reference axis — Fibonacci sphere fallback
+                    _bfs_counter[0] += 1
+                    golden = (1 + math.sqrt(5)) / 2
+                    theta = math.acos(1 - 2 * (_bfs_counter[0] % 50 + 0.5) / 50)
+                    phi = 2 * math.pi * _bfs_counter[0] / golden
+                    ax = math.sin(theta) * math.cos(phi)
+                    ay = math.sin(theta) * math.sin(phi)
+                    az = math.cos(theta)
+                    axis_mag = 1.0
+                ax /= axis_mag; ay /= axis_mag; az /= axis_mag
+
+                # Build orthonormal basis (u, v) perpendicular to axis
+                if abs(az) < 0.9:
+                    ux = -ay; uy = ax; uz = 0.0
+                else:
+                    ux = 1.0; uy = 0.0; uz = 0.0
+                # Gram-Schmidt
+                dot = ux * ax + uy * ay + uz * az
+                ux -= dot * ax; uy -= dot * ay; uz -= dot * az
+                u_mag = math.sqrt(ux * ux + uy * uy + uz * uz)
+                if u_mag < 1e-8:
+                    ux = 1.0; uy = 0.0; uz = 0.0; u_mag = 1.0
+                ux /= u_mag; uy /= u_mag; uz /= u_mag
+                vx = ay * uz - az * uy
+                vy = az * ux - ax * uz
+                vz = ax * uy - ay * ux
+
+                # For each unplaced neighbour, place at angle expected_angle
+                # from axis.  H-C-X angle = expected_angle gives:
+                #   nbr_dir · axis = cos(expected_angle)
+                # since axis points FROM placed-nbrs TO centre (i.e. away
+                # from placed nbrs), this nbr_dir points OUT from centre
+                # at expected_angle from the OUT-direction of axis-of-
+                # placed.  The unplaced H's go OPPOSITE the placed nbr.
+                # nbr_dir · axis = -cos(180-expected) = cos(expected)
+                # Correct: H_dir = cos(180-expected)*axis + sin(180-expected)*perp
+                # where 180-expected is the angle between nbr_dir and the
+                # "away from centre toward placed nbr" direction.
+                # Equivalently: H_dir = -cos(expected)*(-axis) + sin(expected)*perp
+                # which simplifies to:
+                cos_h = math.cos(math.pi - math.radians(expected_angle))  # =-cos_target
+                sin_h = math.sin(math.pi - math.radians(expected_angle))
+                n_unplaced = len(unplaced_nbrs)
+                # Distribute unplaced nbrs evenly around axis (120° apart for sp3 3H,
+                # 180° apart for sp2 2H, 360° for sp 1H).
+                phase_step = 2 * math.pi / max(n_unplaced, 1)
                 for k, nbr_idx in enumerate(unplaced_nbrs):
-                    dx, dy, dz = 0.0, 0.0, 0.0
-                    for other in atom.GetNeighbors():
-                        oi = other.GetIdx()
-                        if oi in local_placed and oi != nbr_idx:
-                            ox, oy, oz = local_coords[oi]
-                            dx += cx - ox
-                            dy += cy - oy
-                            dz += cz - oz
-                    mag = math.sqrt(dx**2 + dy**2 + dz**2)
-                    if mag < 1e-8:
-                        # Use Fibonacci sphere direction for unique placement
-                        _bfs_counter[0] += 1
-                        golden = (1 + math.sqrt(5)) / 2
-                        theta = math.acos(1 - 2 * (_bfs_counter[0] % 50 + 0.5) / 50)
-                        phi = 2 * math.pi * _bfs_counter[0] / golden
-                        dx = math.sin(theta) * math.cos(phi)
-                        dy = math.sin(theta) * math.sin(phi)
-                        dz = math.cos(theta)
-                        mag = 1.0
-                    dx = dx/mag * bond_len_default
-                    dy = dy/mag * bond_len_default
-                    dz = dz/mag * bond_len_default
-                    # Clash check: if target position is too close to any placed atom, nudge
+                    phase = k * phase_step
+                    cp, sp = math.cos(phase), math.sin(phase)
+                    perp_x = cp * ux + sp * vx
+                    perp_y = cp * uy + sp * vy
+                    perp_z = cp * uz + sp * vz
+                    dx = cos_h * ax + sin_h * perp_x
+                    dy = cos_h * ay + sin_h * perp_y
+                    dz = cos_h * az + sin_h * perp_z
+                    dx *= bond_len_default
+                    dy *= bond_len_default
+                    dz *= bond_len_default
+
+                    # Clash check: rotate around axis (preserves angle)
                     nx, ny, nz = cx + dx, cy + dy, cz + dz
                     for _attempt in range(5):
                         too_close = False
                         for pi in local_placed:
                             px, py, pz = local_coords[pi]
-                            dd = math.sqrt((nx-px)**2 + (ny-py)**2 + (nz-pz)**2)
+                            dd = math.sqrt((nx - px) ** 2 + (ny - py) ** 2 + (nz - pz) ** 2)
                             if dd < 0.8:
                                 too_close = True
                                 break
                         if not too_close:
                             break
-                        # Rotate direction by 60 degrees around z
-                        cos60, sin60 = 0.5, 0.866
-                        dx, dy = dx*cos60 - dy*sin60, dx*sin60 + dy*cos60
+                        # Rotate around axis by 60° (preserves the
+                        # cos_target angle, just shifts azimuth)
+                        a60 = math.radians(60)
+                        ca, sa = math.cos(a60), math.sin(a60)
+                        # Rodrigues' formula for rotation around axis (ax,ay,az)
+                        ddx = dx; ddy = dy; ddz = dz
+                        dot_da = ddx * ax + ddy * ay + ddz * az
+                        crx = ay * ddz - az * ddy
+                        cry = az * ddx - ax * ddz
+                        crz = ax * ddy - ay * ddx
+                        dx = ddx * ca + crx * sa + ax * dot_da * (1 - ca)
+                        dy = ddy * ca + cry * sa + ay * dot_da * (1 - ca)
+                        dz = ddz * ca + crz * sa + az * dot_da * (1 - ca)
                         nx, ny, nz = cx + dx, cy + dy, cz + dz
                     local_coords[nbr_idx] = (nx, ny, nz)
                     local_placed.add(nbr_idx)
@@ -1715,6 +1963,16 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             xyz_tetra = _optimize_xyz_openbabel_safe(xyz_tetra, mol_template=mol)
             xyz_sq = _optimize_xyz_openbabel_safe(xyz_sq, mol_template=mol)
 
+            # Post-UFF H-geometry correction.  OB UFF without proper
+            # transition-metal parameters can place H atoms on
+            # orthogonal x/y/z axes (90°/180° H-C-H) instead of the
+            # expected sp3-tetrahedral / sp2-trigonal / sp-linear.
+            # Universal repair: for each non-H atom with H neighbours,
+            # re-place the H atoms via VSEPR rules derived from the
+            # neighbour count.  Heavy-atom geometry untouched.
+            xyz_tetra = _fix_h_geometry_universal(xyz_tetra, mol)
+            xyz_sq = _fix_h_geometry_universal(xyz_sq, mol)
+
             # Score via temporary RDKit conformers
             try:
                 mol_tmp = Chem.RWMol(mol)
@@ -1738,6 +1996,7 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 _COORD_VECTORS_BASE.get(4, [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)])
             )
             xyz_str = _optimize_xyz_openbabel_safe(xyz_str, mol_template=mol)
+            xyz_str = _fix_h_geometry_universal(xyz_str, mol)
 
         return xyz_str, None
 
@@ -23237,6 +23496,18 @@ def smiles_to_xyz_isomers(
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
 
+    # F19/F20 — final universal H-geometry pass.  Repairs naive H placement
+    # (90°/180° H-C-H, sp2-H out-of-plane) introduced by OB UFF without
+    # transition-metal parameters.  Heavy-atom positions never modified;
+    # only H positions re-derived via VSEPR.
+    try:
+        results = [
+            (_fix_h_geometry_via_smiles(xyz, smiles), lbl)
+            for xyz, lbl in results
+        ]
+    except Exception as _hfix_exc:
+        logger.debug("H-geometry universal fix failed: %s", _hfix_exc)
+
     return results, None
 
 
@@ -24207,6 +24478,10 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                 pass
 
         xyz_content = _mol_to_xyz(mol)
+        # F19/F20-driven post-process: re-place all H atoms via VSEPR
+        # (sp3-Td / sp2-trigonal / sp-linear) using heavy-atom positions.
+        # Catches naive 90°/180° H-C-H from RDKit/OB-UFF on metal complexes.
+        xyz_content = _fix_h_geometry_universal(xyz_content, mol)
         return xyz_content, None
     except Exception as e:
         # Extra-permissive fallback for explicit valence errors
@@ -24308,13 +24583,20 @@ def _mol_to_xyz(mol) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
 
-    return '\n'.join(lines) + '\n'
+    raw_xyz = '\n'.join(lines) + '\n'
+    # F19/F20 — universal H-geometry repair (sp3-Td, sp2-trigonal, sp-linear).
+    # OB UFF / RDKit AddHs without metal parameters can place H atoms on
+    # orthogonal x/y/z axes (90°/180° H-C-H).  Re-place via VSEPR rules
+    # using only neighbour-count + heavy-atom positions.  Heavy-atom
+    # geometry is never touched.
+    return _fix_h_geometry_universal(raw_xyz, mol)
 
 
 def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     """Convert a specific conformer of an RDKit molecule to DELFIN coordinate format.
 
     Like ``_mol_to_xyz`` but uses *conf_id* instead of the first conformer.
+    Applies the same F19/F20 universal H-geometry repair pass.
     """
     conf = mol.GetConformer(conf_id)
     num_atoms = mol.GetNumAtoms()
@@ -24324,7 +24606,8 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         pos = conf.GetAtomPosition(i)
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
-    return '\n'.join(lines) + '\n'
+    raw_xyz = '\n'.join(lines) + '\n'
+    return _fix_h_geometry_universal(raw_xyz, mol)
 
 
 def _build_uff_constraints_from_template(
@@ -24621,7 +24904,6 @@ def _detect_chelate_donors(mol, metal_idx: int, donor_indices: List[int]) -> set
         return set()
     donor_set = set(donor_indices)
     chelate: set = set()
-    n_atoms = mol.GetNumAtoms()
     for start in donor_indices:
         if start in chelate:
             continue
