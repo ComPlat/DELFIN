@@ -8267,12 +8267,16 @@ def create_tab(ctx):
             _on_send(None)
 
     def _on_stop(button):
+        # Soft-stop: cooperative end of the running turn so the next Send
+        # can continue the same conversation (CLI session_id preserved).
+        # Queue is intentionally NOT cleared — user may want to keep the
+        # follow-up prompts. Old behaviour killed the subprocess and wiped
+        # the queue, which forced a full re-init on every ESC.
         engine = state["engine"]
         if engine:
             engine.request_stop()
-            # Kill the persistent CLI process
-            if hasattr(engine.client, "kill"):
-                engine.client.kill()
+            if hasattr(engine.client, "signal_stop"):
+                engine.client.signal_stop()
         # Bump generation so the old worker's finally block won't touch UI
         state["_generation_id"] = state.get("_generation_id", 0) + 1
         state["streaming"] = False
@@ -8285,12 +8289,13 @@ def create_tab(ctx):
         _set_working(False)
         _update_button_states()
         _record_cycle_event("pause", "Generation stopped by user")
-        _append_system_message("Generation stopped by user.")
-        if state["message_queue"]:
-            n = len(state["message_queue"])
-            state["message_queue"].clear()
-            _update_queue_display()
-            _append_system_message(f"Cleared {n} queued message(s).")
+        queued = len(state.get("message_queue") or [])
+        if queued:
+            _append_system_message(
+                f"Stop. {queued} queued message(s) preserved — Send to continue."
+            )
+        else:
+            _append_system_message("Stop. Send a message to continue.")
 
     def _on_new_cycle(button):
         # Save current session before clearing so it can be restored later

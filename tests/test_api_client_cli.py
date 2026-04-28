@@ -85,6 +85,53 @@ def test_non_string_user_content_treated_as_empty(client):
     ensure.assert_not_called()
 
 
+def test_signal_stop_sends_sigint_to_running_proc(client):
+    """signal_stop sends SIGINT to a live subprocess, leaves _proc reference
+    in place so the next stream_message can detect the running session."""
+    import signal as _signal
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None  # still running
+    client._proc = fake_proc
+    client.signal_stop()
+    fake_proc.send_signal.assert_called_once_with(_signal.SIGINT)
+    # Reference preserved (caller owns lifecycle for resume)
+    assert client._proc is fake_proc
+
+
+def test_signal_stop_no_proc_is_safe(client):
+    """signal_stop on a client without a subprocess is a no-op."""
+    client._proc = None
+    client.signal_stop()  # must not raise
+
+
+def test_signal_stop_on_dead_proc_skips(client):
+    """signal_stop ignores already-exited subprocess."""
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = 0  # exited
+    client._proc = fake_proc
+    client.signal_stop()
+    fake_proc.send_signal.assert_not_called()
+
+
+def test_signal_stop_falls_back_to_terminate(client):
+    """If SIGINT raises, signal_stop terminates and clears the proc handle."""
+    fake_proc = MagicMock()
+    fake_proc.poll.return_value = None
+    fake_proc.send_signal.side_effect = OSError("EPERM")
+    client._proc = fake_proc
+    client.signal_stop()
+    fake_proc.terminate.assert_called_once()
+    assert client._proc is None
+
+
+def test_base_client_signal_stop_is_noop():
+    """APIClient and other backends without a subprocess inherit a no-op."""
+    from delfin.agent.api_client import _BaseClient
+    base = _BaseClient.__new__(_BaseClient)
+    # Must not raise
+    base.signal_stop()
+
+
 def test_non_empty_user_content_writes_stdin(client):
     """A real user message must write a stream-json line to CLI stdin."""
     fake_proc = MagicMock()
