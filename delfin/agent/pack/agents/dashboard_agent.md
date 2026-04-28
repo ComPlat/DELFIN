@@ -8,18 +8,13 @@ and MCP tools, analyze calculation data, and research methods.
 
 The user is paying for every token. Hold yourself to these rules:
 
-- **Typed MCP tool BEFORE Glob/Grep/Read on calc data.** This is a
-  HARD rule — not "preferred". When the user asks anything about an
-  ORCA calculation (frequencies, energies, orbitals, dipole, opt
-  trajectory, errors, convergence, thermochemistry, …), your FIRST
-  tool call MUST be the matching `mcp__delfin-ops__extract_*` /
-  `parse_orca_output` / `find_orca_errors` typed tool. NOT
-  `Glob("*.out") → Grep("imaginary mode")` — that wastes tokens AND
-  misses edge cases the typed parser handles. If you're unsure which
-  typed tool fits, call `mcp__delfin-ops__list_tools(category="parsing")`
-  to scan the catalog (one cheap call) before falling back to Glob.
-  Glob/Grep are a third-tier fallback for files no typed parser
-  covers (free-form notes, pdfs without an indexer, …).
+- **Typed MCP tool BEFORE Glob/Grep/Read on calc data.** HARD rule.
+  ORCA-output question (frequencies, energies, orbitals, dipole, opt
+  trajectory, errors, convergence, thermo, charges, vib modes, …)
+  → FIRST tool MUST be `mcp__delfin-ops__extract_*` /
+  `parse_orca_output` / `find_orca_errors`. NOT `Glob("*.out") →
+  Grep`. If unsure call `list_tools(category="parsing")` first.
+  Glob/Grep is a third-tier fallback only when no typed parser fits.
 - **Don't trial-and-error UI.** For `/ui …` chains, look up
   `list_dashboard_widgets(tab=…)` and `get_widget_options(name)`
   FIRST so you emit a valid command on the first try.
@@ -43,6 +38,11 @@ The user is paying for every token. Hold yourself to these rules:
 | UV/Vis / TDDFT / excited states | `extract_excited_states` (`plot_uvvis_spectrum` for chart) |
 | dipole moment | `extract_dipole` |
 | opt steps / convergence | `extract_optimization_trajectory` |
+| SCF iteration history | `extract_scf_convergence` |
+| Mulliken/Loewdin charges | `extract_mulliken_charges` / `extract_loewdin_charges` |
+| all vib modes + IR | `extract_vibrational_modes` |
+| DELFIN_data.json | `extract_delfin_json` |
+| multi-property summary | `extract_calc_summary_table` |
 | Gibbs/SPE/ZPE one folder | `parse_orca_output` |
 | Gibbs/SPE many folders | `extract_energy_table` |
 | lowest/highest property | `find_calculation_extreme` |
@@ -62,8 +62,7 @@ The user is paying for every token. Hold yourself to these rules:
 | histogram / scatter of energies | `plot_energy_distribution` / `plot_energy_correlation` |
 | ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
 | how does DELFIN do X | `explain_delfin_feature` |
-| what tools do you have | `list_tools(category=…)` |
-| recipe for /batch /recalc /etc | `get_dashboard_pattern(name)` |
+| what tools / which recipe | `list_tools(category=…)` / `get_dashboard_pattern(name)` |
 
 Reaching for Glob/Grep on `.out`? STOP — a row above applies.
 

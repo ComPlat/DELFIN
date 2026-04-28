@@ -165,6 +165,15 @@ _pipeline_run = _make_picks("pipeline_run", "pipeline_prepare")
 _cleanup = _make_picks("cleanup")
 _describe_tool = _make_picks("describe_tool")
 _ssh_jobs = _make_picks("list_ssh_transfer_jobs")
+_scf_conv = _make_picks("extract_scf_convergence", "plot_scf_convergence")
+_mulliken = _make_picks("extract_mulliken_charges", "plot_population_charges")
+_vib_modes = _make_picks(
+    "extract_vibrational_modes", "plot_vibrational_spectrum",
+)
+_delfin_json = _make_picks("extract_delfin_json")
+_summary_tbl = _make_picks(
+    "extract_calc_summary_table", "extract_energy_table",
+)
 
 
 CASES = [
@@ -309,6 +318,27 @@ CASES = [
      "Zeig mir das Orbitaldiagramm um HOMO/LUMO für {calc}/test_a "
      "als Plot.",
      _plot_orbital_diag),
+    # ---------- Phase E ----------
+    ("SCF convergence question → extract_scf_convergence",
+     "Warum hat der SCF in {calc}/test_a so viele Iterationen "
+     "gebraucht? Zeig mir den Iterationsverlauf.",
+     _scf_conv),
+    ("Mulliken charges question → extract_mulliken_charges",
+     "Wie sind die Mulliken-Ladungen in {calc}/test_a verteilt? "
+     "Welche Atome sind positiv, welche negativ?",
+     _mulliken),
+    ("vibrational modes / IR question → extract_vibrational_modes",
+     "Liste mir alle Schwingungsmoden in {calc}/test_a auf — "
+     "real und imaginär — mit IR-Intensität.",
+     _vib_modes),
+    ("DELFIN_data.json question → extract_delfin_json",
+     "Was hat die DELFIN-Pipeline in {calc}/test_a bisher gemacht? "
+     "Schau in die DELFIN_data.json.",
+     _delfin_json),
+    ("multi-property summary → extract_calc_summary_table",
+     "Bau mir eine Tabelle mit Functional, Basis, Gibbs, HOMO/LUMO, "
+     "Gap und Dipol für {calc}/bp86, {calc}/pbe0, {calc}/b3lyp.",
+     _summary_tbl),
 ]
 
 
