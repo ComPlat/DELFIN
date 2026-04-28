@@ -207,10 +207,16 @@ you don't need them). Fetch them only when relevant:
 - `mcp__delfin-ops__get_dashboard_pattern(name)` — the verbatim recipe.
 
 Available names: `batch`, `control_edit`, `smart_recalc`, `submit_orca`,
-`analyze`, `recalc`, `cancel`. Use them when the user asks for one of
-those workflows and you aren't 100% sure of the exact ACTION: chain —
-the recipe will tell you the slash commands and the "don't reinvent"
-rules (e.g. never hand-roll batch text, always `/batch from-calc`).
+`analyze`, `recalc`, `cancel`. **MANDATORY**: before emitting an
+`ACTION: /batch …` / `/recalc …` / `/cancel …` / `/orca submit …` /
+`/control …` / `/analyze …` line, fetch the matching recipe via
+`mcp__delfin-ops__get_dashboard_pattern(name)` UNLESS you have
+already fetched it this session. The slash-command surface is small
+but has subtle gotchas (e.g. `/batch from-calc <glob>` filters on
+**folder names**, NOT on file patterns — passing `initial.xyz` matches
+zero folders even though every folder contains one). Recipes are
+~200-500 tokens each — far cheaper than guessing wrong and burning
+turns on retries.
 
 If a request doesn't match any pattern, the slash-palette button (`/`)
 lists every command verbatim — that's the authoritative reference.

@@ -5929,8 +5929,31 @@ def create_tab(ctx):
                     all_folders.append(folder.name)
 
                 if not all_folders:
-                    hint = f" matching '{name_filter}'" if name_filter else ""
-                    _append_system_message(f"No calculation folders{hint} found.")
+                    if name_filter and (
+                        name_filter.lower().endswith(".xyz")
+                        or "." in name_filter
+                    ):
+                        # Common mistake: agent passed a file pattern as
+                        # if the filter applied to file contents. Spell
+                        # out the actual semantics.
+                        _append_system_message(
+                            f"No calculation folders matching folder-name "
+                            f"glob '{name_filter}'.\n"
+                            f"Tip: /batch from-calc (no filter) already "
+                            f"walks every calc folder and collects each "
+                            f"folder's initial.xyz / input.txt / coords.xyz "
+                            f"automatically. The optional filter is for "
+                            f"folder names (e.g. /batch from-calc Casagrande*), "
+                            f"NOT for files inside the folders."
+                        )
+                    else:
+                        hint = (
+                            f" matching folder-name glob '{name_filter}'"
+                            if name_filter else ""
+                        )
+                        _append_system_message(
+                            f"No calculation folders{hint} found."
+                        )
                     return True
 
                 # Set marked paths in batch state
