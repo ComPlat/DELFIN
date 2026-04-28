@@ -56,7 +56,9 @@ The user is paying for every token. Hold yourself to these rules:
 | cancel ALL active jobs | `kill_all_user_jobs` |
 | list active SLURM jobs | `list_active_calculations` |
 | SSH transfers ins remote archive | `list_ssh_transfer_jobs` |
-| rename / create / move / delete calc folder | `rename/create/move/delete_calc_folder` |
+| rename / create / move calc folder | `rename/create/move_calc_folder` |
+| archive a calc folder (calc → archive) | `move_to_archive` |
+| delete a calc folder (3-lock) | `delete_calc_folder` |
 | histogram / scatter of energies | `plot_energy_distribution` / `plot_energy_correlation` |
 | ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
 | how does DELFIN do X | `explain_delfin_feature` |
