@@ -171,3 +171,103 @@ def test_render_escapes_user_text():
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
     assert "&lt;branch&gt;" in html
+
+
+# ---------------------------------------------------------------------------
+# A4 — grouping by path prefix
+# ---------------------------------------------------------------------------
+
+def _make(path: str, *, is_main: bool = False, is_bare: bool = False):
+    return git_worktrees.WorktreeEntry(
+        path=path, head="abc1234", branch="GUPPY",
+        is_main=is_main, is_bare=is_bare,
+    )
+
+
+def test_classify_main_worktree():
+    e = _make("/home/u/repo", is_main=True)
+    assert git_worktrees._classify_worktree(e) == "main"
+
+
+def test_classify_bare_repo_is_main_bucket():
+    e = _make("/home/u/repo.git", is_bare=True)
+    assert git_worktrees._classify_worktree(e) == "main"
+
+
+def test_classify_commit_sweep():
+    e = _make("/home/u/agent_workspace/commit_sweep/worktrees/abc123")
+    assert git_worktrees._classify_worktree(e) == "commit_sweep"
+
+
+def test_classify_bisect_variants():
+    bisect_paths = [
+        "/tmp/bvs_abc", "/tmp/vf_abc", "/tmp/vsf_abc", "/tmp/vs51_abc",
+        "/tmp/sweep_wt_abc", "/tmp/sd_abc", "/tmp/sw_abc",
+        "/tmp/r20_abc", "/tmp/r20m_abc", "/tmp/feschiff_abc",
+        "/tmp/main_wt", "/tmp/wt_pre_failfast", "/tmp/delfin_bisect_wt",
+        "/tmp/delfin-main-cherry",
+    ]
+    for p in bisect_paths:
+        assert git_worktrees._classify_worktree(_make(p)) == "bisect", p
+
+
+def test_classify_unknown_path_is_other():
+    e = _make("/home/u/some/random/spot")
+    assert git_worktrees._classify_worktree(e) == "other"
+
+
+def test_group_worktrees_partitions_correctly():
+    items = [
+        _make("/home/u/repo", is_main=True),
+        _make("/home/u/agent_workspace/commit_sweep/worktrees/a"),
+        _make("/home/u/agent_workspace/commit_sweep/worktrees/b"),
+        _make("/tmp/bvs_xyz"),
+        _make("/tmp/vf_abc"),
+        _make("/home/u/random"),
+    ]
+    g = git_worktrees._group_worktrees(items)
+    assert len(g["main"]) == 1
+    assert len(g["commit_sweep"]) == 2
+    assert len(g["bisect"]) == 2
+    assert len(g["other"]) == 1
+
+
+def test_render_uses_grouped_layout():
+    items = [
+        _make("/home/u/repo", is_main=True),
+        _make("/home/u/agent_workspace/commit_sweep/worktrees/a"),
+        _make("/tmp/bvs_xyz"),
+    ]
+    html = git_worktrees.render_worktrees_html(items)
+    assert "1 main" in html
+    assert "1 commit_sweep" in html
+    assert "1 bisect" in html
+    assert "<details" in html
+    assert "Main worktrees" in html
+    assert "External: commit_sweep" in html
+    assert "External: bisect" in html
+
+
+def test_render_main_group_open_external_groups_collapsed():
+    items = [
+        _make("/home/u/repo", is_main=True),
+        _make("/tmp/bvs_xyz"),
+    ]
+    html = git_worktrees.render_worktrees_html(items)
+    # Walk back from each section title to its <details ...> open tag.
+    main_idx = html.find("Main worktrees")
+    bisect_idx = html.find("External: bisect")
+    main_open_idx = html.rfind("<details", 0, main_idx)
+    bisect_open_idx = html.rfind("<details", 0, bisect_idx)
+    main_tag = html[main_open_idx:html.find(">", main_open_idx) + 1]
+    bisect_tag = html[bisect_open_idx:html.find(">", bisect_open_idx) + 1]
+    assert " open" in main_tag, main_tag
+    assert " open" not in bisect_tag, bisect_tag
+
+
+def test_render_skips_empty_groups():
+    items = [_make("/home/u/repo", is_main=True)]
+    html = git_worktrees.render_worktrees_html(items)
+    assert "Main worktrees" in html
+    assert "commit_sweep" not in html
+    assert "External: bisect" not in html
