@@ -6267,6 +6267,53 @@ def create_tab(ctx):
             branch=branch_name,
         )
 
+    def _build_solo_session_boot() -> str:
+        """One-shot domain primer for SOLO-mode first-send.
+
+        Solo agents do code work, not workflow orchestration, so the
+        primer skips active SLURM jobs and active calc-folder (those
+        belong to dashboard). Keeps recent outcomes (last sessions'
+        successes/failures inform the next task), active branch, and
+        recent commits — exactly the orient-yourself info a returning
+        developer would want.
+        """
+        outcomes: list = []
+        try:
+            from delfin.agent.outcome_tracker import load_outcomes
+            outcomes = load_outcomes(max_entries=5)
+        except Exception:
+            outcomes = []
+
+        commits: list[str] = []
+        branch_name = ""
+        try:
+            import subprocess as _sp
+            _r = _sp.run(
+                ["git", "log", "-3", "--oneline"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _r.returncode == 0:
+                commits = [
+                    line for line in _r.stdout.splitlines() if line.strip()
+                ]
+            _b = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _b.returncode == 0:
+                branch_name = _b.stdout.strip()
+        except Exception:
+            pass
+
+        return _format_session_boot(
+            outcomes=outcomes,
+            commits=commits,
+            branch=branch_name,
+            # jobs + calc_path intentionally omitted for solo
+        )
+
     # -- command safety tiers (enforced at CODE level, not prompt) ----------
 
     _TIER3_EXACT = {"/submit", "/orca submit", "/recalc auto", "/cancel all"}
@@ -8050,6 +8097,13 @@ def create_tab(ctx):
                 if mode_dropdown.value == "dashboard" and not engine.messages:
                     try:
                         _boot = _build_dashboard_session_boot()
+                    except Exception:
+                        _boot = ""
+                    if _boot:
+                        current_msg = f"{_boot}\n\n{current_msg}"
+                elif mode_dropdown.value == "solo" and not engine.messages:
+                    try:
+                        _boot = _build_solo_session_boot()
                     except Exception:
                         _boot = ""
                     if _boot:
