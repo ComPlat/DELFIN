@@ -7842,7 +7842,14 @@ def create_tab(ctx):
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI
                     # via ACTION: /command lines. Safety tiers still enforced.
-                    _MAX_ACTION_CONT = 10
+                    # S6: cap at 4 continuation rounds. More than that means
+                    # the model is in a confused loop — stop and let the
+                    # user redirect rather than burn tokens. Live-state was
+                    # set once at turn-start; do NOT regenerate it inside
+                    # the continuation loop (it didn't change between
+                    # ACTION: rounds, and a fresh state would invalidate
+                    # the prompt cache for every continuation turn).
+                    _MAX_ACTION_CONT = 4
                     _cont_turn = 0
                     while chunks and _cont_turn < _MAX_ACTION_CONT:
                         _cont_turn += 1
@@ -7883,6 +7890,15 @@ def create_tab(ctx):
                         )
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
+                    # Cap-hit notification — only when the loop actually
+                    # exhausted all rounds without finishing on its own.
+                    if _cont_turn >= _MAX_ACTION_CONT and chunks:
+                        _post_raw = "".join(chunks)
+                        if _extract_action_commands(_post_raw):
+                            _append_system_message(
+                                f"⏸ Stopped after {_MAX_ACTION_CONT} ACTION rounds — "
+                                f"agent kept emitting commands. Send a follow-up to continue."
+                            )
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
