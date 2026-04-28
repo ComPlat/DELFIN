@@ -376,6 +376,9 @@ def main():
                    help="substring filter on test name (default: all)")
     p.add_argument("--out", default="",
                    help="write the markdown table here (default: stdout)")
+    p.add_argument("--rerun-failed", default="",
+                   help="path to a previous .partial file; re-run only "
+                        "the cells that FAILed there")
     args = p.parse_args()
 
     if os.environ.get("DELFIN_AGENT_DRYRUN") != "1":
@@ -386,6 +389,24 @@ def main():
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     cases = [c for c in CASES if not args.include
              or args.include.lower() in c[0].lower()]
+
+    if args.rerun_failed:
+        # Filter cases to only those that FAILed in the named .partial
+        # file. Each .partial line: "  (i) model | name | PASS|FAIL | ..."
+        try:
+            txt = open(args.rerun_failed, "r").read()
+        except Exception as exc:
+            print(f"error reading {args.rerun_failed}: {exc}",
+                  file=sys.stderr)
+            return 2
+        failed_names: set[str] = set()
+        for line in txt.splitlines():
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) >= 4 and parts[2] == "FAIL":
+                failed_names.add(parts[1])
+        cases = [c for c in cases if c[0] in failed_names]
+        print(f"  rerun-failed: {len(cases)} case(s) carried over",
+              file=sys.stderr)
 
     rows = []
     for i, (case_name, q, assertion) in enumerate(cases, 1):
