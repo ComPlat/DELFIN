@@ -80,3 +80,80 @@ class TestContextDistiller:
         prompt = "Critical rules.\n\n--- Repo Map ---\n- file: a.py\nLong text." * 10
         result = d.distill(prompt)
         assert result.startswith("Critical rules.")
+
+
+# ---------------------------------------------------------------------------
+# S8 — engine wires distiller-enabled per mode
+# ---------------------------------------------------------------------------
+
+class TestEngineDistillerWiring:
+
+    def _engine(self, mode):
+        from unittest.mock import MagicMock, patch
+        import textwrap
+        import tempfile
+        from pathlib import Path
+        from delfin.agent.engine import AgentEngine
+
+        tmp = Path(tempfile.mkdtemp())
+        agent_dir = tmp / "pack"
+        shared = agent_dir / "shared"
+        shared.mkdir(parents=True)
+        agents = agent_dir / "agents"
+        agents.mkdir()
+        (shared / "delfin_context.md").write_text("# DELFIN Context\nTest.")
+        (shared / "work_cycle_rules.md").write_text("# Work Cycle\nRule 1.")
+        (shared / "universal_input_template.md").write_text("# Input")
+        (shared / "minimal_final_verdict.md").write_text("# Verdict")
+        (agents / "solo_agent.md").write_text("# Solo\nplain.")
+        (agents / "dashboard_agent.md").write_text("# Dashboard\nplain.")
+        lite = tmp / "pack_lite"
+        modes = lite / "modes"
+        modes.mkdir(parents=True)
+        for m in ("quick", "solo", "dashboard", "reviewed"):
+            (modes / f"{m}.md").write_text(f"# Mode: {m}\n{m} mode.")
+        manifest = textwrap.dedent("""\
+            pack_name: DELFIN_AGENT_LITE
+            version: 1
+            recommended_default_mode: quick
+            modes:
+              - id: quick
+                file: modes/quick.md
+                route:
+                  - solo_agent
+              - id: solo
+                file: modes/solo.md
+                route:
+                  - solo_agent
+              - id: dashboard
+                file: modes/dashboard.md
+                route:
+                  - dashboard_agent
+              - id: reviewed
+                file: modes/reviewed.md
+                route:
+                  - solo_agent
+        """)
+        (lite / "manifest.yaml").write_text(manifest)
+        with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+            return AgentEngine(repo_dir=tmp, backend="cli", mode=mode, pack_dir=tmp)
+
+    def test_solo_mode_has_distiller_enabled_by_default(self):
+        engine = self._engine("solo")
+        assert engine._distiller is not None
+        assert engine._distiller.enabled is True
+
+    def test_quick_mode_has_distiller_enabled_by_default(self):
+        engine = self._engine("quick")
+        assert engine._distiller.enabled is True
+
+    def test_reviewed_mode_has_distiller_enabled_by_default(self):
+        engine = self._engine("reviewed")
+        assert engine._distiller.enabled is True
+
+    def test_dashboard_mode_has_distiller_disabled(self):
+        """Dashboard prompt is small + haiku-class — distiller's per-call
+        cost would exceed the savings. Stay off by default."""
+        engine = self._engine("dashboard")
+        assert engine._distiller is not None
+        assert engine._distiller.enabled is False
