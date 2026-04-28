@@ -47,3 +47,10 @@ agent_workspace/
 # User settings (may contain API keys)
 .delfin_settings.json
 *_settings.json
+
+# Local Claude Code state (per-machine, not for the repo)
+.claude/
+
+# Solver run logs (large, regenerated per run)
+censo.log
+*.log
