@@ -94,8 +94,73 @@ def _filter_outcomes(
     return out
 
 
+def _outcome_cost_delta(outcome: CycleOutcome) -> float:
+    """Return the per-cycle cost Δ for an outcome.
+
+    Newer outcomes (A6+) carry an explicit ``cost_usd_delta``. Legacy
+    entries written before that field don't, but we still record the
+    cumulative ``cost_usd``; the caller can recover Δ by diffing against
+    the previous outcome's cumulative total when both belong to the same
+    session (heuristic: timestamps within 4 h, same provider+mode).
+    """
+    delta = float(getattr(outcome, "cost_usd_delta", 0.0) or 0.0)
+    if delta > 0:
+        return delta
+    # No delta on legacy entry — caller should fall back via _outcomes_total_delta.
+    return 0.0
+
+
+def _outcomes_total_delta(outcomes: list[CycleOutcome]) -> float:
+    """Sum honest per-cycle costs across a list of outcomes.
+
+    Uses ``cost_usd_delta`` when present; otherwise falls back to a
+    "diff against previous same-session entry" heuristic, and finally
+    uses ``cost_usd`` itself for the very first session entry.
+    """
+    if not outcomes:
+        return 0.0
+    total = 0.0
+    # Group by (provider, mode) timeline so legacy session-Δ stays sane
+    last_session_total: dict[tuple[str, str], float] = {}
+    last_ts: dict[tuple[str, str], str] = {}
+    SESSION_WINDOW_S = 4 * 3600
+    for o in outcomes:
+        delta = _outcome_cost_delta(o)
+        if delta > 0:
+            total += delta
+            continue
+        # Legacy entry — compute against previous same-session entry.
+        key = (o.provider or "", o.mode or "")
+        prev = last_session_total.get(key, 0.0)
+        prev_ts = last_ts.get(key, "")
+        same_session = bool(prev_ts) and _ts_close(prev_ts, o.timestamp, SESSION_WINDOW_S)
+        if same_session and float(o.cost_usd) >= prev:
+            total += float(o.cost_usd) - prev
+        else:
+            # First entry of a (provider, mode) timeline or far-apart turn:
+            # treat its cumulative cost as its own delta — better than 0.
+            total += float(o.cost_usd)
+        last_session_total[key] = float(o.cost_usd)
+        last_ts[key] = o.timestamp
+    return total
+
+
+def _ts_close(ts_a: str, ts_b: str, window_s: float) -> bool:
+    """True iff two ISO timestamps are within ``window_s`` of each other."""
+    try:
+        a = datetime.fromisoformat(ts_a)
+        b = datetime.fromisoformat(ts_b)
+    except (ValueError, TypeError):
+        return False
+    return abs((b - a).total_seconds()) <= window_s
+
+
 def _aggregate_stats(outcomes: list[CycleOutcome]) -> dict:
-    """Compute summary statistics (totals, success rate, avg cost/duration)."""
+    """Compute summary statistics (totals, success rate, avg cost/duration).
+
+    ``total_cost`` is the honest sum of per-cycle Δ (uses cost_usd_delta
+    when present, falls back to session-aware diff for legacy entries).
+    """
     n = len(outcomes)
     if n == 0:
         return {
@@ -108,7 +173,7 @@ def _aggregate_stats(outcomes: list[CycleOutcome]) -> dict:
     partials = sum(1 for o in outcomes if o.verdict == "PARTIAL")
     rated = passes + fails + partials
     success_rate = (passes / rated) if rated else 0.0
-    total_cost = sum(o.cost_usd for o in outcomes)
+    total_cost = _outcomes_total_delta(outcomes)
     durations = [o.duration_s for o in outcomes if o.duration_s > 0]
     return {
         "n": n,

@@ -181,3 +181,96 @@ def test_render_timeline_shows_denied_commands_count():
     out = _make_outcomes()  # second one has 1 denied command
     html = tab._render_timeline(out)
     assert "⛔" in html  # warning marker present
+
+
+# ---------------------------------------------------------------------------
+# A6 — honest cost_usd_delta accounting
+# ---------------------------------------------------------------------------
+
+def test_outcome_cost_delta_uses_explicit_field():
+    """When cost_usd_delta is set, _outcome_cost_delta returns it."""
+    o = CycleOutcome(cost_usd=12.5, cost_usd_delta=0.75)
+    assert tab._outcome_cost_delta(o) == 0.75
+
+
+def test_outcome_cost_delta_zero_for_legacy():
+    """Legacy entries (no cost_usd_delta) get 0 from the per-outcome helper."""
+    o = CycleOutcome(cost_usd=12.5, cost_usd_delta=0.0)
+    assert tab._outcome_cost_delta(o) == 0.0
+
+
+def test_outcomes_total_delta_sums_explicit_deltas():
+    """All-new entries: sum of deltas, NOT sum of cumulative."""
+    outs = [
+        CycleOutcome(provider="claude", mode="solo", cost_usd=0.10, cost_usd_delta=0.10,
+                     timestamp="2026-04-28T10:00:00"),
+        CycleOutcome(provider="claude", mode="solo", cost_usd=0.30, cost_usd_delta=0.20,
+                     timestamp="2026-04-28T10:05:00"),
+        CycleOutcome(provider="claude", mode="solo", cost_usd=0.45, cost_usd_delta=0.15,
+                     timestamp="2026-04-28T10:10:00"),
+    ]
+    # Honest spend = 0.10 + 0.20 + 0.15 = 0.45 (matches the final cumulative)
+    assert abs(tab._outcomes_total_delta(outs) - 0.45) < 1e-9
+
+
+def test_outcomes_total_delta_legacy_session_aware_diff():
+    """Legacy entries (delta=0) within a 4 h same-(provider,mode) window get
+    diffed against their predecessor — that recovers the per-cycle cost."""
+    outs = [
+        CycleOutcome(provider="claude", mode="solo", cost_usd=5.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T10:00:00"),
+        CycleOutcome(provider="claude", mode="solo", cost_usd=15.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T10:05:00"),
+        CycleOutcome(provider="claude", mode="solo", cost_usd=22.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T10:10:00"),
+    ]
+    # Honest spend should be 5 (first) + 10 (15-5) + 7 (22-15) = 22
+    # NOT 5 + 15 + 22 = 42 (the buggy sum-of-cumulative)
+    assert abs(tab._outcomes_total_delta(outs) - 22.0) < 1e-9
+
+
+def test_outcomes_total_delta_far_apart_treated_as_separate_sessions():
+    """Outcomes > 4 h apart can't be diffed — each counts as its own first-of-session."""
+    outs = [
+        CycleOutcome(provider="claude", mode="solo", cost_usd=5.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T08:00:00"),
+        CycleOutcome(provider="claude", mode="solo", cost_usd=12.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T20:00:00"),  # 12 h later
+    ]
+    # Two separate sessions → 5 + 12 = 17 (each cumulative treated as its own delta)
+    assert abs(tab._outcomes_total_delta(outs) - 17.0) < 1e-9
+
+
+def test_outcomes_total_delta_mixed_explicit_and_legacy():
+    """A real-world history: some legacy + some new entries."""
+    outs = [
+        # Legacy first session
+        CycleOutcome(provider="claude", mode="solo", cost_usd=5.0, cost_usd_delta=0.0,
+                     timestamp="2026-04-28T08:00:00"),
+        # New entry continues the same session — explicit delta
+        CycleOutcome(provider="claude", mode="solo", cost_usd=8.0, cost_usd_delta=3.0,
+                     timestamp="2026-04-28T08:30:00"),
+        # New separate session, explicit delta
+        CycleOutcome(provider="claude", mode="dashboard", cost_usd=0.5, cost_usd_delta=0.5,
+                     timestamp="2026-04-28T15:00:00"),
+    ]
+    # 5 (legacy first) + 3 (explicit) + 0.5 (explicit) = 8.5
+    assert abs(tab._outcomes_total_delta(outs) - 8.5) < 1e-9
+
+
+def test_outcomes_total_delta_empty_returns_zero():
+    assert tab._outcomes_total_delta([]) == 0.0
+
+
+def test_aggregate_stats_uses_honest_total():
+    """End-to-end: _aggregate_stats reports the corrected total_cost."""
+    outs = [
+        CycleOutcome(provider="x", mode="solo", verdict="PASS", cost_usd=2.0,
+                     cost_usd_delta=2.0, timestamp="2026-04-28T08:00:00"),
+        CycleOutcome(provider="x", mode="solo", verdict="PASS", cost_usd=5.0,
+                     cost_usd_delta=3.0, timestamp="2026-04-28T08:05:00"),
+    ]
+    stats = tab._aggregate_stats(outs)
+    # Was buggy 2+5=7, now honest 2+3=5
+    assert stats["total_cost"] == 5.0
+    assert stats["avg_cost"] == 2.5

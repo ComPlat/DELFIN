@@ -1296,3 +1296,75 @@ def test_parallel_role_detection(agent_tree, mock_client):
     # Not parallel at session_manager
     engine.current_role_index = 0
     assert engine.can_run_parallel() is None
+
+
+# ---------------------------------------------------------------------------
+# A6 — record_cycle_outcome tracks honest per-cycle cost delta
+# ---------------------------------------------------------------------------
+
+def _build_engine_with_real_client(agent_tree):
+    """Engine with a Mock client whose ``model`` is a real string (so that
+    record_cycle_outcome's JSON serialisation doesn't trip over MagicMock)."""
+    from delfin.agent.engine import AgentEngine
+    fake = MagicMock()
+    fake.model = "sonnet"
+    with patch("delfin.agent.engine.create_client", return_value=fake):
+        return AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+
+def test_record_cycle_outcome_writes_cost_delta(agent_tree, tmp_path, monkeypatch):
+    """Each successive record_cycle_outcome stamps the delta vs. the
+    previous outcome, NOT the cumulative engine.cost_usd."""
+    import delfin.agent.outcome_tracker as ot
+
+    history = tmp_path / "outcomes.jsonl"
+    monkeypatch.setattr(ot, "_DEFAULT_PATH", history)
+    monkeypatch.setattr(
+        "delfin.agent.provider_profile.update_from_outcome",
+        lambda *a, **kw: {},
+    )
+
+    engine = _build_engine_with_real_client(agent_tree)
+
+    engine.cost_usd = 0.10
+    engine.record_cycle_outcome(verdict="PASS", user_task="t1")
+    engine.cost_usd = 0.30
+    engine.record_cycle_outcome(verdict="PASS", user_task="t2")
+    engine.cost_usd = 0.45
+    engine.record_cycle_outcome(verdict="PASS", user_task="t3")
+
+    outcomes = ot.load_outcomes(path=history, max_entries=10)
+    assert len(outcomes) == 3
+    assert [round(o.cost_usd, 4) for o in outcomes] == [0.10, 0.30, 0.45]
+    deltas = [round(o.cost_usd_delta, 4) for o in outcomes]
+    assert deltas == [0.10, 0.20, 0.15]
+    assert abs(sum(deltas) - 0.45) < 1e-9
+
+
+def test_reset_cycle_resets_outcome_cost_baseline(agent_tree, tmp_path, monkeypatch):
+    """After reset_cycle, the next outcome's delta is the FULL new cost
+    (treated as a fresh session, not a Δ vs the dead one)."""
+    import delfin.agent.outcome_tracker as ot
+
+    history = tmp_path / "out.jsonl"
+    monkeypatch.setattr(ot, "_DEFAULT_PATH", history)
+    monkeypatch.setattr(
+        "delfin.agent.provider_profile.update_from_outcome",
+        lambda *a, **kw: {},
+    )
+
+    engine = _build_engine_with_real_client(agent_tree)
+    engine.cost_usd = 5.0
+    engine.record_cycle_outcome(verdict="PASS", user_task="big task")
+    assert engine._last_outcome_cost == 5.0
+
+    engine.reset_cycle()
+    assert engine._last_outcome_cost == 0.0
+    assert engine.cost_usd == 0.0
+
+    engine.cost_usd = 1.5
+    engine.record_cycle_outcome(verdict="PASS", user_task="new task")
+    outcomes = ot.load_outcomes(path=history, max_entries=10)
+    assert outcomes[-1].cost_usd_delta == 1.5

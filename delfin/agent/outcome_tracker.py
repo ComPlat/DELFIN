@@ -26,7 +26,11 @@ class CycleOutcome:
     model: str = ""                     # "opus" | "sonnet" | "gpt-5.4" | ...
     mode: str = ""                      # "solo" | "quick" | "reviewed" | ...
     verdict: str = ""                   # "PASS" | "FAIL" | "PARTIAL" | ""
-    cost_usd: float = 0.0
+    cost_usd: float = 0.0               # Cumulative engine.cost_usd at outcome time
+    cost_usd_delta: float = 0.0         # Δ for THIS cycle (cost_usd - prev cycle's
+                                        # cost_usd). The honest per-turn spend; sum
+                                        # across cycles equals real session total.
+                                        # 0.0 on legacy entries written before A6.
     duration_s: float = 0.0
     retries: int = 0
     denied_commands: list[str] = field(default_factory=list)
