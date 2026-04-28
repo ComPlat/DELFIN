@@ -300,6 +300,10 @@ class AgentEngine:
         self.compaction_summaries: dict[str, str] = {}
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
+        # A6 — last cost_usd snapshot at outcome time; the next outcome's
+        # delta is (current cost_usd - this). Reset together with cost_usd
+        # in reset_cycle() so a fresh cycle starts at delta = full spend.
+        self._last_outcome_cost: float = 0.0
         self.session_id: str = ""  # CLI session ID for conversation persistence
         self._prompt_session_serial: int = 1
         self._stop_requested = False
@@ -981,6 +985,7 @@ class AgentEngine:
         self.current_role_index = 0
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd = 0.0
+        self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
         self.session_id = ""  # New session for new cycle
         self.loader.reset_session_prompt_state(
             f"engine-session-{self._prompt_session_serial}"
@@ -1051,6 +1056,14 @@ class AgentEngine:
         except Exception:
             pass
 
+        # A6 — honest delta. ``self.cost_usd`` is the cumulative engine cost
+        # across every turn of this session. The Δ for THIS turn is the new
+        # total minus the total at the previous outcome — that's the value
+        # the activity tab should sum across cycles to get real spend.
+        prev_total = float(getattr(self, "_last_outcome_cost", 0.0) or 0.0)
+        cost_delta = max(0.0, float(self.cost_usd) - prev_total)
+        self._last_outcome_cost = float(self.cost_usd)
+
         outcome = CycleOutcome(
             task=user_task[:200],
             provider=self.provider,
@@ -1058,6 +1071,7 @@ class AgentEngine:
             mode=self.mode,
             verdict=verdict,
             cost_usd=self.cost_usd,
+            cost_usd_delta=round(cost_delta, 6),
             duration_s=round(duration, 1),
             retries=0,
             denied_commands=denied_commands or [],
