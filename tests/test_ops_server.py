@@ -282,3 +282,26 @@ def test_ensure_mcp_config_recovers_from_corrupt_existing(tmp_path, monkeypatch)
     data = json.loads(Path(out_path).read_text())
     # falls back to a fresh ops-only config
     assert list(data["mcpServers"].keys()) == ["delfin-ops"]
+
+
+# ---------------------------------------------------------------------------
+# On-demand operational-pattern lookup tools
+# ---------------------------------------------------------------------------
+
+def test_tool_list_dashboard_patterns_returns_names():
+    out = ops_server.tool_list_dashboard_patterns()
+    assert "batch" in out
+    assert "smart_recalc" in out
+    assert "Available dashboard pattern names" in out
+
+
+def test_tool_get_dashboard_pattern_batch():
+    out = ops_server.tool_get_dashboard_pattern("batch")
+    assert "/batch from-calc" in out
+    assert "Never" in out
+
+
+def test_tool_get_dashboard_pattern_unknown_returns_hint():
+    out = ops_server.tool_get_dashboard_pattern("notreal")
+    assert "Unknown pattern" in out
+    assert "batch" in out

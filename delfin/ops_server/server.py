@@ -115,6 +115,38 @@ def tool_analysis_check() -> str:
     return _format_result(delfin_api.analysis_check(), action="analysis_check")
 
 
+def tool_list_dashboard_patterns() -> str:
+    """List the names of operational-pattern recipes available on demand.
+
+    Each name maps to a concrete slash-chain recipe for one dashboard
+    workflow (batch jobs, smart recalc, ORCA submit, …). Use the
+    returned list to pick a name, then call get_dashboard_pattern(name)
+    to fetch only the recipe you need — none are pre-loaded into the
+    system prompt, so this is the only way to see them.
+    """
+    names = delfin_api.list_dashboard_patterns()
+    return "Available dashboard pattern names:\n- " + "\n- ".join(names)
+
+
+def tool_get_dashboard_pattern(name: str) -> str:
+    """Return the slash-chain recipe for a named dashboard workflow.
+
+    Available names (call list_dashboard_patterns to see them all):
+    batch, control_edit, smart_recalc, submit_orca, analyze, recalc,
+    cancel.
+
+    Use this when the user asks for one of those workflows and you
+    aren't 100% sure of the exact ACTION: chain — the recipe contains
+    the verbatim slash commands you should emit, plus the don't-
+    reinvent rules (e.g. never hand-roll batch text, always use
+    /batch from-calc).
+
+    Args:
+        name: the pattern to fetch (case-insensitive; "-" / " " also OK).
+    """
+    return delfin_api.get_dashboard_pattern(name)
+
+
 def tool_stop_dry_run(workspace: str) -> str:
     """List DELFIN processes that would be signaled (no actual signal sent)."""
     rc = delfin_api.stop(workspace=workspace, dry_run=True)
@@ -285,6 +317,8 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_csp_check)
     mcp.tool()(tool_mlp_check)
     mcp.tool()(tool_analysis_check)
+    mcp.tool()(tool_list_dashboard_patterns)
+    mcp.tool()(tool_get_dashboard_pattern)
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)

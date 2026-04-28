@@ -263,3 +263,56 @@ def test_systemexit_none_handled(monkeypatch):
     rc = delfin_api.qm_check()
     assert rc.returncode == 0
     assert rc.ok is True
+
+
+# ---------------------------------------------------------------------------
+# On-demand operational-pattern lookup
+# ---------------------------------------------------------------------------
+
+def test_list_dashboard_patterns_returns_known_names():
+    names = delfin_api.list_dashboard_patterns()
+    assert isinstance(names, list)
+    assert names == sorted(names)
+    assert {"batch", "control_edit", "smart_recalc", "submit_orca",
+            "analyze", "recalc", "cancel"}.issubset(set(names))
+
+
+def test_get_dashboard_pattern_returns_batch_recipe():
+    out = delfin_api.get_dashboard_pattern("batch")
+    assert "/batch from-calc" in out
+    assert "Never" in out  # carries the don't-reinvent rule
+
+
+def test_get_dashboard_pattern_smart_recalc_recipe():
+    out = delfin_api.get_dashboard_pattern("smart_recalc")
+    assert "calc-options value Smart Recalc" in out
+    assert "calc-override-btn" in out
+
+
+def test_get_dashboard_pattern_case_insensitive():
+    a = delfin_api.get_dashboard_pattern("Batch")
+    b = delfin_api.get_dashboard_pattern("BATCH")
+    c = delfin_api.get_dashboard_pattern("batch")
+    assert a == b == c
+    assert "/batch from-calc" in a
+
+
+def test_get_dashboard_pattern_normalises_separators():
+    via_hyphen = delfin_api.get_dashboard_pattern("control-edit")
+    via_space = delfin_api.get_dashboard_pattern("control edit")
+    via_underscore = delfin_api.get_dashboard_pattern("control_edit")
+    assert via_hyphen == via_space == via_underscore
+    assert "/control key" in via_hyphen
+
+
+def test_get_dashboard_pattern_unknown_lists_options():
+    """An unknown name returns a hint, not an exception."""
+    out = delfin_api.get_dashboard_pattern("nonexistent")
+    assert "Unknown pattern" in out
+    assert "batch" in out and "smart_recalc" in out
+
+
+def test_get_dashboard_pattern_empty_name_lists_options():
+    out = delfin_api.get_dashboard_pattern("")
+    assert "No pattern requested" in out
+    assert "batch" in out

@@ -386,6 +386,137 @@ def hyperpol(
 
 
 # ---------------------------------------------------------------------------
+# On-demand operational-pattern lookup
+# ---------------------------------------------------------------------------
+#
+# Concrete slash-chain recipes for common dashboard workflows.  These
+# used to be baked into ``dashboard_agent.md`` but that paid token cost
+# every turn — even for conversations that have nothing to do with
+# batch jobs or recalc.  Now they live behind a typed lookup the agent
+# only calls when it actually needs a workflow recipe.
+#
+# Adding a new pattern: drop an entry into ``_DASHBOARD_PATTERNS`` and
+# add the name to the docstring for discoverability.
+
+_DASHBOARD_PATTERNS: dict[str, str] = {
+    "batch": (
+        "## Batch jobs (Submit-Tab)\n\n"
+        "- Build a batch from EVERY calc-folder's initial geometry:\n"
+        "    `ACTION: /batch from-calc`\n"
+        "- Build from a glob subset (e.g. all Casagrande folders):\n"
+        "    `ACTION: /batch from-calc Casagrande*`\n"
+        "- Add one SMILES line manually:\n"
+        "    `ACTION: /batch add Name;SMILES;charge=…`\n"
+        "- Show / clear the current batch text:\n"
+        "    `ACTION: /batch show`  ·  `ACTION: /batch clear`\n\n"
+        "**Never** assemble batch text by reading XYZ files yourself —\n"
+        "`/batch from-calc` already collects every initial.xyz (or\n"
+        "fallback input.txt / coords.xyz) across `calculations/` and\n"
+        "writes a properly formatted block into the Submit-Tab textarea.\n\n"
+        "Example:\n"
+        "  > User: \"Bau einen Batch aus allen XYZ in calc/.\"\n"
+        "  > Agent:\n"
+        "  >\n"
+        "  >     ACTION: /batch from-calc\n"
+    ),
+    "control_edit": (
+        "## CONTROL.txt edits (Submit-Tab)\n\n"
+        "- One key change → `ACTION: /control key <key> <value>`\n"
+        "- Replace whole content (rare) → `ACTION: /control set <multi-line>`\n"
+        "- Validate before submit → `ACTION: /control validate`\n\n"
+        "Never paste the full CONTROL into chat — use `/control key` per change.\n"
+    ),
+    "smart_recalc": (
+        "## Smart Recalc (Calc browser)\n\n"
+        "Selecting Smart Recalc auto-loads CONTROL into the editor, so\n"
+        "the right idiom is `/ui calc-editor replace <old> <new>`:\n\n"
+        "  > User: \"smart recalc von Foo/bar mit PAL=1, 1 h\"\n"
+        "  > Agent:\n"
+        "  >\n"
+        "  >     ACTION: /calc cd Foo/bar\n"
+        "  >     ACTION: /calc select CONTROL.txt\n"
+        "  >     ACTION: /ui calc-options value Smart Recalc\n"
+        "  >     ACTION: /ui calc-editor replace PAL=40 PAL=1\n"
+        "  >     ACTION: /ui calc-override-time value 01:00:00\n"
+        "  >\n"
+        "  > Then ASK before submitting:\n"
+        "  >\n"
+        "  >     ACTION: /ui calc-override-btn click\n\n"
+        "`calc-override-btn` is the submit; `calc-override-time` is the\n"
+        "time field. Don't confuse with `calc-recalc-btn` /\n"
+        "`calc-submit-recalc-btn` — those are NOT the Smart-Recalc panel.\n"
+    ),
+    "submit_orca": (
+        "## Submit a single ORCA job (ORCA Builder)\n\n"
+        "- Set fields → `ACTION: /ui orca-method value PBE0`,\n"
+        "  `/ui orca-basis value def2-TZVP`, `/ui orca-charge value 0`, …\n"
+        "- Switch to the tab → `ACTION: /tab orca`\n"
+        "- Submit (after the user explicitly OKs!) → `ACTION: /orca submit`\n"
+    ),
+    "analyze": (
+        "## Analyze existing calculations\n\n"
+        "- One folder, full → `ACTION: /analyze <dir>`\n"
+        "- Just energies → `ACTION: /analyze energy <dir>`\n"
+        "- SCF convergence → `ACTION: /analyze convergence <dir>`\n"
+        "- Error scan → `ACTION: /analyze errors <dir>`\n"
+        "- All folders overview → `ACTION: /analyze status`\n\n"
+        "For multi-folder energy tables prefer\n"
+        "`mcp__delfin-ops__extract_energy_table(folders=[...])` — it\n"
+        "returns structured data the agent can format directly.\n"
+    ),
+    "recalc": (
+        "## Recalc check / submit\n\n"
+        "- Check one folder (safe, read-only) → `ACTION: /recalc check <dir>`\n"
+        "- Scan everything (safe) → `ACTION: /recalc check-all`\n"
+        "- Submit recalc (DESTRUCTIVE — needs explicit user OK):\n"
+        "    `ACTION: /recalc <dir>` and confirm\n"
+        "- Bulk auto-recalc only on explicit \"alle neuberechnen\":\n"
+        "    `ACTION: /recalc auto`\n"
+    ),
+    "cancel": (
+        "## Cancel jobs\n\n"
+        "- One job → `ACTION: /cancel <job_id>` (after user OK)\n"
+        "- All — only on explicit \"cancel all\":\n"
+        "    `ACTION: /cancel all`\n"
+    ),
+}
+
+
+def list_dashboard_patterns() -> list[str]:
+    """Return the names of every operational pattern available for lookup.
+
+    Use this when the agent isn't sure which pattern matches the user's
+    request — a names-only list is cheap and lets the agent pick.
+    """
+    return sorted(_DASHBOARD_PATTERNS)
+
+
+def get_dashboard_pattern(name: str) -> str:
+    """Return the slash-chain recipe for a named dashboard workflow.
+
+    Available names: ``batch``, ``control_edit``, ``smart_recalc``,
+    ``submit_orca``, ``analyze``, ``recalc``, ``cancel``.
+
+    Names are matched case-insensitively. An unknown name returns a
+    short error string with the available choices so the agent can
+    self-correct.
+    """
+    if not name:
+        return (
+            "No pattern requested. Call with one of: "
+            + ", ".join(list_dashboard_patterns())
+        )
+    key = str(name).strip().lower().replace("-", "_").replace(" ", "_")
+    text = _DASHBOARD_PATTERNS.get(key)
+    if text is None:
+        return (
+            f"Unknown pattern: {name!r}. Available: "
+            + ", ".join(list_dashboard_patterns())
+        )
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Module surface
 # ---------------------------------------------------------------------------
 
@@ -406,4 +537,6 @@ __all__ = [
     "co2",
     "tadf_xtb",
     "hyperpol",
+    "list_dashboard_patterns",
+    "get_dashboard_pattern",
 ]
