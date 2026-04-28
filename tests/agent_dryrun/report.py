@@ -276,7 +276,7 @@ CASES = [
      "Berechnung? Schau im ORCA-Manual nach (nicht raten).",
      _orca_manual),
     ("ad-hoc PDF read → read_pdf",
-     "Lies bitte aus der PDF /tmp/papers/example.pdf die Seiten 1-3 "
+     "Lies bitte aus der PDF {lit}/example.pdf die Seiten 1-2 "
      "und sag mir, was drin steht.",
      _pdf_read),
     # ---------- Calc-options dropdown + folder mgmt ----------
@@ -323,7 +323,10 @@ class Cell:
 
 def _run_one(case_name, query_tmpl, assertion, model: str) -> Cell:
     with sandboxed() as sb:
-        query = query_tmpl.format(calc=str(sb.calc))
+        query = query_tmpl.format(
+            calc=str(sb.calc),
+            lit=str(sb.literature) if sb.literature else "",
+        )
         t0 = time.time()
         try:
             res = run_agent_dryrun(

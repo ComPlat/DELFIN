@@ -112,6 +112,7 @@ class Sandbox:
     calc: Path
     archive: Path
     workspace: Path
+    literature: Path | None = None  # papers/ for ad-hoc PDF reads
 
     def add_calc_folder(
         self,
@@ -152,11 +153,34 @@ def build_default_sandbox() -> Sandbox:
     calc = root / "calc"
     archive = root / "archive"
     workspace = root / "agent_workspace"
+    literature = root / "literature"
     calc.mkdir()
     archive.mkdir()
     workspace.mkdir()
+    literature.mkdir()
     (root / "CONTROL.txt").write_text(_FAKE_CONTROL, encoding="utf-8")
-    sb = Sandbox(root=root, calc=calc, archive=archive, workspace=workspace)
+    # A minimal valid PDF (1 page, says "DELFIN dry-run sandbox") so the
+    # ad-hoc PDF read test isn't trying to read a non-existent file.
+    pdf_bytes = (
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R"
+        b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 53>>stream\n"
+        b"BT /F1 12 Tf 50 700 Td (DELFIN dry-run sandbox PDF) Tj ET\n"
+        b"endstream endobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"xref\n0 6\n0000000000 65535 f \n"
+        b"0000000010 00000 n \n0000000053 00000 n \n0000000098 00000 n \n"
+        b"0000000179 00000 n \n0000000272 00000 n \n"
+        b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n333\n%%EOF\n"
+    )
+    (literature / "example.pdf").write_bytes(pdf_bytes)
+    sb = Sandbox(
+        root=root, calc=calc, archive=archive, workspace=workspace,
+        literature=literature,
+    )
     # Three fake calcs spanning functionals — perfect for compare tests.
     sb.add_calc_folder("test_a", functional="BP86",  gibbs=-100.0, spe=-100.5, n_imag=1)
     sb.add_calc_folder("bp86",   functional="BP86",  gibbs=-150.0, spe=-150.7, n_imag=0)
