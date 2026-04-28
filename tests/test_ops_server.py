@@ -774,3 +774,131 @@ def test_tool_list_active_calculations_returns_list():
     txt = ops_server.tool_list_active_calculations()
     data = json.loads(txt)
     assert isinstance(data, list)
+
+
+# ---------------------------------------------------------------------------
+# ORCA-manual lookup + literature indexing
+# ---------------------------------------------------------------------------
+
+def test_check_orca_manual_indexed_no_index(tmp_path, monkeypatch):
+    """No index file → indexed=False with a clear hint."""
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer.get_default_index_path",
+        lambda: tmp_path / "missing.json",
+    )
+    txt = ops_server.tool_check_orca_manual_indexed()
+    data = json.loads(txt)
+    assert data["indexed"] is False
+    assert "Drop a PDF" in data["hint"] or "drop" in data["hint"].lower()
+
+
+def test_check_orca_manual_indexed_finds_orca_doc(tmp_path, monkeypatch):
+    """An index containing an ORCA-titled doc returns indexed=True."""
+    fake_index = tmp_path / "doc_index.json"
+    fake_index.write_text(json.dumps({
+        "documents": {
+            "orca_manual_6_1_1_delfin": {
+                "title": "ORCA 6.1.1 Manual",
+                "sections": {"ch1": {"text": "..."}},
+            },
+        },
+    }))
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer.get_default_index_path",
+        lambda: fake_index,
+    )
+    txt = ops_server.tool_check_orca_manual_indexed()
+    data = json.loads(txt)
+    assert data["indexed"] is True
+    assert "orca_manual_6_1_1_delfin" in data["doc_ids"]
+
+
+def test_check_orca_manual_indexed_empty_index_is_unindexed(tmp_path, monkeypatch):
+    """Index file exists but has only non-ORCA docs."""
+    fake_index = tmp_path / "doc_index.json"
+    fake_index.write_text(json.dumps({
+        "documents": {
+            "some_random_paper": {"title": "Random Paper"},
+        },
+    }))
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer.get_default_index_path",
+        lambda: fake_index,
+    )
+    txt = ops_server.tool_check_orca_manual_indexed()
+    data = json.loads(txt)
+    assert data["indexed"] is False
+    assert "Literature tab" in data["hint"]
+
+
+def test_index_new_pdf_missing_file():
+    """Non-existent path → ok=False, no exception."""
+    txt = ops_server.tool_index_new_pdf("/nope/missing.pdf")
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert "not found" in data["error"]
+
+
+def test_index_new_pdf_wrong_extension(tmp_path):
+    not_pdf = tmp_path / "x.txt"
+    not_pdf.write_text("hi")
+    txt = ops_server.tool_index_new_pdf(str(not_pdf))
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert "PDF" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# DELFIN-feature explainer
+# ---------------------------------------------------------------------------
+
+def test_list_delfin_features_returns_known_concepts():
+    txt = ops_server.tool_list_delfin_features()
+    rows = json.loads(txt)
+    names = {r["name"] for r in rows}
+    assert {"control_keys", "occupier", "smart_recalc", "modes",
+            "guppy", "permissions"}.issubset(names)
+
+
+def test_list_delfin_features_filter_workflow():
+    txt = ops_server.tool_list_delfin_features(category="workflow")
+    rows = json.loads(txt)
+    assert all(r["category"] == "workflow" for r in rows)
+
+
+def test_explain_delfin_feature_returns_summary_and_seealso():
+    txt = ops_server.tool_explain_delfin_feature("smart_recalc")
+    info = json.loads(txt)
+    assert info["name"] == "smart_recalc"
+    assert "calc-override-btn" in info["summary"]
+    assert info["see_also"]  # at least one source pointer
+
+
+def test_explain_delfin_feature_case_insensitive():
+    a = ops_server.tool_explain_delfin_feature("OCCUPIER")
+    b = ops_server.tool_explain_delfin_feature("occupier")
+    assert json.loads(a)["name"] == "occupier"
+    assert a == b
+
+
+def test_explain_delfin_feature_unknown_returns_candidates():
+    txt = ops_server.tool_explain_delfin_feature("notreal")
+    info = json.loads(txt)
+    assert "error" in info
+    assert "available" in info
+    assert "occupier" in info["available"]
+
+
+def test_explain_delfin_feature_fuzzy_match():
+    """A unique substring match still resolves cleanly."""
+    txt = ops_server.tool_explain_delfin_feature("recalc")
+    info = json.loads(txt)
+    # smart_recalc is the only entry with 'recalc' in the name
+    assert info.get("name") == "smart_recalc"
+
+
+def test_explain_delfin_feature_normalises_separators():
+    a = ops_server.tool_explain_delfin_feature("smart-recalc")
+    b = ops_server.tool_explain_delfin_feature("smart recalc")
+    assert json.loads(a)["name"] == "smart_recalc"
+    assert json.loads(b)["name"] == "smart_recalc"

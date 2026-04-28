@@ -780,6 +780,16 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "scancel one job by id (mutating)."},
     {"name": "list_active_calculations", "category": "jobs",
      "summary": "Live SLURM/local job list with status."},
+    # delfin-ops — literature management
+    {"name": "check_orca_manual_indexed", "category": "literature",
+     "summary": "Is the ORCA manual indexed for search_docs?"},
+    {"name": "index_new_pdf", "category": "literature",
+     "summary": "Add a freshly-uploaded PDF to the search index."},
+    # delfin-ops — DELFIN feature explainer
+    {"name": "list_delfin_features", "category": "explainer",
+     "summary": "Catalog of DELFIN concepts (control_keys, OCCUPIER, …)."},
+    {"name": "explain_delfin_feature", "category": "explainer",
+     "summary": "Curated explanation of one DELFIN concept."},
     # delfin-docs (other MCP server, listed for cross-reference)
     {"name": "search_docs", "category": "literature",
      "summary": "TF-IDF search over indexed PDFs."},
@@ -1274,6 +1284,419 @@ def cancel_calculation(
         return {"ok": bool(ok), "message": msg, "job_id": job_id}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# DELFIN-feature explainer (curated knowledge base of DELFIN's own concepts)
+# ---------------------------------------------------------------------------
+
+_DELFIN_FEATURES: dict[str, dict] = {
+    # CONTROL.txt keys
+    "control": {
+        "category": "config",
+        "summary": (
+            "DELFIN's master configuration file. Plain key=value lines "
+            "drive every workflow — functional, basis, charge, "
+            "multiplicity, solvent, redox steps, etc."
+        ),
+        "see_also": [
+            "delfin/utils.py", "delfin/common/control_validator.py",
+            "delfin/dashboard/constants.py",
+        ],
+    },
+    "control_keys": {
+        "category": "config",
+        "summary": (
+            "Common keys: functional, main_basisset, metal_basisset, "
+            "aux_jk, disp_corr, solvent, solvation_model, freq_type, "
+            "geom_opt, charge, multiplicity, PAL, maxcore, "
+            "redox_steps, parallel_workflows. Relativistic variants "
+            "carry a `_rel` suffix (main_basisset_rel etc.) and only "
+            "fire when `relativity` is set (ZORA/X2C/DKH)."
+        ),
+        "see_also": ["delfin/common/control_validator.py"],
+    },
+    "relativistic_methods": {
+        "category": "methodology",
+        "summary": (
+            "Three Hamiltonians supported: ZORA (zeroth-order regular "
+            "approximation), X2C (exact two-component), DKH (Douglas-"
+            "Kroll-Hess). When `relativity` is set, the `*_rel` keys "
+            "select matching basis sets — ZORA wants ZORA-def2-TZVP / "
+            "SARC-ZORA-TZVP, X2C wants x2c-TZVPall / x2c-QZVPPall, "
+            "and aux_jk_rel is empty for X2C (def2/J works) but "
+            "SARC/J for ZORA. The non-rel keys stay as-is."
+        ),
+        "see_also": ["delfin/utils.py"],
+    },
+    # Workflow concepts
+    "pipeline": {
+        "category": "workflow",
+        "summary": (
+            "DELFIN's main pipeline runs the full QM-chemistry workflow "
+            "for one CONTROL.txt: prepare geometry → optimize → "
+            "frequencies → optional redox / solvation steps → property "
+            "extraction. Driven by `delfin run` or `pipeline_run` MCP "
+            "tool. Stages can run in parallel via `parallel_workflows`."
+        ),
+        "see_also": ["delfin/cli.py", "delfin/runtime_setup.py"],
+    },
+    "smart_recalc": {
+        "category": "workflow",
+        "summary": (
+            "Re-submit an existing job with only resource overrides "
+            "changed (PAL, maxcore, time-limit, basis swap). The "
+            "Smart-Recalc panel auto-loads CONTROL.txt into an editor "
+            "so you make a targeted edit (`/ui calc-editor replace "
+            "PAL=40 PAL=12`) and click `calc-override-btn`. Faster "
+            "than a from-scratch recalc; reuses .gbw and .opt when "
+            "available."
+        ),
+        "see_also": [
+            "delfin/dashboard/tab_calculations_browser.py",
+            "delfin/orca_recovery.py",
+        ],
+    },
+    "occupier": {
+        "category": "module",
+        "summary": (
+            "Spin/occupation-state explorer: enumerates plausible "
+            "(charge, multiplicity, occupation) combinations for "
+            "open-shell metal complexes, runs each as a sub-job, and "
+            "ranks by SCF + geometry quality. Drives the "
+            "OCCUPIER_FOB job tree under each calc folder. Triggered "
+            "by `OCCUPIER=auto` in CONTROL or via the typed "
+            "build_mult/co2_species_delta override."
+        ),
+        "see_also": [
+            "delfin/occupier.py", "delfin/occupier_flat_extraction.py",
+        ],
+    },
+    "guppy": {
+        "category": "module",
+        "summary": (
+            "GUPPY = generative ULFP/structure sampling. Generates "
+            "diverse 3D conformers + spin states for SMILES input "
+            "before the QM stages, using deterministic seed schedules "
+            "(env-var DELFIN_GUPPY_SEEDS) plus optional ML-potential "
+            "rescoring. Used as the front-end for SMILES → 3D in the "
+            "ORCA Builder and batch flows."
+        ),
+        "see_also": [
+            "delfin/guppy_sampling.py", "delfin/guppy_batch.py",
+        ],
+    },
+    "csp": {
+        "category": "module",
+        "summary": (
+            "Crystal Structure Prediction via Genarris. Generates "
+            "candidate periodic structures from a molecular input. "
+            "Triggered by `csp` workflow in CONTROL or `csp_check` "
+            "MCP tool to verify Genarris availability."
+        ),
+        "see_also": ["delfin/csp_tools/"],
+    },
+    "mlp": {
+        "category": "module",
+        "summary": (
+            "Machine-learning potentials for fast geometry pre-relax: "
+            "TorchANI, AIMNet2, MACE backends. Used to cheap-relax "
+            "before the expensive DFT step, especially in batch "
+            "screening. Available via `mlp_check` MCP tool."
+        ),
+        "see_also": ["delfin/mlp_tools/"],
+    },
+    # Modes
+    "modes": {
+        "category": "agent",
+        "summary": (
+            "Agent operating modes: dashboard (UI-control, restricted "
+            "tools), solo (full code access), quick (lightweight "
+            "pipeline), reviewed (with critic), tdd (test-first), "
+            "cluster (multi-system), full (everything). Set via "
+            "`/mode <name>` slash command or the Mode dropdown."
+        ),
+        "see_also": ["delfin/agent/pack/agents/"],
+    },
+    "permissions": {
+        "category": "agent",
+        "summary": (
+            "Four permission profiles: plan (read-only everywhere), "
+            "ask_all (confirm every change, default), repo_free "
+            "(repo edits free, calc asks), all_free (full mutation "
+            "rights, archive stays read-only). Set via `/perms` slash."
+        ),
+        "see_also": ["delfin/dashboard/tab_agent.py"],
+    },
+    # Other concepts
+    "co2": {
+        "category": "workflow",
+        "summary": (
+            "CO2 Coordinator workflow: enumerates and optimizes CO2 "
+            "binding modes on a metal complex, then ranks by binding "
+            "energy. Run via `delfin co2` or the `co2` MCP tool with "
+            "explicit charge/multiplicity/solvent."
+        ),
+        "see_also": ["delfin/cli.py (co2 subcommand)"],
+    },
+    "tadf_xtb": {
+        "category": "workflow",
+        "summary": (
+            "TADF (thermally activated delayed fluorescence) workflow "
+            "via xTB. Computes S0/S1/T1 energies, ΔEST, oscillator "
+            "strength, and relevant kinetics. Faster than full DFT "
+            "TDDFT; useful for screening dye candidates."
+        ),
+        "see_also": ["delfin/cli.py (tadf-xtb subcommand)"],
+    },
+    "hyperpol": {
+        "category": "workflow",
+        "summary": (
+            "Hyperpolarizability (β, γ) workflow: ORCA-driven "
+            "calculation of nonlinear-optical properties for "
+            "chromophores. Reads orca.out for β-tensor components "
+            "(beta_zzz etc.) and aggregates into DELFIN_data.json."
+        ),
+        "see_also": ["delfin/cli.py (hyperpol subcommand)"],
+    },
+    "outcomes": {
+        "category": "agent",
+        "summary": (
+            "Persistent log of every agent turn: outcome_history.jsonl "
+            "in ~/.delfin/. Each entry has provider, model, mode, "
+            "verdict (PASS/FAIL/PARTIAL, computed via heuristics on "
+            "denied-commands + give-up phrases + QUESTION tag), "
+            "cost_usd_delta (per-turn spend), retries, denied_commands. "
+            "Activity tab visualises this history."
+        ),
+        "see_also": ["delfin/agent/outcome_tracker.py"],
+    },
+    "session_boot": {
+        "category": "agent",
+        "summary": (
+            "Every fresh dashboard session injects a one-shot "
+            "[Session boot context] block on the first send: last 5 "
+            "outcomes, active SLURM jobs, recent commits, branch, "
+            "active calc folder. Lets the agent answer 'where are we?'"
+            " without spending tool calls."
+        ),
+        "see_also": [
+            "delfin/dashboard/tab_agent.py "
+            "(_build_dashboard_session_boot)",
+        ],
+    },
+    "live_state": {
+        "category": "agent",
+        "summary": (
+            "Per-turn snapshot in the system prompt's `--- Live state "
+            "---` section: current CONTROL, ORCA-Builder values, "
+            "active calc folder, workspace files, recent jobs, "
+            "permissions. Updated each send so the agent is always "
+            "aware of UI state without round-trips. Lives in the "
+            "system prompt (cache-friendly), not user messages."
+        ),
+        "see_also": [
+            "delfin/dashboard/tab_agent.py (_build_dashboard_context)",
+            "delfin/agent/engine.py (set_live_state)",
+        ],
+    },
+}
+
+
+def list_delfin_features(category: str = "") -> list[dict]:
+    """Return the catalog of DELFIN concept entries, optionally filtered.
+
+    Each entry: {name, category, summary}. Use this BEFORE describe_-
+    delfin_feature to find the right name for a concept the user
+    asked about.
+    """
+    cat = (category or "").strip().lower()
+    out = []
+    for name, info in sorted(_DELFIN_FEATURES.items()):
+        if cat and info["category"].lower() != cat:
+            continue
+        out.append({
+            "name": name,
+            "category": info["category"],
+            "summary": info["summary"][:140],
+        })
+    return out
+
+
+def explain_delfin_feature(name: str) -> dict:
+    """Return a curated explanation of one DELFIN feature/concept.
+
+    Use when the user asks "wie funktioniert X in DELFIN?" / "was
+    macht OCCUPIER?" / "was sind die Modi?". The returned dict has:
+
+    - ``name``, ``category``, ``summary`` (full prose)
+    - ``see_also``: list of source-file pointers if you want to dig
+      deeper (Read tool).
+
+    Unknown name → returns hint with the available concept names so
+    the agent can self-correct.
+
+    Args:
+        name: concept name (case-insensitive). E.g. ``occupier``,
+            ``smart_recalc``, ``relativistic_methods``,
+            ``control_keys``, ``modes``, ``guppy``.
+    """
+    if not name:
+        return {
+            "error": "no name given",
+            "available": [k for k in _DELFIN_FEATURES],
+        }
+    key = (
+        str(name).strip().lower()
+        .replace("-", "_").replace(" ", "_")
+    )
+    info = _DELFIN_FEATURES.get(key)
+    if info is None:
+        # Fuzzy: substring match
+        candidates = [
+            k for k in _DELFIN_FEATURES
+            if key in k.lower() or k.lower() in key
+        ]
+        if len(candidates) == 1:
+            info = _DELFIN_FEATURES[candidates[0]]
+            key = candidates[0]
+        else:
+            return {
+                "error": f"unknown feature: {name!r}",
+                "candidates": candidates,
+                "available": sorted(_DELFIN_FEATURES),
+            }
+    return {
+        "name": key,
+        "category": info["category"],
+        "summary": info["summary"],
+        "see_also": list(info.get("see_also", [])),
+    }
+
+
+def check_orca_manual_indexed() -> dict:
+    """Quick-check whether the ORCA manual is in the doc-search index.
+
+    Returns a dict with:
+    - ``indexed`` (bool): True iff at least one indexed doc looks like
+      the ORCA manual (title or doc_id contains "orca").
+    - ``doc_ids`` (list): matching ids if found.
+    - ``hint`` (str): if not indexed, a suggestion the agent should
+      pass to the user (e.g. "drop the ORCA manual PDF into the
+      Literature tab and call index_new_pdf").
+    """
+    import json as _json
+    from pathlib import Path as _P
+    try:
+        from delfin.doc_server.indexer import get_default_index_path
+        index_path = get_default_index_path()
+    except Exception as exc:
+        return {"indexed": False, "doc_ids": [],
+                "hint": f"could not locate doc index: {exc}"}
+    if not index_path.exists():
+        return {
+            "indexed": False, "doc_ids": [],
+            "hint": (
+                f"No doc index at {index_path}. Drop a PDF into the "
+                f"Literature tab and call index_new_pdf, or run "
+                f"`delfin-docs-index` once to build the initial index."
+            ),
+        }
+    try:
+        data = _json.loads(_P(index_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"indexed": False, "doc_ids": [],
+                "hint": f"index read error: {exc}"}
+    docs = (data or {}).get("documents", {}) or {}
+    matches: list[str] = []
+    for doc_id, meta in docs.items():
+        title = (meta or {}).get("title", "") or ""
+        if "orca" in doc_id.lower() or "orca" in title.lower():
+            matches.append(doc_id)
+    if matches:
+        return {"indexed": True, "doc_ids": matches, "hint": ""}
+    return {
+        "indexed": False, "doc_ids": [],
+        "hint": (
+            "ORCA manual not found in the index. Ask the user to drop "
+            "the ORCA manual PDF (e.g. ORCA_6_1_1.pdf) into the "
+            "Literature tab, then call index_new_pdf with the path."
+        ),
+    }
+
+
+def index_new_pdf(
+    path: str,
+    *,
+    doc_id: str = "",
+    title: str = "",
+) -> dict:
+    """Add (or refresh) one PDF to the doc-search index.
+
+    Re-builds the existing index PLUS the new PDF as an extra entry.
+    Use after the user uploads a new manual / paper into Literature.
+    The PDF must already exist on disk; this tool does NOT move or
+    copy files.
+
+    Args:
+        path: absolute path to the PDF.
+        doc_id: explicit id (defaults to filename stem).
+        title: human-readable title (defaults to filename stem).
+
+    Returns dict with ``ok`` (bool), ``doc_id``, ``sections_indexed``
+    (int), ``error`` (str on failure).
+    """
+    from pathlib import Path as _P
+    p = _P(path).expanduser()
+    if not p.exists():
+        return {"ok": False, "error": f"file not found: {path}"}
+    if p.suffix.lower() != ".pdf":
+        return {"ok": False, "error": "not a PDF file"}
+
+    try:
+        from delfin.doc_server.indexer import (
+            build_index,
+            get_default_index_path,
+            get_default_literature_dir,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"indexer import failed: {exc}"}
+
+    lit = get_default_literature_dir() or _P.home() / "literature"
+    final_doc_id = doc_id or p.stem
+    final_title = title or p.stem.replace("_", " ")
+    try:
+        index = build_index(
+            literature_dir=lit,
+            extra_paths=[{
+                "path": str(p),
+                "doc_id": final_doc_id,
+                "title": final_title,
+            }],
+            quiet=True,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"build_index failed: {exc}"}
+
+    out_path = get_default_index_path()
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        out_path.write_text(_json.dumps(index, indent=2), encoding="utf-8")
+    except Exception as exc:
+        return {"ok": False, "error": f"index write failed: {exc}"}
+
+    docs = (index or {}).get("documents", {}) or {}
+    sections = 0
+    if final_doc_id in docs:
+        sections = len((docs[final_doc_id] or {}).get("sections", {}))
+    return {
+        "ok": True,
+        "doc_id": final_doc_id,
+        "title": final_title,
+        "sections_indexed": sections,
+        "index_path": str(out_path),
+    }
 
 
 def list_active_calculations() -> list[dict]:
@@ -1811,4 +2234,10 @@ __all__ = [
     "submit_calculation",
     "cancel_calculation",
     "list_active_calculations",
+    # ORCA-manual lookup helpers
+    "check_orca_manual_indexed",
+    "index_new_pdf",
+    # DELFIN-feature explainer
+    "list_delfin_features",
+    "explain_delfin_feature",
 ]

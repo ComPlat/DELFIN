@@ -432,6 +432,90 @@ def tool_cancel_calculation(
     )
 
 
+def tool_check_orca_manual_indexed() -> str:
+    """Quick-check whether the ORCA manual is in the doc-search index.
+
+    ALWAYS call this FIRST when the user asks an ORCA-specific question
+    (keyword syntax, %block, methodology, basis pairing). If the
+    ``indexed`` field comes back False, surface the ``hint`` to the
+    user verbatim — it asks them to drop the manual into the
+    Literature tab and call index_new_pdf.
+
+    Returns JSON: {indexed, doc_ids, hint}.
+    """
+    import json as _json
+    return _json.dumps(delfin_api.check_orca_manual_indexed(), indent=2)
+
+
+def tool_index_new_pdf(
+    path: str,
+    doc_id: str = "",
+    title: str = "",
+) -> str:
+    """Add a PDF to the doc-search index.
+
+    Use after the user drops a new manual / paper into the Literature
+    tab so subsequent search_docs calls find it. Re-builds the
+    existing index plus the new PDF.
+
+    Returns JSON: {ok, doc_id, title, sections_indexed, index_path,
+    error}.
+
+    Args:
+        path: absolute path to the PDF on disk.
+        doc_id: explicit identifier (defaults to filename stem).
+        title: human-readable title (defaults to filename stem).
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.index_new_pdf(
+            path, doc_id=doc_id, title=title,
+        ),
+        indent=2,
+    )
+
+
+def tool_list_delfin_features(category: str = "") -> str:
+    """Browse the curated catalog of DELFIN concepts/features.
+
+    Use before explain_delfin_feature when you're not sure of the
+    exact concept name. Each entry: {name, category, summary
+    (truncated to 140 chars)}.
+
+    Args:
+        category: optional filter (config / workflow / module /
+            agent / methodology).
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_delfin_features(category=category),
+        indent=2,
+    )
+
+
+def tool_explain_delfin_feature(name: str) -> str:
+    """Explain a DELFIN concept (CONTROL keys, Smart Recalc, OCCUPIER, …).
+
+    Use when the user asks "wie funktioniert X in DELFIN?" or "was
+    macht <feature>?". Returns curated prose + source-file pointers
+    so you can read deeper if needed. Unknown name → JSON with
+    candidates and available list.
+
+    Available concepts: control, control_keys, relativistic_methods,
+    pipeline, smart_recalc, occupier, guppy, csp, mlp, modes,
+    permissions, co2, tadf_xtb, hyperpol, outcomes, session_boot,
+    live_state.
+
+    Args:
+        name: concept name (case-insensitive; "-" / " " also ok).
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.explain_delfin_feature(name),
+        indent=2,
+    )
+
+
 def tool_list_active_calculations() -> str:
     """Live list of running/pending jobs (read-only).
 
@@ -689,6 +773,12 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_list_active_calculations)
     mcp.tool()(tool_submit_calculation)
     mcp.tool()(tool_cancel_calculation)
+    # ORCA-manual lookup + literature indexing
+    mcp.tool()(tool_check_orca_manual_indexed)
+    mcp.tool()(tool_index_new_pdf)
+    # DELFIN-feature explainer
+    mcp.tool()(tool_list_delfin_features)
+    mcp.tool()(tool_explain_delfin_feature)
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)
