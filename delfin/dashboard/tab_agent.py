@@ -7999,6 +7999,9 @@ def create_tab(ctx):
                         or tool_name.endswith("__plot_orbital_diagram")
                         or tool_name.endswith("__plot_optimization_convergence")
                         or tool_name.endswith("__plot_uvvis_spectrum")
+                        or tool_name.endswith("__plot_scf_convergence")
+                        or tool_name.endswith("__plot_population_charges")
+                        or tool_name.endswith("__plot_vibrational_spectrum")
                     )
                     if _is_file_creating_tool:
                         _emit_new_workspace_artifacts()

@@ -1018,6 +1018,87 @@ def tool_plot_uvvis_spectrum(
     )
 
 
+def tool_plot_scf_convergence(
+    folder: str,
+    cycle_index: int = -1,
+    title: str = "",
+) -> str:
+    """Plot SCF iteration curves (energy vs iteration); PNG → workspace.
+
+    For multi-cycle output (geom optimization), draws one curve per
+    geom step. Set cycle_index >= 0 to plot a single cycle.
+    Default = -1 (treat as None → all cycles overlaid).
+
+    Direct answer to 'warum konvergiert der SCF nicht?'.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    ci = None if int(cycle_index) < 0 else int(cycle_index)
+    return _json.dumps(
+        _asdict(delfin_api.plot_scf_convergence(
+            folder, cycle_index=ci, title=title,
+        )),
+        indent=2,
+    )
+
+
+def tool_plot_population_charges(
+    folder: str,
+    method: str = "mulliken",
+    title: str = "",
+) -> str:
+    """Bar chart of atomic charges (Mulliken or Loewdin); PNG → workspace.
+
+    Args:
+        folder: absolute path to a calc folder.
+        method: 'mulliken' (default) or 'loewdin'.
+        title: optional figure title.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.plot_population_charges(
+            folder, method=method, title=title,
+        )),
+        indent=2,
+    )
+
+
+def tool_plot_vibrational_spectrum(
+    folder: str,
+    fwhm_cm: float = 12.0,
+    freq_min: float = 0.0,
+    freq_max: float = 4000.0,
+    n_points: int = 1500,
+    title: str = "",
+) -> str:
+    """Lorentzian-broadened IR spectrum from full mode list; PNG.
+
+    Direct answer to 'wie sieht das IR-Spektrum aus?' / 'welche
+    Schwingungsmoden sind IR-aktiv?'.
+
+    Args:
+        folder: absolute path to a Freq calc folder.
+        fwhm_cm: Lorentzian FWHM in cm-1 (default 12).
+        freq_min, freq_max: window in cm-1 (default 0-4000).
+        n_points: convolution grid resolution.
+        title: optional figure title.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.plot_vibrational_spectrum(
+            folder,
+            fwhm_cm=fwhm_cm,
+            freq_min=freq_min,
+            freq_max=freq_max,
+            n_points=n_points,
+            title=title,
+        )),
+        indent=2,
+    )
+
+
 def tool_find_calculation_extreme(
     folders: str,
     property: str = "gibbs",
@@ -1472,6 +1553,10 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="plot_orbital_diagram")(tool_plot_orbital_diagram)
     mcp.tool(name="plot_optimization_convergence")(tool_plot_optimization_convergence)
     mcp.tool(name="plot_uvvis_spectrum")(tool_plot_uvvis_spectrum)
+    # Phase E plots (SCF / charges / vibrational IR spectrum)
+    mcp.tool(name="plot_scf_convergence")(tool_plot_scf_convergence)
+    mcp.tool(name="plot_population_charges")(tool_plot_population_charges)
+    mcp.tool(name="plot_vibrational_spectrum")(tool_plot_vibrational_spectrum)
     # Tool / widget catalogs (cheap on-demand discovery)
     mcp.tool(name="list_tools")(tool_list_tools)
     mcp.tool(name="describe_tool")(tool_describe_tool)

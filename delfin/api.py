@@ -1951,6 +1951,12 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Energy + ΔE per opt cycle; PNG → workspace."},
     {"name": "plot_uvvis_spectrum", "category": "plotting",
      "summary": "Gaussian-broadened UV/Vis from TDDFT; PNG → workspace."},
+    {"name": "plot_scf_convergence", "category": "plotting",
+     "summary": "SCF iteration energy curves per geom step; PNG."},
+    {"name": "plot_population_charges", "category": "plotting",
+     "summary": "Bar chart of Mulliken/Loewdin atomic charges; PNG."},
+    {"name": "plot_vibrational_spectrum", "category": "plotting",
+     "summary": "Lorentzian-broadened IR spectrum from .out; PNG."},
     # delfin-ops — dashboard guidance
     {"name": "list_dashboard_patterns", "category": "guidance",
      "summary": "Names of operational pattern recipes."},
@@ -4486,6 +4492,237 @@ def plot_uvvis_spectrum(
     )
 
 
+def plot_scf_convergence(
+    folder: str,
+    *,
+    cycle_index: int | None = None,
+    title: str = "",
+) -> PlotResult:
+    """Plot SCF iteration energy curves for the convergence diagnostic.
+
+    For multi-cycle output (geom optimization), draws one curve per
+    geom step with the iteration number on X and the SCF energy
+    (Eh, relative to the cycle's final energy) on Y. This makes
+    oscillation / divergence patterns visible at a glance.
+
+    ``cycle_index`` filters to a single geom-step's SCF history if
+    given; default = all cycles overlaid.
+    """
+    res = extract_scf_convergence(folder)
+    if res.error is not None or not res.cycles:
+        return PlotResult(
+            error=res.error or "no SCF cycles",
+            title=title or "SCF convergence",
+        )
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+
+    cycles = res.cycles
+    if cycle_index is not None:
+        try:
+            cycles = [cycles[cycle_index]]
+        except IndexError:
+            return PlotResult(
+                error=f"cycle_index {cycle_index} out of range "
+                      f"(have {len(res.cycles)})",
+            )
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    cmap = matplotlib.colormaps.get_cmap("viridis").resampled(
+        max(len(cycles), 2),
+    )
+    for i, cyc in enumerate(cycles):
+        if not cyc.iterations:
+            continue
+        xs = [it.iteration for it in cyc.iterations]
+        # Plot energy minus the cycle's final → all cycles align at 0
+        # for visual oscillation comparison.
+        finalE = cyc.iterations[-1].energy_eh
+        ys = [it.energy_eh - finalE for it in cyc.iterations]
+        ax.plot(xs, ys, marker="o", linewidth=1.2, color=cmap(i),
+                label=cyc.cycle_label)
+    ax.axhline(0.0, color="grey", linewidth=0.5, alpha=0.6)
+    ax.set_xlabel("SCF iteration")
+    ax.set_ylabel("E − E_final (Eh)")
+    if len(cycles) > 1:
+        ax.legend(fontsize=7, loc="upper right", ncol=2)
+    fig.suptitle(
+        title or f"SCF convergence ({_short_folder_label(folder)})",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    out = _new_workspace_png_path("scf_conv")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=sum(len(c.iterations) for c in cycles),
+        title=title or "SCF convergence",
+        properties=["scf_iteration", "energy_eh"],
+        statistics={
+            "n_cycles_plotted": len(cycles),
+            "n_total_iterations": sum(
+                len(c.iterations) for c in cycles
+            ),
+            "all_converged": all(
+                c.converged is True for c in cycles
+            ),
+        },
+    )
+
+
+def plot_population_charges(
+    folder: str,
+    *,
+    method: str = "mulliken",
+    title: str = "",
+) -> PlotResult:
+    """Bar chart of atomic charges (Mulliken or Loewdin).
+
+    Highlights positively-charged atoms in red, negatively-charged
+    atoms in blue; height encodes charge magnitude. Atom labels
+    (``index symbol``) on the x-axis.
+
+    ``method``: ``"mulliken"`` (default) or ``"loewdin"``.
+    """
+    method_clean = method.strip().lower()
+    if method_clean == "loewdin":
+        res = extract_loewdin_charges(folder)
+    else:
+        res = extract_mulliken_charges(folder)
+
+    if res.error is not None or not res.atoms:
+        return PlotResult(
+            error=res.error or f"no {method_clean} charges",
+            title=title or f"{method_clean.title()} charges",
+        )
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+
+    fig, ax = plt.subplots(figsize=(max(6, 0.4 * len(res.atoms)), 4.2))
+    labels = [f"{a.index} {a.symbol}" for a in res.atoms]
+    charges = [a.charge for a in res.atoms]
+    colors = ["#c62828" if c > 0 else "#1565c0" for c in charges]
+    ax.bar(range(len(res.atoms)), charges, color=colors, alpha=0.85)
+    ax.axhline(0.0, color="black", linewidth=0.6)
+    ax.set_xticks(range(len(res.atoms)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel("Charge (e)")
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.suptitle(
+        title or f"{method_clean.title()} charges "
+                 f"({_short_folder_label(folder)})",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    out = _new_workspace_png_path(f"charges_{method_clean}")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=len(res.atoms),
+        title=title or f"{method_clean.title()} charges",
+        properties=["atomic_charge"],
+        statistics={
+            "n_atoms": len(res.atoms),
+            "method": method_clean,
+            "total_charge": res.total_charge,
+            "max_positive": max(charges, default=0.0),
+            "max_negative": min(charges, default=0.0),
+        },
+    )
+
+
+def plot_vibrational_spectrum(
+    folder: str,
+    *,
+    fwhm_cm: float = 12.0,
+    freq_min: float = 0.0,
+    freq_max: float = 4000.0,
+    n_points: int = 1500,
+    title: str = "",
+) -> PlotResult:
+    """Render an IR vibrational spectrum from full mode list + IR intensity.
+
+    Lorentzian-broadens each IR-active mode (intensity weighted) and
+    plots absorbance vs wavenumber [cm-1] over the standard 0-4000
+    range. Stick spectrum drawn underneath.
+    """
+    res = extract_vibrational_modes(folder)
+    if res.error is not None or not res.modes:
+        return PlotResult(
+            error=res.error or "no vibrational data",
+            title=title or "Vibrational spectrum",
+        )
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+    import numpy as _np
+
+    wns = _np.linspace(freq_min, freq_max, n_points)
+    spectrum = _np.zeros_like(wns)
+    sticks: list[tuple[float, float]] = []
+    half = fwhm_cm / 2.0
+    for m in res.modes:
+        if m.is_imaginary:
+            continue
+        if not (freq_min <= m.frequency_cm <= freq_max):
+            continue
+        intensity = m.ir_intensity if m.ir_intensity is not None else 0.0
+        if intensity <= 0.0:
+            continue
+        sticks.append((m.frequency_cm, intensity))
+        spectrum += intensity * (half * half) / (
+            (wns - m.frequency_cm) ** 2 + half * half
+        )
+
+    if not sticks:
+        return PlotResult(
+            error="no IR-active real modes in window",
+            title=title or "Vibrational spectrum",
+        )
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    ax.plot(wns, spectrum, color="#1565c0", linewidth=1.3,
+            label="broadened")
+    for w, intensity in sticks:
+        ax.vlines(w, 0, intensity, color="#c62828", linewidth=1.0,
+                  alpha=0.7)
+    ax.invert_xaxis()  # spectroscopist convention: high → low
+    ax.set_xlabel("Wavenumber (cm⁻¹)")
+    ax.set_ylabel("IR intensity (km/mol, broadened)")
+    ax.grid(True, alpha=0.3)
+    fig.suptitle(
+        title or f"IR spectrum ({_short_folder_label(folder)}) "
+                 f"— FWHM = {fwhm_cm:.0f} cm⁻¹",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    out = _new_workspace_png_path("ir_spectrum")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=len(sticks),
+        title=title or "Vibrational spectrum",
+        properties=["wavenumber_cm", "ir_intensity"],
+        statistics={
+            "n_modes_total": res.n_modes,
+            "n_imag": res.n_imag,
+            "n_ir_active": len(sticks),
+            "max_intensity": max(s[1] for s in sticks) if sticks else 0.0,
+            "lambda_max_cm": (
+                max(sticks, key=lambda s: s[1])[0] if sticks else None
+            ),
+        },
+    )
+
+
 def _import_matplotlib():
     """Lazy matplotlib import (Agg backend) shared by every plot helper."""
     try:
@@ -4766,6 +5003,9 @@ __all__ = [
     "plot_orbital_diagram",
     "plot_optimization_convergence",
     "plot_uvvis_spectrum",
+    "plot_scf_convergence",
+    "plot_population_charges",
+    "plot_vibrational_spectrum",
     # Tool / widget catalogs (cheap on-demand discovery)
     "list_tools",
     "describe_tool",

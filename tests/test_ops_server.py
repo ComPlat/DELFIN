@@ -1226,6 +1226,83 @@ def test_tool_plot_uvvis_spectrum_window_filtering(tmp_path, workspace_redirect)
 
 
 # ---------------------------------------------------------------------------
+# Phase E plots — SCF convergence / population charges / IR spectrum
+# ---------------------------------------------------------------------------
+
+
+def test_tool_plot_scf_convergence_writes_png(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_SCF_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_scf_convergence(str(folder)))
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    stats = data["statistics"]
+    assert stats["n_cycles_plotted"] == 1
+    assert stats["n_total_iterations"] == 4
+    assert stats["all_converged"] is True
+
+
+def test_tool_plot_scf_convergence_no_data(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_scf_convergence(str(folder)))
+    assert data["path"] == ""
+    assert data["error"] != ""
+
+
+def test_tool_plot_population_charges_mulliken(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_MULLIKEN_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_population_charges(str(folder)))
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    stats = data["statistics"]
+    assert stats["n_atoms"] == 3
+    assert stats["method"] == "mulliken"
+    assert stats["max_negative"] < 0
+    assert stats["max_positive"] > 0
+
+
+def test_tool_plot_population_charges_loewdin(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        _MULLIKEN_BLOCK.replace("MULLIKEN", "LOEWDIN"),
+        encoding="utf-8",
+    )
+    data = json.loads(ops_server.tool_plot_population_charges(
+        str(folder), method="loewdin",
+    ))
+    assert data["error"] == ""
+    assert data["statistics"]["method"] == "loewdin"
+
+
+def test_tool_plot_vibrational_spectrum_writes_png(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_FREQ_BLOCK_FULL, encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_vibrational_spectrum(str(folder)))
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    stats = data["statistics"]
+    assert stats["n_imag"] == 1
+    assert stats["n_ir_active"] == 3
+    assert stats["lambda_max_cm"] == pytest.approx(1450.3)
+
+
+def test_tool_plot_vibrational_spectrum_no_freq(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_vibrational_spectrum(str(folder)))
+    assert data["path"] == ""
+    assert data["error"] != ""
+
+
+# ---------------------------------------------------------------------------
 # P1 — statistical plot tools (PNG output, auto-displayed in chat)
 # ---------------------------------------------------------------------------
 
