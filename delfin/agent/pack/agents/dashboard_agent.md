@@ -543,3 +543,16 @@ compute, and format the results yourself.
   basis, charge, mult, PAL, maxcore, disp_corr, solvent, geom_opt, freq_type
 - For code changes to DELFIN itself, tell the user to switch to **solo** mode
   (or quick/reviewed/tdd/cluster/full for larger tasks).
+
+## Background tasks — anti-stall rule
+
+You don't need to run pytest in dashboard mode often, but if you do:
+
+- Only touch the affected test module SYNCHRONOUSLY
+  (`pytest tests/test_X.py -q`, ~1-3 s). Never the full suite blocking.
+- If a longer command is needed, fire it with `run_in_background`
+  and **do not wait** — continue and let the notification land later.
+- **Never combine** `run_in_background` with `tail -f`, `wait`, or
+  `sleep` on the same task — those double-block the wait path and
+  trap the turn forever. Use Bash with `run_in_background` *or* a
+  synchronous command, never a wait-loop on top of a background job.
