@@ -1486,3 +1486,265 @@ def test_tool_delete_calc_folder_refuses_archive(calc_tree):
     assert data["ok"] is False
     assert "archive" in data["error"]
     assert target.exists()
+
+
+# ---------------------------------------------------------------------------
+# Phase B-2 — bulk job control + recalc preparation
+# ---------------------------------------------------------------------------
+
+
+def test_tool_kill_all_user_jobs_dry_run(monkeypatch):
+    """Default-blocked: lists candidates, no actual cancel calls."""
+    fake_jobs = [
+        {"job_id": "111", "status": "RUNNING"},
+        {"job_id": "222", "status": "PENDING"},
+        {"job_id": "333", "status": "RUNNING"},
+    ]
+    cancelled: list = []
+    monkeypatch.setattr(
+        "delfin.api.list_active_calculations",
+        lambda: list(fake_jobs),
+    )
+    monkeypatch.setattr(
+        "delfin.api.cancel_calculation",
+        lambda jid, allow_mutate: cancelled.append(jid)
+        or {"ok": True, "job_id": jid},
+    )
+    txt = ops_server.tool_kill_all_user_jobs()
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert data["skipped"] is True
+    assert sorted(data["candidates"]) == ["111", "222", "333"]
+    assert cancelled == []
+
+
+def test_tool_kill_all_user_jobs_only_running(monkeypatch):
+    monkeypatch.setattr(
+        "delfin.api.list_active_calculations",
+        lambda: [
+            {"job_id": "111", "status": "RUNNING"},
+            {"job_id": "222", "status": "PENDING"},
+        ],
+    )
+    monkeypatch.setattr(
+        "delfin.api.cancel_calculation",
+        lambda jid, allow_mutate: {"ok": True, "job_id": jid},
+    )
+    txt = ops_server.tool_kill_all_user_jobs(
+        only_running=True, allow_mutate=True,
+    )
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert data["cancelled"] == ["111"]
+    assert data["total"] == 1
+
+
+def test_tool_kill_all_user_jobs_executes(monkeypatch):
+    """allow_mutate=True → cancels every candidate."""
+    monkeypatch.setattr(
+        "delfin.api.list_active_calculations",
+        lambda: [
+            {"job_id": "111", "status": "R"},
+            {"job_id": "222", "status": "PD"},
+        ],
+    )
+    seen: list = []
+    monkeypatch.setattr(
+        "delfin.api.cancel_calculation",
+        lambda jid, allow_mutate: seen.append((jid, allow_mutate))
+        or {"ok": True, "job_id": jid},
+    )
+    txt = ops_server.tool_kill_all_user_jobs(allow_mutate=True)
+    data = json.loads(txt)
+    assert data["ok"] is True
+    assert sorted(data["cancelled"]) == ["111", "222"]
+    assert all(allow for _, allow in seen)
+
+
+def _write_recalc_inputs(folder, *, pal=8, maxcore=2000):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "CONTROL.txt").write_text(
+        f"functional = BP86\nPAL = {pal}\nmaxcore = {maxcore}\n",
+        encoding="utf-8",
+    )
+    (folder / "calc.inp").write_text(
+        f"! BP86 def2-SVP Opt\n%pal nprocs {pal} end\n%maxcore {maxcore}\n",
+        encoding="utf-8",
+    )
+
+
+def test_tool_prepare_recalc_dry_run(tmp_path):
+    """allow_mutate=False → returns plan with PAL/maxcore but no submission."""
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    txt = ops_server.tool_prepare_recalc(str(folder))
+    plan = json.loads(txt)
+    assert plan["mode"] == "delfin-recalc"
+    assert plan["pal"] == 8
+    assert plan["maxcore"] == 2000
+    assert plan["valid"] is True
+    assert plan["submitted_job_id"] is None
+    assert "Would submit" in plan["submission_message"]
+
+
+def test_tool_prepare_recalc_classic_mode(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    plan = json.loads(ops_server.tool_prepare_recalc(
+        str(folder), mode="classic",
+    ))
+    assert plan["mode"] == "delfin-recalc-classic"
+    assert plan["valid"] is True
+
+
+def test_tool_prepare_recalc_override_needs_value(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    plan = json.loads(ops_server.tool_prepare_recalc(
+        str(folder), mode="override",
+    ))
+    assert plan["valid"] is False
+    assert any("STAGE=INDEX" in i for i in plan["issues"])
+
+
+def test_tool_prepare_recalc_unknown_mode(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    plan = json.loads(ops_server.tool_prepare_recalc(
+        str(folder), mode="bogus",
+    ))
+    assert plan["valid"] is False
+    assert any("mode must be" in i for i in plan["issues"])
+
+
+def test_tool_prepare_recalc_missing_pal(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.inp").write_text("! BP86 def2-SVP\n", encoding="utf-8")
+    plan = json.loads(ops_server.tool_prepare_recalc(str(folder)))
+    assert plan["valid"] is False
+    assert any("PAL" in i for i in plan["issues"])
+
+
+def test_tool_prepare_recalc_bad_time_format(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    plan = json.loads(ops_server.tool_prepare_recalc(
+        str(folder), time_limit="oneday",
+    ))
+    assert plan["valid"] is False
+    assert any("HH:MM:SS" in i for i in plan["issues"])
+
+
+def test_tool_prepare_recalc_executes(monkeypatch, tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+
+    class FakeBackend:
+        def submit_delfin(self, **kwargs):
+            self.called_with = kwargs
+
+            class R:
+                returncode = 0
+                job_id = "JOB42"
+                stderr = ""
+
+            return R()
+
+    fake = FakeBackend()
+    monkeypatch.setattr("delfin.api._resolve_backend", lambda: fake)
+    plan = json.loads(ops_server.tool_prepare_recalc(
+        str(folder), allow_mutate=True,
+    ))
+    assert plan["valid"] is True
+    assert plan["submitted_job_id"] == "JOB42"
+    assert "Submitted delfin-recalc" in plan["submission_message"]
+    assert fake.called_with["mode"] == "delfin-recalc"
+    assert fake.called_with["pal"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Phase C — list_calc_options + run_calc_option
+# ---------------------------------------------------------------------------
+
+
+def test_tool_list_calc_options_control_txt():
+    data = json.loads(ops_server.tool_list_calc_options("CONTROL.txt"))
+    assert data["file_type"] == "control_txt"
+    assert "Recalc" in data["options"]
+    assert "Smart Recalc" in data["options"]
+
+
+def test_tool_list_calc_options_inp_only_recalc():
+    data = json.loads(ops_server.tool_list_calc_options("calc.inp"))
+    assert data["file_type"] == "inp"
+    assert data["options"] == ["Recalc"]
+
+
+def test_tool_list_calc_options_xyz_full():
+    data = json.loads(ops_server.tool_list_calc_options("structure.xyz"))
+    assert data["file_type"] == "xyz"
+    assert "Build Batch from XYZ" in data["options"]
+    assert "hyperpol_xtb" in data["options"]
+
+
+def test_tool_list_calc_options_out_set():
+    data = json.loads(ops_server.tool_list_calc_options("calc.out"))
+    assert data["file_type"] == "out"
+    assert "MO Plot" in data["options"]
+    assert "Print NMR" in data["options"]
+
+
+def test_tool_list_calc_options_occupier():
+    data = json.loads(ops_server.tool_list_calc_options("OCCUPIER.txt"))
+    assert data["file_type"] == "occupier_txt"
+    assert data["options"] == ["Override"]
+
+
+def test_tool_list_calc_options_unknown_returns_other():
+    data = json.loads(ops_server.tool_list_calc_options("readme.md"))
+    assert data["file_type"] == "other"
+    assert "RMSD" in data["options"]
+
+
+def test_tool_run_calc_option_routes_smart_recalc(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    data = json.loads(ops_server.tool_run_calc_option(
+        str(folder), "Smart Recalc",
+    ))
+    assert data["option"] == "Smart Recalc"
+    assert data["mode"] == "delfin-recalc"
+    assert data["valid"] is True
+    assert data["submitted_job_id"] is None
+
+
+def test_tool_run_calc_option_routes_classic_recalc(tmp_path):
+    folder = tmp_path / "calc"
+    _write_recalc_inputs(folder)
+    data = json.loads(ops_server.tool_run_calc_option(
+        str(folder), "Recalc",
+    ))
+    assert data["mode"] == "delfin-recalc-classic"
+
+
+def test_tool_run_calc_option_ui_only_returns_hint(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    data = json.loads(ops_server.tool_run_calc_option(
+        str(folder), "MO Plot",
+    ))
+    assert data["ok"] is False
+    assert data["ui_only"] is True
+    assert "ACTION:" in data["hint"]
+
+
+def test_tool_run_calc_option_unknown_option(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    data = json.loads(ops_server.tool_run_calc_option(
+        str(folder), "Cheese",
+    ))
+    assert data["ok"] is False
+    assert "Unknown option" in data["error"]
+    assert "list_calc_options" in data["error"]

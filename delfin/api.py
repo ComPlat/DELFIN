@@ -1057,6 +1057,16 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Move a calc folder calc/ -> archive/ (mutating)."},
     {"name": "delete_calc_folder", "category": "calc-fs",
      "summary": "rmtree a calc folder (3-lock destructive)."},
+    # delfin-ops — bulk job control + recalc preparation
+    {"name": "kill_all_user_jobs", "category": "jobs",
+     "summary": "scancel every active job for the user (mutating)."},
+    {"name": "prepare_recalc", "category": "workflow",
+     "summary": "Pre-flight + submit Smart/classic/Override recalc."},
+    # delfin-ops — calc-options dropdown
+    {"name": "list_calc_options", "category": "calc-fs",
+     "summary": "Items in the (Options) dropdown for one filename."},
+    {"name": "run_calc_option", "category": "calc-fs",
+     "summary": "Dispatch one (Options) action — recalc/UI hint/etc."},
     # delfin-ops — literature management
     {"name": "check_orca_manual_indexed", "category": "literature",
      "summary": "Is the ORCA manual indexed for search_docs?"},
@@ -1919,6 +1929,384 @@ def delete_calc_folder(
     return {
         "ok": True, "deleted": str(target),
         "message": f"Deleted {target.name}.",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Job lifecycle helpers (bulk cancel) + recalc preparation
+# ---------------------------------------------------------------------------
+
+
+def kill_all_user_jobs(
+    *,
+    only_running: bool = False,
+    allow_mutate: bool = False,
+) -> dict:
+    """Cancel every active job for the current user (DESTRUCTIVE).
+
+    Lists jobs via :func:`list_active_calculations` and calls
+    :func:`cancel_calculation` for each. With ``only_running=True``
+    skips PENDING jobs.
+
+    Returns a dict with ``ok``, ``cancelled`` (list of {job_id, ok}),
+    ``skipped`` (list), and ``total``.
+    """
+    try:
+        jobs = list_active_calculations()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    candidates = []
+    for job in jobs:
+        status = (job.get("status") or "").upper()
+        if only_running and status not in ("RUNNING", "R"):
+            continue
+        jid = str(job.get("job_id") or job.get("id") or "").strip()
+        if jid:
+            candidates.append(jid)
+
+    if not allow_mutate:
+        return {
+            "ok": False,
+            "skipped": True,
+            "candidates": candidates,
+            "total": len(candidates),
+            "message": (
+                f"Would cancel {len(candidates)} job(s). Confirm with "
+                f"the user, then re-run with allow_mutate=True."
+            ),
+        }
+
+    cancelled, errors = [], []
+    for jid in candidates:
+        rc = cancel_calculation(jid, allow_mutate=True)
+        if rc.get("ok"):
+            cancelled.append(jid)
+        else:
+            errors.append({"job_id": jid, "error": rc.get("error")})
+    return {
+        "ok": not errors,
+        "cancelled": cancelled,
+        "errors": errors,
+        "total": len(candidates),
+    }
+
+
+@dataclass
+class RecalcPlan:
+    """Pre-flight summary of a recalc submission before it runs."""
+    folder: str
+    mode: str
+    time_limit: str
+    pal: int | None
+    maxcore: int | None
+    override: str
+    valid: bool
+    issues: list[str]
+    submitted_job_id: str | None = None
+    submission_message: str = ""
+
+
+def _extract_pal_maxcore(folder: "Path") -> tuple[int | None, int | None]:
+    """Pull (pal, maxcore) from CONTROL.txt or the largest .inp."""
+    import re as _re
+    pal = maxcore = None
+    control = folder / "CONTROL.txt"
+    if control.exists():
+        try:
+            text = control.read_text(encoding="utf-8", errors="replace")
+            m = _re.search(r"^\s*PAL\s*=\s*(\d+)", text, _re.MULTILINE)
+            if m:
+                pal = int(m.group(1))
+            m = _re.search(r"^\s*maxcore\s*=\s*(\d+)", text, _re.MULTILINE)
+            if m:
+                maxcore = int(m.group(1))
+        except Exception:
+            pass
+    if pal is None or maxcore is None:
+        for inp in sorted(folder.glob("*.inp")):
+            try:
+                text = inp.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if pal is None:
+                m = _re.search(r"\bnprocs\s+(\d+)", text)
+                if m:
+                    pal = int(m.group(1))
+            if maxcore is None:
+                m = _re.search(r"%\s*maxcore\s+(\d+)", text)
+                if m:
+                    maxcore = int(m.group(1))
+            if pal is not None and maxcore is not None:
+                break
+    return pal, maxcore
+
+
+def prepare_recalc(
+    folder: str,
+    *,
+    mode: str = "smart",
+    time_limit: str = "24:00:00",
+    override: str = "",
+    allow_mutate: bool = False,
+) -> RecalcPlan:
+    """Prepare a Smart-Recalc / classic Recalc / Override resubmission.
+
+    Reads PAL/maxcore from the folder's CONTROL.txt or largest .inp,
+    reports any issues (missing values, no input file, …), and either
+    returns a dry-run plan (``allow_mutate=False``) or actually
+    submits the job via the live backend.
+
+    Args:
+        folder: absolute path to the calc folder.
+        mode: ``smart`` (default) → delfin-recalc, ``classic`` →
+            delfin-recalc-classic, ``override`` → delfin-recalc-override
+            (then ``override`` must be ``STAGE=INDEX``).
+        time_limit: SLURM time spec (``HH:MM:SS``).
+        override: only used when mode=override.
+        allow_mutate: must be True to actually submit.
+    """
+    from pathlib import Path as _P
+    p = _P(folder).expanduser().resolve()
+    issues: list[str] = []
+    if not p.exists() or not p.is_dir():
+        issues.append(f"folder missing: {p}")
+    mode_clean = mode.strip().lower()
+    submission_mode_map = {
+        "smart": "delfin-recalc",
+        "classic": "delfin-recalc-classic",
+        "override": "delfin-recalc-override",
+    }
+    submission_mode = submission_mode_map.get(mode_clean)
+    if submission_mode is None:
+        issues.append(
+            f"mode must be one of {sorted(submission_mode_map)} (got {mode!r})"
+        )
+    if mode_clean == "override":
+        if not override.strip() or "=" not in override:
+            issues.append(
+                "override mode needs STAGE=INDEX (e.g. red_step_2=1)"
+            )
+    if not _re_match(r"^\d+:\d{2}:\d{2}$", time_limit):
+        issues.append(f"time_limit must be HH:MM:SS (got {time_limit!r})")
+
+    pal: int | None = None
+    maxcore: int | None = None
+    if p.is_dir():
+        pal, maxcore = _extract_pal_maxcore(p)
+        if pal is None:
+            issues.append("PAL not found in CONTROL.txt / .inp")
+        if maxcore is None:
+            issues.append("maxcore not found in CONTROL.txt / .inp")
+
+    plan = RecalcPlan(
+        folder=str(p),
+        mode=submission_mode or "",
+        time_limit=time_limit,
+        pal=pal,
+        maxcore=maxcore,
+        override=override,
+        valid=not issues,
+        issues=issues,
+    )
+    if not plan.valid:
+        return plan
+    if not allow_mutate:
+        plan.submission_message = (
+            f"Would submit {submission_mode} for {p.name} "
+            f"(PAL={pal}, maxcore={maxcore}, time={time_limit}). "
+            f"Confirm with the user, then re-run with allow_mutate=True."
+        )
+        return plan
+
+    try:
+        backend = _resolve_backend()
+        job_name = f"recalc_{p.name}"
+        kwargs = dict(
+            job_dir=str(p),
+            job_name=job_name,
+            mode=submission_mode,
+            time_limit=time_limit,
+            pal=pal,
+            maxcore=maxcore,
+        )
+        if mode_clean == "override":
+            kwargs["override"] = override
+        rc = backend.submit_delfin(**kwargs)
+        if getattr(rc, "returncode", 0) == 0:
+            plan.submitted_job_id = str(getattr(rc, "job_id", "") or "")
+            plan.submission_message = (
+                f"Submitted {submission_mode} for {p.name}"
+                + (
+                    f" (job {plan.submitted_job_id})"
+                    if plan.submitted_job_id else ""
+                )
+            )
+        else:
+            plan.valid = False
+            plan.issues.append(
+                f"backend returned rc={rc.returncode}: "
+                f"{getattr(rc, 'stderr', '')[:200]}"
+            )
+    except Exception as exc:
+        plan.valid = False
+        plan.issues.append(f"submission failed: {exc}")
+    return plan
+
+
+def _re_match(pattern: str, value: str) -> bool:
+    import re as _re
+    return _re.match(pattern, value or "") is not None
+
+
+# ---------------------------------------------------------------------------
+# Calculations-tab options dropdown — typed map + dispatcher
+# ---------------------------------------------------------------------------
+#
+# The Calculations browser shows a context-aware "(Options)" dropdown
+# whose contents depend on the selected file's type. The agent can use
+# ``list_calc_options(filename)`` to discover what's offered, and
+# ``run_calc_option(folder, option, ...)`` as a single typed entry to
+# the most common ones (Recalc / Smart Recalc / Override / Visualize).
+
+_CALC_OPTIONS_BY_TYPE: dict[str, list[str]] = {
+    "control_txt":      ["Recalc", "Smart Recalc"],
+    "occupier_txt":     ["Override"],
+    "inp":              ["Recalc"],
+    "out":              ["Print Mode", "MO Plot", "Print NMR", "RMSD"],
+    "xyz":              [
+        "Build Batch from XYZ", "Calc NMR", "Calc CENSO/ANMR",
+        "hyperpol_xtb", "tadf_xtb", "RMSD",
+    ],
+    "csv_complete":     ["Preselection", "Visualize"],
+    "csv_preselected":  ["Visualize"],
+    "csv_rejected":     ["Visualize"],
+    "final_interp":     ["Plot Trajectory"],
+    "other":            ["RMSD"],
+}
+
+
+def _classify_calc_file(filename: str) -> str:
+    """Map a basename to one of the keys in :data:`_CALC_OPTIONS_BY_TYPE`."""
+    name = (filename or "").strip()
+    lower = name.lower()
+    if name == "CONTROL.txt":
+        return "control_txt"
+    if name == "OCCUPIER.txt":
+        return "occupier_txt"
+    if lower.endswith(".inp"):
+        return "inp"
+    if lower.endswith(".out"):
+        return "out"
+    if lower.endswith(".xyz"):
+        return "xyz"
+    if lower.endswith(".final.interp"):
+        return "final_interp"
+    if lower.endswith(".csv"):
+        # The dashboard further splits by content — without reading the
+        # CSV we can't tell complete vs preselected vs rejected, so we
+        # return the broadest superset so the agent sees every option.
+        return "csv_complete"
+    return "other"
+
+
+def list_calc_options(filename: str) -> dict:
+    """Return the (Options)-dropdown items for one selected file.
+
+    Mirrors the dashboard's context-aware menu so the agent can plan
+    "what can I do with this file" without /ui-trial-and-error. The
+    ``file_type`` field shows which classification was applied.
+    """
+    file_type = _classify_calc_file(filename)
+    options = list(_CALC_OPTIONS_BY_TYPE.get(file_type, []))
+    return {
+        "filename": filename,
+        "file_type": file_type,
+        "options": options,
+    }
+
+
+def run_calc_option(
+    folder: str,
+    option: str,
+    *,
+    target_file: str = "",
+    time_limit: str = "24:00:00",
+    override: str = "",
+    allow_mutate: bool = False,
+) -> dict:
+    """Generic dispatcher for the (Options) dropdown.
+
+    Today this routes to :func:`prepare_recalc` for the destructive
+    workflow paths (Recalc / Smart Recalc / Override) and returns a
+    "not_implemented" hint for read-only / visualisation options that
+    only make sense inside the dashboard UI (Visualize, MO Plot, …).
+    The agent should drive those via ``ACTION:`` slash-commands.
+
+    Args:
+        folder: absolute path to the calc folder.
+        option: dropdown text — "Smart Recalc", "Recalc", "Override",
+            "Visualize", "MO Plot", "Print Mode", "Print NMR",
+            "Plot Trajectory", "Preselection", "RMSD", "Build Batch
+            from XYZ", "Calc NMR", "Calc CENSO/ANMR", "hyperpol_xtb",
+            "tadf_xtb".
+        target_file: optional basename when the option references a
+            single file (e.g. RMSD between two .xyz files).
+        time_limit: SLURM time spec for recalcs.
+        override: only used when option=Override (STAGE=INDEX).
+        allow_mutate: required for any submission.
+    """
+    opt = (option or "").strip()
+    routing = {
+        "Smart Recalc": ("recalc", "smart"),
+        "Recalc":       ("recalc", "classic"),
+        "Override":     ("recalc", "override"),
+    }
+    routed = routing.get(opt)
+    if routed and routed[0] == "recalc":
+        plan = prepare_recalc(
+            folder,
+            mode=routed[1],
+            time_limit=time_limit,
+            override=override,
+            allow_mutate=allow_mutate,
+        )
+        from dataclasses import asdict as _asdict
+        return {
+            "ok": plan.valid and (allow_mutate or not plan.issues),
+            "option": opt,
+            **_asdict(plan),
+        }
+
+    ui_only = {
+        "Visualize", "MO Plot", "Print Mode", "Print NMR",
+        "Plot Trajectory", "Preselection", "RMSD",
+        "Build Batch from XYZ", "Calc NMR", "Calc CENSO/ANMR",
+        "hyperpol_xtb", "tadf_xtb",
+    }
+    if opt in ui_only:
+        return {
+            "ok": False,
+            "option": opt,
+            "ui_only": True,
+            "message": (
+                f"Option '{opt}' runs inside the dashboard UI. The "
+                f"agent should drive it with an ACTION: slash-command "
+                f"(see list_dashboard_widgets / get_dashboard_pattern)."
+            ),
+            "hint": (
+                f"For {opt}: select the file in the calc browser, set "
+                f"the (Options) dropdown to '{opt}', then click the "
+                f"action button. From the agent: ACTION: /calc select "
+                f"<file>; ACTION: /calc options {opt}."
+            ),
+        }
+    return {
+        "ok": False,
+        "option": opt,
+        "error": (
+            f"Unknown option {opt!r}. Use list_calc_options(filename) "
+            f"to discover valid choices for the selected file."
+        ),
     }
 
 
@@ -3167,6 +3555,11 @@ __all__ = [
     "move_calc_folder",
     "move_to_archive",
     "delete_calc_folder",
+    "kill_all_user_jobs",
+    "RecalcPlan",
+    "prepare_recalc",
+    "list_calc_options",
+    "run_calc_option",
     # ORCA-manual lookup helpers
     "check_orca_manual_indexed",
     "index_new_pdf",

@@ -579,6 +579,116 @@ def tool_delete_calc_folder(
     )
 
 
+# ---------------------------------------------------------------------------
+# Bulk job control + recalc preparation + (Options) dispatcher
+# ---------------------------------------------------------------------------
+
+
+def tool_kill_all_user_jobs(
+    only_running: bool = False,
+    allow_mutate: bool = False,
+) -> str:
+    """Cancel every active job for the current user (DESTRUCTIVE).
+
+    Default-blocks: returns a list of job_ids that WOULD be cancelled
+    so you can confirm with the user. Pass ``only_running=True`` to
+    skip PENDING jobs.
+
+    Args:
+        only_running: skip PENDING jobs.
+        allow_mutate: required for actual scancel.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.kill_all_user_jobs(
+            only_running=bool(only_running),
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_prepare_recalc(
+    folder: str,
+    mode: str = "smart",
+    time_limit: str = "24:00:00",
+    override: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Pre-flight + submit a Smart-Recalc / classic Recalc / Override.
+
+    Reads PAL/maxcore from CONTROL.txt or the largest .inp, validates
+    the time-limit format, and either returns a dry-run plan
+    (allow_mutate=False) or submits via the live backend.
+
+    Args:
+        folder: absolute path to the calc folder.
+        mode: 'smart' (delfin-recalc), 'classic' (delfin-recalc-classic),
+            or 'override' (delfin-recalc-override; needs override=).
+        time_limit: SLURM time spec HH:MM:SS.
+        override: only used when mode='override' (STAGE=INDEX[,...]).
+        allow_mutate: required for actual submission.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    plan = delfin_api.prepare_recalc(
+        folder, mode=mode, time_limit=time_limit,
+        override=override, allow_mutate=bool(allow_mutate),
+    )
+    return _json.dumps(_asdict(plan), indent=2)
+
+
+def tool_list_calc_options(filename: str) -> str:
+    """Return the (Options)-dropdown items for one selected basename.
+
+    Mirrors the dashboard's context-aware menu; the file_type field
+    shows which classification was applied (control_txt / occupier_txt
+    / inp / out / xyz / csv_complete / final_interp / other).
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_calc_options(filename),
+        indent=2,
+    )
+
+
+def tool_run_calc_option(
+    folder: str,
+    option: str,
+    target_file: str = "",
+    time_limit: str = "24:00:00",
+    override: str = "",
+    allow_mutate: bool = False,
+) -> str:
+    """Dispatch one (Options) action.
+
+    Recalc / Smart Recalc / Override route to ``prepare_recalc``;
+    everything else (Visualize, MO Plot, Print NMR, Plot Trajectory,
+    Preselection, RMSD, Build Batch from XYZ, Calc NMR, Calc CENSO/ANMR,
+    hyperpol_xtb, tadf_xtb) returns a hint to drive it via ACTION:
+    slash-commands (those run inside the dashboard UI).
+
+    Args:
+        folder: absolute path to the calc folder.
+        option: dropdown text — see list_calc_options output.
+        target_file: optional basename when the option needs one.
+        time_limit: SLURM time for recalcs.
+        override: STAGE=INDEX when option='Override'.
+        allow_mutate: required for any submission.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.run_calc_option(
+            folder, option,
+            target_file=target_file,
+            time_limit=time_limit,
+            override=override,
+            allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
 def tool_read_pdf(
     path: str,
     pages: str = "",
@@ -1109,6 +1219,11 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_move_calc_folder)
     mcp.tool()(tool_move_to_archive)
     mcp.tool()(tool_delete_calc_folder)
+    # Bulk job control + recalc preparation + Options dispatcher
+    mcp.tool()(tool_kill_all_user_jobs)
+    mcp.tool()(tool_prepare_recalc)
+    mcp.tool()(tool_list_calc_options)
+    mcp.tool()(tool_run_calc_option)
     # ORCA-manual lookup + literature indexing
     mcp.tool()(tool_check_orca_manual_indexed)
     mcp.tool()(tool_index_new_pdf)
