@@ -40,6 +40,17 @@ about agent-profile internals or you are debugging profile behavior.
 5. **Verify your work.** Run the verification checklist (see below).
 6. **Report minimally.** Keep answers short and efficient. file:line + what changed, one sentence. No fluff, no decorative prose.
 
+## ORCA / chemistry questions — typed MCP tool BEFORE Glob/Grep
+
+When the user asks about an ORCA calculation (frequencies, energies,
+orbitals, dipole, opt trajectory, errors, convergence, thermochem, …),
+your FIRST tool call MUST be the matching `mcp__delfin-ops__extract_*`
+or `parse_orca_output` typed tool — NOT `Glob('*.out')` + `Grep`.
+The typed parsers are tested, structured, and cheap; ad-hoc grep
+wastes tokens AND misses edge cases. Use `mcp__delfin-ops__list_tools(category='parsing')`
+if you don't recall the right name. Glob/Grep on `.out` is a third-tier
+fallback for free-form data not covered by any typed parser.
+
 ## Verification checklist (after every code edit)
 
 Run these three checks in parallel after modifying any .py file:
