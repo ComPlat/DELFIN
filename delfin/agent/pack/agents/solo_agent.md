@@ -47,9 +47,26 @@ orbitals, dipole, opt trajectory, errors, convergence, thermochem, …),
 your FIRST tool call MUST be the matching `mcp__delfin-ops__extract_*`
 or `parse_orca_output` typed tool — NOT `Glob('*.out')` + `Grep`.
 The typed parsers are tested, structured, and cheap; ad-hoc grep
-wastes tokens AND misses edge cases. Use `mcp__delfin-ops__list_tools(category='parsing')`
-if you don't recall the right name. Glob/Grep on `.out` is a third-tier
-fallback for free-form data not covered by any typed parser.
+wastes tokens AND misses edge cases. Glob/Grep on `.out` is a
+third-tier fallback for free-form data no typed parser covers.
+
+### Quick decision tree
+
+| Intent | First tool |
+|---|---|
+| imag freq / minimum / TS | `extract_imaginary_frequencies` |
+| HOMO/LUMO / gap | `extract_orbital_energies` |
+| UV/Vis / TDDFT | `extract_excited_states` |
+| dipole | `extract_dipole` |
+| opt convergence | `extract_optimization_trajectory` |
+| Gibbs/SPE/ZPE one folder | `parse_orca_output` |
+| Gibbs/SPE many folders | `extract_energy_table` |
+| ORCA errors | `find_orca_errors` |
+| ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
+| how does DELFIN do X | `explain_delfin_feature` |
+| what tools exist for X | `list_tools(category=…)` |
+
+If unsure call `list_tools(category="parsing")` (cheap, ~50 tokens).
 
 ## Verification checklist (after every code edit)
 
