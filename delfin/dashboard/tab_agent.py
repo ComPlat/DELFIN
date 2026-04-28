@@ -1574,6 +1574,75 @@ def _render_artifact_inline(path) -> str | None:
     return None
 
 
+def _build_full_transcript_handoff(
+    chat_messages: list[dict],
+    old_mode: str,
+    new_mode: str,
+    *,
+    max_chars_per_msg: int = 4000,
+) -> str:
+    """Format the UI conversation history as a single handoff message.
+
+    Used when the user switches modes mid-session — the new engine
+    starts with no message history, so we replay the conversation as
+    one user-side block at the top of the next turn so the model has
+    the full context without re-asking. Per-message text is capped at
+    ``max_chars_per_msg`` to keep huge runs from blowing the context.
+
+    Returns an empty string when there is nothing to hand off (no
+    chat_messages, or only system banners).
+
+    Roles understood: ``user``, ``assistant``, ``system``, ``tool``.
+    Empty content is skipped. ``role`` keys missing or unknown are
+    rendered under a ``Note`` heading so nothing silently disappears.
+    """
+    if not chat_messages:
+        return ""
+
+    def _truncate(text: str) -> str:
+        if not isinstance(text, str):
+            text = str(text or "")
+        if len(text) <= max_chars_per_msg:
+            return text
+        head = max_chars_per_msg - 64
+        return text[:head] + f"\n... [truncated {len(text) - head} chars]"
+
+    rendered: list[str] = []
+    for msg in chat_messages:
+        role = (msg.get("role") or "").strip().lower()
+        content = msg.get("content")
+        if not content:
+            continue
+        body = _truncate(content)
+        if role == "user":
+            heading = "User"
+        elif role == "assistant":
+            heading = "Assistant"
+        elif role == "system":
+            heading = "System"
+        elif role == "tool":
+            tool_name = msg.get("tool_name") or "tool"
+            heading = f"Tool ({tool_name})"
+        else:
+            heading = f"Note ({role or 'unknown'})"
+        rendered.append(f"### {heading}\n{body}")
+
+    if not rendered:
+        return ""
+
+    header = (
+        f"[Mode switch: {old_mode or '?'} → {new_mode}]\n\n"
+        f"You are now operating as the **{new_mode}** agent. The user "
+        f"kept the same conversation; below is the full prior transcript "
+        f"so you can continue without re-asking for context. Pick up "
+        f"where the previous mode left off."
+    )
+    return "\n\n".join(
+        [header, "--- Prior conversation (full transcript) ---", *rendered,
+         "--- End of prior context ---"]
+    )
+
+
 def _format_solo_domain_state(snapshot: dict) -> str:
     """Render a compact ``[Domain state]`` block for the solo-mode prompt.
 
@@ -7675,6 +7744,14 @@ def create_tab(ctx):
                 else:
                     current_msg = user_text
 
+                # Live mode-switch handoff: if the user just changed mode,
+                # _on_mode_change stashed a full-transcript block here.
+                # Prepend it to the first user message of the new engine so
+                # the model picks up where the previous mode left off.
+                _handoff = state.pop("_pending_mode_handoff", "")
+                if _handoff:
+                    current_msg = f"{_handoff}\n\n{current_msg}"
+
                 # D4: snapshot agent_workspace before the turn so we can
                 # diff and inline-render any new artifacts the agent
                 # creates (PNG/SVG/CSV/JSON).
@@ -8428,6 +8505,7 @@ def create_tab(ctx):
 
     def _on_mode_change(change):
         new_mode = change["new"]
+        old_mode = (change.get("old") or "")
         if not state.get("_mode_change_internal"):
             state["_mode_manual_override"] = True
         # Update mode description label
@@ -8437,7 +8515,51 @@ def create_tab(ctx):
             f'{desc}</span>'
         )
         engine = state["engine"]
-        if engine and not state["streaming"] and not engine.messages:
+        # Live mode-switch with full-transcript handoff: works even mid-
+        # stream and even when the engine already has messages. The new
+        # engine is built lazily by _ensure_engine on the next Send,
+        # picking up mode_dropdown.value (= new_mode). The handoff text
+        # is stashed in state and prepended to the next user message.
+        has_history = bool(state.get("chat_messages")) or bool(
+            engine and engine.messages
+        )
+        if engine and has_history and old_mode and old_mode != new_mode:
+            was_streaming = state.get("streaming", False)
+            if was_streaming:
+                try:
+                    engine.request_stop()
+                    if hasattr(engine.client, "signal_stop"):
+                        engine.client.signal_stop()
+                except Exception:
+                    pass
+                state["streaming"] = False
+                state["_generation_id"] = state.get("_generation_id", 0) + 1
+                _set_working(False)
+            try:
+                handoff = _build_full_transcript_handoff(
+                    state["chat_messages"], old_mode, new_mode,
+                )
+            except Exception:
+                handoff = ""
+            # Discard the old engine; _ensure_engine will rebuild on the
+            # next send with the new mode and the correct allowlist.
+            try:
+                if hasattr(engine.client, "kill"):
+                    engine.client.kill()
+            except Exception:
+                pass
+            state["engine"] = None
+            ctx.agent_engine = None
+            if handoff:
+                state["_pending_mode_handoff"] = handoff
+            n_msgs = len(state.get("chat_messages") or [])
+            _append_system_message(
+                f"Mode {old_mode} → {new_mode}. Context preserved "
+                f"({n_msgs} message(s) handed off on next Send)."
+            )
+            _update_status()
+            _update_button_states()
+        elif engine and not state["streaming"] and not engine.messages:
             engine.reset_cycle(mode=new_mode)
             _update_status()
         # Dashboard mode: lock permission to default, model to cheapest

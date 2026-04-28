@@ -8,6 +8,7 @@ from __future__ import annotations
 from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
     _TAB_SUGGESTIONS,
+    _build_full_transcript_handoff,
     _extract_action_commands,
     _extract_denied_tool_name,
     _filter_slash_commands,
@@ -1015,3 +1016,94 @@ def test_is_structurally_blocked_returns_false_when_tool_unknown():
     """Empty tool name → can't determine, treat as not structurally blocked."""
     assert _is_structurally_blocked("", ["Read"]) is False
     assert _is_structurally_blocked("garbage", ["Read"]) is False
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — full-transcript handoff for live mode-switch
+# ---------------------------------------------------------------------------
+
+def test_handoff_empty_chat_returns_empty():
+    assert _build_full_transcript_handoff([], "dashboard", "solo") == ""
+
+
+def test_handoff_chat_with_only_empty_content_returns_empty():
+    """No real content → no handoff (avoids empty header-only blob)."""
+    msgs = [
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": None},
+    ]
+    assert _build_full_transcript_handoff(msgs, "dashboard", "solo") == ""
+
+
+def test_handoff_includes_mode_pair_in_header():
+    msgs = [{"role": "user", "content": "hi"}]
+    out = _build_full_transcript_handoff(msgs, "dashboard", "solo")
+    assert "[Mode switch: dashboard → solo]" in out
+    assert "operating as the **solo** agent" in out
+
+
+def test_handoff_renders_all_known_roles():
+    msgs = [
+        {"role": "user", "content": "fix bug"},
+        {"role": "assistant", "content": "located the issue"},
+        {"role": "system", "content": "Cycle complete"},
+        {"role": "tool", "content": "diff output", "tool_name": "Edit"},
+    ]
+    out = _build_full_transcript_handoff(msgs, "dashboard", "solo")
+    assert "### User\nfix bug" in out
+    assert "### Assistant\nlocated the issue" in out
+    assert "### System\nCycle complete" in out
+    assert "### Tool (Edit)\ndiff output" in out
+
+
+def test_handoff_unknown_role_rendered_as_note():
+    """Unrecognised role keys are surfaced under "Note", never silently dropped."""
+    msgs = [{"role": "guest", "content": "external note"}]
+    out = _build_full_transcript_handoff(msgs, "a", "b")
+    assert "### Note (guest)\nexternal note" in out
+
+
+def test_handoff_truncates_long_messages():
+    long_text = "x" * 12000
+    msgs = [{"role": "user", "content": long_text}]
+    out = _build_full_transcript_handoff(
+        msgs, "dashboard", "solo", max_chars_per_msg=4000
+    )
+    # Cap respected (header + "[truncated ... chars]" footer)
+    assert "[truncated" in out
+    assert "x" * 5000 not in out
+
+
+def test_handoff_preserves_message_order():
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "reply2"},
+    ]
+    out = _build_full_transcript_handoff(msgs, "x", "y")
+    i_first = out.find("first")
+    i_reply1 = out.find("reply1")
+    i_second = out.find("second")
+    i_reply2 = out.find("reply2")
+    assert 0 < i_first < i_reply1 < i_second < i_reply2
+
+
+def test_handoff_skips_messages_with_empty_content():
+    """Empty-content messages are silently dropped from the transcript."""
+    msgs = [
+        {"role": "user", "content": "real"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": None},
+    ]
+    out = _build_full_transcript_handoff(msgs, "x", "y")
+    assert "### User\nreal" in out
+    assert "### Assistant" not in out  # empty assistant skipped
+
+
+def test_handoff_includes_context_framing():
+    """The framing tells the new agent it's a continuation, not a fresh start."""
+    msgs = [{"role": "user", "content": "hi"}]
+    out = _build_full_transcript_handoff(msgs, "dashboard", "solo")
+    assert "Prior conversation" in out
+    assert "End of prior context" in out
