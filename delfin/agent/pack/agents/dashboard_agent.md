@@ -146,6 +146,91 @@ Script rules (CLI-enforced):
 - Never modify CONTROL.txt, orca.inp, or any input file from a script.
 - Output (CSV, plots, reports) goes to `agent_workspace/` only.
 
+## Operational patterns (use these, don't reinvent)
+
+When the user asks for one of these workflows, run the slash chain
+verbatim — do NOT walk the filesystem manually or write Python first.
+Each pattern is exposed by an `ACTION:` slash command that already
+does the heavy lifting:
+
+### Batch jobs (Submit-Tab)
+- "Batch aus allen calc-Ordnern bauen" → `/batch from-calc`
+- "Batch nur aus matching folders" → `/batch from-calc <glob>` (e.g. `Casagrande*`)
+- "Eine SMILES-Zeile dazu" → `/batch add Name;SMILES;charge=…`
+- "Aktuellen Batch-Inhalt zeigen" → `/batch show`
+- "Batch leeren" → `/batch clear`
+
+Never assemble batch text by reading XYZ files yourself —
+`/batch from-calc` already collects every initial.xyz (or fallback
+input.txt / coords.xyz) across `calculations/` and writes a properly
+formatted block into the Submit-Tab's batch textarea.
+
+Example:
+> User: "Bau einen Batch aus allen XYZ in calc/."
+>
+>     ACTION: /batch from-calc
+
+### CONTROL.txt edits (Submit-Tab)
+- One key change → `ACTION: /control key <key> <value>`
+- Replace whole content → `ACTION: /control set <multi-line content>` (rare)
+- Validate before submit → `ACTION: /control validate`
+
+Never paste the full CONTROL into chat — use `/control key` per change.
+
+### Recalc / Smart Recalc (Calc browser)
+The Smart-Recalc widget chain auto-loads CONTROL into the editor,
+so the right idiom is `/ui calc-editor replace <old> <new>`:
+
+> User: "smart recalc von Foo/bar mit PAL=1, 1 h"
+>
+>     ACTION: /calc cd Foo/bar
+>     ACTION: /calc select CONTROL.txt
+>     ACTION: /ui calc-options value Smart Recalc
+>     ACTION: /ui calc-editor replace PAL=40 PAL=1
+>     ACTION: /ui calc-override-time value 01:00:00
+>
+> Then ASK before:
+>
+>     ACTION: /ui calc-override-btn click
+
+`calc-override-btn` is the submit button, `calc-override-time` is the
+time field. Don't confuse with `calc-recalc-btn` / `calc-submit-recalc-btn`
+(those exist but are NOT the Smart-Recalc panel).
+
+### Submit a single ORCA job (ORCA Builder)
+- Set fields → `ACTION: /ui orca-method value PBE0`,
+  `/ui orca-basis value def2-TZVP`, `/ui orca-charge value 0`
+- Switch to the tab → `ACTION: /tab orca`
+- Submit (after confirmation!) → `ACTION: /orca submit`
+
+### Analyze existing calculations
+- One folder, full → `ACTION: /analyze <dir>`
+- Just energies → `ACTION: /analyze energy <dir>`
+- SCF convergence → `ACTION: /analyze convergence <dir>`
+- Error scan → `ACTION: /analyze errors <dir>`
+- All folders overview → `ACTION: /analyze status`
+
+For multi-folder energy tables across `calc/` / `archive/`, prefer
+the `extract_energy_table` MCP tool when available — it returns
+structured data the agent can format directly.
+
+### Recalc check / submit
+- Check one folder (safe, read-only) → `ACTION: /recalc check <dir>`
+- Scan everything (safe) → `ACTION: /recalc check-all`
+- Submit recalc (DESTRUCTIVE — needs explicit user OK) →
+  `ACTION: /recalc <dir>` and confirm
+- Bulk auto-recalc only on explicit "alle neuberechnen" →
+  `ACTION: /recalc auto`
+
+### Cancel jobs
+- One job → `ACTION: /cancel <job_id>` (after user OK)
+- All — only on explicit "cancel all" → `ACTION: /cancel all`
+
+### When in doubt
+The dashboard's slash-palette (button labelled `/`) lists every
+command and is the authoritative reference. If a workflow doesn't
+match anything above, switch to that palette before writing Python.
+
 ## Background tasks — anti-stall rule
 
 You don't need to run pytest in dashboard mode often, but if you do:
