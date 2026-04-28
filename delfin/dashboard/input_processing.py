@@ -289,8 +289,21 @@ def parse_resource_settings(control_text):
     return pal, maxcore
 
 
+_PAL_NPROCS_RE = re.compile(r'(?i)\bnprocs\s*=?\s*(\d+)')
+_PAL_KEYWORD_RE = re.compile(r'(?im)^\s*!.*?\bPAL\s*(\d+)\b')
+_MAXCORE_RE = re.compile(r'(?im)^\s*%maxcore\s*=?\s*(\d+)')
+_PAL_BLOCK_RE = re.compile(r'(?is)%pal\b.*?\bend\b')
+
+
 def parse_inp_resources(inp_text):
     """Parse PAL (nprocs) and maxcore from ORCA ``.inp`` text.
+
+    Accepts every form ORCA itself accepts:
+      * ``%pal nprocs N end``                    (inline)
+      * ``%pal\n  nprocs N\nend``                (multi-line)
+      * ``%pal\n  nprocs=N\nend``                (= syntax)
+      * ``! PAL<N>``                              (keyword shortcut, e.g. ``! PAL8``)
+      * ``%maxcore N`` / ``%MaxCore=N``           (case-insensitive, optional ``=``)
 
     Returns ``(pal, maxcore)`` as ints or *None* if not found.
     """
@@ -298,12 +311,16 @@ def parse_inp_resources(inp_text):
     maxcore = None
     if not inp_text:
         return pal, maxcore
-    pal_match = re.search(r'(?i)\bnprocs\s+(\d+)', inp_text)
-    if pal_match:
-        pal = int(pal_match.group(1))
-    maxcore_match = re.search(r'(?im)^\s*%maxcore\s+(\d+)', inp_text)
-    if maxcore_match:
-        maxcore = int(maxcore_match.group(1))
+    m = _PAL_NPROCS_RE.search(inp_text)
+    if m:
+        pal = int(m.group(1))
+    else:
+        m = _PAL_KEYWORD_RE.search(inp_text)
+        if m:
+            pal = int(m.group(1))
+    m = _MAXCORE_RE.search(inp_text)
+    if m:
+        maxcore = int(m.group(1))
     return pal, maxcore
 
 
