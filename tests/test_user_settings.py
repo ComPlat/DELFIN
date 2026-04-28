@@ -245,3 +245,43 @@ def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
 
     assert loaded["ui"]["tabs"]["order"] == ["submit", "archive"]
     assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
+
+
+# ---------------------------------------------------------------------------
+# S5 + S7 — agent-section additions: compact_resets_cli + cost_soft_limit_usd
+# ---------------------------------------------------------------------------
+
+def test_default_settings_has_cost_soft_limit_usd():
+    """Soft-limit default must be present so the dashboard banner has a source."""
+    agent = _MODULE.DEFAULT_SETTINGS["agent"]
+    assert "cost_soft_limit_usd" in agent
+    assert isinstance(agent["cost_soft_limit_usd"], (int, float))
+    assert agent["cost_soft_limit_usd"] > 0
+
+
+def test_default_settings_has_compact_resets_cli():
+    """compact_resets_cli must default True (preserves the old behaviour)."""
+    agent = _MODULE.DEFAULT_SETTINGS["agent"]
+    assert agent.get("compact_resets_cli") is True
+
+
+def test_load_settings_keeps_user_cost_soft_limit_override(tmp_path):
+    """User-supplied soft-limit must round-trip via load/save."""
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"agent": {"cost_soft_limit_usd": 12.5}}),
+        encoding="utf-8",
+    )
+    loaded = load_settings(settings_path)
+    assert loaded["agent"]["cost_soft_limit_usd"] == 12.5
+
+
+def test_load_settings_keeps_user_compact_resets_cli_override(tmp_path):
+    """compact_resets_cli false → kept as false after load (no silent reset)."""
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"agent": {"compact_resets_cli": False}}),
+        encoding="utf-8",
+    )
+    loaded = load_settings(settings_path)
+    assert loaded["agent"]["compact_resets_cli"] is False

@@ -8075,18 +8075,27 @@ def create_tab(ctx):
                             start_time=_turn_start_time,
                         )
 
-                    # Show per-role cost (only for pipeline modes, not solo/dashboard)
+                    # S7 — Show per-turn cost in ALL modes including solo +
+                    # dashboard. Pipeline rows stay verbose (they include the
+                    # role label so the user can attribute cost per agent);
+                    # solo/dashboard get a single compact line.
                     _role_cost = engine.cost_usd - _cost_before
                     _role_in = engine.token_usage["input"] - _in_before
                     _role_out = engine.token_usage["output"] - _out_before
-                    _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
-                    if _is_pipeline_mode and (_role_in > 0 or _role_out > 0):
+                    if _role_in > 0 or _role_out > 0:
                         _cost_str = f"${_role_cost:.3f}" if _role_cost > 0 else ""
-                        _append_system_message(
-                            f"{role_label}: {_role_in:,} in / {_role_out:,} out"
-                            f"{' · ' + _cost_str if _cost_str else ''}"
-                            f" [{_effective_model}]"
-                        )
+                        _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
+                        if _is_pipeline_mode:
+                            _append_system_message(
+                                f"{role_label}: {_role_in:,} in / {_role_out:,} out"
+                                f"{' · ' + _cost_str if _cost_str else ''}"
+                                f" [{_effective_model}]"
+                            )
+                        elif _cost_str:
+                            _append_system_message(
+                                f"Turn cost: {_cost_str} "
+                                f"({_role_in:,} in / {_role_out:,} out · {_effective_model})"
+                            )
 
                     if engine._stop_requested:
                         break
@@ -8102,6 +8111,24 @@ def create_tab(ctx):
                             _passed.add(_ms)
                             _append_system_message(
                                 f"Cost milestone: ${engine.cost_usd:.2f} (passed ${_ms:.0f})"
+                            )
+
+                    # S7 — Soft-limit banner: show ONCE per session when the
+                    # configured threshold is crossed. Doesn't stop anything;
+                    # the user decides whether to /stop or continue.
+                    if not state.get("_cost_soft_limit_warned"):
+                        try:
+                            _soft = float(
+                                _get_agent_settings().get("cost_soft_limit_usd", 5.0)
+                            )
+                        except (TypeError, ValueError):
+                            _soft = 5.0
+                        if _soft > 0 and engine.cost_usd >= _soft:
+                            state["_cost_soft_limit_warned"] = True
+                            _append_system_message(
+                                f"💸 Cost soft-limit reached: ${engine.cost_usd:.2f} "
+                                f"≥ ${_soft:.2f}. Continue or /stop — limit "
+                                f"configurable via agent.cost_soft_limit_usd."
                             )
 
                     # --- Auto-advance logic ---
