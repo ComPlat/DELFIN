@@ -1178,6 +1178,63 @@ def _suggestion_for_tab(tab_name: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Helper: distinguish "interactive approval needed" from "structurally
+# blocked" denials so we can show the right message instead of an
+# Approve/Deny prompt that won't actually unblock anything.
+# ---------------------------------------------------------------------------
+
+def _extract_denied_tool_name(denied_raw: str) -> str:
+    """Pull ``tool_name`` from a permission-denied payload.
+
+    The payload is a Python-literal dict produced by the CLI; we accept
+    string and dict inputs, return ``""`` if no tool name can be read.
+    """
+    if not denied_raw:
+        return ""
+    if isinstance(denied_raw, dict):
+        return str(denied_raw.get("tool_name", "") or "")
+    import ast as _ast
+    try:
+        d = _ast.literal_eval(denied_raw) if str(denied_raw).strip().startswith("{") else {}
+    except Exception:
+        d = {}
+    if isinstance(d, dict):
+        return str(d.get("tool_name", "") or "")
+    return ""
+
+
+def _tool_in_allowlist(tool_name: str, cli_tools: list[str] | None) -> bool:
+    """Return True if ``tool_name`` is permitted by the CLI tool allow-list.
+
+    A ``None`` allow-list means no restriction (CLI default = all tools
+    available). An entry like ``"Bash(git *)"`` counts as enabling the
+    ``Bash`` tool — patterns are interactive guards on top, not extra
+    blocks. Empty list explicitly disallows everything.
+    """
+    if not tool_name:
+        return False
+    if cli_tools is None:
+        return True
+    base_names = {entry.split("(", 1)[0].strip() for entry in cli_tools}
+    return tool_name in base_names
+
+
+def _is_structurally_blocked(denied_raw: str, cli_tools: list[str] | None) -> bool:
+    """``True`` when the denied tool is missing from the CLI allow-list.
+
+    In that case Approve/Deny buttons can't help — the CLI subprocess
+    rejects the call before any interactive prompt fires. The caller
+    should surface a mode-switch hint instead of the normal prompt.
+    """
+    if cli_tools is None:
+        return False
+    tool = _extract_denied_tool_name(denied_raw)
+    if not tool:
+        return False
+    return not _tool_in_allowlist(tool, cli_tools)
+
+
 def _should_show_action_confirmation(agent_text: str) -> bool:
     """Decision rule for the D1 confirm-buttons: agent proposed
     ``ACTION:`` lines AND its prose explicitly invites confirmation.
@@ -7533,6 +7590,25 @@ def create_tab(ctx):
                     denied_raw = str(description)
                     readable = _format_tool_description(denied_raw)
                     state["_last_denied"] = denied_raw
+                    # Step 5 — distinguish "interactive approval" from
+                    # "structurally blocked": if the denied tool isn't in
+                    # the CLI allowlist for the current mode, Approve/Deny
+                    # can't help. Tell the user what to switch instead.
+                    _engine_obj = state.get("engine")
+                    _allowed = getattr(
+                        getattr(_engine_obj, "client", None), "allowed_tools", None,
+                    )
+                    if _is_structurally_blocked(denied_raw, _allowed):
+                        _tool = _extract_denied_tool_name(denied_raw) or "this tool"
+                        _append_system_message(
+                            f"⛔ {_tool} is blocked by the {mode_dropdown.value} "
+                            f"mode CLI allowlist — Approve won't help. "
+                            f"Switch the Mode dropdown to **solo** "
+                            f"(live, conversation context is preserved) "
+                            f"or run the action manually."
+                        )
+                        engine.request_stop()
+                        return
                     # Accumulate denied commands for context injection
                     _denied_cmds = state.setdefault("_denied_commands", [])
                     if readable not in _denied_cmds:

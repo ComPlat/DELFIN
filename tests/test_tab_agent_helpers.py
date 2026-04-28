@@ -9,8 +9,10 @@ from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
     _TAB_SUGGESTIONS,
     _extract_action_commands,
+    _extract_denied_tool_name,
     _filter_slash_commands,
     _format_solo_domain_state,
+    _is_structurally_blocked,
     _render_action_confirmation_html,
     _render_artifact_inline,
     _render_molecule_to_png_b64,
@@ -21,6 +23,7 @@ from delfin.dashboard.tab_agent import (
     _should_show_action_confirmation,
     _suggestion_for_tab,
     _text_requests_confirmation,
+    _tool_in_allowlist,
 )
 
 
@@ -942,3 +945,73 @@ def test_solo_domain_state_full_snapshot_well_formed():
         idx = out.find(key)
         assert idx > last_index, f"missing or out-of-order: {key}"
         last_index = idx
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — structural-block detection for permission denials
+# ---------------------------------------------------------------------------
+
+def test_extract_denied_tool_name_from_dict_string():
+    """Real CLI denial payload is a literal dict string."""
+    raw = "{'tool_name': 'Edit', 'tool_input': {'file_path': '/tmp/x.py'}}"
+    assert _extract_denied_tool_name(raw) == "Edit"
+
+
+def test_extract_denied_tool_name_from_dict_object():
+    raw = {"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}}
+    assert _extract_denied_tool_name(raw) == "Bash"
+
+
+def test_extract_denied_tool_name_returns_empty_when_missing():
+    assert _extract_denied_tool_name("") == ""
+    assert _extract_denied_tool_name("not a dict") == ""
+    assert _extract_denied_tool_name("{'no_tool_key': 1}") == ""
+
+
+def test_tool_in_allowlist_none_means_unrestricted():
+    """A None allow-list = CLI default = every tool allowed."""
+    assert _tool_in_allowlist("Edit", None) is True
+    assert _tool_in_allowlist("Anything", None) is True
+
+
+def test_tool_in_allowlist_empty_list_blocks_everything():
+    assert _tool_in_allowlist("Edit", []) is False
+    assert _tool_in_allowlist("Read", []) is False
+
+
+def test_tool_in_allowlist_pattern_entries_count_as_base_tool():
+    """``Bash(git *)`` enables the Bash tool."""
+    cli = ["Read", "Glob", "Bash(git *)"]
+    assert _tool_in_allowlist("Bash", cli) is True
+    assert _tool_in_allowlist("Read", cli) is True
+    assert _tool_in_allowlist("Edit", cli) is False
+
+
+def test_is_structurally_blocked_dashboard_edit():
+    """Real-world case: dashboard mode lacks Edit, agent tries to Edit."""
+    dashboard_tools = [
+        "Read", "Grep", "Glob", "Write", "Bash", "WebSearch", "WebFetch",
+    ]
+    raw = "{'tool_name': 'Edit', 'tool_input': {'file_path': 'foo.py'}}"
+    assert _is_structurally_blocked(raw, dashboard_tools) is True
+
+
+def test_is_structurally_blocked_solo_edit_is_allowed():
+    solo_tools = [
+        "Read", "Grep", "Glob", "Bash", "Edit", "Write",
+        "WebSearch", "WebFetch",
+    ]
+    raw = "{'tool_name': 'Edit', 'tool_input': {'file_path': 'foo.py'}}"
+    assert _is_structurally_blocked(raw, solo_tools) is False
+
+
+def test_is_structurally_blocked_returns_false_when_unrestricted():
+    """``allowed_tools=None`` means CLI default — never structurally blocked."""
+    raw = "{'tool_name': 'Edit', 'tool_input': {}}"
+    assert _is_structurally_blocked(raw, None) is False
+
+
+def test_is_structurally_blocked_returns_false_when_tool_unknown():
+    """Empty tool name → can't determine, treat as not structurally blocked."""
+    assert _is_structurally_blocked("", ["Read"]) is False
+    assert _is_structurally_blocked("garbage", ["Read"]) is False
