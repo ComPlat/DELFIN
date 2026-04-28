@@ -351,3 +351,111 @@ def test_live_state_session_id_truncated():
     })
     assert "abcdef12" in html
     assert "abcdef1234567890abcdef1234567890" not in html  # truncated
+
+
+# ---------------------------------------------------------------------------
+# A3 — cost insights (period buckets + per-mode)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime as _dt
+
+
+def _outcome_at(ts: str, *, mode: str = "solo", delta: float = 0.5,
+                cum: float | None = None, provider: str = "x") -> CycleOutcome:
+    return CycleOutcome(
+        provider=provider, mode=mode, verdict="PASS",
+        cost_usd=cum if cum is not None else delta,
+        cost_usd_delta=delta,
+        timestamp=ts,
+    )
+
+
+def test_aggregate_costs_by_period_buckets_correctly():
+    """Calendar boundaries: today / this-week / this-month / all."""
+    now = _dt(2026, 4, 28, 12, 0, 0)  # Tuesday in week 18
+    outcomes = [
+        _outcome_at("2026-04-28T08:00:00", delta=0.10),  # today
+        _outcome_at("2026-04-27T20:00:00", delta=0.20),  # this week
+        _outcome_at("2026-04-15T08:00:00", delta=0.30),  # this month, NOT this week
+        _outcome_at("2026-03-15T08:00:00", delta=1.00),  # all-time only
+    ]
+    p = tab._aggregate_costs_by_period(outcomes, now=now)
+    assert p["today"] == 0.10
+    assert abs(p["week"] - 0.30) < 1e-9   # 0.10 + 0.20
+    assert abs(p["month"] - 0.60) < 1e-9  # 0.10 + 0.20 + 0.30
+    assert abs(p["all"] - 1.60) < 1e-9    # all four
+
+
+def test_aggregate_costs_by_period_empty():
+    assert tab._aggregate_costs_by_period([]) == {
+        "today": 0.0, "week": 0.0, "month": 0.0, "all": 0.0,
+    }
+
+
+def test_aggregate_costs_by_period_unparseable_ts_excluded():
+    """An entry with a broken timestamp must NOT corrupt buckets."""
+    now = _dt(2026, 4, 28, 12, 0, 0)
+    outcomes = [
+        _outcome_at("2026-04-28T08:00:00", delta=0.10),
+        CycleOutcome(provider="x", mode="solo", verdict="PASS",
+                     cost_usd=999.0, cost_usd_delta=999.0,
+                     timestamp="not a real timestamp"),
+    ]
+    p = tab._aggregate_costs_by_period(outcomes, now=now)
+    assert p["today"] == 0.10  # broken-ts entry excluded
+    assert p["all"] == 0.10 + 999.0   # but still counted in all-time
+
+
+def test_aggregate_costs_by_period_at_day_boundary():
+    """An entry one second before midnight counts to that day, not the next."""
+    now = _dt(2026, 4, 28, 0, 30, 0)  # right after midnight
+    outcomes = [
+        _outcome_at("2026-04-27T23:59:30", delta=0.50),  # yesterday
+        _outcome_at("2026-04-28T00:00:30", delta=0.10),  # today
+    ]
+    p = tab._aggregate_costs_by_period(outcomes, now=now)
+    assert p["today"] == 0.10
+    # Both fall in the same iso week (Mon-Sun) → both in week
+    assert abs(p["week"] - 0.60) < 1e-9
+
+
+def test_aggregate_costs_by_mode_groups_correctly():
+    outcomes = [
+        _outcome_at("2026-04-28T08:00:00", mode="solo",      delta=0.10),
+        _outcome_at("2026-04-28T08:01:00", mode="solo",      delta=0.20),
+        _outcome_at("2026-04-28T08:02:00", mode="dashboard", delta=0.05),
+        _outcome_at("2026-04-28T08:03:00", mode="quick",     delta=0.15),
+    ]
+    by_mode = tab._aggregate_costs_by_mode(outcomes)
+    assert abs(by_mode["solo"] - 0.30) < 1e-9
+    assert abs(by_mode["dashboard"] - 0.05) < 1e-9
+    assert abs(by_mode["quick"] - 0.15) < 1e-9
+
+
+def test_aggregate_costs_by_mode_empty_returns_empty_dict():
+    assert tab._aggregate_costs_by_mode([]) == {}
+
+
+def test_render_cost_insights_includes_all_period_cards():
+    out = tab._render_cost_insights(
+        {"today": 0.10, "week": 0.50, "month": 1.20, "all": 5.0},
+        {"solo": 3.0, "dashboard": 2.0},
+    )
+    assert "Today" in out
+    assert "This week" in out
+    assert "This month" in out
+    assert "All time" in out
+    # Mode bars
+    assert "Cost by mode" in out
+    assert "solo" in out
+    assert "dashboard" in out
+
+
+def test_render_cost_insights_handles_empty_modes():
+    out = tab._render_cost_insights(
+        {"today": 0.0, "week": 0.0, "month": 0.0, "all": 0.0},
+        {},
+    )
+    assert "Today" in out
+    # No "Cost by mode" section when by_mode is empty
+    assert "Cost by mode" not in out

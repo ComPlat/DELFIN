@@ -262,6 +262,157 @@ def _ts_close(ts_a: str, ts_b: str, window_s: float) -> bool:
     return abs((b - a).total_seconds()) <= window_s
 
 
+def _aggregate_costs_by_period(
+    outcomes: list[CycleOutcome],
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """Bucket honest per-cycle deltas into today / week / month / all.
+
+    Boundaries are calendar-based in the local timezone:
+    - "today" = same calendar date as ``now``
+    - "week"  = within the same ISO week (Mon-Sun)
+    - "month" = within the same calendar month
+    - "all"   = sum across every outcome we have
+
+    Outcomes with unparseable timestamps fall through into "all" but
+    are NOT counted toward today/week/month (we can't place them).
+    """
+    if not outcomes:
+        return {"today": 0.0, "week": 0.0, "month": 0.0, "all": 0.0}
+
+    now = now or datetime.now()
+    today = now.date()
+    iso_year, iso_week, _ = today.isocalendar()
+    cur_month = (today.year, today.month)
+
+    today_total = 0.0
+    week_total = 0.0
+    month_total = 0.0
+    all_total = _outcomes_total_delta(outcomes)
+
+    # We need the per-outcome delta in the same way _outcomes_total_delta
+    # computes it, including the legacy heuristic. Reuse it row-by-row.
+    last_cum: dict[tuple[str, str], float] = {}
+    last_ts: dict[tuple[str, str], str] = {}
+    SESSION_WINDOW_S = 4 * 3600
+
+    for o in outcomes:
+        delta = _outcome_cost_delta(o)
+        if delta <= 0:
+            key = (o.provider or "", o.mode or "")
+            prev = last_cum.get(key, 0.0)
+            prev_ts = last_ts.get(key, "")
+            same_session = bool(prev_ts) and _ts_close(prev_ts, o.timestamp, SESSION_WINDOW_S)
+            if same_session and float(o.cost_usd) >= prev:
+                delta = float(o.cost_usd) - prev
+            else:
+                delta = float(o.cost_usd)
+            last_cum[key] = float(o.cost_usd)
+            last_ts[key] = o.timestamp
+        try:
+            ts = datetime.fromisoformat(o.timestamp) if o.timestamp else None
+        except (ValueError, TypeError):
+            ts = None
+        if ts is None:
+            continue
+        d = ts.date()
+        if d == today:
+            today_total += delta
+        if d.isocalendar()[:2] == (iso_year, iso_week):
+            week_total += delta
+        if (d.year, d.month) == cur_month:
+            month_total += delta
+
+    return {
+        "today": today_total,
+        "week":  week_total,
+        "month": month_total,
+        "all":   all_total,
+    }
+
+
+def _aggregate_costs_by_mode(
+    outcomes: list[CycleOutcome],
+) -> dict[str, float]:
+    """Sum honest per-cycle deltas grouped by mode."""
+    if not outcomes:
+        return {}
+    by_mode: dict[str, float] = {}
+    last_cum: dict[tuple[str, str], float] = {}
+    last_ts: dict[tuple[str, str], str] = {}
+    SESSION_WINDOW_S = 4 * 3600
+
+    for o in outcomes:
+        delta = _outcome_cost_delta(o)
+        if delta <= 0:
+            key = (o.provider or "", o.mode or "")
+            prev = last_cum.get(key, 0.0)
+            prev_ts = last_ts.get(key, "")
+            same_session = bool(prev_ts) and _ts_close(prev_ts, o.timestamp, SESSION_WINDOW_S)
+            if same_session and float(o.cost_usd) >= prev:
+                delta = float(o.cost_usd) - prev
+            else:
+                delta = float(o.cost_usd)
+            last_cum[key] = float(o.cost_usd)
+            last_ts[key] = o.timestamp
+        mode = o.mode or "unknown"
+        by_mode[mode] = by_mode.get(mode, 0.0) + delta
+    return by_mode
+
+
+def _render_cost_insights(period: dict, by_mode: dict[str, float]) -> str:
+    """Render the period cards + per-mode bar list."""
+    period_cards = []
+    for label, key, color in [
+        ("Today",     "today", "#3b82f6"),
+        ("This week", "week",  "#10b981"),
+        ("This month","month", "#6366f1"),
+        ("All time",  "all",   "#8b5cf6"),
+    ]:
+        value = float(period.get(key, 0.0) or 0.0)
+        period_cards.append(
+            f'<div style="flex:1;min-width:120px;padding:10px 12px;'
+            f'background:#fff;border:1px solid #e5e7eb;border-radius:8px;'
+            f'border-left:3px solid {color};">'
+            f'<div style="font-size:10px;font-weight:600;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">{_html.escape(label)}</div>'
+            f'<div style="font-size:16px;font-weight:700;color:#111827;'
+            f'margin-top:2px;">{_fmt_cost(value)}</div></div>'
+        )
+    cards_html = (
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">'
+        + "".join(period_cards) + '</div>'
+    )
+
+    if not by_mode:
+        return cards_html
+    max_v = max(by_mode.values()) or 1.0
+    rows = []
+    for mode, v in sorted(by_mode.items(), key=lambda kv: -kv[1]):
+        pct = max(2.0, (v / max_v) * 100.0)
+        rows.append(
+            f'<div style="display:flex;align-items:center;gap:8px;'
+            f'margin:3px 0;font-size:11px;">'
+            f'<div style="width:96px;color:#374151;">{_html.escape(mode)}</div>'
+            f'<div style="flex:1;background:#f3f4f6;border-radius:4px;'
+            f'height:14px;position:relative;overflow:hidden;">'
+            f'<div style="position:absolute;left:0;top:0;height:100%;'
+            f'width:{pct:.1f}%;background:#6366f1;"></div></div>'
+            f'<div style="width:80px;text-align:right;color:#6366f1;'
+            f'font-weight:600;">{_fmt_cost(v)}</div></div>'
+        )
+    bars_html = (
+        '<div style="background:#f9fafb;border:1px solid #e5e7eb;'
+        'border-radius:6px;padding:8px 12px;">'
+        '<div style="font-size:10px;font-weight:600;color:#6b7280;'
+        'text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">'
+        'Cost by mode</div>'
+        + "".join(rows) + '</div>'
+    )
+    return cards_html + bars_html
+
+
 def _aggregate_stats(outcomes: list[CycleOutcome]) -> dict:
     """Compute summary statistics (totals, success rate, avg cost/duration).
 
@@ -456,6 +607,7 @@ def create_tab(ctx, history_path: Path | None = None):
     live_html = widgets.HTML(value=_format_live_state({}))
     summary_html = widgets.HTML(value="")
     timeline_html = widgets.HTML(value="")
+    cost_html = widgets.HTML(value="")
     mcp_html = widgets.HTML(value="")
     hooks_html = widgets.HTML(value="")
     settings_html = widgets.HTML(value="")
@@ -601,6 +753,11 @@ def create_tab(ctx, history_path: Path | None = None):
         )
         summary_html.value = _render_summary(_aggregate_stats(outcomes))
         timeline_html.value = _render_timeline(outcomes)
+        # A3 — cost insights mirror the same filtered set
+        cost_html.value = _render_cost_insights(
+            _aggregate_costs_by_period(outcomes),
+            _aggregate_costs_by_mode(outcomes),
+        )
 
     # ---- A2: Accordion layout with live count badges -------------------
 
@@ -609,28 +766,32 @@ def create_tab(ctx, history_path: Path | None = None):
         layout=widgets.Layout(gap="8px", flex_flow="row wrap"),
     )
     recent_runs = widgets.VBox([filter_row, summary_html, timeline_html])
+    cost_insights = widgets.VBox([cost_html])
     configuration = widgets.VBox([mcp_html, hooks_html, settings_html])
     local_state = widgets.VBox([worktrees_html, schedules_html])
 
     accordion = widgets.Accordion(
-        children=[recent_runs, configuration, local_state],
+        children=[recent_runs, cost_insights, configuration, local_state],
         selected_index=0,
     )
     accordion.set_title(0, "Recent runs")
-    accordion.set_title(1, "Configuration")
-    accordion.set_title(2, "Local state")
+    accordion.set_title(1, "Cost insights")
+    accordion.set_title(2, "Configuration")
+    accordion.set_title(3, "Local state")
 
     def _update_section_titles() -> None:
         c = state["_counts"]
+        n_outcomes = len(state['all_outcomes'])
+        accordion.set_title(0, f"Recent runs ({n_outcomes} cycles)")
+        # Cost-insights title gets the honest "all-time" total in the badge
+        all_time = _outcomes_total_delta(state["all_outcomes"])
+        accordion.set_title(1, f"Cost insights ({_fmt_cost(all_time)} all-time)")
         accordion.set_title(
-            0, f"Recent runs ({len(state['all_outcomes'])} cycles)"
-        )
-        accordion.set_title(
-            1,
+            2,
             f"Configuration ({c['mcp']} MCP · {c['hooks']} hooks · {c['settings']} settings)"
         )
         accordion.set_title(
-            2,
+            3,
             f"Local state ({c['worktrees']} worktrees · {c['schedules']} schedules)"
         )
 
@@ -650,11 +811,14 @@ def create_tab(ctx, history_path: Path | None = None):
 
 __all__ = [
     "create_tab",
+    "_aggregate_costs_by_mode",
+    "_aggregate_costs_by_period",
     "_aggregate_stats",
     "_filter_outcomes",
     "_format_live_state",
     "_outcome_cost_delta",
     "_outcomes_total_delta",
+    "_render_cost_insights",
     "_render_summary",
     "_render_timeline",
 ]
