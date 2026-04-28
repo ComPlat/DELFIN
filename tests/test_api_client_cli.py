@@ -23,6 +23,7 @@ def client(tmp_path):
     c.mcp_config = ""
     c.allowed_tools = None
     c.extra_dirs = None
+    c.effort = ""
     c._proc = None
     c._session_id = ""
     return c
@@ -153,3 +154,94 @@ def test_non_empty_user_content_writes_stdin(client):
     fake_proc.stdin.write.assert_called()
     written = fake_proc.stdin.write.call_args_list[0].args[0]
     assert '"text": "hello"' in written or '"text":"hello"' in written
+
+
+# ---------------------------------------------------------------------------
+# Effort flag: dashboard's effort_dropdown.value -> CLI subprocess --effort X
+# ---------------------------------------------------------------------------
+
+
+def _stub_client(tmp_path, effort: str):
+    """Build a CLIClient bypassing the claude-binary existence check."""
+    c = CLIClient.__new__(CLIClient)
+    c.claude_path = "/usr/bin/claude"
+    c.model = "haiku"
+    c.permission_mode = ""
+    c.cwd = str(tmp_path)
+    c.mcp_config = ""
+    c.allowed_tools = None
+    c.extra_dirs = None
+    c.effort = (effort or "").strip().lower()
+    c._proc = None
+    c._session_id = ""
+    return c
+
+
+@pytest.mark.parametrize(
+    "level", ["low", "medium", "high", "xhigh", "max"],
+)
+def test_effort_flag_appears_in_cmd(tmp_path, level):
+    """Valid effort levels add ``--effort <level>`` to the cmd."""
+    import delfin.agent.api_client as api_client
+
+    c = _stub_client(tmp_path, effort=level)
+
+    captured = {}
+    class DummyProc:
+        stdin = stdout = stderr = MagicMock()
+        def poll(self): return None
+
+    def _capture_popen(cmd, **_):
+        captured["cmd"] = cmd
+        return DummyProc()
+
+    with patch.object(api_client.subprocess, "Popen", side_effect=_capture_popen):
+        c._ensure_proc(system="sys", session_id="")
+
+    assert "--effort" in captured["cmd"]
+    idx = captured["cmd"].index("--effort")
+    assert captured["cmd"][idx + 1] == level
+
+
+def test_empty_effort_omits_flag(tmp_path):
+    """Empty effort = use the CLI's default (no --effort flag)."""
+    import delfin.agent.api_client as api_client
+
+    c = _stub_client(tmp_path, effort="")
+
+    captured = {}
+    class DummyProc:
+        stdin = stdout = stderr = MagicMock()
+        def poll(self): return None
+
+    def _capture_popen(cmd, **_):
+        captured["cmd"] = cmd
+        return DummyProc()
+
+    with patch.object(api_client.subprocess, "Popen", side_effect=_capture_popen):
+        c._ensure_proc(system="sys", session_id="")
+
+    assert "--effort" not in captured["cmd"]
+
+
+def test_invalid_effort_omits_flag(tmp_path):
+    """Garbage value falls through silently rather than crashing."""
+    import delfin.agent.api_client as api_client
+
+    import delfin.agent.api_client as api_client
+
+    c = _stub_client(tmp_path, effort="bogus")
+
+    captured = {}
+    class DummyProc:
+        stdin = stdout = stderr = MagicMock()
+        def poll(self): return None
+
+    def _capture_popen(cmd, **_):
+        captured["cmd"] = cmd
+        return DummyProc()
+
+    with patch.object(api_client.subprocess, "Popen", side_effect=_capture_popen):
+        c._ensure_proc(system="sys", session_id="")
+
+    assert "--effort" not in captured["cmd"]
