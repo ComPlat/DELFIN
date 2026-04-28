@@ -320,7 +320,16 @@ class AgentEngine:
         self._load_mode(mode)
 
     def _init_context_features(self) -> None:
-        """Initialize context engineering features (tracker, distiller)."""
+        """Initialize context engineering features (tracker, distiller).
+
+        Distiller is enabled by default for the solo role (where long
+        sessions accumulate big repo-map + briefing + memory context that
+        actually benefits from haiku-class compression). Dashboard runs
+        on a much smaller prompt budget and the distiller's per-call
+        cost ($~0.04) outweighs the savings, so it stays off there.
+
+        Other roles inherit the conservative default off.
+        """
         try:
             from .context_tracker import ContextUsageTracker
             self._context_tracker = ContextUsageTracker()
@@ -329,7 +338,9 @@ class AgentEngine:
             pass
         try:
             from .context_distiller import ContextDistiller
-            self._distiller = ContextDistiller(enabled=False)
+            _enable = self.mode in ("solo", "quick", "reviewed", "tdd",
+                                    "cluster", "full")
+            self._distiller = ContextDistiller(enabled=_enable)
         except Exception:
             pass
 
