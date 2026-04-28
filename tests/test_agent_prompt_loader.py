@@ -622,3 +622,84 @@ def test_solo_prompt_includes_external_memory_when_present(
     )
     assert "External Memory" in prompt
     assert "terse diffs" in prompt
+
+
+# ---------------------------------------------------------------------------
+# S1 — live_state injected into the system prompt (replaces user-msg state block)
+# ---------------------------------------------------------------------------
+
+def test_live_state_appears_in_solo_prompt(agent_tree):
+    """live_state passes through and lands as a --- Live state --- section."""
+    from delfin.agent.prompt_loader import PromptLoader
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+        live_state="calc_dir: /tmp/calc\nactive_tab: Calculations",
+    )
+    assert "--- Live state ---" in prompt
+    assert "calc_dir: /tmp/calc" in prompt
+
+
+def test_live_state_appears_in_dashboard_prompt(agent_tree):
+    """Dashboard goes through the non-solo branch — must also support live_state."""
+    from delfin.agent.prompt_loader import PromptLoader
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="dashboard_agent",
+        mode_id="dashboard",
+        mode_description="dashboard",
+        route=["dashboard_agent"],
+        role_index=0,
+        live_state="ORCA Builder: method=BP86",
+    )
+    assert "--- Live state ---" in prompt
+    assert "method=BP86" in prompt
+
+
+def test_live_state_omitted_when_empty(agent_tree):
+    """Empty live_state must NOT add a --- Live state --- header."""
+    from delfin.agent.prompt_loader import PromptLoader
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+        live_state="",
+    )
+    assert "--- Live state ---" not in prompt
+
+
+def test_live_state_default_is_empty(agent_tree):
+    """Backwards compat: callers that don't pass live_state still work."""
+    from delfin.agent.prompt_loader import PromptLoader
+    loader = PromptLoader(agent_tree)
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="quick",
+        mode_description="solo",
+        route=["solo_agent"],
+        role_index=0,
+    )
+    assert "--- Live state ---" not in prompt
+
+
+def test_engine_set_live_state_passes_through(agent_tree):
+    """AgentEngine.set_live_state() flows through into build_system_prompt."""
+    from unittest.mock import MagicMock, patch
+    from delfin.agent.engine import AgentEngine
+
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        engine = AgentEngine(
+            repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree,
+        )
+
+    engine.set_live_state("CONTROL: PAL=8\nselected: foo.out")
+    prompt = engine._build_current_system_prompt(memory_context="", task_text="hi")
+    assert "--- Live state ---" in prompt
+    assert "CONTROL: PAL=8" in prompt

@@ -306,6 +306,10 @@ class AgentEngine:
         self._prompt_session_serial: int = 1
         self._stop_requested = False
         self._lock = threading.Lock()
+        # Live state: a per-turn snippet (Dashboard widget state, calc folder,
+        # etc.) appended to the system prompt — keeps it OUT of the user
+        # message body so it doesn't accumulate in self.messages history.
+        self._live_state: str = ""
 
         # Context engineering features (all opt-in, default off)
         self._context_tracker = None  # type: Any  # ContextUsageTracker
@@ -400,6 +404,7 @@ class AgentEngine:
             memory_context=memory_context,
             task_text=task_text,
             session_key=f"engine-session-{self._prompt_session_serial}",
+            live_state=self._live_state,
         )
 
     def stream_response(
@@ -948,6 +953,16 @@ class AgentEngine:
     def request_stop(self) -> None:
         """Request the current streaming response to stop."""
         self._stop_requested = True
+
+    def set_live_state(self, text: str) -> None:
+        """Update the per-turn live-state snippet.
+
+        The string is appended to the system prompt (cache-friendly,
+        regenerated only when needed) instead of being baked into the
+        user message body — so old turns in ``self.messages`` don't
+        carry stale dashboard state forever.
+        """
+        self._live_state = text or ""
 
     def reset_cycle(self, mode: str | None = None) -> None:
         """Reset the engine for a new work cycle."""

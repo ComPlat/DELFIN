@@ -7719,30 +7719,25 @@ def create_tab(ctx):
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                # Dashboard mode: inject current widget state so the agent
-                # can read CONTROL, ORCA settings, etc. without tool calls.
+                # S1 — Per-turn live state goes into the SYSTEM prompt via
+                # engine.set_live_state(), not into the user message body.
+                # That keeps engine.messages history small and cache-friendly:
+                # old turns no longer carry their stale dashboard state.
+                _live_state_text = ""
                 if mode_dropdown.value == "dashboard":
-                    _ctx_text = _build_dashboard_context()
-                    current_msg = (
-                        f"[Dashboard state]\n{_ctx_text}\n\n"
-                        f"[User request]\n{user_text}"
-                    )
+                    try:
+                        _live_state_text = _build_dashboard_context()
+                    except Exception:
+                        _live_state_text = ""
                 elif mode_dropdown.value == "solo":
-                    # Solo mode: prepend a compact domain-state block so
-                    # the agent inherits the user's UI context (active
-                    # calc folder, CONTROL values, jobs, workspace files)
-                    # without having to ask. Empty snapshot → no block.
                     try:
                         _solo_snap = _collect_solo_domain_snapshot()
-                        _solo_block = _format_solo_domain_state(_solo_snap)
+                        _live_state_text = _format_solo_domain_state(_solo_snap)
                     except Exception:
-                        _solo_block = ""
-                    if _solo_block:
-                        current_msg = f"{_solo_block}\n\n[User request]\n{user_text}"
-                    else:
-                        current_msg = user_text
-                else:
-                    current_msg = user_text
+                        _live_state_text = ""
+                if hasattr(engine, "set_live_state"):
+                    engine.set_live_state(_live_state_text)
+                current_msg = user_text
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
