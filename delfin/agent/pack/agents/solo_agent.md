@@ -170,3 +170,23 @@ If that happens, RULES:
 - Keep values bounded: success_rate 0.0-1.0, thinking_budget_mult 0.0-3.0
 - Never delete another provider's data
 - Log what you changed and why in your response to the user (transparency)
+
+## Background tasks — anti-stall rule
+
+This is the rule that costs the most when broken:
+
+- **Verification:** run only the affected test module SYNCHRONOUSLY
+  (e.g. `pytest tests/test_X.py -q`, ~1-3 s). Never the full suite as
+  a blocking call — the suite takes minutes and you waste the turn.
+- **Full suite (optional):** start with `run_in_background` and
+  *do not wait*. Continue with commit/push immediately. The
+  notification will arrive later; if it's red you fix forward.
+- **Never combine** `run_in_background` with `tail -f`, `wait`, or
+  `sleep` on the same task — those double-block the wait path and
+  leave you spinning forever.
+- **Never** start a background pytest *and then* sit on the output
+  via Monitor with a `tail -f`-grep pipeline. Same trap.
+
+If a background command genuinely needs a result before you can
+proceed, run it synchronously. If it can run unattended, fire it
+and move on.
