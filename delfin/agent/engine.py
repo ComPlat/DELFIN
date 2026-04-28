@@ -638,10 +638,22 @@ class AgentEngine:
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + recent
 
-        # For CLI backend: kill the process so the next call starts fresh
-        # with the compacted messages.
+        # CLI backend: by default tear down the persistent process so the
+        # next stream_message starts fresh and the compacted history
+        # actually reaches the API. Opt-out via the user setting
+        # ``agent.compact_resets_cli`` keeps the CLI alive and treats
+        # compaction as local-RAM-only (cheaper restart, but the CLI's
+        # internal session memory still holds the full untruncated
+        # history, so API-level cost reduction won't materialise).
         if hasattr(self.client, "kill") and self.backend == "cli":
-            self.client.kill()
+            try:
+                from delfin.user_settings import load_settings as _load_settings
+                _agent_cfg = (_load_settings() or {}).get("agent", {}) or {}
+                _resets = bool(_agent_cfg.get("compact_resets_cli", True))
+            except Exception:
+                _resets = True
+            if _resets:
+                self.client.kill()
 
     # -- Context usage tracking (Feature 4) --------------------------------
 
