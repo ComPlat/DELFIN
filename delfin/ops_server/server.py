@@ -432,6 +432,112 @@ def tool_cancel_calculation(
     )
 
 
+def tool_read_pdf(
+    path: str,
+    pages: str = "",
+    max_chars: int = 50000,
+) -> str:
+    """Read plain text from a PDF without indexing it first.
+
+    Use for ad-hoc PDFs the user dropped in the Literature tab when
+    you don't need persistent search. For repeated lookups, prefer
+    index_new_pdf + search_docs.
+
+    Args:
+        path: absolute path to the PDF.
+        pages: optional 1-based page selector — "5" / "3-7" /
+            "1,5-10,15". Empty → entire document.
+        max_chars: cap on returned text size (default 50000).
+
+    Returns JSON: {path, n_pages_total, n_pages_read, text,
+    truncated, error}.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.read_pdf(path, pages=pages, max_chars=int(max_chars)),
+        indent=2,
+    )
+
+
+def tool_search_pdf_local(
+    path: str,
+    query: str,
+    context_lines: int = 3,
+    max_hits: int = 20,
+    case_sensitive: bool = False,
+) -> str:
+    """Substring-search inside ONE PDF; return matching paragraphs.
+
+    Cheaper than indexing for one-off lookups. Each hit carries
+    surrounding context so the agent can quote the relevant passage.
+
+    Args:
+        path: absolute path to the PDF.
+        query: substring to look for.
+        context_lines: lines above/below each hit (default 3).
+        max_hits: cap on returned hits (default 20).
+        case_sensitive: default False.
+
+    Returns JSON: {path, query, hits: [{page, line, snippet}], error}.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.search_pdf_local(
+            path, query,
+            context_lines=int(context_lines),
+            max_hits=int(max_hits),
+            case_sensitive=bool(case_sensitive),
+        ),
+        indent=2,
+    )
+
+
+def tool_extract_pdf_section(
+    path: str,
+    heading: str,
+    max_chars: int = 8000,
+) -> str:
+    """Pull a single section from a PDF by heading.
+
+    Searches for the heading line, then returns everything from there
+    until the next heading-like line. Useful when search_docs returned
+    a hit and you want the full section without round-tripping through
+    read_section.
+
+    Args:
+        path: absolute path to the PDF.
+        heading: heading text to match (case-insensitive substring).
+        max_chars: cap on returned text (default 8000).
+
+    Returns JSON: {path, heading_found, text, next_heading, error}.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.extract_pdf_section(
+            path, heading, max_chars=int(max_chars),
+        ),
+        indent=2,
+    )
+
+
+def tool_list_literature_files(folder: str = "") -> str:
+    """List PDFs / MDs / TXTs in the Literature folder.
+
+    Empty folder → uses the Literature directory the indexer
+    auto-detects (next to the DELFIN repo or ~/literature). Recursive.
+
+    Returns JSON list of {path, name, size_bytes, mtime_iso, ext}.
+
+    Args:
+        folder: optional explicit folder to scan.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_literature_files(folder=folder),
+        indent=2,
+    )
+
+
 def tool_check_orca_manual_indexed() -> str:
     """Quick-check whether the ORCA manual is in the doc-search index.
 
@@ -776,6 +882,11 @@ def run_server(argv: list[str] | None = None) -> None:
     # ORCA-manual lookup + literature indexing
     mcp.tool()(tool_check_orca_manual_indexed)
     mcp.tool()(tool_index_new_pdf)
+    # PDF on-demand reading (no pre-indexing)
+    mcp.tool()(tool_read_pdf)
+    mcp.tool()(tool_search_pdf_local)
+    mcp.tool()(tool_extract_pdf_section)
+    mcp.tool()(tool_list_literature_files)
     # DELFIN-feature explainer
     mcp.tool()(tool_list_delfin_features)
     mcp.tool()(tool_explain_delfin_feature)

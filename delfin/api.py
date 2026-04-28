@@ -785,6 +785,14 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Is the ORCA manual indexed for search_docs?"},
     {"name": "index_new_pdf", "category": "literature",
      "summary": "Add a freshly-uploaded PDF to the search index."},
+    {"name": "read_pdf", "category": "literature",
+     "summary": "Plain text from a PDF (page selector + size cap)."},
+    {"name": "search_pdf_local", "category": "literature",
+     "summary": "Substring-search inside one specific PDF."},
+    {"name": "extract_pdf_section", "category": "literature",
+     "summary": "Pull one section from a PDF by heading."},
+    {"name": "list_literature_files", "category": "literature",
+     "summary": "List PDFs/MDs/TXTs available in the Literature folder."},
     # delfin-ops — DELFIN feature explainer
     {"name": "list_delfin_features", "category": "explainer",
      "summary": "Catalog of DELFIN concepts (control_keys, OCCUPIER, …)."},
@@ -1574,6 +1582,290 @@ def explain_delfin_feature(name: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# PDF on-demand reading (no pre-indexing required)
+# ---------------------------------------------------------------------------
+
+
+def _pdf_pages(path: str) -> list[dict]:
+    """Page-wise plain text via pypdf. Empty list on missing/errored PDFs."""
+    from pathlib import Path as _P
+    p = _P(path).expanduser()
+    if not p.exists() or p.suffix.lower() != ".pdf":
+        return []
+    try:
+        from delfin.doc_server.indexer import _extract_pdf_text
+        return _extract_pdf_text(p, quiet=True)
+    except Exception:
+        return []
+
+
+def _parse_page_range(spec: str, total: int) -> list[int]:
+    """Turn '5-10,12,15-20' into a sorted unique 1-based page list.
+
+    Empty / invalid input returns every page (1..total).
+    """
+    if not spec:
+        return list(range(1, total + 1))
+    pages: set[int] = set()
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                a, b = (int(x) for x in part.split("-", 1))
+            except ValueError:
+                continue
+            if a > b:
+                a, b = b, a
+            pages.update(range(max(1, a), min(total, b) + 1))
+        else:
+            try:
+                v = int(part)
+            except ValueError:
+                continue
+            if 1 <= v <= total:
+                pages.add(v)
+    return sorted(pages) if pages else list(range(1, total + 1))
+
+
+def read_pdf(
+    path: str,
+    *,
+    pages: str = "",
+    max_chars: int = 50000,
+) -> dict:
+    """Read plain text from a PDF without indexing it first.
+
+    Use for ad-hoc PDFs the user dropped in the Literature tab when
+    you don't need persistent search. For repeated lookups, prefer
+    ``index_new_pdf`` + ``search_docs``.
+
+    Args:
+        path: absolute path to the PDF.
+        pages: optional 1-based page selector — ``"5"`` / ``"3-7"`` /
+            ``"1,5-10,15"``. Empty → entire document.
+        max_chars: cap on returned text size (default 50 000). The
+            text is truncated WITH a ``[truncated …]`` marker so the
+            agent knows there's more.
+
+    Returns dict with: ``path``, ``n_pages_total``, ``n_pages_read``,
+    ``text`` (page-tagged), ``truncated`` (bool), ``error``.
+    """
+    from pathlib import Path as _P
+    p = _P(path).expanduser()
+    if not p.exists():
+        return {"path": str(p), "error": "file not found",
+                "text": "", "n_pages_total": 0, "n_pages_read": 0,
+                "truncated": False}
+    if p.suffix.lower() != ".pdf":
+        return {"path": str(p), "error": "not a PDF file",
+                "text": "", "n_pages_total": 0, "n_pages_read": 0,
+                "truncated": False}
+
+    page_list = _pdf_pages(str(p))
+    if not page_list:
+        return {"path": str(p),
+                "error": "could not extract text (pypdf missing or empty)",
+                "text": "", "n_pages_total": 0, "n_pages_read": 0,
+                "truncated": False}
+
+    selected = _parse_page_range(pages, len(page_list))
+    by_num = {entry["page"]: entry["text"] for entry in page_list}
+    out_chunks = [
+        f"--- PAGE {n} ---\n{by_num[n]}"
+        for n in selected if n in by_num
+    ]
+    full = "\n\n".join(out_chunks)
+
+    truncated = False
+    if len(full) > max_chars:
+        full = full[: max_chars - 32] + "\n\n[truncated — larger than max_chars]"
+        truncated = True
+
+    return {
+        "path": str(p),
+        "n_pages_total": len(page_list),
+        "n_pages_read": len(selected),
+        "text": full,
+        "truncated": truncated,
+        "error": "",
+    }
+
+
+def search_pdf_local(
+    path: str,
+    query: str,
+    *,
+    context_lines: int = 3,
+    max_hits: int = 20,
+    case_sensitive: bool = False,
+) -> dict:
+    """Substring-search inside ONE PDF, return matching paragraphs.
+
+    Cheaper than indexing for one-off lookups. Returns hits with
+    surrounding context (``context_lines`` per side) so the agent
+    can quote the relevant passage.
+
+    Args:
+        path: absolute path to the PDF.
+        query: substring to look for.
+        context_lines: lines of context above/below each hit.
+        max_hits: cap on returned hits.
+        case_sensitive: default False — lowercase compare.
+
+    Returns dict with ``path``, ``query``, ``hits`` (list of
+    {page, line, snippet}), ``error``.
+    """
+    if not query.strip():
+        return {"path": path, "query": query, "hits": [],
+                "error": "empty query"}
+    page_list = _pdf_pages(path)
+    if not page_list:
+        return {"path": path, "query": query, "hits": [],
+                "error": "could not extract text"}
+    needle = query if case_sensitive else query.lower()
+    hits: list[dict] = []
+    for entry in page_list:
+        text = entry["text"]
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            cmp_line = line if case_sensitive else line.lower()
+            if needle in cmp_line:
+                lo = max(0, i - context_lines)
+                hi = min(len(lines), i + context_lines + 1)
+                snippet = "\n".join(lines[lo:hi])
+                hits.append({
+                    "page": entry["page"],
+                    "line": i + 1,
+                    "snippet": snippet,
+                })
+                if len(hits) >= max_hits:
+                    return {"path": path, "query": query,
+                            "hits": hits, "error": ""}
+    return {"path": path, "query": query, "hits": hits, "error": ""}
+
+
+def extract_pdf_section(
+    path: str,
+    heading: str,
+    *,
+    max_chars: int = 8000,
+) -> dict:
+    """Pull a single section starting at the given heading.
+
+    Searches for the heading line in the PDF text, then returns
+    everything from there until the next heading-like line (or the
+    end of the document). Useful when ``search_docs`` returned a hit
+    and you want the full section text without a separate
+    ``read_section`` call.
+
+    Args:
+        path: absolute path to the PDF.
+        heading: heading text to match (case-insensitive substring).
+        max_chars: cap on returned text.
+
+    Returns dict with ``path``, ``heading_found`` (bool), ``text``,
+    ``next_heading`` (str), ``error``.
+    """
+    import re as _re
+    page_list = _pdf_pages(path)
+    if not page_list:
+        return {"path": path, "heading_found": False,
+                "text": "", "next_heading": "",
+                "error": "could not extract text"}
+
+    full = "\n\n".join(
+        f"--- PAGE {p['page']} ---\n{p['text']}" for p in page_list
+    )
+    needle = heading.strip()
+    if not needle:
+        return {"path": path, "heading_found": False,
+                "text": "", "next_heading": "", "error": "empty heading"}
+
+    # Find heading position (case-insensitive)
+    idx = full.lower().find(needle.lower())
+    if idx == -1:
+        return {"path": path, "heading_found": False,
+                "text": "", "next_heading": "",
+                "error": f"heading {heading!r} not found"}
+
+    after = full[idx:]
+    # Heuristic for "next heading": next line that looks like a
+    # numbered or capitalised heading, with at least one blank line
+    # before it.
+    heading_re = _re.compile(
+        r"\n\n(\d+(?:\.\d+)*\s+[A-Z][^\n]{2,80}|[A-Z][A-Z\s]{4,80})\n",
+    )
+    m = heading_re.search(after, pos=len(needle) + 1)
+    if m:
+        text = after[: m.start()]
+        next_heading = m.group(1).strip()
+    else:
+        text = after
+        next_heading = ""
+
+    truncated = False
+    if len(text) > max_chars:
+        text = text[: max_chars - 32] + "\n\n[truncated]"
+        truncated = True
+
+    return {
+        "path": path,
+        "heading_found": True,
+        "text": text,
+        "next_heading": next_heading,
+        "truncated": truncated,
+        "error": "",
+    }
+
+
+def list_literature_files(
+    folder: str = "",
+    *,
+    extensions: tuple = (".pdf", ".md", ".txt"),
+) -> list[dict]:
+    """List documents available in a Literature folder.
+
+    Empty folder → uses the Literature directory next to the DELFIN
+    repo (same path the indexer auto-detects). Recursive.
+
+    Each entry: {path, name, size_bytes, mtime_iso, ext}.
+    """
+    from pathlib import Path as _P
+    from datetime import datetime as _dt
+    if folder:
+        root = _P(folder).expanduser()
+    else:
+        try:
+            from delfin.doc_server.indexer import get_default_literature_dir
+            root = get_default_literature_dir() or _P.home() / "literature"
+        except Exception:
+            root = _P.home() / "literature"
+    if not root.exists() or not root.is_dir():
+        return []
+    files: list[dict] = []
+    exts = tuple(e.lower() for e in extensions)
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in exts:
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        files.append({
+            "path": str(p),
+            "name": p.name,
+            "size_bytes": int(stat.st_size),
+            "mtime_iso": _dt.fromtimestamp(stat.st_mtime).isoformat(),
+            "ext": p.suffix.lower(),
+        })
+    return files
+
+
 def check_orca_manual_indexed() -> dict:
     """Quick-check whether the ORCA manual is in the doc-search index.
 
@@ -2237,6 +2529,11 @@ __all__ = [
     # ORCA-manual lookup helpers
     "check_orca_manual_indexed",
     "index_new_pdf",
+    # PDF on-demand reading (no pre-indexing)
+    "read_pdf",
+    "search_pdf_local",
+    "extract_pdf_section",
+    "list_literature_files",
     # DELFIN-feature explainer
     "list_delfin_features",
     "explain_delfin_feature",

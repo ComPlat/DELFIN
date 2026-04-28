@@ -902,3 +902,187 @@ def test_explain_delfin_feature_normalises_separators():
     b = ops_server.tool_explain_delfin_feature("smart recalc")
     assert json.loads(a)["name"] == "smart_recalc"
     assert json.loads(b)["name"] == "smart_recalc"
+
+
+# ---------------------------------------------------------------------------
+# PDF on-demand tools (read / search / extract_section / list_literature)
+# ---------------------------------------------------------------------------
+
+# We don't need a real PDF — mock _extract_pdf_text so tests don't depend
+# on pypdf installation or PDF rendering. The tool API treats the result
+# the same regardless of the real-vs-mocked source.
+_FAKE_PDF_PAGES = [
+    {"page": 1, "text": (
+        "1 Introduction\n"
+        "ORCA is a quantum chemistry program package.\n"
+        "It supports DFT, CC, and many other methods.\n"
+    )},
+    {"page": 2, "text": (
+        "2 Density Functional Theory\n"
+        "Several functionals are available, including PBE0,\n"
+        "BP86, and B3LYP. The default basis is def2-TZVP.\n"
+    )},
+    {"page": 3, "text": (
+        "3 Geometry Optimization\n"
+        "Use OPT keyword. For tight convergence: TIGHTOPT.\n"
+        "Combined with FREQ for transition states: NEB-TS.\n"
+    )},
+]
+
+
+@pytest.fixture
+def fake_pdf(tmp_path, monkeypatch):
+    """Create a non-empty placeholder PDF + monkeypatch _extract_pdf_text."""
+    pdf_path = tmp_path / "fake_orca_manual.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n%fake\n")
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer._extract_pdf_text",
+        lambda p, quiet=True: _FAKE_PDF_PAGES,
+    )
+    return pdf_path
+
+
+def test_tool_read_pdf_full_document(fake_pdf):
+    txt = ops_server.tool_read_pdf(str(fake_pdf))
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert data["n_pages_total"] == 3
+    assert data["n_pages_read"] == 3
+    assert "Density Functional Theory" in data["text"]
+    assert "PAGE 1" in data["text"]
+
+
+def test_tool_read_pdf_page_range(fake_pdf):
+    txt = ops_server.tool_read_pdf(str(fake_pdf), pages="2-3")
+    data = json.loads(txt)
+    assert data["n_pages_read"] == 2
+    assert "Introduction" not in data["text"]
+    assert "Density Functional" in data["text"]
+    assert "Geometry Optimization" in data["text"]
+
+
+def test_tool_read_pdf_page_csv(fake_pdf):
+    txt = ops_server.tool_read_pdf(str(fake_pdf), pages="1,3")
+    data = json.loads(txt)
+    assert data["n_pages_read"] == 2
+    assert "Introduction" in data["text"]
+    assert "Density Functional" not in data["text"]
+    assert "Geometry Optimization" in data["text"]
+
+
+def test_tool_read_pdf_truncates(fake_pdf):
+    txt = ops_server.tool_read_pdf(str(fake_pdf), max_chars=80)
+    data = json.loads(txt)
+    assert data["truncated"] is True
+    assert "[truncated" in data["text"]
+
+
+def test_tool_read_pdf_missing_file():
+    txt = ops_server.tool_read_pdf("/nope/missing.pdf")
+    data = json.loads(txt)
+    assert data["error"] == "file not found"
+    assert data["text"] == ""
+
+
+def test_tool_read_pdf_wrong_extension(tmp_path):
+    bad = tmp_path / "x.txt"
+    bad.write_text("hello")
+    txt = ops_server.tool_read_pdf(str(bad))
+    data = json.loads(txt)
+    assert data["error"] == "not a PDF file"
+
+
+def test_tool_search_pdf_local_finds_matches(fake_pdf):
+    txt = ops_server.tool_search_pdf_local(str(fake_pdf), query="def2")
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert len(data["hits"]) >= 1
+    hit = data["hits"][0]
+    assert "def2" in hit["snippet"].lower()
+    assert hit["page"] == 2
+
+
+def test_tool_search_pdf_local_case_insensitive_default(fake_pdf):
+    txt = ops_server.tool_search_pdf_local(str(fake_pdf), query="TIGHTOPT")
+    data = json.loads(txt)
+    assert len(data["hits"]) >= 1
+
+
+def test_tool_search_pdf_local_case_sensitive_misses(fake_pdf):
+    txt = ops_server.tool_search_pdf_local(
+        str(fake_pdf), query="density",  # title is "Density"
+        case_sensitive=True,
+    )
+    data = json.loads(txt)
+    assert data["hits"] == []
+
+
+def test_tool_search_pdf_local_max_hits_cap(fake_pdf):
+    txt = ops_server.tool_search_pdf_local(
+        str(fake_pdf), query="ORCA", max_hits=1,
+    )
+    data = json.loads(txt)
+    assert len(data["hits"]) <= 1
+
+
+def test_tool_search_pdf_local_empty_query():
+    txt = ops_server.tool_search_pdf_local("/nope/missing.pdf", query="")
+    data = json.loads(txt)
+    assert data["error"] == "empty query"
+
+
+def test_tool_extract_pdf_section_finds_heading(fake_pdf):
+    txt = ops_server.tool_extract_pdf_section(
+        str(fake_pdf), heading="Geometry Optimization",
+    )
+    data = json.loads(txt)
+    assert data["heading_found"] is True
+    assert "OPT" in data["text"] or "TIGHTOPT" in data["text"]
+
+
+def test_tool_extract_pdf_section_unknown_heading(fake_pdf):
+    txt = ops_server.tool_extract_pdf_section(
+        str(fake_pdf), heading="Quantum Tunneling Through Time",
+    )
+    data = json.loads(txt)
+    assert data["heading_found"] is False
+    assert "not found" in data["error"]
+
+
+def test_tool_list_literature_files_filter_pdfs(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer.get_default_literature_dir",
+        lambda: tmp_path,
+    )
+    (tmp_path / "paper.pdf").write_bytes(b"%PDF-1.4\n")
+    (tmp_path / "notes.md").write_text("# stuff\n")
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n")
+    txt = ops_server.tool_list_literature_files()
+    rows = json.loads(txt)
+    names = sorted(r["name"] for r in rows)
+    assert names == ["notes.md", "paper.pdf"]
+    # png is filtered out
+
+
+def test_tool_list_literature_files_recursive(tmp_path, monkeypatch):
+    """Sub-folders are walked too."""
+    monkeypatch.setattr(
+        "delfin.doc_server.indexer.get_default_literature_dir",
+        lambda: tmp_path,
+    )
+    sub = tmp_path / "papers"
+    sub.mkdir()
+    (sub / "a.pdf").write_bytes(b"%PDF-1.4\n")
+    (tmp_path / "b.pdf").write_bytes(b"%PDF-1.4\n")
+    txt = ops_server.tool_list_literature_files()
+    rows = json.loads(txt)
+    assert len(rows) == 2
+    paths = {r["path"] for r in rows}
+    assert any(p.endswith("/papers/a.pdf") for p in paths)
+
+
+def test_tool_list_literature_files_missing_folder(tmp_path):
+    """Non-existent explicit folder → empty list, no exception."""
+    txt = ops_server.tool_list_literature_files(folder=str(tmp_path / "nope"))
+    rows = json.loads(txt)
+    assert rows == []
