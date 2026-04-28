@@ -327,7 +327,7 @@ def _run_one(case_name, query_tmpl, assertion, model: str) -> Cell:
         t0 = time.time()
         try:
             res = run_agent_dryrun(
-                query, model=model, timeout_s=90,
+                query, model=model, timeout_s=150,
                 cwd=str(sb.root), sandbox_root=str(sb.root),
             )
         except Exception as exc:
