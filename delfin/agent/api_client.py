@@ -185,6 +185,14 @@ class CLIClient(_BaseClient):
                 prompt_text = msg["content"]
                 break
 
+        # Empty user content would cause the CLI to forward a content block
+        # tagged with cache_control on empty text → Anthropic API rejects
+        # with "cache_control cannot be set for empty text blocks". Skip the
+        # send instead — caller can resume the existing session next turn.
+        _text = prompt_text if isinstance(prompt_text, str) else ""
+        if not _text.strip():
+            return
+
         # Use existing session_id if we have one from a prior turn
         effective_sid = session_id or self._session_id
 
