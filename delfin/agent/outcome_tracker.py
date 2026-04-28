@@ -102,3 +102,75 @@ def _trim_if_needed(path: Path) -> None:
             path.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
     except Exception:
         pass
+
+
+def update_last_outcome(
+    *,
+    retries: int | None = None,
+    verdict: str | None = None,
+    cost_usd: float | None = None,
+    cost_usd_delta: float | None = None,
+    duration_s: float | None = None,
+    denied_commands: list[str] | None = None,
+    error_type: str | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Mutate the most recent JSONL outcome in-place.
+
+    Used by ``/retry`` (B3): instead of appending a fresh outcome for
+    a re-attempted task, bump the existing entry's ``retries`` counter
+    and optionally swap the verdict to reflect the retry result.
+
+    Only the keyword args that are passed (non-None) get rewritten.
+    Returns True on success, False if the file is missing/empty/unreadable.
+    """
+    p = path or _DEFAULT_PATH
+    if not p.exists():
+        return False
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    lines = text.splitlines()
+    # Walk from the end to find the last non-empty line (some writers
+    # leave a trailing newline that produces a blank tail entry).
+    last_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last_idx = i
+            break
+    if last_idx < 0:
+        return False
+    try:
+        record = json.loads(lines[last_idx])
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(record, dict):
+        return False
+
+    updates: dict = {}
+    if retries is not None:
+        updates["retries"] = int(retries)
+    if verdict is not None:
+        updates["verdict"] = str(verdict)
+    if cost_usd is not None:
+        updates["cost_usd"] = float(cost_usd)
+    if cost_usd_delta is not None:
+        updates["cost_usd_delta"] = float(cost_usd_delta)
+    if duration_s is not None:
+        updates["duration_s"] = float(duration_s)
+    if denied_commands is not None:
+        updates["denied_commands"] = list(denied_commands)
+    if error_type is not None:
+        updates["error_type"] = str(error_type)
+
+    if not updates:
+        return False
+
+    record.update(updates)
+    lines[last_idx] = json.dumps(record, ensure_ascii=False)
+    try:
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return False
+    return True

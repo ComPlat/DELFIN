@@ -9,12 +9,15 @@ from delfin.dashboard.tab_agent import (
     _SLASH_COMMANDS,
     _TAB_SUGGESTIONS,
     _build_full_transcript_handoff,
+    _compute_turn_verdict,
     _extract_action_commands,
     _extract_denied_tool_name,
     _filter_slash_commands,
     _format_session_boot,
     _format_solo_domain_state,
     _is_structurally_blocked,
+    _record_solo_turn_outcome,  # backwards-compat alias
+    _record_turn_outcome,
     _render_action_confirmation_html,
     _render_artifact_inline,
     _render_molecule_to_png_b64,
@@ -1201,3 +1204,205 @@ def test_session_boot_skips_missing_blocks():
     assert "Recent outcomes" not in out
     assert "Active SLURM jobs" not in out
     assert "Active calc folder" not in out
+
+
+# ---------------------------------------------------------------------------
+# B2 — _compute_turn_verdict (real PASS/FAIL/PARTIAL detection)
+# ---------------------------------------------------------------------------
+
+class _FakeEngine:
+    """Minimal stand-in for AgentEngine — only the attrs the verdict uses."""
+    def __init__(self, *, stop_requested: bool = False):
+        self._stop_requested = stop_requested
+
+
+def test_verdict_pass_default():
+    """A clean response without denied commands or errors → PASS."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="All set. Done.",
+        denied_commands=[],
+        state={},
+    )
+    assert v == "PASS"
+
+
+def test_verdict_fail_on_explicit_error_type():
+    """Engine bubbled up an exception → FAIL regardless of text content."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="Successfully did the thing.",  # text claims success
+        denied_commands=[],
+        state={},
+        error_type="exception",
+    )
+    assert v == "FAIL"
+
+
+def test_verdict_fail_on_stop_requested_with_short_response():
+    """User hit ESC and almost nothing came out → FAIL."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(stop_requested=True),
+        response_text="Working on it",  # < 80 chars
+        denied_commands=[],
+        state={},
+    )
+    assert v == "FAIL"
+
+
+def test_verdict_pass_on_stop_requested_with_long_response():
+    """Stop requested AFTER a substantial answer is not a fail."""
+    long = "x" * 200
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(stop_requested=True),
+        response_text=long,
+        denied_commands=[],
+        state={},
+    )
+    assert v == "PASS"
+
+
+def test_verdict_fail_on_denied_plus_giveup_phrase():
+    """Tool calls blocked + agent says it cannot continue → FAIL."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="I'm unable to complete this without the Edit tool.",
+        denied_commands=["Edit"],
+        state={},
+    )
+    assert v == "FAIL"
+
+
+def test_verdict_partial_on_question_tag():
+    """Agent paused with QUESTION: → PARTIAL (waiting on user)."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="Did some work. QUESTION: which file should I touch next?",
+        denied_commands=[],
+        state={},
+    )
+    assert v == "PARTIAL"
+
+
+def test_verdict_partial_on_incomplete_phrase():
+    """Agent self-reports incomplete work → PARTIAL."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="Couldn't fully complete the task — maxiter ran out.",
+        denied_commands=[],
+        state={},
+    )
+    assert v == "PARTIAL"
+
+
+def test_verdict_partial_when_denied_but_progress_made():
+    """Tool calls blocked but the agent still produced a substantive reply
+    (no give-up phrase) → PARTIAL — work continued under restrictions."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="Skipped the Edit; here's the patch you can apply manually.",
+        denied_commands=["Edit"],
+        state={},
+    )
+    assert v == "PARTIAL"
+
+
+def test_verdict_records_german_giveup_phrase():
+    """The fail-phrase list covers German fallbacks too."""
+    v = _compute_turn_verdict(
+        engine=_FakeEngine(),
+        response_text="Ich konnte nicht weitermachen, alle Edits sind blockiert.",
+        denied_commands=["Edit"],
+        state={},
+    )
+    assert v == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# B1 — _record_turn_outcome (renamed, tracks all modes)
+# ---------------------------------------------------------------------------
+
+def test_record_turn_outcome_skips_empty_task():
+    """An empty user task is a no-op (no outcome write)."""
+
+    class _NoCallEngine:
+        mode = "solo"
+        def record_cycle_outcome(self, **kw):
+            raise AssertionError("must NOT be called for empty task")
+
+    out = _record_turn_outcome(
+        _NoCallEngine(),
+        user_task="",
+        response_text="some reply",
+        state={},
+        start_time=None,
+    )
+    assert out == {}
+
+
+def test_record_turn_outcome_skips_empty_response():
+    """An empty assistant response is also a no-op."""
+
+    class _NoCallEngine:
+        mode = "solo"
+        def record_cycle_outcome(self, **kw):
+            raise AssertionError("must NOT be called for empty response")
+
+    out = _record_turn_outcome(
+        _NoCallEngine(),
+        user_task="real task",
+        response_text="",
+        state={},
+        start_time=None,
+    )
+    assert out == {}
+
+
+def test_record_turn_outcome_passes_computed_verdict():
+    """The verdict produced by _compute_turn_verdict reaches the engine call."""
+    captured: dict = {}
+
+    class _Engine:
+        mode = "dashboard"
+        _stop_requested = False
+        def record_cycle_outcome(self, **kw):
+            captured.update(kw)
+            return {}
+
+    _record_turn_outcome(
+        _Engine(),
+        user_task="fix bug",
+        response_text="I'm unable to do that, Edit is blocked.",
+        state={"_denied_commands": ["Edit"]},
+        start_time=None,
+    )
+    assert captured["verdict"] == "FAIL"
+    assert captured["denied_commands"] == ["Edit"]
+
+
+def test_record_turn_outcome_runs_for_all_modes():
+    """B1 — dashboard / quick / reviewed all reach record_cycle_outcome."""
+    captured: list[str] = []
+
+    class _Engine:
+        _stop_requested = False
+        def __init__(self, mode):
+            self.mode = mode
+        def record_cycle_outcome(self, **kw):
+            captured.append(self.mode)
+            return {}
+
+    for mode in ("solo", "dashboard", "quick", "reviewed", "tdd"):
+        _record_turn_outcome(
+            _Engine(mode),
+            user_task="t",
+            response_text="ok done",
+            state={},
+            start_time=None,
+        )
+    assert captured == ["solo", "dashboard", "quick", "reviewed", "tdd"]
+
+
+def test_record_solo_turn_outcome_alias_still_works():
+    """The old name is kept as an alias so external callers don't break."""
+    assert _record_solo_turn_outcome is _record_turn_outcome

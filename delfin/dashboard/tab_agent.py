@@ -1937,32 +1937,153 @@ def _render_todo_pane_html(todos: list[dict]) -> str:
     )
 
 
-def _record_solo_turn_outcome(
+_FAIL_PHRASES = (
+    "i'm unable", "i am unable", "i cannot", "can't complete",
+    "ich kann nicht", "ich konnte nicht", "konnte das nicht",
+    "abgebrochen", "aborting", "i give up", "ich gebe auf",
+    "blocked by", "blockiert durch", "permission denied",
+)
+_PARTIAL_PHRASES = (
+    "couldn't fully", "konnte nicht vollständig", "teilweise erfolgreich",
+    "partially", "incomplete", "unfinished", "not all of", "nur einen teil",
+)
+
+
+def _compute_turn_verdict(
+    *,
+    engine,
+    response_text: str,
+    denied_commands: list[str],
+    state: dict,
+    error_type: str | None = None,
+) -> str:
+    """Decide PASS / FAIL / PARTIAL for a finished conversational turn.
+
+    Heuristics are deliberately conservative — a wrong FAIL erodes trust
+    in the success-rate metric faster than missing the occasional real
+    failure does. The default is PASS.
+
+    FAIL triggers (any):
+    - explicit error_type (exception bubbled up from the stream loop)
+    - stop_requested AND we have very little assistant output
+    - denied commands present AND response contains a give-up phrase
+
+    PARTIAL triggers (when no FAIL):
+    - response ends with the QUESTION: tag (agent paused for the user)
+    - response contains an "incomplete" phrase
+    - denied commands present (work continued, but with restrictions)
+
+    Otherwise: PASS.
+    """
+    text = (response_text or "").strip()
+    text_low = text.lower()
+
+    # ---- FAIL conditions -----------------------------------------------
+    if error_type:
+        return "FAIL"
+
+    if getattr(engine, "_stop_requested", False) and len(text) < 80:
+        # User hit stop and the agent had barely produced anything.
+        return "FAIL"
+
+    if denied_commands and any(p in text_low for p in _FAIL_PHRASES):
+        # Tool calls were blocked AND the agent surrendered.
+        return "FAIL"
+
+    # ---- PARTIAL conditions --------------------------------------------
+    # Look at the tail (last 800 chars) — most "I need more info" markers
+    # show up at the end of the assistant reply.
+    tail = text[-800:].lower()
+    if "question:" in tail:
+        return "PARTIAL"
+
+    if any(p in text_low for p in _PARTIAL_PHRASES):
+        return "PARTIAL"
+
+    if denied_commands:
+        # Tool calls were blocked but the agent didn't surrender — counts
+        # as PARTIAL (the user got something, but not everything).
+        return "PARTIAL"
+
+    return "PASS"
+
+
+def _record_turn_outcome(
     engine,
     user_task: str,
     response_text: str,
     state: dict,
     start_time: float | None,
+    *,
+    error_type: str | None = None,
 ) -> dict[str, str]:
-    """Persist one completed solo turn into outcome history/profile."""
-    if getattr(engine, "mode", "") != "solo":
-        return {}
+    """Persist one completed turn into outcome history/profile.
+
+    Tracks every conversational mode (solo, dashboard, quick, …) so the
+    Activity tab can show real PASS/FAIL/PARTIAL across mode usage.
+    Pipeline-internal cycles (session_manager etc.) still go through
+    engine.record_cycle_outcome from the cycle gate, not this helper.
+
+    B3: when ``state['_retry_pending_retries']`` > 0 (set by
+    ``_retry_last``), the result of this turn is treated as a retry of
+    the LAST outcome — we bump that outcome's retries counter and
+    update its verdict in place instead of writing a fresh row.
+    """
     if not (user_task or "").strip() or not (response_text or "").strip():
         return {}
 
-    denied_commands = []
+    denied_commands: list[str] = []
     if isinstance(state, dict):
         denied_commands = list(state.get("_denied_commands", []))
 
+    verdict = _compute_turn_verdict(
+        engine=engine,
+        response_text=response_text,
+        denied_commands=denied_commands,
+        state=state,
+        error_type=error_type,
+    )
+
+    pending_retries = 0
+    if isinstance(state, dict):
+        pending_retries = int(state.get("_retry_pending_retries", 0) or 0)
+
+    if pending_retries > 0:
+        # Update last outcome's retries + verdict in place. Always
+        # consume the flag so we don't double-bump on the next normal
+        # turn even if the update fails.
+        try:
+            from delfin.agent.outcome_tracker import update_last_outcome
+            ok = update_last_outcome(
+                retries=pending_retries,
+                verdict=verdict,
+                denied_commands=denied_commands,
+                error_type=error_type,
+            )
+        except Exception:
+            ok = False
+        if isinstance(state, dict):
+            state["_retry_pending_retries"] = 0
+        if ok:
+            return {"retried": str(pending_retries), "verdict": verdict}
+        # Fall through to a normal append if the bump failed (file
+        # missing, permissions, etc.) — better to record something than
+        # nothing.
+
     try:
         return engine.record_cycle_outcome(
-            verdict="PASS",
+            verdict=verdict,
             user_task=user_task[:200],
             denied_commands=denied_commands,
+            error_type=error_type,
             start_time=start_time,
         )
     except Exception:
         return {}
+
+
+# Backwards-compat alias — old callers might still import this name.
+_record_solo_turn_outcome = _record_turn_outcome
 
 
 # ---------------------------------------------------------------------------
@@ -6633,6 +6754,12 @@ def create_tab(ctx):
             engine.messages.pop()
         _refresh_chat_html()
         if last_user_text:
+            # B3 — flag the next outcome write as a retry attempt so it
+            # bumps the previous outcome's retries counter instead of
+            # appending a fresh entry. Counter persists across the send
+            # cycle and is consumed (cleared) by _record_turn_outcome.
+            _prev_retries = int(state.get("_retry_pending_retries", 0))
+            state["_retry_pending_retries"] = _prev_retries + 1
             # Re-send via the send flow
             input_textarea.value = last_user_text
             _on_send(None)
@@ -8065,9 +8192,16 @@ def create_tab(ctx):
                         if _q_info:
                             _show_question_ui(_q_info)
 
-                    # Solo outcome tracking: persist every completed user turn.
-                    if engine.mode == "solo" and chunks:
-                        _record_solo_turn_outcome(
+                    # B1 — Outcome tracking for ALL conversational modes,
+                    # not just solo. Pipeline modes still go through the
+                    # cycle gate's record_cycle_outcome; this captures the
+                    # interactive dashboard / solo / quick / reviewed / etc.
+                    # turns the user actually drives.
+                    if chunks and engine.mode in (
+                        "solo", "dashboard", "quick", "reviewed",
+                        "tdd", "cluster", "full",
+                    ):
+                        _record_turn_outcome(
                             engine,
                             user_task=original_task,
                             response_text="".join(chunks),
