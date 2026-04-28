@@ -702,6 +702,603 @@ def extract_energy_table(
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Meta-tool: tool catalog for on-demand discovery
+# ---------------------------------------------------------------------------
+#
+# As the MCP toolbox grows, paying token cost for ALL schemas every turn
+# scales poorly.  The agent can use ``list_tools`` to see what's
+# available (one short line each) and ``describe_tool`` to fetch the
+# full signature only when it actually plans to call it.
+
+_TOOL_CATALOG: list[dict] = [
+    # delfin-ops — environment / tool checks
+    {"name": "qm_check", "category": "checks",
+     "summary": "Verify xtb/crest/etc. tool availability."},
+    {"name": "csp_check", "category": "checks",
+     "summary": "Verify CSP (genarris) availability."},
+    {"name": "mlp_check", "category": "checks",
+     "summary": "Verify MLP backends (torchani/AIMNet2/MACE)."},
+    {"name": "analysis_check", "category": "checks",
+     "summary": "Verify Multiwfn/CENSO/ANMR/morfeus availability."},
+    # delfin-ops — workflow execution (mutating)
+    {"name": "pipeline_prepare", "category": "workflow",
+     "summary": "Generate a CONTROL.txt template (mutating)."},
+    {"name": "pipeline_run", "category": "workflow",
+     "summary": "Run the full DELFIN pipeline (mutating, long-running)."},
+    {"name": "run_orca_input", "category": "workflow",
+     "summary": "Run ORCA on a single .inp file (mutating)."},
+    {"name": "co2", "category": "workflow",
+     "summary": "CO2 Coordinator workflow (mutating)."},
+    {"name": "tadf_xtb", "category": "workflow",
+     "summary": "TADF xTB workflow (mutating)."},
+    {"name": "hyperpol", "category": "workflow",
+     "summary": "Hyperpolarisability workflow (mutating)."},
+    {"name": "cleanup", "category": "workflow",
+     "summary": "Remove ORCA scratch / OCCUPIER artifacts (mutating)."},
+    {"name": "stop", "category": "workflow",
+     "summary": "Signal running DELFIN procs (INT/TERM/KILL, mutating)."},
+    {"name": "stop_dry_run", "category": "workflow",
+     "summary": "List DELFIN procs that WOULD be signaled (read-only)."},
+    # delfin-ops — output parsing
+    {"name": "parse_orca_output", "category": "parsing",
+     "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
+    {"name": "find_orca_errors", "category": "parsing",
+     "summary": "Scan a folder's .out files for known error patterns."},
+    {"name": "extract_thermochem", "category": "parsing",
+     "summary": "Pull T, P, ZPE, H, S, G from a Freq output."},
+    {"name": "extract_energy_table", "category": "parsing",
+     "summary": "Multi-folder energy table (gibbs/zpe/spe/conv/...)."},
+    {"name": "find_calculation_extreme", "category": "parsing",
+     "summary": "Top-N folders sorted by an energy property."},
+    # delfin-ops — plotting
+    {"name": "plot_energy_distribution", "category": "plotting",
+     "summary": "Histogram/bar/boxplot of energies; PNG → workspace."},
+    {"name": "plot_energy_correlation", "category": "plotting",
+     "summary": "Scatter + Pearson r; PNG → workspace."},
+    # delfin-ops — dashboard guidance
+    {"name": "list_dashboard_patterns", "category": "guidance",
+     "summary": "Names of operational pattern recipes."},
+    {"name": "get_dashboard_pattern", "category": "guidance",
+     "summary": "Slash-chain recipe for one workflow (batch/recalc/...)."},
+    {"name": "list_dashboard_widgets", "category": "guidance",
+     "summary": "Catalog of /ui-controllable widgets per tab."},
+    {"name": "get_widget_options", "category": "guidance",
+     "summary": "Allowed values for one widget (dropdown options)."},
+    # delfin-ops — validation
+    {"name": "validate_orca_input", "category": "validation",
+     "summary": "Sanity-check an ORCA .inp text and return issues."},
+    # delfin-ops — discovery
+    {"name": "list_tools", "category": "meta",
+     "summary": "Filter this very catalog (category, query)."},
+    {"name": "describe_tool", "category": "meta",
+     "summary": "Full description + signature of one tool."},
+    # delfin-ops — job lifecycle
+    {"name": "submit_calculation", "category": "jobs",
+     "summary": "Submit a folder via the live backend (mutating)."},
+    {"name": "cancel_calculation", "category": "jobs",
+     "summary": "scancel one job by id (mutating)."},
+    {"name": "list_active_calculations", "category": "jobs",
+     "summary": "Live SLURM/local job list with status."},
+    # delfin-docs (other MCP server, listed for cross-reference)
+    {"name": "search_docs", "category": "literature",
+     "summary": "TF-IDF search over indexed PDFs."},
+    {"name": "read_section", "category": "literature",
+     "summary": "Read a specific section of an indexed doc."},
+    {"name": "list_docs", "category": "literature",
+     "summary": "List indexed documents."},
+    {"name": "list_sections", "category": "literature",
+     "summary": "List sections of one indexed doc."},
+    {"name": "search_calcs", "category": "calc-search",
+     "summary": "Search calculation metadata (functional/basis/...)."},
+    {"name": "get_calc_info", "category": "calc-search",
+     "summary": "Detailed info about one calculation by id."},
+    {"name": "calc_summary", "category": "calc-search",
+     "summary": "Aggregate counts across all indexed calculations."},
+]
+
+
+def list_tools(category: str = "", query: str = "") -> list[dict]:
+    """Filter the typed tool catalog by category and/or substring query.
+
+    Returns a list of {name, category, summary} entries — no full
+    schemas, just enough for the agent to pick a candidate tool. Use
+    :func:`describe_tool` for the full description + signature.
+
+    Both filters are case-insensitive substring matches. Empty filters
+    (the defaults) → return everything.
+    """
+    cat = (category or "").strip().lower()
+    q = (query or "").strip().lower()
+    out = []
+    for entry in _TOOL_CATALOG:
+        if cat and entry["category"].lower() != cat:
+            continue
+        if q and (q not in entry["name"].lower()
+                  and q not in entry["summary"].lower()
+                  and q not in entry["category"].lower()):
+            continue
+        out.append(dict(entry))
+    return out
+
+
+def describe_tool(name: str) -> dict:
+    """Return the catalog entry for ``name`` plus its docstring.
+
+    Looks the function up by name in this module first; falls back to
+    the doc-server toolset if nothing local matches. Unknown names
+    return a hint with the available choices.
+    """
+    if not name:
+        return {"error": "no name given",
+                "available": [e["name"] for e in _TOOL_CATALOG]}
+    target = str(name).strip().lower()
+    entry = next(
+        (e for e in _TOOL_CATALOG if e["name"].lower() == target), None,
+    )
+    if entry is None:
+        return {
+            "error": f"unknown tool: {name!r}",
+            "available": [e["name"] for e in _TOOL_CATALOG],
+        }
+    # Try to grab the docstring of the local function if we host it.
+    fn = globals().get(entry["name"])
+    docstring = (fn.__doc__ or "") if callable(fn) else ""
+    return {
+        "name": entry["name"],
+        "category": entry["category"],
+        "summary": entry["summary"],
+        "docstring": docstring.strip(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dashboard widget catalog (static; lets the agent emit /ui commands
+# without trial-and-error)
+# ---------------------------------------------------------------------------
+
+_WIDGET_CATALOG: list[dict] = [
+    # Submit-Tab
+    {"name": "control", "tab": "submit", "type": "Textarea",
+     "purpose": "CONTROL.txt content (use /control key for single keys)."},
+    {"name": "coords", "tab": "submit", "type": "Textarea",
+     "purpose": "Coordinates (XYZ / SMILES / batch)."},
+    {"name": "batch-smiles", "tab": "submit", "type": "Textarea",
+     "purpose": "Batch SMILES/XYZ (use /batch from-calc to populate)."},
+    {"name": "job-name", "tab": "submit", "type": "Text",
+     "purpose": "Job name (used as folder prefix)."},
+    {"name": "submit-btn", "tab": "submit", "type": "Button",
+     "purpose": "Submit the configured job (DESTRUCTIVE)."},
+    {"name": "time-limit", "tab": "submit", "type": "Dropdown",
+     "purpose": "SLURM time limit preset.",
+     "values": ["00:30:00", "01:00:00", "06:00:00",
+                "12:00:00", "24:00:00", "48:00:00", "custom"]},
+    {"name": "custom-time", "tab": "submit", "type": "Text",
+     "purpose": "Custom HH:MM:SS, only used when time-limit=custom."},
+    # ORCA Builder
+    {"name": "orca-method", "tab": "orca", "type": "Dropdown",
+     "purpose": "Functional / method.",
+     "values": ["BP86", "PBE0", "B3LYP", "TPSS", "wB97X-D3",
+                "CAM-B3LYP", "r2SCAN", "PBE", "M06-2X"]},
+    {"name": "orca-basis", "tab": "orca", "type": "Dropdown",
+     "purpose": "Basis set.",
+     "values": ["def2-SVP", "def2-TZVP", "def2-TZVPP",
+                "def2-QZVP", "ma-def2-TZVP", "x2c-TZVPall",
+                "ZORA-def2-TZVP", "SARC-ZORA-TZVP", "pcSseg-2"]},
+    {"name": "orca-job-type", "tab": "orca", "type": "Dropdown",
+     "purpose": "Job type.",
+     "values": ["SP", "OPT", "OPT Freq", "Freq", "TDDFT",
+                "NEB-TS", "Scan"]},
+    {"name": "orca-charge", "tab": "orca", "type": "IntText",
+     "purpose": "Total molecular charge."},
+    {"name": "orca-mult", "tab": "orca", "type": "IntText",
+     "purpose": "Spin multiplicity (2S+1)."},
+    {"name": "orca-pal", "tab": "orca", "type": "IntText",
+     "purpose": "PAL — number of MPI processes."},
+    {"name": "orca-maxcore", "tab": "orca", "type": "IntText",
+     "purpose": "%maxcore in MB per process."},
+    {"name": "orca-coords", "tab": "orca", "type": "Textarea",
+     "purpose": "Coordinate block (xyz, gbw, etc.)."},
+    {"name": "orca-dispersion", "tab": "orca", "type": "Dropdown",
+     "purpose": "Dispersion correction.",
+     "values": ["", "D3BJ", "D3(0)", "D4"]},
+    {"name": "orca-solvent", "tab": "orca", "type": "Dropdown",
+     "purpose": "Solvent for CPCM/SMD.",
+     "values": ["", "water", "methanol", "ethanol",
+                "acetonitrile", "DMSO", "DMF", "toluene",
+                "thf", "chloroform", "dcm"]},
+    {"name": "orca-preview", "tab": "orca", "type": "Textarea",
+     "purpose": "Live INP preview generated from the form."},
+    {"name": "orca-submit-btn", "tab": "orca", "type": "Button",
+     "purpose": "Submit the ORCA job (DESTRUCTIVE)."},
+    # Calc Browser
+    {"name": "calc-path", "tab": "calc", "type": "Text",
+     "purpose": "Current path inside calc/ or archive/."},
+    {"name": "calc-options", "tab": "calc", "type": "Dropdown",
+     "purpose": "Action for selected file.",
+     "values": ["", "Recalc", "Smart Recalc", "Visualize",
+                "Generate Report", "Override / Resubmit"]},
+    {"name": "calc-editor", "tab": "calc", "type": "Textarea",
+     "purpose": "Editor for CONTROL.txt (Smart Recalc panel)."},
+    {"name": "calc-override-time", "tab": "calc", "type": "Text",
+     "purpose": "Time-limit override for the resubmit."},
+    {"name": "calc-override-btn", "tab": "calc", "type": "Button",
+     "purpose": "Submit resubmit/override (DESTRUCTIVE)."},
+    # Agent tab itself
+    {"name": "send-btn", "tab": "agent", "type": "Button",
+     "purpose": "Send the current input to the agent."},
+    {"name": "input", "tab": "agent", "type": "Textarea",
+     "purpose": "User-input area."},
+    {"name": "mode", "tab": "agent", "type": "Dropdown",
+     "purpose": "Agent mode.",
+     "values": ["dashboard", "solo", "quick", "reviewed",
+                "tdd", "cluster", "full"]},
+    {"name": "perm", "tab": "agent", "type": "Dropdown",
+     "purpose": "Permission profile.",
+     "values": ["plan", "ask_all", "repo_free", "all_free"]},
+]
+
+
+def list_dashboard_widgets(tab: str = "") -> list[dict]:
+    """Return the static catalog of /ui-controllable widgets.
+
+    Optionally filter by ``tab`` (submit / orca / calc / agent).
+    Each entry: name, tab, type, purpose, and (for dropdowns) an
+    explicit ``values`` list — no need to /ui options first.
+    """
+    t = (tab or "").strip().lower()
+    return [
+        dict(e) for e in _WIDGET_CATALOG
+        if not t or e["tab"].lower() == t
+    ]
+
+
+def get_widget_options(name: str) -> list:
+    """Return the allowed values for a dropdown widget, or [] otherwise.
+
+    Use BEFORE setting a value via /ui to avoid a "Invalid value"
+    error round-trip.
+    """
+    if not name:
+        return []
+    target = str(name).strip().lower()
+    for e in _WIDGET_CATALOG:
+        if e["name"].lower() == target:
+            return list(e.get("values", []))
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Validation: is this ORCA input plausible?
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ValidationIssue:
+    """One validation finding."""
+    severity: str   # "error" | "warning" | "info"
+    code: str       # short machine-readable identifier
+    message: str    # human-readable detail
+    suggestion: str = ""
+
+
+def validate_orca_input(inp_text: str) -> list[ValidationIssue]:
+    """Sanity-check the text of an ORCA ``.inp`` file.
+
+    Returns a list of :class:`ValidationIssue` entries. Empty list = no
+    obvious problems detected (NOT proof the input is correct, just
+    that the heuristic checks pass). Use this before submit when the
+    user asks "passt alles im ORCA Builder?".
+
+    Checks performed:
+
+    - **structural**: ``! …`` keyword line present; `* xyz` / `* xyzfile`
+      coordinate header; balanced ``%pal`` / ``end`` blocks.
+    - **resources**: ``%pal nprocs N end`` parses (incl. inline form);
+      ``%maxcore`` reasonable (1-20000 MB range).
+    - **electronics**: charge / multiplicity present; multiplicity is
+      odd/even consistent with electron count if the coordinate block
+      has integers we can sum.
+    - **method**: known functional + basis combo (warn on unknown).
+    - **job-type vs keywords**: ``Freq`` requires no ``LARGEPRINT`` etc.
+    - **dispersion vs functional**: D3(0)/D3BJ/D4 paired sensibly.
+
+    Any discovered issue carries a short suggestion the agent can
+    paste back to the user (or use to ``/control key`` an autofix).
+    """
+    import re as _re
+    issues: list[ValidationIssue] = []
+    if not (inp_text or "").strip():
+        issues.append(ValidationIssue(
+            severity="error", code="empty",
+            message="INP text is empty.",
+            suggestion="Generate the input via ORCA Builder or paste a real .inp.",
+        ))
+        return issues
+
+    text = inp_text
+    text_low = text.lower()
+
+    # --- Structural checks -----------------------------------------------
+    m_keyword = _re.search(r"^\s*!\s*(.+)$", text, _re.MULTILINE)
+    if not m_keyword:
+        issues.append(ValidationIssue(
+            severity="error", code="no_keyword_line",
+            message="No `! …` keyword line found.",
+            suggestion="Add a line like `! PBE0 def2-TZVP D4 OPT Freq` at the top.",
+        ))
+        keyword_line = ""
+    else:
+        keyword_line = m_keyword.group(1).strip()
+
+    if not _re.search(r"^\s*\*\s+(xyz|xyzfile)\s+", text, _re.MULTILINE):
+        issues.append(ValidationIssue(
+            severity="error", code="no_xyz_block",
+            message="No `* xyz <charge> <mult>` (or xyzfile) block found.",
+            suggestion="Add `* xyz 0 1` followed by atom lines and a closing `*`.",
+        ))
+
+    # Charge / multiplicity from xyz header
+    m_xyz = _re.search(
+        r"^\s*\*\s+xyz\s+(-?\d+)\s+(\d+)\s*$", text, _re.MULTILINE,
+    )
+    charge = int(m_xyz.group(1)) if m_xyz else None
+    mult = int(m_xyz.group(2)) if m_xyz else None
+    if mult is not None and mult < 1:
+        issues.append(ValidationIssue(
+            severity="error", code="bad_multiplicity",
+            message=f"Multiplicity {mult} is < 1.",
+            suggestion="Multiplicity = 2S+1, so it must be ≥ 1 (singlet=1, doublet=2, ...).",
+        ))
+
+    # --- %pal block ------------------------------------------------------
+    if "%pal" in text_low:
+        # Use the same regex as parse_inp_resources (inline + multi-line)
+        m_pal = _re.search(r"\bnprocs\s+(\d+)", text, _re.IGNORECASE)
+        if not m_pal:
+            issues.append(ValidationIssue(
+                severity="error", code="pal_no_nprocs",
+                message="`%pal` block has no `nprocs` value.",
+                suggestion="Use `%pal nprocs 12 end` (or multi-line form).",
+            ))
+    if "%maxcore" in text_low:
+        m_mc = _re.search(r"%maxcore\s+(\d+)", text, _re.IGNORECASE)
+        if m_mc:
+            mc = int(m_mc.group(1))
+            if mc < 100:
+                issues.append(ValidationIssue(
+                    severity="warning", code="maxcore_low",
+                    message=f"%maxcore = {mc} MB is unusually low.",
+                    suggestion="Typical values are 1000-8000 MB per core.",
+                ))
+            elif mc > 32000:
+                issues.append(ValidationIssue(
+                    severity="warning", code="maxcore_high",
+                    message=f"%maxcore = {mc} MB is unusually high.",
+                    suggestion="Above 16-32 GB/core is uncommon — verify SLURM allocation.",
+                ))
+
+    # --- Method / basis sanity (heuristic) ------------------------------
+    kw = keyword_line.upper()
+    has_functional = any(
+        f in kw.split()
+        for f in ("BP86", "PBE0", "B3LYP", "TPSS", "WB97X", "WB97X-D3",
+                  "CAM-B3LYP", "R2SCAN", "PBE", "M06", "M06-2X", "BLYP",
+                  "REVTPSS", "HF", "MP2", "CCSD")
+    )
+    has_basis = any(
+        b in kw
+        for b in ("DEF2-", "PCSSEG", "MA-DEF2-", "SARC-", "X2C-", "CC-PV", "AUG-")
+    )
+    if keyword_line and not has_functional:
+        issues.append(ValidationIssue(
+            severity="warning", code="no_functional",
+            message="Could not detect a known functional in the keyword line.",
+            suggestion="Common picks: PBE0, BP86, B3LYP, wB97X-D3, CAM-B3LYP.",
+        ))
+    if keyword_line and not has_basis:
+        issues.append(ValidationIssue(
+            severity="warning", code="no_basis",
+            message="Could not detect a known basis set.",
+            suggestion="Common picks: def2-SVP, def2-TZVP, ma-def2-TZVP.",
+        ))
+
+    # --- Dispersion vs functional --------------------------------------
+    has_d4 = "D4" in kw.split()
+    has_d3 = "D3BJ" in kw.split() or "D3(0)" in kw.replace(" ", "")
+    if has_d4 and has_d3:
+        issues.append(ValidationIssue(
+            severity="warning", code="dispersion_double",
+            message="Both D3 and D4 appear in the keyword line.",
+            suggestion="Pick one — usually D4 for newer functionals, D3BJ otherwise.",
+        ))
+
+    # --- Job type vs accompanying keywords -----------------------------
+    if "FREQ" in kw and "TIGHTOPT" not in kw and "OPT" in kw and "VERYTIGHTOPT" not in kw:
+        issues.append(ValidationIssue(
+            severity="info", code="freq_after_loose_opt",
+            message="`OPT Freq` without TIGHTOPT may give imag-freq false positives.",
+            suggestion="Add TIGHTOPT or VERYTIGHTOPT for clean Hessian.",
+        ))
+
+    if "NEB-TS" in kw and not _re.search(r"%neb", text, _re.IGNORECASE):
+        issues.append(ValidationIssue(
+            severity="error", code="neb_no_block",
+            message="NEB-TS keyword without %neb block.",
+            suggestion="Add `%neb NImages 8 end` (or your image count) to the input.",
+        ))
+
+    # --- Relativistic consistency --------------------------------------
+    has_zora = "ZORA" in kw
+    has_x2c = "X2C" in kw
+    if has_zora and "DEF2-" in kw and "ZORA-DEF2-" not in kw:
+        issues.append(ValidationIssue(
+            severity="warning", code="zora_basis_mismatch",
+            message="ZORA Hamiltonian set but plain def2- basis used.",
+            suggestion="Use ZORA-def2-TZVP or SARC-ZORA-TZVP with ZORA.",
+        ))
+    if has_x2c and ("DEF2-" in kw and "X2C-" not in kw):
+        issues.append(ValidationIssue(
+            severity="warning", code="x2c_basis_mismatch",
+            message="X2C set but def2- basis (non-relativistic) used.",
+            suggestion="Use x2c-TZVPall / x2c-QZVPPall with X2C.",
+        ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
+# Job lifecycle (typed wrappers around backend_local / backend_slurm)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SubmitOutcome:
+    """Result of a submit_calculation call."""
+    job_id: str = ""
+    submitted: bool = False
+    folder: str = ""
+    backend: str = ""
+    message: str = ""
+    error: str = ""
+
+
+def _resolve_backend():
+    """Pick the right backend (local vs slurm) for the running host."""
+    import shutil as _sh
+    if _sh.which("sbatch") and _sh.which("squeue"):
+        from delfin.dashboard.backend_slurm import SLURMBackend
+        return SLURMBackend(orca_base="")
+    from delfin.dashboard.backend_local import LocalBackend
+    return LocalBackend(orca_base="")
+
+
+def submit_calculation(
+    folder: str,
+    *,
+    job_name: str = "",
+    mode: str = "delfin",
+    time_limit: str = "12:00:00",
+    pal: int = 12,
+    maxcore: int = 6000,
+    allow_mutate: bool = False,
+) -> SubmitOutcome:
+    """Submit a calculation folder via the live backend (DESTRUCTIVE).
+
+    ``allow_mutate=False`` (default) → no submit. Returns a
+    SubmitOutcome with ``submitted=False`` and a hint message so the
+    agent can confirm with the user before a real submit.
+
+    Args:
+        folder: absolute path to the job folder (must contain a
+            CONTROL.txt or .inp).
+        job_name: optional name (defaults to folder basename).
+        mode: ``delfin`` (full pipeline) or ``orca`` (single-step).
+        time_limit: SLURM HH:MM:SS.
+        pal: cores.
+        maxcore: per-core memory in MB.
+        allow_mutate: must be True for the submit to actually run.
+    """
+    from pathlib import Path as _P
+    p = _P(folder)
+    if not p.exists() or not p.is_dir():
+        return SubmitOutcome(
+            folder=str(folder),
+            error=f"folder not found or not a directory: {folder}",
+        )
+    if not allow_mutate:
+        return SubmitOutcome(
+            folder=str(folder),
+            backend="(skipped — allow_mutate=False)",
+            message=(
+                f"Would submit {folder} as mode={mode!r}, "
+                f"time={time_limit}, pal={pal}, maxcore={maxcore}. "
+                f"Confirm with the user, then call again with "
+                f"allow_mutate=True."
+            ),
+        )
+    name = job_name or p.name
+    try:
+        backend = _resolve_backend()
+        result = backend.submit_delfin(
+            job_dir=str(p), job_name=name, mode=mode,
+            time_limit=time_limit, pal=pal, maxcore=maxcore,
+        )
+    except Exception as exc:
+        return SubmitOutcome(
+            folder=str(folder), error=f"submit failed: {exc}",
+        )
+    submitted = bool(getattr(result, "returncode", 1) == 0)
+    job_id = ""
+    stdout = getattr(result, "stdout", "") or ""
+    import re as _re
+    m = _re.search(r"\b(\d{6,})\b", stdout)
+    if m:
+        job_id = m.group(1)
+    return SubmitOutcome(
+        job_id=job_id,
+        submitted=submitted,
+        folder=str(p),
+        backend=type(backend).__name__,
+        message=(stdout or "").strip()[:500],
+        error="" if submitted else (
+            getattr(result, "stderr", "") or "submit returned non-zero"
+        )[:500],
+    )
+
+
+def cancel_calculation(
+    job_id: str,
+    *,
+    allow_mutate: bool = False,
+) -> dict:
+    """Cancel a running job by SLURM/local id (DESTRUCTIVE).
+
+    ``allow_mutate=False`` → returns a "would cancel" hint without
+    running scancel. Confirm with the user, then re-call.
+    """
+    if not (job_id or "").strip():
+        return {"ok": False, "error": "no job_id given"}
+    if not allow_mutate:
+        return {
+            "ok": False,
+            "skipped": True,
+            "message": (
+                f"Would cancel job {job_id}. Confirm with the user, "
+                f"then call again with allow_mutate=True."
+            ),
+        }
+    try:
+        backend = _resolve_backend()
+        ok, msg = backend.cancel_job(job_id)
+        return {"ok": bool(ok), "message": msg, "job_id": job_id}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "job_id": job_id}
+
+
+def list_active_calculations() -> list[dict]:
+    """Return the live job list from the active backend (read-only).
+
+    Each entry: {job_id, name, status, runtime_s, directory}. Empty
+    list when SLURM isn't reachable or no jobs are active.
+    """
+    try:
+        backend = _resolve_backend()
+        jobs = list(backend.list_jobs() or [])
+    except Exception as exc:
+        return [{"error": str(exc)}]
+    out: list[dict] = []
+    for j in jobs:
+        out.append({
+            "job_id": getattr(j, "job_id", "") or "",
+            "name": getattr(j, "name", "") or "",
+            "status": getattr(j, "status", "") or "",
+            "runtime_s": float(getattr(j, "runtime_s", 0) or 0),
+            "directory": getattr(j, "directory", "") or "",
+        })
+    return out
+
+
 def _default_plot_dir() -> str:
     """Return the agent_workspace/ directory the dashboard auto-renders."""
     from pathlib import Path as _P
@@ -1201,4 +1798,17 @@ __all__ = [
     # P1 — statistical plots (PNG → agent_workspace, auto-shown in chat)
     "plot_energy_distribution",
     "plot_energy_correlation",
+    # Tool / widget catalogs (cheap on-demand discovery)
+    "list_tools",
+    "describe_tool",
+    "list_dashboard_widgets",
+    "get_widget_options",
+    # ORCA Builder validation
+    "ValidationIssue",
+    "validate_orca_input",
+    # Job lifecycle (typed, allow_mutate gates)
+    "SubmitOutcome",
+    "submit_calculation",
+    "cancel_calculation",
+    "list_active_calculations",
 ]

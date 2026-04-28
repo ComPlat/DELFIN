@@ -291,6 +291,157 @@ def tool_plot_energy_distribution(
     return _json.dumps(_asdict(result), indent=2)
 
 
+def tool_list_tools(category: str = "", query: str = "") -> str:
+    """Browse the typed-tool catalog without paying for full schemas.
+
+    Returns JSON list of {name, category, summary} entries. Use this
+    BEFORE making up a tool name — the catalog is the source of truth.
+    Filter by category (checks/workflow/parsing/plotting/jobs/...) or
+    query (case-insensitive substring match).
+
+    Args:
+        category: optional category to filter by.
+        query: optional substring to match against name/summary/category.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_tools(category=category, query=query),
+        indent=2,
+    )
+
+
+def tool_describe_tool(name: str) -> str:
+    """Return the full description + signature of one typed tool.
+
+    Use AFTER list_tools to read the docstring for one specific tool
+    before deciding to call it. Unknown name → JSON with hint.
+
+    Args:
+        name: exact tool name (case-insensitive).
+    """
+    import json as _json
+    return _json.dumps(delfin_api.describe_tool(name), indent=2)
+
+
+def tool_list_dashboard_widgets(tab: str = "") -> str:
+    """Catalog of widgets the agent can drive via /ui ACTION commands.
+
+    Returns JSON list of {name, tab, type, purpose} entries plus, for
+    dropdowns, an explicit ``values`` list — no /ui options round-trip
+    needed. Filter by ``tab`` (submit/orca/calc/agent) for fewer rows.
+
+    Args:
+        tab: optional tab name to filter by.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.list_dashboard_widgets(tab=tab),
+        indent=2,
+    )
+
+
+def tool_get_widget_options(name: str) -> str:
+    """Return the allowed values for a dropdown widget.
+
+    Use BEFORE setting a value so /ui doesn't reject it. Empty list
+    when the widget isn't a dropdown (or doesn't exist).
+
+    Args:
+        name: widget name (e.g. "orca-method").
+    """
+    import json as _json
+    return _json.dumps(delfin_api.get_widget_options(name), indent=2)
+
+
+def tool_validate_orca_input(inp_text: str) -> str:
+    """Sanity-check the text of an ORCA .inp and report issues.
+
+    Use this when the user asks "passt alles im ORCA Builder?" — read
+    the orca-preview widget value first (via /ui orca-preview show),
+    then pass it here. Returns JSON list of
+    {severity, code, message, suggestion} entries.
+
+    Severities: error (definitely broken), warning (probably wrong),
+    info (style hint). Empty list = no obvious problems detected (NOT
+    proof the calculation is correct).
+
+    Args:
+        inp_text: raw ORCA .inp file content.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    issues = delfin_api.validate_orca_input(inp_text)
+    return _json.dumps([_asdict(i) for i in issues], indent=2)
+
+
+def tool_submit_calculation(
+    folder: str,
+    job_name: str = "",
+    mode: str = "delfin",
+    time_limit: str = "12:00:00",
+    pal: int = 12,
+    maxcore: int = 6000,
+    allow_mutate: bool = False,
+) -> str:
+    """Submit a folder via the live backend (DESTRUCTIVE — needs allow_mutate).
+
+    Default ``allow_mutate=False`` returns a "would submit" preview
+    with the full args so you can confirm with the user. Set
+    allow_mutate=True ONLY after the user explicitly says yes.
+
+    Returns JSON with: job_id, submitted (bool), folder, backend,
+    message, error.
+
+    Args:
+        folder: absolute path to the job folder.
+        job_name: defaults to folder basename.
+        mode: "delfin" (full pipeline) or "orca" (single-step).
+        time_limit: SLURM HH:MM:SS.
+        pal: cores. maxcore: per-core memory in MB.
+        allow_mutate: must be True for the submit to actually run.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    result = delfin_api.submit_calculation(
+        folder, job_name=job_name, mode=mode, time_limit=time_limit,
+        pal=int(pal), maxcore=int(maxcore),
+        allow_mutate=bool(allow_mutate),
+    )
+    return _json.dumps(_asdict(result), indent=2)
+
+
+def tool_cancel_calculation(
+    job_id: str,
+    allow_mutate: bool = False,
+) -> str:
+    """Cancel a running job by id (DESTRUCTIVE — needs allow_mutate).
+
+    Default returns a "would cancel" hint without scancel. Confirm
+    with the user, then re-call with allow_mutate=True.
+
+    Args:
+        job_id: SLURM job id (or local PID).
+        allow_mutate: must be True for actual cancel.
+    """
+    import json as _json
+    return _json.dumps(
+        delfin_api.cancel_calculation(
+            job_id, allow_mutate=bool(allow_mutate),
+        ),
+        indent=2,
+    )
+
+
+def tool_list_active_calculations() -> str:
+    """Live list of running/pending jobs (read-only).
+
+    Returns JSON list of {job_id, name, status, runtime_s, directory}
+    entries. Empty when no jobs are active.
+    """
+    import json as _json
+    return _json.dumps(delfin_api.list_active_calculations(), indent=2)
+
+
 def tool_plot_energy_correlation(
     folders: str,
     x: str = "single_point",
@@ -527,6 +678,17 @@ def run_server(argv: list[str] | None = None) -> None:
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
     mcp.tool()(tool_plot_energy_distribution)
     mcp.tool()(tool_plot_energy_correlation)
+    # Tool / widget catalogs (cheap on-demand discovery)
+    mcp.tool()(tool_list_tools)
+    mcp.tool()(tool_describe_tool)
+    mcp.tool()(tool_list_dashboard_widgets)
+    mcp.tool()(tool_get_widget_options)
+    # ORCA Builder validation
+    mcp.tool()(tool_validate_orca_input)
+    # Job lifecycle (read-only list + mutating submit/cancel)
+    mcp.tool()(tool_list_active_calculations)
+    mcp.tool()(tool_submit_calculation)
+    mcp.tool()(tool_cancel_calculation)
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)

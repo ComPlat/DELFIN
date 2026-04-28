@@ -579,3 +579,198 @@ def test_tool_plot_energy_correlation_no_overlap(tmp_path, monkeypatch):
     data = json.loads(txt)
     assert data["error"] != ""
     assert data["path"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Tool / widget catalog discovery
+# ---------------------------------------------------------------------------
+
+
+def test_tool_list_tools_returns_full_catalog():
+    txt = ops_server.tool_list_tools()
+    catalog = json.loads(txt)
+    assert isinstance(catalog, list)
+    # Sanity: at least the canonical tools are listed
+    names = {e["name"] for e in catalog}
+    assert {"parse_orca_output", "submit_calculation",
+            "validate_orca_input", "list_dashboard_widgets",
+            "list_tools", "describe_tool"}.issubset(names)
+
+
+def test_tool_list_tools_filter_by_category():
+    txt = ops_server.tool_list_tools(category="parsing")
+    rows = json.loads(txt)
+    assert all(r["category"] == "parsing" for r in rows)
+    # parsing has parse_orca_output etc.
+    assert any(r["name"] == "parse_orca_output" for r in rows)
+
+
+def test_tool_list_tools_filter_by_query():
+    txt = ops_server.tool_list_tools(query="cancel")
+    rows = json.loads(txt)
+    assert any("cancel" in r["name"].lower() for r in rows)
+
+
+def test_tool_describe_tool_returns_docstring():
+    txt = ops_server.tool_describe_tool("validate_orca_input")
+    info = json.loads(txt)
+    assert info["name"] == "validate_orca_input"
+    assert info["category"] == "validation"
+    assert "Sanity-check" in info["docstring"]
+
+
+def test_tool_describe_tool_unknown_lists_options():
+    txt = ops_server.tool_describe_tool("nopepe")
+    info = json.loads(txt)
+    assert "error" in info
+    assert "available" in info
+    assert "parse_orca_output" in info["available"]
+
+
+# ---------------------------------------------------------------------------
+# Widget catalog
+# ---------------------------------------------------------------------------
+
+
+def test_tool_list_dashboard_widgets_all_tabs():
+    txt = ops_server.tool_list_dashboard_widgets()
+    rows = json.loads(txt)
+    tabs = {r["tab"] for r in rows}
+    assert {"submit", "orca", "calc", "agent"}.issubset(tabs)
+
+
+def test_tool_list_dashboard_widgets_filter_orca():
+    txt = ops_server.tool_list_dashboard_widgets(tab="orca")
+    rows = json.loads(txt)
+    assert all(r["tab"] == "orca" for r in rows)
+    assert any(r["name"] == "orca-method" for r in rows)
+    assert any(r["name"] == "orca-preview" for r in rows)
+
+
+def test_tool_get_widget_options_returns_dropdown_values():
+    txt = ops_server.tool_get_widget_options("orca-method")
+    options = json.loads(txt)
+    assert "PBE0" in options
+    assert "BP86" in options
+
+
+def test_tool_get_widget_options_empty_for_textarea():
+    """Non-dropdown widgets return [] — agent shouldn't try /ui options."""
+    txt = ops_server.tool_get_widget_options("orca-preview")
+    assert json.loads(txt) == []
+
+
+# ---------------------------------------------------------------------------
+# ORCA-input validation
+# ---------------------------------------------------------------------------
+
+
+def test_tool_validate_orca_input_clean_returns_no_errors():
+    inp = (
+        "! PBE0 def2-TZVP D4 OPT Freq\n"
+        "%pal nprocs 12 end\n"
+        "%maxcore 4000\n"
+        "* xyz 0 1\n"
+        "C 0 0 0\n"
+        "*\n"
+    )
+    txt = ops_server.tool_validate_orca_input(inp)
+    issues = json.loads(txt)
+    severities = {i["severity"] for i in issues}
+    assert "error" not in severities
+
+
+def test_tool_validate_orca_input_empty_text_is_error():
+    txt = ops_server.tool_validate_orca_input("")
+    issues = json.loads(txt)
+    assert any(i["code"] == "empty" for i in issues)
+
+
+def test_tool_validate_orca_input_missing_xyz_block():
+    inp = "! PBE0 def2-TZVP\n%pal nprocs 4 end\n"
+    txt = ops_server.tool_validate_orca_input(inp)
+    issues = json.loads(txt)
+    assert any(i["code"] == "no_xyz_block" for i in issues)
+
+
+def test_tool_validate_orca_input_pal_inline_form_passes():
+    """The S2 OOM bug — inline %pal nprocs 40 end must validate clean."""
+    inp = (
+        "! PBE0 def2-TZVP\n"
+        "%pal nprocs 40 end\n"
+        "%maxcore 6000\n"
+        "* xyz 0 1\nC 0 0 0\n*\n"
+    )
+    txt = ops_server.tool_validate_orca_input(inp)
+    issues = json.loads(txt)
+    assert not any(i["code"] == "pal_no_nprocs" for i in issues)
+
+
+def test_tool_validate_orca_input_zora_basis_mismatch():
+    """ZORA Hamiltonian + plain def2 basis → warning."""
+    inp = (
+        "! PBE0 def2-TZVP ZORA\n"
+        "%pal nprocs 4 end\n"
+        "* xyz 0 1\nFe 0 0 0\n*\n"
+    )
+    txt = ops_server.tool_validate_orca_input(inp)
+    issues = json.loads(txt)
+    assert any(i["code"] == "zora_basis_mismatch" for i in issues)
+
+
+def test_tool_validate_orca_input_neb_without_block():
+    inp = (
+        "! NEB-TS PBE0 def2-TZVP\n"
+        "%pal nprocs 4 end\n"
+        "* xyz 0 1\nC 0 0 0\n*\n"
+    )
+    txt = ops_server.tool_validate_orca_input(inp)
+    issues = json.loads(txt)
+    assert any(i["code"] == "neb_no_block" for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Job lifecycle (mutation gate + dry-run)
+# ---------------------------------------------------------------------------
+
+
+def test_tool_submit_calculation_dry_run_no_sbatch(tmp_path):
+    """Default allow_mutate=False returns a 'would submit' preview."""
+    job_dir = tmp_path / "job1"
+    job_dir.mkdir()
+    txt = ops_server.tool_submit_calculation(
+        str(job_dir), pal=12, maxcore=4000, time_limit="06:00:00",
+    )
+    data = json.loads(txt)
+    assert data["submitted"] is False
+    assert "Would submit" in data["message"]
+    assert "06:00:00" in data["message"]
+
+
+def test_tool_submit_calculation_missing_folder():
+    txt = ops_server.tool_submit_calculation("/nope/missing")
+    data = json.loads(txt)
+    assert data["submitted"] is False
+    assert "not found" in data["error"]
+
+
+def test_tool_cancel_calculation_dry_run_no_scancel():
+    txt = ops_server.tool_cancel_calculation("12345")
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert data.get("skipped") is True
+    assert "Would cancel" in data["message"]
+
+
+def test_tool_cancel_calculation_empty_id_is_error():
+    txt = ops_server.tool_cancel_calculation("")
+    data = json.loads(txt)
+    assert data["ok"] is False
+    assert "no job_id" in data["error"]
+
+
+def test_tool_list_active_calculations_returns_list():
+    """Backend may or may not have jobs — must return a list shape."""
+    txt = ops_server.tool_list_active_calculations()
+    data = json.loads(txt)
+    assert isinstance(data, list)
