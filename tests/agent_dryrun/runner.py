@@ -61,21 +61,35 @@ class AgentDryRunResult:
         return [c.name for c in self.tool_calls]
 
 
-def _load_dashboard_prompt(sandbox_root: str | None = None) -> str:
-    """Read the dashboard agent prompt verbatim with a synthetic live state.
+def _load_agent_prompt(
+    role: str = "dashboard",
+    sandbox_root: str | None = None,
+) -> str:
+    """Read an agent prompt (dashboard / solo) with a synthetic live state.
 
-    When ``sandbox_root`` is given the live-state block points at it so
-    the agent's ACTION: lines reference paths it can actually see.
+    Parameters
+    ----------
+    role : str
+        ``"dashboard"`` (default) or ``"solo"`` — which agent prompt to load.
+    sandbox_root : str, optional
+        When given, the live-state block points at the sandbox tree so
+        the agent's ACTION: lines reference paths it can actually see.
     """
     pack = (
         Path(__file__).resolve().parents[2]
-        / "delfin" / "agent" / "pack" / "agents" / "dashboard_agent.md"
+        / "delfin" / "agent" / "pack" / "agents"
+        / f"{role}_agent.md"
     )
+    if not pack.exists():
+        raise FileNotFoundError(
+            f"agent prompt not found: {pack} (role={role!r})"
+        )
     base = pack.read_text(encoding="utf-8")
     root = sandbox_root or "/tmp/dryrun_calc"
     live_state = (
         "\n--- Live state ---\n"
-        "Branch: GUPPY (sandboxed dry-run)\n"
+        f"Role: {role}_agent (sandboxed dry-run)\n"
+        "Branch: GUPPY\n"
         "CONTROL.txt: functional=BP86, main_basisset=def2-SVP, PAL=8, maxcore=2000\n"
         "ORCA Builder: idle\n"
         f"Active calc folder: {root}/calc/test_a\n"
@@ -88,6 +102,10 @@ def _load_dashboard_prompt(sandbox_root: str | None = None) -> str:
     return base + live_state
 
 
+# Backwards-compat alias for the dashboard-only path
+_load_dashboard_prompt = _load_agent_prompt
+
+
 def _ensure_ops_mcp_config() -> str:
     """Generate the delfin-ops MCP config file the CLI needs."""
     from delfin.ops_server.config import ensure_mcp_config
@@ -98,6 +116,7 @@ def run_agent_dryrun(
     user_query: str,
     *,
     model: str = "haiku",
+    role: str = "dashboard",
     timeout_s: int = 90,
     cwd: str | None = None,
     extra_disallowed_tools: list[str] | None = None,
@@ -146,7 +165,7 @@ def run_agent_dryrun(
             pass  # cwd is outside the repo — exactly what we want
 
     effective_root = sandbox_root or cwd
-    system_prompt = _load_dashboard_prompt(sandbox_root=effective_root)
+    system_prompt = _load_agent_prompt(role=role, sandbox_root=effective_root)
     mcp_config = _ensure_ops_mcp_config()
 
     cmd = [
