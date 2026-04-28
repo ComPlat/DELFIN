@@ -1034,6 +1034,66 @@ def tool_compare_across_functionals(
     return _json.dumps([_asdict(r) for r in rows], indent=2)
 
 
+def tool_extract_orbital_energies(folder: str) -> str:
+    """Pull the LAST ORBITAL ENERGIES block + HOMO/LUMO/gap.
+
+    Returns the full orbital list (index, occupation, energy_eh,
+    energy_ev) plus homo_index/lumo_index/homo_ev/lumo_ev/gap_ev.
+    Direct answer to "wo liegt das HOMO?" / "wie groß ist der Gap?".
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_orbital_energies(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_excited_states(folder: str) -> str:
+    """Pull the TDDFT/CIS transition table from a folder's .out.
+
+    Selects the LAST ABSORPTION SPECTRUM block (post-optimization).
+    Each row has state_from, state_to, energy_ev, energy_cm,
+    wavelength_nm, fosc. Use for UV/Vis spectrum analysis.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_excited_states(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_dipole(folder: str) -> str:
+    """Pull the dipole-moment vector + magnitude from a folder's .out.
+
+    Returns dx/dy/dz (a.u.), magnitude_au, and magnitude_debye
+    (computed if ORCA didn't print Debye explicitly).
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_dipole(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_optimization_trajectory(folder: str) -> str:
+    """Per-cycle energies + convergence flag for an Opt run.
+
+    Each row carries cycle, energy_eh, delta_e (Δ to previous cycle).
+    ``converged`` follows ORCA's OPTIMIZATION RUN DONE / HAS
+    CONVERGED markers. Useful for "warum hat die Optimierung 50
+    Schritte gebraucht?" and trajectory plotting.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_optimization_trajectory(folder)),
+        indent=2,
+    )
+
+
 def tool_stop_dry_run(workspace: str) -> str:
     """List DELFIN processes that would be signaled (no actual signal sent)."""
     rc = delfin_api.stop(workspace=workspace, dry_run=True)
@@ -1216,6 +1276,11 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_extract_imaginary_frequencies)
     mcp.tool()(tool_compare_calculations)
     mcp.tool()(tool_compare_across_functionals)
+    # Output-analysis depth (orbitals / TDDFT / dipole / opt trajectory)
+    mcp.tool()(tool_extract_orbital_energies)
+    mcp.tool()(tool_extract_excited_states)
+    mcp.tool()(tool_extract_dipole)
+    mcp.tool()(tool_extract_optimization_trajectory)
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
     mcp.tool()(tool_plot_energy_distribution)
     mcp.tool()(tool_plot_energy_correlation)

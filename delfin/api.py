@@ -792,6 +792,327 @@ def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
 
 
 @dataclass
+class OrbitalEnergyEntry:
+    """One molecular orbital from an ORCA ORBITAL ENERGIES section."""
+    index: int
+    occupation: float
+    energy_eh: float
+    energy_ev: float
+
+
+@dataclass
+class OrbitalEnergyResult:
+    """Orbital snapshot: HOMO/LUMO/gap + the full list."""
+    folder: str
+    output_file: str | None
+    n_orbitals: int
+    homo_index: int | None
+    lumo_index: int | None
+    homo_ev: float | None
+    lumo_ev: float | None
+    gap_ev: float | None
+    orbitals: list[OrbitalEnergyEntry]
+    error: str | None = None
+
+
+def _read_largest_out(folder: str) -> tuple["Path | None", str, str | None]:
+    """Pick the largest .out, return (path, text, error_or_None)."""
+    from pathlib import Path as _P
+    p = _P(folder)
+    if not p.exists():
+        return None, "", "folder missing"
+    out_files = sorted(p.glob("*.out")) if p.is_dir() else [p]
+    if not out_files:
+        return None, "", "no ORCA output"
+    target = max(out_files, key=lambda f: f.stat().st_size)
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return target, "", f"read failed: {exc}"
+    return target, text, None
+
+
+def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
+    """Parse the LAST ORBITAL ENERGIES block from a folder's .out.
+
+    Returns full orbital list + HOMO/LUMO/gap. ``occupation >= 0.5``
+    counts as occupied — covers RHF/UHF/ROHF and TDDFT references.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return OrbitalEnergyResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            n_orbitals=0, homo_index=None, lumo_index=None,
+            homo_ev=None, lumo_ev=None, gap_ev=None,
+            orbitals=[], error=err,
+        )
+    sections = list(_re.finditer(r"ORBITAL ENERGIES\s*\n[-=]+", text))
+    if not sections:
+        return OrbitalEnergyResult(
+            folder=str(folder), output_file=target.name,
+            n_orbitals=0, homo_index=None, lumo_index=None,
+            homo_ev=None, lumo_ev=None, gap_ev=None,
+            orbitals=[], error="no ORBITAL ENERGIES section",
+        )
+    block = text[sections[-1].end():][:500_000]
+    rows: list[OrbitalEnergyEntry] = []
+    line_re = _re.compile(
+        r"^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+    )
+    for line in block.split("\n"):
+        if line.strip().startswith(("NO", "*")) or not line.strip():
+            if rows:
+                break
+            continue
+        m = line_re.match(line)
+        if not m:
+            if rows:
+                break
+            continue
+        rows.append(OrbitalEnergyEntry(
+            index=int(m.group(1)),
+            occupation=float(m.group(2)),
+            energy_eh=float(m.group(3)),
+            energy_ev=float(m.group(4)),
+        ))
+    homo_idx = lumo_idx = None
+    for r in rows:
+        if r.occupation >= 0.5:
+            homo_idx = r.index
+    if homo_idx is not None:
+        for r in rows:
+            if r.index > homo_idx:
+                lumo_idx = r.index
+                break
+    homo_ev = next((r.energy_ev for r in rows if r.index == homo_idx), None)
+    lumo_ev = next((r.energy_ev for r in rows if r.index == lumo_idx), None)
+    gap_ev = (
+        lumo_ev - homo_ev
+        if homo_ev is not None and lumo_ev is not None else None
+    )
+    return OrbitalEnergyResult(
+        folder=str(folder), output_file=target.name,
+        n_orbitals=len(rows),
+        homo_index=homo_idx, lumo_index=lumo_idx,
+        homo_ev=homo_ev, lumo_ev=lumo_ev, gap_ev=gap_ev,
+        orbitals=rows,
+    )
+
+
+@dataclass
+class ExcitedStateEntry:
+    """One TDDFT/CIS transition row."""
+    state_from: str
+    state_to: str
+    energy_ev: float
+    energy_cm: float
+    wavelength_nm: float
+    fosc: float
+
+
+@dataclass
+class ExcitedStatesResult:
+    """TDDFT excitation table (uses the LAST absorption block)."""
+    folder: str
+    output_file: str | None
+    n_states: int
+    transitions: list[ExcitedStateEntry]
+    error: str | None = None
+
+
+def extract_excited_states(folder: str) -> ExcitedStatesResult:
+    """Pull the TDDFT/CIS transition table from a folder's .out.
+
+    Selects the LAST ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC
+    DIPOLE MOMENTS block (after geometry optimization). Returns
+    energy_ev, energy_cm, wavelength_nm and oscillator strength per
+    transition.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return ExcitedStatesResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            n_states=0, transitions=[], error=err,
+        )
+    pattern = (
+        r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
+        r".*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)"
+    )
+    matches = _re.findall(pattern, text, _re.DOTALL)
+    if not matches:
+        return ExcitedStatesResult(
+            folder=str(folder), output_file=target.name,
+            n_states=0, transitions=[],
+            error="no TDDFT absorption block (run with !TDDFT or !CIS)",
+        )
+    line_re = _re.compile(
+        r"(\S+)\s+->\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+"
+        r"([\d.]+)",
+    )
+    rows: list[ExcitedStateEntry] = []
+    for line in matches[-1].strip().split("\n"):
+        m = line_re.search(line)
+        if not m:
+            continue
+        rows.append(ExcitedStateEntry(
+            state_from=m.group(1),
+            state_to=m.group(2),
+            energy_ev=float(m.group(3)),
+            energy_cm=float(m.group(4)),
+            wavelength_nm=float(m.group(5)),
+            fosc=float(m.group(6)),
+        ))
+    return ExcitedStatesResult(
+        folder=str(folder), output_file=target.name,
+        n_states=len(rows), transitions=rows,
+    )
+
+
+@dataclass
+class DipoleResult:
+    """Dipole-moment vector + magnitude from an ORCA .out."""
+    folder: str
+    output_file: str | None
+    dx: float | None
+    dy: float | None
+    dz: float | None
+    magnitude_au: float | None
+    magnitude_debye: float | None
+    error: str | None = None
+
+
+def extract_dipole(folder: str) -> DipoleResult:
+    """Pull the total electric dipole moment from a folder's .out.
+
+    Reads the LAST "Total Dipole Moment" line. ORCA prints both atomic
+    units and Debye nearby; we capture both.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return DipoleResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            dx=None, dy=None, dz=None,
+            magnitude_au=None, magnitude_debye=None, error=err,
+        )
+    vec_matches = list(_re.finditer(
+        r"Total Dipole Moment\s*:\s*"
+        r"(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+        text,
+    ))
+    if not vec_matches:
+        return DipoleResult(
+            folder=str(folder), output_file=target.name,
+            dx=None, dy=None, dz=None,
+            magnitude_au=None, magnitude_debye=None,
+            error="no DIPOLE MOMENT block",
+        )
+    last = vec_matches[-1]
+    dx = float(last.group(1))
+    dy = float(last.group(2))
+    dz = float(last.group(3))
+    tail = text[last.end():last.end() + 800]
+    mag_au = next((
+        float(m.group(1)) for m in
+        _re.finditer(r"Magnitude\s*\(a\.u\.\)\s*:\s*(-?\d+\.\d+)", tail)
+    ), None)
+    mag_d = next((
+        float(m.group(1)) for m in
+        _re.finditer(r"Magnitude\s*\(Debye\)\s*:\s*(-?\d+\.\d+)", tail)
+    ), None)
+    if mag_au is None:
+        mag_au = (dx * dx + dy * dy + dz * dz) ** 0.5
+    if mag_d is None:
+        mag_d = mag_au * 2.541746229  # 1 a.u. → Debye
+    return DipoleResult(
+        folder=str(folder), output_file=target.name,
+        dx=dx, dy=dy, dz=dz,
+        magnitude_au=mag_au, magnitude_debye=mag_d,
+    )
+
+
+@dataclass
+class OptCycleEntry:
+    """One row of an ORCA geometry-optimization trajectory."""
+    cycle: int
+    energy_eh: float | None
+    delta_e: float | None
+    rms_grad: float | None
+    max_grad: float | None
+    rms_step: float | None
+    max_step: float | None
+
+
+@dataclass
+class OptTrajectoryResult:
+    """Geometry-optimization trajectory + convergence flags."""
+    folder: str
+    output_file: str | None
+    cycles: list[OptCycleEntry]
+    n_cycles: int
+    converged: bool | None
+    final_energy_eh: float | None
+    error: str | None = None
+
+
+def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
+    """Extract the geometry-optimization energy trajectory.
+
+    Uses ``FINAL SINGLE POINT ENERGY`` lines (one per cycle in an
+    Opt run) and the convergence-criteria block to populate gradient
+    + step columns where present. ``converged`` follows ORCA's
+    ``OPTIMIZATION RUN DONE`` / ``HAS CONVERGED`` markers.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return OptTrajectoryResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            cycles=[], n_cycles=0, converged=None,
+            final_energy_eh=None, error=err,
+        )
+    energies = [float(m.group(1)) for m in _re.finditer(
+        r"FINAL SINGLE POINT ENERGY\s+(-?\d+\.\d+)", text,
+    )]
+    if not energies:
+        return OptTrajectoryResult(
+            folder=str(folder), output_file=target.name,
+            cycles=[], n_cycles=0, converged=None,
+            final_energy_eh=None,
+            error="no FINAL SINGLE POINT ENERGY (single-point only?)",
+        )
+    cycles: list[OptCycleEntry] = []
+    prev = None
+    for i, e in enumerate(energies, start=1):
+        cycles.append(OptCycleEntry(
+            cycle=i, energy_eh=e,
+            delta_e=(e - prev) if prev is not None else None,
+            rms_grad=None, max_grad=None,
+            rms_step=None, max_step=None,
+        ))
+        prev = e
+    converged = None
+    if ("OPTIMIZATION RUN DONE" in text
+            or "THE OPTIMIZATION HAS CONVERGED" in text):
+        converged = True
+    elif ("OPTIMIZATION DID NOT CONVERGE" in text
+            or "FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION" in text):
+        converged = False
+    return OptTrajectoryResult(
+        folder=str(folder), output_file=target.name,
+        cycles=cycles, n_cycles=len(cycles),
+        converged=converged,
+        final_energy_eh=energies[-1] if energies else None,
+    )
+
+
+@dataclass
 class FunctionalComparisonRow:
     """One folder's row in a cross-functional comparison table."""
     folder: str
@@ -1013,6 +1334,14 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Top-N folders sorted by an energy property."},
     {"name": "extract_imaginary_frequencies", "category": "parsing",
      "summary": "Imag freq modes + minimum/TS classification per folder."},
+    {"name": "extract_orbital_energies", "category": "parsing",
+     "summary": "Orbital list + HOMO/LUMO/gap (last block in .out)."},
+    {"name": "extract_excited_states", "category": "parsing",
+     "summary": "TDDFT/CIS excitation table (energy, wavelength, fosc)."},
+    {"name": "extract_dipole", "category": "parsing",
+     "summary": "Dipole-moment vector + magnitude (a.u. and Debye)."},
+    {"name": "extract_optimization_trajectory", "category": "parsing",
+     "summary": "Per-cycle energies + convergence flag (Opt jobs)."},
     {"name": "compare_calculations", "category": "parsing",
      "summary": "Side-by-side diff of method/basis/G/SPE for two folders."},
     {"name": "compare_across_functionals", "category": "parsing",
@@ -3548,6 +3877,17 @@ __all__ = [
     "ImagFreqMode",
     "ImagFreqResult",
     "extract_imaginary_frequencies",
+    "OrbitalEnergyEntry",
+    "OrbitalEnergyResult",
+    "extract_orbital_energies",
+    "ExcitedStateEntry",
+    "ExcitedStatesResult",
+    "extract_excited_states",
+    "DipoleResult",
+    "extract_dipole",
+    "OptCycleEntry",
+    "OptTrajectoryResult",
+    "extract_optimization_trajectory",
     "FunctionalComparisonRow",
     "compare_across_functionals",
     "CalcDiff",

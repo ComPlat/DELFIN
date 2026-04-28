@@ -652,6 +652,223 @@ def test_tool_compare_across_functionals_status_codes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase D — output-analysis depth: orbitals / TDDFT / dipole / opt trajectory
+# ---------------------------------------------------------------------------
+
+
+_ORBITAL_BLOCK = """\
+
+----------------
+ORBITAL ENERGIES
+----------------
+
+  NO   OCC          E(Eh)            E(eV)
+   0   2.0000     -19.246153      -523.7146
+   1   2.0000      -1.005211       -27.3535
+   2   2.0000      -0.502350       -13.6697
+   3   2.0000      -0.412341       -11.2200
+   4   1.0000      -0.150000        -4.0816
+   5   0.0000       0.052345         1.4244
+   6   0.0000       0.412345        11.2200
+   7   0.0000       0.812345        22.1051
+
+------------------
+"""
+
+
+def test_tool_extract_orbital_energies_homo_lumo_gap(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_ORBITAL_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_orbital_energies(str(folder)))
+    assert data["error"] is None
+    assert data["n_orbitals"] == 8
+    # Highest occupied (occ >= 0.5) is index 4 (occ=1.0)
+    assert data["homo_index"] == 4
+    assert data["lumo_index"] == 5
+    assert data["homo_ev"] == pytest.approx(-4.0816)
+    assert data["lumo_ev"] == pytest.approx(1.4244)
+    # gap_ev = LUMO - HOMO
+    assert data["gap_ev"] == pytest.approx(1.4244 - -4.0816)
+
+
+def test_tool_extract_orbital_energies_no_block(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing relevant\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_orbital_energies(str(folder)))
+    assert data["error"] is not None
+    assert "ORBITAL ENERGIES" in data["error"]
+
+
+def test_tool_extract_orbital_energies_picks_last_block(tmp_path):
+    """When multiple ORBITAL ENERGIES blocks exist, the LAST one wins."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    early = """\
+----------------
+ORBITAL ENERGIES
+----------------
+  NO   OCC          E(Eh)            E(eV)
+   0   2.0000     -19.000000      -517.0000
+   1   0.0000       0.000000         0.0000
+
+"""
+    (folder / "calc.out").write_text(early + _ORBITAL_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_orbital_energies(str(folder)))
+    # Expect the second (8-orbital) block, not the early 2-orbital one
+    assert data["n_orbitals"] == 8
+    assert data["homo_ev"] == pytest.approx(-4.0816)
+
+
+_TDDFT_BLOCK = """\
+ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
+-------------------------------------------------------------------
+States    Energy (eV)   Energy (cm-1)   Wavelength (nm)   fosc  D**2  X     Y     Z
+-------------------------------------------------------------------
+  0-1A  ->  1-3A    2.600831     20977.1     476.7     0.000000    0.0    0.0  0.0  0.0
+  0-1A  ->  2-3A    3.105210     25048.8     399.2     0.054321    0.5    0.1  0.2  0.4
+  0-1A  ->  3-3A    4.005210     32299.1     309.6     0.123456    1.2    0.0  0.5  1.0
+
+"""
+
+
+def test_tool_extract_excited_states_table(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_TDDFT_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_excited_states(str(folder)))
+    assert data["error"] is None
+    assert data["n_states"] == 3
+    t0 = data["transitions"][0]
+    assert t0["energy_ev"] == pytest.approx(2.600831)
+    assert t0["wavelength_nm"] == pytest.approx(476.7)
+    assert t0["fosc"] == pytest.approx(0.0)
+    t1 = data["transitions"][1]
+    assert t1["fosc"] == pytest.approx(0.054321)
+
+
+def test_tool_extract_excited_states_no_block(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        "no spectroscopy here\n", encoding="utf-8",
+    )
+    data = json.loads(ops_server.tool_extract_excited_states(str(folder)))
+    assert data["n_states"] == 0
+    assert "TDDFT" in data["error"]
+
+
+def test_tool_extract_excited_states_uses_last_block(tmp_path):
+    """Two absorption blocks (initial + final geometry) → last one only."""
+    early = _TDDFT_BLOCK.replace("476.7", "999.9")
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        early + "\n" + _TDDFT_BLOCK, encoding="utf-8",
+    )
+    data = json.loads(ops_server.tool_extract_excited_states(str(folder)))
+    # Final block has 476.7, not the bogus 999.9 from the early block
+    assert data["transitions"][0]["wavelength_nm"] == pytest.approx(476.7)
+
+
+_DIPOLE_BLOCK = """\
+DIPOLE MOMENT
+-------------
+                                X             Y             Z
+Total Dipole Moment    :     1.20000      -0.30000       0.40000
+
+Magnitude (a.u.)       :      1.29614
+Magnitude (Debye)      :      3.29447
+"""
+
+
+def test_tool_extract_dipole_vector_and_magnitude(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_DIPOLE_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_dipole(str(folder)))
+    assert data["dx"] == pytest.approx(1.20000)
+    assert data["dy"] == pytest.approx(-0.30000)
+    assert data["dz"] == pytest.approx(0.40000)
+    assert data["magnitude_au"] == pytest.approx(1.29614)
+    assert data["magnitude_debye"] == pytest.approx(3.29447)
+
+
+def test_tool_extract_dipole_computes_debye_when_missing(tmp_path):
+    """If ORCA didn't print 'Magnitude (Debye)', compute from a.u."""
+    minimal = (
+        "DIPOLE MOMENT\n"
+        "Total Dipole Moment    :     1.00000       0.00000       0.00000\n"
+    )
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(minimal, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_dipole(str(folder)))
+    assert data["magnitude_au"] == pytest.approx(1.0)
+    assert data["magnitude_debye"] == pytest.approx(2.541746229)
+
+
+def test_tool_extract_dipole_no_block(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_dipole(str(folder)))
+    assert data["error"] is not None
+    assert "DIPOLE" in data["error"]
+
+
+def test_tool_extract_optimization_trajectory_basic(tmp_path):
+    """Three FSPE lines → 3-cycle trajectory with delta_e column."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        "FINAL SINGLE POINT ENERGY    -100.000000\n"
+        "FINAL SINGLE POINT ENERGY    -100.500000\n"
+        "FINAL SINGLE POINT ENERGY    -100.750000\n"
+        "                          *** OPTIMIZATION RUN DONE ***\n",
+        encoding="utf-8",
+    )
+    data = json.loads(
+        ops_server.tool_extract_optimization_trajectory(str(folder))
+    )
+    assert data["n_cycles"] == 3
+    assert data["converged"] is True
+    assert data["final_energy_eh"] == pytest.approx(-100.75)
+    cycles = data["cycles"]
+    assert cycles[0]["delta_e"] is None
+    assert cycles[1]["delta_e"] == pytest.approx(-0.5)
+    assert cycles[2]["delta_e"] == pytest.approx(-0.25)
+
+
+def test_tool_extract_optimization_trajectory_did_not_converge(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        "FINAL SINGLE POINT ENERGY    -50.0\n"
+        "OPTIMIZATION DID NOT CONVERGE\n",
+        encoding="utf-8",
+    )
+    data = json.loads(
+        ops_server.tool_extract_optimization_trajectory(str(folder))
+    )
+    assert data["converged"] is False
+    assert data["n_cycles"] == 1
+
+
+def test_tool_extract_optimization_trajectory_no_fspe(tmp_path):
+    """Single-point calc → no FSPE means we report it cleanly."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("just text\n", encoding="utf-8")
+    data = json.loads(
+        ops_server.tool_extract_optimization_trajectory(str(folder))
+    )
+    assert data["n_cycles"] == 0
+    assert "single-point" in data["error"]
+
+
+# ---------------------------------------------------------------------------
 # P1 — statistical plot tools (PNG output, auto-displayed in chat)
 # ---------------------------------------------------------------------------
 
