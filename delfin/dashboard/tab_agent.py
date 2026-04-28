@@ -3274,6 +3274,7 @@ def create_tab(ctx):
                 allowed_tools=_cli_tools,
                 extra_dirs=_extra_dirs,
                 agent_workspace_dir=_ws_dir,
+                effort=str(effort_dropdown.value or ""),
             )
 
             # Configure calc search directories for OpenAI function calling

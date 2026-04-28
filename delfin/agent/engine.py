@@ -279,14 +279,17 @@ class AgentEngine:
         allowed_tools: list[str] | None = None,
         extra_dirs: list[str] | None = None,
         agent_workspace_dir: str = "",
+        effort: str = "",
     ):
         self.repo_dir = Path(repo_dir)
         self.loader = PromptLoader(repo_dir=pack_dir)
+        self.effort = (effort or "").strip().lower()
         self.client = create_client(
             backend=backend, provider=provider, api_key=api_key,
             model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir), mcp_config=mcp_config,
             allowed_tools=allowed_tools, extra_dirs=extra_dirs,
+            effort=self.effort,
         )
         self.backend = backend
         self.provider = provider
