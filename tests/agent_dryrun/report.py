@@ -374,6 +374,8 @@ def main():
     p.add_argument("--models", default="haiku")
     p.add_argument("--include", default="",
                    help="substring filter on test name (default: all)")
+    p.add_argument("--out", default="",
+                   help="write the markdown table here (default: stdout)")
     args = p.parse_args()
 
     if os.environ.get("DELFIN_AGENT_DRYRUN") != "1":
@@ -386,14 +388,64 @@ def main():
              or args.include.lower() in c[0].lower()]
 
     rows = []
-    for case_name, q, assertion in cases:
+    for i, (case_name, q, assertion) in enumerate(cases, 1):
         row: dict[str, Cell] = {}
         for m in models:
-            print(f"  · [{m}] {case_name}", file=sys.stderr)
+            print(f"  ({i}/{len(cases)}) [{m}] {case_name}",
+                  file=sys.stderr, flush=True)
             row[m] = _run_one(case_name, q, assertion, m)
+            # Per-cell flush so output survives a crash mid-sweep.
+            if args.out:
+                with open(args.out + ".partial", "a") as fh:
+                    print(
+                        f"  ({i}) {m} | {case_name} | "
+                        f"{'PASS' if row[m].passed else 'FAIL'} | "
+                        f"{row[m].note} | ${row[m].cost_usd:.3f}",
+                        file=fh, flush=True,
+                    )
         rows.append((case_name, row))
-    _print_table(rows, models)
+
+    out_path = args.out or None
+    if out_path:
+        import io
+        buf = io.StringIO()
+        _print_table_to(rows, models, fh=buf)
+        with open(out_path, "w") as fh:
+            fh.write(buf.getvalue())
+        print(f"\nwrote table to {out_path}", file=sys.stderr)
+        # Also stream to stdout so callers without --out still see it
+        sys.stdout.write(buf.getvalue())
+    else:
+        _print_table_to(rows, models, fh=sys.stdout)
     return 0
+
+
+def _print_table_to(rows, models, *, fh) -> None:
+    """Variant of _print_table that takes an explicit file handle."""
+    pass_glyph, fail_glyph = "✓", "✗"
+    cost_total = {m: 0.0 for m in models}
+    pass_count = {m: 0 for m in models}
+    print(file=fh)
+    print(f"## Per-model capability report (n_tests={len(rows)})", file=fh)
+    print(file=fh)
+    header = "| Test | " + " | ".join(models) + " |"
+    sep = "|------|" + "|".join("------" for _ in models) + "|"
+    print(header, file=fh)
+    print(sep, file=fh)
+    for name, by_model in rows:
+        cells = []
+        for m in models:
+            c = by_model[m]
+            glyph = pass_glyph if c.passed else fail_glyph
+            cells.append(f"{glyph} {c.note} (${c.cost_usd:.3f})")
+            cost_total[m] += c.cost_usd
+            pass_count[m] += int(c.passed)
+        print(f"| {name} | " + " | ".join(cells) + " |", file=fh)
+    print(file=fh)
+    print("### Totals", file=fh)
+    for m in models:
+        print(f"- {m}: {pass_count[m]}/{len(rows)} passed, "
+              f"${cost_total[m]:.3f} spent", file=fh)
 
 
 if __name__ == "__main__":
