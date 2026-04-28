@@ -869,6 +869,258 @@ def test_tool_extract_optimization_trajectory_no_fspe(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase E parsers — SCF / Mulliken / Loewdin / Freq / DELFIN_data / summary
+# ---------------------------------------------------------------------------
+
+
+_SCF_BLOCK = """\
+                                ------------------
+                                SCF SETTINGS
+                                ------------------
+SOME PRELUDE...
+
+                ITER       Energy         Delta-E         Max-DP    RMS-DP    [F,P]
+                  0   -123.45000000   -123.45000000    0.012345  0.001234   0.000
+                  1   -123.45100000     -0.00100000    0.001234  0.000123   0.001
+                  2   -123.45110000     -0.00010000    0.000123  0.000012  -0.001
+                  3   -123.45111000     -0.00001000    0.000012  0.000001   0.000
+
+                          *** SCF CONVERGED AFTER   4 CYCLES ***
+
+OTHER OUTPUT...
+"""
+
+
+def test_tool_extract_scf_convergence_basic(tmp_path):
+    """Single SCF block → one cycle with iteration history."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_SCF_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_scf_convergence(str(folder)))
+    assert data["error"] is None
+    assert data["n_cycles"] == 1
+    cyc = data["cycles"][0]
+    assert len(cyc["iterations"]) == 4
+    assert cyc["converged"] is True
+    assert cyc["final_energy_eh"] == pytest.approx(-123.45111)
+    assert cyc["iterations"][0]["delta_e"] is None  # first row, no prev
+    assert cyc["iterations"][1]["delta_e"] == pytest.approx(-0.001)
+
+
+def test_tool_extract_scf_convergence_no_block(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_scf_convergence(str(folder)))
+    assert data["error"] is not None
+    assert "no SCF iteration tables" in data["error"]
+
+
+_MULLIKEN_BLOCK = """\
+-----------------------
+MULLIKEN ATOMIC CHARGES
+-----------------------
+   0 C :   -0.123456
+   1 H :    0.061728
+   2 H :    0.061728
+Sum of atomic charges:    0.000000
+"""
+
+_MULLIKEN_OPENSHELL = """\
+-----------------------
+MULLIKEN ATOMIC CHARGES
+-----------------------
+   0 C :   -0.500000    0.250000
+   1 N :    0.500000   -0.250000
+Sum of atomic charges:    0.000000
+"""
+
+
+def test_tool_extract_mulliken_charges_closed_shell(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_MULLIKEN_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_mulliken_charges(str(folder)))
+    assert data["error"] is None
+    assert data["n_atoms"] == 3
+    assert data["atoms"][0]["charge"] == pytest.approx(-0.123456)
+    assert data["atoms"][0]["spin_population"] is None
+    assert data["total_charge"] == pytest.approx(0.0)
+
+
+def test_tool_extract_mulliken_charges_open_shell(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_MULLIKEN_OPENSHELL, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_mulliken_charges(str(folder)))
+    assert data["n_atoms"] == 2
+    assert data["atoms"][0]["spin_population"] == pytest.approx(0.25)
+    assert data["atoms"][1]["spin_population"] == pytest.approx(-0.25)
+
+
+def test_tool_extract_mulliken_charges_no_block(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_mulliken_charges(str(folder)))
+    assert data["error"] is not None
+    assert "MULLIKEN" in data["error"]
+
+
+def test_tool_extract_loewdin_charges_basic(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        _MULLIKEN_BLOCK.replace("MULLIKEN", "LOEWDIN"),
+        encoding="utf-8",
+    )
+    data = json.loads(ops_server.tool_extract_loewdin_charges(str(folder)))
+    assert data["method"] == "loewdin"
+    assert data["n_atoms"] == 3
+
+
+_FREQ_BLOCK_FULL = """\
+-----------------------
+VIBRATIONAL FREQUENCIES
+-----------------------
+   0:    -45.20 cm**-1 ***imaginary mode***
+   1:      0.00 cm**-1
+   2:      0.00 cm**-1
+   3:    250.50 cm**-1
+   4:    800.00 cm**-1
+   5:   1450.30 cm**-1
+
+NORMAL MODES
+------------
+
+IR SPECTRUM
+-----------
+Mode    freq       eps       Int      T**2          TX         TY         TZ
+   3:   250.50    0.0345     12.3    0.0023        ...
+   4:   800.00    0.0156      8.5    0.0012        ...
+   5:  1450.30    0.0789     45.2    0.0089        ...
+
+The first frequency considered is 0
+"""
+
+
+def test_tool_extract_vibrational_modes_full(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_FREQ_BLOCK_FULL, encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_vibrational_modes(str(folder)))
+    assert data["error"] is None
+    assert data["n_modes"] == 6
+    assert data["n_imag"] == 1
+    assert data["n_real"] == 5
+    # IR intensities should be parsed for modes 3, 4, 5
+    by_idx = {m["mode_index"]: m for m in data["modes"]}
+    assert by_idx[3]["ir_intensity"] == pytest.approx(12.3)
+    assert by_idx[5]["ir_intensity"] == pytest.approx(45.2)
+    assert by_idx[0]["is_imaginary"] is True
+    assert by_idx[3]["is_imaginary"] is False
+
+
+def test_tool_extract_vibrational_modes_no_freq(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_vibrational_modes(str(folder)))
+    assert data["error"] is not None
+
+
+def test_tool_extract_delfin_json_basic(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    payload = {
+        "workflow": {
+            "geom_opt": {"fspe": -123.456, "elapsed_s": 120.5},
+            "freq": {"gibbs": -123.400, "zpe": 0.05, "elapsed_s": 60.0},
+        },
+        "cost_usd": 0.45,
+    }
+    (folder / "DELFIN_data.json").write_text(json.dumps(payload))
+    data = json.loads(ops_server.tool_extract_delfin_json(str(folder)))
+    assert data["error"] is None
+    assert sorted(data["workflow_stages"]) == ["freq", "geom_opt"]
+    assert data["energies"]["geom_opt"]["fspe"] == pytest.approx(-123.456)
+    assert data["energies"]["freq"]["gibbs"] == pytest.approx(-123.4)
+    assert data["timings_s"]["geom_opt"] == pytest.approx(120.5)
+    assert data["cost_usd"] == pytest.approx(0.45)
+
+
+def test_tool_extract_delfin_json_missing(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    data = json.loads(ops_server.tool_extract_delfin_json(str(folder)))
+    assert data["error"] == "DELFIN_data.json not found"
+
+
+def test_tool_extract_delfin_json_malformed(tmp_path):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "DELFIN_data.json").write_text("not json", encoding="utf-8")
+    data = json.loads(ops_server.tool_extract_delfin_json(str(folder)))
+    assert "json parse failed" in data["error"]
+
+
+_SUMMARY_OUT = """\
+|  1> ! BP86 def2-SVP Opt Freq
+Number of atoms                                 ...     3
+  *** SCF CONVERGED ***
+FINAL SINGLE POINT ENERGY    -100.5
+
+------------------
+ORBITAL ENERGIES
+------------------
+  NO   OCC          E(Eh)            E(eV)
+   0   2.0000     -1.000000      -27.2114
+   1   2.0000     -0.500000      -13.6057
+   2   1.0000     -0.150000       -4.0816
+   3   0.0000      0.052345        1.4244
+
+VIBRATIONAL FREQUENCIES
+   0:   -45.20 cm**-1 ***imaginary mode***
+   1:   500.00 cm**-1
+
+THERMOCHEMISTRY
+Final Gibbs free energy          ...    -100.0 Eh
+Number of imaginary frequencies   ...     1
+
+DIPOLE MOMENT
+Total Dipole Moment    :     1.0    0.0    0.0
+Magnitude (a.u.)       :      1.0
+Magnitude (Debye)      :      2.5417
+
+TOTAL RUN TIME: 0 days 0 hours 1 minutes 30 seconds 0 msec
+"""
+
+
+def test_tool_extract_calc_summary_table_multi_folder(tmp_path):
+    folder_a = tmp_path / "a"
+    folder_a.mkdir()
+    (folder_a / "calc.out").write_text(_SUMMARY_OUT, encoding="utf-8")
+    folder_b = tmp_path / "missing"  # never created
+    txt = ops_server.tool_extract_calc_summary_table(
+        f"{folder_a},{folder_b}",
+    )
+    rows = json.loads(txt)
+    assert len(rows) == 2
+    a = rows[0]
+    assert a["status"] == "ok"
+    assert a["functional"] == "BP86"
+    assert a["gibbs"] == pytest.approx(-100.0)
+    assert a["single_point"] == pytest.approx(-100.5)
+    assert a["homo_ev"] == pytest.approx(-4.0816)
+    assert a["lumo_ev"] == pytest.approx(1.4244)
+    assert a["gap_ev"] == pytest.approx(1.4244 - -4.0816)
+    assert a["n_imag"] == 1
+    assert a["dipole_debye"] == pytest.approx(2.5417)
+    assert a["walltime_s"] == pytest.approx(90.0, abs=0.5)
+    assert rows[1]["status"] == "missing"
+
+
+# ---------------------------------------------------------------------------
 # Phase D plots — orbital diagram / opt convergence / UV/Vis spectrum
 # ---------------------------------------------------------------------------
 

@@ -1112,6 +1112,588 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# SCF convergence — per-iteration energy history
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SCFIteration:
+    """One SCF iteration row (per cycle)."""
+    iteration: int
+    energy_eh: float
+    delta_e: float | None
+    max_density_change: float | None
+
+
+@dataclass
+class SCFCycleResult:
+    """One full SCF cycle's iteration history (one geom step)."""
+    cycle_label: str  # e.g. "geom_step_3" or "single"
+    iterations: list[SCFIteration]
+    converged: bool | None
+    final_energy_eh: float | None
+
+
+@dataclass
+class SCFConvergenceResult:
+    """SCF convergence across all cycles in a folder's largest .out."""
+    folder: str
+    output_file: str | None
+    cycles: list[SCFCycleResult]
+    n_cycles: int
+    error: str | None = None
+
+
+def extract_scf_convergence(folder: str) -> SCFConvergenceResult:
+    """Extract per-iteration SCF history for every geom-step in a folder.
+
+    ORCA prints SCF iteration tables formatted as::
+
+        ITER       Energy         Delta-E         Max-DP    RMS-DP    [F,P]
+          0   -123.45678901   -123.45678901    0.001234  0.000123    0.001
+          1   -123.45698234   -0.00019333    0.000234  0.000023   -0.001
+          ...
+
+    one block per geom-optimization step. The function captures all
+    blocks; ``cycles`` lists them in order. ``cycle_label`` is taken
+    from the optimization-cycle marker preceding the SCF table when
+    present; otherwise generic ``"cycle_N"``.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return SCFConvergenceResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            cycles=[], n_cycles=0, error=err,
+        )
+
+    # ORCA SCF iteration table looks like:
+    #   ITER       Energy         Delta-E         Max-DP    RMS-DP    [F,P]
+    #     0   -...   -...   ...  ...  ...
+    iter_pat = _re.compile(
+        r"^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+(?:[eE][+-]?\d+)?)"
+        r"\s+(\d+\.\d+(?:[eE][+-]?\d+)?)",
+        _re.MULTILINE,
+    )
+    header_pat = _re.compile(
+        r"^\s*ITER\s+Energy\s+Delta-E\s+Max-DP", _re.MULTILINE,
+    )
+    geom_step_pat = _re.compile(
+        r"GEOMETRY OPTIMIZATION CYCLE\s+(\d+)", _re.MULTILINE,
+    )
+
+    # Find each SCF block by header position; capture the table that
+    # follows until a blank line or new section.
+    cycles: list[SCFCycleResult] = []
+    headers = list(header_pat.finditer(text))
+    geom_starts = list(geom_step_pat.finditer(text))
+
+    def _label_for_position(pos: int) -> str:
+        """Map a header position to its enclosing geom step label."""
+        applicable = [m for m in geom_starts if m.start() < pos]
+        if applicable:
+            return f"geom_step_{applicable[-1].group(1)}"
+        return f"cycle_{len(cycles) + 1}"
+
+    for h in headers:
+        # Slice from end of the header line to the next header or 4 KB
+        block_start = h.end()
+        next_header = next(
+            (h2.start() for h2 in headers if h2.start() > h.start()), None
+        )
+        block_end = (
+            min(next_header, block_start + 4000)
+            if next_header else block_start + 4000
+        )
+        block = text[block_start:block_end]
+
+        # Stop at the first blank-line break after at least one row
+        rows: list[SCFIteration] = []
+        prev_e: float | None = None
+        for line in block.split("\n"):
+            line_stripped = line.strip()
+            if not line_stripped:
+                if rows:
+                    break
+                continue
+            m = iter_pat.match(line)
+            if not m:
+                if rows:
+                    break
+                continue
+            try:
+                idx = int(m.group(1))
+                e = float(m.group(2))
+                de = float(m.group(3))
+                max_dp = float(m.group(4))
+            except ValueError:
+                continue
+            rows.append(SCFIteration(
+                iteration=idx, energy_eh=e,
+                delta_e=de if prev_e is not None else None,
+                max_density_change=max_dp,
+            ))
+            prev_e = e
+        if not rows:
+            continue
+        # Convergence: ORCA writes "*** SCF CONVERGED" near the end of
+        # the table; check the immediate tail
+        tail = text[block_end:block_end + 600]
+        converged: bool | None = None
+        if "SCF CONVERGED" in block + tail:
+            converged = True
+        elif (
+            "SCF NOT CONVERGED" in block + tail
+            or "SCF iterations did not converge" in block + tail
+        ):
+            converged = False
+        cycles.append(SCFCycleResult(
+            cycle_label=_label_for_position(h.start()),
+            iterations=rows,
+            converged=converged,
+            final_energy_eh=rows[-1].energy_eh if rows else None,
+        ))
+
+    if not cycles:
+        return SCFConvergenceResult(
+            folder=str(folder), output_file=target.name,
+            cycles=[], n_cycles=0,
+            error="no SCF iteration tables found",
+        )
+    return SCFConvergenceResult(
+        folder=str(folder), output_file=target.name,
+        cycles=cycles, n_cycles=len(cycles),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mulliken / Loewdin population analysis
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AtomicCharge:
+    """One atom's population analysis row."""
+    index: int
+    symbol: str
+    charge: float
+    spin_population: float | None = None
+
+
+@dataclass
+class PopulationAnalysisResult:
+    """Population-analysis snapshot from a folder's .out."""
+    folder: str
+    output_file: str | None
+    method: str  # "mulliken" / "loewdin" / "natural"
+    atoms: list[AtomicCharge]
+    total_charge: float | None
+    n_atoms: int
+    error: str | None = None
+
+
+def _extract_pop_block(
+    text: str, method_label: str, *, allow_spin: bool = True,
+) -> tuple[list[AtomicCharge], float | None, str | None]:
+    """Helper: parse the LAST <method>-style atomic-charges block.
+
+    ORCA prints either::
+
+        MULLIKEN ATOMIC CHARGES
+        ---
+           0 C    :   -0.123456
+           1 H    :    0.045678
+        Sum of atomic charges: -0.0123456
+
+    or for open-shell::
+
+           0 C    :   -0.123456    0.012345
+    """
+    import re as _re
+    section_re = _re.compile(
+        rf"{method_label}.*?CHARGES.*?\n[-=]+\n(.*?)(?:\nSum of atomic charges:\s*(-?\d+\.\d+)|\n\n)",
+        _re.DOTALL | _re.IGNORECASE,
+    )
+    matches = list(section_re.finditer(text))
+    if not matches:
+        return [], None, f"no {method_label} ATOMIC CHARGES block"
+    last = matches[-1]
+    body = last.group(1)
+    total: float | None = None
+    if last.lastindex and last.lastindex >= 2 and last.group(2):
+        try:
+            total = float(last.group(2))
+        except ValueError:
+            total = None
+
+    atoms: list[AtomicCharge] = []
+    line_open = _re.compile(
+        r"^\s*(\d+)\s+([A-Z][a-z]?)\s*:\s*(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+    )
+    line_closed = _re.compile(
+        r"^\s*(\d+)\s+([A-Z][a-z]?)\s*:\s*(-?\d+\.\d+)",
+    )
+    for raw in body.split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        m = line_open.match(line) if allow_spin else None
+        if m:
+            atoms.append(AtomicCharge(
+                index=int(m.group(1)), symbol=m.group(2),
+                charge=float(m.group(3)),
+                spin_population=float(m.group(4)),
+            ))
+            continue
+        m = line_closed.match(line)
+        if m:
+            atoms.append(AtomicCharge(
+                index=int(m.group(1)), symbol=m.group(2),
+                charge=float(m.group(3)),
+            ))
+    if not atoms:
+        return [], None, f"{method_label} block found but no atomic rows"
+    return atoms, total, None
+
+
+def extract_mulliken_charges(folder: str) -> PopulationAnalysisResult:
+    """Pull Mulliken atomic charges from a folder's .out.
+
+    Returns the LAST Mulliken block (post-optimization). Includes spin
+    populations for open-shell calculations when present.
+    """
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return PopulationAnalysisResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            method="mulliken",
+            atoms=[], total_charge=None, n_atoms=0,
+            error=err,
+        )
+    atoms, total, perr = _extract_pop_block(text, "MULLIKEN")
+    return PopulationAnalysisResult(
+        folder=str(folder), output_file=target.name,
+        method="mulliken", atoms=atoms, total_charge=total,
+        n_atoms=len(atoms), error=perr,
+    )
+
+
+def extract_loewdin_charges(folder: str) -> PopulationAnalysisResult:
+    """Pull Loewdin atomic charges (alternative to Mulliken).
+
+    Loewdin charges are basis-set-stable and often preferred for
+    quantitative comparisons. Same return shape as
+    :func:`extract_mulliken_charges`.
+    """
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return PopulationAnalysisResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            method="loewdin",
+            atoms=[], total_charge=None, n_atoms=0,
+            error=err,
+        )
+    atoms, total, perr = _extract_pop_block(text, "LOEWDIN")
+    return PopulationAnalysisResult(
+        folder=str(folder), output_file=target.name,
+        method="loewdin", atoms=atoms, total_charge=total,
+        n_atoms=len(atoms), error=perr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Full vibrational modes table (not just imaginary)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VibrationalMode:
+    """One vibrational mode row from an ORCA Freq output."""
+    mode_index: int
+    frequency_cm: float
+    ir_intensity: float | None  # km/mol if present
+    is_imaginary: bool
+
+
+@dataclass
+class VibrationalModesResult:
+    """All vibrational modes (real + imaginary) from one folder."""
+    folder: str
+    output_file: str | None
+    modes: list[VibrationalMode]
+    n_modes: int
+    n_imag: int
+    n_real: int
+    error: str | None = None
+
+
+def extract_vibrational_modes(folder: str) -> VibrationalModesResult:
+    """Pull every vibrational mode (frequency + IR intensity) from .out.
+
+    Returns rows for all modes — imaginary AND real — so the agent can
+    plot a full vibrational spectrum or pick specific modes for
+    animation. ``ir_intensity`` is filled when an IR SPECTRUM block
+    is present in the output.
+    """
+    import re as _re
+    target, text, err = _read_largest_out(folder)
+    if err is not None:
+        return VibrationalModesResult(
+            folder=str(folder),
+            output_file=target.name if target else None,
+            modes=[], n_modes=0, n_imag=0, n_real=0,
+            error=err,
+        )
+    if "VIBRATIONAL FREQUENCIES" not in text:
+        return VibrationalModesResult(
+            folder=str(folder), output_file=target.name,
+            modes=[], n_modes=0, n_imag=0, n_real=0,
+            error="no Freq section in output",
+        )
+
+    # Freq section: lines like "  N:   freq cm**-1  [***imaginary mode***]"
+    freq_block = text.split("VIBRATIONAL FREQUENCIES", 1)[1].split(
+        "NORMAL MODES", 1,
+    )[0]
+    freq_lines = _re.finditer(
+        r"^\s*(\d+):\s*(-?\d+\.\d+)\s+cm\*\*-1(.*?)$",
+        freq_block, _re.MULTILINE,
+    )
+    rows: dict[int, VibrationalMode] = {}
+    for m in freq_lines:
+        idx = int(m.group(1))
+        freq = float(m.group(2))
+        is_imag = "imaginary mode" in (m.group(3) or "").lower()
+        rows[idx] = VibrationalMode(
+            mode_index=idx, frequency_cm=freq,
+            ir_intensity=None, is_imaginary=is_imag,
+        )
+
+    # IR SPECTRUM block (when present): map intensities back into rows.
+    # ORCA layouts vary; the most common modern format is:
+    #   Mode    freq       eps        Int       T**2     TX     TY     TZ
+    #     6:   250.50    0.0345     12.3     0.0023   ...
+    # i.e. the 3rd numeric column after the mode index is the intensity.
+    ir_re = _re.search(
+        r"IR SPECTRUM.*?\n[-=]+\n(.*?)(?:\nThe first frequency|\n\n\n)",
+        text, _re.DOTALL,
+    )
+    if ir_re:
+        ir_line_re = _re.compile(
+            r"^\s*(\d+):\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
+            _re.MULTILINE,
+        )
+        for m in ir_line_re.finditer(ir_re.group(1)):
+            idx = int(m.group(1))
+            try:
+                # Column 3 (post-mode-index) = Int (km/mol)
+                intensity = float(m.group(4))
+            except ValueError:
+                continue
+            if idx in rows:
+                rows[idx].ir_intensity = intensity
+
+    modes = [rows[k] for k in sorted(rows)]
+    n_imag = sum(1 for x in modes if x.is_imaginary)
+    return VibrationalModesResult(
+        folder=str(folder), output_file=target.name,
+        modes=modes, n_modes=len(modes),
+        n_imag=n_imag, n_real=len(modes) - n_imag,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELFIN_data.json reader
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DelfinDataResult:
+    """Structured snapshot of a folder's DELFIN_data.json."""
+    folder: str
+    json_path: str | None
+    workflow_stages: list[str]
+    energies: dict  # stage → {fspe, gibbs, zpe, ...}
+    timings_s: dict  # stage → elapsed seconds
+    cost_usd: float | None
+    raw_keys: list[str]  # top-level keys for discovery
+    error: str | None = None
+
+
+def extract_delfin_json(folder: str) -> DelfinDataResult:
+    """Read DELFIN_data.json (the pipeline state file).
+
+    DELFIN writes this file at the root of a calc folder while a
+    workflow runs, capturing per-stage energies, timings, and the
+    cumulative cost. Returns a structured snapshot regardless of the
+    schema version (raw_keys preserves the top-level shape).
+    """
+    from pathlib import Path as _P
+    import json as _json
+    p = _P(folder)
+    json_path = p / "DELFIN_data.json"
+    if not json_path.exists():
+        return DelfinDataResult(
+            folder=str(p), json_path=None,
+            workflow_stages=[], energies={}, timings_s={},
+            cost_usd=None, raw_keys=[],
+            error="DELFIN_data.json not found",
+        )
+    try:
+        data = _json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return DelfinDataResult(
+            folder=str(p), json_path=str(json_path),
+            workflow_stages=[], energies={}, timings_s={},
+            cost_usd=None, raw_keys=[],
+            error=f"json parse failed: {exc}",
+        )
+
+    if not isinstance(data, dict):
+        return DelfinDataResult(
+            folder=str(p), json_path=str(json_path),
+            workflow_stages=[], energies={}, timings_s={},
+            cost_usd=None, raw_keys=[],
+            error="root is not a dict",
+        )
+
+    raw_keys = sorted(data.keys())
+    stages: list[str] = []
+    energies: dict = {}
+    timings: dict = {}
+    cost: float | None = None
+
+    # Workflow / steps live under several plausible keys depending on
+    # DELFIN version. Try them in order.
+    for key in ("workflow", "stages", "steps", "history"):
+        v = data.get(key)
+        if isinstance(v, dict):
+            stages = sorted(v.keys())
+            for stage_name, stage_data in v.items():
+                if not isinstance(stage_data, dict):
+                    continue
+                e = {}
+                for ek in ("fspe", "single_point", "gibbs",
+                           "zpe", "enthalpy", "entropy"):
+                    if ek in stage_data:
+                        try:
+                            e[ek] = float(stage_data[ek])
+                        except (TypeError, ValueError):
+                            pass
+                if e:
+                    energies[stage_name] = e
+                t = stage_data.get("elapsed_s") or stage_data.get("walltime_s")
+                if t is not None:
+                    try:
+                        timings[stage_name] = float(t)
+                    except (TypeError, ValueError):
+                        pass
+            break
+        if isinstance(v, list):
+            stages = [
+                str(item.get("name", f"stage_{i}"))
+                if isinstance(item, dict) else f"stage_{i}"
+                for i, item in enumerate(v)
+            ]
+            break
+
+    for cost_key in ("cost_usd", "total_cost_usd", "cost"):
+        if cost_key in data:
+            try:
+                cost = float(data[cost_key])
+                break
+            except (TypeError, ValueError):
+                pass
+
+    return DelfinDataResult(
+        folder=str(p), json_path=str(json_path),
+        workflow_stages=stages, energies=energies, timings_s=timings,
+        cost_usd=cost, raw_keys=raw_keys,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Extended multi-property comparison
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExtendedComparisonRow:
+    """One row in extract_calc_summary_table — multi-property snapshot."""
+    folder: str
+    functional: str | None
+    basis: str | None
+    gibbs: float | None
+    single_point: float | None
+    zpe: float | None
+    homo_ev: float | None
+    lumo_ev: float | None
+    gap_ev: float | None
+    n_imag: int | None
+    dipole_debye: float | None
+    walltime_s: float | None
+    status: str  # "ok" / "missing" / "no_output"
+
+
+def extract_calc_summary_table(
+    folders: list[str],
+) -> list[ExtendedComparisonRow]:
+    """Multi-property comparison row per folder.
+
+    For each folder, parses the largest .out and collects: functional,
+    basis, gibbs, single_point, zpe, HOMO/LUMO/gap, n_imag, dipole
+    magnitude (Debye), walltime. Useful for benchmark tables across
+    methods/molecules.
+    """
+    rows: list[ExtendedComparisonRow] = []
+    from pathlib import Path as _P
+    for folder in folders:
+        p = _P(folder)
+        if not p.exists() or not p.is_dir():
+            rows.append(ExtendedComparisonRow(
+                folder=str(folder), functional=None, basis=None,
+                gibbs=None, single_point=None, zpe=None,
+                homo_ev=None, lumo_ev=None, gap_ev=None,
+                n_imag=None, dipole_debye=None, walltime_s=None,
+                status="missing",
+            ))
+            continue
+        out_files = sorted(p.glob("*.out"))
+        if not out_files:
+            rows.append(ExtendedComparisonRow(
+                folder=str(folder), functional=None, basis=None,
+                gibbs=None, single_point=None, zpe=None,
+                homo_ev=None, lumo_ev=None, gap_ev=None,
+                n_imag=None, dipole_debye=None, walltime_s=None,
+                status="no_output",
+            ))
+            continue
+        target = max(out_files, key=lambda f: f.stat().st_size)
+        parsed = parse_orca_output(str(target))
+        orb = extract_orbital_energies(str(p))
+        dip = extract_dipole(str(p))
+        rows.append(ExtendedComparisonRow(
+            folder=str(folder),
+            functional=parsed.functional,
+            basis=parsed.basis,
+            gibbs=parsed.gibbs_free_energy,
+            single_point=parsed.final_single_point,
+            zpe=parsed.zpe,
+            homo_ev=orb.homo_ev,
+            lumo_ev=orb.lumo_ev,
+            gap_ev=orb.gap_ev,
+            n_imag=parsed.imag_freq_count,
+            dipole_debye=dip.magnitude_debye,
+            walltime_s=parsed.walltime_s,
+            status="ok",
+        ))
+    return rows
+
+
 @dataclass
 class FunctionalComparisonRow:
     """One folder's row in a cross-functional comparison table."""
@@ -1342,6 +1924,18 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Dipole-moment vector + magnitude (a.u. and Debye)."},
     {"name": "extract_optimization_trajectory", "category": "parsing",
      "summary": "Per-cycle energies + convergence flag (Opt jobs)."},
+    {"name": "extract_scf_convergence", "category": "parsing",
+     "summary": "Per-iteration SCF history (every geom step)."},
+    {"name": "extract_mulliken_charges", "category": "parsing",
+     "summary": "Mulliken atomic charges + spin populations."},
+    {"name": "extract_loewdin_charges", "category": "parsing",
+     "summary": "Loewdin atomic charges (basis-set-stable alternative)."},
+    {"name": "extract_vibrational_modes", "category": "parsing",
+     "summary": "All vibrational modes + IR intensities (real + imag)."},
+    {"name": "extract_delfin_json", "category": "parsing",
+     "summary": "Read DELFIN_data.json: stages, energies, timings, cost."},
+    {"name": "extract_calc_summary_table", "category": "parsing",
+     "summary": "Multi-property table: G/SPE/HOMO/LUMO/gap/dipole/walltime."},
     {"name": "compare_calculations", "category": "parsing",
      "summary": "Side-by-side diff of method/basis/G/SPE for two folders."},
     {"name": "compare_across_functionals", "category": "parsing",
@@ -4147,6 +4741,21 @@ __all__ = [
     "OptCycleEntry",
     "OptTrajectoryResult",
     "extract_optimization_trajectory",
+    "SCFIteration",
+    "SCFCycleResult",
+    "SCFConvergenceResult",
+    "extract_scf_convergence",
+    "AtomicCharge",
+    "PopulationAnalysisResult",
+    "extract_mulliken_charges",
+    "extract_loewdin_charges",
+    "VibrationalMode",
+    "VibrationalModesResult",
+    "extract_vibrational_modes",
+    "DelfinDataResult",
+    "extract_delfin_json",
+    "ExtendedComparisonRow",
+    "extract_calc_summary_table",
     "FunctionalComparisonRow",
     "compare_across_functionals",
     "CalcDiff",

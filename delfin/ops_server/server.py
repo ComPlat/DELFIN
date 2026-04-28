@@ -1178,6 +1178,99 @@ def tool_extract_optimization_trajectory(folder: str) -> str:
     )
 
 
+def tool_extract_scf_convergence(folder: str) -> str:
+    """Per-iteration SCF history for every geom-step in a folder.
+
+    Returns one entry per SCF cycle with the full iteration table
+    (iteration #, energy, ΔE, max density change). Useful for
+    'warum konvergiert der SCF nicht?' diagnostics + plotting
+    energy(iter) curves to spot oscillation / divergence.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_scf_convergence(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_mulliken_charges(folder: str) -> str:
+    """Mulliken atomic charges + spin populations from .out.
+
+    Returns the LAST Mulliken block (post-optimization). Open-shell
+    calculations include spin_population per atom; closed-shell omit
+    it. Direct answer to 'wie ist die Ladungsverteilung?'.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_mulliken_charges(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_loewdin_charges(folder: str) -> str:
+    """Loewdin atomic charges (basis-set-stable alternative to Mulliken).
+
+    Loewdin charges are the preferred metric for cross-method
+    comparison (Mulliken charges depend on basis-set choice). Same
+    return shape as extract_mulliken_charges.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_loewdin_charges(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_vibrational_modes(folder: str) -> str:
+    """All vibrational modes (real + imaginary) + IR intensities.
+
+    Each row: mode_index, frequency_cm, ir_intensity (km/mol if
+    present), is_imaginary. Use for full vibrational spectrum
+    analysis or to pick a mode for animation.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_vibrational_modes(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_delfin_json(folder: str) -> str:
+    """Read the structured DELFIN_data.json pipeline state.
+
+    Returns workflow_stages, per-stage energies + timings, total
+    cost (USD), and raw_keys (for schema-version discovery).
+    Direct answer to 'was hat die Pipeline bisher gemacht?'.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_delfin_json(folder)),
+        indent=2,
+    )
+
+
+def tool_extract_calc_summary_table(folders: str) -> str:
+    """Multi-property comparison row per folder.
+
+    For each folder: functional, basis, gibbs, single_point, zpe,
+    HOMO/LUMO/gap, n_imag, dipole_debye, walltime. Useful for
+    benchmark tables across methods/molecules.
+
+    Args:
+        folders: comma-separated absolute paths.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    rows = delfin_api.extract_calc_summary_table(folder_list)
+    return _json.dumps([_asdict(r) for r in rows], indent=2)
+
+
 def tool_stop_dry_run(workspace: str) -> str:
     """List DELFIN processes that would be signaled (no actual signal sent)."""
     rc = delfin_api.stop(workspace=workspace, dry_run=True)
@@ -1365,6 +1458,13 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="extract_excited_states")(tool_extract_excited_states)
     mcp.tool(name="extract_dipole")(tool_extract_dipole)
     mcp.tool(name="extract_optimization_trajectory")(tool_extract_optimization_trajectory)
+    # Phase E parsers (SCF / population / vib modes / DELFIN json / summary table)
+    mcp.tool(name="extract_scf_convergence")(tool_extract_scf_convergence)
+    mcp.tool(name="extract_mulliken_charges")(tool_extract_mulliken_charges)
+    mcp.tool(name="extract_loewdin_charges")(tool_extract_loewdin_charges)
+    mcp.tool(name="extract_vibrational_modes")(tool_extract_vibrational_modes)
+    mcp.tool(name="extract_delfin_json")(tool_extract_delfin_json)
+    mcp.tool(name="extract_calc_summary_table")(tool_extract_calc_summary_table)
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
     mcp.tool(name="plot_energy_distribution")(tool_plot_energy_distribution)
     mcp.tool(name="plot_energy_correlation")(tool_plot_energy_correlation)
