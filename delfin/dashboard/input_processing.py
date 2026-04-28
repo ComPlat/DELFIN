@@ -298,7 +298,7 @@ def parse_inp_resources(inp_text):
     maxcore = None
     if not inp_text:
         return pal, maxcore
-    pal_match = re.search(r'(?im)^\s*nprocs\s+(\d+)', inp_text)
+    pal_match = re.search(r'(?i)\bnprocs\s+(\d+)', inp_text)
     if pal_match:
         pal = int(pal_match.group(1))
     maxcore_match = re.search(r'(?im)^\s*%maxcore\s+(\d+)', inp_text)
