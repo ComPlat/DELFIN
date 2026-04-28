@@ -9218,6 +9218,13 @@ def create_tab(ctx):
 """
 
     tab_widget = agent_content
+    # A2b — expose the agent-tab state to other tabs (Activity tab's live
+    # pane reads engine status, session cost, streaming flag, perms).
+    # Read-only contract: other tabs MUST NOT mutate this dict.
+    try:
+        ctx.agent_state = state
+    except Exception:
+        pass
     return tab_widget, {"init_js": _enter_key_init_js}
 
 

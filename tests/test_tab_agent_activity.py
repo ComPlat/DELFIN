@@ -274,3 +274,80 @@ def test_aggregate_stats_uses_honest_total():
     # Was buggy 2+5=7, now honest 2+3=5
     assert stats["total_cost"] == 5.0
     assert stats["avg_cost"] == 2.5
+
+
+# ---------------------------------------------------------------------------
+# A1 — _format_live_state pure helper
+# ---------------------------------------------------------------------------
+
+def test_live_state_missing_engine_shows_placeholder():
+    html = tab._format_live_state({})
+    assert "Not started" in html
+    assert "No active engine" in html
+
+
+def test_live_state_idle_shows_idle_badge():
+    html = tab._format_live_state({"engine_status": "idle"})
+    assert ">Idle<" in html
+    assert "(engine present but idle)" in html
+
+
+def test_live_state_streaming_badge():
+    html = tab._format_live_state({
+        "engine_status": "streaming",
+        "current_mode": "dashboard",
+        "current_model": "haiku",
+        "current_provider": "claude",
+    })
+    assert ">Streaming<" in html
+    assert "dashboard" in html
+    assert "claude/haiku" in html
+
+
+def test_live_state_session_cost_and_turns():
+    html = tab._format_live_state({
+        "engine_status": "idle",
+        "session_cost_usd": 0.123,
+        "session_turns": 5,
+    })
+    assert "$0.123" in html or "$0.12¢" in html or "session" in html
+    assert "5 turn" in html
+
+
+def test_live_state_jobs_summary():
+    html = tab._format_live_state({
+        "engine_status": "idle",
+        "active_jobs": {"RUNNING": 2, "PENDING": 1},
+    })
+    assert "RUNNING:" in html
+    assert ">2<" in html
+    assert "PENDING:" in html
+    assert ">1<" in html
+
+
+def test_live_state_jobs_zeroes_filtered():
+    """Job statuses with count 0 must NOT show up (clutter)."""
+    html = tab._format_live_state({
+        "engine_status": "idle",
+        "active_jobs": {"RUNNING": 1, "FAILED": 0},
+    })
+    assert "RUNNING:" in html
+    assert "FAILED" not in html
+
+
+def test_live_state_perm_profile_visible():
+    html = tab._format_live_state({
+        "engine_status": "idle",
+        "perm_profile": "repo_free",
+    })
+    assert "repo_free" in html
+    assert "perms" in html
+
+
+def test_live_state_session_id_truncated():
+    html = tab._format_live_state({
+        "engine_status": "idle",
+        "active_session_id": "abcdef1234567890" * 4,
+    })
+    assert "abcdef12" in html
+    assert "abcdef1234567890abcdef1234567890" not in html  # truncated

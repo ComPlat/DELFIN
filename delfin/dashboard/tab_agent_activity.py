@@ -40,6 +40,113 @@ _VERDICT_COLORS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# A1 — Live state pane
+# ---------------------------------------------------------------------------
+
+_LIVE_STATUS_BADGES = {
+    "streaming": ("#3b82f6", "Streaming"),
+    "idle":      ("#10b981", "Idle"),
+    "stopped":   ("#9ca3af", "Stopped"),
+    "missing":   ("#9ca3af", "Not started"),
+}
+
+
+def _format_live_state(snapshot: dict) -> str:
+    """Render the current engine + jobs snapshot as a compact pane.
+
+    ``snapshot`` keys (all optional, missing → block omitted):
+    - ``engine_status``: ``"streaming"`` | ``"idle"`` | ``"stopped"`` | ``"missing"``
+    - ``current_mode``: e.g. ``"dashboard"``
+    - ``current_model``: e.g. ``"sonnet"``
+    - ``current_provider``: e.g. ``"claude"``
+    - ``session_cost_usd``: float
+    - ``session_turns``: int
+    - ``active_jobs``: dict[status_str, count]
+    - ``active_session_id``: str (truncated for display)
+    - ``perm_profile``: e.g. ``"repo_free"``
+
+    Always returns HTML — even an empty snapshot renders a small
+    "agent not started" placeholder so the user knows the pane is alive.
+    """
+    status = (snapshot.get("engine_status") or "missing").lower()
+    badge_color, badge_label = _LIVE_STATUS_BADGES.get(status, _LIVE_STATUS_BADGES["missing"])
+
+    status_html = (
+        f'<span style="background:{badge_color};color:#fff;padding:2px 10px;'
+        f'border-radius:12px;font-size:11px;font-weight:700;'
+        f'letter-spacing:0.3px;">{_html.escape(badge_label)}</span>'
+    )
+
+    parts = []
+    mode = snapshot.get("current_mode") or ""
+    model = snapshot.get("current_model") or ""
+    provider = snapshot.get("current_provider") or ""
+    if mode or model:
+        provider_str = f"{_html.escape(provider)}/{_html.escape(model)}" if provider else _html.escape(model)
+        mode_str = _html.escape(mode) if mode else "—"
+        parts.append(
+            f'<span style="color:#6b7280;font-size:11px;">'
+            f'mode <strong style="color:#111827;">{mode_str}</strong> · '
+            f'<strong style="color:#111827;">{provider_str}</strong>'
+            f'</span>'
+        )
+
+    cost = float(snapshot.get("session_cost_usd") or 0.0)
+    turns = int(snapshot.get("session_turns") or 0)
+    if cost > 0 or turns > 0:
+        parts.append(
+            f'<span style="color:#6b7280;font-size:11px;">'
+            f'session <strong style="color:#6366f1;">{_fmt_cost(cost)}</strong>'
+            f'{f" · {turns} turn(s)" if turns else ""}'
+            f'</span>'
+        )
+
+    jobs = snapshot.get("active_jobs") or {}
+    if jobs:
+        job_summary = ", ".join(
+            f'{_html.escape(str(s))}:<strong style="color:#111827;">{int(c)}</strong>'
+            for s, c in jobs.items() if int(c or 0) > 0
+        )
+        if job_summary:
+            parts.append(
+                f'<span style="color:#6b7280;font-size:11px;">jobs {job_summary}</span>'
+            )
+
+    perm = snapshot.get("perm_profile") or ""
+    if perm:
+        parts.append(
+            f'<span style="color:#6b7280;font-size:11px;">'
+            f'perms <strong style="color:#111827;">{_html.escape(perm)}</strong>'
+            f'</span>'
+        )
+
+    sid = snapshot.get("active_session_id") or ""
+    if sid:
+        sid_short = sid[:8] + "…" if len(sid) > 8 else sid
+        parts.append(
+            f'<span style="color:#9ca3af;font-size:10px;font-family:monospace;">'
+            f'sid {_html.escape(sid_short)}</span>'
+        )
+
+    body = (
+        '<span style="color:#9ca3af;font-size:11px;font-style:italic;">'
+        'No active engine. Start a conversation in the Agent tab.</span>'
+        if not parts and status == "missing"
+        else " · ".join(parts) or
+             '<span style="color:#9ca3af;font-size:11px;">'
+             '(engine present but idle)</span>'
+    )
+
+    return (
+        '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;'
+        'background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;'
+        'margin-bottom:12px;">'
+        f'{status_html}<div style="flex:1;display:flex;flex-wrap:wrap;gap:14px;">'
+        f'{body}</div></div>'
+    )
+
+
 def _fmt_ts(ts: str) -> str:
     """Render an ISO timestamp as ``YYYY-MM-DD HH:MM``."""
     if not ts:
@@ -346,6 +453,7 @@ def create_tab(ctx, history_path: Path | None = None):
         description="Refresh", icon="refresh", button_style="info",
         layout=widgets.Layout(width="110px"),
     )
+    live_html = widgets.HTML(value=_format_live_state({}))
     summary_html = widgets.HTML(value="")
     timeline_html = widgets.HTML(value="")
     mcp_html = widgets.HTML(value="")
@@ -355,7 +463,80 @@ def create_tab(ctx, history_path: Path | None = None):
     schedules_html = widgets.HTML(value="")
 
     # ---- state ---------------------------------------------------------
-    state: dict = {"all_outcomes": []}
+    state: dict = {
+        "all_outcomes": [],
+        "_live_timer": None,
+        "_live_stop": False,
+        # Cached counts so we can update Accordion section titles cheaply
+        "_counts": {"mcp": 0, "hooks": 0, "settings": 0, "worktrees": 0, "schedules": 0},
+    }
+
+    # ---- A1: Live snapshot collector + auto-refresher ------------------
+
+    def _collect_live_snapshot() -> dict:
+        """Pull the current engine + jobs status from ctx (read-only)."""
+        snap: dict = {
+            "engine_status": "missing",
+            "current_mode": "",
+            "current_model": "",
+            "current_provider": "",
+            "session_cost_usd": 0.0,
+            "session_turns": 0,
+            "active_jobs": {},
+            "active_session_id": "",
+            "perm_profile": "",
+        }
+        agent_state = getattr(ctx, "agent_state", None) or {}
+        engine = agent_state.get("engine") or getattr(ctx, "agent_engine", None)
+
+        if engine is not None:
+            snap["engine_status"] = "streaming" if agent_state.get("streaming") else "idle"
+            snap["current_mode"] = getattr(engine, "mode", "") or ""
+            snap["current_model"] = getattr(getattr(engine, "client", None), "model", "") or ""
+            snap["current_provider"] = getattr(engine, "provider", "") or ""
+            try:
+                snap["session_cost_usd"] = float(getattr(engine, "cost_usd", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pass
+            try:
+                snap["session_turns"] = len(getattr(engine, "messages", []) or []) // 2
+            except Exception:
+                pass
+            snap["active_session_id"] = getattr(engine, "session_id", "") or ""
+
+        snap["perm_profile"] = agent_state.get("_perm_profile", "") or ""
+
+        backend = getattr(ctx, "backend", None)
+        if backend is not None and hasattr(backend, "list_jobs"):
+            try:
+                from collections import Counter as _C
+                jobs = list(backend.list_jobs() or [])
+                if jobs:
+                    statuses = _C(
+                        (str(getattr(j, "status", "") or "?")).upper() for j in jobs
+                    )
+                    snap["active_jobs"] = dict(statuses.most_common())
+            except Exception:
+                pass
+
+        return snap
+
+    def _refresh_live() -> None:
+        try:
+            live_html.value = _format_live_state(_collect_live_snapshot())
+        except Exception:
+            pass
+
+    def _live_loop() -> None:
+        """Periodic refresh — 5 s tick, kooperative stop via _live_stop."""
+        import threading as _th
+        if state.get("_live_stop"):
+            return
+        _refresh_live()
+        timer = _th.Timer(5.0, _live_loop)
+        timer.daemon = True
+        state["_live_timer"] = timer
+        timer.start()
 
     def _reload() -> None:
         outcomes = load_outcomes(path=history_path, max_entries=500)
@@ -368,35 +549,47 @@ def create_tab(ctx, history_path: Path | None = None):
         try:
             servers = discover_mcp_servers()
             mcp_html.value = render_mcp_overview_html(servers)
+            state["_counts"]["mcp"] = len(servers or [])
         except Exception:
             mcp_html.value = ""
+            state["_counts"]["mcp"] = 0
         # Refresh Claude hook inventory (read-only).
         try:
             project_path = (Path.cwd() / ".claude" / "settings.json")
             hooks = discover_hooks(project_path=project_path)
             hooks_html.value = render_hooks_html(hooks)
+            state["_counts"]["hooks"] = len(hooks or [])
         except Exception:
             hooks_html.value = ""
+            state["_counts"]["hooks"] = 0
         # Refresh Claude settings inventory (read-only).
         try:
             project_path = (Path.cwd() / ".claude" / "settings.json")
             views = discover_settings(project_path=project_path)
             settings_html.value = render_settings_html(views)
+            state["_counts"]["settings"] = len(views or [])
         except Exception:
             settings_html.value = ""
+            state["_counts"]["settings"] = 0
         # Refresh git worktree inventory (read-only).
         try:
             wts = list_worktrees(Path.cwd())
             worktrees_html.value = render_worktrees_html(wts)
+            state["_counts"]["worktrees"] = len(wts or [])
         except Exception:
             worktrees_html.value = ""
+            state["_counts"]["worktrees"] = 0
         # Refresh scheduled-task inventory (read-only).
         try:
             scheds = discover_schedules()
             schedules_html.value = render_schedules_html(scheds)
+            state["_counts"]["schedules"] = len(scheds or [])
         except Exception:
             schedules_html.value = ""
+            state["_counts"]["schedules"] = 0
         _render()
+        _refresh_live()
+        _update_section_titles()
 
     def _render() -> None:
         outcomes = _filter_outcomes(
@@ -409,23 +602,59 @@ def create_tab(ctx, history_path: Path | None = None):
         summary_html.value = _render_summary(_aggregate_stats(outcomes))
         timeline_html.value = _render_timeline(outcomes)
 
+    # ---- A2: Accordion layout with live count badges -------------------
+
+    filter_row = widgets.HBox(
+        [provider_dd, mode_dd, verdict_dd, class_dd, refresh_btn],
+        layout=widgets.Layout(gap="8px", flex_flow="row wrap"),
+    )
+    recent_runs = widgets.VBox([filter_row, summary_html, timeline_html])
+    configuration = widgets.VBox([mcp_html, hooks_html, settings_html])
+    local_state = widgets.VBox([worktrees_html, schedules_html])
+
+    accordion = widgets.Accordion(
+        children=[recent_runs, configuration, local_state],
+        selected_index=0,
+    )
+    accordion.set_title(0, "Recent runs")
+    accordion.set_title(1, "Configuration")
+    accordion.set_title(2, "Local state")
+
+    def _update_section_titles() -> None:
+        c = state["_counts"]
+        accordion.set_title(
+            0, f"Recent runs ({len(state['all_outcomes'])} cycles)"
+        )
+        accordion.set_title(
+            1,
+            f"Configuration ({c['mcp']} MCP · {c['hooks']} hooks · {c['settings']} settings)"
+        )
+        accordion.set_title(
+            2,
+            f"Local state ({c['worktrees']} worktrees · {c['schedules']} schedules)"
+        )
+
     # ---- wiring --------------------------------------------------------
     refresh_btn.on_click(lambda _b: _reload())
     for dd in (provider_dd, mode_dd, verdict_dd, class_dd):
         dd.observe(lambda _change: _render(), names="value")
 
     _reload()
+    _live_loop()  # kicks off the 5-s refresh chain
 
-    filter_row = widgets.HBox(
-        [provider_dd, mode_dd, verdict_dd, class_dd, refresh_btn],
-        layout=widgets.Layout(gap="8px", flex_flow="row wrap"),
-    )
     return widgets.VBox(
-        [title, filter_row, summary_html, timeline_html,
-         mcp_html, hooks_html, settings_html, worktrees_html, schedules_html],
+        [title, live_html, accordion],
         layout=widgets.Layout(padding="8px"),
     )
 
 
-__all__ = ["create_tab", "_aggregate_stats", "_filter_outcomes",
-           "_render_summary", "_render_timeline"]
+__all__ = [
+    "create_tab",
+    "_aggregate_stats",
+    "_filter_outcomes",
+    "_format_live_state",
+    "_outcome_cost_delta",
+    "_outcomes_total_delta",
+    "_render_summary",
+    "_render_timeline",
+]
