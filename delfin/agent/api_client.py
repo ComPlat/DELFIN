@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +73,15 @@ class _BaseClient:
         thinking_budget: int = 0,
     ) -> Generator[StreamEvent, None, None]:
         raise NotImplementedError
+
+    def signal_stop(self) -> None:
+        """Cooperative stop: nudge a running turn to end without tearing down
+        the underlying connection or session. Default is no-op; backends that
+        own a long-lived subprocess should override to send SIGINT so the
+        next turn can ``--resume`` the same conversation. The engine's
+        ``request_stop`` flag handles the Python-side stream cutoff.
+        """
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +456,24 @@ class CLIClient(_BaseClient):
                     self._proc.kill()
                 except Exception:
                     pass
+            self._proc = None
+
+    def signal_stop(self) -> None:
+        """Soft-stop: SIGINT the CLI subprocess so the current turn ends
+        cooperatively. The session_id is preserved so the next send can
+        resume via ``--resume``. If SIGINT fails or the process is gone,
+        we fall back to a regular kill (still safe — resume handles it).
+        """
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.send_signal(signal.SIGINT)
+        except Exception:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
             self._proc = None
 
     @property
