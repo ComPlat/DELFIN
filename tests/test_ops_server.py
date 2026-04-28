@@ -869,6 +869,111 @@ def test_tool_extract_optimization_trajectory_no_fspe(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase D plots — orbital diagram / opt convergence / UV/Vis spectrum
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def workspace_redirect(tmp_path, monkeypatch):
+    """Redirect agent_workspace/ output to tmp_path so PNGs land here."""
+    monkeypatch.setattr(
+        "delfin.api._default_plot_dir", lambda: str(tmp_path),
+    )
+    return tmp_path
+
+
+def test_tool_plot_orbital_diagram_writes_png(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_ORBITAL_BLOCK, encoding="utf-8")
+    txt = ops_server.tool_plot_orbital_diagram(str(folder))
+    data = json.loads(txt)
+    assert data["error"] == ""
+    assert data["path"].endswith(".png")
+    assert Path(data["path"]).exists()
+    stats = data["statistics"]
+    assert stats["homo_ev"] == pytest.approx(-4.0816)
+    assert stats["gap_ev"] == pytest.approx(1.4244 - -4.0816)
+
+
+def test_tool_plot_orbital_diagram_no_data_returns_error(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_orbital_diagram(str(folder)))
+    assert data["path"] == ""
+    assert "ORBITAL ENERGIES" in data["error"]
+
+
+def test_tool_plot_optimization_convergence_writes_png(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        "FINAL SINGLE POINT ENERGY    -100.0\n"
+        "FINAL SINGLE POINT ENERGY    -100.5\n"
+        "FINAL SINGLE POINT ENERGY    -100.7\n"
+        "                          *** OPTIMIZATION RUN DONE ***\n",
+        encoding="utf-8",
+    )
+    data = json.loads(
+        ops_server.tool_plot_optimization_convergence(str(folder))
+    )
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    assert data["statistics"]["n_cycles"] == 3
+    assert data["statistics"]["converged"] is True
+
+
+def test_tool_plot_optimization_convergence_no_fspe(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(
+        ops_server.tool_plot_optimization_convergence(str(folder))
+    )
+    assert data["path"] == ""
+    assert data["error"] != ""
+
+
+def test_tool_plot_uvvis_spectrum_writes_png(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_TDDFT_BLOCK, encoding="utf-8")
+    data = json.loads(
+        ops_server.tool_plot_uvvis_spectrum(str(folder))
+    )
+    assert data["error"] == ""
+    assert Path(data["path"]).exists()
+    stats = data["statistics"]
+    assert stats["n_transitions_total"] == 3
+    # The widest fosc is at 309.6 nm in the test block
+    assert stats["lambda_max"] == pytest.approx(309.6)
+
+
+def test_tool_plot_uvvis_spectrum_no_data(tmp_path, workspace_redirect):
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text("nothing\n", encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_uvvis_spectrum(str(folder)))
+    assert data["path"] == ""
+    assert data["error"] != ""
+
+
+def test_tool_plot_uvvis_spectrum_window_filtering(tmp_path, workspace_redirect):
+    """Window outside transition wavelengths → clean error, no PNG."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(_TDDFT_BLOCK, encoding="utf-8")
+    data = json.loads(ops_server.tool_plot_uvvis_spectrum(
+        str(folder),
+        wavelength_min=1000.0,
+        wavelength_max=2000.0,
+    ))
+    assert data["path"] == ""
+    assert "wavelength window" in data["error"]
+
+
+# ---------------------------------------------------------------------------
 # P1 — statistical plot tools (PNG output, auto-displayed in chat)
 # ---------------------------------------------------------------------------
 

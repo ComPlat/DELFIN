@@ -1351,6 +1351,12 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Histogram/bar/boxplot of energies; PNG → workspace."},
     {"name": "plot_energy_correlation", "category": "plotting",
      "summary": "Scatter + Pearson r; PNG → workspace."},
+    {"name": "plot_orbital_diagram", "category": "plotting",
+     "summary": "MO level diagram around HOMO/LUMO; PNG → workspace."},
+    {"name": "plot_optimization_convergence", "category": "plotting",
+     "summary": "Energy + ΔE per opt cycle; PNG → workspace."},
+    {"name": "plot_uvvis_spectrum", "category": "plotting",
+     "summary": "Gaussian-broadened UV/Vis from TDDFT; PNG → workspace."},
     # delfin-ops — dashboard guidance
     {"name": "list_dashboard_patterns", "category": "guidance",
      "summary": "Names of operational pattern recipes."},
@@ -3651,6 +3657,252 @@ def plot_energy_correlation(
     )
 
 
+def plot_orbital_diagram(
+    folder: str,
+    *,
+    n_below: int = 5,
+    n_above: int = 5,
+    title: str = "",
+) -> PlotResult:
+    """Render an orbital-energy level diagram around HOMO/LUMO.
+
+    Reads :func:`extract_orbital_energies` for *folder* and draws a
+    horizontal-line plot (energy on the y-axis, single column) showing
+    the *n_below* HOMOs and *n_above* LUMOs around the gap. HOMO is
+    highlighted blue, LUMO red, occupied orbitals dark grey, virtuals
+    light grey.
+
+    PNG lands in ``agent_workspace/`` so the inline-render hook picks
+    it up automatically.
+    """
+    res = extract_orbital_energies(folder)
+    if res.error is not None or not res.orbitals:
+        return PlotResult(
+            error=res.error or "no orbital data",
+            title=title or "Orbital diagram",
+        )
+    if res.homo_index is None:
+        return PlotResult(error="no HOMO detected", title="Orbital diagram")
+
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+
+    homo_idx = res.homo_index
+    lumo_idx = res.lumo_index
+    sel = [
+        o for o in res.orbitals
+        if (
+            (homo_idx - n_below) <= o.index <= homo_idx
+            or (lumo_idx is not None
+                and lumo_idx <= o.index <= lumo_idx + n_above)
+        )
+    ]
+    if not sel:
+        return PlotResult(error="no orbitals in window")
+
+    fig, ax = plt.subplots(figsize=(4.5, 5.5))
+    for o in sel:
+        if o.index == homo_idx:
+            color, lw = "#1565c0", 2.5
+        elif o.index == lumo_idx:
+            color, lw = "#c62828", 2.5
+        elif o.occupation >= 0.5:
+            color, lw = "#424242", 1.2
+        else:
+            color, lw = "#bdbdbd", 1.2
+        ax.hlines(o.energy_ev, 0.05, 0.95, color=color, linewidth=lw)
+        label = f"#{o.index} ({o.occupation:.1f})"
+        if o.index == homo_idx:
+            label += " HOMO"
+        elif o.index == lumo_idx:
+            label += " LUMO"
+        ax.text(1.02, o.energy_ev, label, va="center", fontsize=8)
+
+    ax.set_xlim(0, 1.6)
+    ax.set_xticks([])
+    ax.set_ylabel("Energy (eV)")
+    if title:
+        ax.set_title(title)
+    else:
+        gap_str = f", gap = {res.gap_ev:.2f} eV" if res.gap_ev else ""
+        ax.set_title(f"Orbital diagram ({_short_folder_label(folder)}){gap_str}")
+    fig.tight_layout()
+
+    out = _new_workspace_png_path("orbitals")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=len(sel),
+        title=title or "Orbital diagram",
+        properties=["orbital_energies"],
+        statistics={
+            "homo_ev": res.homo_ev,
+            "lumo_ev": res.lumo_ev,
+            "gap_ev": res.gap_ev,
+            "n_orbitals_total": res.n_orbitals,
+        },
+    )
+
+
+def plot_optimization_convergence(
+    folder: str,
+    *,
+    title: str = "",
+) -> PlotResult:
+    """Render an optimization-convergence plot (energy vs. cycle).
+
+    Two panels: top = absolute energy (Eh) per cycle, bottom = ΔE
+    (kcal/mol) per cycle on a symmetric-log scale to show very small
+    final-cycle changes. Marks the converged/not-converged status in
+    the title.
+    """
+    res = extract_optimization_trajectory(folder)
+    if res.error is not None or not res.cycles:
+        return PlotResult(
+            error=res.error or "no trajectory",
+            title=title or "Optimization convergence",
+        )
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+
+    cycles = [c.cycle for c in res.cycles]
+    energies = [c.energy_eh for c in res.cycles]
+    deltas_kcal = [
+        (c.delta_e * 627.5094740631) if c.delta_e is not None else 0.0
+        for c in res.cycles
+    ]
+
+    fig, (ax_e, ax_d) = plt.subplots(
+        2, 1, figsize=(7, 5), sharex=True,
+        gridspec_kw={"height_ratios": [2, 1]},
+    )
+    ax_e.plot(cycles, energies, marker="o", color="#1565c0", linewidth=1.5)
+    ax_e.set_ylabel("Energy (Eh)")
+    ax_e.grid(True, alpha=0.3)
+    ax_d.plot(cycles, deltas_kcal, marker="s", color="#c62828", linewidth=1.2)
+    ax_d.axhline(0.0, color="grey", linewidth=0.6)
+    ax_d.set_yscale("symlog", linthresh=1e-3)
+    ax_d.set_ylabel("ΔE (kcal/mol)")
+    ax_d.set_xlabel("Optimization cycle")
+    ax_d.grid(True, alpha=0.3)
+
+    status = (
+        "converged" if res.converged is True
+        else "did NOT converge" if res.converged is False
+        else "status unknown"
+    )
+    fig.suptitle(
+        title
+        or f"Opt convergence ({_short_folder_label(folder)}) — {status}",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    out = _new_workspace_png_path("opt_conv")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=len(cycles),
+        title=title or "Optimization convergence",
+        properties=["energy_eh", "delta_e_kcal"],
+        statistics={
+            "n_cycles": res.n_cycles,
+            "final_energy_eh": res.final_energy_eh,
+            "converged": res.converged,
+        },
+    )
+
+
+def plot_uvvis_spectrum(
+    folder: str,
+    *,
+    fwhm_nm: float = 20.0,
+    wavelength_min: float = 200.0,
+    wavelength_max: float = 800.0,
+    n_points: int = 1000,
+    title: str = "",
+) -> PlotResult:
+    """Render a Gaussian-broadened UV/Vis spectrum from TDDFT output.
+
+    Convolutes each TDDFT transition (oscillator strength weighted)
+    with a Gaussian of given FWHM in nm and plots the absorbance over
+    [wavelength_min, wavelength_max]. Stick spectrum drawn underneath.
+    """
+    res = extract_excited_states(folder)
+    if res.error is not None or not res.transitions:
+        return PlotResult(
+            error=res.error or "no excited-state data",
+            title=title or "UV/Vis spectrum",
+        )
+    matplotlib = _import_matplotlib()
+    if matplotlib is None:
+        return PlotResult(error="matplotlib unavailable")
+    plt = matplotlib.pyplot
+    import numpy as _np
+
+    wl = _np.linspace(wavelength_min, wavelength_max, n_points)
+    sigma = fwhm_nm / 2.3548  # FWHM → σ
+    spectrum = _np.zeros_like(wl)
+    sticks = []
+    for t in res.transitions:
+        if not (wavelength_min <= t.wavelength_nm <= wavelength_max):
+            continue
+        spectrum += t.fosc * _np.exp(-((wl - t.wavelength_nm) ** 2)
+                                     / (2 * sigma * sigma))
+        sticks.append((t.wavelength_nm, t.fosc))
+
+    if not sticks:
+        return PlotResult(
+            error="no transitions in wavelength window",
+            title=title or "UV/Vis spectrum",
+        )
+
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    ax.plot(wl, spectrum, color="#1565c0", linewidth=1.6, label="broadened")
+    for w, f in sticks:
+        ax.vlines(w, 0, f, color="#c62828", linewidth=1.0, alpha=0.7)
+    ax.set_xlabel("Wavelength (nm)")
+    ax.set_ylabel("Oscillator strength / absorbance (a.u.)")
+    ax.grid(True, alpha=0.3)
+    ax.set_title(
+        title
+        or f"UV/Vis spectrum ({_short_folder_label(folder)}) "
+           f"— FWHM = {fwhm_nm:.0f} nm",
+    )
+    fig.tight_layout()
+    out = _new_workspace_png_path("uvvis")
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
+    return PlotResult(
+        path=str(out),
+        n_points=len(sticks),
+        title=title or "UV/Vis spectrum",
+        properties=["wavelength_nm", "fosc"],
+        statistics={
+            "n_transitions_in_window": len(sticks),
+            "n_transitions_total": res.n_states,
+            "max_fosc": max((f for _, f in sticks), default=0.0),
+            "lambda_max": max(sticks, key=lambda s: s[1])[0] if sticks else None,
+        },
+    )
+
+
+def _import_matplotlib():
+    """Lazy matplotlib import (Agg backend) shared by every plot helper."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot  # noqa: F401
+        return matplotlib
+    except Exception:
+        return None
+
+
 def _short_folder_label(folder: str) -> str:
     """Return a 24-char-max label for a folder path (last 1-2 components)."""
     from pathlib import Path as _P
@@ -3895,6 +4147,9 @@ __all__ = [
     # P1 — statistical plots (PNG → agent_workspace, auto-shown in chat)
     "plot_energy_distribution",
     "plot_energy_correlation",
+    "plot_orbital_diagram",
+    "plot_optimization_convergence",
+    "plot_uvvis_spectrum",
     # Tool / widget catalogs (cheap on-demand discovery)
     "list_tools",
     "describe_tool",

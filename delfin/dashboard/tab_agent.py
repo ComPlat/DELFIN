@@ -7925,6 +7925,9 @@ def create_tab(ctx):
                         tool_name in ("Write", "Edit", "Bash", "NotebookEdit")
                         or tool_name.endswith("__plot_energy_distribution")
                         or tool_name.endswith("__plot_energy_correlation")
+                        or tool_name.endswith("__plot_orbital_diagram")
+                        or tool_name.endswith("__plot_optimization_convergence")
+                        or tool_name.endswith("__plot_uvvis_spectrum")
                     )
                     if _is_file_creating_tool:
                         _emit_new_workspace_artifacts()

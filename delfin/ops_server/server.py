@@ -934,6 +934,90 @@ def tool_plot_energy_correlation(
     return _json.dumps(_asdict(result), indent=2)
 
 
+def tool_plot_orbital_diagram(
+    folder: str,
+    n_below: int = 5,
+    n_above: int = 5,
+    title: str = "",
+) -> str:
+    """Render an MO level diagram around HOMO/LUMO; PNG → workspace.
+
+    Reads the LAST ORBITAL ENERGIES block from the folder's largest
+    .out, then draws horizontal lines at each orbital's eV value.
+    HOMO highlighted blue, LUMO red. JSON return carries the PNG path
+    so the dashboard's inline-render hook displays it in chat.
+
+    Args:
+        folder: absolute path to one calculation folder.
+        n_below: occupied orbitals to show below HOMO (default 5).
+        n_above: virtuals above LUMO (default 5).
+        title: optional figure title.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.plot_orbital_diagram(
+            folder, n_below=n_below, n_above=n_above, title=title,
+        )),
+        indent=2,
+    )
+
+
+def tool_plot_optimization_convergence(
+    folder: str,
+    title: str = "",
+) -> str:
+    """Render energy + ΔE per cycle for an Opt run; PNG → workspace.
+
+    Two panels: absolute energy (Eh) and ΔE (kcal/mol on symlog).
+    Title carries the converged/not-converged status. Direct answer
+    to 'warum hat die Optimierung 50 Schritte gebraucht?'.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.plot_optimization_convergence(
+            folder, title=title,
+        )),
+        indent=2,
+    )
+
+
+def tool_plot_uvvis_spectrum(
+    folder: str,
+    fwhm_nm: float = 20.0,
+    wavelength_min: float = 200.0,
+    wavelength_max: float = 800.0,
+    n_points: int = 1000,
+    title: str = "",
+) -> str:
+    """Gaussian-broadened UV/Vis from TDDFT; PNG → workspace.
+
+    Uses the LAST ABSORPTION SPECTRUM block from the folder's .out.
+    Stick spectrum drawn underneath the broadened curve.
+
+    Args:
+        folder: absolute path to a TDDFT calc folder.
+        fwhm_nm: broadening FWHM in nm (default 20).
+        wavelength_min, wavelength_max: plot window in nm.
+        n_points: convolution grid resolution.
+        title: optional figure title.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.plot_uvvis_spectrum(
+            folder,
+            fwhm_nm=fwhm_nm,
+            wavelength_min=wavelength_min,
+            wavelength_max=wavelength_max,
+            n_points=n_points,
+            title=title,
+        )),
+        indent=2,
+    )
+
+
 def tool_find_calculation_extreme(
     folders: str,
     property: str = "gibbs",
@@ -1284,6 +1368,10 @@ def run_server(argv: list[str] | None = None) -> None:
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
     mcp.tool()(tool_plot_energy_distribution)
     mcp.tool()(tool_plot_energy_correlation)
+    # Phase D plots (orbitals / opt convergence / UV/Vis spectrum)
+    mcp.tool()(tool_plot_orbital_diagram)
+    mcp.tool()(tool_plot_optimization_convergence)
+    mcp.tool()(tool_plot_uvvis_spectrum)
     # Tool / widget catalogs (cheap on-demand discovery)
     mcp.tool()(tool_list_tools)
     mcp.tool()(tool_describe_tool)
