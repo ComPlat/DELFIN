@@ -930,6 +930,19 @@ class PromptLoader:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
                 injected.append("memory")
 
+        # 8b. External Memory bridge — same source the terminal CLI reads
+        # (~/.claude/projects/<slug>/memory/MEMORY.md). Solo gets the full
+        # 6 KB cap; dashboard gets a tighter 2 KB cap because its turns are
+        # short and we don't want to drown a haiku-class model in memos.
+        if role_id == "dashboard_agent":
+            try:
+                ext_mem = self._load_external_memory_context(max_chars=2000)
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
+
         # 9. Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):

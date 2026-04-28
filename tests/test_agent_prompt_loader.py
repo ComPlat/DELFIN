@@ -624,6 +624,68 @@ def test_solo_prompt_includes_external_memory_when_present(
     assert "terse diffs" in prompt
 
 
+def test_external_memory_injected_into_dashboard_prompt(agent_tree, tmp_path, monkeypatch):
+    """S3 — Dashboard mode now also gets the CLI memory bridge (smaller cap)."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    (agent_tree / "pack" / "agents" / "dashboard_agent.md").write_text(
+        "# Dashboard Agent\nYou are the dashboard operator."
+    )
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text(
+        "# Project Memory\n- DELFIN runs on uc3 cluster.\n"
+    )
+
+    loader = PromptLoader(agent_tree)
+    captured: dict = {}
+    real = loader._load_external_memory_context
+
+    def _spy(max_chars=6000, memory_root=None):
+        captured["max_chars"] = max_chars
+        return real.__func__(loader, memory_root=mem, max_chars=max_chars)
+
+    monkeypatch.setattr(loader, "_load_external_memory_context", _spy)
+    prompt = loader.build_system_prompt(
+        role_id="dashboard_agent",
+        mode_id="dashboard",
+        mode_description="dashboard",
+        route=["dashboard_agent"],
+        role_index=0,
+    )
+    assert "External Memory" in prompt
+    assert "uc3 cluster" in prompt
+    # Dashboard cap is tighter than solo's default 6000
+    assert captured["max_chars"] == 2000
+
+
+def test_external_memory_not_injected_for_other_roles(agent_tree, tmp_path, monkeypatch):
+    """Non-solo, non-dashboard roles must NOT get the external-memory block."""
+    from delfin.agent.prompt_loader import PromptLoader
+
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "MEMORY.md").write_text("# Project Memory\n- Some note.\n")
+
+    loader = PromptLoader(agent_tree)
+    monkeypatch.setattr(
+        loader, "_load_external_memory_context",
+        lambda max_chars=6000, memory_root=None:
+            loader.__class__._load_external_memory_context(
+                loader, memory_root=mem, max_chars=max_chars,
+            ),
+    )
+    prompt = loader.build_system_prompt(
+        role_id="builder_agent",
+        mode_id="default",
+        mode_description="default",
+        route=["builder_agent"],
+        role_index=0,
+    )
+    assert "External Memory" not in prompt
+
+
 # ---------------------------------------------------------------------------
 # S1 — live_state injected into the system prompt (replaces user-msg state block)
 # ---------------------------------------------------------------------------
