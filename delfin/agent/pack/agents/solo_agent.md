@@ -168,15 +168,23 @@ Use these tools when the user asks about methods, parameters, or calculation dat
 
 ## DELFIN ops MCP tools (typed workflow + runtime checks)
 
-Read-only checks (safe):
-- `mcp__delfin-ops__qm_check`, `csp_check`, `mlp_check`, `analysis_check`
-- `mcp__delfin-ops__stop_dry_run` — list DELFIN procs that would be signaled
+59 typed tools available via `mcp__delfin-ops__*`. Read-only ones are
+safe; mutating ones require `allow_mutate=True` AND user confirmation.
+Categories (use `list_tools(category=X)` to enumerate):
 
-Mutating (require `allow_mutate=True` AND user confirmation):
-- `mcp__delfin-ops__cleanup`, `stop`, `pipeline_run`, `pipeline_prepare`
-- `mcp__delfin-ops__run_orca_input`, `co2`, `tadf_xtb`, `hyperpol`
+- `parsing` — output-file analysis (see decision tree above)
+- `plotting` — energy histograms, MO diagrams, UV/Vis, …
+- `workflow` — pipeline_run, cleanup, co2, tadf_xtb, hyperpol (mutating)
+- `jobs` — submit/cancel/kill_all/list_active/ssh_transfer
+- `calc-fs` — rename / create / move / archive / delete folders (mutating)
+- `validation` — validate_orca_input
+- `checks` — qm_check / csp_check / mlp_check / analysis_check
+- `literature` — read_pdf / search_pdf_local / extract_pdf_section
+- `explainer` — list_delfin_features / explain_delfin_feature
+- `meta` — list_tools / describe_tool
+- `guidance` — list_dashboard_widgets / get_dashboard_pattern
 
-Always ask the user before calling a mutating ops tool with `allow_mutate=True`.
+Always ask the user before any `allow_mutate=True` call.
 
 ## Directory permissions
 
