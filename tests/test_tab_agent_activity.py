@@ -173,8 +173,17 @@ def test_render_timeline_handles_long_tasks():
         mode="solo", timestamp="2026-04-27T08:00:00",
     )]
     html = tab._render_timeline(out)
-    # Truncated to <80 chars
-    assert "x" * 80 not in html
+    # The SUMMARY (between <summary> and </summary>) must truncate.
+    # Long-task outcomes also get a drilldown that intentionally shows
+    # the full text, so we only assert truncation in the summary.
+    summary_start = html.find("<summary")
+    summary_end = html.find("</summary>", summary_start) if summary_start >= 0 else -1
+    if summary_start >= 0 and summary_end > summary_start:
+        summary_html = html[summary_start:summary_end]
+        assert "x" * 80 not in summary_html, "summary line should be truncated"
+    else:
+        # Fallback for the non-drilldown layout (kept defensively):
+        assert "x" * 80 not in html
 
 
 def test_render_timeline_shows_denied_commands_count():
@@ -459,3 +468,117 @@ def test_render_cost_insights_handles_empty_modes():
     assert "Today" in out
     # No "Cost by mode" section when by_mode is empty
     assert "Cost by mode" not in out
+
+
+# ---------------------------------------------------------------------------
+# A5 — outcome-row drilldown via <details>/<summary>
+# ---------------------------------------------------------------------------
+
+def test_outcome_has_drilldown_long_task_yes():
+    """A truncated task triggers the toggle so the user can read the rest."""
+    o = CycleOutcome(task="x" * 200, verdict="PASS")
+    assert tab._outcome_has_drilldown(o) is True
+
+
+def test_outcome_has_drilldown_short_task_no():
+    """Short tasks fully visible in the summary need no toggle."""
+    o = CycleOutcome(task="quick fix", verdict="PASS")
+    assert tab._outcome_has_drilldown(o) is False
+
+
+def test_outcome_has_drilldown_denied_yes():
+    o = CycleOutcome(task="t", verdict="FAIL", denied_commands=["rm -rf /"])
+    assert tab._outcome_has_drilldown(o) is True
+
+
+def test_outcome_has_drilldown_error_yes():
+    o = CycleOutcome(task="t", verdict="FAIL", error_type="timeout")
+    assert tab._outcome_has_drilldown(o) is True
+
+
+def test_outcome_has_drilldown_retries_yes():
+    o = CycleOutcome(task="t", verdict="PARTIAL", retries=2)
+    assert tab._outcome_has_drilldown(o) is True
+
+
+def test_render_drilldown_shows_full_task():
+    """Drilldown panel exposes the full task without 80-char truncation."""
+    full = "fix bug in foo " * 20
+    o = CycleOutcome(task=full, verdict="FAIL")
+    html = tab._render_outcome_drilldown(o)
+    assert "Task (full)" in html
+    assert _truncate_safe(full)[:50] in html  # text present without ellipsis
+
+
+def _truncate_safe(text: str) -> str:
+    """Helper: just html-escape and look for a substring."""
+    import html as _h
+    return _h.escape(text)
+
+
+def test_render_drilldown_shows_denied_commands():
+    o = CycleOutcome(task="t", verdict="FAIL",
+                     denied_commands=["sudo rm -rf /", "git push --force"])
+    html = tab._render_outcome_drilldown(o)
+    assert "Denied commands (2)" in html
+    assert "sudo rm -rf /" in html
+    assert "git push --force" in html
+
+
+def test_render_drilldown_shows_error_type():
+    o = CycleOutcome(task="t", verdict="FAIL", error_type="timeout")
+    html = tab._render_outcome_drilldown(o)
+    assert ">Error<" in html
+    assert "timeout" in html
+
+
+def test_render_drilldown_shows_retries():
+    o = CycleOutcome(task="t", verdict="PARTIAL", retries=3)
+    html = tab._render_outcome_drilldown(o)
+    assert ">Retries<" in html
+    assert ">3<" in html
+
+
+def test_render_drilldown_shows_full_timestamp():
+    o = CycleOutcome(task="t", verdict="PASS", retries=1,
+                     timestamp="2026-04-28T10:42:11.123456")
+    html = tab._render_outcome_drilldown(o)
+    assert "Timestamp" in html
+    assert "2026-04-28T10:42:11.123456" in html
+
+
+def test_timeline_uses_details_for_drillable_rows():
+    """Timeline emits <details> for outcomes with extra content."""
+    outs = [
+        CycleOutcome(task="x" * 200, verdict="FAIL",
+                     denied_commands=["bad"], error_type="timeout"),
+    ]
+    html = tab._render_timeline(outs)
+    assert "<details" in html
+    assert "<summary" in html
+    # Drilldown content present
+    assert "Task (full)" in html
+    assert "Denied commands" in html
+
+
+def test_timeline_skips_details_for_clean_rows():
+    """Outcomes without drilldown content render as plain divs, not <details>."""
+    outs = [
+        CycleOutcome(task="quick fix", verdict="PASS", provider="claude",
+                     mode="solo", timestamp="2026-04-27T08:00:00"),
+    ]
+    html = tab._render_timeline(outs)
+    # The single row is NOT a <details> — it's a flat div
+    assert "<details" not in html
+    assert "<summary" not in html
+    assert "quick fix" in html
+
+
+def test_timeline_drilldown_escapes_user_text():
+    """Task with HTML in it must be escaped in both summary and drilldown."""
+    bad = "<script>alert(1)</script>" + "x" * 200
+    outs = [CycleOutcome(task=bad, verdict="FAIL", error_type="<x>")]
+    html = tab._render_timeline(outs)
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;x&gt;" in html

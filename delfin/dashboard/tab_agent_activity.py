@@ -481,8 +481,84 @@ def _render_summary(stats: dict) -> str:
     )
 
 
+def _outcome_has_drilldown(o: CycleOutcome) -> bool:
+    """Decide whether an outcome warrants the ▸ expand toggle.
+
+    True when there's content the summary row truncates: long task
+    text, denied commands, error_type, or any retries. Otherwise the
+    summary line tells the whole story and we don't add the toggle.
+    """
+    if (o.task or "") and len(o.task) > 80:
+        return True
+    if o.denied_commands:
+        return True
+    if o.error_type:
+        return True
+    if int(o.retries or 0) > 0:
+        return True
+    return False
+
+
+def _render_outcome_drilldown(o: CycleOutcome) -> str:
+    """Render the expanded detail block under a row's ▸ toggle."""
+    parts: list[str] = []
+    if o.task:
+        parts.append(
+            f'<div style="margin:6px 0 2px 0;font-size:10px;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">Task (full)</div>'
+            f'<div style="font-size:11px;color:#1f2937;'
+            f'white-space:pre-wrap;word-break:break-word;">'
+            f'{_html.escape(o.task)}</div>'
+        )
+    if o.denied_commands:
+        cmd_html = "".join(
+            f'<li style="margin:2px 0;">{_html.escape(c)}</li>'
+            for c in o.denied_commands
+        )
+        parts.append(
+            f'<div style="margin:8px 0 2px 0;font-size:10px;color:#ef4444;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">'
+            f'Denied commands ({len(o.denied_commands)})</div>'
+            f'<ul style="margin:0;padding-left:18px;font-size:11px;'
+            f'color:#7f1d1d;font-family:monospace;">{cmd_html}</ul>'
+        )
+    if o.error_type:
+        parts.append(
+            f'<div style="margin:8px 0 2px 0;font-size:10px;color:#dc2626;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">Error</div>'
+            f'<div style="font-size:11px;color:#7f1d1d;font-family:monospace;">'
+            f'{_html.escape(o.error_type)}</div>'
+        )
+    if int(o.retries or 0) > 0:
+        parts.append(
+            f'<div style="margin:8px 0 2px 0;font-size:10px;color:#f59e0b;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">Retries</div>'
+            f'<div style="font-size:11px;color:#92400e;">{int(o.retries)}</div>'
+        )
+    if o.timestamp:
+        parts.append(
+            f'<div style="margin:8px 0 2px 0;font-size:10px;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:0.4px;">Timestamp</div>'
+            f'<div style="font-size:11px;color:#374151;font-family:monospace;">'
+            f'{_html.escape(o.timestamp)}</div>'
+        )
+    return (
+        '<div style="background:#f9fafb;border-top:1px solid #e5e7eb;'
+        'padding:8px 14px;">' + "".join(parts) + '</div>'
+    )
+
+
 def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
-    """Render the recent-cycles timeline as an HTML table."""
+    """Render the recent-cycles timeline.
+
+    Layout: a vertical list of <details> elements, one per outcome.
+    The summary line is a flex row that mimics the previous table
+    columns; clicking it expands the drilldown panel underneath.
+
+    Outcomes with nothing additional to show (short task, no denied
+    commands, no error, no retries) skip the toggle entirely so the
+    row stays clean.
+    """
     if not outcomes:
         return '<div style="padding:12px;color:#6b7280;font-size:12px;">' \
                'Keine Einträge passen zum Filter.</div>'
@@ -508,51 +584,93 @@ def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
             f'<span style="margin-left:6px;color:#f59e0b;font-size:10px;">'
             f'↻ {o.retries}</span>' if o.retries else ""
         )
-        rows.append(
-            '<tr style="border-bottom:1px solid #f3f4f6;">'
-            f'<td style="padding:6px 8px;font-family:monospace;font-size:11px;'
-            f'color:#6b7280;">{_html.escape(_fmt_ts(o.timestamp))}</td>'
-            f'<td style="padding:6px 8px;">{verdict_html}{denied}{err}{retries}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#374151;">'
-            f'{_html.escape(o.mode or "—")}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#374151;">'
-            f'{_html.escape(o.provider or "—")}/{_html.escape(o.model or "")}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#374151;">'
-            f'{_html.escape(o.task_class or "—")}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#6366f1;'
-            f'text-align:right;">{_fmt_cost(o.cost_usd)}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#14b8a6;'
-            f'text-align:right;">{_fmt_duration(o.duration_s)}</td>'
-            f'<td style="padding:6px 8px;font-size:11px;color:#1f2937;">'
-            f'{_html.escape(_truncate(o.task, 80))}</td>'
-            '</tr>'
+
+        # Common cell styling for the flex-row summary
+        cell = "padding:6px 8px;font-size:11px;"
+        time_cell = (
+            f'<span style="{cell}font-family:monospace;color:#6b7280;'
+            f'min-width:120px;">{_html.escape(_fmt_ts(o.timestamp))}</span>'
         )
+        verdict_cell = (
+            f'<span style="{cell}min-width:100px;">'
+            f'{verdict_html}{denied}{err}{retries}</span>'
+        )
+        mode_cell = (
+            f'<span style="{cell}color:#374151;min-width:80px;">'
+            f'{_html.escape(o.mode or "—")}</span>'
+        )
+        provider_cell = (
+            f'<span style="{cell}color:#374151;min-width:140px;">'
+            f'{_html.escape(o.provider or "—")}/{_html.escape(o.model or "")}'
+            f'</span>'
+        )
+        class_cell = (
+            f'<span style="{cell}color:#374151;min-width:90px;">'
+            f'{_html.escape(o.task_class or "—")}</span>'
+        )
+        cost_cell = (
+            f'<span style="{cell}color:#6366f1;text-align:right;'
+            f'min-width:70px;">{_fmt_cost(o.cost_usd)}</span>'
+        )
+        dur_cell = (
+            f'<span style="{cell}color:#14b8a6;text-align:right;'
+            f'min-width:60px;">{_fmt_duration(o.duration_s)}</span>'
+        )
+        task_cell = (
+            f'<span style="{cell}color:#1f2937;flex:1;min-width:0;'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'
+            f'{_html.escape(_truncate(o.task, 80))}</span>'
+        )
+
+        summary_row = (
+            f'<summary style="display:flex;align-items:center;gap:4px;'
+            f'border-bottom:1px solid #f3f4f6;cursor:pointer;'
+            f'list-style:none;">'
+            f'{time_cell}{verdict_cell}{mode_cell}{provider_cell}'
+            f'{class_cell}{cost_cell}{dur_cell}{task_cell}'
+            f'</summary>'
+        )
+
+        if _outcome_has_drilldown(o):
+            row = (
+                f'<details style="border-bottom:1px solid #f3f4f6;">'
+                f'{summary_row}'
+                f'{_render_outcome_drilldown(o)}'
+                f'</details>'
+            )
+        else:
+            # No drilldown content — render a plain row that doesn't
+            # advertise an expand toggle (cursor stays default).
+            row = (
+                f'<div style="display:flex;align-items:center;gap:4px;'
+                f'border-bottom:1px solid #f3f4f6;">'
+                f'{time_cell}{verdict_cell}{mode_cell}{provider_cell}'
+                f'{class_cell}{cost_cell}{dur_cell}{task_cell}'
+                f'</div>'
+            )
+        rows.append(row)
+
     header = (
-        '<tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Time</th>'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Verdict</th>'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Mode</th>'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Provider</th>'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Class</th>'
-        '<th style="padding:6px 8px;text-align:right;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Cost</th>'
-        '<th style="padding:6px 8px;text-align:right;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Duration</th>'
-        '<th style="padding:6px 8px;text-align:left;font-size:10px;color:#6b7280;'
-        'text-transform:uppercase;letter-spacing:0.4px;">Task</th>'
-        '</tr>'
+        '<div style="display:flex;align-items:center;gap:4px;'
+        'background:#f9fafb;border-bottom:2px solid #e5e7eb;'
+        'font-size:10px;color:#6b7280;text-transform:uppercase;'
+        'letter-spacing:0.4px;font-weight:600;">'
+        '<span style="padding:6px 8px;min-width:120px;">Time</span>'
+        '<span style="padding:6px 8px;min-width:100px;">Verdict</span>'
+        '<span style="padding:6px 8px;min-width:80px;">Mode</span>'
+        '<span style="padding:6px 8px;min-width:140px;">Provider</span>'
+        '<span style="padding:6px 8px;min-width:90px;">Class</span>'
+        '<span style="padding:6px 8px;min-width:70px;text-align:right;">Cost</span>'
+        '<span style="padding:6px 8px;min-width:60px;text-align:right;">Duration</span>'
+        '<span style="padding:6px 8px;flex:1;">Task</span>'
+        '</div>'
     )
     return (
         '<div style="max-height:520px;overflow-y:auto;border:1px solid #e5e7eb;'
-        'border-radius:6px;background:#fff;">'
-        '<table style="width:100%;border-collapse:collapse;font-family:'
-        '-apple-system,BlinkMacSystemFont,sans-serif;">'
-        f'<thead>{header}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+        'border-radius:6px;background:#fff;font-family:-apple-system,'
+        'BlinkMacSystemFont,sans-serif;">'
+        f'{header}{"".join(rows)}'
+        '</div>'
     )
 
 
