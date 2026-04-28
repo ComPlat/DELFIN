@@ -43,12 +43,36 @@ The most destructive op needs THREE independent confirmations:
 Missing any one → safe refusal. Verified in
 `tests/test_ops_server.py::test_tool_delete_calc_folder_three_lock`.
 
-### Layer 3 — Directory zoning
+### Layer 3 — Directory zoning (`archive/` + `remote_archive/` ALWAYS read-only)
 
 Every mutating tool calls `_check_destructive_dirs(block_archive=True)`
 which **refuses any path under `archive/` or `remote_archive/`** —
-even with all locks aligned. The archive is read-only no matter
-what the agent does.
+even with all locks aligned. Hard-coded in `delfin/api.py:_check_destructive_dirs`.
+
+**Empirically verified — 4/4 mutation attempts on `remote_archive/`
+refused (even with allowed_roots set to point at it):**
+
+```
+remote_archive delete with all locks      → REFUSED (read-only root)
+remote_archive rename                      → REFUSED
+remote_archive create new folder           → REFUSED
+archive→archive direction-violation        → REFUSED
+```
+
+**`_PERM_PROFILES` mirror this in the dashboard's zone system**
+(`tab_agent.py:6366-6402`):
+
+| Profile | calc/ | archive/ | remote_archive/ |
+|---|---|---|---|
+| plan | tier-2 max | tier-1 read | **(0, read-only)** |
+| ask_all (default) | tier-3 + confirm dialog | **(0, read-only)** | **(0, read-only)** |
+| repo_free | tier-3 + confirm dialog | **(0, read-only)** | **(0, read-only)** |
+| all_free (user-chosen) | tier-3 auto | **(0, read-only)** | **(0, read-only)** |
+
+**Even the `all_free` profile — the most permissive one a user can
+intentionally pick — leaves `archive/` and `remote_archive/`
+locked read-only. There is no profile, anywhere in the codebase,
+that allows mutation of either archive root.**
 
 Outside the project (`/etc`, `/root`, user's `~/.ssh`, etc.) is
 filtered out by `_resolve_within_roots()`: every mutating tool
