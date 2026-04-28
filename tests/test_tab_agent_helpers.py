@@ -12,6 +12,7 @@ from delfin.dashboard.tab_agent import (
     _extract_action_commands,
     _extract_denied_tool_name,
     _filter_slash_commands,
+    _format_session_boot,
     _format_solo_domain_state,
     _is_structurally_blocked,
     _render_action_confirmation_html,
@@ -1107,3 +1108,96 @@ def test_handoff_includes_context_framing():
     out = _build_full_transcript_handoff(msgs, "dashboard", "solo")
     assert "Prior conversation" in out
     assert "End of prior context" in out
+
+
+# ---------------------------------------------------------------------------
+# S4 — Session boot context (once per fresh dashboard session)
+# ---------------------------------------------------------------------------
+
+def test_session_boot_empty_inputs_returns_empty():
+    """No data → no header — caller must be free to skip the block entirely."""
+    assert _format_session_boot() == ""
+    assert _format_session_boot(outcomes=[], jobs=[], commits=[]) == ""
+
+
+def test_session_boot_renders_outcome_block():
+    outcomes = [
+        {"verdict": "PASS", "mode": "solo", "task": "fix bug", "cost_usd": 0.012},
+        {"verdict": "FAIL", "mode": "dashboard", "task": "recalc job_X", "cost_usd": 0.234},
+    ]
+    out = _format_session_boot(outcomes=outcomes)
+    assert "[Session boot context]" in out
+    assert "Recent outcomes" in out
+    assert "[PASS]" in out and "[FAIL]" in out
+    assert "fix bug" in out
+    assert "$0.234" in out
+
+
+def test_session_boot_outcomes_truncated_to_last_5():
+    outcomes = [
+        {"verdict": "PASS", "mode": "x", "task": f"t{i}", "cost_usd": 0.01}
+        for i in range(20)
+    ]
+    out = _format_session_boot(outcomes=outcomes)
+    # Most recent 5 are t15..t19 — t14 must NOT show
+    assert "'t19'" in out
+    assert "'t14'" not in out
+
+
+def test_session_boot_renders_job_block():
+    jobs = [
+        {"name": "Cas_red_1", "status": "RUNNING"},
+        {"name": "job_2", "status": "RUNNING"},
+        {"name": "job_3", "status": "PENDING"},
+    ]
+    out = _format_session_boot(jobs=jobs)
+    assert "Active SLURM jobs" in out
+    assert "RUNNING:2" in out
+    assert "PENDING:1" in out
+    assert "Cas_red_1(R)" in out
+
+
+def test_session_boot_renders_commits_and_branch():
+    out = _format_session_boot(
+        commits=["abc1234 fix scf", "def5678 add NEB", "999aaaa upd docs"],
+        branch="GUPPY",
+    )
+    assert "Recent commits:" in out
+    assert "abc1234" in out
+    assert "Active branch: GUPPY" in out
+
+
+def test_session_boot_renders_calc_path():
+    out = _format_session_boot(calc_path="/home/u/calc/Jerome/c1")
+    assert "Active calc folder: /home/u/calc/Jerome/c1" in out
+
+
+def test_session_boot_truncates_above_max_chars():
+    """Cap respected even with absurd outcome list."""
+    outcomes = [
+        {"verdict": "PASS", "mode": "x", "task": "x" * 200, "cost_usd": 0.0}
+        for _ in range(50)
+    ]
+    out = _format_session_boot(outcomes=outcomes, max_chars=400)
+    assert "[truncated]" in out
+    assert len(out) <= 600  # header + 400 + "[truncated]" footer
+
+
+def test_session_boot_handles_dataclass_like_objects():
+    """Outcomes can be CycleOutcome dataclasses (attrs) instead of dicts."""
+    class _Fake:
+        verdict = "PASS"
+        mode = "solo"
+        task = "real task"
+        cost_usd = 0.05
+    out = _format_session_boot(outcomes=[_Fake(), _Fake()])
+    assert "real task" in out and "[PASS]" in out
+
+
+def test_session_boot_skips_missing_blocks():
+    """A boot context with only commits must NOT leak empty section headers."""
+    out = _format_session_boot(commits=["abc1234 fix"])
+    assert "Recent commits:" in out
+    assert "Recent outcomes" not in out
+    assert "Active SLURM jobs" not in out
+    assert "Active calc folder" not in out

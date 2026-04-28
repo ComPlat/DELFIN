@@ -1643,6 +1643,86 @@ def _build_full_transcript_handoff(
     )
 
 
+def _format_session_boot(
+    *,
+    outcomes: list | None = None,
+    jobs: list | None = None,
+    commits: list | None = None,
+    calc_path: str = "",
+    branch: str = "",
+    max_chars: int = 2400,
+) -> str:
+    """Render a one-shot "session boot" snippet for the dashboard agent.
+
+    Goal: on the first user message of a fresh session, give the agent
+    enough domain context to answer "what's going on?" without firing a
+    dozen tool calls. Cap is tight (~600 tokens) — this is a *primer*,
+    not a replacement for live state.
+
+    All inputs are optional: missing data → that block is skipped.
+    Empty everything → returns "" so the caller can omit the block.
+
+    ``outcomes`` items may be ``CycleOutcome`` dataclasses or plain
+    dicts (so the helper stays mock-friendly in tests).
+    """
+    parts: list[str] = []
+
+    def _attr(o, name, default=""):
+        if isinstance(o, dict):
+            return o.get(name, default)
+        return getattr(o, name, default)
+
+    if outcomes:
+        recent = outcomes[-5:]
+        lines = ["Recent outcomes (last 5 cycles):"]
+        for o in recent:
+            verdict = _attr(o, "verdict", "?") or "?"
+            mode = _attr(o, "mode", "")
+            task = _attr(o, "task", "") or ""
+            cost = _attr(o, "cost_usd", 0.0) or 0.0
+            task_short = str(task).replace("\n", " ")[:60]
+            lines.append(
+                f"  [{verdict}] {mode}: {task_short!r} (${float(cost):.3f})"
+            )
+        parts.append("\n".join(lines))
+
+    if jobs:
+        # Group by status for a compact summary
+        from collections import Counter
+        statuses = Counter()
+        named: list[str] = []
+        for j in jobs:
+            status = (_attr(j, "status", "") or "").upper()
+            statuses[status] += 1
+            name = _attr(j, "name", "") or _attr(j, "job_id", "")
+            if name and len(named) < 8:
+                named.append(f"{name}({status[:1] or '?'})")
+        summary = ", ".join(f"{k}:{v}" for k, v in statuses.most_common())
+        line = f"Active SLURM jobs: {summary}"
+        if named:
+            line += f" — {', '.join(named)}"
+        parts.append(line)
+
+    if commits:
+        head = "Recent commits:"
+        body = "\n".join(f"  {c}" for c in commits[:3])
+        parts.append(f"{head}\n{body}")
+
+    if branch:
+        parts.append(f"Active branch: {branch}")
+
+    if calc_path:
+        parts.append(f"Active calc folder: {calc_path}")
+
+    if not parts:
+        return ""
+
+    body = "\n\n".join(parts)
+    if len(body) > max_chars:
+        body = body[: max_chars - 32].rstrip() + "\n... [truncated]"
+    return f"[Session boot context]\n{body}"
+
+
 def _format_solo_domain_state(snapshot: dict) -> str:
     """Render a compact ``[Domain state]`` block for the solo-mode prompt.
 
@@ -5981,6 +6061,68 @@ def create_tab(ctx):
             pass
         return "\n".join(parts)
 
+    def _build_dashboard_session_boot() -> str:
+        """Collect once-per-session domain snapshot and format it.
+
+        Used on the FIRST user-send of a fresh session so the agent
+        starts with the same domain awareness a returning developer
+        would have: recent outcomes, active jobs, recent commits,
+        active branch, current calc folder.
+        """
+        outcomes: list = []
+        try:
+            from delfin.agent.outcome_tracker import load_outcomes
+            outcomes = load_outcomes(max_entries=5)
+        except Exception:
+            outcomes = []
+
+        jobs: list = []
+        try:
+            backend = getattr(ctx, "backend", None)
+            if backend is not None and hasattr(backend, "list_jobs"):
+                jobs = list(backend.list_jobs() or [])
+        except Exception:
+            jobs = []
+
+        commits: list[str] = []
+        branch_name = ""
+        try:
+            import subprocess as _sp
+            _r = _sp.run(
+                ["git", "log", "-3", "--oneline"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _r.returncode == 0:
+                commits = [
+                    line for line in _r.stdout.splitlines() if line.strip()
+                ]
+            _b = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _b.returncode == 0:
+                branch_name = _b.stdout.strip()
+        except Exception:
+            pass
+
+        calc_path = ""
+        try:
+            _w = ctx.calc_browser_refs.get("calc_path_input")
+            if _w and _w.value:
+                calc_path = str(_w.value)
+        except Exception:
+            calc_path = ""
+
+        return _format_session_boot(
+            outcomes=outcomes,
+            jobs=jobs,
+            commits=commits,
+            calc_path=calc_path,
+            branch=branch_name,
+        )
+
     # -- command safety tiers (enforced at CODE level, not prompt) ----------
 
     _TIER3_EXACT = {"/submit", "/orca submit", "/recalc auto", "/cancel all"}
@@ -7738,6 +7880,19 @@ def create_tab(ctx):
                 if hasattr(engine, "set_live_state"):
                     engine.set_live_state(_live_state_text)
                 current_msg = user_text
+
+                # S4 — Session boot context: ONCE on the first user-send of
+                # a fresh dashboard session. Gives the agent a 600-token
+                # primer (recent outcomes, SLURM jobs, commits, calc-folder)
+                # so it doesn't have to fire a dozen tool calls just to
+                # know "where are we and what just failed?".
+                if mode_dropdown.value == "dashboard" and not engine.messages:
+                    try:
+                        _boot = _build_dashboard_session_boot()
+                    except Exception:
+                        _boot = ""
+                    if _boot:
+                        current_msg = f"{_boot}\n\n{current_msg}"
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
