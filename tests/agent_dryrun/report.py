@@ -420,8 +420,17 @@ def main():
         return 2
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    cases = [c for c in CASES if not args.include
-             or args.include.lower() in c[0].lower()]
+    # --include accepts comma-separated substrings: any match is kept.
+    include_terms = [
+        s.strip().lower() for s in args.include.split(",") if s.strip()
+    ]
+    if include_terms:
+        cases = [
+            c for c in CASES
+            if any(term in c[0].lower() for term in include_terms)
+        ]
+    else:
+        cases = list(CASES)
 
     if args.rerun_failed:
         # Filter cases to only those that FAILed in the named .partial
