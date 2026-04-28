@@ -687,6 +687,79 @@ def tool_find_calculation_extreme(
     return _json.dumps(rows, indent=2)
 
 
+def tool_extract_imaginary_frequencies(folder: str) -> str:
+    """List imaginary modes (n_imag, mode_index, frequency_cm) for one folder.
+
+    Reads the largest ``*.out`` containing a VIBRATIONAL FREQUENCIES
+    block and returns:
+
+    - ``n_imag``: count of imaginary modes
+    - ``modes``: list of {mode_index, frequency_cm}
+    - ``most_negative``: most negative cm**-1 value (None if no imag)
+    - ``is_minimum`` (n_imag == 0), ``is_ts`` (n_imag == 1)
+    - ``error``: filled when no Freq output is present
+
+    Use this when the user asks "ist X ein Minimum?" / "TS suchen" /
+    "imaginäre Frequenzen vergleichen". Combine with
+    ``compare_across_functionals`` to scan many folders.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.extract_imaginary_frequencies(folder)),
+        indent=2,
+    )
+
+
+def tool_compare_calculations(folder_a: str, folder_b: str) -> str:
+    """Side-by-side diff of two calculation folders.
+
+    Returns: method/basis match flags, both functionals + bases,
+    Gibbs/SPE for each, ``delta_*_kcal`` (B - A in kcal/mol), imag-freq
+    counts, and human notes (e.g. "different functional", "B has 1 imag
+    freq — not a minimum").
+
+    Use this when the user wants to compare two single calculations
+    head-to-head. For more than 2 folders use
+    ``compare_across_functionals``.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(
+        _asdict(delfin_api.compare_calculations(folder_a, folder_b)),
+        indent=2,
+    )
+
+
+def tool_compare_across_functionals(
+    folders: str,
+    include_imag: bool = True,
+    sort_by: str = "gibbs",
+) -> str:
+    """Multi-folder comparison table grouped by functional/basis.
+
+    Returns one row per folder with: functional, basis, gibbs,
+    single_point, zpe, n_imag, is_minimum, status. Sortable by gibbs
+    (default), single_point, zpe, functional, or folder.
+
+    Direct answer to "vergleiche imaginäre Frequenzen über Funktionale"
+    or "Welcher Functional gibt das tiefste Minimum?".
+
+    Args:
+        folders: comma-separated absolute paths.
+        include_imag: if True (default), also extract imaginary-freq
+            counts (slightly slower but usually wanted).
+        sort_by: gibbs | single_point | zpe | functional | folder.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    rows = delfin_api.compare_across_functionals(
+        folder_list, include_imag=include_imag, sort_by=sort_by,
+    )
+    return _json.dumps([_asdict(r) for r in rows], indent=2)
+
+
 def tool_stop_dry_run(workspace: str) -> str:
     """List DELFIN processes that would be signaled (no actual signal sent)."""
     rc = delfin_api.stop(workspace=workspace, dry_run=True)
@@ -865,6 +938,10 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool()(tool_extract_thermochem)
     mcp.tool()(tool_extract_energy_table)
     mcp.tool()(tool_find_calculation_extreme)
+    # Imaginary-frequency + functional-comparison helpers
+    mcp.tool()(tool_extract_imaginary_frequencies)
+    mcp.tool()(tool_compare_calculations)
+    mcp.tool()(tool_compare_across_functionals)
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
     mcp.tool()(tool_plot_energy_distribution)
     mcp.tool()(tool_plot_energy_correlation)

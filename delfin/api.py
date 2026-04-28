@@ -703,6 +703,266 @@ def extract_energy_table(
 
 
 # ---------------------------------------------------------------------------
+# Imaginary-frequency extraction + multi-folder comparison
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImagFreqMode:
+    """One imaginary vibrational mode in an ORCA frequency output."""
+    mode_index: int
+    frequency_cm: float
+
+
+@dataclass
+class ImagFreqResult:
+    """Imaginary frequencies extracted from one calculation folder."""
+    folder: str
+    output_file: str | None
+    n_imag: int
+    modes: list[ImagFreqMode]
+    most_negative: float | None
+    is_minimum: bool | None
+    is_ts: bool | None
+    error: str | None = None
+
+
+def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
+    """Pull imaginary modes from the largest ``*.out`` in *folder*.
+
+    Returns ``n_imag = 0`` and ``is_minimum = True`` for true minima.
+    A single imaginary mode (typically below -100 cm-1) is the TS
+    signature; ``is_ts = True`` then. Missing freq output → ``error``.
+    """
+    from pathlib import Path as _P
+    import re as _re
+    p = _P(folder)
+    if not p.exists():
+        return ImagFreqResult(
+            folder=str(p), output_file=None, n_imag=0, modes=[],
+            most_negative=None, is_minimum=None, is_ts=None,
+            error="folder missing",
+        )
+    out_files = sorted(p.glob("*.out")) if p.is_dir() else [p]
+    if not out_files:
+        return ImagFreqResult(
+            folder=str(p), output_file=None, n_imag=0, modes=[],
+            most_negative=None, is_minimum=None, is_ts=None,
+            error="no ORCA output",
+        )
+    target = max(out_files, key=lambda f: f.stat().st_size)
+    try:
+        text = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return ImagFreqResult(
+            folder=str(p), output_file=target.name, n_imag=0, modes=[],
+            most_negative=None, is_minimum=None, is_ts=None,
+            error=f"read failed: {exc}",
+        )
+
+    if "VIBRATIONAL FREQUENCIES" not in text:
+        return ImagFreqResult(
+            folder=str(p), output_file=target.name, n_imag=0, modes=[],
+            most_negative=None, is_minimum=None, is_ts=None,
+            error="no Freq section (run with !Freq or !Opt Freq)",
+        )
+
+    modes: list[ImagFreqMode] = []
+    for m in _re.finditer(
+        r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1.*?\*\*\*imaginary mode\*\*\*",
+        text, _re.MULTILINE,
+    ):
+        modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+    if not modes:
+        for m in _re.finditer(
+            r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1", text, _re.MULTILINE,
+        ):
+            modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+
+    n_imag = len(modes)
+    most_negative = min((m.frequency_cm for m in modes), default=None)
+    is_minimum = (n_imag == 0)
+    is_ts = (n_imag == 1)
+    return ImagFreqResult(
+        folder=str(p), output_file=target.name,
+        n_imag=n_imag, modes=modes,
+        most_negative=most_negative,
+        is_minimum=is_minimum, is_ts=is_ts,
+    )
+
+
+@dataclass
+class FunctionalComparisonRow:
+    """One folder's row in a cross-functional comparison table."""
+    folder: str
+    functional: str | None
+    basis: str | None
+    gibbs: float | None
+    single_point: float | None
+    zpe: float | None
+    n_imag: int | None
+    is_minimum: bool | None
+    status: str  # "ok" / "no_output" / "missing" / parse-error
+
+
+def compare_across_functionals(
+    folders: list[str],
+    *,
+    include_imag: bool = True,
+    sort_by: str = "gibbs",
+) -> list[FunctionalComparisonRow]:
+    """Build a comparison table grouped by functional/basis.
+
+    Walks each folder, parses its largest .out, and returns one
+    :class:`FunctionalComparisonRow` per folder. ``sort_by`` accepts
+    ``gibbs``, ``single_point``, ``zpe``, ``functional``, or ``folder``.
+    Rows with missing values for the sort key go to the bottom.
+    """
+    rows: list[FunctionalComparisonRow] = []
+    from pathlib import Path as _P
+    for folder in folders:
+        p = _P(folder)
+        if not p.exists() or not p.is_dir():
+            rows.append(FunctionalComparisonRow(
+                folder=str(folder), functional=None, basis=None,
+                gibbs=None, single_point=None, zpe=None,
+                n_imag=None, is_minimum=None, status="missing",
+            ))
+            continue
+        out_files = sorted(p.glob("*.out"))
+        if not out_files:
+            rows.append(FunctionalComparisonRow(
+                folder=str(folder), functional=None, basis=None,
+                gibbs=None, single_point=None, zpe=None,
+                n_imag=None, is_minimum=None, status="no_output",
+            ))
+            continue
+        target = max(out_files, key=lambda f: f.stat().st_size)
+        parsed = parse_orca_output(str(target))
+        n_imag: int | None = None
+        is_min: bool | None = None
+        if include_imag:
+            imag = extract_imaginary_frequencies(str(p))
+            if imag.error is None:
+                n_imag = imag.n_imag
+                is_min = imag.is_minimum
+        rows.append(FunctionalComparisonRow(
+            folder=str(folder),
+            functional=parsed.functional,
+            basis=parsed.basis,
+            gibbs=parsed.gibbs_free_energy,
+            single_point=parsed.final_single_point,
+            zpe=parsed.zpe,
+            n_imag=n_imag,
+            is_minimum=is_min,
+            status="ok",
+        ))
+
+    sort_field = sort_by.strip().lower()
+    if sort_field in ("gibbs", "single_point", "zpe"):
+        def _key(r: FunctionalComparisonRow):
+            v = getattr(r, sort_field)
+            return (v is None, v if v is not None else 0.0)
+        rows.sort(key=_key)
+    elif sort_field == "functional":
+        rows.sort(key=lambda r: (r.functional is None, r.functional or ""))
+    elif sort_field == "folder":
+        rows.sort(key=lambda r: r.folder)
+    return rows
+
+
+@dataclass
+class CalcDiff:
+    """Side-by-side diff of two calculation folders."""
+    folder_a: str
+    folder_b: str
+    method_match: bool
+    basis_match: bool
+    a_functional: str | None
+    b_functional: str | None
+    a_basis: str | None
+    b_basis: str | None
+    a_gibbs: float | None
+    b_gibbs: float | None
+    delta_gibbs_kcal: float | None
+    a_spe: float | None
+    b_spe: float | None
+    delta_spe_kcal: float | None
+    a_n_imag: int | None
+    b_n_imag: int | None
+    notes: list[str]
+
+
+def compare_calculations(folder_a: str, folder_b: str) -> CalcDiff:
+    """Diff method/basis/results between two calculation folders.
+
+    ``delta_gibbs_kcal`` and ``delta_spe_kcal`` are :math:`(B - A)` in
+    kcal/mol; ``None`` if either side lacks the value. ``method_match``
+    is ``True`` only when both functionals are non-None and equal.
+    """
+    HARTREE_TO_KCAL = 627.5094740631
+    rows = compare_across_functionals(
+        [folder_a, folder_b], include_imag=True, sort_by="folder",
+    )
+    by_folder = {r.folder: r for r in rows}
+    a = by_folder.get(str(folder_a))
+    b = by_folder.get(str(folder_b))
+    if a is None or b is None:
+        return CalcDiff(
+            folder_a=str(folder_a), folder_b=str(folder_b),
+            method_match=False, basis_match=False,
+            a_functional=None, b_functional=None,
+            a_basis=None, b_basis=None,
+            a_gibbs=None, b_gibbs=None, delta_gibbs_kcal=None,
+            a_spe=None, b_spe=None, delta_spe_kcal=None,
+            a_n_imag=None, b_n_imag=None,
+            notes=["could not parse one or both folders"],
+        )
+
+    notes: list[str] = []
+    method_match = (
+        a.functional is not None
+        and b.functional is not None
+        and a.functional.upper() == b.functional.upper()
+    )
+    basis_match = (
+        a.basis is not None
+        and b.basis is not None
+        and a.basis.upper() == b.basis.upper()
+    )
+    if not method_match and a.functional and b.functional:
+        notes.append(
+            f"different functional: {a.functional} vs {b.functional}",
+        )
+    if not basis_match and a.basis and b.basis:
+        notes.append(f"different basis: {a.basis} vs {b.basis}")
+    if a.n_imag and a.n_imag > 0:
+        notes.append(f"A has {a.n_imag} imag freq(s) — not a minimum")
+    if b.n_imag and b.n_imag > 0:
+        notes.append(f"B has {b.n_imag} imag freq(s) — not a minimum")
+
+    delta_g = (
+        (b.gibbs - a.gibbs) * HARTREE_TO_KCAL
+        if a.gibbs is not None and b.gibbs is not None else None
+    )
+    delta_e = (
+        (b.single_point - a.single_point) * HARTREE_TO_KCAL
+        if a.single_point is not None and b.single_point is not None
+        else None
+    )
+    return CalcDiff(
+        folder_a=str(folder_a), folder_b=str(folder_b),
+        method_match=method_match, basis_match=basis_match,
+        a_functional=a.functional, b_functional=b.functional,
+        a_basis=a.basis, b_basis=b.basis,
+        a_gibbs=a.gibbs, b_gibbs=b.gibbs, delta_gibbs_kcal=delta_g,
+        a_spe=a.single_point, b_spe=b.single_point, delta_spe_kcal=delta_e,
+        a_n_imag=a.n_imag, b_n_imag=b.n_imag,
+        notes=notes,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Meta-tool: tool catalog for on-demand discovery
 # ---------------------------------------------------------------------------
 #
@@ -751,6 +1011,12 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Multi-folder energy table (gibbs/zpe/spe/conv/...)."},
     {"name": "find_calculation_extreme", "category": "parsing",
      "summary": "Top-N folders sorted by an energy property."},
+    {"name": "extract_imaginary_frequencies", "category": "parsing",
+     "summary": "Imag freq modes + minimum/TS classification per folder."},
+    {"name": "compare_calculations", "category": "parsing",
+     "summary": "Side-by-side diff of method/basis/G/SPE for two folders."},
+    {"name": "compare_across_functionals", "category": "parsing",
+     "summary": "Multi-folder table grouped by functional/basis."},
     # delfin-ops — plotting
     {"name": "plot_energy_distribution", "category": "plotting",
      "summary": "Histogram/bar/boxplot of energies; PNG → workspace."},
@@ -2510,6 +2776,13 @@ __all__ = [
     "extract_thermochem",
     "extract_energy_table",
     "find_calculation_extreme",
+    "ImagFreqMode",
+    "ImagFreqResult",
+    "extract_imaginary_frequencies",
+    "FunctionalComparisonRow",
+    "compare_across_functionals",
+    "CalcDiff",
+    "compare_calculations",
     # P1 — statistical plots (PNG → agent_workspace, auto-shown in chat)
     "plot_energy_distribution",
     "plot_energy_correlation",

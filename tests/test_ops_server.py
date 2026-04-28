@@ -467,6 +467,191 @@ def test_tool_find_calculation_extreme_excludes_unparseable(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Imaginary-frequency extraction + functional comparison
+# ---------------------------------------------------------------------------
+
+
+def _write_freq_out(
+    folder, *, gibbs=-100.0, spe=-100.5, functional="PBE0",
+    basis="def2-TZVP", imag_freqs=None,
+):
+    """Write a synthetic ORCA freq output. ``imag_freqs`` is a list of cm-1."""
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"|  1> ! {functional} {basis} Opt Freq",
+        "Number of atoms                                 ...     6",
+        "  *** SCF CONVERGED ***",
+        f"FINAL SINGLE POINT ENERGY    {spe}",
+        "VIBRATIONAL FREQUENCIES",
+        "-----------------------",
+    ]
+    idx = 0
+    for f in (imag_freqs or []):
+        lines.append(f"  {idx}:    {f:.2f} cm**-1 ***imaginary mode***")
+        idx += 1
+    for f in (250.0, 800.0, 1450.0):
+        lines.append(f"  {idx}:    {f:.2f} cm**-1")
+        idx += 1
+    lines += [
+        "THERMOCHEMISTRY",
+        "Temperature        ...    298.15 K",
+        "Pressure           ...      1.00 atm",
+        f"Final Gibbs free energy          ...    {gibbs} Eh",
+    ]
+    if imag_freqs is None:
+        lines.append("Number of imaginary frequencies   ...     0")
+    else:
+        lines.append(
+            f"Number of imaginary frequencies   ...     {len(imag_freqs)}"
+        )
+    (folder / "calc.out").write_text("\n".join(lines), encoding="utf-8")
+
+
+def test_tool_extract_imaginary_frequencies_minimum(tmp_path):
+    """No imaginary modes → is_minimum=True, n_imag=0."""
+    _write_freq_out(tmp_path / "calc")
+    txt = ops_server.tool_extract_imaginary_frequencies(
+        str(tmp_path / "calc"),
+    )
+    data = json.loads(txt)
+    assert data["n_imag"] == 0
+    assert data["is_minimum"] is True
+    assert data["is_ts"] is False
+    assert data["most_negative"] is None
+    assert data["modes"] == []
+    assert data["error"] is None
+
+
+def test_tool_extract_imaginary_frequencies_ts(tmp_path):
+    """Single imaginary mode → is_ts=True, most_negative reported."""
+    _write_freq_out(tmp_path / "calc", imag_freqs=[-450.7])
+    txt = ops_server.tool_extract_imaginary_frequencies(
+        str(tmp_path / "calc"),
+    )
+    data = json.loads(txt)
+    assert data["n_imag"] == 1
+    assert data["is_minimum"] is False
+    assert data["is_ts"] is True
+    assert data["most_negative"] == pytest.approx(-450.7)
+    assert len(data["modes"]) == 1
+    assert data["modes"][0]["frequency_cm"] == pytest.approx(-450.7)
+
+
+def test_tool_extract_imaginary_frequencies_multi(tmp_path):
+    """Multiple imag modes → not a minimum nor a TS."""
+    _write_freq_out(
+        tmp_path / "calc", imag_freqs=[-200.5, -55.1, -22.3],
+    )
+    data = json.loads(
+        ops_server.tool_extract_imaginary_frequencies(str(tmp_path / "calc"))
+    )
+    assert data["n_imag"] == 3
+    assert data["is_minimum"] is False
+    assert data["is_ts"] is False
+    # most_negative is the smallest (most negative) value
+    assert data["most_negative"] == pytest.approx(-200.5)
+
+
+def test_tool_extract_imaginary_frequencies_no_freq_block(tmp_path):
+    """Folder without VIBRATIONAL FREQUENCIES → error string returned."""
+    folder = tmp_path / "calc"
+    folder.mkdir()
+    (folder / "calc.out").write_text(
+        "  *** SCF CONVERGED ***\nFINAL SINGLE POINT ENERGY  -1.0\n",
+        encoding="utf-8",
+    )
+    data = json.loads(
+        ops_server.tool_extract_imaginary_frequencies(str(folder))
+    )
+    assert data["error"] is not None
+    assert "Freq" in data["error"]
+    assert data["n_imag"] == 0
+
+
+def test_tool_extract_imaginary_frequencies_missing_folder(tmp_path):
+    data = json.loads(
+        ops_server.tool_extract_imaginary_frequencies(str(tmp_path / "nope"))
+    )
+    assert data["error"] == "folder missing"
+
+
+def test_tool_compare_calculations_method_and_delta(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _write_freq_out(a, gibbs=-100.0, spe=-101.0, functional="BP86")
+    _write_freq_out(b, gibbs=-100.5, spe=-101.6, functional="PBE0")
+    txt = ops_server.tool_compare_calculations(str(a), str(b))
+    data = json.loads(txt)
+    assert data["a_functional"] == "BP86"
+    assert data["b_functional"] == "PBE0"
+    assert data["method_match"] is False
+    assert data["basis_match"] is True
+    # delta_gibbs_kcal = (B - A) * 627.5 = -0.5 * 627.5 ≈ -313.75 kcal/mol
+    assert data["delta_gibbs_kcal"] == pytest.approx(
+        (-100.5 - -100.0) * 627.5094740631,
+    )
+    assert any("BP86" in n and "PBE0" in n for n in data["notes"])
+
+
+def test_tool_compare_calculations_with_imag_warning(tmp_path):
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    _write_freq_out(a)
+    _write_freq_out(b, imag_freqs=[-300.0])
+    data = json.loads(
+        ops_server.tool_compare_calculations(str(a), str(b))
+    )
+    assert data["b_n_imag"] == 1
+    assert any("imag" in n.lower() for n in data["notes"])
+
+
+def test_tool_compare_across_functionals_sorted_by_gibbs(tmp_path):
+    """Three folders with different functionals sorted by Gibbs ascending."""
+    folders = []
+    for name, func, gibbs in [
+        ("bp", "BP86", -100.0),
+        ("pbe", "PBE0", -150.5),
+        ("b3", "B3LYP", -120.2),
+    ]:
+        f = tmp_path / name
+        _write_freq_out(f, functional=func, gibbs=gibbs)
+        folders.append(str(f))
+    txt = ops_server.tool_compare_across_functionals(",".join(folders))
+    rows = json.loads(txt)
+    assert len(rows) == 3
+    assert rows[0]["functional"] == "PBE0"
+    assert rows[0]["gibbs"] == pytest.approx(-150.5)
+    assert rows[-1]["functional"] == "BP86"
+
+
+def test_tool_compare_across_functionals_skip_imag(tmp_path):
+    """include_imag=False → n_imag/is_minimum stay None even for true minima."""
+    f = tmp_path / "calc"
+    _write_freq_out(f)
+    txt = ops_server.tool_compare_across_functionals(
+        str(f), include_imag=False,
+    )
+    rows = json.loads(txt)
+    assert rows[0]["n_imag"] is None
+    assert rows[0]["is_minimum"] is None
+    # gibbs/spe still extracted even when imag is skipped
+    assert rows[0]["gibbs"] == pytest.approx(-100.0)
+
+
+def test_tool_compare_across_functionals_status_codes(tmp_path):
+    """Missing folder → status=missing; folder w/o output → no_output."""
+    missing = tmp_path / "missing"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    txt = ops_server.tool_compare_across_functionals(
+        f"{missing},{empty}", sort_by="folder",
+    )
+    rows = json.loads(txt)
+    statuses = sorted(r["status"] for r in rows)
+    assert statuses == ["missing", "no_output"]
+
+
+# ---------------------------------------------------------------------------
 # P1 — statistical plot tools (PNG output, auto-displayed in chat)
 # ---------------------------------------------------------------------------
 
