@@ -17825,6 +17825,13 @@ def _chelate_conformer_candidates(
         n_trials = min(n_trials, DELFIN_CHELATE_CAP_60)
     elif _frag_n > 30:
         n_trials = min(n_trials, DELFIN_CHELATE_CAP_30)
+    elif _frag_n > 20:
+        # Moderate-size ligands (terpyridines ~22 atoms, salen-biphep ~25):
+        # default n_trials of 40 yields diminishing returns past ~20 trials.
+        # Halving here recovers ~60s per such SMILES from blocking subprocess
+        # without measurable loss in conformer diversity (env override:
+        # DELFIN_CHELATE_CAP_20).
+        n_trials = min(n_trials, int(os.environ.get('DELFIN_CHELATE_CAP_20', '20')))
 
     for seed in _SEEDS[:n_trials]:
         cid = _try_embed(frag_mol, seed)
@@ -21535,7 +21542,27 @@ def _enumerate_hapto_sigma_isomers(
             original_label_tuple = tuple(donor_keys)
             seen_labels: set = {original_label_tuple}
 
-            for perm in _it.permutations(range(len(sigma_donors))):
+            # Cap permutation enumeration to prevent unbounded explosion on
+            # high-CN sigma-donor systems. n_donors=6 → 720 perms,
+            # n_donors=7 → 5040 perms, each costs ~100ms (rigid-body align +
+            # UFF refinement). Without cap, single SMILES blocks subprocess
+            # for minutes and accumulates in pool_evaluator. Identity perm
+            # is always tried first; remaining quota is randomly sampled
+            # for diversity (deterministic with PYTHONHASHSEED=0).
+            import random as _random
+            max_sigma_perms = int(os.environ.get('DELFIN_SIGMA_PERMS_MAX', '12'))
+            all_perms = list(_it.permutations(range(len(sigma_donors))))
+            if len(all_perms) > max_sigma_perms:
+                identity_perm = all_perms[0]
+                rest = all_perms[1:]
+                _rng = _random.Random(0)  # deterministic
+                perms_to_try = [identity_perm] + _rng.sample(
+                    rest, min(max_sigma_perms - 1, len(rest))
+                )
+            else:
+                perms_to_try = all_perms
+
+            for perm in perms_to_try:
                 perm_labels = tuple(donor_keys[p] for p in perm)
                 if perm_labels in seen_labels:
                     continue
@@ -22617,8 +22644,20 @@ def smiles_to_xyz_isomers(
     # reached fingerprint deduplication.  Union by fingerprint keeps
     # the lowest-score representative per unique coordination pattern.
     _strict = _collect_fp_label_pairs(relax_hard_chem_filters=False)
+    # Early exit: skip the costly relaxed-pass if the strict pass already
+    # produced enough diverse fingerprints. Relaxed pass uses a second
+    # ThreadPoolExecutor that can saturate the per-process thread budget on
+    # large systems; only invoke it when strict pass is sparse (<70% of
+    # max_isomers found). Threshold env-configurable.
+    _relax_skip_threshold = float(os.environ.get(
+        'DELFIN_RELAX_SKIP_THRESHOLD', '0.7'
+    ))
+    _strict_sufficient = (
+        max_isomers > 0
+        and len(_strict) >= max_isomers * _relax_skip_threshold
+    )
     _relaxed = _collect_fp_label_pairs(relax_hard_chem_filters=True) if (
-        conf_ids and has_metal
+        conf_ids and has_metal and not _strict_sufficient
     ) else []
     _merged: Dict[tuple, Tuple[str, int, float]] = {}
     for fp, lbl, cid, sc in _strict:
