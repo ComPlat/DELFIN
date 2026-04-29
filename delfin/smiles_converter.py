@@ -1963,15 +1963,12 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             xyz_tetra = _optimize_xyz_openbabel_safe(xyz_tetra, mol_template=mol)
             xyz_sq = _optimize_xyz_openbabel_safe(xyz_sq, mol_template=mol)
 
-            # Post-UFF H-geometry correction.  OB UFF without proper
-            # transition-metal parameters can place H atoms on
-            # orthogonal x/y/z axes (90°/180° H-C-H) instead of the
-            # expected sp3-tetrahedral / sp2-trigonal / sp-linear.
-            # Universal repair: for each non-H atom with H neighbours,
-            # re-place the H atoms via VSEPR rules derived from the
-            # neighbour count.  Heavy-atom geometry untouched.
-            xyz_tetra = _fix_h_geometry_universal(xyz_tetra, mol)
-            xyz_sq = _fix_h_geometry_universal(xyz_sq, mol)
+            # H-placement: trust OB UFF output above (environment-aware
+            # energy minimisation).  Disabled `_fix_h_geometry_universal`
+            # post-process — it produced 5x more H-clash violations by
+            # snapping H to ideal VSEPR angles with arbitrary rotational
+            # phase (methyl umbrella could point INTO nearby atoms).
+            # See INSIGHTS_LOG 2026-04-29 ~12:00 UTC.
 
             # Score via temporary RDKit conformers
             try:
@@ -1996,7 +1993,7 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 _COORD_VECTORS_BASE.get(4, [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)])
             )
             xyz_str = _optimize_xyz_openbabel_safe(xyz_str, mol_template=mol)
-            xyz_str = _fix_h_geometry_universal(xyz_str, mol)
+            # H-fix disabled — see comment above.
 
         return xyz_str, None
 
@@ -23496,17 +23493,13 @@ def smiles_to_xyz_isomers(
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
 
-    # F19/F20 — final universal H-geometry pass.  Repairs naive H placement
-    # (90°/180° H-C-H, sp2-H out-of-plane) introduced by OB UFF without
-    # transition-metal parameters.  Heavy-atom positions never modified;
-    # only H positions re-derived via VSEPR.
-    try:
-        results = [
-            (_fix_h_geometry_via_smiles(xyz, smiles), lbl)
-            for xyz, lbl in results
-        ]
-    except Exception as _hfix_exc:
-        logger.debug("H-geometry universal fix failed: %s", _hfix_exc)
+    # H-geometry universal repair DISABLED at end-of-pipeline.
+    # `_fix_h_geometry_via_smiles` -> `_fix_h_geometry_universal` snaps
+    # H atoms to ideal VSEPR angles with arbitrary rotational phase,
+    # producing 5x more H-clash violations (methyl umbrella pointing
+    # INTO nearby heavies) than UFF-only output. See INSIGHTS_LOG
+    # 2026-04-29 ~12:00 UTC for the data: clash/1k_H 13.8 (e183cea)
+    # -> 70.8 (current HEAD with this call active).
 
     return results, None
 
@@ -24478,10 +24471,7 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                 pass
 
         xyz_content = _mol_to_xyz(mol)
-        # F19/F20-driven post-process: re-place all H atoms via VSEPR
-        # (sp3-Td / sp2-trigonal / sp-linear) using heavy-atom positions.
-        # Catches naive 90°/180° H-C-H from RDKit/OB-UFF on metal complexes.
-        xyz_content = _fix_h_geometry_universal(xyz_content, mol)
+        # H-fix disabled — see INSIGHTS_LOG 2026-04-29 ~12:00 UTC.
         return xyz_content, None
     except Exception as e:
         # Extra-permissive fallback for explicit valence errors
@@ -24584,19 +24574,21 @@ def _mol_to_xyz(mol) -> str:
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
 
     raw_xyz = '\n'.join(lines) + '\n'
-    # F19/F20 — universal H-geometry repair (sp3-Td, sp2-trigonal, sp-linear).
-    # OB UFF / RDKit AddHs without metal parameters can place H atoms on
-    # orthogonal x/y/z axes (90°/180° H-C-H).  Re-place via VSEPR rules
-    # using only neighbour-count + heavy-atom positions.  Heavy-atom
-    # geometry is never touched.
-    return _fix_h_geometry_universal(raw_xyz, mol)
+    # H-placement is now left to RDKit ETKDG + OB UFF (environment-aware
+    # energy minimisation).  Earlier attempts to re-snap H to ideal VSEPR
+    # angles via `_fix_h_geometry_universal` produced 5x more H-clash
+    # violations (H methyl umbrella pointing AT nearby heavies because
+    # the rotational phase was chosen arbitrarily, ignoring the local
+    # environment) — see INSIGHTS_LOG 2026-04-29 ~12:00 UTC for data.
+    return raw_xyz
 
 
 def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
     """Convert a specific conformer of an RDKit molecule to DELFIN coordinate format.
 
     Like ``_mol_to_xyz`` but uses *conf_id* instead of the first conformer.
-    Applies the same F19/F20 universal H-geometry repair pass.
+    H positions come from the conformer (RDKit/UFF environment-aware
+    placement) — no post-process snap; see comment in `_mol_to_xyz`.
     """
     conf = mol.GetConformer(conf_id)
     num_atoms = mol.GetNumAtoms()
@@ -24607,7 +24599,7 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     raw_xyz = '\n'.join(lines) + '\n'
-    return _fix_h_geometry_universal(raw_xyz, mol)
+    return raw_xyz
 
 
 def _build_uff_constraints_from_template(
