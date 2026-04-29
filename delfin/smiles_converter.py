@@ -17628,6 +17628,14 @@ def _enumerate_topological_isomers(
         List of (canonical_form_tuple, perm_list) for every unique isomer.
     """
     import itertools
+    import os
+
+    # Permutation-cap to prevent exponential explosion on high-CN + multi-chelate
+    # cases. CN=8 gives 80640 perms, CN=9 gives 362880 — without cap, a single
+    # call can run for minutes and consume 17-22 cores via numpy/MKL via RDKit
+    # (observed: 2026-04-29 INSIGHTS_LOG ~18:51 UTC).  Default 50000 covers all
+    # reasonable CN<=7 cases and most CN=8 cases; CN=9+ returns reduced set.
+    max_perms_cap = int(os.environ.get('DELFIN_MAX_PERMS_CAP', '50000'))
 
     if n_coord == 2:
         geometries = ['LIN']
@@ -17657,12 +17665,25 @@ def _enumerate_topological_isomers(
 
     results: List[Tuple[tuple, List[int]]] = []
     seen_canonical: set = set()
+    perm_count = 0
 
     for geom_name in geometries:
         canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
         trans_pos = _TOPO_TRANS_POSITIONS[geom_name]
 
         for perm in itertools.permutations(range(n_coord)):
+            perm_count += 1
+            if perm_count > max_perms_cap:
+                # Early exit: return whatever isomers we found so far rather
+                # than blocking subprocess for minutes on exhaustive enumeration.
+                logger.warning(
+                    "_enumerate_topological_isomers cap %d reached (CN=%d, "
+                    "n_chelates=%d, geom=%s); returning %d isomers",
+                    max_perms_cap, n_coord, len(chelate_pairs),
+                    geom_name, len(results),
+                )
+                return results
+
             # Validate chelate constraints: paired donors must not sit trans
             valid = True
             for chelate in chelate_pairs:
