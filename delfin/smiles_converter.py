@@ -12556,6 +12556,26 @@ def _build_hapto_scaffold(
         target_bl = _bond_len(si, sj)
         bond_targets.append((bi, bj, target_bl))
 
+    # Direct neighbours of any metal (σ-donors) — placed at the correct
+    # M-D bond length by the σ-donor placement block.  Their downstream
+    # ligand bonds (e.g. Si-Cl on a SiCl3 σ-donor, or N-C inside an
+    # imidazole ring) are spring-constrained while the M-D bond itself
+    # is not (skipped at L12554), so the spring forces drag the donor
+    # away from the metal toward its other ligand atoms.  Freezing
+    # σ-donors here keeps every M-D distance pinned at the cone target,
+    # generalising the hapto-atom freeze to all coordination donors.
+    metal_donors_frozen: set = set()
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() not in _METAL_SET:
+            continue
+        for nbr in atom.GetNeighbors():
+            ni = nbr.GetIdx()
+            if nbr.GetSymbol() in _METAL_SET:
+                continue
+            if ni in all_hapto_atoms:
+                continue
+            metal_donors_frozen.add(ni)
+
     # Spring-based relaxation: accumulate all bond forces, then apply
     for _relax_pass in range(120):
         forces = np.zeros_like(coords)
@@ -12578,11 +12598,13 @@ def _build_hapto_scaffold(
                 max_err = err
         if max_err < 0.05:
             break
-        # Apply forces — hapto ring atoms and metals are frozen
+        # Apply forces — metals, hapto-ring atoms, and σ-donors are frozen
         for ai in range(n_atoms):
             if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
                 continue
             if ai in all_hapto_atoms:
+                continue
+            if ai in metal_donors_frozen:
                 continue
             coords[ai] = coords[ai] + forces[ai]
 
