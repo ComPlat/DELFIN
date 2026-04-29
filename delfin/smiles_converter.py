@@ -358,6 +358,23 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Sn', 'I'): 2.75, ('Pb', 'I'): 2.90, ('Bi', 'I'): 2.85,
     ('U',  'I'): 3.05, ('Th', 'I'): 3.05,
     ('Li', 'I'): 2.55, ('Na', 'I'): 2.85, ('K',  'I'): 3.20,
+    # Metal–Silyl bonds.  The covalent-radius fallback gives ~2.75-3.02 Å
+    # which is 0.4-0.6 Å too long versus CSD averages for σ-silyl ligands
+    # (M-SiR3 is shorter than the additive-radii estimate because Si
+    # acts as a soft σ-donor with significant π-backbonding).  Without
+    # these entries, σ-Si donors on hapto metals end up far outside the
+    # bonding range during topology check (observed 3.08-3.45 Å).
+    ('Sc', 'Si'): 2.55, ('Ti', 'Si'): 2.50, ('V',  'Si'): 2.45,
+    ('Cr', 'Si'): 2.42, ('Mn', 'Si'): 2.40, ('Fe', 'Si'): 2.35,
+    ('Co', 'Si'): 2.30, ('Ni', 'Si'): 2.25, ('Cu', 'Si'): 2.30,
+    ('Zn', 'Si'): 2.40,
+    ('Y',  'Si'): 2.85, ('Zr', 'Si'): 2.75,
+    ('Nb', 'Si'): 2.65, ('Mo', 'Si'): 2.55, ('Tc', 'Si'): 2.50,
+    ('Ru', 'Si'): 2.40, ('Rh', 'Si'): 2.30, ('Pd', 'Si'): 2.30,
+    ('Ag', 'Si'): 2.50, ('Cd', 'Si'): 2.55,
+    ('Hf', 'Si'): 2.75, ('Ta', 'Si'): 2.65, ('W',  'Si'): 2.55,
+    ('Re', 'Si'): 2.50, ('Os', 'Si'): 2.40, ('Ir', 'Si'): 2.40,
+    ('Pt', 'Si'): 2.35, ('Au', 'Si'): 2.40, ('Hg', 'Si'): 2.50,
     # -------------------------------------------------------------------
     # Comprehensive fill-in for all remaining (M, L) pairs of practical
     # interest (L ∈ {C, N, O, P, S, F, Cl, Br, Se}).  Values are CSD /
