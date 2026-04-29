@@ -12390,8 +12390,17 @@ def _build_hapto_scaffold(
         else:
             bond_dir = np.array([1.0, 0.0, 0.0])
 
-        u_r, v_r = _ortho_basis(bond_dir)
+        # Ring plane CONTAINS the bond_dir (metal-anchor axis is in the
+        # ring plane, not perpendicular to it).  Polygon centre is at
+        # distance radius from anchor along bond_dir (away from parent).
+        # Anchor sits at angle=0 in (-bond_dir, perp_in_plane) basis so
+        # any pre-placed anchor (e.g. a σ-donor positioned at correct
+        # M-D distance for a piano-stool complex) stays fixed at its
+        # original coords.  Universal: applies to every ring placement,
+        # the previous geometry (bond_dir as ring normal) was incorrect
+        # — it moved every anchor by ~radius·sqrt(2) ≈ 2 Å on each call.
         ring_center = anchor_pos + bond_dir * radius
+        perp_in_plane, _ = _ortho_basis(bond_dir)
 
         ring_adj = {a: [] for a in ring_tuple}
         for a in ring_tuple:
@@ -12414,14 +12423,11 @@ def _build_hapto_scaffold(
         if len(chain) != rsize:
             return False
 
-        anchor_offset = np.arctan2(
-            float(np.dot(anchor_pos - ring_center, v_r)),
-            float(np.dot(anchor_pos - ring_center, u_r)),
-        )
         for k, atom_idx in enumerate(chain):
-            angle = anchor_offset + 2.0 * np.pi * k / rsize
+            angle = 2.0 * np.pi * k / rsize
             coords[atom_idx] = ring_center + radius * (
-                np.cos(angle) * u_r + np.sin(angle) * v_r)
+                np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
+            )
             placed.add(atom_idx)
         return True
 
