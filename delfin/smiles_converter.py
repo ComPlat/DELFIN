@@ -23651,25 +23651,14 @@ def smiles_to_xyz_isomers(
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
 
-    # H-geometry universal repair RE-ENABLED for pure-mono cases
-    # (Welle-5 iter8): the disable was correct for hapto SMILES where
-    # _fix_h_geometry_universal snapped H atoms to ideal VSEPR angles
-    # with arbitrary rotational phase (5x more H-clash violations on
-    # hapto, INSIGHTS_LOG 2026-04-29 ~12:00 UTC). For pure-mono the
-    # repair restores correct topology (mono %topo gain). Gate:
-    # only run when no hapto groups are present.
-    if not hapto_groups:
-        try:
-            _fixed_results = []
-            for _xyz, _lbl in results:
-                try:
-                    _fixed_xyz = _fix_h_geometry_via_smiles(_xyz, smiles)
-                    _fixed_results.append((_fixed_xyz, _lbl))
-                except Exception:
-                    _fixed_results.append((_xyz, _lbl))
-            results = _fixed_results
-        except Exception as _hfix_exc:
-            logger.debug("H-geometry repair (mono Hunk A) failed: %s", _hfix_exc)
+    # H-geometry universal repair DISABLED at end-of-pipeline.
+    # Iter-8 attempted to re-enable for pure-mono via gate `not hapto_groups`,
+    # but smoke detector (Iter-8.5 forward-only) showed H-Triangle pattern
+    # reproduced on pure-mono pool: 042-ARABUR 19 triangle-H + 2 H-clashes
+    # vs 0/0 in Iter-7 baseline. _fix_h_geometry_universal's arbitrary
+    # rotational phase still places H between 2 heavy atoms even on mono.
+    # Re-enable not safe — keep disabled until rotational-phase logic is
+    # rewritten (Iter-9+ task). See INSIGHTS_LOG 2026-05-01 ~07:30 UTC.
 
     return results, None
 
@@ -24744,15 +24733,11 @@ def _mol_to_xyz(mol) -> str:
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
 
     raw_xyz = '\n'.join(lines) + '\n'
-    # H-placement re-enabled for pure-mono via _fix_h_geometry_universal
-    # (Welle-5 iter8). The disable from 2026-04-29 was correct for hapto
-    # systems (5x H-clash uplift); for pure-mono the VSEPR snap restores
-    # correct topology. Gate: only when no hapto groups detected.
-    if not _find_hapto_groups(mol):
-        try:
-            raw_xyz = _fix_h_geometry_universal(raw_xyz, mol)
-        except Exception as _hfix_exc:
-            logger.debug("H-geometry repair (mono Hunk B) failed: %s", _hfix_exc)
+    # H-fix re-enable from Iter-8 reverted (Iter-8.5 forward-only):
+    # detector showed H-triangle pattern on pure-mono pool (042-ARABUR
+    # 19 triangle-H, d_min 0.76 Å). _fix_h_geometry_universal arbitrary
+    # rotational phase places H between heavy atoms even on mono.
+    # H-placement now exclusively from RDKit ETKDG + OB UFF.
     return raw_xyz
 
 
@@ -24772,13 +24757,8 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     raw_xyz = '\n'.join(lines) + '\n'
-    # H-placement re-enabled for pure-mono (Welle-5 iter8); mirror of
-    # Hunk B in `_mol_to_xyz_conformer`. Gate on absence of hapto groups.
-    if not _find_hapto_groups(mol):
-        try:
-            raw_xyz = _fix_h_geometry_universal(raw_xyz, mol)
-        except Exception as _hfix_exc:
-            logger.debug("H-geometry repair (mono Hunk C) failed: %s", _hfix_exc)
+    # H-fix re-enable from Iter-8 reverted (Iter-8.5 forward-only); mirror
+    # of _mol_to_xyz revert. See comment there + INSIGHTS_LOG 2026-05-01.
     return raw_xyz
 
 
