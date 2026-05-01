@@ -18491,18 +18491,70 @@ def _snap_aromatic_rings_to_plane(
             # Out-of-plane deviations
             offsets = centered @ normal
             rms = float(np.sqrt(float((offsets * offsets).mean())))
-            if rms < rms_threshold:
-                continue  # already planar enough, skip
-            # Minimal-movement projection: subtract the normal-component
-            # from each ring atom.  Other heavy atoms (substituents) stay
-            # where UFF left them; only the ring's own atoms move.
-            for idx, atom_idx in enumerate(ring):
-                new_p = pts[idx] - offsets[idx] * normal
-                conf.SetAtomPosition(
-                    int(atom_idx),
-                    (float(new_p[0]), float(new_p[1]), float(new_p[2])),
-                )
-            changed = True
+            #
+            # Iter-9 fix (User-Direktive 2026-05-01): attached H atoms must
+            # follow the π-system rigid-body — F20 detector confirmed cf1d480
+            # baseline (083-JARVOQ pyridine) had H atoms 0.5-1.4 Å out of
+            # ring plane.  Heavy-atom ring is planar but H placement was
+            # arbitrary (RDKit ETKDG on kekulized SMILES with [N+] cations).
+            # Project H onto ring plane via outward-radial placement at
+            # element-specific ideal C-H length.
+            #
+            # H-projection runs INDEPENDENTLY of heavy-atom snap: even when
+            # ring is already planar (rms < threshold) the H atoms can still
+            # be out of plane.  Ring-atom snap only fires when rms >= threshold.
+            _ideal_xh = {"C": 1.08, "N": 1.01, "O": 0.96, "S": 1.34}
+            ring_did_snap = False
+            if rms >= rms_threshold:
+                # Minimal-movement projection: subtract normal-component
+                # from each ring atom.  Substituent heavy atoms unchanged.
+                for idx, atom_idx in enumerate(ring):
+                    new_p = pts[idx] - offsets[idx] * normal
+                    conf.SetAtomPosition(
+                        int(atom_idx),
+                        (float(new_p[0]), float(new_p[1]), float(new_p[2])),
+                    )
+                ring_did_snap = True
+                changed = True
+
+            # Step 2: project ring-attached H atoms onto current ring plane
+            # (uses CURRENT parent position regardless of whether ring was
+            # snapped this pass — handles the cf1d480 case where ring was
+            # already planar but H was placed off-plane by ETKDG).
+            for atom_idx in ring:
+                try:
+                    parent_atom = mol.GetAtomWithIdx(int(atom_idx))
+                    h_nbrs = [
+                        n for n in parent_atom.GetNeighbors()
+                        if n.GetAtomicNum() == 1
+                    ]
+                    if len(h_nbrs) != 1:
+                        continue  # CH2/NH2 etc.: not a single-H aromatic
+                    h_idx = h_nbrs[0].GetIdx()
+                    parent_pos_obj = conf.GetAtomPosition(int(atom_idx))
+                    parent_pos = np.array([
+                        parent_pos_obj.x, parent_pos_obj.y, parent_pos_obj.z
+                    ])
+                    h_pos = conf.GetAtomPosition(h_idx)
+                    h_arr = np.array([h_pos.x, h_pos.y, h_pos.z])
+                    h_oop = float(abs(np.dot(h_arr - centroid, normal)))
+                    if h_oop <= 0.10:
+                        continue  # already in-plane, leave alone
+                    outward = parent_pos - centroid  # in-plane vector
+                    n_out = float(np.linalg.norm(outward))
+                    if n_out < 1e-6:
+                        continue
+                    outward_unit = outward / n_out
+                    sym = parent_atom.GetSymbol()
+                    d_xh = _ideal_xh.get(sym, 1.08)
+                    h_new = parent_pos + d_xh * outward_unit
+                    conf.SetAtomPosition(
+                        int(h_idx),
+                        (float(h_new[0]), float(h_new[1]), float(h_new[2])),
+                    )
+                    changed = True
+                except Exception:
+                    continue
         return changed
     except Exception as exc:
         logger.debug("_snap_aromatic_rings_to_plane failed: %s", exc)
