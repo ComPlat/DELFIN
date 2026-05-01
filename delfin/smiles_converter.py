@@ -23658,30 +23658,18 @@ def smiles_to_xyz_isomers(
     # 2026-04-29 ~12:00 UTC for the data: clash/1k_H 13.8 (e183cea)
     # -> 70.8 (current HEAD with this call active).
     #
-    # Iter-9 H2 universal post-process: ensure ring-attached H atoms are
-    # always projected onto their π-plane regardless of which UFF path
-    # was taken upstream.  cf1d480 baseline showed many isomers with H
-    # 0.5-1.4 Å out of ring plane despite ring atoms perfectly planar
-    # (RDKit ETKDG sp³-like placement on kekulized aromatics with [N+]
-    # cations).  Pure deterministic projection in `_snap_aromatic_rings_to_plane`
-    # (Iter-9 H1) — no rotational-phase guessing — safe by construction.
-    if RDKIT_AVAILABLE and results:
-        try:
-            _mol_aro = Chem.MolFromSmiles(smiles)
-            if _mol_aro is not None:
-                _mol_aro = Chem.AddHs(_mol_aro)
-                _fixed_aro = []
-                for _xyz, _lbl in results:
-                    try:
-                        _xyz_aro = _snap_aromatic_rings_in_xyz(
-                            _xyz, _mol_aro, rms_threshold=0.05
-                        )
-                        _fixed_aro.append((_xyz_aro, _lbl))
-                    except Exception:
-                        _fixed_aro.append((_xyz, _lbl))
-                results = _fixed_aro
-        except Exception as _aro_exc:
-            logger.debug("Iter-9 H2 universal aromatic-H fix failed: %s", _aro_exc)
+    # Iter-9 H2 (universal aromatic-H post-process) REVERTED 2026-05-01
+    # ~14:35 UTC after voll-pool ≥20% mid-audit revealed catastrophic
+    # F20 regression on FUSED ring systems (D-POLTIT_main_Sn_CN3 295 -> 697
+    # violations).  The outward-radial projection assumes single-ring H
+    # placement: when a ring atom belongs to MULTIPLE rings (fused
+    # naphthalene-style, Cp-Cyclopentyl, Ph3P-on-metal), projecting H onto
+    # ring A's plane creates a violation in ring B's detector pass.
+    # F20 reports a single H with parent in 2 rings as 2 violations.
+    # Aggregate sample 2219 SMILES: F20 19469 -> 30559 (+57%).
+    # H1 fix in `_snap_aromatic_rings_to_plane` retained (selective —
+    # only fires when ring rms >= threshold, so non-issue on flat fused
+    # systems where rms = 0).
 
     return results, None
 
