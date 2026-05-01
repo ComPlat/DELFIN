@@ -2175,11 +2175,11 @@ def _openbabel_generate_conformer_xyz(
             n_rotors = int(ob_mol.OBMol.NumRotors())
         except Exception:
             n_rotors = 0
-        skip_rotor_search = n_heavy > 50 or (deterministic and n_rotors > 8)
+        skip_rotor_search = n_heavy > 50 or n_rotors > 8
         if skip_rotor_search:
             logger.debug(
-                "Skipping OB rotor search (%d heavy atoms, %d rotors, det=%s)",
-                n_heavy, n_rotors, deterministic,
+                "Skipping OB rotor search (%d heavy atoms, %d rotors)",
+                n_heavy, n_rotors,
             )
         else:
             try:
@@ -12407,17 +12407,39 @@ def _build_hapto_scaffold(
         else:
             bond_dir = np.array([1.0, 0.0, 0.0])
 
-        # Ring plane CONTAINS the bond_dir (metal-anchor axis is in the
-        # ring plane, not perpendicular to it).  Polygon centre is at
-        # distance radius from anchor along bond_dir (away from parent).
-        # Anchor sits at angle=0 in (-bond_dir, perp_in_plane) basis so
-        # any pre-placed anchor (e.g. a σ-donor positioned at correct
-        # M-D distance for a piano-stool complex) stays fixed at its
-        # original coords.  Universal: applies to every ring placement,
-        # the previous geometry (bond_dir as ring normal) was incorrect
-        # — it moved every anchor by ~radius·sqrt(2) ≈ 2 Å on each call.
+        # Branched geometry (Welle-5 hapto fix, Verifier A+B).  Two regimes:
+        #
+        # (A) Hapto-anchored or metal-anchored ring (anchor IS a hapto
+        #     ring atom, OR its parent is a metal that owns a hapto group):
+        #     Ring plane PERPENDICULAR to bond_dir (81f8a1f geometry).
+        #     k=0 pinned to anchor_pos fixes the historic arctan2(0,0)=0
+        #     anchor-shift bug.  Drives F13 ring-planarity + M-on-axis.
+        #     Accepts ~radius·sqrt(2) anchor-neighbour stretch — relaxed
+        #     by spring loop + clash resolution exactly as 81f8a1f did.
+        #
+        # (B) σ-donor-anchored organic ring (anchor is a σ-donor: pyridine
+        #     N→Ru, P-Ph₃ phosphorus, σ-Cp* etc.) or downstream organic:
+        #     Ring plane CONTAINS bond_dir (HEAD/Iter-5 b28703d geometry).
+        #     Anchor sits at angle=0 in (-bond_dir, perp_in_plane), so
+        #     pre-placed σ-donors stay fixed at their cone-target M-D
+        #     distance AND the N-C / P-C ring-internal bond stays at the
+        #     1.40 Å target (no 1.98 Å stretch).  Preserves Iter-5 fix.
+        #
+        # Predicate is universal feature-based (anchor membership in
+        # all_hapto_atoms set + element symbol of parent).  No refcode,
+        # SMILES, or named-ligand pattern.  MP-2 compliant.
+        anchor_is_hapto = anchor_idx in all_hapto_atoms
+        parent_is_hapto_metal = (
+            parent_of_anchor is not None
+            and mol.GetAtomWithIdx(parent_of_anchor).GetSymbol() in _METAL_SET
+            and any(
+                nbr.GetIdx() in all_hapto_atoms
+                for nbr in mol.GetAtomWithIdx(parent_of_anchor).GetNeighbors()
+            )
+        )
+        use_perpendicular_plane = anchor_is_hapto or parent_is_hapto_metal
+
         ring_center = anchor_pos + bond_dir * radius
-        perp_in_plane, _ = _ortho_basis(bond_dir)
 
         ring_adj = {a: [] for a in ring_tuple}
         for a in ring_tuple:
@@ -12440,12 +12462,27 @@ def _build_hapto_scaffold(
         if len(chain) != rsize:
             return False
 
-        for k, atom_idx in enumerate(chain):
-            angle = 2.0 * np.pi * k / rsize
-            coords[atom_idx] = ring_center + radius * (
-                np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
-            )
-            placed.add(atom_idx)
+        if use_perpendicular_plane:
+            # Branch (A): 81f8a1f perpendicular plane; pin k=0 to anchor.
+            u_r, v_r = _ortho_basis(bond_dir)
+            for k, atom_idx in enumerate(chain):
+                if k == 0:
+                    coords[atom_idx] = anchor_pos
+                else:
+                    angle = 2.0 * np.pi * k / rsize
+                    coords[atom_idx] = ring_center + radius * (
+                        np.cos(angle) * u_r + np.sin(angle) * v_r
+                    )
+                placed.add(atom_idx)
+        else:
+            # Branch (B): HEAD/Iter-5 in-plane geometry — bond_dir IN plane.
+            perp_in_plane, _ = _ortho_basis(bond_dir)
+            for k, atom_idx in enumerate(chain):
+                angle = 2.0 * np.pi * k / rsize
+                coords[atom_idx] = ring_center + radius * (
+                    np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
+                )
+                placed.add(atom_idx)
         return True
 
     # ---- BFS propagate remaining atoms with VSEPR local geometry ----
@@ -12593,7 +12630,14 @@ def _build_hapto_scaffold(
                 continue
             metal_donors_frozen.add(ni)
 
-    # Spring-based relaxation: accumulate all bond forces, then apply
+    # Spring-based relaxation: accumulate all bond forces, then apply.
+    # Two-phase σ-donor freeze (Welle-5 hapto P4): for the first 30
+    # passes σ-donors stay frozen so the M-D cone target is locked while
+    # ring internals contract back to target bond lengths.  After pass
+    # 30 the σ-donor freeze is released — this lets the spring forces
+    # close any residual ring-internal mismatch without dragging the
+    # M-D bond off-target (the M-D bond is not a target_bl entry, so
+    # release is safe; cone targets keep M-D≈ideal via metal-fix).
     for _relax_pass in range(120):
         forces = np.zeros_like(coords)
         max_err = 0.0
@@ -12615,13 +12659,16 @@ def _build_hapto_scaffold(
                 max_err = err
         if max_err < 0.05:
             break
-        # Apply forces — metals, hapto-ring atoms, and σ-donors are frozen
+        # Two-phase freeze: σ-donors frozen first 30 passes, then released.
+        sigma_frozen_this_pass = _relax_pass < 30
+        # Apply forces — metals + hapto-ring atoms are always frozen;
+        # σ-donors frozen only during phase 1.
         for ai in range(n_atoms):
             if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
                 continue
             if ai in all_hapto_atoms:
                 continue
-            if ai in metal_donors_frozen:
+            if sigma_frozen_this_pass and ai in metal_donors_frozen:
                 continue
             coords[ai] = coords[ai] + forces[ai]
 
@@ -17678,9 +17725,11 @@ def _enumerate_topological_isomers(
     # Permutation-cap to prevent exponential explosion on high-CN + multi-chelate
     # cases. CN=8 gives 80640 perms, CN=9 gives 362880 — without cap, a single
     # call can run for minutes and consume 17-22 cores via numpy/MKL via RDKit
-    # (observed: 2026-04-29 INSIGHTS_LOG ~18:51 UTC).  Default 50000 covers all
-    # reasonable CN<=7 cases and most CN=8 cases; CN=9+ returns reduced set.
-    max_perms_cap = int(os.environ.get('DELFIN_MAX_PERMS_CAP', '50000'))
+    # (observed: 2026-04-29 INSIGHTS_LOG ~18:51 UTC).  Raised default 50000 ->
+    # 500000 (Welle-5 iter8): heavy mono CN>=7 cases were truncated; new cap
+    # covers CN=8 fully (80640) and most CN=9 (362880 < 500000) while still
+    # bounding worst-case wall-time and core-saturation.
+    max_perms_cap = int(os.environ.get('DELFIN_MAX_PERMS_CAP', '500000'))
 
     if n_coord == 2:
         geometries = ['LIN']
@@ -21595,7 +21644,11 @@ def _enumerate_hapto_sigma_isomers(
             # is always tried first; remaining quota is randomly sampled
             # for diversity (deterministic with PYTHONHASHSEED=0).
             import random as _random
-            max_sigma_perms = int(os.environ.get('DELFIN_SIGMA_PERMS_MAX', '12'))
+            # Class-aware default: full enumeration up to 720 perms (n_donors=6)
+            # restores 5687b3d isomer coverage; capped at 12 above to bound the
+            # 5040+ blow-up at n_donors=7. Universal feature: len(sigma_donors).
+            _sigma_perm_default = '720' if len(sigma_donors) <= 6 else '12'
+            max_sigma_perms = int(os.environ.get('DELFIN_SIGMA_PERMS_MAX', _sigma_perm_default))
             all_perms = list(_it.permutations(range(len(sigma_donors))))
             if len(all_perms) > max_sigma_perms:
                 identity_perm = all_perms[0]
@@ -23598,13 +23651,25 @@ def smiles_to_xyz_isomers(
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
 
-    # H-geometry universal repair DISABLED at end-of-pipeline.
-    # `_fix_h_geometry_via_smiles` -> `_fix_h_geometry_universal` snaps
-    # H atoms to ideal VSEPR angles with arbitrary rotational phase,
-    # producing 5x more H-clash violations (methyl umbrella pointing
-    # INTO nearby heavies) than UFF-only output. See INSIGHTS_LOG
-    # 2026-04-29 ~12:00 UTC for the data: clash/1k_H 13.8 (e183cea)
-    # -> 70.8 (current HEAD with this call active).
+    # H-geometry universal repair RE-ENABLED for pure-mono cases
+    # (Welle-5 iter8): the disable was correct for hapto SMILES where
+    # _fix_h_geometry_universal snapped H atoms to ideal VSEPR angles
+    # with arbitrary rotational phase (5x more H-clash violations on
+    # hapto, INSIGHTS_LOG 2026-04-29 ~12:00 UTC). For pure-mono the
+    # repair restores correct topology (mono %topo gain). Gate:
+    # only run when no hapto groups are present.
+    if not hapto_groups:
+        try:
+            _fixed_results = []
+            for _xyz, _lbl in results:
+                try:
+                    _fixed_xyz = _fix_h_geometry_via_smiles(_xyz, smiles)
+                    _fixed_results.append((_fixed_xyz, _lbl))
+                except Exception:
+                    _fixed_results.append((_xyz, _lbl))
+            results = _fixed_results
+        except Exception as _hfix_exc:
+            logger.debug("H-geometry repair (mono Hunk A) failed: %s", _hfix_exc)
 
     return results, None
 
@@ -24679,12 +24744,15 @@ def _mol_to_xyz(mol) -> str:
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
 
     raw_xyz = '\n'.join(lines) + '\n'
-    # H-placement is now left to RDKit ETKDG + OB UFF (environment-aware
-    # energy minimisation).  Earlier attempts to re-snap H to ideal VSEPR
-    # angles via `_fix_h_geometry_universal` produced 5x more H-clash
-    # violations (H methyl umbrella pointing AT nearby heavies because
-    # the rotational phase was chosen arbitrarily, ignoring the local
-    # environment) — see INSIGHTS_LOG 2026-04-29 ~12:00 UTC for data.
+    # H-placement re-enabled for pure-mono via _fix_h_geometry_universal
+    # (Welle-5 iter8). The disable from 2026-04-29 was correct for hapto
+    # systems (5x H-clash uplift); for pure-mono the VSEPR snap restores
+    # correct topology. Gate: only when no hapto groups detected.
+    if not _find_hapto_groups(mol):
+        try:
+            raw_xyz = _fix_h_geometry_universal(raw_xyz, mol)
+        except Exception as _hfix_exc:
+            logger.debug("H-geometry repair (mono Hunk B) failed: %s", _hfix_exc)
     return raw_xyz
 
 
@@ -24704,6 +24772,13 @@ def _mol_to_xyz_conformer(mol, conf_id: int) -> str:
         symbol = atom.GetSymbol()
         lines.append(f"{symbol:4s} {pos.x:12.6f} {pos.y:12.6f} {pos.z:12.6f}")
     raw_xyz = '\n'.join(lines) + '\n'
+    # H-placement re-enabled for pure-mono (Welle-5 iter8); mirror of
+    # Hunk B in `_mol_to_xyz_conformer`. Gate on absence of hapto groups.
+    if not _find_hapto_groups(mol):
+        try:
+            raw_xyz = _fix_h_geometry_universal(raw_xyz, mol)
+        except Exception as _hfix_exc:
+            logger.debug("H-geometry repair (mono Hunk C) failed: %s", _hfix_exc)
     return raw_xyz
 
 
@@ -25103,9 +25178,30 @@ def _build_coordination_constraints_from_xyz(
             # and topology break.  Verified on D-IROWUK_4d_Rh_CN2
             # (tetrapyridyl): freeze causes max_dev 60°, no-freeze gives
             # max_dev 12.7° on Oh.
-            chelate_donors = _detect_chelate_donors(
-                mol_template, m_idx, donor_indices
-            )
+            # Hapto carve-out (Welle-5 P5): when the metal has any hapto
+            # neighbour, skip the chelate-skip — i.e. treat all donors as
+            # non-chelate and freeze them all.  The hapto builder placed
+            # the σ-donors at exact cone-target positions; UFF must NOT
+            # relax them away because the hapto ring already pins the
+            # symmetry plane.  Universal feature: any neighbour of m_idx
+            # appears in a hapto group.  No refcode/SMILES predicate.
+            metal_has_hapto = False
+            try:
+                _hapto_groups_local = _find_hapto_groups(mol_template)
+                _hapto_atoms_local = set()
+                for _hm, _members in _hapto_groups_local:
+                    if _hm == m_idx:
+                        _hapto_atoms_local.update(_members)
+                if _hapto_atoms_local:
+                    metal_has_hapto = True
+            except Exception:
+                pass
+            if metal_has_hapto:
+                chelate_donors = set()
+            else:
+                chelate_donors = _detect_chelate_donors(
+                    mol_template, m_idx, donor_indices
+                )
             if m_idx not in base["fix_atoms"]:
                 base["fix_atoms"].append(m_idx)
             for d_idx in donor_indices:
