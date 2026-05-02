@@ -863,6 +863,65 @@ def _delfin_env_int(name: str, default: int) -> int:
         return default
 
 
+def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-13 Baustein 3 dispatch helper.
+
+    Apply post-ETKDG/UFF coordination-angle correction to ``results`` if a
+    metal is present, this is the outer (non dual-parse) call, and the
+    DELFIN_BAUSTEIN3 env-flag is set.  Fail-safe: any exception in the
+    corrector returns ``results`` unchanged.
+
+    Centralised here so every scaffold-path return point in
+    ``smiles_to_xyz_isomers`` (mono σ, mono hapto, multi σ-σ, multi
+    σ-hapto, multi hapto-hapto, fallback single-conformer) can share one
+    insertion site without code drift.
+
+    Bit-exact when ``DELFIN_BAUSTEIN3=0`` (default).  No effect on results
+    that contain no metal.  ``mol`` may be ``None`` — the underlying
+    corrector operates on XYZ text only.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_BAUSTEIN3", 0):
+        return results
+    # Quick element scan — if no metal symbol appears in any result XYZ,
+    # the corrector would no-op anyway.  Cheap pre-check avoids import
+    # cost for organic/no-metal complexes that share this path.
+    try:
+        any_metal = False
+        for entry in results:
+            xyz_text = entry[0] if entry else ""
+            if not isinstance(xyz_text, str):
+                continue
+            for ln in xyz_text.splitlines():
+                tok = ln.strip().split(" ", 1)[0] if ln.strip() else ""
+                if tok and tok[0].isalpha() and len(tok) <= 2:
+                    # Defer real metal classification to corrector;
+                    # break early once we see a plausibly metallic symbol.
+                    if tok not in ("H", "C", "N", "O", "F", "P", "S",
+                                   "Cl", "Br", "I", "B", "Si"):
+                        any_metal = True
+                        break
+            if any_metal:
+                break
+        if not any_metal:
+            return results
+    except Exception:
+        # Pre-check error → fall through to full corrector (it is fail-safe).
+        pass
+    try:
+        from delfin._coord_angle_corrector import correct_results as _b3_correct
+        return _b3_correct(mol, results)
+    except Exception as _b3_exc:
+        try:
+            logger.debug("Baustein 3 coord-angle correction skipped: %s", _b3_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _delfin_env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -22548,11 +22607,19 @@ def smiles_to_xyz_isomers(
             except Exception:
                 pass
             if _n_metals_hapto <= 1:
+                # Iter-13: apply Baustein 3 to mono-hapto path (env-gated).
+                results_hapto = _apply_baustein3_if_enabled(
+                    _mol_hapto_gate, results_hapto, _dual_parse_done
+                )
                 return results_hapto, None
             # Multi-metal hapto: the hapto builder already produced the
             # best possible Cp geometry (perfectly planar rings). ETKDG
             # sampling would produce conformers with broken Cp rings.
             # Return the hapto results directly.
+            # Iter-13: apply Baustein 3 to multi-metal hapto path (env-gated).
+            results_hapto = _apply_baustein3_if_enabled(
+                _mol_hapto_gate, results_hapto, _dual_parse_done
+            )
             return results_hapto, None
 
     # Non-metal molecules: deterministic conformer pool.  Organic
@@ -22582,7 +22649,13 @@ def smiles_to_xyz_isomers(
         xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
         if err:
             return [], err
-        return [(xyz, '')], None
+        # Iter-13: apply Baustein 3 to fallback single-conformer path (env-gated).
+        _fallback_results = [(xyz, '')]
+        if has_metal:
+            _fallback_results = _apply_baustein3_if_enabled(
+                None, _fallback_results, _dual_parse_done
+            )
+        return _fallback_results, None
 
     # For metal complexes: prepend OB conformers to the pool so that
     # Avogadro-quality geometries are always considered during isomer search.
@@ -23671,7 +23744,7 @@ def smiles_to_xyz_isomers(
     # only fires when ring rms >= threshold, so non-issue on flat fused
     # systems where rms = 0).
 
-    # ── Iter-12 Baustein 3: post-ETKDG/UFF coord-angle correction ───────────
+    # ── Iter-12/13 Baustein 3: post-ETKDG/UFF coord-angle correction ────────
     # Per-conformer, opt-in via DELFIN_BAUSTEIN3=1.  No effect when disabled.
     # Operates on already-finalised XYZs; rotates rigid X-side around the
     # axis perpendicular to (M, D, X) plane through D to bring observed
@@ -23684,12 +23757,12 @@ def smiles_to_xyz_isomers(
     # match the (still-uncorrected) outer.results, breaking dedup.  By
     # deferring correction to the outer call (after union), all results pass
     # through one consistent correction step.
-    if has_metal and not _dual_parse_done and _delfin_env_int("DELFIN_BAUSTEIN3", 0):
-        try:
-            from delfin._coord_angle_corrector import correct_results as _b3_correct
-            results = _b3_correct(mol, results)
-        except Exception as _b3_exc:
-            logger.debug("Baustein 3 coord-angle correction skipped: %s", _b3_exc)
+    #
+    # Iter-13: routed through ``_apply_baustein3_if_enabled`` so every
+    # scaffold-path return point shares the same gate (mono σ here, plus
+    # mono hapto / multi-metal hapto / fallback above).
+    if has_metal:
+        results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
 
     return results, None
 
