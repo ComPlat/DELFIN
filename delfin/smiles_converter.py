@@ -23671,6 +23671,26 @@ def smiles_to_xyz_isomers(
     # only fires when ring rms >= threshold, so non-issue on flat fused
     # systems where rms = 0).
 
+    # ── Iter-12 Baustein 3: post-ETKDG/UFF coord-angle correction ───────────
+    # Per-conformer, opt-in via DELFIN_BAUSTEIN3=1.  No effect when disabled.
+    # Operates on already-finalised XYZs; rotates rigid X-side around the
+    # axis perpendicular to (M, D, X) plane through D to bring observed
+    # M-D-X angle to expected (sp/sp2/sp3 inferred geometrically).
+    # Per-violation revert on clash regression.  Universal — no SMILES/refcode.
+    #
+    # Run ONLY at top-level (not in recursive dual-parse inner call).  Reason:
+    # the outer dual-parse union dedup uses XYZ heavy-atom signature; if the
+    # inner call modifies coordinates, signatures of inner.results will not
+    # match the (still-uncorrected) outer.results, breaking dedup.  By
+    # deferring correction to the outer call (after union), all results pass
+    # through one consistent correction step.
+    if has_metal and not _dual_parse_done and _delfin_env_int("DELFIN_BAUSTEIN3", 0):
+        try:
+            from delfin._coord_angle_corrector import correct_results as _b3_correct
+            results = _b3_correct(mol, results)
+        except Exception as _b3_exc:
+            logger.debug("Baustein 3 coord-angle correction skipped: %s", _b3_exc)
+
     return results, None
 
 
