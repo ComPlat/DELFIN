@@ -922,6 +922,40 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-14 Baustein 4 dispatch helper — RigidPiFragment H projection.
+
+    Apply post-ETKDG/UFF ring-attached H projection to ``results`` if this
+    is the outer (non dual-parse) call and the DELFIN_BAUSTEIN4 env-flag
+    is set.  Per User-Direktive ("π-System rotiert mit entsprechenden H
+    atomen"): every transformation that moves a π-frame must drag attached
+    H atoms rigidly with the ring.  Iter-9 H1 and Iter-12/13 B3 already
+    handle some cases; B4 is the universal final pass.
+
+    Bit-exact when ``DELFIN_BAUSTEIN4=0`` (default).  Operates on XYZ text
+    only (no RDKit dependency for the projection step).  ``mol`` may be
+    ``None``.
+
+    Insertion order: B3 first (rotates X-side around donor — moves H atoms
+    on rotated bonds), B4 second (projects H onto current ring planes).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_BAUSTEIN4", 0):
+        return results
+    try:
+        from delfin._pi_h_projector import correct_results as _b4_correct
+        return _b4_correct(mol, results)
+    except Exception as _b4_exc:
+        try:
+            logger.debug("Baustein 4 H-projection skipped: %s", _b4_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _delfin_env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -22611,6 +22645,10 @@ def smiles_to_xyz_isomers(
                 results_hapto = _apply_baustein3_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
+                # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
+                results_hapto = _apply_baustein4_if_enabled(
+                    _mol_hapto_gate, results_hapto, _dual_parse_done
+                )
                 return results_hapto, None
             # Multi-metal hapto: the hapto builder already produced the
             # best possible Cp geometry (perfectly planar rings). ETKDG
@@ -22618,6 +22656,10 @@ def smiles_to_xyz_isomers(
             # Return the hapto results directly.
             # Iter-13: apply Baustein 3 to multi-metal hapto path (env-gated).
             results_hapto = _apply_baustein3_if_enabled(
+                _mol_hapto_gate, results_hapto, _dual_parse_done
+            )
+            # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
+            results_hapto = _apply_baustein4_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
             return results_hapto, None
@@ -22636,10 +22678,17 @@ def smiles_to_xyz_isomers(
             smiles, xyz, max_pool=_max_pool, apply_uff=apply_uff,
         )
         if not pool:
-            return [(xyz, '')], None
+            # Iter-14 B4: project ring-attached H onto π-plane (no-metal path).
+            return _apply_baustein4_if_enabled(
+                None, [(xyz, '')], _dual_parse_done
+            ), None
         if collapse_label_variants and len(pool) == 1:
-            return [(pool[0][0], '')], None
-        return pool, None
+            return _apply_baustein4_if_enabled(
+                None, [(pool[0][0], '')], _dual_parse_done
+            ), None
+        return _apply_baustein4_if_enabled(
+            None, pool, _dual_parse_done
+        ), None
 
     # Prepare molecule for embedding (skip if already set by hapto multi-metal path)
     if mol is None:
@@ -22655,6 +22704,12 @@ def smiles_to_xyz_isomers(
             _fallback_results = _apply_baustein3_if_enabled(
                 None, _fallback_results, _dual_parse_done
             )
+        # Iter-14: apply Baustein 4 (rigid-π H projection) — runs on metal
+        # AND non-metal complexes; aromatic-H out-of-plane is a generic
+        # converter pathology independent of metal presence.
+        _fallback_results = _apply_baustein4_if_enabled(
+            None, _fallback_results, _dual_parse_done
+        )
         return _fallback_results, None
 
     # For metal complexes: prepend OB conformers to the pool so that
@@ -23763,6 +23818,19 @@ def smiles_to_xyz_isomers(
     # mono hapto / multi-metal hapto / fallback above).
     if has_metal:
         results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-14 Baustein 4: post-B3 rigid-π H projection ────────────────────
+    # Per User-Direktive ("π-System rotiert mit entsprechenden H atomen"):
+    # every transformation that moves a π-frame must drag attached H atoms
+    # rigidly with the ring.  Iter-9 H1 handles ring-snap-time projection;
+    # Iter-12/13 B3 handles X-side rotation around donors (BFS includes H).
+    # B4 is the universal final pass that re-projects ring-attached H onto
+    # current ring planes after all upstream operations.  Per-conformer,
+    # opt-in via DELFIN_BAUSTEIN4=1.  Bit-exact when disabled.
+    #
+    # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
+    # is a generic converter pathology independent of metal presence.
+    results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
 
     return results, None
 
