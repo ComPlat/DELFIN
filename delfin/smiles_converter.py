@@ -17639,6 +17639,96 @@ def _canonical_ttp(types: tuple) -> tuple:
     return ('TTP', prism, caps)
 
 
+# ---------------------------------------------------------------------------
+# Iter-2 Subagent D — CN10/11/12 polyhedra (lanthanide / actinide complexes).
+# Env-gated: DELFIN_CN_HIGH_ENABLE=1 enables CN ≥ 10 enumeration.  Default
+# OFF (=0) → bit-exact HEAD (existing dispatcher returns [] for cn ≥ 10).
+#
+# Polyhedra:
+#   CN10  BCSAP (D4d, bicapped square-antiprism)
+#         PAP   (D5d, pentagonal antiprism)
+#   CN11  CPAP  (C5v, capped pentagonal antiprism)
+#   CN12  ICOS  (Ih, icosahedron)
+#         CUBO  (Oh, cuboctahedron)
+#         HBP   (D6h, hexagonal prism — eclipsed)
+#
+# Pólya/Burnside counts validated for binary multisets [P^k X^(n-k)]
+# against group-theoretic tables; see staged_patches/iter2D_cn10_11_12_design.md
+# ---------------------------------------------------------------------------
+
+
+def _canonical_bcsap(types: tuple) -> tuple:
+    """Canonical form for bicapped square-antiprism (D4d, CN=10).
+
+    Positions 0-3 = top square, 4-7 = bottom square (rotated 45°),
+    8-9 = axial caps.  Trans pairs: (0,2),(1,3),(4,6),(5,7),(8,9).
+    """
+    sap_pairs = tuple(sorted([
+        tuple(sorted([types[0], types[2]])),
+        tuple(sorted([types[1], types[3]])),
+        tuple(sorted([types[4], types[6]])),
+        tuple(sorted([types[5], types[7]])),
+    ]))
+    caps = tuple(sorted([types[8], types[9]]))
+    return ('BCSAP', sap_pairs, caps)
+
+
+def _canonical_pap(types: tuple) -> tuple:
+    """Canonical form for pentagonal antiprism (D5d, CN=10).
+
+    Positions 0-4 = top pentagon, 5-9 = bottom pentagon (staggered 36°).
+    Two rings interchangeable under σ_d.
+    """
+    top = tuple(sorted(types[0:5]))
+    bot = tuple(sorted(types[5:10]))
+    rings = tuple(sorted([top, bot]))
+    return ('PAP', rings)
+
+
+def _canonical_cpap(types: tuple) -> tuple:
+    """Canonical form for capped pentagonal antiprism (C5v, CN=11).
+
+    Positions 0-4 = top pentagon (cap-side), 5-9 = bottom pentagon,
+    10 = axial cap.  Cap breaks σ_h → top and bottom NOT interchangeable.
+    """
+    top = tuple(sorted(types[0:5]))
+    bot = tuple(sorted(types[5:10]))
+    return ('CPAP', top, bot, types[10])
+
+
+def _canonical_icos(types: tuple) -> tuple:
+    """Canonical form for icosahedron (Ih, CN=12).
+
+    All 12 vertices equivalent under Ih (vertex-transitive group).
+    """
+    return ('ICOS', tuple(sorted(types)))
+
+
+def _canonical_cubo(types: tuple) -> tuple:
+    """Canonical form for cuboctahedron (Oh, CN=12).
+
+    Positions 0-3 = xy-plane square, 4-7 = xz-plane square,
+    8-11 = yz-plane square.  Three squares interchangeable under Oh.
+    """
+    sq_xy = tuple(sorted(types[0:4]))
+    sq_xz = tuple(sorted(types[4:8]))
+    sq_yz = tuple(sorted(types[8:12]))
+    sqs = tuple(sorted([sq_xy, sq_xz, sq_yz]))
+    return ('CUBO', sqs)
+
+
+def _canonical_hbp(types: tuple) -> tuple:
+    """Canonical form for hexagonal prism (D6h, CN=12).
+
+    Positions 0-5 = top hexagon, 6-11 = bottom hexagon (eclipsed).
+    Two rings interchangeable under σ_h.
+    """
+    top = tuple(sorted(types[0:6]))
+    bot = tuple(sorted(types[6:12]))
+    rings = tuple(sorted([top, bot]))
+    return ('HBP', rings)
+
+
 def _label_from_canonical_form(cf: tuple) -> str:
     """Derive a display label directly from an enumerator canonical form.
 
@@ -17781,6 +17871,13 @@ _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'TPR': [],                # trigonal-prismatic: no 180° pairs
     'COH': [(0, 1), (2, 3), (4, 5)],  # capped-oh: octahedral base trans pairs
     'TTP': [],                # tricapped trigonal prism: no 180° pairs
+    # Iter-2D — CN10/11/12 polyhedra (env DELFIN_CN_HIGH_ENABLE=1)
+    'BCSAP': [(0, 2), (1, 3), (4, 6), (5, 7), (8, 9)],            # CN10 D4d
+    'PAP':   [(0, 7), (1, 8), (2, 9), (3, 5), (4, 6)],            # CN10 D5d
+    'CPAP':  [],                                                  # CN11 C5v: cap unique
+    'ICOS':  [(0, 6), (1, 7), (2, 8), (3, 9), (4, 10), (5, 11)],  # CN12 Ih (antipodal)
+    'CUBO':  [(0, 2), (1, 3), (4, 6), (5, 7), (8, 10), (9, 11)],  # CN12 Oh
+    'HBP':   [(0, 3), (1, 4), (2, 5), (6, 9), (7, 10), (8, 11)],  # CN12 D6h
 }
 
 _TOPO_CANONICAL_FNS = {
@@ -17799,6 +17896,13 @@ _TOPO_CANONICAL_FNS = {
     'TPR': _canonical_tpr,
     'COH': _canonical_coh,
     'TTP': _canonical_ttp,
+    # Iter-2D — CN10/11/12 polyhedra
+    'BCSAP': _canonical_bcsap,
+    'PAP':   _canonical_pap,
+    'CPAP':  _canonical_cpap,
+    'ICOS':  _canonical_icos,
+    'CUBO':  _canonical_cubo,
+    'HBP':   _canonical_hbp,
 }
 
 # Idealized coordination vectors per geometry (bond length ~2 Å)
@@ -17832,6 +17936,42 @@ _TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
     'TTP': [(1.633, 0, 1.155), (-0.816, 1.414, 1.155), (-0.816, -1.414, 1.155),
             (1.633, 0, -1.155), (-0.816, 1.414, -1.155), (-0.816, -1.414, -1.155),
             (1.0, 1.732, 0), (-2.0, 0, 0), (1.0, -1.732, 0)],
+    # Iter-2D — CN10 BCSAP (D4d): SAP + 2 axial caps
+    'BCSAP': [(1.414, 0, 0.6), (0, 1.414, 0.6), (-1.414, 0, 0.6), (0, -1.414, 0.6),
+              (1, 1, -0.6), (-1, 1, -0.6), (-1, -1, -0.6), (1, -1, -0.6),
+              (0, 0, 2.0), (0, 0, -2.0)],
+    # Iter-2D — CN10 PAP (D5d): two staggered pentagons (36° offset)
+    'PAP':   [(1.902, 0.000, 0.8), (0.588, 1.809, 0.8), (-1.539, 1.118, 0.8),
+              (-1.539, -1.118, 0.8), (0.588, -1.809, 0.8),
+              (1.539, 1.118, -0.8), (-0.588, 1.809, -0.8), (-1.902, 0.000, -0.8),
+              (-0.588, -1.809, -0.8), (1.539, -1.118, -0.8)],
+    # Iter-2D — CN11 CPAP (C5v): PAP + axial cap (top side)
+    'CPAP':  [(1.902, 0.000, 0.6), (0.588, 1.809, 0.6), (-1.539, 1.118, 0.6),
+              (-1.539, -1.118, 0.6), (0.588, -1.809, 0.6),
+              (1.539, 1.118, -1.0), (-0.588, 1.809, -1.0), (-1.902, 0.000, -1.0),
+              (-0.588, -1.809, -1.0), (1.539, -1.118, -1.0),
+              (0, 0, 2.0)],
+    # Iter-2D — CN12 ICOS (Ih): 12 golden-ratio vertices, scaled to ~2 Å
+    # Vertices: (0,±1,±φ), (±1,±φ,0), (±φ,0,±1) with φ=(1+√5)/2 ≈ 1.618.
+    # Numbering chosen so vertex i and i+6 are antipodal (i ↔ -i).
+    'ICOS':  [(0, 1.051, 1.701), (1.051, 1.701, 0), (1.701, 0, 1.051),
+              (0, -1.051, 1.701), (-1.051, 1.701, 0), (1.701, 0, -1.051),
+              (0, -1.051, -1.701), (-1.051, -1.701, 0), (-1.701, 0, -1.051),
+              (0, 1.051, -1.701), (1.051, -1.701, 0), (-1.701, 0, 1.051)],
+    # Iter-2D — CN12 CUBO (Oh): 12 cuboctahedral vertices = (±1,±1,0)+perms × √2
+    # 3 mutually-orthogonal squares (xy, xz, yz).  Numbering: i and i+2 (mod 4)
+    # are antipodal within each square.
+    'CUBO':  [(1.414, 1.414, 0), (-1.414, 1.414, 0),
+              (-1.414, -1.414, 0), (1.414, -1.414, 0),    # xy square
+              (1.414, 0, 1.414), (-1.414, 0, 1.414),
+              (-1.414, 0, -1.414), (1.414, 0, -1.414),    # xz square
+              (0, 1.414, 1.414), (0, -1.414, 1.414),
+              (0, -1.414, -1.414), (0, 1.414, -1.414)],   # yz square
+    # Iter-2D — CN12 HBP (D6h): hexagonal prism, eclipsed top/bottom hexagons.
+    'HBP':   [(2.0, 0, 1.0), (1.0, 1.732, 1.0), (-1.0, 1.732, 1.0),
+              (-2.0, 0, 1.0), (-1.0, -1.732, 1.0), (1.0, -1.732, 1.0),
+              (2.0, 0, -1.0), (1.0, 1.732, -1.0), (-1.0, 1.732, -1.0),
+              (-2.0, 0, -1.0), (-1.0, -1.732, -1.0), (1.0, -1.732, -1.0)],
 }
 
 
@@ -17889,6 +18029,23 @@ def _enumerate_topological_isomers(
         geometries = _all_polyhedra_codes(8, metal_symbol, ['SAP', 'DD'])
     elif n_coord == 9:
         geometries = ['TTP']
+    elif n_coord == 10:
+        # Iter-2D — DELFIN_CN_HIGH_ENABLE=1 enables CN10 lanthanide/actinide.
+        # Default OFF (=0) → bit-exact HEAD (returns []).
+        if _delfin_env_int("DELFIN_CN_HIGH_ENABLE", 0):
+            geometries = ['BCSAP', 'PAP']
+        else:
+            return []
+    elif n_coord == 11:
+        if _delfin_env_int("DELFIN_CN_HIGH_ENABLE", 0):
+            geometries = ['CPAP']
+        else:
+            return []
+    elif n_coord == 12:
+        if _delfin_env_int("DELFIN_CN_HIGH_ENABLE", 0):
+            geometries = ['ICOS', 'CUBO', 'HBP']
+        else:
+            return []
     else:
         return []
 
