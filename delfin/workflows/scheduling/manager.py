@@ -64,6 +64,46 @@ def _default_pal_jobs_for_makespan(pal: int) -> int:
     return max(1, min(8, int(math.ceil(pal / 12.0))))
 
 
+_SLURM_MEM_HEADROOM = 0.85
+
+
+def _slurm_node_memory_mb() -> Optional[int]:
+    """Return SLURM-allocated memory for this job in MB, or None outside SLURM.
+
+    Reads SLURM_MEM_PER_NODE first, then falls back to SLURM_MEM_PER_CPU × CPU count.
+    Used to cap the pool memory budget so PAL × MaxCore cannot overcommit beyond
+    what the node actually has — prevents OOM-kills when multiple ORCA jobs run
+    in parallel on the same allocation.
+    """
+    per_node = os.environ.get("SLURM_MEM_PER_NODE", "").strip()
+    if per_node:
+        try:
+            return int(per_node)
+        except (TypeError, ValueError):
+            pass
+    per_cpu = os.environ.get("SLURM_MEM_PER_CPU", "").strip()
+    cpus = os.environ.get("SLURM_CPUS_ON_NODE", "").strip() or os.environ.get("SLURM_NTASKS", "").strip()
+    if per_cpu and cpus:
+        try:
+            return int(per_cpu) * int(cpus)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _budgeted_memory_mb(pal: int, maxcore_mb: int) -> Tuple[int, Optional[int]]:
+    """Compute pool memory budget, capped to actual SLURM allocation if available.
+
+    Returns (effective_total_mb, slurm_node_mb_or_None).
+    """
+    requested = pal * maxcore_mb
+    slurm_mem = _slurm_node_memory_mb()
+    if slurm_mem is None or slurm_mem <= 0:
+        return requested, None
+    cap = int(slurm_mem * _SLURM_MEM_HEADROOM)
+    return min(requested, cap), slurm_mem
+
+
 class GlobalJobManager:
     """Singleton manager for all DELFIN computational jobs.
 
@@ -164,7 +204,19 @@ class GlobalJobManager:
 
         self.config = sanitized
         self.total_cores = sanitized['PAL']
-        self.total_memory = sanitized['PAL'] * sanitized['maxcore']
+        budgeted_mem, slurm_mem = _budgeted_memory_mb(sanitized['PAL'], sanitized['maxcore'])
+        self.total_memory = budgeted_mem
+        self._slurm_node_memory_mb = slurm_mem
+        if slurm_mem is not None and budgeted_mem < sanitized['PAL'] * sanitized['maxcore']:
+            logger.warning(
+                "Pool memory budget capped to %d MB (SLURM allocation %d MB × %.0f%% headroom); "
+                "PAL × MaxCore would request %d MB. Concurrent ORCA jobs will be sequenced when "
+                "their combined memory exceeds the cap to prevent OOM.",
+                budgeted_mem,
+                slurm_mem,
+                _SLURM_MEM_HEADROOM * 100,
+                sanitized['PAL'] * sanitized['maxcore'],
+            )
         self.maxcore_per_job = sanitized['maxcore']
         self.max_jobs = sanitized['pal_jobs']
         self.parallel_mode = sanitized['parallel_mode']
@@ -198,6 +250,15 @@ class GlobalJobManager:
             _banner_line(f"• Max concurrent jobs: {self.max_jobs}", align="left"),
             _banner_line(f"• Parallel mode: {self.parallel_mode.upper()}", align="left"),
             _banner_line(f"• Total memory: {self.total_memory} MB", align="left"),
+        ]
+        if self._slurm_node_memory_mb is not None:
+            banner_lines.append(
+                _banner_line(
+                    f"• SLURM mem cap: {self._slurm_node_memory_mb} MB ({_SLURM_MEM_HEADROOM:.0%} headroom)",
+                    align="left",
+                )
+            )
+        banner_lines += [
             f"╚{'═' * banner_width}╝",
         ]
         print("\n".join(banner_lines))
