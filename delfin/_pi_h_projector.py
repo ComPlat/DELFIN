@@ -125,6 +125,60 @@ _XYZ_LINE_RE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Iter-15 — Hard M-D bond-length invariant guard (mirror of
+# _coord_angle_corrector._snapshot_md_bonds / _md_invariant_violated).  B4
+# moves H atoms only, so M-D bonds with heavy donors are conceptually safe;
+# however, defense-in-depth: any projection that produces a structure where
+# a pre-existing M-D bond changed by more than _MD_INVARIANT_TOL Å is
+# rolled back.  This also catches metal-hydride (M-H) hydrides if any.
+# ---------------------------------------------------------------------------
+
+_MD_INVARIANT_TOL: float = 0.05
+_MD_INTACT_FACTOR: float = 1.30
+
+
+def _snapshot_md_bonds(
+    pts: np.ndarray,
+    syms: List[str],
+) -> Dict[Tuple[int, int], float]:
+    """Return dict of (metal_idx, donor_idx) -> distance for every M-D pair
+    within ``_MD_INTACT_FACTOR * Sigma_r_cov``.  Includes M-H pairs
+    (potential hydride coordination) so the H-projection step cannot
+    silently break M-H bonds either.
+    """
+    snap: Dict[Tuple[int, int], float] = {}
+    n = len(syms)
+    for i in range(n):
+        if not _is_metal_sym(syms[i]):
+            continue
+        ri = _COV_RADII.get(syms[i], 1.5)
+        for j in range(n):
+            if j == i:
+                continue
+            sj = syms[j]
+            if _is_metal_sym(sj):
+                continue
+            rj = _COV_RADII.get(sj, 1.5)
+            d = float(np.linalg.norm(pts[i] - pts[j]))
+            sigma = ri + rj
+            if d <= _MD_INTACT_FACTOR * sigma:
+                snap[(i, j)] = d
+    return snap
+
+
+def _md_invariant_violated(
+    pre: Dict[Tuple[int, int], float],
+    new_pts: np.ndarray,
+    tol: float = _MD_INVARIANT_TOL,
+) -> bool:
+    for (m_idx, d_idx), pre_d in pre.items():
+        new_d = float(np.linalg.norm(new_pts[m_idx] - new_pts[d_idx]))
+        if abs(new_d - pre_d) > tol:
+            return True
+    return False
+
+
 def _parse_xyz(xyz_str: str) -> Tuple[List[str], np.ndarray, List[str]]:
     syms: List[str] = []
     pts: List[np.ndarray] = []
@@ -301,7 +355,8 @@ def project_ring_h_atoms(
     has exactly one H neighbour gets that H projected to
     ``parent + d_XH · r_hat`` where ``r_hat`` is the in-plane outward
     unit vector from centroid to parent.  Per-H rollback if a new clash
-    pair appears.
+    pair appears OR if the projection breaks any pre-existing M-D bond
+    (Iter-15 hard invariant).
     """
     n = len(syms)
     if n == 0:
@@ -311,6 +366,12 @@ def project_ring_h_atoms(
     rings = _detect_planar_rings(syms, pts, nbrs)
     if not rings:
         return 0
+
+    # Iter-15 — snapshot M-D bonds (heavy + hydride) once at the start.
+    # Per-H projection moves H atoms only; the snapshot is invariant under
+    # rotations of any non-included atom.  Re-checked after each projection
+    # before commit.
+    pre_md_snapshot = _snapshot_md_bonds(pts, syms)
 
     moved = 0
     for ring, centroid, normal in rings:
@@ -351,7 +412,15 @@ def project_ring_h_atoms(
                 threshold_factor=0.80,
             ):
                 continue  # rollback this single H
+            # (Iter-15) M-D invariant: speculatively place H, check whether
+            # any pre-existing M-D bond changed by > _MD_INVARIANT_TOL.
+            # Only relevant for M-H hydrides; H ↔ heavy donor invariants
+            # are unaffected by H displacement.  Defense-in-depth.
+            old_h_pos = pts[h_idx].copy()
             pts[h_idx] = new_h_pos
+            if _md_invariant_violated(pre_md_snapshot, pts, tol=_MD_INVARIANT_TOL):
+                pts[h_idx] = old_h_pos
+                continue  # rollback this single H
             moved += 1
     return moved
 

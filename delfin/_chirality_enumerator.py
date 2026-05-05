@@ -1,0 +1,210 @@
+"""Iter-2 Λ/Δ Helical-Isomer Enumeration Helper.
+
+Computes the helicity (Λ / Δ / —) of a coordination-polyhedron permutation
+given its chelate-pair graph.  The doctrine matches Iter-12 / Iter-14:
+
+    - Universal: works for any polyhedron with ≥ 2 chelate pairs (OH, TPR,
+      TBP, SP, SAP, DD, COH).  Driven by the polyhedron geometry vectors
+      and the chelate-pair list — no element / SMILES / refcode shortcuts.
+    - Geometry-driven: helicity is the sign of a scalar triple-product /
+      pseudo-vector built from chelate-spanning vectors. No hardcoded
+      angle thresholds beyond a small ``EPS`` floor for achiral cases.
+    - Env-flag-gated: callers must check ``DELFIN_CHIRAL_ENUM`` themselves;
+      this helper only computes the classification given the inputs.
+    - Side-effect-free: returns 'L', 'D', or '' — no I/O, no rng, no globals.
+
+Stufe-3-Innovation pattern (BECHUQ Λ/Δ gap, 2026-05-04):
+
+    Multi-chelate Polyhedra have first-class chirality (Λ vs Δ helical
+    enantiomers) that the achiral-by-construction `_canonical_*` (double
+    `sorted()`) destroys.  This helper restores the missing degree of
+    freedom by computing a deterministic helicity tag from the donor
+    permutation and the chelate-pair list, which can then be appended
+    to the canonical-form tuple to keep both hands as separate buckets.
+"""
+from __future__ import annotations
+
+from typing import FrozenSet, Iterable, List, Optional, Sequence, Tuple
+
+# Polyhedron geometry vectors (must match _TOPO_GEOMETRY_VECTORS in
+# smiles_converter.py).  Duplicated here intentionally to keep the helper
+# import-cycle-free; the tuple of tuples is a tiny constant.
+_OH_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (2.0, 0.0, 0.0), (-2.0, 0.0, 0.0),
+    (0.0, 2.0, 0.0), (0.0, -2.0, 0.0),
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+)
+_TPR_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (2.0, 0.0, 1.0), (-1.0, 1.732, 1.0), (-1.0, -1.732, 1.0),
+    (2.0, 0.0, -1.0), (-1.0, 1.732, -1.0), (-1.0, -1.732, -1.0),
+)
+_TBP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+    (2.0, 0.0, 0.0), (-1.0, 1.732, 0.0), (-1.0, -1.732, 0.0),
+)
+_SP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (0.0, 0.0, 2.2),
+    (2.0, 0.0, 0.4), (0.0, 2.0, 0.4), (-2.0, 0.0, 0.4), (0.0, -2.0, 0.4),
+)
+_SAP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.414, 0.0, 0.8), (0.0, 1.414, 0.8), (-1.414, 0.0, 0.8), (0.0, -1.414, 0.8),
+    (1.0, 1.0, -0.8), (-1.0, 1.0, -0.8), (-1.0, -1.0, -0.8), (1.0, -1.0, -0.8),
+)
+_DD_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.414, 0.0, 1.0), (0.0, 1.414, -1.0), (-1.414, 0.0, 1.0), (0.0, -1.414, -1.0),
+    (0.9, 0.9, 0.0), (-0.9, 0.9, 0.0), (-0.9, -0.9, 0.0), (0.9, -0.9, 0.0),
+)
+_COH_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (2.0, 0.0, 0.0), (-2.0, 0.0, 0.0),
+    (0.0, 2.0, 0.0), (0.0, -2.0, 0.0),
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+    (1.155, 1.155, 1.155),
+)
+
+_GEOM_VECTORS = {
+    'OH':  _OH_VECTORS,
+    'TPR': _TPR_VECTORS,
+    'TBP': _TBP_VECTORS,
+    'SP':  _SP_VECTORS,
+    'SAP': _SAP_VECTORS,
+    'DD':  _DD_VECTORS,
+    'COH': _COH_VECTORS,
+}
+
+_EPS = 1e-3
+
+
+def _cross(a: Sequence[float], b: Sequence[float]) -> Tuple[float, float, float]:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _dot(a: Sequence[float], b: Sequence[float]) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _sub(a: Sequence[float], b: Sequence[float]) -> Tuple[float, float, float]:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _norm2(a: Sequence[float]) -> float:
+    return _dot(a, a)
+
+
+def _classify_helicity(
+    perm: Sequence[int],
+    chelate_pairs: Iterable[FrozenSet],
+    geometry: str,
+) -> str:
+    """Return 'L' (Λ), 'D' (Δ), or '' (achiral / undefined).
+
+    Universal scalar-triple-product method for ≥ 2 chelate pairs:
+
+      For each chelate pair (a, b) in canonical (sorted) donor-list-index
+      order, the chelate-spanning vector at the polyhedron is
+
+          c_k = pos(perm.index(b)) - pos(perm.index(a))
+
+      where ``pos(i)`` is the i-th polyhedron geometry vector.  The chelate
+      *centroid-vector* is
+
+          m_k = pos(perm.index(b)) + pos(perm.index(a))   (×0.5 implicit)
+
+      Helicity-pseudovector:
+
+          P = Σ_k  c_k × m_k_unit
+
+      where ``m_k_unit`` is the centroid-vector normalised.  ``P`` points
+      along the helical axis.  The handed-ness comes from the sign of the
+      mixed product
+
+          sign(  (c_1 × c_2) · (m_1 + m_2)  )
+
+      which is invariant under the relabelling symmetries of the polyhedron
+      (mirroring through any plane flips the sign exactly once).  For ≥ 3
+      chelate pairs we extend by summing over consecutive pair-pairs.
+
+    Returns:
+        'L' for Λ (right-handed, propeller +), 'D' for Δ (left-handed, −),
+        '' if helicity undefined: < 2 chelate pairs, geometry without
+        registered vectors, all triples ≤ EPS (achiral by construction).
+    """
+    vectors = _GEOM_VECTORS.get(geometry)
+    if vectors is None:
+        return ''
+
+    # Build chelate-pair geometric data in canonical donor-list order.
+    pair_data: List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = []
+    perm_list = list(perm)
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= len(vectors) or pos_b >= len(vectors):
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        c = _sub(vb, va)               # chelate-spanning vector
+        m = (va[0] + vb[0], va[1] + vb[1], va[2] + vb[2])  # centroid (×2)
+        pair_data.append((c, m))
+
+    if len(pair_data) < 2:
+        return ''
+
+    # Sort pair_data canonically by centroid magnitude+direction so the
+    # output is permutation-symmetry stable: swapping the pair-iteration
+    # order must not flip helicity (would create non-determinism between
+    # equivalent perms that just relabel chelate-pair indices).
+    pair_data.sort(key=lambda cm: (round(_norm2(cm[1]), 3),
+                                    round(cm[1][0], 3),
+                                    round(cm[1][1], 3),
+                                    round(cm[1][2], 3)))
+
+    # Mixed product: sum over all i<j pair-pairs of
+    #   ((c_i × c_j) · (m_i + m_j))
+    # This is the SO(3)-invariant helicity scalar.  For 2 chelate pairs
+    # this collapses to the single triple product; for 3 pairs (tris-bidentate
+    # Δ/Λ classic) it is the standard tris-chelate handedness sign.
+    total = 0.0
+    n = len(pair_data)
+    for i in range(n):
+        for j in range(i + 1, n):
+            c_i, m_i = pair_data[i]
+            c_j, m_j = pair_data[j]
+            cross_cc = _cross(c_i, c_j)
+            m_sum = (m_i[0] + m_j[0], m_i[1] + m_j[1], m_i[2] + m_j[2])
+            total += _dot(cross_cc, m_sum)
+
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+def helicity_aware_pairs(canonical_pairs: tuple,
+                         perm: Optional[Sequence[int]],
+                         chelate_pairs: Optional[Iterable[FrozenSet]],
+                         geometry: str) -> tuple:
+    """Append helicity tag to a canonical-form pair-tuple if defined.
+
+    Returns ``canonical_pairs`` unchanged if helicity is undefined ('') —
+    so achiral isomers keep their bit-exact pre-Iter-2 canonical form.
+    """
+    if perm is None or chelate_pairs is None:
+        return canonical_pairs
+    h = _classify_helicity(perm, chelate_pairs, geometry)
+    if not h:
+        return canonical_pairs
+    return canonical_pairs + (('chir', h),)
+
+
+__all__ = ['_classify_helicity', 'helicity_aware_pairs']

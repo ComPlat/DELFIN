@@ -486,6 +486,77 @@ def _compute_clash_state(
 
 
 # ---------------------------------------------------------------------------
+# Iter-15 — Hard M-D bond-length invariant guard.
+#
+# User diagnosis 2026-05-03 (commits 35ac005, fdee83a, fdee83a-b3b4on):
+# B3/B4 rotation operations broke 23-32% of metal-donor bonds because the
+# rotation pivot D, although fixed, propagated through chelate-ring atoms
+# that are simultaneously donors to the same metal M.  These secondary
+# donors moved relative to M, stretching their M-D bonds.
+#
+# Hard invariant: for every (metal, donor) pair within "intact" range
+# BEFORE the rotation, the same pair MUST remain within +/- 0.05 A of its
+# pre-rotation distance after the rotation.  Any larger change rolls back
+# the rotation.
+# ---------------------------------------------------------------------------
+
+# Maximum allowed change of any pre-existing intact M-D bond length (A)
+_MD_INVARIANT_TOL: float = 0.05
+
+# Reference-topology intact factor: an (M, D) pair is "intact" if the
+# observed distance d <= _MD_INTACT_FACTOR * Sigma_r_cov.  Matches the
+# F26 detector default (1.30 covers covalent + short dative range).
+_MD_INTACT_FACTOR: float = 1.30
+
+
+def _snapshot_md_bonds(
+    pts: np.ndarray,
+    syms: List[str],
+    metal_idxs: List[int],
+) -> Dict[Tuple[int, int], float]:
+    """Return dict of (metal_idx, donor_idx) -> distance for every M-D pair
+    within ``_MD_INTACT_FACTOR * Sigma_r_cov``.
+
+    Universal: NO refcode/SMILES/element-list logic.  Donor = any non-H,
+    non-metal atom within the intact-bond range of a metal.
+    """
+    snap: Dict[Tuple[int, int], float] = {}
+    for m_idx in metal_idxs:
+        rm = _COV_RADII.get(syms[m_idx], 1.5)
+        pm = pts[m_idx]
+        for j in range(len(syms)):
+            if j == m_idx:
+                continue
+            sj = syms[j]
+            if sj == "H" or _is_metal_sym(sj):
+                continue
+            rj = _COV_RADII.get(sj, 1.5)
+            d = float(np.linalg.norm(pm - pts[j]))
+            sigma = rm + rj
+            if d <= _MD_INTACT_FACTOR * sigma:
+                snap[(m_idx, j)] = d
+    return snap
+
+
+def _md_invariant_violated(
+    pre: Dict[Tuple[int, int], float],
+    new_pts: np.ndarray,
+    tol: float = _MD_INVARIANT_TOL,
+) -> bool:
+    """Return True if any pre-snapshot M-D distance differs by more than
+    ``tol`` Angstrom in ``new_pts``.
+
+    Operates on the SAME atom indices as the snapshot — atom topology
+    must not have changed between snapshot and check.
+    """
+    for (m_idx, d_idx), pre_d in pre.items():
+        new_d = float(np.linalg.norm(new_pts[m_idx] - new_pts[d_idx]))
+        if abs(new_d - pre_d) > tol:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Top-level: per-XYZ correction
 # ---------------------------------------------------------------------------
 
@@ -498,6 +569,7 @@ def _try_fix_one_violation(
     pre_clash_set: set,
     pre_min_dist: float,
     pre_triangle_pairs: set,
+    pre_md_snapshot: Optional[Dict[Tuple[int, int], float]] = None,
 ) -> bool:
     """Attempt rotation; revert on validation failure.  Mutates pts in place
     on success.  Returns True iff applied.
@@ -510,6 +582,9 @@ def _try_fix_one_violation(
          atom overlaps where a new pair drops to <0.5 Å.
       3. Angle gate: rotated M-D-X angle within ±5° of expected, OR strictly
          improved over observed.
+      4. (Iter-15) M-D invariant: every pre-existing M-D bond length must
+         change by less than ``_MD_INVARIANT_TOL`` Å.  Catches catastrophic
+         donor-detachment (Iter-12+13+14 23-32% break-rate).
     """
     M = viol["M_idx"]
     D = viol["D_idx"]
@@ -554,7 +629,8 @@ def _try_fix_one_violation(
 
     def gate_ok(new_pts: np.ndarray) -> Tuple[bool, Optional[float]]:
         """Returns (ok, angle).  ok = no new catastrophic clash AND no new
-        clash-pair identity AND no new triangle-H pair.  Angle = M-D-X after rotation."""
+        clash-pair identity AND no new triangle-H pair AND M-D invariant
+        preserved.  Angle = M-D-X after rotation."""
         # Hard-min-distance gate (catastrophic overlap detector)
         new_min = _hard_min_distance(new_pts, syms, side_X, rest_filter)
         floor = max(0.85, 0.7 * pre_min_dist) if pre_min_dist < 1e8 else 0.85
@@ -572,6 +648,12 @@ def _try_fix_one_violation(
         # where rotation moves an H next to a non-bonded heavy.
         new_tri = _h_close_heavy_pairs(new_pts, syms, side_X, rest_filter, 1.40)
         if new_tri - pre_triangle_pairs:
+            return (False, None)
+        # (Iter-15) M-D invariant: any pre-existing intact M-D bond stretched
+        # by more than _MD_INVARIANT_TOL Å is a hard FAIL.
+        if pre_md_snapshot is not None and _md_invariant_violated(
+            pre_md_snapshot, new_pts, tol=_MD_INVARIANT_TOL,
+        ):
             return (False, None)
         ang = _angle_deg(new_pts[D], new_pts[M], new_pts[X])
         return (True, ang)
@@ -618,6 +700,13 @@ def correct_xyz(xyz_str: str, max_passes: int = 10) -> str:
 
     pts = pts.copy()
 
+    # Iter-15: GLOBAL M-D snapshot taken ONCE at the start of correct_xyz.
+    # Every rotation must preserve every pre-existing intact M-D bond
+    # within ``_MD_INVARIANT_TOL`` Å of its initial length.  This catches
+    # cumulative drift across multiple sequential rotations that, taken
+    # individually, are each within tol but together exceed it.
+    initial_md_snapshot = _snapshot_md_bonds(pts, syms, metal_idxs)
+
     for outer in range(max_passes):
         nbrs, bond_d = _build_geometric_adjacency(syms, pts)
         aromatic = _detect_aromatic_atoms(syms, pts, nbrs)
@@ -652,6 +741,7 @@ def correct_xyz(xyz_str: str, max_passes: int = 10) -> str:
                 pre_clash_set=pre_clash_set,
                 pre_min_dist=pre_min_dist,
                 pre_triangle_pairs=pre_triangle_pairs,
+                pre_md_snapshot=initial_md_snapshot,
             )
             if ok:
                 progress = True

@@ -17673,6 +17673,22 @@ def _label_from_canonical_form(cf: tuple) -> str:
     return ''
 
 
+def _extract_helicity_suffix(cf: tuple) -> str:
+    """Iter-2: extract helicity suffix from a canonical form, if present.
+
+    Returns 'L', 'D', or '' (no helicity tag).  Looks for a ``('chir', X)``
+    sub-tuple anywhere in cf — appended by ``helicity_aware_pairs`` when
+    DELFIN_CHIRAL_ENUM=1 and ≥ 2 chelate pairs.
+    """
+    if not cf:
+        return ''
+    for item in cf:
+        if (isinstance(item, tuple) and len(item) == 2
+                and item[0] == 'chir' and item[1] in ('L', 'D')):
+            return item[1]
+    return ''
+
+
 # Trans position pairs (indices into the geometry vector list) for each geometry
 _TOPO_TRANS_POSITIONS: Dict[str, List[Tuple[int, int]]] = {
     'LIN': [(0, 1)],
@@ -17805,6 +17821,21 @@ def _enumerate_topological_isomers(
     seen_canonical: set = set()
     perm_count = 0
 
+    # Iter-2 Λ/Δ helicity gate — hoisted out of the inner loop.  Active only
+    # when DELFIN_CHIRAL_ENUM=1 and ≥ 2 chelate pairs (chirality undefined
+    # otherwise).  Bit-exact when env-flag is off.
+    _chir_enabled = (
+        _delfin_env_int('DELFIN_CHIRAL_ENUM', 0)
+        and len(chelate_pairs) >= 2
+    )
+    _helicity_aware_pairs = None
+    if _chir_enabled:
+        try:
+            from delfin._chirality_enumerator import helicity_aware_pairs as _helicity_aware_pairs  # type: ignore
+        except Exception as _ce_exc:
+            logger.debug("Chirality enumerator import failed: %s", _ce_exc)
+            _chir_enabled = False
+
     for geom_name in geometries:
         canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
         trans_pos = _TOPO_TRANS_POSITIONS[geom_name]
@@ -17844,6 +17875,22 @@ def _enumerate_topological_isomers(
             # Build canonical form from donor element symbols at each position
             types = tuple(donor_labels[perm[pos]] for pos in range(n_coord))
             cf = canonical_fn(types)
+            # Iter-2 Λ/Δ helical-isomer enumeration (env-gated, additive):
+            # When DELFIN_CHIRAL_ENUM=1 and ≥ 2 chelate pairs are present,
+            # tag the canonical form with helicity ('L'/'D') so Λ and Δ
+            # enantiomeric permutations survive as separate buckets instead
+            # of collapsing via the achiral-by-construction _canonical_*.
+            # When env-flag is off (default) cf is unchanged → bit-exact HEAD.
+            if _chir_enabled and _helicity_aware_pairs is not None:
+                try:
+                    cf = _helicity_aware_pairs(
+                        cf, perm, chelate_pairs, geom_name,
+                    )
+                except Exception as _ce_exc:
+                    logger.debug(
+                        "Chirality enumerator no-op (%s, perm=%s): %s",
+                        geom_name, perm, _ce_exc,
+                    )
             if cf not in seen_canonical:
                 seen_canonical.add(cf)
                 results.append((cf, list(perm)))
@@ -20342,6 +20389,13 @@ def _generate_topological_isomers(
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
+                # Iter-2: append Λ/Δ helicity suffix (env-gated; safe when
+                # cf carries no chirality tag → no-op).
+                _hsuf = _extract_helicity_suffix(cf)
+                if _hsuf == 'L':
+                    lbl = f'{lbl}-Λ' if lbl else 'Λ'
+                elif _hsuf == 'D':
+                    lbl = f'{lbl}-Δ' if lbl else 'Δ'
                 return (xyz, lbl)
             except Exception as exc:
                 logger.debug("Topo isomer build failed (%s): %s", gn, exc)
@@ -20572,6 +20626,12 @@ def _generate_topological_isomers(
                 if _primary_geom and gn != _primary_geom:
                     gp = _GEOM_PRETTY.get(gn, gn)
                     lbl = f'{gp} {lbl}' if lbl else gp
+                # Iter-2: append Λ/Δ helicity suffix when present.
+                _hsuf = _extract_helicity_suffix(cf)
+                if _hsuf == 'L':
+                    lbl = f'{lbl}-Λ' if lbl else 'Λ'
+                elif _hsuf == 'D':
+                    lbl = f'{lbl}-Δ' if lbl else 'Δ'
                 # Conformer-variant suffix: second, third, ... distinct
                 # XYZ for the same (CF, perm) gets ``-conf2``, ``-conf3``
                 # so the downstream label-collapse keeps every pucker.
@@ -22585,7 +22645,50 @@ def smiles_to_xyz_isomers(
                 _mol_hapto_gate = _prepare_mol_for_embedding(smiles, hapto_approx=True)
             except Exception:
                 _mol_hapto_gate = None
-            if OPENBABEL_AVAILABLE:
+
+            # Iter-1 (hapto-σ topology guard): WeightedRotorSearch treats the
+            # M-C η-bonds encoded in the SMILES as rotatable torsions and
+            # rotates Cp/arene rings as if they were freely-rotating ligands.
+            # When σ-donors are also present, those rotations rip the rings
+            # apart and project σ-ligands onto the Cp plane (User 2026-05-04
+            # "alles in einer Ebene"-Pattern).  Skip OB diversity for piano-
+            # stool / mixed-coordination complexes; pure Cp/arene sandwiches
+            # (no σ-donors) still benefit from rotor diversity.
+            # Opt out via DELFIN_HAPTO_NO_OB_WHEN_SIGMA=0.
+            _hapto_skip_ob_diversity = False
+            try:
+                _no_ob_env = os.environ.get(
+                    "DELFIN_HAPTO_NO_OB_WHEN_SIGMA", "1"
+                ).strip().lower()
+                _no_ob_active = _no_ob_env not in {"0", "false", "no", "off", ""}
+                if _no_ob_active and _mol_hapto_gate is not None:
+                    _n_sigma_total = 0
+                    _hapto_atoms_set: set = set()
+                    try:
+                        for _m_idx, _grp in _find_hapto_groups(_mol_hapto_gate):
+                            _hapto_atoms_set.update(_grp)
+                    except Exception:
+                        _hapto_atoms_set = set()
+                    for _a in _mol_hapto_gate.GetAtoms():
+                        if _a.GetSymbol() not in _METAL_SET:
+                            continue
+                        for _nb in _a.GetNeighbors():
+                            _ni = _nb.GetIdx()
+                            if (
+                                _nb.GetSymbol() not in _METAL_SET
+                                and _ni not in _hapto_atoms_set
+                            ):
+                                _n_sigma_total += 1
+                    if _n_sigma_total > 0:
+                        _hapto_skip_ob_diversity = True
+                        logger.debug(
+                            "Hapto-σ guard: skipping OB diversity (n_sigma=%d)",
+                            _n_sigma_total,
+                        )
+            except Exception as _hsg_exc:
+                logger.debug("Hapto-σ guard probe failed: %s", _hsg_exc)
+
+            if OPENBABEL_AVAILABLE and not _hapto_skip_ob_diversity:
                 try:
                     _HAPTO_OB_RESTARTS = 4
                     _HAPTO_OB_CONFS_PER_RUN = 30

@@ -54,3 +54,12 @@ agent_workspace/
 # Solver run logs (large, regenerated per run)
 censo.log
 *.log
+
+# Run-output artifacts (move to quality_framework/results/ instead)
+/reports/
+/topology_summary.json
+/all_metrics_*.json
+
+# Iter-specific scripts (move to quality_framework/iter_history/<iter>/scripts/ instead)
+/scripts/iter*_*.py
+/scripts/iter*_*.sh

@@ -61,16 +61,16 @@
   },
   "claude": {
     "avg_cost_per_task": {
-      "coding": 85.016,
+      "coding": 24.489,
       "chemistry": 12.447,
-      "dashboard": 23.533
+      "dashboard": 14.676
     },
     "success_rate": {
       "solo": 0.997,
-      "quick": 0.8,
+      "quick": 0.877,
       "reviewed": 0.75,
       "cluster": 0.7,
-      "dashboard": 0.9
+      "dashboard": 0.956
     },
     "task_performance": {
       "coding": {
@@ -80,14 +80,14 @@
         "success_rate": 0.917
       },
       "dashboard": {
-        "success_rate": 0.928
+        "success_rate": 0.956
       }
     },
     "common_failures": [
       "dashboard edits drifting into longer prose than the UI needs"
     ],
-    "total_cycles": 42,
-    "updated_at": "2026-04-28 08:22:51",
+    "total_cycles": 53,
+    "updated_at": "2026-05-05 09:15:22",
     "communication": {
       "rules": [
         "No Co-Authored-By in commits",
