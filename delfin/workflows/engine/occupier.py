@@ -1772,11 +1772,17 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                         break
                     remapped.add(mapped)
                 elif dep.startswith("occupier_ox_") or dep.startswith("occupier_red_"):
-                    # Keep cross-step OPT deps so that step N+1 waits for
-                    # step N's OPT-converged geometry. Dropping them caused
-                    # JEW-R465 to start occupier_red_2 before occupier_red_1
-                    # in recalc/resume mode.
-                    remapped.add(dep)
+                    # Drop in fresh run (FoB pipeline serializes naturally),
+                    # keep in recalc/resume (pre-marking would race otherwise).
+                    from delfin import smart_recalc as _smart_recalc_a
+                    if _smart_recalc_a.recalc_enabled():
+                        remapped.add(dep)
+                    else:
+                        logger.debug(
+                            "[occupier_flat] Dropping stale sequential dep %s from %s (fresh run)",
+                            dep,
+                            job.job_id,
+                        )
                 else:
                     remapped.add(dep)
             if skip:
@@ -2260,12 +2266,24 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
 
             filtered_jobs = [job for job in new_jobs if _is_stage_job(job.job_id)]
 
-            # Keep cross-step OPT deps (same fix as the eager path): each
-            # post-processing job needs both its own occ_proc_* result AND its
-            # cross-step OPT predecessor (e.g. occupier_red_2 → occupier_red_1)
-            # so that recalc/resume mode does not start step N+1's OPT before
-            # step N's OPT has finished. See JEW-R465 failure mode.
+            # Cross-step OPT deps: drop in fresh run (FoB pipeline naturally
+            # sequences), keep in recalc/resume (pre-marking races otherwise).
+            # See eager-path comment block for rationale.
+            from delfin import smart_recalc as _smart_recalc_d
+            _keep_cs = _smart_recalc_d.recalc_enabled()
             for job in filtered_jobs:
+                if not _keep_cs:
+                    stale = {
+                        d for d in job.dependencies
+                        if d.startswith("occupier_ox_") or d.startswith("occupier_red_")
+                    }
+                    if stale:
+                        job.dependencies -= stale
+                        logger.debug(
+                            "[combined] Deferred: dropped stale deps %s from %s (fresh run)",
+                            sorted(stale),
+                            job.job_id,
+                        )
                 # Ensure the correct occ_proc dependency is present
                 if job.job_id.startswith("occupier_ox_"):
                     s = job.job_id.replace("occupier_ox_", "")
@@ -2387,28 +2405,38 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
         pass
 
     # Update dependencies for post-processing jobs based on file requirements.
-    # In the combined OCCUPIER workflow each post-processing ORCA job (freq+opt)
-    # gets its OWN occ_proc_* result (FoB-best geometry + GBW from OCCUPIER) in
-    # addition to the cross-step OPT dep (e.g. occupier_red_2 → occupier_red_1).
+    # In a fresh run we DROP cross-step OPT deps (occupier_red_2 → occupier_red_1)
+    # so OPT_N+1 can start as soon as its own FoB pipeline finishes — the
+    # original optimization that lets ~139 mid-sized complexes parallelize OPTs
+    # while their FoB-best propagated geometry is converging. The propagation
+    # uses FoB-best of step N (NOT OPT-converged), and that is fine — OPT_N+1
+    # converges from there.
     #
-    # The cross-step OPT deps MUST be kept: they guarantee that occupier_red_2
-    # waits for occupier_red_1's OPT-converged geometry. Dropping them was an
-    # earlier optimization that relied on the FoB pipeline naturally sequencing
-    # the steps. That holds in a fresh run but BREAKS in recalc/resume mode:
-    # when prior FoB outputs are pre-marked, all occ_proc_* are instantly
-    # satisfiable and occupier_red_2 starts in the same second as
-    # occupier_initial — using the previous run's possibly-corrupt geometry
-    # while occupier_red_1 never gets scheduled because the pool is full.
-    # See JEW-R465 (2026-04-30) for the failure mode: 48h walltime burned on
-    # red_step_2 OPT that never had a valid red_step_1 predecessor.
-    #
-    # Keeping the cross-step deps is safe in fresh runs too: the FoB pipeline
-    # for step N+1 only needs red_step_N.xyz (written by the FoB best-selector
-    # before OPT), so red_(N+1)_fob_* can still run in parallel with
-    # occupier_red_N's OPT — the parallelism we wanted to preserve.
+    # In recalc/resume mode we KEEP the cross-step deps, because pre-marking
+    # of FoB outputs makes occ_proc_* instantly satisfiable and the FoB
+    # pipeline no longer naturally sequences the steps. Without this,
+    # occupier_red_2 starts in the same second as occupier_initial while
+    # occupier_red_1 never gets scheduled because the pool is full — the
+    # JEW-R465 (2026-04-30) failure: 48h walltime burned on a red_step_2 OPT
+    # that never had a properly scheduled red_step_1 predecessor.
+    from delfin import smart_recalc as _smart_recalc
+    _keep_cross_step = _smart_recalc.recalc_enabled()
     for job in postprocessing_jobs:
-        # Keep all original dependencies, including cross-step OPT references.
-        new_deps: Set[str] = set(job.dependencies)
+        if _keep_cross_step:
+            # Resume mode: keep all deps so cross-step OPT ordering is enforced.
+            new_deps: Set[str] = set(job.dependencies)
+        else:
+            # Fresh run: drop stale cross-step OPT deps to allow OPT-OPT parallelism.
+            new_deps = set()
+            for dep in job.dependencies:
+                if dep.startswith("occupier_ox_") or dep.startswith("occupier_red_"):
+                    logger.debug(
+                        "[combined] Dropping stale sequential dep %s from %s (fresh run)",
+                        dep,
+                        job.job_id,
+                    )
+                    continue
+                new_deps.add(dep)
 
         # Wire the correct OCCUPIER process dependency on top
         if job.job_id.startswith("occupier_"):
