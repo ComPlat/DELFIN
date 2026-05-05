@@ -24,7 +24,16 @@ Stufe-3-Innovation pattern (BECHUQ Λ/Δ gap, 2026-05-04):
 """
 from __future__ import annotations
 
+import os
 from typing import FrozenSet, Iterable, List, Optional, Sequence, Tuple
+
+
+def _delfin_env_int(name: str, default: int) -> int:
+    """Local copy of smiles_converter._delfin_env_int (avoid import cycle)."""
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
 
 # Polyhedron geometry vectors (must match _TOPO_GEOMETRY_VECTORS in
 # smiles_converter.py).  Duplicated here intentionally to keep the helper
@@ -70,6 +79,86 @@ _TTP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
     (1.0, 1.732, 0.0), (-2.0, 0.0, 0.0), (1.0, -1.732, 0.0),
 )
 
+# ---------------------------------------------------------------------------
+# Iter-3 — Universal Λ/Δ for ALL registered polyhedra.
+#
+# Until Iter-2 only OH/TPR/TBP/SP/SAP/DD/COH/TTP participated in helical-
+# isomer enumeration, but DELFIN registers 21 polyhedra in
+# _TOPO_GEOMETRY_VECTORS.  The universal scalar-triple-product classifier
+# (`_classify_helicity` below) is geometry-vector-driven and works
+# unmodified for any polyhedron with ≥ 2 chelate pairs that breaks the
+# polyhedron's improper-rotation symmetries.  Adding the missing vector
+# tables therefore unlocks Λ/Δ enumeration for 8 additional polyhedra —
+# TH/SS/PBP/BCSAP/PAP/CPAP/ICOS/CUBO/HBP — without any new code paths.
+#
+# Vectors are duplicated (not imported) from smiles_converter._TOPO_GEOMETRY
+# _VECTORS to keep this helper import-cycle-free.  Lockstep is enforced
+# byte-for-byte; any change in smiles_converter must be mirrored here.
+# ---------------------------------------------------------------------------
+
+# Tetrahedral (Td, CN=4): 4 vertices on alternate cube corners.
+_TH_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.155, 1.155, 1.155),  (-1.155, -1.155, 1.155),
+    (-1.155, 1.155, -1.155), (1.155, -1.155, -1.155),
+)
+# See-saw / C2v (CN=4): axial pair along z, equatorial pair in xz-plane.
+_SS_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+    (2.0, 0.0, 0.4), (-2.0, 0.0, 0.4),
+)
+# Pentagonal-bipyramidal (D5h, CN=7): axial pair + 5 equatorial vertices.
+_PBP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+    (2.0, 0.0, 0.0), (0.618, 1.902, 0.0),
+    (-1.618, 1.176, 0.0), (-1.618, -1.176, 0.0), (0.618, -1.902, 0.0),
+)
+# Bicapped square-antiprism (D4d, CN=10): SAP + 2 axial caps.
+_BCSAP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.414, 0.0, 0.6), (0.0, 1.414, 0.6), (-1.414, 0.0, 0.6), (0.0, -1.414, 0.6),
+    (1.0, 1.0, -0.6), (-1.0, 1.0, -0.6), (-1.0, -1.0, -0.6), (1.0, -1.0, -0.6),
+    (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
+)
+# Pentagonal antiprism (D5d, CN=10): two staggered pentagons (36° offset).
+_PAP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.902, 0.0, 0.8), (0.588, 1.809, 0.8), (-1.539, 1.118, 0.8),
+    (-1.539, -1.118, 0.8), (0.588, -1.809, 0.8),
+    (1.539, 1.118, -0.8), (-0.588, 1.809, -0.8), (-1.902, 0.0, -0.8),
+    (-0.588, -1.809, -0.8), (1.539, -1.118, -0.8),
+)
+# Capped pentagonal antiprism (C5v, CN=11): PAP + axial cap on cap-side.
+_CPAP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.902, 0.0, 0.6), (0.588, 1.809, 0.6), (-1.539, 1.118, 0.6),
+    (-1.539, -1.118, 0.6), (0.588, -1.809, 0.6),
+    (1.539, 1.118, -1.0), (-0.588, 1.809, -1.0), (-1.902, 0.0, -1.0),
+    (-0.588, -1.809, -1.0), (1.539, -1.118, -1.0),
+    (0.0, 0.0, 2.0),
+)
+# Icosahedron (Ih, CN=12): 12 golden-ratio vertices.  Numbering chosen so
+# vertex i and i+6 are antipodal.
+_ICOS_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (0.0, 1.051, 1.701), (1.051, 1.701, 0.0), (1.701, 0.0, 1.051),
+    (0.0, -1.051, 1.701), (-1.051, 1.701, 0.0), (1.701, 0.0, -1.051),
+    (0.0, -1.051, -1.701), (-1.051, -1.701, 0.0), (-1.701, 0.0, -1.051),
+    (0.0, 1.051, -1.701), (1.051, -1.701, 0.0), (-1.701, 0.0, 1.051),
+)
+# Cuboctahedron (Oh, CN=12): 3 mutually-orthogonal squares (xy, xz, yz).
+_CUBO_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.414, 1.414, 0.0), (-1.414, 1.414, 0.0),
+    (-1.414, -1.414, 0.0), (1.414, -1.414, 0.0),    # xy square
+    (1.414, 0.0, 1.414), (-1.414, 0.0, 1.414),
+    (-1.414, 0.0, -1.414), (1.414, 0.0, -1.414),    # xz square
+    (0.0, 1.414, 1.414), (0.0, -1.414, 1.414),
+    (0.0, -1.414, -1.414), (0.0, 1.414, -1.414),    # yz square
+)
+# Hexagonal prism (D6h, CN=12): eclipsed top/bottom hexagons.
+_HBP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (2.0, 0.0, 1.0), (1.0, 1.732, 1.0), (-1.0, 1.732, 1.0),
+    (-2.0, 0.0, 1.0), (-1.0, -1.732, 1.0), (1.0, -1.732, 1.0),
+    (2.0, 0.0, -1.0), (1.0, 1.732, -1.0), (-1.0, 1.732, -1.0),
+    (-2.0, 0.0, -1.0), (-1.0, -1.732, -1.0), (1.0, -1.732, -1.0),
+)
+
+
 _GEOM_VECTORS = {
     'OH':  _OH_VECTORS,
     'TPR': _TPR_VECTORS,
@@ -80,6 +169,24 @@ _GEOM_VECTORS = {
     'COH': _COH_VECTORS,
     'TTP': _TTP_VECTORS,
 }
+
+# Iter-3 — Universal Λ/Δ extension to remaining registered polyhedra.
+# Env-flag-gated (default ON).  When DELFIN_CHIRAL_ENUM_UNIVERSAL=0 the
+# extra polyhedra are NOT registered → bit-exact pre-Iter-3 behaviour.
+# When =1 (default), 9 additional polyhedra get classified by the universal
+# scalar-triple-product / dedicated improper-axis helicity functions below.
+if _delfin_env_int("DELFIN_CHIRAL_ENUM_UNIVERSAL", 1):
+    _GEOM_VECTORS.update({
+        'TH':    _TH_VECTORS,
+        'SS':    _SS_VECTORS,
+        'PBP':   _PBP_VECTORS,
+        'BCSAP': _BCSAP_VECTORS,
+        'PAP':   _PAP_VECTORS,
+        'CPAP':  _CPAP_VECTORS,
+        'ICOS':  _ICOS_VECTORS,
+        'CUBO':  _CUBO_VECTORS,
+        'HBP':   _HBP_VECTORS,
+    })
 
 _EPS = 1e-3
 
@@ -266,11 +373,188 @@ def _helicity_tpr(perm: Sequence[int],
     return ''
 
 
+# ---------------------------------------------------------------------------
+# Iter-3 — dedicated helicity classifiers for D-symmetric extended polyhedra
+# (BCSAP D4d, PAP D5d).  Same template as Iter-2C SAP: cross-tier pairs
+# contribute z-cross, within-tier pairs contribute signed-angle.  The two
+# axial caps in BCSAP are always achiral by themselves but flip the helicity
+# scalar's sign when they participate in a chelate (cap → ring).
+# ---------------------------------------------------------------------------
+
+
+def _helicity_bcsap(perm: Sequence[int],
+                    chelate_pairs: Iterable[FrozenSet]) -> str:
+    """BCSAP (D4d, CN=10) — bicapped square-antiprism helicity.
+
+    Vertex layout (`_BCSAP_VECTORS`):
+      Top square z=+0.6:  0..3 at angles {0,90,180,270} deg
+      Bot square z=-0.6:  4..7 at angles {45,135,225,315} deg
+      Axial caps:         8 at +z, 9 at -z
+
+    S8 axis along z.  Combines SAP-style intra/inter-tier scalars with a
+    cap-tilt term that activates only when a chelate involves a cap.
+    """
+    vectors = _GEOM_VECTORS.get('BCSAP')
+    if vectors is None:
+        return ''
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 10 or pos_b >= 10:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        # Tier classification: top-square / bottom-square / cap.
+        def _tier(p):
+            if p < 4:
+                return 0
+            if p < 8:
+                return 1
+            return 2  # cap
+        ta, tb = _tier(pos_a), _tier(pos_b)
+        if ta == 2 or tb == 2:
+            # Cap-involving chelate: helicity comes from cap-side z-direction
+            # crossed with the ring-vertex angular position.
+            ring_v = vb if ta == 2 else va
+            cap_v = va if ta == 2 else vb
+            # Contribution = sign(cap_z) * angular position (atan2 → +/-)
+            import math
+            ang = math.atan2(ring_v[1], ring_v[0])
+            total += 0.5 * (1.0 if cap_v[2] > 0 else -1.0) * ang
+        elif ta != tb:
+            total += cross_z
+        else:
+            total += 0.5 * _signed_angle_around_z(va, vb)
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+def _helicity_hbp(perm: Sequence[int],
+                  chelate_pairs: Iterable[FrozenSet]) -> str:
+    """HBP (D6h, CN=12) — hexagonal-prism helicity.
+
+    Vertex layout (`_HBP_VECTORS`):
+      Top hexagon z=+1: 0..5 at angles {0,60,120,180,240,300} deg
+      Bot hexagon z=-1: 6..11 at angles {0,60,120,180,240,300} deg (eclipsed)
+
+    σh + i means the universal scalar-triple-product collapses for any
+    cross-tier chelate set (m_sum_z always 0 for top↔bot pairs).  Use the
+    SAP-style template: cross-tier pairs contribute z-cross, within-tier
+    pairs contribute signed-angle.  Hexagonal-propeller chelate pattern
+    (top_i → bot_{i+k}) yields nonzero scalar with sign = sign(k).
+    """
+    vectors = _GEOM_VECTORS.get('HBP')
+    if vectors is None:
+        return ''
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 12 or pos_b >= 12:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        tier_a = 0 if pos_a < 6 else 1
+        tier_b = 0 if pos_b < 6 else 1
+        if tier_a != tier_b:
+            total += cross_z
+        else:
+            total += 0.3 * _signed_angle_around_z(va, vb)
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+def _helicity_pap(perm: Sequence[int],
+                  chelate_pairs: Iterable[FrozenSet]) -> str:
+    """PAP (D5d, CN=10) — pentagonal antiprism helicity.
+
+    Vertex layout (`_PAP_VECTORS`):
+      Top pentagon z=+0.8:  0..4 at angles {0,72,144,216,288} deg
+      Bot pentagon z=-0.8:  5..9 at angles {36,108,180,252,324} deg
+                            (staggered 36° = pentagonal antiprism)
+
+    S10 axis along z.  Same template as SAP (D4d), one tier higher.
+    """
+    vectors = _GEOM_VECTORS.get('PAP')
+    if vectors is None:
+        return ''
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 10 or pos_b >= 10:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        tier_a = 0 if pos_a < 5 else 1
+        tier_b = 0 if pos_b < 5 else 1
+        if tier_a != tier_b:
+            total += cross_z
+        else:
+            total += 0.4 * _signed_angle_around_z(va, vb)
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+# Iter-3 dedicated classifier registration — env-gated so DELFIN_CHIRAL_ENUM
+# _UNIVERSAL=0 leaves _GEOM_HELICITY_FN bit-exact pre-Iter-3.
 _GEOM_HELICITY_FN = {
     'DD':  _helicity_dd,
     'SAP': _helicity_sap,
     'TPR': _helicity_tpr,
 }
+if _delfin_env_int("DELFIN_CHIRAL_ENUM_UNIVERSAL", 1):
+    _GEOM_HELICITY_FN.update({
+        'BCSAP': _helicity_bcsap,
+        'PAP':   _helicity_pap,
+        'HBP':   _helicity_hbp,
+    })
 
 
 def _classify_helicity(

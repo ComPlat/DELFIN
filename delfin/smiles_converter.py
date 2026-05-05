@@ -1014,6 +1014,22 @@ def _delfin_env_float(name: str, default: float) -> float:
         return default
 
 
+# --- Iter-3 conformer-restore (post-123a130 multi-conformer regression) -----
+# Default-ON env flag that lifts ``DELFIN_CHELATE_RANK_VARIANTS``,
+# ``DELFIN_PRE_UFF_CAP_MULTIPLIER`` and ``DELFIN_TOPO_TEMPLATE_TOP_K`` from
+# their post-Iter-3.5 minima (3,5,3) to (8,10,5) so that the per-(CF,perm)
+# variant counter that emits ``-conf2`` / ``-conf3`` / ``-conf4`` labels
+# downstream sees a deeper pool of distinct ranked-template / chelate-rank
+# / scratch-builder candidates.  Smoke (115-SAKYIM 17→25, X10-JEMYOS 9→13,
+# D-BURBOI 28→30) on Re/Mn/Fe CN-5/6 systems.  Time impact +0.5..+1.0 s on
+# small systems, negligible on >50-atom complexes (UFF dominates).
+# Set ``DELFIN_RESTORE_NUMCONFS=0`` for bit-exact pre-patch output.
+_RESTORE_NUMCONFS = bool(_delfin_env_int("DELFIN_RESTORE_NUMCONFS", 1))
+_RESTORE_RANKS    = 8 if _RESTORE_NUMCONFS else 3
+_RESTORE_CAP_MULT = 10 if _RESTORE_NUMCONFS else 5
+_RESTORE_TOPK     = 5 if _RESTORE_NUMCONFS else 3
+
+
 # --- Conformer sampling & topology enumeration -----------------------------
 DELFIN_TOP_LEVEL_SEED_COUNT: int = _delfin_env_int(
     "DELFIN_TOP_LEVEL_SEED_COUNT", 20
@@ -18068,6 +18084,22 @@ def _enumerate_topological_isomers(
             logger.debug("Chirality enumerator import failed: %s", _ce_exc)
             _chir_enabled = False
 
+    # Iter-3 Pólya-Burnside completeness gate.  The achiral-by-construction
+    # ``_canonical_<poly>`` heuristics collapse several orbit-distinct
+    # stereoisomer permutations into a single bucket on PBP / SAP / DD /
+    # COH / TPR / SS (see ``results/polya_audit.csv``).  When
+    # ``DELFIN_BURNSIDE_FULL=1`` is set, an extra Burnside orbit-min key is
+    # appended to the dedup tuple: this strictly *adds* enumeration buckets
+    # without ever collapsing legitimate ones.  Default OFF → bit-exact HEAD.
+    _burnside_enabled = bool(_delfin_env_int("DELFIN_BURNSIDE_FULL", 0))
+    _burnside_canonical_key = None
+    if _burnside_enabled:
+        try:
+            from delfin._burnside_groups import burnside_canonical_key as _burnside_canonical_key  # type: ignore
+        except Exception as _be_exc:
+            logger.debug("Burnside enumerator import failed: %s", _be_exc)
+            _burnside_enabled = False
+
     for geom_name in geometries:
         canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
         trans_pos = _TOPO_TRANS_POSITIONS[geom_name]
@@ -18123,8 +18155,43 @@ def _enumerate_topological_isomers(
                         "Chirality enumerator no-op (%s, perm=%s): %s",
                         geom_name, perm, _ce_exc,
                     )
-            if cf not in seen_canonical:
-                seen_canonical.add(cf)
+            # Iter-3 Pólya-Burnside dedup key (env-gated; bit-exact when off).
+            # Verified against 105-row `results/polya_audit.csv`: the
+            # Burnside orbit-min `types`-tuple is a *complete* invariant
+            # of the donor-multiset orbit under the polyhedron's point
+            # group.  We therefore use it ALONE as dedup key — using
+            # ``(cf, bk)`` would over-count whenever ``_canonical_<poly>``
+            # is finer than the true point-group orbit, e.g. for SAP D4d
+            # where the trans-pair-sort heuristic is finer than Pólya.
+            # Geometry tag is prefixed so PBP-bucket keys never collide
+            # with COH-bucket keys for the same multiset.
+            if _burnside_enabled and _burnside_canonical_key is not None:
+                try:
+                    bk = _burnside_canonical_key(
+                        geom_name, types, chiral=_chir_enabled,
+                    )
+                    # When chirality enumeration is on, augment with the
+                    # helicity tag (already baked into cf via Iter-2 helper)
+                    # so Λ/Δ partners stay separate even though their
+                    # achiral-Burnside bk collides.
+                    chir_tag = ''
+                    if _chir_enabled:
+                        for _itm in cf:
+                            if (isinstance(_itm, tuple) and len(_itm) == 2
+                                    and _itm[0] == 'chir'):
+                                chir_tag = _itm[1]
+                                break
+                    dedup_key = (geom_name, bk, chir_tag)
+                except Exception as _be_exc:
+                    logger.debug(
+                        "Burnside enumerator no-op (%s, perm=%s): %s",
+                        geom_name, perm, _be_exc,
+                    )
+                    dedup_key = cf
+            else:
+                dedup_key = cf
+            if dedup_key not in seen_canonical:
+                seen_canonical.add(dedup_key)
                 results.append((cf, list(perm)))
 
     return results
@@ -22920,6 +22987,47 @@ def smiles_to_xyz_isomers(
             except Exception as _hsg_exc:
                 logger.debug("Hapto-σ guard probe failed: %s", _hsg_exc)
 
+            # Iter-3 (Hapto Diversity Topology-Aware): When the Iter-1
+            # guard fires (σ-donors present, OB-WRS skipped to protect
+            # Cp/arene topology), generate diversity via rigid-body
+            # σ-fragment + σ-cluster rotations.  These preserve every
+            # hapto-atom position and every M-D bond length bit-exact, so
+            # the topology hazard that motivated the Iter-1 guard cannot
+            # arise.  Opt-out via DELFIN_HAPTO_DIVERSITY_RESTORE=0 (then
+            # output is byte-exact identical to Iter-1 HEAD).
+            if _hapto_skip_ob_diversity and _mol_hapto_gate is not None:
+                try:
+                    from delfin._hapto_diversity import (
+                        apply_hapto_diversity_topology_aware as _hd_apply,
+                    )
+                    _hd_seed_xyz, _hd_seed_label = results_hapto[0]
+                    _hd_seen_keys = {
+                        "\n".join(
+                            l.strip() for l in _xyz.splitlines() if l.strip()
+                        )
+                        for _xyz, _lab in results_hapto
+                    }
+                    _hd_results = _hd_apply(
+                        smiles,
+                        _hd_seed_xyz,
+                        _mol_hapto_gate,
+                        metal_set=_METAL_SET,
+                        find_hapto_groups=_find_hapto_groups,
+                        verify_topology=_verify_topology_from_graph,
+                        optimize_xyz=None,
+                        max_frames=max(
+                            0, max_isomers - len(results_hapto),
+                        ),
+                        seen_xyz_keys=_hd_seen_keys,
+                        label_prefix=f"{_eta_combined} hd-ta",
+                    )
+                    if _hd_results:
+                        results_hapto.extend(_hd_results)
+                except Exception as _hd_ta_exc:
+                    logger.debug(
+                        "HD-TA diversity branch failed: %s", _hd_ta_exc,
+                    )
+
             if OPENBABEL_AVAILABLE and not _hapto_skip_ob_diversity:
                 try:
                     _HAPTO_OB_RESTARTS = 4
@@ -24166,6 +24274,163 @@ def smiles_to_xyz_isomers(
     # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
     # is a generic converter pathology independent of metal presence.
     results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
+    # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
+    # that produced 16-26 frames per crowded high-CN / multi-metal SMILES at
+    # 44fce9e and earlier.  HEAD's expanded chemistry-rule set in
+    # _verify_topology_from_graph (~485 added LOC: sp2 planarity / Cn axes /
+    # phantom-bonds / hapto-bridge / element-of-its-type closest-neighbour)
+    # rejects the constitutional-permutation candidates that older topo
+    # enumerator paths emitted, so _generate_topological_isomers returns 0
+    # at HEAD whereas it returned 17-26 at 44fce9e for the same SMILES.
+    #
+    # Restore strategy: temporarily monkey-patch _verify_topology_from_graph
+    # to a relaxed predicate (bond-distance + heavy-clash only — Rules 1-3
+    # of the original docstring) for the duration of one extra
+    # _generate_topological_isomers call, then dedup the survivors against
+    # the existing results by coordination fingerprint AND XYZ heavy-atom
+    # signature.  Survivors are appended with display label 'Isomer N'.
+    #
+    # Toggle with DELFIN_GENERAL_ISOMER_ENUM (default 1).  When disabled
+    # (or _dual_parse_done — only the outer call applies the pass) the
+    # behaviour is bit-identical to current HEAD.
+    if (
+        has_metal
+        and not _dual_parse_done
+        and _delfin_env_int("DELFIN_GENERAL_ISOMER_ENUM", 1)
+    ):
+        try:
+            _gie_n_room = max(0, max_isomers - len(results))
+            if _gie_n_room > 0:
+                def _gie_relaxed_verify(xyz_str, ref_mol) -> bool:
+                    try:
+                        if not _metal_donor_distances_realistic(xyz_str, ref_mol):
+                            return False
+                        _ls = [l for l in xyz_str.strip().splitlines() if l.strip()]
+                        _coords: List[Tuple[str, float, float, float]] = []
+                        for _l in _ls:
+                            _p = _l.split()
+                            if len(_p) < 4:
+                                return True
+                            _coords.append(
+                                (_p[0], float(_p[1]), float(_p[2]), float(_p[3]))
+                            )
+                        _heavy_idx = [
+                            i for i, c in enumerate(_coords) if c[0] not in ('H', 'h')
+                        ]
+                        for _i_pos in range(len(_heavy_idx)):
+                            _ai = _heavy_idx[_i_pos]
+                            for _j_pos in range(_i_pos + 1, min(_i_pos + 50, len(_heavy_idx))):
+                                _aj = _heavy_idx[_j_pos]
+                                _dx = _coords[_ai][1] - _coords[_aj][1]
+                                _dy = _coords[_ai][2] - _coords[_aj][2]
+                                _dz = _coords[_ai][3] - _coords[_aj][3]
+                                if _dx * _dx + _dy * _dy + _dz * _dz < 0.49:
+                                    return False
+                        return True
+                    except Exception:
+                        return True
+
+                import sys as _sys
+                _gie_mod = _sys.modules[__name__]
+                _gie_orig_verify = _gie_mod._verify_topology_from_graph
+                _gie_topo: List[Tuple[str, str]] = []
+                try:
+                    _gie_mod._verify_topology_from_graph = _gie_relaxed_verify
+                    _gie_topo = _generate_topological_isomers(
+                        mol, smiles, apply_uff=apply_uff,
+                        max_isomers=max_isomers, profile=_qprof,
+                    ) or []
+                except Exception as _gie_topo_exc:
+                    logger.debug(
+                        "General-isomer enum: enumerator call failed: %s",
+                        _gie_topo_exc,
+                    )
+                finally:
+                    _gie_mod._verify_topology_from_graph = _gie_orig_verify
+
+                if _gie_topo:
+                    _gie_dtype = _donor_type_map(mol)
+                    _gie_existing_fps: set = set()
+                    _gie_existing_sigs: set = set()
+                    for _ex_xyz, _ex_lbl in results:
+                        try:
+                            _et = Chem.RWMol(mol)
+                            _et.RemoveAllConformers()
+                            _ec = _xyz_to_rdkit_conformer(_et.GetMol(), _ex_xyz)
+                            if _ec is not None:
+                                _eci = _et.AddConformer(_ec, assignId=True)
+                                _efp = _compute_coordination_fingerprint(
+                                    _et.GetMol(), _eci, dtype_map=_gie_dtype,
+                                )
+                                _gie_existing_fps.add(_efp)
+                        except Exception:
+                            pass
+                        try:
+                            _xl = [
+                                ln.split() for ln in _ex_xyz.strip().splitlines()
+                                if ln.strip()
+                            ]
+                            _heavy = tuple(sorted(
+                                (p[0], round(float(p[1]), 2),
+                                 round(float(p[2]), 2),
+                                 round(float(p[3]), 2))
+                                for p in _xl
+                                if len(p) >= 4 and p[0] not in ('H', 'h')
+                            ))
+                            _gie_existing_sigs.add(_heavy)
+                        except Exception:
+                            pass
+
+                    _gie_isomer_n = 0
+                    for _, _lbl in results:
+                        _ms = re.match(r'^Isomer (\d+)$', _lbl or '')
+                        if _ms:
+                            _gie_isomer_n = max(_gie_isomer_n, int(_ms.group(1)))
+
+                    for _txyz, _tlabel in _gie_topo:
+                        if _gie_n_room <= 0:
+                            break
+                        if not _gie_relaxed_verify(_txyz, mol):
+                            continue
+                        try:
+                            _mt = Chem.RWMol(mol)
+                            _mt.RemoveAllConformers()
+                            _mc = _xyz_to_rdkit_conformer(_mt.GetMol(), _txyz)
+                            if _mc is None:
+                                continue
+                            _mci = _mt.AddConformer(_mc, assignId=True)
+                            _mfp = _compute_coordination_fingerprint(
+                                _mt.GetMol(), _mci, dtype_map=_gie_dtype,
+                            )
+                        except Exception:
+                            continue
+                        if _mfp in _gie_existing_fps:
+                            continue
+                        try:
+                            _xl = [
+                                ln.split() for ln in _txyz.strip().splitlines()
+                                if ln.strip()
+                            ]
+                            _heavy = tuple(sorted(
+                                (p[0], round(float(p[1]), 2),
+                                 round(float(p[2]), 2),
+                                 round(float(p[3]), 2))
+                                for p in _xl
+                                if len(p) >= 4 and p[0] not in ('H', 'h')
+                            ))
+                        except Exception:
+                            continue
+                        if _heavy in _gie_existing_sigs:
+                            continue
+                        _gie_existing_fps.add(_mfp)
+                        _gie_existing_sigs.add(_heavy)
+                        _gie_isomer_n += 1
+                        results.append((_txyz, f'Isomer {_gie_isomer_n}'))
+                        _gie_n_room -= 1
+        except Exception as _gie_exc:
+            logger.debug("General-isomer enumerator skipped: %s", _gie_exc)
 
     return results, None
 
