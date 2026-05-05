@@ -60,6 +60,15 @@ _COH_VECTORS: Tuple[Tuple[float, float, float], ...] = (
     (0.0, 0.0, 2.0), (0.0, 0.0, -2.0),
     (1.155, 1.155, 1.155),
 )
+# Tricapped trigonal prism (D3h, CN=9): 6 prism vertices (top z=+1.155,
+# bottom z=-1.155, eclipsed) + 3 equatorial caps at z=0 between prism edges.
+# Identical to _TOPO_GEOMETRY_VECTORS['TTP'] in smiles_converter.py - kept in
+# lockstep so chirality classifier and isomer enumerator agree on positions.
+_TTP_VECTORS: Tuple[Tuple[float, float, float], ...] = (
+    (1.633, 0.0, 1.155), (-0.816, 1.414, 1.155), (-0.816, -1.414, 1.155),
+    (1.633, 0.0, -1.155), (-0.816, 1.414, -1.155), (-0.816, -1.414, -1.155),
+    (1.0, 1.732, 0.0), (-2.0, 0.0, 0.0), (1.0, -1.732, 0.0),
+)
 
 _GEOM_VECTORS = {
     'OH':  _OH_VECTORS,
@@ -69,6 +78,7 @@ _GEOM_VECTORS = {
     'SAP': _SAP_VECTORS,
     'DD':  _DD_VECTORS,
     'COH': _COH_VECTORS,
+    'TTP': _TTP_VECTORS,
 }
 
 _EPS = 1e-3
@@ -92,6 +102,175 @@ def _sub(a: Sequence[float], b: Sequence[float]) -> Tuple[float, float, float]:
 
 def _norm2(a: Sequence[float]) -> float:
     return _dot(a, a)
+
+
+# ---------------------------------------------------------------------------
+# Iter-2C polyhedron-specific Λ/Δ classifiers (DD, SAP, TPR)
+#
+# The universal scalar-triple-product (used for OH/TBP/SP/COH below) collapses
+# to zero for several D2d/D4d/D3h-symmetric chelate-pair configurations, so
+# DD CN8, SAP CN8, TPR CN6 receive dedicated classifiers driven by the
+# *signed projection of the chelate-pair cross-product onto the principal
+# improper-rotation axis* of the polyhedron (z by construction in our
+# canonical vector-set).  No SMILES-, refcode-, or element-specific logic.
+# ---------------------------------------------------------------------------
+
+
+def _signed_angle_around_z(va: Sequence[float], vb: Sequence[float]) -> float:
+    """Signed planar angle from va->vb measured CCW around the +z axis.
+
+    Returns a number in (-pi, +pi].  Used as a tier-internal handedness
+    discriminator for SAP and TPR where the principal axis is z.
+    """
+    import math
+    ang_a = math.atan2(va[1], va[0])
+    ang_b = math.atan2(vb[1], vb[0])
+    d = ang_b - ang_a
+    while d > math.pi:
+        d -= 2 * math.pi
+    while d < -math.pi:
+        d += 2 * math.pi
+    return d
+
+
+def _helicity_dd(perm: Sequence[int],
+                 chelate_pairs: Iterable[FrozenSet]) -> str:
+    """DD (D2d, CN=8) - interpenetrating-trapezoid helicity.
+
+    Vertex layout (`_DD_VECTORS`):
+      Trap-A:   0,2 at (+/-x,0,+1); 1,3 at (0,+/-y,-1)   - alternating tier
+      Trap-B:   4-7 at (+/-0.9,+/-0.9, 0)                - middle ring
+
+    S4 axis along z.  Helicity scalar combines (1) the z-component of the
+    chelate-spanning cross-product and (2) a tier-tilt term distinguishing
+    Trap-A vs Trap-B (vertices 0..3 vs 4..7).
+    """
+    vectors = _GEOM_VECTORS['DD']
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 8 or pos_b >= 8:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        # z-projected angular-momentum term
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        # tier-tilt term: distinguishes Trap-A (pos<4) vs Trap-B (pos>=4)
+        tier_a = 1 if pos_a < 4 else -1
+        tier_b = 1 if pos_b < 4 else -1
+        tier_tilt = 0.5 * (tier_a - tier_b) * (va[2] + vb[2])
+        total += cross_z + tier_tilt
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+def _helicity_sap(perm: Sequence[int],
+                  chelate_pairs: Iterable[FrozenSet]) -> str:
+    """SAP (D4d, CN=8) - square-antiprismatic helicity.
+
+    Vertex layout (`_SAP_VECTORS`):
+      Top square z=+0.8: 0..3 at angles {0, 90, 180, 270} deg
+      Bot square z=-0.8: 4..7 at angles {45, 135, 225, 315} deg
+
+    S8 axis along z. Helicity scalar = z-cross of cross-tier chelate pairs
+    + signed-angle of within-tier chelate pairs.
+    """
+    vectors = _GEOM_VECTORS['SAP']
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 8 or pos_b >= 8:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        tier_a = 0 if pos_a < 4 else 1
+        tier_b = 0 if pos_b < 4 else 1
+        if tier_a != tier_b:
+            total += cross_z
+        else:
+            total += 0.5 * _signed_angle_around_z(va, vb)
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+def _helicity_tpr(perm: Sequence[int],
+                  chelate_pairs: Iterable[FrozenSet]) -> str:
+    """TPR (D3h, CN=6) - eclipsed trigonal-prism helicity.
+
+    Vertex layout (`_TPR_VECTORS`):
+      Top triangle z=+1: 0,1,2 at angles {0, 120, 240} deg
+      Bot triangle z=-1: 3,4,5 at angles {0, 120, 240} deg (eclipsed)
+    """
+    vectors = _GEOM_VECTORS['TPR']
+    perm_list = list(perm)
+    total = 0.0
+    pair_count = 0
+    for cp in chelate_pairs:
+        pair = sorted(cp)
+        if len(pair) != 2:
+            continue
+        try:
+            pos_a = perm_list.index(pair[0])
+            pos_b = perm_list.index(pair[1])
+        except ValueError:
+            continue
+        if pos_a >= 6 or pos_b >= 6:
+            continue
+        va = vectors[pos_a]
+        vb = vectors[pos_b]
+        cross_z = va[0] * vb[1] - va[1] * vb[0]
+        tier_a = 0 if pos_a < 3 else 1
+        tier_b = 0 if pos_b < 3 else 1
+        if tier_a != tier_b:
+            total += cross_z
+        else:
+            total += 0.7 * _signed_angle_around_z(va, vb)
+        pair_count += 1
+    if pair_count < 2:
+        return ''
+    if total > _EPS:
+        return 'L'
+    if total < -_EPS:
+        return 'D'
+    return ''
+
+
+_GEOM_HELICITY_FN = {
+    'DD':  _helicity_dd,
+    'SAP': _helicity_sap,
+    'TPR': _helicity_tpr,
+}
 
 
 def _classify_helicity(
@@ -132,6 +311,15 @@ def _classify_helicity(
         '' if helicity undefined: < 2 chelate pairs, geometry without
         registered vectors, all triples ≤ EPS (achiral by construction).
     """
+    # Iter-2C: dispatch DD / SAP / TPR to their polyhedron-specific
+    # classifiers driven by the principal-improper-axis projection.  The
+    # universal scalar-triple-product fall-through covers OH, TBP, SP, COH
+    # (and any future polyhedron registered only in _GEOM_VECTORS without
+    # a dedicated helicity_fn).
+    fn = _GEOM_HELICITY_FN.get(geometry)
+    if fn is not None:
+        return fn(perm, chelate_pairs)
+
     vectors = _GEOM_VECTORS.get(geometry)
     if vectors is None:
         return ''

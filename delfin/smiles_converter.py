@@ -778,6 +778,57 @@ _PREFERRED_CN6_GEOMETRY: Dict[str, str] = {
     'Mo': 'OH', 'W': 'OH', 'Re': 'OH',
 }
 
+# ---------------------------------------------------------------------------
+# Iter-2 Subagent A - complete polyhedra per CN (Polya enumeration).
+# Used when DELFIN_ALL_POLYHEDRA=1 (default ON) for call sites that
+# previously picked ONE preferred polyhedron per metal.  Stable-first order
+# keeps legacy preferred polyhedron leading; new entries appended LAST.
+# Bit-exact HEAD when env-flag is 0.
+# ---------------------------------------------------------------------------
+_ALL_CN3_POLYHEDRA: Tuple[str, ...] = ('TP', 'TS')          # trig-planar, T-shape
+_ALL_CN4_POLYHEDRA: Tuple[str, ...] = ('TH', 'SQ', 'SS')    # tet, sq-planar, see-saw
+_ALL_CN5_POLYHEDRA: Tuple[str, ...] = ('TBP', 'SP')         # trig-bipyr, sq-pyr
+_ALL_CN6_POLYHEDRA: Tuple[str, ...] = ('OH', 'TPR')         # octahedral, trig-prism
+_ALL_CN7_POLYHEDRA: Tuple[str, ...] = ('PBP', 'COH')        # pent-bipyr, capped-oct
+_ALL_CN8_POLYHEDRA: Tuple[str, ...] = ('SAP', 'DD')         # sq-antiprism, dodecahedral
+
+_ALL_POLYHEDRA_BY_CN: Dict[int, Tuple[str, ...]] = {
+    3: _ALL_CN3_POLYHEDRA,
+    4: _ALL_CN4_POLYHEDRA,
+    5: _ALL_CN5_POLYHEDRA,
+    6: _ALL_CN6_POLYHEDRA,
+    7: _ALL_CN7_POLYHEDRA,
+    8: _ALL_CN8_POLYHEDRA,
+}
+
+
+def _all_polyhedra_codes(n_coord: int, metal_symbol: str,
+                         legacy_codes: List[str]) -> List[str]:
+    """Iter-2 Subagent A - polyhedron-completeness dispatch.
+
+    When DELFIN_ALL_POLYHEDRA=1 (default ON): return the complete polyhedra
+    set for ``n_coord`` with the metal's preferred polyhedron first
+    (stable order, additive vs ``legacy_codes``).
+    When DELFIN_ALL_POLYHEDRA=0: return ``legacy_codes`` unchanged.
+
+    User-Direktive 2026-05-05: "wir muessen IMMER ALLE koordinationsisomere
+    bauen und generieren" - DELFIN must enumerate ALL polyhedra per CN, not
+    pick one preferred via metal-identity heuristic.
+    """
+    if not _delfin_env_int("DELFIN_ALL_POLYHEDRA", 1):
+        return list(legacy_codes)
+    full = _ALL_POLYHEDRA_BY_CN.get(int(n_coord))
+    if not full:
+        return list(legacy_codes)
+    seen: set = set()
+    ordered: List[str] = []
+    for code in list(legacy_codes) + list(full):
+        if code in seen:
+            continue
+        seen.add(code)
+        ordered.append(code)
+    return ordered
+
 
 def _is_simple_organometallic(smiles: str) -> bool:
     """Heuristic: simple organometallics like C[Mg]Br where adding Hs is wrong."""
@@ -2057,21 +2108,27 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
         )
 
         if has_4coord:
-            # Try both tetrahedral and square-planar vectors
+            # Try tetrahedral, square-planar, and (Iter-2 Subagent A) see-saw vectors.
+            # Bit-exact HEAD when DELFIN_ALL_POLYHEDRA=0 (SS branch is gated off).
             tetra_vecs = [(1, 1, 1), (-1, -1, 1), (-1, 1, -1), (1, -1, -1)]
             sq_vecs = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)]
+            ss_vecs = [(0, 0, 1), (0, 0, -1), (1, 0, 0.2), (-1, 0, 0.2)]
 
             # Determine preferred geometry from metal identity
             metal_syms = [mol.GetAtomWithIdx(mi).GetSymbol() for mi in metal_indices]
             pref_geom = _PREFERRED_CN4_GEOMETRY.get(metal_syms[0], 'SQ')
+            _all_poly_on = bool(_delfin_env_int("DELFIN_ALL_POLYHEDRA", 1))
 
             xyz_tetra = _build_xyz_for_4coord_vecs(tetra_vecs)
             xyz_sq = _build_xyz_for_4coord_vecs(sq_vecs)
+            xyz_ss = _build_xyz_for_4coord_vecs(ss_vecs) if _all_poly_on else None
 
-            # OB UFF refinement for both — through safe wrapper for
+            # OB UFF refinement for all candidates — through safe wrapper for
             # universal coordination constraints.
             xyz_tetra = _optimize_xyz_openbabel_safe(xyz_tetra, mol_template=mol)
             xyz_sq = _optimize_xyz_openbabel_safe(xyz_sq, mol_template=mol)
+            if xyz_ss is not None:
+                xyz_ss = _optimize_xyz_openbabel_safe(xyz_ss, mol_template=mol)
 
             # H-placement: trust OB UFF output above (environment-aware
             # energy minimisation).  Disabled `_fix_h_geometry_universal`
@@ -2086,12 +2143,25 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                 mol_tmp.RemoveAllConformers()
                 conf_t = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_tetra)
                 conf_s = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_sq)
+                conf_ss = (
+                    _xyz_to_rdkit_conformer(mol_tmp.GetMol(), xyz_ss)
+                    if xyz_ss is not None else None
+                )
                 if conf_t is not None and conf_s is not None:
                     cid_t = mol_tmp.AddConformer(conf_t, assignId=True)
                     cid_s = mol_tmp.AddConformer(conf_s, assignId=True)
                     score_t = _geometry_quality_score(mol_tmp.GetMol(), cid_t)
                     score_s = _geometry_quality_score(mol_tmp.GetMol(), cid_s)
-                    xyz_str = xyz_tetra if score_t <= score_s else xyz_sq
+                    best_xyz = xyz_tetra if score_t <= score_s else xyz_sq
+                    best_score = score_t if score_t <= score_s else score_s
+                    # Iter-2 Subagent A: include SS in score-off when active.
+                    if conf_ss is not None and xyz_ss is not None:
+                        cid_ss = mol_tmp.AddConformer(conf_ss, assignId=True)
+                        score_ss = _geometry_quality_score(mol_tmp.GetMol(), cid_ss)
+                        if score_ss < best_score:
+                            best_xyz = xyz_ss
+                            best_score = score_ss
+                    xyz_str = best_xyz
                 else:
                     # Use metal-preferred geometry as fallback
                     xyz_str = xyz_tetra if pref_geom == 'TH' else xyz_sq
@@ -4183,23 +4253,28 @@ def _secondary_metal_geometry_codes(n_coord: int, metal_symbol: str) -> List[str
     """Return geometry candidates for explicit secondary-metal placement."""
     if n_coord <= 1:
         return []
+    # Iter-2 Subagent A: legacy list (HEAD-bit-exact when DELFIN_ALL_POLYHEDRA=0)
+    # passed as the seed `legacy_codes` so env=0 path is unmodified.  When
+    # env=1, helper appends missing polyhedra (SS for CN4, TPR for CN6, etc.).
     if n_coord == 2:
-        return ['LIN']
-    if n_coord == 3:
-        return ['TP', 'TS']
-    if n_coord == 4:
+        legacy = ['LIN']
+    elif n_coord == 3:
+        legacy = ['TP', 'TS']
+    elif n_coord == 4:
         pref = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
         other = 'TH' if pref == 'SQ' else 'SQ'
-        return [pref, other]
-    if n_coord == 5:
-        return ['TBP', 'SP']
-    if n_coord == 6:
-        return ['OH']
-    if n_coord == 7:
-        return ['PBP']
-    if n_coord == 8:
-        return ['SAP', 'DD']
-    return []
+        legacy = [pref, other]
+    elif n_coord == 5:
+        legacy = ['TBP', 'SP']
+    elif n_coord == 6:
+        legacy = ['OH']
+    elif n_coord == 7:
+        legacy = ['PBP']
+    elif n_coord == 8:
+        legacy = ['SAP', 'DD']
+    else:
+        return []
+    return _all_polyhedra_codes(n_coord, metal_symbol, legacy)
 
 
 def _fit_secondary_metal_model_to_targets(
@@ -17794,24 +17869,24 @@ def _enumerate_topological_isomers(
     if n_coord == 2:
         geometries = ['LIN']
     elif n_coord == 3:
-        geometries = ['TP', 'TS']
+        geometries = _all_polyhedra_codes(3, metal_symbol, ['TP', 'TS'])
     elif n_coord == 4:
         # Metal-aware geometry ordering: preferred geometry first
         pref = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
         other = 'TH' if pref == 'SQ' else 'SQ'
-        geometries = [pref, other, 'SS']
+        geometries = _all_polyhedra_codes(4, metal_symbol, [pref, other, 'SS'])
     elif n_coord == 5:
         pref5 = _PREFERRED_CN5_GEOMETRY.get(metal_symbol, 'TBP')
         other5 = 'SP' if pref5 == 'TBP' else 'TBP'
-        geometries = [pref5, other5]
+        geometries = _all_polyhedra_codes(5, metal_symbol, [pref5, other5])
     elif n_coord == 6:
         pref6 = _PREFERRED_CN6_GEOMETRY.get(metal_symbol, 'OH')
         other6 = 'TPR' if pref6 == 'OH' else 'OH'
-        geometries = [pref6, other6]
+        geometries = _all_polyhedra_codes(6, metal_symbol, [pref6, other6])
     elif n_coord == 7:
-        geometries = ['PBP', 'COH']
+        geometries = _all_polyhedra_codes(7, metal_symbol, ['PBP', 'COH'])
     elif n_coord == 8:
-        geometries = ['SAP', 'DD']
+        geometries = _all_polyhedra_codes(8, metal_symbol, ['SAP', 'DD'])
     elif n_coord == 9:
         geometries = ['TTP']
     else:
