@@ -24432,6 +24432,34 @@ def smiles_to_xyz_isomers(
         except Exception as _gie_exc:
             logger.debug("General-isomer enumerator skipped: %s", _gie_exc)
 
+    # ── Iter-3.1 H1 universal aromatic-H projection (env-gated, default ON) ──
+    # Iter-3 added new emit paths (Hapto-Diversity-Topology-Aware, General-
+    # Isomer-N, conformer multiplication) that bypass the upstream
+    # _snap_aromatic_rings_in_xyz call sites.  This left aromatic-H atoms in
+    # ETKDG sp³-like positions, producing AROM_OOP +1097 anomalies vs Iter-1.
+    # User direktive 2026-05-05: H must be realistic at aromatics.
+    # Apply Iter-9 H1 (project ring-attached H onto π-plane) to every result
+    # frame as a final post-emit pass.  Topology-preserving (heavy atoms
+    # untouched), only H atoms move perpendicular to the SVD-fit ring plane.
+    # Toggle: DELFIN_H1_PROJECT_ALL=0 → bit-exact Iter-3 (no projection).
+    if has_metal and _delfin_env_int("DELFIN_H1_PROJECT_ALL", 1):
+        try:
+            _h1_results: List[Tuple[str, str]] = []
+            for _h1_xyz, _h1_lbl in results:
+                try:
+                    _h1_xyz_snapped = _snap_aromatic_rings_in_xyz(
+                        _h1_xyz, mol, rms_threshold=0.05,
+                    )
+                    _h1_results.append((_h1_xyz_snapped, _h1_lbl))
+                except Exception as _h1_inner_exc:
+                    logger.debug(
+                        "H1 projection skipped for one frame: %s", _h1_inner_exc,
+                    )
+                    _h1_results.append((_h1_xyz, _h1_lbl))
+            results = _h1_results
+        except Exception as _h1_exc:
+            logger.debug("H1 universal projection failed: %s", _h1_exc)
+
     return results, None
 
 
