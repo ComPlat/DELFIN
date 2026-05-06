@@ -787,6 +787,7 @@ class KitToolPermissions:
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
+    extra_workspace_dirs: tuple[Path, ...] = ()
     bash_timeout_s: int = 120
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
@@ -800,6 +801,46 @@ class KitToolPermissions:
         valid = {"plan", "default", "acceptEdits", "bypassPermissions"}
         if self.mode not in valid:
             raise ValueError(f"mode must be one of {valid}, got {self.mode!r}")
+        resolved_extra: list[Path] = []
+        for d in self.extra_workspace_dirs or ():
+            try:
+                p = Path(d).expanduser().resolve()
+            except Exception:
+                continue
+            if p == self.workspace:
+                continue
+            if p not in resolved_extra:
+                resolved_extra.append(p)
+        self.extra_workspace_dirs = tuple(resolved_extra)
+
+    def all_workspace_roots(self) -> tuple[Path, ...]:
+        return (self.workspace,) + tuple(self.extra_workspace_dirs)
+
+    def add_extra_dir(self, path) -> Path:
+        """Add ``path`` to the allowed workspace roots.
+
+        Returns the resolved path. Raises ValueError if the path does not
+        exist or is not a directory. Idempotent: re-adding is a no-op.
+        """
+        p = Path(path).expanduser().resolve()
+        if not p.exists():
+            raise ValueError(f"path does not exist: {p}")
+        if not p.is_dir():
+            raise ValueError(f"path is not a directory: {p}")
+        if p == self.workspace or p in self.extra_workspace_dirs:
+            return p
+        self.extra_workspace_dirs = tuple(self.extra_workspace_dirs) + (p,)
+        return p
+
+    def find_root_for(self, resolved: Path) -> Optional[Path]:
+        """Return the workspace root that contains ``resolved``, or None."""
+        for root in self.all_workspace_roots():
+            try:
+                resolved.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
 
     def matches_path_deny(self, rel_path: str) -> bool:
         rp = rel_path.replace("\\", "/")
@@ -1525,6 +1566,16 @@ class _DocToolExecutor:
     def _workspace_root(self, perms: "KitToolPermissions") -> Path:
         return perms.workspace
 
+    def _display_path(self, resolved: Path, perms: "KitToolPermissions") -> str:
+        """Render a resolved path as workspace-relative when possible, else absolute."""
+        root = perms.find_root_for(resolved)
+        if root is not None:
+            try:
+                return str(resolved.relative_to(root)).replace("\\", "/")
+            except Exception:
+                pass
+        return str(resolved)
+
     def _resolve_in_workspace(
         self, rel_path: str, perms: "KitToolPermissions"
     ) -> tuple[Optional[Path], Optional[str]]:
@@ -1541,12 +1592,15 @@ class _DocToolExecutor:
             resolved = candidate.resolve(strict=False)
         except Exception as exc:
             return None, f"cannot resolve path: {exc}"
+        root = perms.find_root_for(resolved)
+        if root is None:
+            roots_str = ", ".join(str(r) for r in perms.all_workspace_roots())
+            return None, (
+                f"path is outside the allowed workspace roots [{roots_str}]: "
+                f"{rel_path}"
+            )
         try:
-            resolved.relative_to(ws)
-        except ValueError:
-            return None, f"path escapes workspace sandbox ({ws}): {rel_path}"
-        try:
-            rel_str = str(resolved.relative_to(ws)).replace("\\", "/")
+            rel_str = str(resolved.relative_to(root)).replace("\\", "/")
         except ValueError:
             rel_str = rel_path.replace("\\", "/")
         if perms.matches_path_deny(rel_str):
@@ -1732,9 +1786,10 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-        diff = self._make_diff(old_text, content, str(resolved.relative_to(perms.workspace)))
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, content, disp)
         action = "created" if not existed else "overwritten"
-        return f"File {action}: {resolved.relative_to(perms.workspace)}\n\n{diff}"
+        return f"File {action}: {disp}\n\n{diff}"
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -1801,9 +1856,10 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-        diff = self._make_diff(old_text, new_text, str(resolved.relative_to(perms.workspace)))
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, new_text, disp)
         replaced = count if replace_all else 1
-        return f"Edited {resolved.relative_to(perms.workspace)} ({replaced} replacement(s)):\n\n{diff}"
+        return f"Edited {disp} ({replaced} replacement(s)):\n\n{diff}"
 
     def _execute_multi_edit(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -1877,10 +1933,11 @@ class _DocToolExecutor:
         except Exception:
             pass
 
-        diff = self._make_diff(old_text, text, str(resolved.relative_to(perms.workspace)))
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, text, disp)
         total = sum(per_edit_replacements)
         return (
-            f"Multi-edited {resolved.relative_to(perms.workspace)} "
+            f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total):\n\n{diff}"
         )
 
@@ -1943,7 +2000,7 @@ class _DocToolExecutor:
             "stderr": err,
             "command": cmd[:500],
             "description": description,
-            "cwd": str(run_cwd.relative_to(perms.workspace)) or ".",
+            "cwd": self._display_path(run_cwd, perms) or ".",
         }, ensure_ascii=False)
 
 
@@ -2501,10 +2558,23 @@ def create_client(
     if provider == "kit":
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
         kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+        kit_extra: tuple[Path, ...] = ()
+        if extra_dirs:
+            seen: list[Path] = []
+            for d in extra_dirs:
+                try:
+                    p = Path(d).expanduser().resolve()
+                except Exception:
+                    continue
+                if p == kit_workspace or p in seen:
+                    continue
+                seen.append(p)
+            kit_extra = tuple(seen)
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
             mode=_map_kit_permission_mode(permission_mode),
             confirm_callback=kit_confirm_callback,
+            extra_workspace_dirs=kit_extra,
         )
         return OpenAIClient(
             api_key=kit_key, model=model,

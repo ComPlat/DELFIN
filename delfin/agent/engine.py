@@ -394,6 +394,29 @@ class AgentEngine:
         perms.mode = mode
         return True
 
+    def add_kit_workspace_dir(self, path) -> tuple[bool, str]:
+        """Allow the KIT-Toolbox agent to operate inside an additional directory.
+
+        Returns (ok, message). The path must exist and be a directory; on
+        success the directory is added to ``extra_workspace_dirs`` and any
+        future read/write/bash that resolves under it will pass the sandbox.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        try:
+            resolved = perms.add_extra_dir(path)
+        except ValueError as exc:
+            return False, str(exc)
+        return True, f"added: {resolved}"
+
+    def list_kit_workspace_dirs(self) -> list[str]:
+        """Return all workspace roots the KIT agent may touch (as strings)."""
+        perms = self.kit_permissions
+        if perms is None:
+            return []
+        return [str(p) for p in perms.all_workspace_roots()]
+
     def _load_mode(self, mode: str) -> None:
         """Load a mode definition from the LITE manifest."""
         mode = _migrate_mode(mode)

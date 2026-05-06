@@ -1467,6 +1467,64 @@ def create_tab(ctx):
         layout=widgets.Layout(display="none", margin="0 0 8px 0"),
     )
 
+    # Workspace-roots editor: lets the user grant the KIT agent access to
+    # additional directories beyond the repo root (e.g. /home/.../TestOpt).
+    kit_dirs_status = widgets.HTML(value="")
+    kit_dirs_input = widgets.Text(
+        value="",
+        placeholder="Absoluter Pfad — z.B. /home/.../TestOpt",
+        layout=widgets.Layout(width="55%"),
+    )
+    kit_dirs_add_btn = widgets.Button(
+        description="Verzeichnis erlauben",
+        button_style="info",
+        tooltip="Erlaubt dem KIT-Agent, in diesem Pfad zu lesen/schreiben/ausführen",
+    )
+
+    def _refresh_kit_dirs_status():
+        eng = state.get("engine")
+        if eng is None or not hasattr(eng, "list_kit_workspace_dirs"):
+            kit_dirs_status.value = "<small><i>Kein KIT-Engine aktiv.</i></small>"
+            return
+        roots = eng.list_kit_workspace_dirs()
+        if not roots:
+            kit_dirs_status.value = "<small><i>(KIT nicht aktiv)</i></small>"
+            return
+        items = "".join(f"<li><code>{r}</code></li>" for r in roots)
+        kit_dirs_status.value = (
+            f"<small><b>KIT-Agent darf operieren in:</b><ul style='margin:2px 0 4px 18px'>"
+            f"{items}</ul></small>"
+        )
+
+    def _on_kit_add_dir(_btn):
+        path = (kit_dirs_input.value or "").strip()
+        if not path:
+            return
+        eng = state.get("engine")
+        if eng is None or not hasattr(eng, "add_kit_workspace_dir"):
+            _append_system_message("KIT-Engine ist nicht aktiv (Provider != KIT?).")
+            return
+        ok, msg = eng.add_kit_workspace_dir(path)
+        _append_system_message(("✔ " if ok else "✗ ") + msg)
+        if ok:
+            kit_dirs_input.value = ""
+        _refresh_kit_dirs_status()
+
+    kit_dirs_add_btn.on_click(_on_kit_add_dir)
+    kit_dirs_row = widgets.VBox(
+        [
+            widgets.HTML("<b>Erlaubte Verzeichnisse</b> "
+                         "<small>(zusätzlich zum Repo-Root)</small>"),
+            widgets.HBox([kit_dirs_input, kit_dirs_add_btn]),
+            kit_dirs_status,
+        ],
+        layout=widgets.Layout(
+            border="1px solid #888",
+            padding="6px",
+            margin="4px 0 6px 0",
+        ),
+    )
+
     def _ensure_kit_broker():
         """Build/return the KitConfirmBroker bound to this tab."""
         if state.get("_kit_confirm_broker") is None:
@@ -1474,15 +1532,18 @@ def create_tab(ctx):
                 from delfin.agent.kit_confirm import KitConfirmBroker
                 broker = KitConfirmBroker()
                 panel = broker.build_widget()
-                kit_confirm_container.children = (panel,)
+                kit_confirm_container.children = (kit_dirs_row, panel)
                 state["_kit_confirm_broker"] = broker
             except Exception as exc:
                 _append_system_message(f"KIT confirm broker init failed: {exc}")
                 state["_kit_confirm_broker"] = None
+        _refresh_kit_dirs_status()
         return state.get("_kit_confirm_broker")
 
     def _show_kit_confirm_panel(visible: bool) -> None:
         kit_confirm_container.layout.display = "flex" if visible else "none"
+        if visible:
+            _refresh_kit_dirs_status()
 
     # Chat display
     chat_html = widgets.HTML(

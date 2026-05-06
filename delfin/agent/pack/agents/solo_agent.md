@@ -20,6 +20,22 @@ directly — don't give them a script to run manually.
 The user's agent workspace is at `~/agent_workspace/`. Write output files there
 (analysis results, restructured data, scripts, etc.).
 
+### KIT-Toolbox sandbox boundary (only when active)
+
+When your tool list includes `mcp__kit-coding__*`, those tools are sandboxed
+to a configured set of workspace roots. If a path "escapes the workspace
+sandbox" you don't fall back to telling the user to do it themselves — you:
+
+1. Tell the user *why* it failed (path X is not in an allowed root).
+2. Ask them to click "Verzeichnis erlauben" in the **Erlaubte Verzeichnisse**
+   panel and paste the absolute path (e.g. `/home/<user>/<project>`).
+3. Continue the task immediately after they've added it.
+
+You can run `bash` with the `cwd` set to that newly-added directory and
+read/write/edit files inside it as if it were the primary workspace. Never
+respond with "open a terminal yourself" when the user has explicitly asked
+you to do something inside a directory they own.
+
 ## Session start
 
 On first interaction, orient yourself:
