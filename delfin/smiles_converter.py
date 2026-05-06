@@ -23007,6 +23007,15 @@ def smiles_to_xyz_isomers(
                         )
                         for _xyz, _lab in results_hapto
                     }
+                    # Iter-3.2: pass UFF-optimizer so each rotated frame
+                    # gets refined before the strict topology gate.
+                    def _hd_optimize(xyz_str):
+                        try:
+                            return _optimize_xyz_openbabel_safe(
+                                xyz_str, mol_template=_mol_hapto_gate,
+                            )
+                        except Exception:
+                            return xyz_str
                     _hd_results = _hd_apply(
                         smiles,
                         _hd_seed_xyz,
@@ -23014,7 +23023,7 @@ def smiles_to_xyz_isomers(
                         metal_set=_METAL_SET,
                         find_hapto_groups=_find_hapto_groups,
                         verify_topology=_verify_topology_from_graph,
-                        optimize_xyz=None,
+                        optimize_xyz=_hd_optimize if apply_uff else None,
                         max_frames=max(
                             0, max_isomers - len(results_hapto),
                         ),
@@ -24389,15 +24398,55 @@ def smiles_to_xyz_isomers(
                         if _ms:
                             _gie_isomer_n = max(_gie_isomer_n, int(_ms.group(1)))
 
+                    # ── Iter-3.2 PRE-GATE STRUCTURE REFINEMENT PIPELINE ──
+                    # User direktive 2026-05-06: control at exit must be strict;
+                    # work on structure GENERATION upstream instead of relaxing
+                    # the gate.  Each enumerator candidate flows through
+                    # UFF-refine → H-fix → aromatic-snap → STRICT verify
+                    # (original _verify_topology_from_graph, NOT relaxed).
+                    # This way bad geometries get repaired upstream, and
+                    # only chemically-realistic frames pass the gate.
+                    # Compute cost: ~0.5-2 s per candidate frame.
                     for _txyz, _tlabel in _gie_topo:
                         if _gie_n_room <= 0:
                             break
+                        # Cheap pre-filter: relaxed predicate keeps obvious
+                        # garbage out of the (expensive) refinement loop.
                         if not _gie_relaxed_verify(_txyz, mol):
                             continue
+
+                        # Pre-gate refinement pipeline: UFF + H-fix + arom-snap
+                        _refined = _txyz
+                        if apply_uff:
+                            try:
+                                _refined = _optimize_xyz_openbabel_safe(
+                                    _refined, mol_template=mol,
+                                )
+                            except Exception:
+                                pass
+                        try:
+                            _refined = _fix_h_geometry_universal(_refined, mol)
+                        except Exception:
+                            pass
+                        try:
+                            _refined = _snap_aromatic_rings_in_xyz(
+                                _refined, mol, rms_threshold=0.05,
+                            )
+                        except Exception:
+                            pass
+
+                        # STRICT verify (original gate, all 485 LOC chemistry
+                        # rules) — no monkey-patching here.
+                        try:
+                            if not _gie_orig_verify(_refined, mol):
+                                continue
+                        except Exception:
+                            continue
+
                         try:
                             _mt = Chem.RWMol(mol)
                             _mt.RemoveAllConformers()
-                            _mc = _xyz_to_rdkit_conformer(_mt.GetMol(), _txyz)
+                            _mc = _xyz_to_rdkit_conformer(_mt.GetMol(), _refined)
                             if _mc is None:
                                 continue
                             _mci = _mt.AddConformer(_mc, assignId=True)
@@ -24410,7 +24459,7 @@ def smiles_to_xyz_isomers(
                             continue
                         try:
                             _xl = [
-                                ln.split() for ln in _txyz.strip().splitlines()
+                                ln.split() for ln in _refined.strip().splitlines()
                                 if ln.strip()
                             ]
                             _heavy = tuple(sorted(
@@ -24427,7 +24476,7 @@ def smiles_to_xyz_isomers(
                         _gie_existing_fps.add(_mfp)
                         _gie_existing_sigs.add(_heavy)
                         _gie_isomer_n += 1
-                        results.append((_txyz, f'Isomer {_gie_isomer_n}'))
+                        results.append((_refined, f'Isomer {_gie_isomer_n}'))
                         _gie_n_room -= 1
         except Exception as _gie_exc:
             logger.debug("General-isomer enumerator skipped: %s", _gie_exc)
