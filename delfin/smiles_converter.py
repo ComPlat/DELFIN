@@ -1001,7 +1001,45 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
     try:
         from delfin._pi_h_projector import correct_results as _b4_correct
-        return _b4_correct(mol, results)
+        new_results = _b4_correct(mol, results)
+        # Iter-6 T3 — B4-clash-rollback (preventive; B4 default OFF anyway).
+        # If DELFIN_B4_CLASH_ROLLBACK=1: count heavy/H non-bonded clashes
+        # before vs after B4; rollback per-frame on regression.  Bit-exact
+        # to existing behaviour when the env-flag is 0 (default).
+        if _delfin_env_int("DELFIN_B4_CLASH_ROLLBACK", 0):
+            try:
+                if isinstance(new_results, list) and len(new_results) == len(results):
+                    rolled: List[Tuple[str, str]] = []
+                    for (old_xyz, old_lbl), new_pair in zip(results, new_results):
+                        try:
+                            new_xyz, new_lbl = new_pair
+                        except Exception:
+                            rolled.append((old_xyz, old_lbl))
+                            continue
+                        try:
+                            n_old = _count_xyz_clashes(old_xyz)
+                            n_new = _count_xyz_clashes(new_xyz)
+                        except Exception:
+                            rolled.append((new_xyz, new_lbl))
+                            continue
+                        if n_new > n_old:
+                            try:
+                                logger.debug(
+                                    "B4 rollback: clashes %d->%d, frame %s",
+                                    n_old, n_new, new_lbl,
+                                )
+                            except Exception:
+                                pass
+                            rolled.append((old_xyz, old_lbl))
+                        else:
+                            rolled.append((new_xyz, new_lbl))
+                    return rolled
+            except Exception as _b4_roll_exc:
+                try:
+                    logger.debug("B4 clash-rollback skipped: %s", _b4_roll_exc)
+                except Exception:
+                    pass
+        return new_results
     except Exception as _b4_exc:
         try:
             logger.debug("Baustein 4 H-projection skipped: %s", _b4_exc)
@@ -1763,6 +1801,189 @@ def _fix_h_geometry_via_smiles(xyz: str, smiles: str) -> str:
         if n_atoms_xyz != mol.GetNumAtoms():
             return xyz
         return _fix_h_geometry_universal(xyz, mol)
+    except Exception:
+        return xyz
+
+
+def _count_xyz_clashes(xyz: str, threshold: float = 1.20) -> int:
+    """Count non-bonded heavy/H atom-pair clashes in an XYZ block.
+
+    Used by Iter-6 T3 (B4 rollback) and T1 (H-place clash recheck) as a
+    cheap pure-Python proxy for "did this transformation introduce a
+    physically nonsensical close contact?".  Counts pairs whose distance
+    falls below ``threshold`` (Angstrom) but whose elements are NOT both
+    metals (metal-metal short contacts are real bonds in dimers/clusters).
+    """
+    try:
+        import numpy as _np
+        positions: List[List[float]] = []
+        syms: List[str] = []
+        for line in xyz.strip().splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                positions.append([
+                    float(parts[1]), float(parts[2]), float(parts[3])
+                ])
+                syms.append(parts[0])
+            except (ValueError, IndexError):
+                continue
+        if len(positions) < 2:
+            return 0
+        pos = _np.asarray(positions, dtype=float)
+        n = pos.shape[0]
+        diff = pos[:, None, :] - pos[None, :, :]
+        dist = _np.linalg.norm(diff, axis=-1)
+        cnt = 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = float(dist[i, j])
+                if d < 1e-3 or d >= threshold:
+                    continue
+                if syms[i] in _METAL_SET and syms[j] in _METAL_SET:
+                    continue
+                cnt += 1
+        return int(cnt)
+    except Exception:
+        return 0
+
+
+def _clash_aware_h_place_xyz(xyz: str, threshold: float = 1.0) -> str:
+    """Iter-6 T1 — Per-H clash-aware re-rotation around its parent heavy atom.
+
+    Ported from 81f8a1f's ``_build_multimetal_hapto_sequential`` Step 6b.
+    For each H whose nearest-non-parent neighbour is closer than
+    ``threshold`` (Angstrom), tries 5 trial rotations (60deg, 120deg,
+    180deg, 240deg, 300deg) around an axis perpendicular to the H-parent
+    bond, picking the rotation that maximises that nearest-neighbour
+    distance.  Three passes (the H placement of one atom can free space
+    for the next).
+
+    Pure XYZ-text in/out -- no RDKit dependency.  The "parent" of an H is
+    inferred as its closest non-H atom in the input geometry.
+
+    Gated by ``DELFIN_H_CLASH_ROTATE`` (default 0).  Bit-exact passthrough
+    when disabled or when the input has no H atoms.
+    """
+    if not xyz or not _delfin_env_int("DELFIN_H_CLASH_ROTATE", 0):
+        return xyz
+    try:
+        import numpy as _np
+    except Exception:
+        return xyz
+    try:
+        lines_in = xyz.strip().splitlines()
+        header_lines: List[str] = []
+        coord_lines: List[str] = []
+        for line in lines_in:
+            parts = line.split()
+            if len(parts) >= 4:
+                try:
+                    float(parts[1]); float(parts[2]); float(parts[3])
+                    coord_lines.append(line)
+                    continue
+                except ValueError:
+                    pass
+            header_lines.append(line)
+        if not coord_lines:
+            return xyz
+        positions: List[List[float]] = []
+        syms: List[str] = []
+        for line in coord_lines:
+            parts = line.split()
+            positions.append([
+                float(parts[1]), float(parts[2]), float(parts[3])
+            ])
+            syms.append(parts[0])
+        n = len(positions)
+        pos = _np.asarray(positions, dtype=float)
+        h_indices = [i for i, s in enumerate(syms) if s == "H"]
+        if not h_indices:
+            return xyz
+        # Parent = closest non-H atom for each H
+        parent_of: Dict[int, int] = {}
+        for i in h_indices:
+            best_j = -1
+            best_d = 1e9
+            for j in range(n):
+                if j == i or syms[j] == "H":
+                    continue
+                d = float(_np.linalg.norm(pos[i] - pos[j]))
+                if d < best_d:
+                    best_d = d
+                    best_j = j
+            if best_j >= 0:
+                parent_of[i] = best_j
+        angles_deg = [60.0, 120.0, 180.0, 240.0, 300.0]
+        for _pass in range(3):
+            moved_any = False
+            for i in h_indices:
+                p = parent_of.get(i, -1)
+                if p < 0:
+                    continue
+                # Current nearest non-(self,parent) distance
+                cur_d = 1e9
+                for j in range(n):
+                    if j == i or j == p:
+                        continue
+                    dd = float(_np.linalg.norm(pos[i] - pos[j]))
+                    if dd < cur_d:
+                        cur_d = dd
+                if cur_d >= threshold:
+                    continue
+                bond_vec = pos[i] - pos[p]
+                bond_len = float(_np.linalg.norm(bond_vec))
+                if bond_len < 1e-6:
+                    continue
+                bond_dir = bond_vec / bond_len
+                ref = _np.array([1.0, 0.0, 0.0])
+                if abs(float(_np.dot(bond_dir, ref))) > 0.95:
+                    ref = _np.array([0.0, 1.0, 0.0])
+                axis = _np.cross(bond_dir, ref)
+                axn = float(_np.linalg.norm(axis))
+                if axn < 1e-6:
+                    continue
+                axis = axis / axn
+                best_pos = pos[i].copy()
+                best_d = cur_d
+                for ang_deg in angles_deg:
+                    a = float(ang_deg) * 3.141592653589793 / 180.0
+                    ca = float(_np.cos(a))
+                    sa = float(_np.sin(a))
+                    rv = (bond_dir * ca
+                          + _np.cross(axis, bond_dir) * sa
+                          + axis * float(_np.dot(axis, bond_dir)) * (1.0 - ca))
+                    rvn = float(_np.linalg.norm(rv))
+                    if rvn < 1e-9:
+                        continue
+                    cand = pos[p] + (rv / rvn) * bond_len
+                    cand_d = 1e9
+                    for j in range(n):
+                        if j == i or j == p:
+                            continue
+                        dd = float(_np.linalg.norm(cand - pos[j]))
+                        if dd < cand_d:
+                            cand_d = dd
+                    if cand_d > best_d:
+                        best_d = cand_d
+                        best_pos = cand
+                        if best_d >= threshold:
+                            break
+                if best_d > cur_d + 1e-6:
+                    pos[i] = best_pos
+                    moved_any = True
+            if not moved_any:
+                break
+        out_coord_lines: List[str] = []
+        for i in range(n):
+            out_coord_lines.append(
+                "%s %.6f %.6f %.6f" % (
+                    syms[i], float(pos[i, 0]),
+                    float(pos[i, 1]), float(pos[i, 2]),
+                )
+            )
+        return "\n".join(header_lines + out_coord_lines) + "\n"
     except Exception:
         return xyz
 
@@ -22962,6 +23183,16 @@ def smiles_to_xyz_isomers(
             except Exception:
                 _mol_hapto_gate = None
 
+            # Iter-6 (123a130-port): the Iter-1 σ-guard combined with the
+            # Iter-5 default-flip of HD-TA killed Hapto-class diversity.
+            # Champion 123a130 (Apr 24, topo_pct_match 60.3 %) ran OB-WRS
+            # unconditionally for every hapto SMILES; HEAD-iter5 (14 %)
+            # produces only seed + σ-permutations on σ-mixed cases.
+            # When DELFIN_HAPTO_123A_PORT=1, force σ-guard OFF and HD-TA
+            # ON (topology gates remain in place).  See
+            # results/iter6_hapto_forensik.md.  Default OFF.
+            _hapto_123a_port = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 0))
+
             # Iter-1 (hapto-σ topology guard): WeightedRotorSearch treats the
             # M-C η-bonds encoded in the SMILES as rotatable torsions and
             # rotates Cp/arene rings as if they were freely-rotating ligands.
@@ -22970,13 +23201,17 @@ def smiles_to_xyz_isomers(
             # "alles in einer Ebene"-Pattern).  Skip OB diversity for piano-
             # stool / mixed-coordination complexes; pure Cp/arene sandwiches
             # (no σ-donors) still benefit from rotor diversity.
-            # Opt out via DELFIN_HAPTO_NO_OB_WHEN_SIGMA=0.
+            # Opt out via DELFIN_HAPTO_NO_OB_WHEN_SIGMA=0 OR
+            # DELFIN_HAPTO_123A_PORT=1 (Iter-6 port).
             _hapto_skip_ob_diversity = False
             try:
-                _no_ob_env = os.environ.get(
-                    "DELFIN_HAPTO_NO_OB_WHEN_SIGMA", "1"
-                ).strip().lower()
-                _no_ob_active = _no_ob_env not in {"0", "false", "no", "off", ""}
+                if _hapto_123a_port:
+                    _no_ob_active = False  # 123a130: OB-WRS for all hapto
+                else:
+                    _no_ob_env = os.environ.get(
+                        "DELFIN_HAPTO_NO_OB_WHEN_SIGMA", "1"
+                    ).strip().lower()
+                    _no_ob_active = _no_ob_env not in {"0", "false", "no", "off", ""}
                 if _no_ob_active and _mol_hapto_gate is not None:
                     _n_sigma_total = 0
                     _hapto_atoms_set: set = set()
@@ -23015,12 +23250,21 @@ def smiles_to_xyz_isomers(
             # Iter-5: HD-TA was unconditional in Iter-3.2 (despite docstring).
             # Now env-gated default OFF — see iter5_polyhedron_md_forensik.md.
             # σ-rotations bypass polyhedron gate, pumping low-fidelity frames.
-            if (
-                _hapto_skip_ob_diversity
-                and _mol_hapto_gate is not None
+            # Iter-6 (123a130 port): in port mode HD-TA runs IN ADDITION to
+            # OB-WRS for SMILES that OB cannot parse (dative `->` syntax).
+            # Both diversity sources flow through `_verify_topology_from_graph`.
+            _hd_ta_run = bool(
+                _mol_hapto_gate is not None
                 and not DELFIN_TOPOLOGY_STRICT_MODE
-                and _delfin_env_int("DELFIN_HAPTO_DIVERSITY_RESTORE", 0)
-            ):
+                and (
+                    (
+                        _hapto_skip_ob_diversity
+                        and _delfin_env_int("DELFIN_HAPTO_DIVERSITY_RESTORE", 0)
+                    )
+                    or _hapto_123a_port
+                )
+            )
+            if _hd_ta_run:
                 try:
                     from delfin._hapto_diversity import (
                         apply_hapto_diversity_topology_aware as _hd_apply,
@@ -24554,6 +24798,31 @@ def smiles_to_xyz_isomers(
             results = _h1_results
         except Exception as _h1_exc:
             logger.debug("H1 universal projection failed: %s", _h1_exc)
+
+    # -- Iter-6 T2: hard frame-cap at exit (env-gated, default OFF) ---------
+    # Cap total emitted frames per SMILES regardless of how many enumerator
+    # branches contributed.  Goal: -75% inter-ligand clash density per 1k
+    # frames by trimming low-priority tail buckets.  Stable order -- keeps
+    # the first ``DELFIN_FRAME_CAP_HARD_N`` (default 30) results, which by
+    # construction are the higher-priority polyhedron / preferred-isomer
+    # frames.  Bit-exact when ``DELFIN_FRAME_CAP_HARD=0`` (default).
+    if _delfin_env_int("DELFIN_FRAME_CAP_HARD", 0):
+        try:
+            cap_n = int(_delfin_env_int("DELFIN_FRAME_CAP_HARD_N", 30))
+            if cap_n > 0 and len(results) > cap_n:
+                try:
+                    logger.debug(
+                        "Hard frame-cap: %d->%d frames",
+                        len(results), cap_n,
+                    )
+                except Exception:
+                    pass
+                results = results[:cap_n]
+        except Exception as _cap_exc:
+            try:
+                logger.debug("Hard frame-cap skipped: %s", _cap_exc)
+            except Exception:
+                pass
 
     return results, None
 
