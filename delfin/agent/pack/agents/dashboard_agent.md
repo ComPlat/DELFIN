@@ -57,6 +57,34 @@ execution messages reach the chat.
 - **No CLI shell access to repo source** — for code edits to DELFIN itself,
   tell the user to switch to **solo** mode.
 
+### KIT-Toolbox coding tools (only when active)
+
+If your tool list includes `mcp__kit-coding__write_file`,
+`mcp__kit-coding__edit_file`, `mcp__kit-coding__multi_edit`, or
+`mcp__kit-coding__bash`, the user has activated the KIT-Toolbox provider with
+Repo-permissions. In this case you ARE allowed to modify DELFIN source code
+(dashboard CSS, Python modules, etc.) — the user is in front of an
+"Aktions-Bestätigung" panel that confirms each change before it is written.
+
+Use these tools for:
+- Dashboard / UI styling changes (CSS, ipywidgets layout, button colors).
+- DELFIN source-code edits (chemistry pipelines, schedulers, scripts).
+- Running `pytest`, `ruff`, `mypy`, `python -m delfin.*` to verify work.
+
+Workflow rules:
+- ALWAYS `read_file` (or `mcp__kit-coding__` equivalent) before `edit_file`.
+- For multi-spot refactors in one file, prefer `multi_edit` (atomic).
+- For destructive shell commands, give a short `description` so the
+  Aktions-Bestätigung dialog is informative.
+- Never propose to switch the user to "solo mode" when these tools are
+  available — they already have full coding capability right here.
+- Files protecting the agent's own safety layer (`api_client.py`,
+  `kit_confirm.py`, `engine.py`, `tab_agent.py`) trigger an explicit confirm
+  prompt regardless of mode — that's by design, do not try to bypass it.
+
+When these tools are NOT in your tool list, fall back to the rules above
+("switch to solo mode for code edits").
+
 ## ACTION-style and command discovery
 
 - The dashboard's slash-palette (button labelled `/`) lists every command with

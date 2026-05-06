@@ -996,6 +996,7 @@ def create_tab(ctx):
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
         "_pending_dashboard_action": None,  # {action_id, description, callback}
         "_perm_profile": "ask_all",  # permission profile: plan/ask_all/repo_free/all_free
+        "_kit_confirm_broker": None,  # KitConfirmBroker (lazy-built when KIT is active)
         "_active_gate": None,        # {type, role, title, detail}
         "_cycle_history": [],        # recent gate / handoff / retry events
         "_inspector_detail_key": "", # selected cycle inspector detail entry
@@ -1458,6 +1459,31 @@ def create_tab(ctx):
     )
     inspector_detail_box.add_class("delfin-cycle-detail-box")
 
+    # KIT-Toolbox confirmation broker (lazy — only built when KIT becomes
+    # the active provider). The container is always present; the broker
+    # widget is only mounted on demand so non-KIT users see nothing.
+    kit_confirm_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display="none", margin="0 0 8px 0"),
+    )
+
+    def _ensure_kit_broker():
+        """Build/return the KitConfirmBroker bound to this tab."""
+        if state.get("_kit_confirm_broker") is None:
+            try:
+                from delfin.agent.kit_confirm import KitConfirmBroker
+                broker = KitConfirmBroker()
+                panel = broker.build_widget()
+                kit_confirm_container.children = (panel,)
+                state["_kit_confirm_broker"] = broker
+            except Exception as exc:
+                _append_system_message(f"KIT confirm broker init failed: {exc}")
+                state["_kit_confirm_broker"] = None
+        return state.get("_kit_confirm_broker")
+
+    def _show_kit_confirm_panel(visible: bool) -> None:
+        kit_confirm_container.layout.display = "flex" if visible else "none"
+
     # Chat display
     chat_html = widgets.HTML(
         value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
@@ -1760,7 +1786,7 @@ def create_tab(ctx):
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, chat_html, working_html, queue_html, approval_row, question_row, input_row],
+         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, kit_confirm_container, chat_html, working_html, queue_html, approval_row, question_row, input_row],
     )
 
     if not _yaml_ok:
@@ -1986,6 +2012,17 @@ def create_tab(ctx):
                     "Bash(python -m py_compile*)", "Bash(python3 -m py_compile*)",
                 ]
 
+            # KIT-Toolbox: build/refresh the confirmation broker BEFORE the
+            # engine, so its callback is wired in at construction time. Other
+            # providers leave the panel hidden.
+            _kit_callback = None
+            if provider == "kit":
+                broker = _ensure_kit_broker()
+                _kit_callback = broker.callback if broker is not None else None
+                _show_kit_confirm_panel(True)
+            else:
+                _show_kit_confirm_panel(False)
+
             engine = AgentEngine(
                 repo_dir=repo_dir,
                 backend=backend,
@@ -1998,6 +2035,7 @@ def create_tab(ctx):
                 allowed_tools=_cli_tools,
                 extra_dirs=_extra_dirs,
                 agent_workspace_dir=_ws_dir,
+                kit_confirm_callback=_kit_callback,
             )
 
             # Configure calc search directories for OpenAI function calling
@@ -2012,6 +2050,14 @@ def create_tab(ctx):
                 }
             except Exception:
                 pass
+
+            # Defense in depth: if for any reason the callback wasn't bound
+            # at construction (e.g. broker built later), bind at runtime.
+            if provider == "kit" and _kit_callback is not None:
+                try:
+                    engine.set_kit_confirm_callback(_kit_callback)
+                except Exception:
+                    pass
 
             state["engine"] = engine
             ctx.agent_engine = engine
@@ -7020,6 +7066,11 @@ def create_tab(ctx):
             if hasattr(engine.client, "kill"):
                 engine.client.kill()
             state["engine"] = None
+        # Show/hide the KIT confirmation panel based on the new provider.
+        try:
+            _show_kit_confirm_panel(provider == "kit")
+        except Exception:
+            pass
         n_models = len(models)
         src = "live" if fetched else "fallback"
         _append_system_message(
@@ -7260,6 +7311,16 @@ def create_tab(ctx):
     model_dropdown.observe(_on_model_change, names="value")
     effort_dropdown.observe(_on_effort_change, names="value")
     perm_dropdown.observe(_on_perm_change, names="value")
+
+    # Initial KIT confirm-panel visibility based on saved provider.
+    try:
+        if provider_dropdown.value == "kit":
+            _ensure_kit_broker()
+            _show_kit_confirm_panel(True)
+        else:
+            _show_kit_confirm_panel(False)
+    except Exception:
+        pass
 
     # -- initial state -----------------------------------------------------
     _update_status()

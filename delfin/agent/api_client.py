@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import difflib
+import fnmatch
 import importlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Callable, Generator, Optional
 
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
@@ -657,6 +662,175 @@ class APIClient(_BaseClient):
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# KIT-Toolbox coding-agent permissions (Claude-Code-style safety layer)
+# ---------------------------------------------------------------------------
+
+# Bash patterns that are ALWAYS rejected (case-insensitive substring/regex
+# match against the raw command string). Keep this list tight: false positives
+# block the user, but missing entries can cause real damage.
+_DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
+    r"\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\b",
+    r"\brm\s+-[a-zA-Z]*\s+/(?:\s|$)",
+    r"\bdd\s+if=",
+    r"\bdd\s+of=/dev/",
+    r"\bmkfs(\.|\s)",
+    r"\b(shutdown|reboot|halt|poweroff|init\s+0|init\s+6)\b",
+    r"\bsudo\b",
+    r"(?:^|\s)su\s+-",
+    r"git\s+push\s+(?:[^|;&]*\s)?(?:--force(?!-with-lease)|-f\b)",
+    r"git\s+reset\s+--hard\b",
+    r"git\s+branch\s+-D\b",
+    r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d",
+    r"git\s+update-ref\s+-d\b",
+    r">\s*/dev/(sd|nvme|hd|xvd)",
+    r">\s*/etc/",
+    r"\bchmod\s+-?R?\s*777\b",
+    r":\s*\(\s*\)\s*\{",  # fork bomb
+    r"\bcurl\b[^|;]*\|\s*(?:sh|bash|zsh)",
+    r"\bwget\b[^|;]*\|\s*(?:sh|bash|zsh)",
+    r"--break-system-packages\b",
+    r"\bnpm\s+publish\b",
+    r"\bpip\s+install\b[^|;]*--target\s+/(?:usr|etc|bin|lib|var)",
+    r"\bcrontab\s+-r\b",
+)
+
+# Bash patterns that are auto-approved in mode="default" without callback.
+# Two categories:
+#   (a) Read-only / informational shell commands.
+#   (b) Coding-workflow commands that are ubiquitous and not destructive
+#       outside the workspace (test runners, formatters, type checkers,
+#       compile-only invocations). Anything that pushes to remote, publishes,
+#       installs into system paths, or touches /dev|/etc must NOT be here —
+#       the bash deny-list catches the obvious cases anyway.
+_DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
+    # -- (a) read-only / info --------------------------------------------
+    r"^\s*(?:ls|pwd|whoami|hostname|uname|id|date|uptime|df|du|free|tree)\b",
+    r"^\s*(?:cat|head|tail|wc|file|stat|which|type|env|printenv|sort|uniq|cut|tr)\b",
+    r"^\s*(?:basename|dirname|realpath|readlink)\b",
+    r"^\s*echo\b",
+    r"^\s*find\b(?![^|;&]*-delete)(?![^|;&]*-exec[^|;&]*rm)",
+    r"^\s*grep\b", r"^\s*rg\b", r"^\s*ag\b",
+    r"^\s*sed\s+-n\b",                                       # read-only sed
+    r"^\s*awk\s+",                                           # awk has no destructive default
+    r"^\s*jq\b", r"^\s*yq\b",
+    r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
+    r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+list|tag\s*$|"
+    r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|switch|checkout|add|"
+    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message)\b",
+    r"^\s*tar\s+-?t",                                        # tar list-only
+    r"^\s*unzip\s+-l\b",
+    # -- (b) coding workflow ---------------------------------------------
+    r"^\s*python3?\s+-c\s+",
+    r"^\s*python3?\s+--version\b",
+    r"^\s*python3?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
+    r"pip\s+show|pip\s+list|pip\s+freeze|"
+    r"compileall|json\.tool|http\.server|delfin(?:\.\w+)*)\b",
+    r"^\s*python3?\s+\S+\.py\b",                             # run a script in repo
+    r"^\s*pip\s+(?:show|list|freeze|check)\b",
+    r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
+    r"^\s*(?:pytest|py\.test)\b",
+    r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
+    r"^\s*(?:nox|tox)\s+--?l", r"^\s*tox\s+-e\b",
+    r"^\s*make(?!\s+(?:clean|distclean|uninstall|purge))\b",
+    r"^\s*mkdir\s+-p\b",
+    r"^\s*touch\s+(?!/)",                                    # only relative paths
+    r"^\s*cp\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",         # disallow copy to system dirs
+    r"^\s*mv\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",
+    r"^\s*chmod\s+(?:[ugoa+=-]+|[0-7]{3,4})\s+",             # any chmod except 777 (deny-list)
+    r"^\s*time\s+",
+    r"^\s*timeout\s+\d",
+    r"^\s*xargs\s+",
+    r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
+    r"^\s*xtb\s+\S+\.xyz\b",                                 # DELFIN-spezifisch: read-only xtb-Aufruf
+    r"^\s*delfin(?:-\w+)?\b",                                # delfin-CLI-Wrapper
+)
+
+# Path globs (relative to workspace) where writes/edits are forbidden.
+_DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
+    ".git/**", "**/.git/**",
+    ".env", ".env.*", "**/.env", "**/.env.*",
+    "**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx",
+    "**/.ssh/**", "**/.gnupg/**",
+    "**/credentials*", "**/secrets*", "**/*.secret",
+    "**/.netrc", "**/.aws/credentials",
+)
+
+# Self-modification protection: paths that are still WRITABLE, but always
+# require explicit user confirmation — even in 'acceptEdits' or
+# 'bypassPermissions' modes. The agent must not silently rewrite its own
+# safety layer or the dashboard wiring that hosts the confirmation UI.
+_DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
+    "delfin/agent/api_client.py",
+    "delfin/agent/kit_confirm.py",
+    "delfin/agent/engine.py",
+    "delfin/dashboard/tab_agent.py",
+)
+
+
+@dataclass
+class KitToolPermissions:
+    """Permission policy for KIT-Toolbox coding-agent tools.
+
+    mode:
+        - "plan"               -> read-only (no write/edit/bash)
+        - "default"            -> destructive ops require confirm_callback;
+                                  bash auto-allow list bypasses callback
+        - "acceptEdits"        -> write/edit auto-allowed (sandbox-checked);
+                                  bash still gated by callback / auto-allow
+        - "bypassPermissions"  -> sandbox + denylist still enforced, but no
+                                  user confirmation prompted (use sparingly)
+    """
+
+    workspace: Path
+    mode: str = "default"
+    bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
+    bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
+    path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
+    path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
+    bash_timeout_s: int = 120
+    bash_max_timeout_s: int = 600
+    max_output_chars: int = 12_000
+    confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
+    pre_tool_hook: Optional[Callable[[str, dict], None]] = None
+    post_tool_hook: Optional[Callable[[str, dict, str], None]] = None
+    read_tracker: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.workspace = Path(self.workspace).expanduser().resolve()
+        valid = {"plan", "default", "acceptEdits", "bypassPermissions"}
+        if self.mode not in valid:
+            raise ValueError(f"mode must be one of {valid}, got {self.mode!r}")
+
+    def matches_path_deny(self, rel_path: str) -> bool:
+        rp = rel_path.replace("\\", "/")
+        return any(fnmatch.fnmatch(rp, g) for g in self.path_deny_globs)
+
+    def matches_path_protected(self, rel_path: str) -> bool:
+        """Self-modification guard: paths that always require explicit confirm,
+        even in 'acceptEdits' or 'bypassPermissions'. Used for the agent's own
+        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)."""
+        rp = rel_path.replace("\\", "/")
+        return any(fnmatch.fnmatch(rp, g) for g in self.path_protected_globs)
+
+    def matches_bash_deny(self, cmd: str) -> Optional[str]:
+        for pat in self.bash_deny_patterns:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return pat
+        return None
+
+    def matches_bash_auto_allow(self, cmd: str) -> bool:
+        for pat in self.bash_auto_allow_patterns:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return True
+        return False
+
+
+def _default_kit_permissions(cwd: Optional[Path] = None) -> KitToolPermissions:
+    """Conservative defaults: workspace = cwd, mode = 'default'."""
+    return KitToolPermissions(workspace=Path(cwd or Path.cwd()))
+
+
+# ---------------------------------------------------------------------------
 # Local doc-search tools (function calling for non-CLI backends)
 # ---------------------------------------------------------------------------
 
@@ -895,6 +1069,142 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # -- Coding-agent tools (sandbox + permission-gated) --
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Create a new file or fully overwrite an existing file in the "
+                "workspace. Requires sandbox-relative path. For existing files, "
+                "you MUST call read_file first (the tool tracks read mtimes). "
+                "Returns a unified diff preview of the change. Use edit_file "
+                "for partial changes — write_file replaces the entire file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative file path.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file content to write.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace an exact substring in a file. The file must have been "
+                "read with read_file before editing. old_string must match "
+                "EXACTLY once unless replace_all=true. Returns a unified diff. "
+                "Preserve indentation exactly as shown in read_file output "
+                "(strip the line-number prefix, keep leading whitespace)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative file path.",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact substring to replace. Include enough context for uniqueness.",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text. Must differ from old_string.",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence (default false).",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "multi_edit",
+            "description": (
+                "Apply a sequence of edits to a single file atomically. Each edit "
+                "is an object with old_string, new_string, and optional replace_all. "
+                "Edits run in order against the file's current text; if any edit "
+                "fails (no match, ambiguous match, identical strings) NOTHING is "
+                "written. The file must have been read with read_file first. "
+                "Use this for refactors that touch several spots in one file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative file path.",
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "Ordered list of edits to apply.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string"},
+                                "new_string": {"type": "string"},
+                                "replace_all": {"type": "boolean"},
+                            },
+                            "required": ["old_string", "new_string"],
+                        },
+                    },
+                },
+                "required": ["path", "edits"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": (
+                "Execute a shell command inside the workspace. The command runs "
+                "with a configurable timeout and returns stdout+stderr (truncated). "
+                "Destructive patterns (rm -rf, dd, sudo, force-push, reset --hard, "
+                "fork bombs, pipe-to-shell, etc.) are rejected. Always include a "
+                "short description so the user can audit. For long-running tasks, "
+                "raise timeout_s; do not use background loops or sleep-polling."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command (passed to /bin/bash -c).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what the command does (5-12 words).",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default 120, max 600).",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Workspace-relative cwd (default = workspace root).",
+                    },
+                },
+                "required": ["command", "description"],
+            },
+        },
+    },
 ]
 
 
@@ -948,8 +1258,72 @@ class _DocToolExecutor:
         except Exception:
             return False
 
-    def execute(self, name: str, arguments: dict) -> str:
-        """Execute a doc/calc tool by name. Returns the result string."""
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"] = None,
+    ) -> str:
+        """Execute a doc/calc/coding tool by name. Returns the result string.
+
+        ``permissions`` activates the coding-agent tools (write_file, edit_file,
+        bash) and gates them through workspace sandbox + denylist + optional
+        confirm callback. When None, those tools are unavailable.
+        """
+        if permissions is not None and permissions.pre_tool_hook:
+            try:
+                permissions.pre_tool_hook(name, arguments)
+            except Exception:
+                pass
+
+        result = self._dispatch(name, arguments, permissions)
+
+        # Track mtime after a successful read_file so edit_file can verify the
+        # file hasn't changed since the agent last read it.
+        if (
+            permissions is not None
+            and name == "read_file"
+            and not result.startswith('{"error"')
+        ):
+            try:
+                full = self._workspace_root(permissions) / arguments.get("path", "")
+                if full.is_file():
+                    permissions.read_tracker[str(full.resolve())] = full.stat().st_mtime
+            except Exception:
+                pass
+
+        if permissions is not None and permissions.post_tool_hook:
+            try:
+                permissions.post_tool_hook(name, arguments, result)
+            except Exception:
+                pass
+        return result
+
+    def _dispatch(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+    ) -> str:
+        # Coding-agent tools are only available with explicit permissions.
+        if name in ("write_file", "edit_file", "multi_edit", "bash"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured. "
+                    "Pass a KitToolPermissions instance to OpenAIClient."
+                )})
+            gate_err = self._run_permission_gate(name, arguments, permissions)
+            if gate_err is not None:
+                return json.dumps({"error": gate_err})
+            if name == "write_file":
+                return self._execute_write_file(arguments, permissions)
+            if name == "edit_file":
+                return self._execute_edit_file(arguments, permissions)
+            if name == "multi_edit":
+                return self._execute_multi_edit(arguments, permissions)
+            if name == "bash":
+                return self._execute_bash(arguments, permissions)
+
         # Calc search tools
         if name in ("search_calcs", "get_calc_info", "calc_summary"):
             return self._execute_calc(name, arguments)
@@ -1009,13 +1383,13 @@ class _DocToolExecutor:
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
-        # Repo file access tools
+        # Repo file access tools (workspace-aware when permissions are set)
         if name == "read_file":
-            return self._execute_read_file(arguments)
+            return self._execute_read_file(arguments, permissions)
         elif name == "grep_file":
-            return self._execute_grep_file(arguments)
+            return self._execute_grep_file(arguments, permissions)
         elif name == "list_files":
-            return self._execute_list_files(arguments)
+            return self._execute_list_files(arguments, permissions)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1064,11 +1438,14 @@ class _DocToolExecutor:
                 return candidate
         return Path.cwd()
 
-    def _execute_read_file(self, arguments: dict) -> str:
+    def _execute_read_file(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         rel_path = arguments.get("path", "")
         if not rel_path:
             return json.dumps({"error": "path is required"})
-        full = self._repo_root() / rel_path
+        root = perms.workspace if perms is not None else self._repo_root()
+        full = (root / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
         if not full.exists():
             return json.dumps({"error": f"File not found: {rel_path}"})
         if full.is_dir():
@@ -1086,12 +1463,16 @@ class _DocToolExecutor:
             result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
         return result
 
-    def _execute_grep_file(self, arguments: dict) -> str:
+    def _execute_grep_file(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         import re as _re
         pattern = arguments.get("pattern", "")
         if not pattern:
             return json.dumps({"error": "pattern is required"})
-        search_path = self._repo_root() / (arguments.get("path", "") or "")
+        root = perms.workspace if perms is not None else self._repo_root()
+        rel = arguments.get("path", "") or ""
+        search_path = (root / rel) if not Path(rel).is_absolute() else Path(rel)
         max_results = arguments.get("max_results", 30) or 30
         try:
             regex = _re.compile(pattern, _re.IGNORECASE)
@@ -1107,8 +1488,11 @@ class _DocToolExecutor:
             try:
                 for i, line in enumerate(fp.read_text(encoding="utf-8", errors="replace").splitlines()):
                     if regex.search(line):
-                        rel = fp.relative_to(self._repo_root())
-                        matches.append(f"{rel}:{i + 1}: {line.rstrip()[:200]}")
+                        try:
+                            rel_match = fp.relative_to(root)
+                        except ValueError:
+                            rel_match = fp
+                        matches.append(f"{rel_match}:{i + 1}: {line.rstrip()[:200]}")
                         if len(matches) >= max_results:
                             break
             except Exception:
@@ -1117,10 +1501,12 @@ class _DocToolExecutor:
                 break
         return "\n".join(matches) if matches else "No matches found."
 
-    def _execute_list_files(self, arguments: dict) -> str:
+    def _execute_list_files(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         import fnmatch
         pattern = arguments.get("pattern", "*")
-        root = self._repo_root()
+        root = perms.workspace if perms is not None else self._repo_root()
         matches = []
         for fp in sorted(root.rglob("*")):
             if not fp.is_file():
@@ -1133,6 +1519,432 @@ class _DocToolExecutor:
                 if len(matches) >= 50:
                     break
         return "\n".join(matches) if matches else "No files matching pattern."
+
+    # -- Coding-agent helpers (sandbox + permission gating) -------------------
+
+    def _workspace_root(self, perms: "KitToolPermissions") -> Path:
+        return perms.workspace
+
+    def _resolve_in_workspace(
+        self, rel_path: str, perms: "KitToolPermissions"
+    ) -> tuple[Optional[Path], Optional[str]]:
+        """Resolve ``rel_path`` against the workspace and verify containment.
+
+        Returns (resolved_path, error_message). If error_message is non-None,
+        the path is rejected and resolved_path is None.
+        """
+        if not rel_path:
+            return None, "path is required"
+        ws = perms.workspace
+        candidate = (ws / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception as exc:
+            return None, f"cannot resolve path: {exc}"
+        try:
+            resolved.relative_to(ws)
+        except ValueError:
+            return None, f"path escapes workspace sandbox ({ws}): {rel_path}"
+        try:
+            rel_str = str(resolved.relative_to(ws)).replace("\\", "/")
+        except ValueError:
+            rel_str = rel_path.replace("\\", "/")
+        if perms.matches_path_deny(rel_str):
+            return None, f"path is on the deny-list (.git, secrets, keys, .env, ...): {rel_str}"
+        return resolved, None
+
+    def _run_permission_gate(
+        self, name: str, args: dict, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Run the policy + callback gate. Returns error string or None."""
+        mode = perms.mode
+
+        if mode == "plan":
+            return f"plan mode is read-only — '{name}' rejected"
+
+        if name in ("write_file", "edit_file", "multi_edit"):
+            path_arg = args.get("path", "")
+            resolved, err = self._resolve_in_workspace(path_arg, perms)
+            if err:
+                return err
+            try:
+                rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+            except Exception:
+                rel_str = path_arg.replace("\\", "/")
+            is_protected = perms.matches_path_protected(rel_str)
+            if is_protected:
+                # Force explicit user confirmation regardless of mode.
+                if perms.confirm_callback is None:
+                    return (
+                        f"'{name}' targets the agent's own safety layer "
+                        f"('{rel_str}'). This always requires explicit user "
+                        "confirmation but no confirm_callback is configured — "
+                        "refusing to proceed."
+                    )
+                preview = (
+                    "[SELF-MODIFICATION GUARD]\n"
+                    "This file is part of the agent's own safety layer.\n"
+                    "Approving this will let the agent rewrite the code that "
+                    "controls its own permissions.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+                try:
+                    ok = bool(perms.confirm_callback(name, args, preview))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                return None if ok else f"user denied '{name}' on protected path '{rel_str}'"
+            if mode == "acceptEdits" or mode == "bypassPermissions":
+                return None
+            # mode == "default": ask the callback.
+            if perms.confirm_callback is None:
+                return (
+                    f"'{name}' on '{path_arg}' requires user confirmation, but "
+                    "no confirm_callback is configured. Set permissions.mode "
+                    "to 'acceptEdits' or pass a confirm_callback."
+                )
+            preview = self._build_change_preview(name, args, resolved)
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            return None if ok else f"user denied '{name}' on '{path_arg}'"
+
+        if name == "bash":
+            cmd = args.get("command", "") or ""
+            if not cmd.strip():
+                return "command is required"
+            denied = perms.matches_bash_deny(cmd)
+            if denied:
+                return f"command rejected by deny-pattern {denied!r}: refusing to run."
+            if mode == "bypassPermissions":
+                return None
+            if perms.matches_bash_auto_allow(cmd):
+                return None
+            if perms.confirm_callback is None:
+                return (
+                    f"bash command requires user confirmation, but no "
+                    "confirm_callback is configured. Either configure one, "
+                    "use mode='bypassPermissions' for trusted environments, "
+                    f"or restrict to auto-allow patterns. Command: {cmd[:200]}"
+                )
+            preview = f"$ {cmd}\n(description: {args.get('description', '<none>')})"
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            return None if ok else "user denied bash command"
+
+        return None
+
+    def _build_change_preview(
+        self, name: str, args: dict, resolved_path: Optional[Path]
+    ) -> str:
+        try:
+            if resolved_path is None or not resolved_path.exists():
+                old_text = ""
+            else:
+                old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            old_text = ""
+        if name == "write_file":
+            new_text = args.get("content", "") or ""
+        elif name == "edit_file":
+            old_s = args.get("old_string", "")
+            new_s = args.get("new_string", "")
+            if args.get("replace_all"):
+                new_text = old_text.replace(old_s, new_s)
+            else:
+                new_text = old_text.replace(old_s, new_s, 1)
+        elif name == "multi_edit":
+            new_text = old_text
+            for ed in args.get("edits", []) or []:
+                o = ed.get("old_string", "")
+                n = ed.get("new_string", "")
+                if not o or o == n:
+                    continue
+                if ed.get("replace_all"):
+                    new_text = new_text.replace(o, n)
+                else:
+                    new_text = new_text.replace(o, n, 1)
+        else:
+            return ""
+        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
+
+    @staticmethod
+    def _make_diff(old: str, new: str, label: str, max_lines: int = 200) -> str:
+        diff = list(difflib.unified_diff(
+            old.splitlines(keepends=False),
+            new.splitlines(keepends=False),
+            fromfile=f"a/{label}",
+            tofile=f"b/{label}",
+            lineterm="",
+            n=3,
+        ))
+        if not diff:
+            return "(no changes)"
+        if len(diff) > max_lines:
+            diff = diff[:max_lines] + [f"... ({len(diff) - max_lines} more diff lines truncated)"]
+        return "\n".join(diff)
+
+    def _execute_write_file(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        content = arguments.get("content", "")
+        if content is None:
+            return json.dumps({"error": "content is required"})
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+
+        existed = resolved.exists()
+        if existed:
+            tracked = perms.read_tracker.get(str(resolved))
+            try:
+                current_mtime = resolved.stat().st_mtime
+            except Exception:
+                current_mtime = None
+            if tracked is None:
+                return json.dumps({"error": (
+                    f"refusing to overwrite existing file '{path_arg}' without "
+                    "a prior read_file in this session — call read_file first."
+                )})
+            if current_mtime is not None and current_mtime > tracked + 1e-3:
+                return json.dumps({"error": (
+                    f"file '{path_arg}' was modified since last read_file "
+                    "(mtime mismatch). Re-read before writing."
+                )})
+            try:
+                old_text = resolved.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                return json.dumps({"error": f"cannot read existing file: {exc}"})
+        else:
+            old_text = ""
+
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        diff = self._make_diff(old_text, content, str(resolved.relative_to(perms.workspace)))
+        action = "created" if not existed else "overwritten"
+        return f"File {action}: {resolved.relative_to(perms.workspace)}\n\n{diff}"
+
+    def _execute_edit_file(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        old_string = arguments.get("old_string", "")
+        new_string = arguments.get("new_string", "")
+        replace_all = bool(arguments.get("replace_all", False))
+        if old_string == new_string:
+            return json.dumps({"error": "new_string must differ from old_string"})
+        if not old_string:
+            return json.dumps({"error": "old_string is required"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call read_file on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"file '{path_arg}' was modified since last read_file. Re-read first."
+            )})
+
+        try:
+            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return json.dumps({"error": f"cannot read file: {exc}"})
+
+        count = old_text.count(old_string)
+        if count == 0:
+            return json.dumps({"error": f"old_string not found in '{path_arg}'"})
+        if count > 1 and not replace_all:
+            return json.dumps({"error": (
+                f"old_string matches {count} times in '{path_arg}'. "
+                "Provide more surrounding context to make it unique, or pass replace_all=true."
+            )})
+
+        new_text = (
+            old_text.replace(old_string, new_string)
+            if replace_all
+            else old_text.replace(old_string, new_string, 1)
+        )
+
+        try:
+            resolved.write_text(new_text, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        diff = self._make_diff(old_text, new_text, str(resolved.relative_to(perms.workspace)))
+        replaced = count if replace_all else 1
+        return f"Edited {resolved.relative_to(perms.workspace)} ({replaced} replacement(s)):\n\n{diff}"
+
+    def _execute_multi_edit(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        edits = arguments.get("edits", []) or []
+        if not isinstance(edits, list) or not edits:
+            return json.dumps({"error": "edits must be a non-empty list"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call read_file on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"file '{path_arg}' was modified since last read_file. Re-read first."
+            )})
+
+        try:
+            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return json.dumps({"error": f"cannot read file: {exc}"})
+
+        text = old_text
+        per_edit_replacements: list[int] = []
+        for i, ed in enumerate(edits):
+            if not isinstance(ed, dict):
+                return json.dumps({"error": f"edit #{i+1} is not an object"})
+            o = ed.get("old_string", "")
+            n = ed.get("new_string", "")
+            replace_all = bool(ed.get("replace_all", False))
+            if not o:
+                return json.dumps({"error": f"edit #{i+1}: old_string is required"})
+            if o == n:
+                return json.dumps({"error": f"edit #{i+1}: new_string must differ from old_string"})
+            count = text.count(o)
+            if count == 0:
+                return json.dumps({"error": (
+                    f"edit #{i+1}: old_string not found "
+                    f"(after applying earlier edits in this batch)"
+                )})
+            if count > 1 and not replace_all:
+                return json.dumps({"error": (
+                    f"edit #{i+1}: old_string matches {count} times. "
+                    "Add context to make it unique, or set replace_all=true."
+                )})
+            text = text.replace(o, n) if replace_all else text.replace(o, n, 1)
+            per_edit_replacements.append(count if replace_all else 1)
+
+        try:
+            resolved.write_text(text, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        diff = self._make_diff(old_text, text, str(resolved.relative_to(perms.workspace)))
+        total = sum(per_edit_replacements)
+        return (
+            f"Multi-edited {resolved.relative_to(perms.workspace)} "
+            f"({len(edits)} edit(s), {total} replacement(s) total):\n\n{diff}"
+        )
+
+    def _execute_bash(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        cmd = arguments.get("command", "") or ""
+        description = arguments.get("description", "") or ""
+        timeout = int(arguments.get("timeout_s", perms.bash_timeout_s) or perms.bash_timeout_s)
+        timeout = max(1, min(timeout, perms.bash_max_timeout_s))
+        cwd_arg = arguments.get("cwd", "") or ""
+
+        if cwd_arg:
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            if err:
+                return json.dumps({"error": err})
+            if not cwd_resolved.is_dir():
+                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+            run_cwd = cwd_resolved
+        else:
+            run_cwd = perms.workspace
+
+        env = os.environ.copy()
+        env.setdefault("LC_ALL", "C.UTF-8")
+        env.setdefault("LANG", "C.UTF-8")
+
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.run(
+                ["/bin/bash", "-c", cmd],
+                cwd=str(run_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return json.dumps({
+                "error": f"command timed out after {timeout}s",
+                "command": cmd[:200],
+                "description": description,
+            })
+        except Exception as exc:
+            return json.dumps({"error": f"command failed to start: {exc}"})
+
+        elapsed = time.monotonic() - t0
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        cap = perms.max_output_chars
+        if len(out) > cap:
+            out = out[:cap] + f"\n... (stdout truncated, {len(proc.stdout) - cap} chars omitted)"
+        if len(err) > cap:
+            err = err[:cap] + f"\n... (stderr truncated, {len(proc.stderr) - cap} chars omitted)"
+
+        return json.dumps({
+            "exit_code": proc.returncode,
+            "elapsed_s": round(elapsed, 3),
+            "stdout": out,
+            "stderr": err,
+            "command": cmd[:500],
+            "description": description,
+            "cwd": str(run_cwd.relative_to(perms.workspace)) or ".",
+        }, ensure_ascii=False)
 
 
 # Singleton — shared across all OpenAIClient instances.
@@ -1174,7 +1986,8 @@ class OpenAIClient(_BaseClient):
     }
 
     def __init__(self, api_key: str = "", model: str = "",
-                 base_url: str = "", key_env_var: str = "OPENAI_API_KEY"):
+                 base_url: str = "", key_env_var: str = "OPENAI_API_KEY",
+                 permissions: Optional["KitToolPermissions"] = None):
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -1193,6 +2006,12 @@ class OpenAIClient(_BaseClient):
         if base_url:
             kwargs["base_url"] = base_url
         self.client = openai.OpenAI(**kwargs)
+        # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
+        self._permissions: Optional[KitToolPermissions] = permissions
+
+    def set_permissions(self, permissions: Optional["KitToolPermissions"]) -> None:
+        """Replace the KIT-Toolbox permissions policy at runtime."""
+        self._permissions = permissions
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
@@ -1248,6 +2067,16 @@ class OpenAIClient(_BaseClient):
         # Check if doc/calc tools are available
         has_doc_tools = _doc_executor._ensure_loaded()
         has_calc_tools = _doc_executor._ensure_calc_loaded()
+        has_coding = self._permissions is not None
+
+        _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit", "bash"}
+        if has_coding:
+            advertised_tools = _DOC_TOOLS_OPENAI
+        else:
+            advertised_tools = [
+                t for t in _DOC_TOOLS_OPENAI
+                if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
+            ]
 
         _total_in = 0
         _total_out = 0
@@ -1272,8 +2101,8 @@ class OpenAIClient(_BaseClient):
             else:
                 kwargs["max_tokens"] = max_tokens
 
-            if (has_doc_tools or has_calc_tools) and not is_reasoning:
-                kwargs["tools"] = _DOC_TOOLS_OPENAI
+            if (has_doc_tools or has_calc_tools or has_coding) and not is_reasoning:
+                kwargs["tools"] = advertised_tools
 
             # Accumulate streamed tool calls (may arrive in chunks)
             _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
@@ -1351,19 +2180,26 @@ class OpenAIClient(_BaseClient):
                     except json.JSONDecodeError:
                         fn_args = {}
 
+                    # Coding-agent tools get a different namespace prefix so
+                    # the UI/Whitelist layer can distinguish them from doc tools.
+                    is_coding = fn_name in ("write_file", "edit_file", "multi_edit", "bash")
+                    ns_prefix = "kit-coding" if is_coding else "delfin-docs"
+
                     # Emit tool_use event for UI display
                     yield StreamEvent(
                         type="tool_use",
-                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_name=f"mcp__{ns_prefix}__{fn_name}",
                         tool_input=json.dumps(fn_args),
                     )
 
-                    result = _doc_executor.execute(fn_name, fn_args)
+                    result = _doc_executor.execute(
+                        fn_name, fn_args, permissions=self._permissions
+                    )
 
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
-                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_name=f"mcp__{ns_prefix}__{fn_name}",
                         tool_output=result[:2000],
                     )
 
@@ -1603,6 +2439,28 @@ class CodexCLIClient(_BaseClient):
 # Factory
 # ---------------------------------------------------------------------------
 
+def _map_kit_permission_mode(permission_mode: str) -> str:
+    """Map dashboard CLI-permission strings to KitToolPermissions modes.
+
+    Cap at 'acceptEdits' for unknown values — destructive ops should never
+    silently pass through to bypassPermissions. Bash is still gated by
+    deny-list + auto-allow + callback regardless of mode.
+    """
+    pm = (permission_mode or "").strip()
+    table = {
+        "":                  "default",
+        "default":           "default",
+        "ask_all":           "default",
+        "plan":              "plan",
+        "acceptEdits":       "acceptEdits",
+        "auto":              "acceptEdits",
+        "repo_free":         "acceptEdits",
+        "bypassPermissions": "bypassPermissions",
+        "all_free":          "bypassPermissions",
+    }
+    return table.get(pm, "default")
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -1614,6 +2472,7 @@ def create_client(
     mcp_config: str = "",
     allowed_tools: list[str] | None = None,
     extra_dirs: list[str] | None = None,
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]] = None,
 ) -> _BaseClient:
     """Create the appropriate client backend.
 
@@ -1641,10 +2500,17 @@ def create_client(
     """
     if provider == "kit":
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
+        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+        kit_perms = KitToolPermissions(
+            workspace=kit_workspace,
+            mode=_map_kit_permission_mode(permission_mode),
+            confirm_callback=kit_confirm_callback,
+        )
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",
             key_env_var="KIT_TOOLBOX_API_KEY",
+            permissions=kit_perms,
         )
     if provider == "openai":
         if backend == "cli":

@@ -141,10 +141,10 @@
   },
   "kit": {
     "avg_cost_per_task": {
-      "coding": 0.04
+      "coding": 0.036
     },
     "success_rate": {
-      "solo": 0.639,
+      "solo": 0.693,
       "quick": 0.7,
       "reviewed": 0.8,
       "cluster": 0.65,
@@ -152,7 +152,7 @@
     },
     "task_performance": {
       "coding": {
-        "success_rate": 0.884,
+        "success_rate": 0.901,
         "thinking_budget_mult": 1.0
       },
       "chemistry": {
@@ -166,6 +166,8 @@
       "reading DELFIN monoliths before narrowing to concrete call sites",
       "missing KIT-specific constraints (SLURM partitions, micromamba envs, /pfs/ paths)"
     ],
+    "total_cycles": 3,
+    "updated_at": "2026-05-06 16:09:26",
     "communication": {
       "rules": [
         "German for user-facing conversation (matches KIT user base)",
@@ -183,8 +185,6 @@
         "Max 40 tool calls per task; after that, stop and summarize current findings",
         "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files"
       ]
-    },
-    "total_cycles": 2,
-    "updated_at": "2026-04-14 15:40:27"
+    }
   }
 }

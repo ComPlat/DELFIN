@@ -229,6 +229,12 @@ _DASHBOARD_TOOLS = frozenset({
 # MCP documentation server tools — allowed for ALL roles so every agent
 # can look up ORCA manual sections, xTB docs, methodology, etc.
 _DOC_TOOL_PREFIX = "mcp__delfin-docs__"
+# KIT-Toolbox coding-agent tools (write_file, edit_file, multi_edit, bash) are
+# emitted with this prefix by api_client.py. They are gated by the
+# KitToolPermissions layer (sandbox + denylist + confirm-callback), not by the
+# role whitelist below — so we always let them through when KIT permissions
+# have been wired up.
+_KIT_CODING_PREFIX = "mcp__kit-coding__"
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -277,6 +283,7 @@ class AgentEngine:
         allowed_tools: list[str] | None = None,
         extra_dirs: list[str] | None = None,
         agent_workspace_dir: str = "",
+        kit_confirm_callback=None,
     ):
         self.repo_dir = Path(repo_dir)
         self.loader = PromptLoader(repo_dir=pack_dir)
@@ -285,6 +292,7 @@ class AgentEngine:
             model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir), mcp_config=mcp_config,
             allowed_tools=allowed_tools, extra_dirs=extra_dirs,
+            kit_confirm_callback=kit_confirm_callback,
         )
         self.backend = backend
         self.provider = provider
@@ -351,6 +359,40 @@ class AgentEngine:
         """Enable/disable cheap-model context distillation."""
         if self._distiller is not None:
             self._distiller.enabled = enabled
+
+    # -- KIT-Toolbox coding-agent permissions --------------------------------
+
+    @property
+    def kit_permissions(self):
+        """KitToolPermissions instance bound to the client (None if not KIT)."""
+        return getattr(self.client, "_permissions", None)
+
+    def set_kit_confirm_callback(self, callback) -> bool:
+        """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
+
+        Returns True when the callback was attached, False when the active
+        client does not have KIT permissions (e.g. provider != 'kit').
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False
+        perms.confirm_callback = callback
+        return True
+
+    def set_kit_permission_mode(self, mode: str) -> bool:
+        """Switch the KIT permission mode at runtime.
+
+        Accepts 'plan', 'default', 'acceptEdits', 'bypassPermissions'.
+        Returns True on success, False if no KIT permissions are bound or
+        the mode is unknown.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False
+        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+            return False
+        perms.mode = mode
+        return True
 
     def _load_mode(self, mode: str) -> None:
         """Load a mode definition from the LITE manifest."""
@@ -508,8 +550,12 @@ class AgentEngine:
                     role_id = self.route[self.current_role_index] if self.route else ""
                     allowed = _ROLE_TOOL_WHITELIST.get(role_id)
                     if allowed is not None and event.tool_name not in allowed:
-                        # Allow MCP doc server tools for all roles
-                        if not event.tool_name.startswith(_DOC_TOOL_PREFIX):
+                        # Allow MCP doc server tools for all roles, plus the
+                        # KIT-Toolbox coding tools (already permission-gated).
+                        if not (
+                            event.tool_name.startswith(_DOC_TOOL_PREFIX)
+                            or event.tool_name.startswith(_KIT_CODING_PREFIX)
+                        ):
                             # Block unauthorized tool — don't call on_tool_use
                             continue
                     # Defense-in-depth: dashboard_agent Write restricted to workspace
