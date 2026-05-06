@@ -815,7 +815,10 @@ def _all_polyhedra_codes(n_coord: int, metal_symbol: str,
     bauen und generieren" - DELFIN must enumerate ALL polyhedra per CN, not
     pick one preferred via metal-identity heuristic.
     """
-    if not _delfin_env_int("DELFIN_ALL_POLYHEDRA", 1):
+    # Iter-5: default flipped 1→0 (was Iter-2A default-ON, but pumps low-fidelity
+    # polyhedra into pool — see iter5_polyhedron_md_forensik.md).  Opt-in via
+    # DELFIN_ALL_POLYHEDRA=1.
+    if not _delfin_env_int("DELFIN_ALL_POLYHEDRA", 0):
         return list(legacy_codes)
     full = _ALL_POLYHEDRA_BY_CN.get(int(n_coord))
     if not full:
@@ -1215,6 +1218,20 @@ guards in ``smiles_to_xyz_isomers`` (main conformer loop, linkage
 isomer append, alt-binding append) reject structures that pass fragment-
 topology but fail the severe-distortion check.  Set to 0 to bypass the
 gate when diagnosing regressions where it is over-rejecting."""
+
+DELFIN_TOPOLOGY_STRICT_MODE: int = _delfin_env_int("DELFIN_TOPOLOGY_STRICT_MODE", 0)
+"""Iter-5 forensik (123a130 vs HEAD): default 0 = HEAD bit-identical.
+When 1, short-circuits the 5 NEW frame-emitter paths added Apr 28-May 6
+(HD-TA, GIE, _emit_chelate_pucker_variants, _emit_all_trans_by_type_arrangements,
+H1 universal aromatic-H projection over all results) that pass HEAD's strict
+gate at 1.15x cov-sum but fail the downstream covalent-radius bond-multiset
+test at 1.26x cov-sum effective.  Restores 123a130-style frame mix while
+keeping all other Iter-1...4 chemistry improvements (Lambda/Delta-universal,
+Burnside, conformer-mult, B3/B4 corrector, in-pipeline pi-H projection at
+ring-snap call sites).
+
+Forensik report: agent_workspace/quality_framework/results/iter5_topology_forensik.md
+Acceptance target: topo_pct_match >= 65 percent, topo_pct_extra_fragment <= 1.0 percent."""
 
 # --- Symmetry / ideal-polyhedron scoring ---------------------------------
 DELFIN_SYMMETRY_WEIGHT: float = _delfin_env_float(
@@ -2133,7 +2150,7 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
             # Determine preferred geometry from metal identity
             metal_syms = [mol.GetAtomWithIdx(mi).GetSymbol() for mi in metal_indices]
             pref_geom = _PREFERRED_CN4_GEOMETRY.get(metal_syms[0], 'SQ')
-            _all_poly_on = bool(_delfin_env_int("DELFIN_ALL_POLYHEDRA", 1))
+            _all_poly_on = bool(_delfin_env_int("DELFIN_ALL_POLYHEDRA", 0))  # Iter-5: default 1→0
 
             xyz_tetra = _build_xyz_for_4coord_vecs(tetra_vecs)
             xyz_sq = _build_xyz_for_4coord_vecs(sq_vecs)
@@ -22995,7 +23012,15 @@ def smiles_to_xyz_isomers(
             # the topology hazard that motivated the Iter-1 guard cannot
             # arise.  Opt-out via DELFIN_HAPTO_DIVERSITY_RESTORE=0 (then
             # output is byte-exact identical to Iter-1 HEAD).
-            if _hapto_skip_ob_diversity and _mol_hapto_gate is not None:
+            # Iter-5: HD-TA was unconditional in Iter-3.2 (despite docstring).
+            # Now env-gated default OFF — see iter5_polyhedron_md_forensik.md.
+            # σ-rotations bypass polyhedron gate, pumping low-fidelity frames.
+            if (
+                _hapto_skip_ob_diversity
+                and _mol_hapto_gate is not None
+                and not DELFIN_TOPOLOGY_STRICT_MODE
+                and _delfin_env_int("DELFIN_HAPTO_DIVERSITY_RESTORE", 0)
+            ):
                 try:
                     from delfin._hapto_diversity import (
                         apply_hapto_diversity_topology_aware as _hd_apply,
@@ -23902,7 +23927,7 @@ def smiles_to_xyz_isomers(
     # idealised pre-UFF placements that keep the trans symmetry intact.
     # Pure additive: never touches existing entries, only appends new
     # XYZ-signature-distinct ones.  Toggle via DELFIN_TRANS_PASS_ENABLED.
-    if has_metal:
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
         try:
             _emit_all_trans_by_type_arrangements(
                 mol, results, dtype_map, apply_uff, max_isomers,
@@ -23918,7 +23943,7 @@ def smiles_to_xyz_isomers(
     # boat/twist perturbations of each saturated chelate ring as
     # separate XYZ candidates.  Pure additive (toggle:
     # DELFIN_PUCKER_PASS_ENABLED, default 1).
-    if has_metal:
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
         try:
             _emit_chelate_pucker_variants(
                 mol, results, apply_uff, max_isomers,
@@ -24307,7 +24332,11 @@ def smiles_to_xyz_isomers(
     if (
         has_metal
         and not _dual_parse_done
-        and _delfin_env_int("DELFIN_GENERAL_ISOMER_ENUM", 1)
+        # Iter-5: default flipped 1→0.  GIE pumped unrefined enumerator frames
+        # via monkey-patched relaxed verify, breaking topology gate.
+        # Opt-in via DELFIN_GENERAL_ISOMER_ENUM=1.
+        and _delfin_env_int("DELFIN_GENERAL_ISOMER_ENUM", 0)
+        and not DELFIN_TOPOLOGY_STRICT_MODE
     ):
         try:
             _gie_n_room = max(0, max_isomers - len(results))
@@ -24504,7 +24533,11 @@ def smiles_to_xyz_isomers(
     # frame as a final post-emit pass.  Topology-preserving (heavy atoms
     # untouched), only H atoms move perpendicular to the SVD-fit ring plane.
     # Toggle: DELFIN_H1_PROJECT_ALL=0 → bit-exact Iter-3 (no projection).
-    if has_metal and _delfin_env_int("DELFIN_H1_PROJECT_ALL", 1):
+    if (
+        has_metal
+        and _delfin_env_int("DELFIN_H1_PROJECT_ALL", 1)
+        and not DELFIN_TOPOLOGY_STRICT_MODE
+    ):
         try:
             _h1_results: List[Tuple[str, str]] = []
             for _h1_xyz, _h1_lbl in results:
