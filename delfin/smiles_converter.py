@@ -24415,33 +24415,46 @@ def smiles_to_xyz_isomers(
                         if not _gie_relaxed_verify(_txyz, mol):
                             continue
 
-                        # Pre-gate refinement pipeline: UFF + H-fix + arom-snap
+                        # Iter-4: try RAW frame against strict gate first.
+                        # e6761e4 forensik: 70%+ of raw enumerator frames pass
+                        # HEAD's strict verify directly.  UFF refinement on TM
+                        # systems often WRECKS the frame (Cu+1, Cd-6 etc. are
+                        # unrecognized atom types — UFF returns garbage).
+                        # Only fall back to UFF+H-fix+snap if raw fails.
                         _refined = _txyz
-                        if apply_uff:
-                            try:
-                                _refined = _optimize_xyz_openbabel_safe(
-                                    _refined, mol_template=mol,
-                                )
-                            except Exception:
-                                pass
+                        _passed_raw = False
                         try:
-                            _refined = _fix_h_geometry_universal(_refined, mol)
-                        except Exception:
-                            pass
-                        try:
-                            _refined = _snap_aromatic_rings_in_xyz(
-                                _refined, mol, rms_threshold=0.05,
-                            )
+                            if _gie_orig_verify(_txyz, mol):
+                                _passed_raw = True
                         except Exception:
                             pass
 
-                        # STRICT verify (original gate, all 485 LOC chemistry
-                        # rules) — no monkey-patching here.
-                        try:
-                            if not _gie_orig_verify(_refined, mol):
+                        if not _passed_raw:
+                            # Pre-gate refinement pipeline as fallback
+                            if apply_uff:
+                                try:
+                                    _refined = _optimize_xyz_openbabel_safe(
+                                        _refined, mol_template=mol,
+                                    )
+                                except Exception:
+                                    pass
+                            try:
+                                _refined = _fix_h_geometry_universal(_refined, mol)
+                            except Exception:
+                                pass
+                            try:
+                                _refined = _snap_aromatic_rings_in_xyz(
+                                    _refined, mol, rms_threshold=0.05,
+                                )
+                            except Exception:
+                                pass
+
+                            # STRICT verify after refinement
+                            try:
+                                if not _gie_orig_verify(_refined, mol):
+                                    continue
+                            except Exception:
                                 continue
-                        except Exception:
-                            continue
 
                         try:
                             _mt = Chem.RWMol(mol)
