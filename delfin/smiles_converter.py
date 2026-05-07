@@ -3486,6 +3486,70 @@ def _probe_hapto_groups_from_smiles(smiles: str) -> List[Tuple[int, List[int]]]:
     return _find_hapto_groups(mol)
 
 
+# ============================================================================
+# Iter-8 FPCFD: per-class function dispatch infrastructure
+# ============================================================================
+#
+# Forensik-Driven Per-Class Champion Function Dispatch (FPCFD) is the Iter-8+
+# strategy that replaces the env-flag-stacking approach of Iter-1..7.  Per
+# (chemistry_class × function) cell, the best-known champion's function-body
+# is forward-ported into HEAD with suffix `_<champion_sha>` and dispatched at
+# call-site via `_classify_complex_class()` below.
+#
+# Classes (5):
+#   no_metal      — pure organic / inorganic SMILES with no transition metal
+#   sigma         — single metal, all donors are σ-only (Cl, P, N, O, S, ...)
+#   hapto         — single metal with at least one η-coordinated ligand (Cp, arene, alkene)
+#   multi_sigma   — two or more metals, all σ-only coordination
+#   multi_hapto   — two or more metals, at least one metal η-coordinated
+#
+# Design doctrine (HANDOFF2.md sections 14, 15, 16):
+#   - Champion bodies live permanently in HEAD as named functions.
+#   - Pro call-site: dispatcher selects exactly ONE body per SMILES.
+#   - Forward-only: no revert; bei regression → forward-only fix-commit.
+#   - Per-class Δ-matrix as acceptance gate (no aggregate-trap).
+#
+# This dispatch infrastructure is *pure infrastructure* (Iter-8.0): adding the
+# helper does NOT change behavior — no champion-bodies are ported yet, no
+# call-sites dispatch yet.  Subsequent Iter-8.1..8.7 patches port one cell
+# each and wire the dispatcher.
+def _classify_complex_class(mol) -> str:
+    """5-class chemistry classification based on metal count + hapto coordination.
+
+    Returns one of:
+      - 'no_metal'    — n_metals == 0
+      - 'sigma'       — n_metals == 1, no hapto group
+      - 'hapto'       — n_metals == 1, at least one hapto group
+      - 'multi_sigma' — n_metals >= 2, no hapto-coordinated metal
+      - 'multi_hapto' — n_metals >= 2, at least one hapto-coordinated metal
+
+    Used by Iter-8+ FPCFD per-class function dispatch.  Mirrors
+    `quality_framework/scripts/find_topology_loss.py:chemistry_class()` so
+    that runtime-class-detection matches detector-class-detection (essential
+    for per-class Δ-matrix attribution).
+
+    Defensive: returns 'no_metal' on any exception (mol parsing failure etc).
+    """
+    if mol is None:
+        return "no_metal"
+    try:
+        n_metals = sum(
+            1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+        )
+    except Exception:
+        return "no_metal"
+    if n_metals == 0:
+        return "no_metal"
+    try:
+        hapto_metal_idx = {m_idx for m_idx, _ in _find_hapto_groups(mol)}
+    except Exception:
+        hapto_metal_idx = set()
+    n_hapto_metals = len(hapto_metal_idx)
+    if n_metals == 1:
+        return "hapto" if n_hapto_metals else "sigma"
+    return "multi_hapto" if n_hapto_metals else "multi_sigma"
+
+
 def _hapto_failfast_error(hapto_groups: List[Tuple[int, List[int]]]) -> str:
     """Build a concise user-facing error for unsupported hapto coordination."""
     if not hapto_groups:
