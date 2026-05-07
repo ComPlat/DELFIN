@@ -106,7 +106,13 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
 
     stdout = capsys.readouterr().out
     assert "Starting DELFIN Dashboard on http://localhost:9001" in stdout
-    assert "?token=" in stdout  # URL includes the token for convenience
+    # SECURITY: the raw token value MUST NOT appear in stdout — stdout may be
+    # captured by journald/log files readable by other users on shared hosts.
+    # In non-TTY mode, only the token-file path is printed; users read the
+    # value with `cat $(file)`.
+    _real_token = captured["env"]["JUPYTER_TOKEN"]
+    assert _real_token not in stdout, "token value leaked to stdout"
+    assert "voila-token-" in stdout, "token-file hint missing from stdout"
 
 
 def test_main_reports_missing_voila_module(monkeypatch, capsys):
