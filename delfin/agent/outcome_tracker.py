@@ -2,11 +2,15 @@
 
 Records task outcomes (pass/fail, cost, retries, errors) in an append-only
 JSONL file.  Used by the provider profile system for adaptive routing.
+
+The history file is per-user/per-machine (``~/.delfin/outcome_history.jsonl``)
+and is written with 0600 permissions.  It MUST NOT be committed to the repo.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -50,8 +54,14 @@ def append_outcome(
     if not outcome.timestamp:
         outcome.timestamp = datetime.now().isoformat()
 
+    new_file = not p.exists()
     with open(p, "a", encoding="utf-8") as f:
         f.write(json.dumps(asdict(outcome), ensure_ascii=False) + "\n")
+    if new_file:
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
 
     # Trim to max entries (keep newest)
     _trim_if_needed(p)

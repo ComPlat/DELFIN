@@ -2,11 +2,16 @@
 
 Stores facts, preferences, and project context that persist across
 agent cycles and dashboard sessions.
+
+Files live exclusively in ``~/.delfin/`` (per-user, per-machine) and
+are written with 0600 permissions — they MUST NOT be committed to
+the repo.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -39,6 +44,10 @@ def _write(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = time.time()
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def load_memories(path: Path | None = None) -> list[dict[str, Any]]:

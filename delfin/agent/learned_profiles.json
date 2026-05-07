@@ -60,28 +60,6 @@
     }
   },
   "claude": {
-    "avg_cost_per_task": {
-      "coding": 4.772,
-      "chemistry": 7.768
-    },
-    "success_rate": {
-      "solo": 0.959,
-      "quick": 0.8,
-      "reviewed": 0.75,
-      "cluster": 0.7,
-      "dashboard": 0.9
-    },
-    "task_performance": {
-      "coding": {
-        "success_rate": 0.949
-      },
-      "chemistry": {
-        "success_rate": 0.813
-      }
-    },
-    "common_failures": [
-      "dashboard edits drifting into longer prose than the UI needs"
-    ],
     "communication": {
       "rules": [
         "No Co-Authored-By in commits",
@@ -93,33 +71,10 @@
         "pytest in background after every code change",
         "Agent subprocesses for research spanning >3 files"
       ]
-    },
-    "total_cycles": 8,
-    "updated_at": "2026-04-14 15:40:38"
+    }
   },
   "openai": {
     "thinking_budget_mult": 1.1,
-    "avg_cost_per_task": {
-      "coding": 10.306
-    },
-    "success_rate": {
-      "solo": 0.946,
-      "quick": 0.78,
-      "reviewed": 0.84,
-      "cluster": 0.74,
-      "dashboard": 0.9
-    },
-    "task_performance": {
-      "coding": {
-        "success_rate": 0.916
-      }
-    },
-    "common_failures": [
-      "editing before verifying provider/module wiring",
-      "treating cluster or scheduler changes like low-risk local edits",
-      "answering ORCA/xTB/method questions without doc-first lookup",
-      "reading DELFIN monoliths before narrowing to concrete call sites"
-    ],
     "communication": {
       "rules": [
         "State plan briefly before touching >1 DELFIN file",
@@ -135,39 +90,9 @@
         "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files",
         "If the same command fails twice, explain the failure and move on instead of retrying"
       ]
-    },
-    "total_cycles": 5,
-    "updated_at": "2026-04-14 13:18:53"
+    }
   },
   "kit": {
-    "avg_cost_per_task": {
-      "coding": 0.036
-    },
-    "success_rate": {
-      "solo": 0.693,
-      "quick": 0.7,
-      "reviewed": 0.8,
-      "cluster": 0.65,
-      "dashboard": 0.85
-    },
-    "task_performance": {
-      "coding": {
-        "success_rate": 0.901,
-        "thinking_budget_mult": 1.0
-      },
-      "chemistry": {
-        "success_rate": 0.7,
-        "thinking_budget_mult": 1.3
-      }
-    },
-    "common_failures": [
-      "attempting git commit despite explicit user instruction to leave commits to the user",
-      "generic QM answers when search_docs returns few hits — fall back to ORCA manual + methodology doc instead of guessing",
-      "reading DELFIN monoliths before narrowing to concrete call sites",
-      "missing KIT-specific constraints (SLURM partitions, micromamba envs, /pfs/ paths)"
-    ],
-    "total_cycles": 3,
-    "updated_at": "2026-05-06 16:09:26",
     "communication": {
       "rules": [
         "German for user-facing conversation (matches KIT user base)",

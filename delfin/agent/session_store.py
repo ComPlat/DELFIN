@@ -1,7 +1,8 @@
 """Persistent session storage for the DELFIN Agent.
 
 Saves and loads agent sessions so conversations survive dashboard restarts.
-Each session is a JSON file in ``~/.delfin/agent_sessions/``.
+Each session is a JSON file in ``~/.delfin/agent_sessions/`` (per-user,
+per-machine, 0600 permissions).  Sessions MUST NOT be committed to the repo.
 """
 
 from __future__ import annotations
@@ -11,6 +12,13 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _chmod_user_only(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 # Legacy mode name migration
 _LEGACY_MODE_MAP = {
@@ -121,6 +129,7 @@ def save_session(
         data["created_at"] = data["updated_at"]
 
     filepath.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    _chmod_user_only(filepath)
     return filepath
 
 
@@ -177,3 +186,62 @@ def delete_session(session_id: str) -> bool:
         filepath.unlink()
         return True
     return False
+
+
+def fork_session(
+    source_id: str,
+    new_id: str | None = None,
+    *,
+    title_suffix: str = " (fork)",
+    sessions_dir: Path | None = None,
+) -> str | None:
+    """Duplicate an existing session under a new ID.
+
+    The fork inherits all chat / engine / cycle history but gets a fresh
+    ``session_id``, fresh timestamps, and an appended title suffix.  The
+    ``cost_usd`` and ``token_usage`` counters stay attached so the fork's
+    cumulative state is honest.
+
+    Parameters
+    ----------
+    source_id : str
+        The session ID to fork.  Must exist on disk.
+    new_id : str, optional
+        New session ID.  If omitted, a timestamp-based ID is generated.
+    title_suffix : str
+        Appended to the title to disambiguate from the source.
+    sessions_dir : Path, optional
+        Override the default ``~/.delfin/agent_sessions/`` path (for tests).
+
+    Returns
+    -------
+    str | None
+        The new session ID, or ``None`` if the source could not be loaded.
+    """
+    base_dir = sessions_dir or _SESSIONS_DIR
+    src_path = base_dir / f"{source_id}.json"
+    if not src_path.exists():
+        return None
+    try:
+        data = json.loads(src_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    if not new_id:
+        new_id = f"fork-{int(time.time())}-{source_id[-6:] if source_id else 'src'}"
+
+    # Mutate to make this a fresh standalone session
+    data["session_id"] = new_id
+    src_title = str(data.get("title") or "Untitled")
+    if title_suffix and title_suffix not in src_title:
+        data["title"] = f"{src_title}{title_suffix}"
+    now = time.time()
+    data["created_at"] = now
+    data["updated_at"] = now
+    data["forked_from"] = source_id
+
+    out_path = base_dir / f"{new_id}.json"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    _chmod_user_only(out_path)
+    return new_id

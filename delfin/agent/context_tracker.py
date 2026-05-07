@@ -3,12 +3,14 @@
 Records per-section hit rates so the prompt loader can skip sections that
 are consistently ignored — reducing token cost without losing quality.
 
-Storage: ``~/.delfin/context_usage.jsonl`` (append-only, max 500 entries).
+Storage: ``~/.delfin/context_usage.jsonl`` (append-only, max 500 entries,
+0600 permissions, per-user/per-machine — MUST NOT be committed to the repo).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -159,8 +161,14 @@ class ContextUsageTracker:
 
     def _append(self, entry: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not self._path.exists()
         with open(self._path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        if new_file:
+            try:
+                os.chmod(self._path, 0o600)
+            except OSError:
+                pass
         _trim_if_needed(self._path)
 
 
