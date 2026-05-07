@@ -23195,7 +23195,27 @@ def smiles_to_xyz_isomers(
             # (+4.58pp), stereo_pct_match 35.94% -> 44.93% (+8.99pp), h_h_clashes
             # 2910 -> 303 (-89.6%), M_L_intactness 0.979 -> 0.994 (+0.015).
             # Disable via DELFIN_HAPTO_123A_PORT=0 if regression appears.
-            _hapto_123a_port = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 1))
+            #
+            # Iter-7.1 (2026-05-07) multi-metal guard: master_v3 voll-pool data
+            # (~25%) revealed multi-hapto class M_L 0.996 -> 0.882 (-11.4pp),
+            # topology extra-bonds 11.84 -> 24.67 (+108%) with port=1 default-on.
+            # Root cause: OB-WRS rotates each metal's Cp/arene independently,
+            # tearing apart multi-metal-cluster topology.  Port now active
+            # ONLY for single-metal complexes.  Multi-metal complexes fall back
+            # to the Iter-1 σ-guard behaviour (sigma-mixed -> skip OB-WRS).
+            # See project_iter7_3way_findings.md for the per-class delta.
+            _hapto_123a_port_raw = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 1))
+            if _hapto_123a_port_raw and _mol_hapto_gate is not None:
+                try:
+                    _n_metals_check = sum(
+                        1 for _a in _mol_hapto_gate.GetAtoms()
+                        if _a.GetSymbol() in _METAL_SET
+                    )
+                except Exception:
+                    _n_metals_check = 1
+                _hapto_123a_port = (_n_metals_check <= 1)
+            else:
+                _hapto_123a_port = _hapto_123a_port_raw
 
             # Iter-1 (hapto-σ topology guard): WeightedRotorSearch treats the
             # M-C η-bonds encoded in the SMILES as rotatable torsions and
