@@ -23190,8 +23190,12 @@ def smiles_to_xyz_isomers(
             # produces only seed + σ-permutations on σ-mixed cases.
             # When DELFIN_HAPTO_123A_PORT=1, force σ-guard OFF and HD-TA
             # ON (topology gates remain in place).  See
-            # results/iter6_hapto_forensik.md.  Default OFF.
-            _hapto_123a_port = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 0))
+            # results/iter6_hapto_forensik.md.  Default ON since Iter-7 (2026-05-07):
+            # smoke 2000 + 30-detector battery validated topo_pct_match 43.84% -> 48.42%
+            # (+4.58pp), stereo_pct_match 35.94% -> 44.93% (+8.99pp), h_h_clashes
+            # 2910 -> 303 (-89.6%), M_L_intactness 0.979 -> 0.994 (+0.015).
+            # Disable via DELFIN_HAPTO_123A_PORT=0 if regression appears.
+            _hapto_123a_port = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 1))
 
             # Iter-1 (hapto-σ topology guard): WeightedRotorSearch treats the
             # M-C η-bonds encoded in the SMILES as rotatable torsions and
