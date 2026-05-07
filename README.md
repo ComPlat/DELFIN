@@ -9,11 +9,11 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is an open-source AI-orchestrated computational chemistry platform that automates first-principles molecular property prediction across the full chemical space — from drug-like organics and photoactive emitters to transition-metal catalysts, organic crystals, and CO₂-activation systems.
+**DELFIN** is an open-source AI-orchestrated computational chemistry platform that automates first-principles molecular property prediction across the full chemical space — from organics and photoactive emitters to transition-metal catalysts.
 
-By coupling structure generation, semi-empirical methods, density functional theory (DFT), machine-learning potentials, and large-language-model agents behind a single **SMILES-in / property-out** interface, DELFIN lowers the barrier between experimental design and DFT-grade prediction from "weeks of expert work" to "minutes of automated workflow".
+By coupling **topological and mutational structure generation**, semi-empirical methods, density functional theory (DFT), machine-learning potentials, and large-language-model agents behind a single **SMILES-in / property-out** interface, DELFIN lowers the barrier between experimental design and DFT-grade prediction from "weeks of expert work" to "minutes of automated workflow".
 
-> 🧬 organic chemistry · 🧲 transition-metal catalysis · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics · 🧱 crystal structures
+> 🧬 organic chemistry · 🧲 transition-metal catalysis · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
 DELFIN can be used in three ways:
 - **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
