@@ -322,6 +322,7 @@ def main(argv=None):
     # nodes), even 127.0.0.1 is reachable by other local users, so a token is
     # required regardless of bind address. Only --no-token disables it.
     _token = ""
+    _token_file: Path | None = None
     if args.no_token:
         _token = ""
         print(
@@ -333,10 +334,47 @@ def main(argv=None):
     elif args.token:
         _token = args.token
     else:
+        import atexit
         import secrets
+        import tempfile
         _token = secrets.token_urlsafe(32)
-        print(f"\n  🔑 Auto-generated access token (required in URL):\n")
-        print(f"     {_token}\n")
+        # Write token to 0600 file instead of stdout — stdout may be captured
+        # by journald/log files where it would be readable by other users on
+        # shared hosts. XDG_RUNTIME_DIR is per-user (mode 0700) on Linux; we
+        # fall back to ~/.cache/delfin if it is not set.
+        _runtime_dir = Path(
+            os.environ.get("XDG_RUNTIME_DIR")
+            or (Path.home() / ".cache" / "delfin")
+        )
+        try:
+            _runtime_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            _runtime_dir = Path.home() / ".cache" / "delfin"
+            _runtime_dir.mkdir(parents=True, exist_ok=True)
+        # mkstemp creates a unique file with mode 0600 atomically (TOCTOU-free).
+        _fd, _path_str = tempfile.mkstemp(
+            prefix=f"voila-token-{os.getpid()}-", dir=str(_runtime_dir)
+        )
+        _token_file = Path(_path_str)
+        try:
+            os.write(_fd, _token.encode("utf-8"))
+        finally:
+            os.close(_fd)
+
+        def _cleanup_token_file(p: Path = _token_file) -> None:
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+        atexit.register(_cleanup_token_file)
+        print(
+            f"\n  🔑 Auto-generated access token (mode 0600):\n"
+            f"     {_token_file}\n"
+            f"     Read it with:  cat {_token_file}\n"
+        )
 
     if args.open_browser is True:
         open_browser = True
@@ -400,8 +438,15 @@ def main(argv=None):
         cmd.append("--theme=dark")
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
-    token_suffix = f"?token={_token}" if _token else ""
+    # Only embed the token in the printed URL when stdout is an interactive
+    # terminal — when stdout is redirected to a log file or captured by
+    # journald, the token would otherwise be readable by anyone with log
+    # access on shared hosts.  When non-interactive, point to the token file.
+    _stdout_is_tty = sys.stdout.isatty()
+    token_suffix = f"?token={_token}" if (_token and _stdout_is_tty) else ""
     print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}{token_suffix}")
+    if _token and not _stdout_is_tty and _token_file is not None:
+        print(f"  Append ?token=$(cat {_token_file}) to the URL.")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":

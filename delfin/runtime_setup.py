@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shlex
@@ -627,7 +628,7 @@ def _python_version_ok(python_bin: str, min_ver: tuple[int, ...] = (3, 10),
             [python_bin, "-c", "import sys; print(sys.version_info[:2])"],
             capture_output=True, text=True, timeout=10, check=False,
         )
-        major, minor = eval(out.stdout.strip())  # noqa: S307
+        major, minor = ast.literal_eval(out.stdout.strip())
         return min_ver <= (major, minor) < max_ver
     except Exception:
         return False
