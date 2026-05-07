@@ -1,7 +1,8 @@
 """Persistent session storage for the DELFIN Agent.
 
 Saves and loads agent sessions so conversations survive dashboard restarts.
-Each session is a JSON file in ``~/.delfin/agent_sessions/``.
+Each session is a JSON file in ``~/.delfin/agent_sessions/`` (per-user,
+per-machine, 0600 permissions).  Sessions MUST NOT be committed to the repo.
 """
 
 from __future__ import annotations
@@ -11,6 +12,13 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+
+
+def _chmod_user_only(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 # Legacy mode name migration
 _LEGACY_MODE_MAP = {
@@ -121,6 +129,7 @@ def save_session(
         data["created_at"] = data["updated_at"]
 
     filepath.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    _chmod_user_only(filepath)
     return filepath
 
 
@@ -234,4 +243,5 @@ def fork_session(
     out_path = base_dir / f"{new_id}.json"
     base_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(data, ensure_ascii=False, indent=1))
+    _chmod_user_only(out_path)
     return new_id

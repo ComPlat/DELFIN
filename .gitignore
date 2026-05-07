@@ -51,6 +51,14 @@ agent_workspace/
 # Local Claude Code state (per-machine, not for the repo)
 .claude/
 
+# Local agent overlays — per-machine learned state must NEVER enter the repo.
+# Canonical location is ~/.delfin/, but guard against accidental writes that
+# resolve into the repo cwd (e.g. tests with custom paths).
+delfin/agent/learned_profiles.local.json
+delfin/agent/profile_playbooks.local.json
+delfin/agent/*.local.json
+.delfin/
+
 # Solver run logs (large, regenerated per run)
 censo.log
 *.log

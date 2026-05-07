@@ -5,8 +5,19 @@ provider-specific overlays (Claude, OpenAI/Codex, KIT Toolbox). The
 merged result drives adaptive routing and thinking budget selection,
 while outcome updates stay scoped to the active provider.
 
+Privacy model:
+- Repo file (``delfin/agent/learned_profiles.json``) is a STATIC baseline
+  with curated rules (communication / tool_usage / playbooks / codebase_map
+  / preferred_model / thinking_budget_mult). It is read-only at runtime.
+- All per-machine learning (success_rate, avg_cost_per_task,
+  task_performance, total_cycles, common_failures, denied_patterns,
+  next_steps, error_patterns, anti_patterns, updated_at) is written
+  to ``~/.delfin/provider_profile_state.json`` only.
+- ``load_provider_profile`` merges baseline + local overlay so callers
+  see a unified view; ``save_provider_profile`` and ``update_from_outcome``
+  never touch the repo file.
+
 Safety:
-- Only modifies ``delfin/agent/learned_profiles.json``
 - All values are bounded (no runaway drift)
 - Rate-limited: max 1 update per cycle
 - Fully reversible: reset_profile() restores provider defaults
@@ -24,12 +35,28 @@ from typing import Any
 from delfin.agent.outcome_tracker import CycleOutcome
 
 
-# Store in the repo so learned profiles are version-controlled and shared
-# across machines (pushed with git).  Outcome history stays local (~/.delfin/).
+# Repo file = STATIC baseline (curated rules, shared across machines).
+# Local overlay = PRIVATE per-machine learning (~/.delfin/).
+# Outcome history also stays local in ~/.delfin/.
 _DEFAULT_PATH = Path(__file__).resolve().parent / "learned_profiles.json"
 _PLAYBOOKS_PATH = Path(__file__).resolve().parent / "profile_playbooks.json"
 _LOCAL_STATE_PATH = Path.home() / ".delfin" / "provider_profile_state.json"
-_LOCAL_ONLY_KEYS = {"next_steps", "denied_patterns"}
+
+# Keys whose values are PER-MACHINE learning state.  These never get written
+# to the repo file; they live only in the local overlay.  Anything not in
+# this set is treated as a static curated baseline and stays in the repo.
+_LOCAL_ONLY_KEYS = {
+    "next_steps",
+    "denied_patterns",
+    "success_rate",
+    "avg_cost_per_task",
+    "task_performance",
+    "total_cycles",
+    "common_failures",
+    "error_patterns",
+    "anti_patterns",
+    "updated_at",
+}
 
 # Exponential moving average smoothing factor (0.1 = slow, 0.3 = fast)
 _EMA_ALPHA = 0.15
@@ -88,6 +115,20 @@ def _write_all(path: Path, data: dict[str, Any]) -> None:
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def _write_local(path: Path, data: dict[str, Any]) -> None:
+    """Write a local overlay file with user-only (0600) permissions."""
+    import os
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(data, indent=2, ensure_ascii=False)
+    path.write_text(payload, encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        # Best-effort: fall through if filesystem rejects chmod (e.g. NFS)
+        pass
 
 
 def _clamp(value: float, key: str) -> float:
@@ -165,7 +206,7 @@ def _read_local_state(path: Path | None = None) -> dict[str, Any]:
 
 
 def _write_local_state(data: dict[str, Any], path: Path | None = None) -> None:
-    _write_all(path or _LOCAL_STATE_PATH, data)
+    _write_local(path or _LOCAL_STATE_PATH, data)
 
 
 def _split_local_overlay(profile: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -403,7 +444,14 @@ def save_provider_profile(
     path: Path | None = None,
     local_state_path: Path | None = None,
 ) -> None:
-    """Save only the provider-specific overlay, preserving shared rules."""
+    """Persist the provider profile.
+
+    Per-machine learning state (see ``_LOCAL_ONLY_KEYS``) goes to the local
+    overlay only.  Static curated rules go to the repo file, but only when
+    they actually differ from what is already on disk — outcome-driven
+    cycles never trigger a repo write, keeping ``learned_profiles.json``
+    private-data-free.
+    """
     provider = canonical_provider_name(provider)
     p = path or _DEFAULT_PATH
     resolved_local = _resolve_local_state_path(p, local_state_path)
@@ -413,8 +461,11 @@ def save_provider_profile(
     profile_to_save["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     repo_profile, local_profile = _split_local_overlay(profile_to_save)
     overlay = _profile_overlay(shared, repo_profile)
-    data[provider] = overlay if isinstance(overlay, dict) else {}
-    _write_all(p, data)
+    new_overlay = overlay if isinstance(overlay, dict) else {}
+    existing_overlay = data.get(provider, {}) if isinstance(data.get(provider), dict) else {}
+    if new_overlay != existing_overlay:
+        data[provider] = new_overlay
+        _write_all(p, data)
 
     local_state = _read_local_state(resolved_local)
     if local_profile:
