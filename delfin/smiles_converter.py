@@ -23213,7 +23213,27 @@ def smiles_to_xyz_isomers(
                     )
                 except Exception:
                     _n_metals_check = 1
-                _hapto_123a_port = (_n_metals_check <= 1)
+                # Iter-7.2 (2026-05-07): refine multi-metal guard.  Iter-7.1's
+                # n_metals<=1 check was too strict — Sn/Pb/Bi/Sb/Tl-TM(η-Cp)
+                # complexes have n_metals==2 but only ONE hapto-active metal
+                # (main-group is σ-only).  These need the OB-WRS rotor branch.
+                # Forensik: results/iter7.2_multihapto_forensik.md.  The earlier
+                # iter6 baseline MLI=0.996 was metric-cheating: OB-WRS rot-frames
+                # had spurious M-L extra-bonds but MLI counts only missing, so
+                # they appeared "intact" while topology was torn.  Honest
+                # multi-hapto MLI is ~0.886.  Frame count drop from 281 -> 23
+                # (genuine bi-hapto only) needs OB-WRS recovery for Sn-M(η-Cp).
+                _n_hapto_metals = 0
+                try:
+                    _hapto_metal_set = {
+                        _m_idx for _m_idx, _ in _find_hapto_groups(_mol_hapto_gate)
+                    }
+                    _n_hapto_metals = len(_hapto_metal_set)
+                except Exception:
+                    _n_hapto_metals = 0
+                _hapto_123a_port = (
+                    (_n_metals_check <= 1) or (_n_hapto_metals <= 1)
+                )
             else:
                 _hapto_123a_port = _hapto_123a_port_raw
 
