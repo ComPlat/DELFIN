@@ -24,7 +24,7 @@ DELFIN can be used in three ways:
 
 DELFIN's central claim is methodological, not domain-specific:
 
-1. **Democratizing first-principles chemistry.** A bench chemist with a SMILES string but no QM expertise can obtain DFT-grade thermodynamics, spectra, and reactivity predictions through a single command or browser tab.
+1. **Democratizing first-principles chemistry.** A bench chemist working from chemical intuition alone — no SMILES literacy and no QM expertise required — can obtain DFT-grade thermodynamics, spectra, and reactivity predictions through the AI agent or the dashboard's interactive molecule input.
 2. **Method orchestration across the QM stack.** DELFIN routes each stage to the appropriate engine — RDKit / Architector for structure, xTB / CREST for conformer pre-screening, ORCA for DFT, MACE / ANI for ML-accelerated PES — and reconciles their outputs into a single coherent workflow.
 3. **AI as scientific co-pilot, not just chat.** The integrated agent system selects methods, validates geometries (π-H projection, M-D-bond invariants, hapticity preservation), interprets results, and iterates toward publication-ready outputs.
 4. **Reproducible end-to-end pipelines.** Every prediction ships with full provenance: input SMILES, method choices, ORCA / xTB log links, spectra, and a generated DOCX report — designed for direct integration into supplementary information.
