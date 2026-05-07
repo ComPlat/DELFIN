@@ -29,6 +29,7 @@ DELFIN's central claim is methodological, not domain-specific:
 3. **AI as scientific co-pilot, not just chat.** The integrated agent system helps select methods, validates geometries (π-H projection, M-D-bond invariants, hapticity preservation), interprets results, and iterates toward publication-ready outputs.
 4. **Reproducible end-to-end pipelines.** Every prediction ships with full provenance: input SMILES, method choices, ORCA / xTB log links, spectra, and a generated DOCX report — designed for direct integration into supplementary information.
 5. **Self-maintaining AI for chemistry.** DELFIN's agent system actively supports the evaluation, modeling, and optimization of chemical property prediction — not only at release time. Per-task success rates and cost are tracked across sessions in `learned_profiles.json`, multi-iteration forensic workflows benchmark new structure-generation releases against historical champions on hundreds of structures, and the agent uses those signals to refine its own method routing, validation gates, and convergence-recovery strategies. The platform improves with use, not just with new releases.
+6. **Inverse molecular design via evolutionary AI.** Through the integrated ChemDarwin engine, DELFIN moves from property *prediction* to property *discovery*: full DFT / xTB pipelines act as the fitness function inside a genetic-algorithm loop, while ChemDarwin evolves substituent patterns, ligand cores, and donor sets toward target redox potentials, ΔE(S-T) gaps, emission wavelengths, or β tensors over successive generations — without leaving the DELFIN ecosystem.
 
 DELFIN is research infrastructure: the science it enables is not the science *of* DELFIN itself — it is the chemistry that becomes accessible *because* of DELFIN, across organic, organometallic, and materials domains.
 
@@ -40,7 +41,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 |------------|--------|-------------|
 | **Redox Potentials** | 🔬 both | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows — works for organic radicals AND transition-metal complexes |
 | **Thermodynamics Simulations** | 🔬 both | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
-| **Excited-State Dynamics** | 🧪 organic | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps — TADF/OLED-focused |
+| **Excited-State Dynamics** | 🧪 organic | Fully automated calculation of ISC / RISC / IC rates, fluorescence and phosphorescence lifetimes (incl. per-sublevel), SOC coupling, E₀₀ adiabatic energies, and ΔE(S-T) singlet-triplet gaps — TADF/OLED-focused |
 | **TADF Screening** | 🧪 organic | xTB-based singlet-triplet gap estimation for OLED material discovery |
 | **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
 | **Ensemble NMR** | 🧪 organic | CREST → CENSO → c2anmr → ANMR Boltzmann-weighted ensemble shieldings/couplings |
@@ -50,34 +51,45 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **ML Potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) for fast energy/force evaluation |
 | **Crystal Structure Prediction** | 🧱 solid state | Genarris integration for organic polymorph generation with configurable space groups |
 | **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
-| **Reporting** | 🔬 both | DOCX reports with embedded spectra, JSON export, text summaries |
+| **Reporting** | 🔬 both | Auto-generated DOCX combining all visualized output — spectra plots (UV-Vis, IR, AFP), ESD rate tables (ISC / RISC / IC, ΔE(S-T), E₀₀), redox-potential summaries, free energies, and full method provenance — publication-ready out of the box; JSON export and text summaries also available |
 | **AI Agent** | 🔬 both | Multi-agent orchestration with sandboxed bash execution, persistent memory, dashboard control, code implementation, literature research, result analysis |
+| **Evolutionary Optimization** | 🔬 both | ChemDarwin-driven genetic-algorithm inverse design — DELFIN's DFT / xTB pipeline serves as the fitness function while ChemDarwin evolves molecular structures toward target redox potentials, ΔE(S-T) gaps, emission wavelengths, β tensors, or any DELFIN-computable property |
 
 ### Use Cases Across Chemistry
 
-**Pharmaceutical & medicinal chemistry** 🧪
-- Conformer ensembles and free-energy ranking for drug-like molecules
-- Redox-potential and spin-state prediction for prodrug and metallodrug design
-- Reactive-metabolite analysis via spin-state-aware DFT
-- Ensemble NMR for synthesis verification
-
-**Materials & photophysics** 🧪 / 🧱
-- TADF emitter screening (ΔE(S-T), SOC) for OLED development
-- NLO chromophore design via static & frequency-dependent β tensors
-- Organic crystal polymorph prediction (Genarris)
-- Excited-state dynamics — ISC / RISC kinetics, fluorescence and phosphorescence rates
-
-**Catalysis & energy** 🧲
-- Transition-metal complex redox tuning across coordination numbers and oxidation states
+**Catalysis & energy** 🧲 — *In TM-complex and redox catalysis, spin states and redox potentials are the fundamental descriptors — DELFIN treats both as first-class predictions.*
+- Multi-step redox tuning of transition-metal complexes — up to 3 sequential oxidation and reduction steps in a single pipeline
+- Spin-state-dependent reaction-barrier prediction with adaptive broken-symmetry — finds the operative spin manifold automatically
+- Topology-correct structure generation across σ-bonded ligands, π-haptic modes (η¹ / η² / η⁵ / η⁶), and mono- to multi-metallic complexes — with M-D-bond invariants and π-system sanity checks
+- Ligand-variant ranking via Born-Haber stability-constant cycles — log K of competing ligand pools obtained from a single complex SMILES with automatic ligand / solvent / metal sub-workflows
 - CO₂-activation pathway scans on metal centers
-- Spin-state-dependent reaction barriers
-- Born-Haber stability-constant cycles for ligand design
+- Unified comparison of homogeneous, heterogeneous, and ML-accelerated treatments through the same ASE-calculator factory (ORCA + Turbomole + xTB + 8 ML potentials behind one interface)
+- **Evolutionary catalyst design** with ChemDarwin — genetic-algorithm optimization of ligand sets, donor atoms, and oxidation states, driven by DELFIN-computed redox potentials, log K, or barrier heights as the fitness function
+
+**Photophysics & emissive materials** 🧪 / 🧱 — *fully automated photophysics for photoactive materials*
+- TADF emitter screening end-to-end: ΔE(S-T) gap from xTB pre-screen → ISC / RISC rates from full DFT — a single SMILES yields an emitter-quality ranking
+- Phosphorescence emitter design: per-sublevel phosphorescence lifetimes for Ir(III) / Pt(II) / Cu(I) and organic phosphors
+- Excited-state-geometry-aware fluorescence and phosphorescence rates including E₀₀ adiabatic energies and per-state optimization (S₀, S₁, S₂, T₁, T₂)
+- Internal conversion (IC), intersystem crossing (ISC), and reverse intersystem crossing (RISC) — automated from one CONTROL file
+- NLO chromophore design via static and frequency-dependent β tensors and dipole moments
+- Singlet-fission candidate evaluation through automated ΔE(S₁) vs 2 × E(T₁) calculation
+- Spin–orbit coupling magnitudes between electronic states
+- Organic crystal polymorph prediction (Genarris) for solid-state emitter morphology studies
+- **Inverse design of TADF / phosphorescence emitters** with ChemDarwin — evolves substituent patterns and ligand cores toward target ΔE(S-T), SOC magnitude, oscillator strengths, or emission wavelength
+
+**Pharmaceutical & medicinal chemistry** 🧪
+- Conformer ensembles and free-energy ranking for drug-like and natural-product scaffolds (CREST + xTB-GOAT + DFT re-ranking)
+- Redox-potential and spin-state prediction for prodrug, metallodrug, and metalloenzyme-mimic design
+- Reactive-metabolite analysis via spin-state-aware DFT
+- Boltzmann-weighted ensemble NMR (CREST → CENSO → c2anmr → ANMR) for stereo-/regioisomer assignment in synthesis verification
 
 **Spectroscopy & characterization** 🔬
-- UV-Vis, IR, and Boltzmann-weighted ensemble NMR
-- Phosphorescence / fluorescence band assignment
-- Hyperpolarizability tensors and dipole moments
-- Imaginary-frequency elimination for problematic geometries
+- UV-Vis (TD-DFT) absorption with full transition analysis and oscillator strengths
+- IR vibrational spectra with Lorentzian broadening and intensity prediction
+- Boltzmann-weighted ensemble NMR (¹H / ¹³C shieldings + J-couplings)
+- AFP combined absorption / fluorescence / phosphorescence overlay plots
+- Hyperpolarizability β-tensors (static and frequency-dependent) and dipole moments
+- Imaginary-frequency elimination for problematic geometries (`delfin --imag`)
 
 ---
 
