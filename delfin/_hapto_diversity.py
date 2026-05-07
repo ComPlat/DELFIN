@@ -311,6 +311,28 @@ def apply_hapto_diversity_topology_aware(
     except Exception:
         seed_passes_caller_gate = False
 
+    # ------------------------------------------------------------------
+    # Iter-8.2 (FPCFD hapto-port from 123a130): force-enable gate.
+    #
+    # Forensik (results/iter8.1_hapto_port_123a130_design.md):
+    # 123a130 had NO HD-TA branch (this file did not exist in 123a130),
+    # so its OB-WRS hapto path ALWAYS ran the full topology gate.  HEAD
+    # added HD-TA in Iter-3 (commit 83cdbba) and made it skip the gate
+    # for broken-seed cases — to avoid rejecting seed-derived rotations.
+    # But this also lets ALL bad rotations through unconditionally.
+    #
+    # Master_v3 voll-pool consequence:
+    #   HEAD-cb0ef52 hapto: 9.273 bonds_extra/fr, 10.5% topo_pct_match
+    #   123a130 hapto:      1.527 bonds_extra/fr, 41.3% topo_pct_match
+    #   Gap: 17.7pp on hapto-class %match — biggest single-cell gap.
+    #
+    # When DELFIN_HAPTO_PORT_123A130_ITER8=1, force seed_passes_caller_gate
+    # to True regardless of seed quality → the verify_topology gate is
+    # always applied to rotation outputs → bad rotations dropped.
+    # Default 0 (opt-in for first voll-pool validation), flip to 1 after.
+    if _env_int("DELFIN_HAPTO_PORT_123A130_ITER8", 0):
+        seed_passes_caller_gate = True
+
     # Identify hapto sets
     try:
         hapto_groups = find_hapto_groups(mol_template) or []
