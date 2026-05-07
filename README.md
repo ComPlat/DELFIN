@@ -211,7 +211,9 @@ Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ## 🤖 AI Agent System
 
-DELFIN includes a built-in multi-agent AI system that can operate as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab and supports multiple LLM providers: **Claude** (Anthropic), **OpenAI / Codex**, and **KIT Toolbox** (university-hosted). The provider and model are selectable per session from the dashboard.
+DELFIN includes a built-in multi-agent AI system that operates as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab.
+
+The agent's **primary backend is Claude (Anthropic)**, chosen for its extended-thinking and tool-use capabilities — both central to DELFIN's multi-step chemistry orchestration, where method choice, geometry validation, and result interpretation all benefit from genuine reasoning before action. **OpenAI / Codex** and **KIT Toolbox** (university-hosted) are supported as drop-in alternative backends. The provider and model are selectable per session from the dashboard.
 
 ### Agent Modes
 
@@ -224,7 +226,7 @@ DELFIN includes a built-in multi-agent AI system that can operate as a conversat
 | **reviewed** | SM → Critic → Builder → Reviewer → Test | Adds architectural review before and code review after implementation. For risky refactors and API changes. |
 | **tdd** | SM → Test → Builder → Reviewer → Test | Test-driven development: tests written first, then implementation. |
 | **cluster** | SM → Runtime → Critic → Builder → Test | Includes HPC/SLURM runtime specialist for submission scripts, job scheduling, error recovery. |
-| **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead. For releases and milestones. |
+| **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead.|
 
 ### Automatic Task Routing
 
@@ -258,7 +260,8 @@ The **Cycle Inspector** in the dashboard visualises gate decisions, open risks, 
 - **Findings filter**: After Critic/Runtime review, the user can accept all findings or skip specific ones before the Builder starts
 - **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every agent prompt
 - **Agent workspace**: `~/agent_workspace/` directory for uploaded reference files, accessible to the agent
-- **Cost tracking**: Per-role token usage and USD cost displayed in real-time
+- **Cost tracking**: Per-role token usage and USD cost displayed in real-time; with Claude prompt-caching enabled, typical agentic chemistry sessions land in the $0.10–$2.00 range
+- **Self-improving forensic loop**: agent-orchestrated benchmarks compare each new pipeline version against historical champions; per-task success rates and costs persist across sessions in `learned_profiles.json` and feed back into the agent's method routing and validation gates
 - **Session persistence**: Conversations can be saved, restored, and exported as Markdown
 - **Tool whitelists**: Each role has a code-level tool whitelist that blocks unauthorized tool use regardless of prompt content
 - **Sandboxed bash execution**: Agent-issued shell commands run through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
@@ -280,15 +283,15 @@ The agent tab supports extensive slash commands for direct dashboard control:
 
 ### Requirements & Architecture
 
-The agent supports three LLM providers:
+The agent supports three LLM providers. The documented production integration path for each is the official **API**; the CLI binaries are supported as a convenience for local development sessions.
 
-| Provider | Backend | Setup |
-|----------|---------|-------|
-| **Claude** (default) | CLI (`claude` in PATH) or API (`ANTHROPIC_API_KEY`) | [Claude Code CLI](https://claude.ai/code) with OAuth — no API key needed for CLI |
-| **OpenAI / Codex** | CLI (`codex` in PATH) or API (`OPENAI_API_KEY`) | [Codex CLI](https://github.com/openai/codex) or OpenAI API key |
-| **KIT Toolbox** | API (`KIT_TOOLBOX_API_KEY`) | University-hosted endpoint, OpenAI-compatible |
+| Provider | Primary backend | Local-development convenience |
+|----------|------------------|-------------------------------|
+| **Claude** (default) | API via `ANTHROPIC_API_KEY` | [Claude Code CLI](https://claude.ai/code) when `claude` is on PATH |
+| **OpenAI / Codex** | API via `OPENAI_API_KEY` | [Codex CLI](https://github.com/openai/codex) when `codex` is on PATH |
+| **KIT Toolbox** | API via `KIT_TOOLBOX_API_KEY` | — (university-hosted, OpenAI-compatible) |
 
-Available providers are auto-detected from PATH and environment variables. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, ...): as a **subprocess dependency** that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls official binaries via their documented interfaces. All API usage runs through each provider's standard rate limits and billing under the user's own account.
+Available providers are auto-detected from environment variables and PATH. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, …): as a dependency that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls each provider's official API (or CLI binary, when present) via documented interfaces. All API usage runs through each provider's standard rate limits and billing under the user's own account.
 
 ---
 
