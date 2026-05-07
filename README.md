@@ -9,30 +9,74 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is an agentic computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and a multi-agent AI system behind a unified interface with an interactive browser-based dashboard.
+**DELFIN** is an open-source AI-orchestrated computational chemistry platform that automates first-principles molecular property prediction across the full chemical space — from drug-like organics and photoactive emitters to transition-metal catalysts, organic crystals, and CO₂-activation systems.
+
+By coupling structure generation, semi-empirical methods, density functional theory (DFT), machine-learning potentials, and large-language-model agents behind a single **SMILES-in / property-out** interface, DELFIN lowers the barrier between experimental design and DFT-grade prediction from "weeks of expert work" to "minutes of automated workflow".
+
+> 🧬 organic chemistry · 🧲 transition-metal catalysis · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics · 🧱 crystal structures
 
 DELFIN can be used in three ways:
 - **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
 - **Dashboard** — Interactive browser UI for job management, result analysis, and configuration
 - **Agent** — AI co-pilot that operates the dashboard, analyzes results, researches methods, and implements code changes through a multi-agent pipeline
 
+### Why DELFIN — Fundamental Contribution
+
+DELFIN's central claim is methodological, not domain-specific:
+
+1. **Democratizing first-principles chemistry.** A bench chemist with a SMILES string but no QM expertise can obtain DFT-grade thermodynamics, spectra, and reactivity predictions through a single command or browser tab.
+2. **Method orchestration across the QM stack.** DELFIN routes each stage to the appropriate engine — RDKit / Architector for structure, xTB / CREST for conformer pre-screening, ORCA for DFT, MACE / ANI for ML-accelerated PES — and reconciles their outputs into a single coherent workflow.
+3. **AI as scientific co-pilot, not just chat.** The integrated agent system selects methods, validates geometries (π-H projection, M-D-bond invariants, hapticity preservation), interprets results, and iterates toward publication-ready outputs.
+4. **Reproducible end-to-end pipelines.** Every prediction ships with full provenance: input SMILES, method choices, ORCA / xTB log links, spectra, and a generated DOCX report — designed for direct integration into supplementary information.
+
+DELFIN is research infrastructure: the science it enables is not the science *of* DELFIN itself — it is the chemistry that becomes accessible *because* of DELFIN, across organic, organometallic, and materials domains.
+
 ### What DELFIN can do
 
-| Capability | Description |
-|------------|-------------|
-| **Redox Potentials** | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows |
-| **Thermodynamics Simulations** | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
-| **Excited-State Dynamics** | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps |
-| **TADF Screening** | xTB-based singlet-triplet gap estimation for OLED material discovery |
-| **Spectroscopy** | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
-| **Hyperpolarizability** | Static and frequency-dependent β tensors for NLO materials |
-| **Structure Generation** | SMILES→3D for organic molecules and metal complexes (RDKit, Open Babel, architector, PSO builder) |
-| **Conformer Sampling** | GUPPY multi-start sampling, CREST conformer search, XTB-GOAT global optimization |
-| **ML Potentials** | 8 backends (ANI-2x, MACE, CHGNet, M3GNet, ...) for fast energy/force evaluation |
-| **Crystal Structure Prediction** | Genarris integration for random crystal generation |
-| **CO2 Coordination** | Automated CO2 placement, distance/rotation scans |
-| **Reporting** | DOCX reports with embedded spectra, JSON export, text summaries |
-| **AI Agent** | Multi-agent orchestration: dashboard co-pilot, code implementation, literature research, result analysis with persistent memory |
+Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱 solid state
+
+| Capability | Domain | Description |
+|------------|--------|-------------|
+| **Redox Potentials** | 🔬 both | Automated spin-state prediction and redox potential calculation via OCCUPIER/classic workflows — works for organic radicals AND transition-metal complexes |
+| **Thermodynamics Simulations** | 🔬 both | Automated log K prediction and free-energy analysis via Born-Haber thermodynamic cycles with OCCUPIER-aware metal, ligand, and solvent sub-workflows |
+| **Excited-State Dynamics** | 🧪 organic | ISC/RISC rates, fluorescence, phosphorescence, SOC coupling, E₀₀ energies, ΔE(S-T) gaps — TADF/OLED-focused |
+| **TADF Screening** | 🧪 organic | xTB-based singlet-triplet gap estimation for OLED material discovery |
+| **Spectroscopy** | 🔬 both | UV-Vis absorption, IR vibrational spectra, AFP (absorption/fluorescence/phosphorescence) plots |
+| **Ensemble NMR** | 🧪 organic | CREST → CENSO → c2anmr → ANMR Boltzmann-weighted ensemble shieldings/couplings |
+| **Hyperpolarizability** | 🔬 both | Static and frequency-dependent β tensors for NLO materials (organic and organometallic) |
+| **Structure Generation** | 🔬 both | SMILES→3D for organics (RDKit/Open Babel) AND metal complexes (Architector, PSO builder, GUPPY multi-start sampling) |
+| **Conformer Sampling** | 🔬 both | GUPPY multi-start sampling, CREST conformer search, XTB-GOAT global optimization |
+| **ML Potentials** | 🔬 both | 8 backends (ANI-2x, AIMNet2, MACE, CHGNet, M3GNet, SchNetPack, NequIP, ALIGNN) for fast energy/force evaluation |
+| **Crystal Structure Prediction** | 🧱 solid state | Genarris integration for organic polymorph generation with configurable space groups |
+| **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
+| **Reporting** | 🔬 both | DOCX reports with embedded spectra, JSON export, text summaries |
+| **AI Agent** | 🔬 both | Multi-agent orchestration with sandboxed bash execution, persistent memory, dashboard control, code implementation, literature research, result analysis |
+
+### Use Cases Across Chemistry
+
+**Pharmaceutical & medicinal chemistry** 🧪
+- Conformer ensembles and free-energy ranking for drug-like molecules
+- Redox-potential and spin-state prediction for prodrug and metallodrug design
+- Reactive-metabolite analysis via spin-state-aware DFT
+- Ensemble NMR for synthesis verification
+
+**Materials & photophysics** 🧪 / 🧱
+- TADF emitter screening (ΔE(S-T), SOC) for OLED development
+- NLO chromophore design via static & frequency-dependent β tensors
+- Organic crystal polymorph prediction (Genarris)
+- Excited-state dynamics — ISC / RISC kinetics, fluorescence and phosphorescence rates
+
+**Catalysis & energy** 🧲
+- Transition-metal complex redox tuning across coordination numbers and oxidation states
+- CO₂-activation pathway scans on metal centers
+- Spin-state-dependent reaction barriers
+- Born-Haber stability-constant cycles for ligand design
+
+**Spectroscopy & characterization** 🔬
+- UV-Vis, IR, and Boltzmann-weighted ensemble NMR
+- Phosphorescence / fluorescence band assignment
+- Hyperpolarizability tensors and dipole moments
+- Imaginary-frequency elimination for problematic geometries
 
 ---
 
@@ -46,7 +90,7 @@ DELFIN can be used in three ways:
 - **Optional:** `crest` and `xtb` (for CREST/xTB workflows)
 - **Optional:** `censo`, `anmr`, `c2anmr`, and `nmrplot` (for ensemble-averaged NMR workflows)
 - **Optional:** `xtb4stda`, `stda`, and `std2` plus the required `xtb4stda` runtime files (for xTB-based response/screening workflows)
-- **Optional:** Any of the 88 supported computational tools — auto-detected via PATH, installable via Dashboard
+- **Optional:** Any of the 90+ supported computational tools — auto-detected via PATH, installable via Dashboard
 - **Optional (Dashboard):** JupyterLab/Notebook or Voila for interactive UI usage
 
 ### Install Methods
@@ -204,6 +248,7 @@ The **Cycle Inspector** in the dashboard visualises gate decisions, open risks, 
 - **Cost tracking**: Per-role token usage and USD cost displayed in real-time
 - **Session persistence**: Conversations can be saved, restored, and exported as Markdown
 - **Tool whitelists**: Each role has a code-level tool whitelist that blocks unauthorized tool use regardless of prompt content
+- **Sandboxed bash execution**: Agent-issued shell commands run through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
 
 ### Agent Slash Commands
 
@@ -340,11 +385,11 @@ Automatic CUDA validation with CPU fallback. All backends are lazily loaded — 
 
 ### AI/ML Tools Integration
 
-21 AI/ML tools across molecular generation, retrosynthesis, screening, and metal complex design — all behind runtime validation with per-tool Install/Update buttons in the Dashboard Settings tab.
+A curated set of AI/ML tools across molecular generation, retrosynthesis, screening, and metal-complex design — all behind runtime validation with per-tool Install/Update buttons in the Dashboard Settings tab. See the *Linked overview of supported tools* below for the full list with categories.
 
 ### Auto-Detection of External Programs
 
-DELFIN automatically detects 88 computational chemistry programs via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (ORCA, Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
+DELFIN automatically detects **90+ computational chemistry programs** via PATH search. This works seamlessly with cluster module systems (`module load gaussian/16` → DELFIN detects it). Programs that can't be pip-installed (ORCA, Gaussian, VASP, Turbomole, ...) are detected and reported but not installed.
 
 Install/update buttons for pip-installable integrations are available in the Dashboard under `Settings -> Tool Installation`. Licensed or externally managed binaries such as ORCA, Gaussian, VASP, and TURBOMOLE are detected and reported by DELFIN, but not installed by the dashboard.
 
@@ -613,8 +658,8 @@ delfin/
   ai_tools/            ← AI/ML tools registry and per-tool installers
   analysis_tools/      ← Analysis wrappers (cclib, Packmol, Multiwfn, CENSO, ANMR, ...)
   csp_tools/           ← Crystal structure prediction (Genarris)
-  runtime_setup.py     ← Auto-detection of 88 external programs
-  dashboard/           ← 11-tab interactive dashboard (Voila/JupyterLab)
+  runtime_setup.py     ← Auto-detection of 90+ external programs
+  dashboard/           ← Interactive dashboard (Voila/JupyterLab)
   agent/               ← Multi-agent AI system (Claude, OpenAI/Codex, KIT Toolbox)
     engine.py          ← Orchestration engine (task routing, goal-lock gates, role transitions, cost tracking)
     api_client.py      ← LLM backends: Claude CLI, Anthropic API, OpenAI API, Codex CLI
@@ -745,7 +790,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.0). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.1). Zenodo. https://doi.org/10.5281/zenodo.17208145
 - Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
@@ -753,7 +798,7 @@ If you use DELFIN in a scientific publication, please cite:
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.1.0},
+  version = {v1.1.1},
   year    = {2026},
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
@@ -804,7 +849,7 @@ delfin/
   global_scheduler.py      # dynamic shared resource scheduling
   dynamic_pool.py          # dynamic core pool for job scheduling
   cluster_utils.py         # SLURM/PBS/LSF resource detection
-  runtime_setup.py         # auto-detection of 88 external programs
+  runtime_setup.py         # auto-detection of 90+ external programs
 
   # ── Tool Integrations ──
   mlp_tools/               # ML potentials (ANI-2x, MACE, CHGNet, M3GNet, ...)
@@ -814,7 +859,7 @@ delfin/
   qm_tools/                # external QM binary management
 
   # ── Dashboard ──
-  dashboard/               # 11-tab interactive dashboard (Voila/JupyterLab)
+  dashboard/               # Interactive dashboard (Voila/JupyterLab)
 
   # ── Reporting ──
   reporting/               # DOCX, JSON, text report generation
