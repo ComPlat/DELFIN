@@ -5386,61 +5386,73 @@ def create_tab(ctx):
         tool = d.get("tool_name", "")
         inp = d.get("tool_input", {}) if isinstance(d.get("tool_input"), dict) else {}
 
-        # --- Bash commands: run directly, report result to agent ---
+        # --- Bash commands: route through delfin.agent.sandbox -----------
+        # Defense in depth: allow-list + bwrap/firejail sandbox + audit log.
+        # See delfin/agent/sandbox.py for the layer details.  The full,
+        # untruncated command is shown to the user above this branch already
+        # (Layer 4 \u2014 approval); we re-print it here so the audit trail in
+        # the chat matches the audit JSONL.
         if tool == "Bash" and inp.get("command"):
             cmd = inp["command"]
-            # Block truly destructive commands even after approval
-            _DANGEROUS_PATTERNS = [
-                "rm -rf /", "rm -rf ~", "rm -rf .",
-                "mkfs", "dd if=", "> /dev/sd",
-                ":(){ :|:& };:",  # fork bomb
-                "--force-with-lease", "push --force",
-                "git reset --hard", "git clean -fd",
-            ]
-            _cmd_lower = cmd.lower().strip()
-            if any(dp in _cmd_lower for dp in _DANGEROUS_PATTERNS):
+            from delfin.agent import sandbox as _sandbox
+            cfg = _sandbox.detect_config()
+            _append_system_message(
+                f"\u2705 Approved & executing (mode={cfg.mode}, "
+                f"net={'on' if cfg.allow_network else 'off'}):\n  $ {cmd}"
+            )
+            try:
+                res = _sandbox.run_agent_command(
+                    cmd, Path(ctx.repo_dir or "."), config=cfg,
+                )
+            except Exception as exc:
+                _append_system_message(f"\u26a0 Sandbox error: {exc}")
+                input_textarea.value = f"Sandbox error: {exc}"
+                _on_send(None)
+                return
+
+            if res.blocked:
                 _append_system_message(
-                    f"\u26d4 BLOCKED: Destructive command rejected for safety.\n"
-                    f"  $ {cmd[:200]}\n"
-                    f"Run this manually in the terminal if you really need it."
+                    f"\u26d4 BLOCKED by allow-list: {res.block_reason}\n"
+                    f"  $ {cmd}\n"
+                    f"Run it manually in a terminal if you really need it."
                 )
                 input_textarea.value = (
-                    f"That command was blocked for safety. "
-                    f"Please suggest a safer alternative."
+                    f"That command was blocked by the allow-list "
+                    f"({res.block_reason}). Please suggest a safer alternative."
                 )
                 _on_send(None)
                 return
-            _append_system_message(f"\u2705 Approved & executing: $ {cmd[:200]}")
-            try:
-                result = _sp.run(
-                    cmd, shell=True, capture_output=True, text=True,
-                    cwd=str(ctx.repo_dir or "."), timeout=60,
+
+            if res.timed_out:
+                _append_system_message(
+                    f"\u26a0 Command timed out after {cfg.timeout_s}s."
                 )
-                output = (result.stdout.strip() + "\n" + result.stderr.strip()).strip()
-                if result.returncode == 0:
-                    _append_system_message(
-                        f"\u2714 Command succeeded:\n{output[:500]}"
-                    )
-                    # Tell agent it worked
-                    input_textarea.value = (
-                        f"I ran the command for you. Result:\n```\n{output[:1000]}\n```\n"
-                        f"Continue with the next step."
-                    )
-                else:
-                    _append_system_message(
-                        f"\u2718 Command failed (exit {result.returncode}):\n{output[:500]}"
-                    )
-                    input_textarea.value = (
-                        f"The command failed (exit {result.returncode}):\n"
-                        f"```\n{output[:1000]}\n```\n"
-                        f"Please suggest an alternative approach."
-                    )
-            except _sp.TimeoutExpired:
-                _append_system_message("\u26a0 Command timed out after 60s.")
-                input_textarea.value = "The command timed out. Please try a different approach."
-            except Exception as exc:
-                _append_system_message(f"\u26a0 Error: {exc}")
-                input_textarea.value = f"Error running command: {exc}"
+                input_textarea.value = (
+                    "The command timed out. Please try a different approach."
+                )
+                _on_send(None)
+                return
+
+            output = (res.stdout.strip() + "\n" + res.stderr.strip()).strip()
+            if res.returncode == 0:
+                _append_system_message(
+                    f"\u2714 Command succeeded ({res.elapsed_s:.1f}s):\n"
+                    f"{output[:500]}"
+                )
+                input_textarea.value = (
+                    f"I ran the command for you. Result:\n```\n{output[:1000]}\n```\n"
+                    f"Continue with the next step."
+                )
+            else:
+                _append_system_message(
+                    f"\u2718 Command failed (exit {res.returncode}, "
+                    f"{res.elapsed_s:.1f}s):\n{output[:500]}"
+                )
+                input_textarea.value = (
+                    f"The command failed (exit {res.returncode}):\n"
+                    f"```\n{output[:1000]}\n```\n"
+                    f"Please suggest an alternative approach."
+                )
             _on_send(None)
             return
 
