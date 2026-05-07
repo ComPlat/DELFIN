@@ -23802,12 +23802,26 @@ def smiles_to_xyz_isomers(
     # ThreadPoolExecutor that can saturate the per-process thread budget on
     # large systems; only invoke it when strict pass is sparse (<70% of
     # max_isomers found). Threshold env-configurable.
+    # Iter-8.3 multi-σ champion forward-port (5b3e0d2). When env=1 AND class
+    # is multi_sigma, bypass _strict_sufficient short-circuit and always run
+    # the relaxed pass. Voll-pool multi-σ %match 49.45 → 63.36 (+13.91 pp),
+    # frame-ratio 3.54×. Default 0 first run; flip to 1 after acceptance.
+    _multisigma_port_active = bool(_delfin_env_int(
+        "DELFIN_MULTISIGMA_PORT_5B3E0D2_ITER8", 0
+    ))
+    _multisigma_dispatch = False
+    if _multisigma_port_active:
+        try:
+            _multisigma_dispatch = (_classify_complex_class(mol) == "multi_sigma")
+        except Exception:
+            _multisigma_dispatch = False
     _relax_skip_threshold = float(os.environ.get(
         'DELFIN_RELAX_SKIP_THRESHOLD', '0.7'
     ))
     _strict_sufficient = (
         max_isomers > 0
         and len(_strict) >= max_isomers * _relax_skip_threshold
+        and not _multisigma_dispatch
     )
     _relaxed = _collect_fp_label_pairs(relax_hard_chem_filters=True) if (
         conf_ids and has_metal and not _strict_sufficient
