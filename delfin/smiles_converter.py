@@ -13911,6 +13911,105 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
         return True
 
 
+# ============================================================================
+# Iter-8.1 multi-hapto safe-fallback (FPCFD per-class extras-filter)
+# ============================================================================
+#
+# Per master_v3 voll-pool (cb0ef52):
+#   multi-hapto extras=26.61/fr (44% catastrophic) vs cf1d480 13.02 (14%)
+#   hapto       extras= 8.84/fr ( 9% catastrophic) vs cf1d480  5.41 ( 4%)
+# Forensik: results/iter8.1_multihapto_safefallback_design.md.  Two stacked
+# failure modes — broken seed + OB-WRS rotor amplification.  This is a
+# read-only post-filter (no geometry mutation): drop frames with extras > τ
+# AND > 3×median; Best-of-K fallback (K = max(2, ⌈0.3·n⌉)) guarantees ≥2
+# frames per SMILES.  Class-dispatched via _classify_complex_class (L3489).
+
+# Per-class extra-heavy-bond thresholds (Iter-8.1 hybrid filter)
+_ITER8_1_EXTRA_THRESHOLDS = {
+    "multi_hapto": 25,   # voll-pool baseline 26.61 → drop catastrophic tail
+    "hapto":       20,   # voll-pool baseline 8.84 → drop tail
+    "multi_sigma": 9999, # already at <0.10 — no filter
+    "sigma":       9999, # already at <0.16 — no filter
+    "no_metal":    9999, # no metal, no extras — no filter
+}
+
+
+def _count_extra_heavy_bonds(xyz_delfin: str, original_smiles: str) -> int:
+    """Fast detector-faithful extra-bond count for class-dispatched filtering.
+
+    Mirrors quality_framework `find_topology_loss.compare_topology` extras
+    computation: heavy-atom covalent-radius graph from XYZ minus expected
+    SMILES bond multiset (organic + M-L combined).  Returns -1 if any error.
+
+    Used by Iter-8.1 multi-hapto safe-fallback to identify and drop frames
+    where ligand collapse produces ghost C-C / M-C / etc. bonds.
+    """
+    if not RDKIT_AVAILABLE:
+        return -1
+    try:
+        import math
+        from collections import Counter as _Counter
+        mol = Chem.MolFromSmiles(original_smiles, sanitize=False)
+        if mol is None:
+            return -1
+        try:
+            mol.UpdatePropertyCache(strict=False)
+        except Exception:
+            pass
+        # Build SMILES heavy-pair multiset (sorted-tuple key)
+        smi_pairs: _Counter = _Counter()
+        for bond in mol.GetBonds():
+            a = bond.GetBeginAtom()
+            b = bond.GetEndAtom()
+            if a.GetAtomicNum() <= 1 or b.GetAtomicNum() <= 1:
+                continue
+            smi_pairs[tuple(sorted([a.GetSymbol(), b.GetSymbol()]))] += 1
+        # Build XYZ heavy-pair multiset via covalent-radius graph
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        atoms_xyz = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4 or parts[0] == "H":
+                continue
+            try:
+                atoms_xyz.append((parts[0], float(parts[1]),
+                                  float(parts[2]), float(parts[3])))
+            except ValueError:
+                continue
+        n = len(atoms_xyz)
+        if n == 0:
+            return -1
+        xyz_pairs: _Counter = _Counter()
+        # Covalent radii subset (Cordero 2008); fallback 1.50 for unknowns
+        _COV = {"C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "Cl": 1.02,
+                "Br": 1.20, "I": 1.39, "P": 1.07, "S": 1.05, "B": 0.84,
+                "Si": 1.11, "Se": 1.20, "As": 1.19, "Te": 1.38}
+        # Organic vs metal-bond tolerance (matches detector defaults)
+        _TOL_ORG = 0.45
+        _TOL_METAL = 0.60
+        for i in range(n):
+            si, xi, yi, zi = atoms_xyz[i]
+            ri = _COV.get(si, 1.50)
+            mi = si in _METAL_SET
+            for j in range(i + 1, n):
+                sj, xj, yj, zj = atoms_xyz[j]
+                rj = _COV.get(sj, 1.50)
+                mj = sj in _METAL_SET
+                tol = _TOL_METAL if (mi or mj) else _TOL_ORG
+                d = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2)
+                if d <= (ri + rj + tol):
+                    xyz_pairs[tuple(sorted([si, sj]))] += 1
+        # n_extra = sum over keys of max(0, xyz - smi)
+        n_extra = 0
+        for key in set(xyz_pairs) | set(smi_pairs):
+            d = xyz_pairs.get(key, 0) - smi_pairs.get(key, 0)
+            if d > 0:
+                n_extra += d
+        return n_extra
+    except Exception:
+        return -1
+
+
 def _organic_graph_signature(
     symbol_by_idx: Dict[int, str],
     adj: Dict[int, set],
@@ -24931,6 +25030,64 @@ def smiles_to_xyz_isomers(
                 logger.debug("Hard frame-cap skipped: %s", _cap_exc)
             except Exception:
                 pass
+
+    # ========================================================================
+    # Iter-8.1 multi-hapto safe-fallback filter (FPCFD per-class extras-filter)
+    # ========================================================================
+    # Class-dispatched post-filter: drop catastrophic-extras frames for hapto
+    # and multi-hapto only.  sigma / multi_sigma / no_metal pass through
+    # unchanged.  Best-of-K fallback keeps top K=max(2, ⌈0.3·n⌉) frames if
+    # filter would empty result set, guaranteeing ≥2 frames per SMILES.
+    # See results/iter8.1_multihapto_safefallback_design.md for forensik.
+    # Default-on; opt-out via DELFIN_ITER81_FILTER=0.
+    try:
+        if results and len(results) >= 3:
+            _iter81_active = bool(_delfin_env_int("DELFIN_ITER81_FILTER", 1))
+            if _iter81_active:
+                _iter81_class = _classify_complex_class(mol)
+                _iter81_threshold = _ITER8_1_EXTRA_THRESHOLDS.get(
+                    _iter81_class, 9999
+                )
+                if _iter81_threshold < 9999:
+                    # Score each frame by extra-bond count
+                    _scored = []
+                    for _xyz_i, _disp_i in results:
+                        _ne = _count_extra_heavy_bonds(_xyz_i, smiles)
+                        _scored.append(
+                            (_ne if _ne >= 0 else 0, _xyz_i, _disp_i)
+                        )
+                    # Median over valid (>0) scores; fallback 0 (no filter)
+                    _valid = [s for s, _, _ in _scored if s > 0]
+                    _med = sorted(_valid)[len(_valid) // 2] if _valid else 0
+                    # Filter: extras <= τ AND extras <= 3×median (if med>0)
+                    _kept = []
+                    for s, x, d in _scored:
+                        ok = (s <= _iter81_threshold)
+                        if _med > 0:
+                            ok = ok and (s <= 3 * _med)
+                        if ok:
+                            _kept.append((x, d))
+                    # Best-of-K fallback
+                    _n_total = len(results)
+                    _k_min = max(2, int(round(0.3 * _n_total)))
+                    if len(_kept) < _k_min:
+                        _scored.sort(key=lambda t: t[0])
+                        _kept = [(x, d) for _, x, d in _scored[:_k_min]]
+                    if len(_kept) < len(results):
+                        try:
+                            logger.debug(
+                                "Iter-8.1 filter (class=%s, tau=%d, med=%d): %d -> %d frames",
+                                _iter81_class, _iter81_threshold, _med,
+                                len(results), len(_kept),
+                            )
+                        except Exception:
+                            pass
+                        results = _kept
+    except Exception as _iter81_exc:
+        try:
+            logger.debug("Iter-8.1 filter probe failed: %s", _iter81_exc)
+        except Exception:
+            pass
 
     return results, None
 
