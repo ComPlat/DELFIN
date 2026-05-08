@@ -82,6 +82,8 @@ Workflow:
 - Bash blocked with "not on the auto-allow list" → call
   `remember_permission(kind='allow_pattern', value='^\\s*<cmd>\\b',
   rationale='…')`. Don't retry the same blocked command.
+- Never prepend `cd /pfad && …` to a bash command — use the `cwd`
+  parameter (accepts absolute paths in allowed roots).
 - Never propose "switch to solo mode" — KIT is right here.
 - Self-Modification Guard files (`api_client.py`, `kit_confirm.py`,
   `engine.py`, `tab_agent.py`) always need explicit user confirm.

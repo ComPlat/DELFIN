@@ -48,6 +48,13 @@ If `bash` fails with "not on the auto-allow list", call
 to persist the pattern (it survives sessions). Don't retry the same
 blocked command in a loop — fix the cause.
 
+**Never prepend `cd /pfad && …` to a bash command.** Use the bash tool's
+`cwd` parameter — it accepts absolute paths inside allowed roots and
+goes directly through the sandbox. `cd` is not auto-allowed, so
+`cd /home/.../TestOpt && ls` gets blocked even when `/home/.../TestOpt`
+is in your extra_workspace_dirs. Correct form:
+`bash(command="ls", cwd="/home/.../TestOpt")`.
+
 When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
 *"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
 call `mcp__kit-coding__remember_permission`

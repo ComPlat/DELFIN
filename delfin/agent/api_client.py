@@ -1289,7 +1289,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Workspace-relative cwd (default = workspace root).",
+                        "description": (
+                            "Working directory for the command. Accepts a "
+                            "workspace-relative path OR an absolute path that "
+                            "lives under one of the allowed roots (workspace + "
+                            "extra_workspace_dirs). ALWAYS use this parameter "
+                            "to enter another directory — never prepend "
+                            "`cd /path &&` to the command, that defeats the "
+                            "auto-allow gate. Defaults to the workspace root."
+                        ),
                     },
                 },
                 "required": ["command", "description"],
@@ -1871,12 +1879,20 @@ class _DocToolExecutor:
             # by adding allow_patterns (via remember_permission or the
             # Aktions-Bestätigung "Dauerhaft speichern" checkbox), or by
             # switching the mode chip to bypassPermissions.
+            hint = ""
+            if cmd.lstrip().startswith(("cd ", "cd\t")):
+                hint = (
+                    " HINT: this command starts with 'cd' — use the bash "
+                    "tool's `cwd` parameter (it accepts absolute paths "
+                    "inside allowed roots) instead of 'cd /path && …'. "
+                    "Rerun with cwd=<path> and the actual command."
+                )
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Add a regex pattern with "
                 "remember_permission(kind='allow_pattern', value='^\\\\s*<cmd>\\\\b'), "
                 "or switch the KIT-Mode chip to 'bypassPermissions' for "
-                "trusted scratch work."
+                "trusted scratch work." + hint
             )
 
         return None
