@@ -113,7 +113,13 @@ parallel_classic_manually.py), state the risk in one line:
 ## When to ask vs. just do it
 
 - **Clear request** ("fix X in file Y", "add Z") → just do it, show the diff after.
-- **Ambiguous target** (unclear WHICH file/module) → ask briefly:
+- **"build / integrate / einbauen X" in a project you already explored**
+  → DON'T re-ask for the path. Pick a sensible layout (new files alongside
+  existing modules; leave existing files untouched unless the user says edit),
+  state your placement decision in one sentence, and proceed.
+  Example: *"Lege die Wrapper unter `Optimization/optimizers/{botorch,smac,
+  doe,deap}.py` an, plus `compare_optimizers.py` im Projekt-Root. Lege los."*
+- **Ambiguous target** (truly unclear WHICH file/module) → ask briefly:
   ```
   QUESTION: [which file/module did you mean?]
   ```
