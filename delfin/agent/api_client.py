@@ -1545,25 +1545,12 @@ class _DocToolExecutor:
         root = perms.workspace if perms is not None else self._repo_root()
         full = (root / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
 
-        # Read-side denylist: even when reading absolute paths outside the
-        # workspace (which IS allowed — the agent should be able to peek at
-        # other repos / configs / data), refuse to surface secrets.
+        # Read-gate: secrets are hard-denied; reads outside the allowed
+        # workspace roots require an explicit user confirmation.
         if perms is not None:
-            try:
-                resolved = full.expanduser().resolve()
-            except Exception:
-                resolved = full
-            check_path = str(resolved)
-            in_root = perms.find_root_for(resolved) is not None
-            rel_for_glob = (
-                str(resolved.relative_to(perms.find_root_for(resolved)))
-                if in_root else check_path
-            ).replace("\\", "/")
-            if perms.matches_path_deny(rel_for_glob):
-                return json.dumps({"error": (
-                    f"read_file: '{rel_path}' matches a deny-glob "
-                    "(secrets / .ssh / .env / *.key — refusing to read)."
-                )})
+            err = self._check_read_access(perms, full, label=rel_path)
+            if err is not None:
+                return json.dumps({"error": err})
 
         if not full.exists():
             return json.dumps({"error": f"File not found: {rel_path}"})
@@ -1593,6 +1580,13 @@ class _DocToolExecutor:
         rel = arguments.get("path", "") or ""
         search_path = (root / rel) if not Path(rel).is_absolute() else Path(rel)
         max_results = arguments.get("max_results", 30) or 30
+
+        # Read-gate on the search root: secret-deny is hard, outside-workspace
+        # needs user confirm. (Per-file deny still applies inside the loop.)
+        if perms is not None:
+            err = self._check_read_access(perms, search_path, label=rel or "(workspace)")
+            if err is not None:
+                return json.dumps({"error": err})
         try:
             regex = _re.compile(pattern, _re.IGNORECASE)
         except _re.error as exc:
@@ -1685,6 +1679,118 @@ class _DocToolExecutor:
             return None, f"path is on the deny-list (.git, secrets, keys, .env, ...): {rel_str}"
         return resolved, None
 
+    def _scan_bash_for_secrets(
+        self, cmd: str, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Scan a bash command for path-references to secret-deny globs.
+
+        Bash can reach arbitrary paths via ``cat /home/.../.ssh/id_rsa`` even
+        when its ``cwd`` is sandboxed. The standard bash deny-list catches
+        catastrophic patterns (``rm -rf /``, ``sudo``, ``curl|sh``) but is
+        agnostic of secret paths. This scanner extracts any ``/`` or ``~``
+        rooted path-like token from the command and tests it against
+        ``perms.path_deny_globs``. Returns the offending token, or None.
+
+        It's intentionally permissive — false positives only block the
+        offending command, not the workflow.
+        """
+        # Strip quoted strings entirely from the scan: even a benign
+        # `echo "/home/user/.ssh"` shouldn't be confusing. We replace
+        # contents but keep the structure so the regex still locks onto
+        # standalone path tokens elsewhere.
+        cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", " ", cmd)
+        # Match absolute /paths and ~ / $HOME prefixed paths.
+        candidates = set(re.findall(
+            r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
+            cleaned,
+        ))
+        for tok in candidates:
+            try:
+                p = Path(tok.replace("$HOME", "~")).expanduser()
+            except Exception:
+                continue
+            try:
+                resolved = p.resolve(strict=False)
+            except Exception:
+                resolved = p
+            in_root = perms.find_root_for(resolved)
+            if in_root is not None:
+                try:
+                    rel = str(resolved.relative_to(in_root)).replace("\\", "/")
+                except Exception:
+                    rel = str(resolved).replace("\\", "/")
+            else:
+                rel = str(resolved).replace("\\", "/")
+            if perms.matches_path_deny(rel):
+                return tok
+        return None
+
+    def _check_read_access(
+        self, perms: "KitToolPermissions", path: Path, label: str = ""
+    ) -> Optional[str]:
+        """Gate read-style tools (read_file, grep_file).
+
+        Policy:
+          - Secret-deny globs (`.ssh/`, `.env`, `*.key`, ...) ALWAYS reject —
+            no confirm-callback can override.
+          - Paths inside any allowed workspace root: allow.
+          - Paths outside: require explicit user confirmation via
+            ``perms.confirm_callback``. Without a callback the read is
+            refused so the agent can't silently scan the user's home dir.
+        """
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            resolved = path
+
+        # Build the string we test against deny-globs: workspace-relative
+        # when possible (so globs like ".env" match), else absolute.
+        in_root = perms.find_root_for(resolved)
+        if in_root is not None:
+            try:
+                rel_for_glob = str(resolved.relative_to(in_root)).replace("\\", "/")
+            except Exception:
+                rel_for_glob = str(resolved).replace("\\", "/")
+        else:
+            rel_for_glob = str(resolved).replace("\\", "/")
+
+        # Hard secret-deny: secrets are NEVER readable, no confirm option.
+        if perms.matches_path_deny(rel_for_glob):
+            return (
+                f"read denied: '{label or rel_for_glob}' matches a secret "
+                "deny-glob (.ssh/, .env, *.key, credentials, *.pem). "
+                "These are never readable, regardless of mode or confirm."
+            )
+
+        # Inside any allowed root: free read.
+        if in_root is not None:
+            return None
+
+        # Outside the sandbox: ask the user.
+        if perms.confirm_callback is None:
+            return (
+                f"read denied: '{label or resolved}' is outside the allowed "
+                "workspace roots and no confirm callback is configured. "
+                "Add the directory via 'Erlaubte Verzeichnisse' or "
+                "remember_permission(kind='extra_dir', ...) to read it."
+            )
+        preview = (
+            "[OUTSIDE-WORKSPACE READ]\n"
+            f"The agent wants to read a file outside the allowed roots:\n"
+            f"  {resolved}\n\n"
+            "Approving this read does NOT add the directory to the "
+            "permanent workspace list — it only allows this single read."
+        )
+        try:
+            ok = bool(perms.confirm_callback(
+                "read_file", {"path": str(resolved)}, preview
+            ))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if not ok:
+            return f"read denied: user declined read of '{resolved}'"
+        return None
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -1747,6 +1853,13 @@ class _DocToolExecutor:
             denied = perms.matches_bash_deny(cmd)
             if denied:
                 return f"command rejected by deny-pattern {denied!r}: refusing to run."
+            secret_hit = self._scan_bash_for_secrets(cmd, perms)
+            if secret_hit is not None:
+                return (
+                    f"bash command references a secret-deny path ({secret_hit!r}). "
+                    "Reading or touching .ssh/.env/*.key/credentials via the "
+                    "shell is blocked — the read deny-list applies to bash too."
+                )
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.

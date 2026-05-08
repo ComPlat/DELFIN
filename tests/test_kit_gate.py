@@ -218,26 +218,121 @@ def test_plan_mode_blocks_bash(workspace):
 # ---------------------------------------------------------------------------
 
 def test_read_file_blocks_ssh_key(workspace, tmp_path):
-    """Reading absolute paths is allowed (the agent should be able to scout
-    other dirs), but secret-style files must be refused."""
+    """Secret-style files must be refused even with a confirm-callback present."""
     fake_ssh = tmp_path / ".ssh"
     fake_ssh.mkdir()
     (fake_ssh / "id_rsa").write_text("FAKE-KEY")
 
-    perms = KitToolPermissions(workspace=workspace, mode="default")
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        confirm_callback=lambda *_: True,  # would-approve-anything callback
+    )
     out = _doc_executor._execute_read_file(
         {"path": str(fake_ssh / "id_rsa")}, perms=perms,
     )
-    assert "deny-glob" in out or "secret" in out.lower() or ".ssh" in out
+    assert "secret" in out.lower() or "deny" in out.lower()
+    assert "FAKE-KEY" not in out
 
 
-def test_read_file_outside_workspace_allowed(workspace, tmp_path):
-    """Plain file outside workspace + not on deny list → readable."""
-    other = tmp_path / "other.txt"
-    other.write_text("hello world\n")
-
+def test_read_file_inside_workspace_no_callback_needed(workspace):
+    """Files inside the workspace read without prompting."""
+    target = workspace / "hello.txt"
+    target.write_text("inside")
     perms = KitToolPermissions(workspace=workspace, mode="default")
-    out = _doc_executor._execute_read_file(
-        {"path": str(other)}, perms=perms,
+    out = _doc_executor._execute_read_file({"path": "hello.txt"}, perms=perms)
+    assert "inside" in out
+
+
+def test_read_file_outside_workspace_requires_confirm(workspace, tmp_path):
+    """Outside-workspace reads now require an explicit user yes."""
+    other = tmp_path / "other.txt"
+    other.write_text("payload")
+
+    # No callback → refuse.
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    out = _doc_executor._execute_read_file({"path": str(other)}, perms=perms)
+    assert "outside" in out.lower() or "callback" in out.lower()
+    assert "payload" not in out
+
+
+def test_read_file_outside_workspace_callback_approves(workspace, tmp_path):
+    other = tmp_path / "other.txt"
+    other.write_text("hello world")
+
+    seen = {}
+
+    def cb(name, args, preview):
+        seen["called"] = True
+        assert "OUTSIDE-WORKSPACE READ" in preview
+        return True
+
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default", confirm_callback=cb
     )
+    out = _doc_executor._execute_read_file({"path": str(other)}, perms=perms)
+    assert seen.get("called") is True
     assert "hello world" in out
+
+
+def test_read_file_outside_workspace_callback_denies(workspace, tmp_path):
+    other = tmp_path / "other.txt"
+    other.write_text("hello world")
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        confirm_callback=lambda *_: False,
+    )
+    out = _doc_executor._execute_read_file({"path": str(other)}, perms=perms)
+    assert "declined" in out.lower() or "denied" in out.lower()
+    assert "hello world" not in out
+
+
+# ---------------------------------------------------------------------------
+# Bash command scanner: secret paths in the COMMAND text get rejected
+# ---------------------------------------------------------------------------
+
+def test_bash_scanner_rejects_ssh_key_via_cat(workspace):
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(r"^\s*cat\b",),  # cat would otherwise pass
+    )
+    err = _gate(perms, "bash",
+                {"command": "cat ~/.ssh/id_rsa", "description": "show key"})
+    assert err is not None
+    assert "secret" in err.lower() or "deny" in err.lower()
+    assert ".ssh" in err.lower()
+
+
+def test_bash_scanner_rejects_env_via_grep(workspace):
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(r"^\s*grep\b",),
+    )
+    err = _gate(perms, "bash",
+                {"command": "grep -r SECRET /home/user/.env",
+                 "description": "scan env"})
+    assert err is not None
+    assert "secret" in err.lower() or "deny" in err.lower()
+
+
+def test_bash_scanner_passes_normal_commands(workspace):
+    """Normal absolute paths must NOT trigger the scanner."""
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(r"^\s*python\b",),
+    )
+    err = _gate(perms, "bash",
+                {"command": "python /usr/local/bin/some_script.py",
+                 "description": "run script"})
+    assert err is None
+
+
+def test_bash_scanner_in_bypass_still_rejects_secrets(workspace):
+    """Bypass mode skips auto-allow but secret-scanner still applies."""
+    perms = KitToolPermissions(
+        workspace=workspace, mode="bypassPermissions",
+    )
+    err = _gate(perms, "bash",
+                {"command": "cat /home/foo/.ssh/id_rsa",
+                 "description": "leak"})
+    assert err is not None
+    assert "secret" in err.lower() or "deny" in err.lower()
