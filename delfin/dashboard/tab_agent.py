@@ -1035,7 +1035,10 @@ def create_tab(ctx):
                 "broad architectural changes. Most expensive, highest confidence.",
     }
     mode_dropdown = widgets.Dropdown(
-        options=["dashboard", "solo", "research", "quick", "reviewed", "tdd", "cluster", "full"],
+        # Only solo + dashboard are production-ready; the pipeline modes
+        # (research/quick/reviewed/tdd/cluster/full) are gated until they
+        # graduate from experimental status.
+        options=["dashboard", "solo"],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -1577,6 +1580,18 @@ def create_tab(ctx):
         kit_mode_quick_btn.layout.display = ""
         _refresh_plan_accept_btn()
 
+    # Bidirectional mapping between the KIT-Mode chip (4 modes) and the
+    # header Perms dropdown (4 profiles). They mean the same thing for KIT;
+    # syncing them avoids the "they disagreed and the engine took the
+    # dropdown value on recreation" surprise.
+    _CHIP_TO_PROFILE = {
+        "plan":              "plan",
+        "default":           "ask_all",
+        "acceptEdits":       "repo_free",
+        "bypassPermissions": "all_free",
+    }
+    _PROFILE_TO_CHIP = {v: k for k, v in _CHIP_TO_PROFILE.items()}
+
     def _cycle_kit_mode(_btn=None):
         eng = state.get("engine")
         perms = getattr(eng, "kit_permissions", None) if eng is not None else None
@@ -1587,6 +1602,17 @@ def create_tab(ctx):
         ok = bool(eng.set_kit_permission_mode(nxt))
         if ok:
             _append_system_message(f"KIT-Mode → {nxt}")
+            # Sync the header Perms dropdown so a future engine-recreate
+            # starts in the same mode. Suppress the dropdown's verbose
+            # "takes effect on next message" notice since the chip already
+            # took effect live.
+            target_profile = _CHIP_TO_PROFILE.get(nxt)
+            if target_profile and perm_dropdown.value != target_profile:
+                state["_chip_syncing_perm"] = True
+                try:
+                    perm_dropdown.value = target_profile
+                finally:
+                    state["_chip_syncing_perm"] = False
         _refresh_kit_mode_chip()
 
     kit_mode_chip.on_click(_cycle_kit_mode)
@@ -7336,10 +7362,25 @@ def create_tab(ctx):
             return
         new_profile = change["new"]
         state["_perm_profile"] = new_profile
+        # If the change came from the KIT-Mode chip, the live perms.mode
+        # already reflects it and we don't need to recreate the engine.
+        # Just sync silently and return.
+        if state.get("_chip_syncing_perm"):
+            return
         engine = state["engine"]
         if engine:
+            # Apply to the live KIT engine immediately if we can — avoids
+            # the "next message" lag and keeps the chip + dropdown in sync.
+            chip_target = _PROFILE_TO_CHIP.get(new_profile)
+            if chip_target and hasattr(engine, "set_kit_permission_mode"):
+                if engine.set_kit_permission_mode(chip_target):
+                    _refresh_kit_mode_chip()
+                    _append_system_message(
+                        f"Permissions → **{new_profile}** (KIT mode: {chip_target})."
+                    )
+                    return
             state["engine"] = None
-            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")  # CLI default
+            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
             _append_system_message(
                 f"Permissions → **{new_profile}** (CLI: {cli_perm}). "
                 f"Takes effect on next message."
