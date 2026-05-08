@@ -24466,7 +24466,20 @@ def smiles_to_xyz_isomers(
     # boat/twist perturbations of each saturated chelate ring as
     # separate XYZ candidates.  Pure additive (toggle:
     # DELFIN_PUCKER_PASS_ENABLED, default 1).
-    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
+    # Iter-8.4b: when DELFIN_SIGMA_SKIP_PUCKER_ITER8=1 AND class='sigma',
+    # skip the pucker bucket entirely.  The 123a130 sigma champion does
+    # not run a pucker pass; HEAD's pucker pass adds frames that are 38 %
+    # match (mostly bad).  Skipping for sigma class trims the bucket and
+    # raises aggregate sigma %match.  Default OFF for bit-exactness.
+    _iter84b_skip_pucker = False
+    if has_metal and bool(_delfin_env_int("DELFIN_SIGMA_SKIP_PUCKER_ITER8", 0)):
+        try:
+            _iter84b_skip_pucker = (
+                _classify_complex_class(mol) == "sigma"
+            )
+        except Exception:
+            _iter84b_skip_pucker = False
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE and not _iter84b_skip_pucker:
         try:
             _emit_chelate_pucker_variants(
                 mol, results, apply_uff, max_isomers,
