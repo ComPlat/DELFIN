@@ -1490,10 +1490,32 @@ def create_tab(ctx):
         if not roots:
             kit_dirs_status.value = "<small><i>(KIT nicht aktiv)</i></small>"
             return
-        items = "".join(f"<li><code>{r}</code></li>" for r in roots)
+
+        snapshot: dict = {}
+        if hasattr(eng, "kit_settings_snapshot"):
+            try:
+                snapshot = eng.kit_settings_snapshot() or {}
+            except Exception:
+                snapshot = {}
+        persisted_dirs = set(snapshot.get("extra_workspace_dirs", []) or [])
+        allow_count = len(snapshot.get("allow_patterns", []) or [])
+        deny_count = len(snapshot.get("deny_patterns", []) or [])
+        default_mode = snapshot.get("default_mode") or "default"
+
+        repo_root = roots[0]
+        items = [f"<li><code>{repo_root}</code> <small>(repo)</small></li>"]
+        for r in roots[1:]:
+            tag = ("<small>(gespeichert)</small>" if r in persisted_dirs
+                   else "<small>(temporär)</small>")
+            items.append(f"<li><code>{r}</code> {tag}</li>")
+
         kit_dirs_status.value = (
-            f"<small><b>KIT-Agent darf operieren in:</b><ul style='margin:2px 0 4px 18px'>"
-            f"{items}</ul></small>"
+            "<small><b>KIT-Agent darf operieren in:</b>"
+            f"<ul style='margin:2px 0 4px 18px'>{''.join(items)}</ul>"
+            f"<i>Persistiert in <code>~/.delfin/settings.json</code> &middot; "
+            f"Modus: <code>{default_mode}</code> &middot; "
+            f"erlaubte Patterns: {allow_count} &middot; "
+            f"verweigerte Patterns: {deny_count}</i></small>"
         )
 
     def _on_kit_add_dir(_btn):
@@ -1514,7 +1536,8 @@ def create_tab(ctx):
     kit_dirs_row = widgets.VBox(
         [
             widgets.HTML("<b>Erlaubte Verzeichnisse</b> "
-                         "<small>(zusätzlich zum Repo-Root)</small>"),
+                         "<small>(zusätzlich zum Repo-Root, "
+                         "gespeichert in <code>~/.delfin/settings.json</code>)</small>"),
             widgets.HBox([kit_dirs_input, kit_dirs_add_btn]),
             kit_dirs_status,
         ],
@@ -1531,6 +1554,15 @@ def create_tab(ctx):
             try:
                 from delfin.agent.kit_confirm import KitConfirmBroker
                 broker = KitConfirmBroker()
+                # Wire the "Dauerhaft speichern"-checkbox to the engine's
+                # persist hook. Bound lazily so it always picks up the
+                # currently-active engine (provider may switch at runtime).
+                def _persist(kind: str, pattern: str) -> tuple[bool, str]:
+                    eng = state.get("engine")
+                    if eng is None or not hasattr(eng, "persist_kit_pattern"):
+                        return False, "KIT-Engine nicht aktiv"
+                    return eng.persist_kit_pattern(pattern, kind=kind)
+                broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
                 kit_confirm_container.children = (kit_dirs_row, panel)
                 state["_kit_confirm_broker"] = broker

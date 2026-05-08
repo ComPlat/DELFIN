@@ -1213,6 +1213,56 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "remember_permission",
+            "description": (
+                "Persist a KIT-Toolbox permission rule to ~/.delfin/settings.json "
+                "(or <repo>/.delfin/settings.json with scope='repo'). Mirrors the "
+                "Claude Code 'always allow X' pattern — once stored, matching "
+                "actions in future sessions skip the user-confirm dialog. "
+                "ALWAYS confirm with the user before calling this; the user can "
+                "still revoke afterwards by editing the JSON file. "
+                "kind='allow_pattern' / 'deny_pattern' append a regex to the "
+                "Bash auto-allow / deny list. kind='extra_dir' adds a workspace "
+                "root. kind='default_mode' sets the persisted permission mode."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["allow_pattern", "deny_pattern",
+                                 "extra_dir", "default_mode"],
+                        "description": "What to persist.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "For allow_pattern/deny_pattern: a Python regex "
+                            "(e.g. '^\\\\s*pytest\\\\b'). For extra_dir: an "
+                            "absolute path. For default_mode: one of 'plan', "
+                            "'default', 'acceptEdits', 'bypassPermissions'."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "repo"],
+                        "description": (
+                            "user (default) -> ~/.delfin/settings.json. "
+                            "repo -> <repo>/.delfin/settings.json."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-line justification shown to the user.",
+                    },
+                },
+                "required": ["kind", "value", "rationale"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
             "description": (
                 "Execute a shell command inside the workspace. The command runs "
@@ -1364,6 +1414,13 @@ class _DocToolExecutor:
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
                 return self._execute_bash(arguments, permissions)
+
+        if name == "remember_permission":
+            if permissions is None:
+                return json.dumps({"error": (
+                    "remember_permission requires KIT permissions to be configured."
+                )})
+            return self._execute_remember_permission(arguments, permissions)
 
         # Calc search tools
         if name in ("search_calcs", "get_calc_info", "calc_summary"):
@@ -1941,6 +1998,108 @@ class _DocToolExecutor:
             f"({len(edits)} edit(s), {total} replacement(s) total):\n\n{diff}"
         )
 
+    def _execute_remember_permission(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Persist a KIT permission rule to ~/.delfin/settings.json.
+
+        Always routes through ``perms.confirm_callback`` so the user gets a
+        chance to deny — even in 'acceptEdits'/'bypassPermissions' modes.
+        Updates ``perms`` in-place so the rule takes effect immediately.
+        """
+        kind = (arguments.get("kind", "") or "").strip()
+        value = (arguments.get("value", "") or "").strip()
+        scope = (arguments.get("scope", "user") or "user").strip().lower()
+        rationale = (arguments.get("rationale", "") or "").strip()
+
+        if kind not in {"allow_pattern", "deny_pattern",
+                        "extra_dir", "default_mode"}:
+            return json.dumps({"error": f"unknown kind: {kind!r}"})
+        if not value:
+            return json.dumps({"error": "value must be non-empty"})
+        if scope not in {"user", "repo"}:
+            return json.dumps({"error": f"scope must be 'user' or 'repo', got {scope!r}"})
+
+        # Build a human-readable preview for the confirm dialog.
+        try:
+            from . import kit_settings as _kit_settings
+        except Exception as exc:
+            return json.dumps({"error": f"kit_settings import failed: {exc}"})
+
+        scope_path = (
+            str(_kit_settings.repo_settings_path(perms.workspace))
+            if scope == "repo" else str(_kit_settings.USER_SETTINGS_PATH)
+        )
+        preview = (
+            f"remember_permission\n"
+            f"  kind:      {kind}\n"
+            f"  value:     {value}\n"
+            f"  scope:     {scope}  ->  {scope_path}\n"
+            f"  rationale: {rationale or '(none)'}\n"
+            f"\nThis writes the rule to the JSON file. Future sessions will load it on startup."
+        )
+
+        # Always require user confirmation regardless of mode.
+        if perms.confirm_callback is None:
+            return json.dumps({"error": (
+                "remember_permission needs a user-confirm callback. "
+                "Run inside the dashboard with the KIT confirm panel mounted."
+            )})
+        try:
+            ok = bool(perms.confirm_callback(
+                "remember_permission",
+                {"kind": kind, "value": value, "scope": scope,
+                 "rationale": rationale},
+                preview,
+            ))
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        if not ok:
+            return json.dumps({"status": "denied", "kind": kind, "value": value})
+
+        # Apply the change to disk and to the live permissions.
+        try:
+            if kind == "allow_pattern":
+                _kit_settings.persist_pattern(
+                    value, kind="allow", scope=scope, repo_dir=perms.workspace
+                )
+                if value not in perms.bash_auto_allow_patterns:
+                    perms.bash_auto_allow_patterns = (
+                        perms.bash_auto_allow_patterns + (value,)
+                    )
+            elif kind == "deny_pattern":
+                _kit_settings.persist_pattern(
+                    value, kind="deny", scope=scope, repo_dir=perms.workspace
+                )
+                if value not in perms.bash_deny_patterns:
+                    perms.bash_deny_patterns = (
+                        perms.bash_deny_patterns + (value,)
+                    )
+            elif kind == "extra_dir":
+                # Validate via add_extra_dir first (must exist + be a dir).
+                resolved = perms.add_extra_dir(value)
+                _kit_settings.persist_extra_dir(
+                    resolved, scope=scope, repo_dir=perms.workspace
+                )
+                value = str(resolved)
+            elif kind == "default_mode":
+                _kit_settings.persist_default_mode(
+                    value, scope=scope, repo_dir=perms.workspace
+                )
+                perms.mode = value
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"persist failed: {exc}"})
+
+        return json.dumps({
+            "status": "persisted",
+            "kind": kind,
+            "value": value,
+            "scope": scope,
+            "path": scope_path,
+        })
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
@@ -2126,7 +2285,8 @@ class OpenAIClient(_BaseClient):
         has_calc_tools = _doc_executor._ensure_calc_loaded()
         has_coding = self._permissions is not None
 
-        _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit", "bash"}
+        _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit",
+                              "bash", "remember_permission"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -2239,7 +2399,9 @@ class OpenAIClient(_BaseClient):
 
                     # Coding-agent tools get a different namespace prefix so
                     # the UI/Whitelist layer can distinguish them from doc tools.
-                    is_coding = fn_name in ("write_file", "edit_file", "multi_edit", "bash")
+                    is_coding = fn_name in ("write_file", "edit_file",
+                                            "multi_edit", "bash",
+                                            "remember_permission")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display
@@ -2558,23 +2720,63 @@ def create_client(
     if provider == "kit":
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
         kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
-        kit_extra: tuple[Path, ...] = ()
+
+        # Pull persisted user/repo settings (Claude-Code-style two-tier
+        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+        # are empty if neither file exists.
+        try:
+            from . import kit_settings as _kit_settings  # local import to avoid cycle
+            persisted = _kit_settings.load(repo_dir=kit_workspace)
+        except Exception:
+            persisted = None
+
+        seen: list[Path] = []
+        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+        sources: list[str] = []
         if extra_dirs:
-            seen: list[Path] = []
-            for d in extra_dirs:
-                try:
-                    p = Path(d).expanduser().resolve()
-                except Exception:
-                    continue
-                if p == kit_workspace or p in seen:
-                    continue
-                seen.append(p)
-            kit_extra = tuple(seen)
+            sources.extend(extra_dirs)
+        if persisted is not None:
+            sources.extend(persisted.extra_workspace_dirs)
+        for d in sources:
+            try:
+                p = Path(d).expanduser().resolve()
+            except Exception:
+                continue
+            if p == kit_workspace or p in seen:
+                continue
+            if not p.exists() or not p.is_dir():
+                continue
+            seen.append(p)
+        kit_extra = tuple(seen)
+
+        # Mode: explicit caller arg wins over persisted default_mode.
+        if permission_mode:
+            kit_mode = _map_kit_permission_mode(permission_mode)
+        elif persisted is not None and persisted.default_mode in {
+            "plan", "default", "acceptEdits", "bypassPermissions"
+        }:
+            kit_mode = persisted.default_mode
+        else:
+            kit_mode = "default"
+
+        # Allow/deny patterns: append persisted ones to the built-in defaults.
+        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+        if persisted is not None:
+            extra_allow = tuple(p for p in persisted.allow_patterns
+                                if p not in allow_patterns)
+            extra_deny = tuple(p for p in persisted.deny_patterns
+                               if p not in deny_patterns)
+            allow_patterns = allow_patterns + extra_allow
+            deny_patterns = deny_patterns + extra_deny
+
         kit_perms = KitToolPermissions(
             workspace=kit_workspace,
-            mode=_map_kit_permission_mode(permission_mode),
+            mode=kit_mode,
             confirm_callback=kit_confirm_callback,
             extra_workspace_dirs=kit_extra,
+            bash_auto_allow_patterns=allow_patterns,
+            bash_deny_patterns=deny_patterns,
         )
         return OpenAIClient(
             api_key=kit_key, model=model,

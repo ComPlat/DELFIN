@@ -47,6 +47,7 @@ class _ConfirmRequest:
     event: threading.Event = field(default_factory=threading.Event)
     decision: Optional[bool] = None
     remember_pattern: Optional[str] = None
+    persist_pattern: Optional[str] = None  # regex form for ~/.delfin/settings.json
 
 
 class KitConfirmBroker:
@@ -57,7 +58,8 @@ class KitConfirmBroker:
     ``build_widget`` (returns an ipywidgets VBox).
     """
 
-    def __init__(self, default_timeout_s: float = 300.0) -> None:
+    def __init__(self, default_timeout_s: float = 300.0,
+                 persist_callback: Optional[Any] = None) -> None:
         self._lock = threading.Lock()
         self._pending: deque[_ConfirmRequest] = deque()
         self._history: list[_ConfirmRequest] = []
@@ -67,11 +69,17 @@ class KitConfirmBroker:
         self._denied_patterns: list[str] = []
         self._timeout_s = default_timeout_s
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
+        # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
+        # When the user ticks "Dauerhaft speichern" + clicks Erlauben/Ablehnen,
+        # the broker forwards the suggested pattern here. The dashboard wires
+        # this to engine.persist_kit_pattern so it survives across sessions.
+        self._persist_callback: Optional[Any] = persist_callback
         # ipywidgets handles (lazy)
         self._panel: Any = None
         self._mode_dropdown: Any = None
         self._status_label: Any = None
         self._requests_box: Any = None
+        self._toast: Any = None
 
     # -- public API --------------------------------------------------------
 
@@ -128,8 +136,26 @@ class KitConfirmBroker:
                 if req.remember_pattern not in self._denied_patterns:
                     self._denied_patterns.append(req.remember_pattern)
 
+            persist_cb = self._persist_callback
+            persist_pat = req.persist_pattern
+
+        # Persistence happens outside the lock (may do JSON I/O).
+        if persist_cb and persist_pat:
+            kind = "allow" if req.decision else "deny"
+            try:
+                ok, msg = persist_cb(kind, persist_pat)
+            except Exception as exc:
+                ok, msg = False, f"persist failed: {exc}"
+            self._set_toast(
+                f"{'✔' if ok else '✗'} dauerhaft: {msg}"
+            )
+
         self._refresh_panel()
         return bool(req.decision)
+
+    def set_persist_callback(self, callback) -> None:
+        """Bind/unbind the persistence hook (callable(kind, pattern) -> (ok, msg))."""
+        self._persist_callback = callback
 
     def reset_session(self) -> None:
         """Clear all session state (allow/deny lists, history)."""
@@ -205,12 +231,14 @@ class KitConfirmBroker:
 
         self._status_label = widgets.HTML(value=self._render_status_html())
         self._requests_box = widgets.VBox([])
+        self._toast = widgets.HTML(value="")
 
         self._panel = widgets.VBox(
             [
                 widgets.HTML("<b>KIT-Toolbox – Aktions-Bestätigung</b>"),
                 widgets.HBox([self._mode_dropdown, reset_btn]),
                 self._status_label,
+                self._toast,
                 self._requests_box,
             ],
             layout=widgets.Layout(
@@ -265,11 +293,13 @@ class KitConfirmBroker:
 
     def _build_request_row(self, req: _ConfirmRequest, widgets):
         title = f"#{req.seq}  {req.tool_name}"
+        persist_pat = ""
         if req.tool_name == "bash":
             cmd = req.args.get("command", "")
             subtitle = f"<code>{_html_escape(cmd[:200])}</code>"
             suggested_pattern = _suggest_bash_pattern(cmd)
-        elif req.tool_name in ("write_file", "edit_file"):
+            persist_pat = _suggest_persist_pattern(cmd)
+        elif req.tool_name in ("write_file", "edit_file", "multi_edit"):
             subtitle = f"<code>{_html_escape(req.args.get('path', ''))}</code>"
             suggested_pattern = req.args.get("path", "")
         else:
@@ -288,9 +318,23 @@ class KitConfirmBroker:
         deny = widgets.Button(description="Ablehnen", button_style="danger")
         remember = widgets.Checkbox(
             value=False,
-            description=(f"Merken (Pattern: {suggested_pattern[:40]})"
-                         if suggested_pattern else "Merken"),
+            description=(f"Diese Session merken ({suggested_pattern[:40]})"
+                         if suggested_pattern else "Diese Session merken"),
             indent=False,
+        )
+        persist_box = widgets.Checkbox(
+            value=False,
+            description=(f"Dauerhaft speichern ({persist_pat[:40]})"
+                         if persist_pat else "Dauerhaft speichern"),
+            indent=False,
+            disabled=(not persist_pat or self._persist_callback is None),
+            tooltip=(
+                "Schreibt das Pattern nach ~/.delfin/settings.json — "
+                "der Agent fragt für passende Befehle in zukünftigen Sessions "
+                "nicht mehr nach."
+                if persist_pat else
+                "Persistenz nur für Bash-Befehle verfügbar."
+            ),
         )
 
         def _decide(ok: bool):
@@ -298,6 +342,8 @@ class KitConfirmBroker:
                 req.decision = ok
                 if remember.value and suggested_pattern:
                     req.remember_pattern = suggested_pattern
+                if persist_box.value and persist_pat:
+                    req.persist_pattern = persist_pat
             req.event.set()
             self._refresh_panel()
 
@@ -305,13 +351,22 @@ class KitConfirmBroker:
         deny.on_click(lambda _b: _decide(False))
 
         return widgets.VBox(
-            [preview, widgets.HBox([approve, deny, remember])],
+            [preview, widgets.HBox([approve, deny, remember, persist_box])],
             layout=widgets.Layout(
                 border="1px solid #ccc",
                 padding="4px",
                 margin="2px 0",
             ),
         )
+
+    def _set_toast(self, msg: str) -> None:
+        """Show a one-line status message in the panel (best-effort)."""
+        if self._toast is None:
+            return
+        try:
+            self._toast.value = f"<small style='color:#444'>{_html_escape(msg)}</small>"
+        except Exception:
+            pass
 
 
 # -- helpers ---------------------------------------------------------------
@@ -327,7 +382,7 @@ def _html_escape(s: str) -> str:
 
 
 def _suggest_bash_pattern(cmd: str) -> str:
-    """Pick a sensible 'remember' pattern: the leading executable + verb.
+    """Pick a sensible 'remember' substring (session allowlist).
 
     Examples:
       'pytest -xvs tests/foo.py'  -> 'pytest'
@@ -342,3 +397,16 @@ def _suggest_bash_pattern(cmd: str) -> str:
     if parts[0] in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         return f"{parts[0]} -m {parts[2]}"
     return parts[0]
+
+
+def _suggest_persist_pattern(cmd: str) -> str:
+    """Regex form for ``~/.delfin/settings.json`` allow_patterns.
+
+    Delegates to ``kit_settings.suggest_pattern_for_command`` so the same
+    rules apply that the engine consumes on load.
+    """
+    try:
+        from .kit_settings import suggest_pattern_for_command
+        return suggest_pattern_for_command(cmd)
+    except Exception:
+        return ""

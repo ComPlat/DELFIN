@@ -82,6 +82,26 @@ Workflow rules:
   `kit_confirm.py`, `engine.py`, `tab_agent.py`) trigger an explicit confirm
   prompt regardless of mode — that's by design, do not try to bypass it.
 
+#### remember_permission (Claude-Code-style "always allow")
+
+When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
+*"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
+call `mcp__kit-coding__remember_permission`. It writes the rule to
+`~/.delfin/settings.json` (or `<repo>/.delfin/settings.json` with
+`scope="repo"`) so it survives across sessions and applies live in the
+current session.
+
+Required fields: `kind`, `value`, `rationale`.
+- `kind="allow_pattern"` / `"deny_pattern"`: a bash regex
+  (e.g. `^\s*pytest\b`, `^\s*ruff\s+check\b`).
+- `kind="extra_dir"`: an absolute path. The directory must exist.
+- `kind="default_mode"`: one of `plan`, `default`, `acceptEdits`,
+  `bypassPermissions`.
+
+Always confirm intent in chat first ("Ich trage `^\s*pytest\b` dauerhaft ein,
+okay?") before calling the tool — the user still gets a confirm dialog, but
+a chat double-check prevents accidentally persisting overly-broad rules.
+
 When these tools are NOT in your tool list, fall back to the rules above
 ("switch to solo mode for code edits").
 

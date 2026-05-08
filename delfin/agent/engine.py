@@ -394,12 +394,17 @@ class AgentEngine:
         perms.mode = mode
         return True
 
-    def add_kit_workspace_dir(self, path) -> tuple[bool, str]:
+    def add_kit_workspace_dir(self, path, *,
+                              persist: bool = True,
+                              scope: str = "user") -> tuple[bool, str]:
         """Allow the KIT-Toolbox agent to operate inside an additional directory.
 
         Returns (ok, message). The path must exist and be a directory; on
-        success the directory is added to ``extra_workspace_dirs`` and any
-        future read/write/bash that resolves under it will pass the sandbox.
+        success the directory is added to ``extra_workspace_dirs``. When
+        ``persist`` is True (default) the path is also written to the
+        persisted KIT settings (``~/.delfin/settings.json`` for ``scope='user'``,
+        ``<repo>/.delfin/settings.json`` for ``scope='repo'``) so it survives
+        across sessions.
         """
         perms = self.kit_permissions
         if perms is None:
@@ -408,6 +413,14 @@ class AgentEngine:
             resolved = perms.add_extra_dir(path)
         except ValueError as exc:
             return False, str(exc)
+        if persist:
+            try:
+                from . import kit_settings as _kit_settings
+                _kit_settings.persist_extra_dir(
+                    resolved, scope=scope, repo_dir=self.repo_dir
+                )
+            except Exception as exc:
+                return True, f"added (in-memory only — persist failed: {exc}): {resolved}"
         return True, f"added: {resolved}"
 
     def list_kit_workspace_dirs(self) -> list[str]:
@@ -416,6 +429,74 @@ class AgentEngine:
         if perms is None:
             return []
         return [str(p) for p in perms.all_workspace_roots()]
+
+    def remove_kit_workspace_dir(self, path, *,
+                                 scope: str = "user") -> tuple[bool, str]:
+        """Drop ``path`` from the persisted KIT settings (in-memory dirs stay
+        until next reload — recreate the engine to clear them entirely)."""
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.remove_extra_dir(
+                path, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        return True, f"removed from persisted settings: {path}"
+
+    def persist_kit_pattern(self, pattern: str, *,
+                            kind: str = "allow",
+                            scope: str = "user") -> tuple[bool, str]:
+        """Write a bash regex pattern to the persisted KIT settings and apply
+        it to the live permissions. ``kind`` is 'allow' or 'deny'."""
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        if kind not in {"allow", "deny"}:
+            return False, f"kind must be 'allow' or 'deny', got {kind!r}"
+        if not pattern:
+            return False, "pattern must be non-empty"
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.persist_pattern(
+                pattern, kind=kind, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        # Apply to live perms so the next call benefits without restart.
+        if kind == "allow":
+            if pattern not in perms.bash_auto_allow_patterns:
+                perms.bash_auto_allow_patterns = (
+                    perms.bash_auto_allow_patterns + (pattern,)
+                )
+        else:
+            if pattern not in perms.bash_deny_patterns:
+                perms.bash_deny_patterns = (
+                    perms.bash_deny_patterns + (pattern,)
+                )
+        return True, f"persisted {kind}-pattern: {pattern}"
+
+    def persist_kit_default_mode(self, mode: str, *,
+                                 scope: str = "user") -> tuple[bool, str]:
+        """Persist the default permission mode and apply it live."""
+        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+            return False, f"unknown mode: {mode!r}"
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.persist_default_mode(
+                mode, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        self.set_kit_permission_mode(mode)
+        return True, f"persisted default_mode: {mode}"
+
+    def kit_settings_snapshot(self) -> dict:
+        """Return the merged KIT settings as a dict (for UI / debugging)."""
+        try:
+            from . import kit_settings as _kit_settings
+            return _kit_settings.load(repo_dir=self.repo_dir).to_dict()
+        except Exception:
+            return {}
 
     def _load_mode(self, mode: str) -> None:
         """Load a mode definition from the LITE manifest."""

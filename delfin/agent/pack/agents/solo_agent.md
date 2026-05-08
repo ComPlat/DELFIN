@@ -36,6 +36,15 @@ read/write/edit files inside it as if it were the primary workspace. Never
 respond with "open a terminal yourself" when the user has explicitly asked
 you to do something inside a directory they own.
 
+When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
+*"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
+call `mcp__kit-coding__remember_permission`
+(`kind`=`allow_pattern`/`deny_pattern`/`extra_dir`/`default_mode`,
+`value`=regex/path/mode, `rationale`="why"). It writes the rule to
+`~/.delfin/settings.json` so it survives across sessions and applies live
+in the current one. Always sanity-check intent in chat first
+("Ich trage `^\s*pytest\b` dauerhaft ein, okay?") before calling the tool.
+
 ## Session start
 
 On first interaction, orient yourself:
