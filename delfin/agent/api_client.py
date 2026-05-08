@@ -1038,16 +1038,29 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file from the DELFIN repository. Returns the file content. "
-                "Use for .py, .json, .md, .yaml, .txt, .xyz, .out files. "
-                "For large files, use offset and limit to read a specific range."
+                "Read a file. Accepts BOTH a workspace-relative path "
+                "(e.g. 'delfin/agent/foo.py') AND an absolute path "
+                "(e.g. '/home/user/project/foo.py'). When the user is "
+                "working in an extra_workspace_dir (granted via the "
+                "'Erlaubte Verzeichnisse' panel or remember_permission), "
+                "ALWAYS use the absolute path — relative paths only ever "
+                "resolve against the primary workspace root and will look "
+                "in the wrong place. Returns file content. Secret-deny "
+                "globs (.ssh/, .env, *.key, credentials, *.pem) are "
+                "always refused, even with a callback."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to repo root (e.g. 'delfin/agent/learned_profiles.json')",
+                        "description": (
+                            "File path. Workspace-relative (e.g. "
+                            "'delfin/agent/foo.py') OR absolute (e.g. "
+                            "'/home/user/TestOpt/Simulation/foo.py'). "
+                            "Use the absolute form for any file outside "
+                            "the primary workspace."
+                        ),
                     },
                     "offset": {
                         "type": "integer",
@@ -1116,18 +1129,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "write_file",
             "description": (
-                "Create a new file or fully overwrite an existing file in the "
-                "workspace. Requires sandbox-relative path. For existing files, "
-                "you MUST call read_file first (the tool tracks read mtimes). "
-                "Returns a unified diff preview of the change. Use edit_file "
-                "for partial changes — write_file replaces the entire file."
+                "Create a new file or fully overwrite an existing file. "
+                "Path may be workspace-relative OR an absolute path inside "
+                "any allowed workspace root (workspace + extra_workspace_dirs). "
+                "When working in a user-granted directory like "
+                "/home/<user>/<project>, USE THE ABSOLUTE PATH — relative "
+                "paths only resolve against the primary workspace. For "
+                "existing files, call read_file first. Returns a unified "
+                "diff. Use edit_file for partial changes."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative file path.",
+                        "description": (
+                            "File path. Workspace-relative OR absolute (when "
+                            "the target lives in an extra_workspace_dir, e.g. "
+                            "'/home/user/TestOpt/Simulation/foo.py')."
+                        ),
                     },
                     "content": {
                         "type": "string",
@@ -1154,7 +1174,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative file path.",
+                        "description": (
+                            "File path. Workspace-relative OR absolute "
+                            "(use absolute when the file is in an "
+                            "extra_workspace_dir like /home/user/project)."
+                        ),
                     },
                     "old_string": {
                         "type": "string",
@@ -1190,7 +1214,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Workspace-relative file path.",
+                        "description": (
+                            "File path. Workspace-relative OR absolute "
+                            "(use absolute when the file is in an "
+                            "extra_workspace_dir like /home/user/project)."
+                        ),
                     },
                     "edits": {
                         "type": "array",
