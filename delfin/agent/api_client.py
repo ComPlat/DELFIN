@@ -680,8 +680,16 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"git\s+push\s+(?:[^|;&]*\s)?(?:--force(?!-with-lease)|-f\b)",
     r"git\s+reset\s+--hard\b",
     r"git\s+branch\s+-D\b",
+    r"git\s+branch\s+-d\b",                # local branch delete (gentle form)
+    r"git\s+branch\s+--delete\b",
+    r"git\s+push\s+[^|;&]*--delete\b",     # remote branch delete
+    r"git\s+push\s+\S+\s+:\S",             # legacy 'git push origin :branch' delete
+    r"git\s+tag\s+-d\b",                   # tag delete
+    r"git\s+tag\s+--delete\b",
+    r"git\s+worktree\s+remove\b",
     r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d",
     r"git\s+update-ref\s+-d\b",
+    r"git\s+filter-(?:branch|repo)\b",     # history rewriting
     r">\s*/dev/(sd|nvme|hd|xvd)",
     r">\s*/etc/",
     r"\bchmod\s+-?R?\s*777\b",
@@ -716,7 +724,7 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
     r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+list|tag\s*$|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|switch|checkout|add|"
-    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message)\b",
+    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message|push|stash|init)\b",
     r"^\s*tar\s+-?t",                                        # tar list-only
     r"^\s*unzip\s+-l\b",
     # -- (b) coding workflow ---------------------------------------------

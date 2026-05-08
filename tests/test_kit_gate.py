@@ -194,6 +194,51 @@ def test_bash_deny_wins_even_in_bypass(workspace):
 
 
 # ---------------------------------------------------------------------------
+# Git: push / commit allowed, branch deletion blocked everywhere
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "git push",
+    "git push origin main",
+    "git commit -m 'msg'",
+    "git commit --message=msg",
+    "git status",
+    "git diff --stat",
+    "git log -5",
+    "git stash",
+    "git init",
+    "git add -A",
+])
+def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    err = _gate(perms, "bash", {"command": cmd, "description": cmd})
+    assert err is None, f"expected auto-allow for {cmd!r}, got: {err}"
+
+
+@pytest.mark.parametrize("cmd", [
+    "git branch -D feature",
+    "git branch -d feature",
+    "git branch --delete feature",
+    "git push origin --delete feature",
+    "git push origin :feature",
+    "git tag -d v1.0",
+    "git tag --delete v1.0",
+    "git push --force origin main",
+    "git push -f origin main",
+    "git reset --hard HEAD~1",
+    "git filter-branch --tree-filter 'rm foo'",
+    "git worktree remove ../other",
+])
+def test_git_destructive_ops_denied_in_every_mode(workspace, cmd):
+    """Branch / tag deletion + history rewriting must fail in default AND bypass."""
+    for mode in ("default", "bypassPermissions"):
+        perms = KitToolPermissions(workspace=workspace, mode=mode)
+        err = _gate(perms, "bash", {"command": cmd, "description": cmd})
+        assert err is not None, f"expected deny for {cmd!r} in mode={mode}"
+        assert "deny" in err.lower(), f"expected deny-pattern hit for {cmd!r}: {err}"
+
+
+# ---------------------------------------------------------------------------
 # Plan mode: read-only across the board
 # ---------------------------------------------------------------------------
 

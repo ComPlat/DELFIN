@@ -98,9 +98,34 @@ When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
 call `mcp__kit-coding__remember_permission`
 (`kind`=`allow_pattern`/`deny_pattern`/`extra_dir`/`default_mode`,
 `value`=regex/path/mode, `rationale`="why"). It writes the rule to
-`~/.delfin/settings.json` so it survives across sessions and applies live
-in the current one. Always sanity-check intent in chat first
-("Ich trage `^\s*pytest\b` dauerhaft ein, okay?") before calling the tool.
+`~/.delfin/settings.json` (or `<repo>/.delfin/settings.json` with
+`scope='repo'`) so it survives across sessions and applies live in the
+current one. Always sanity-check intent in chat first.
+
+**Proactive project-dev bundle.** When the user starts a longer
+integration ("integrate / einbauen / build" across multiple files +
+tests), don't wait for blocks — propose the typical dev patterns as
+a project-scoped bundle:
+
+> *"Soll ich für dieses Projekt dauerhaft erlauben:
+> `^\s*\.venv-\S+/bin/pip\s+install\b`,
+> `^\s*\.venv-\S+/bin/python\b`,
+> `^\s*pytest\b` (falls noch nicht)? scope='repo' →
+> `<projekt>/.delfin/settings.json`. Dann läuft die Integration
+> ohne weitere Confirms."*
+
+After yes: one `remember_permission` call per pattern. Don't propose
+`git push` / `git commit -m` / `git status` — those are already on
+the default auto-allow list.
+
+**Git as the rollback safety net in tracked dirs.** Before sweeping
+changes in a git-tracked project (multiple new files, refactors across
+modules), first run a checkpoint commit:
+`git add -A && git commit -m "checkpoint before <task>"`. State this
+in chat in one line. The user can `git reset --hard <hash>` if
+anything goes wrong — and yes, branches/tags can NOT be deleted by
+the agent (`git branch -d/-D`, `git push --delete`, `git tag -d`,
+`git push :branch` are all on the deny-list, regardless of mode).
 
 ## Session start
 
