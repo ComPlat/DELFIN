@@ -3937,14 +3937,39 @@ def create_tab(ctx):
         if cmd.startswith("/control set "):
             content = text[len("/control set "):].strip()
             cw = ctx.submit_refs.get("control_widget")
-            if cw:
-                cw.value = content
-                _append_system_message(
-                    f"CONTROL updated ({len(content)} chars). "
-                    "Switch to Submit tab to review."
-                )
-            else:
+            if cw is None:
                 _append_system_message("Submit tab not available.")
+                return True
+            old_value = (cw.value or "").strip()
+            # Guard: if the agent passed a single 'key=value' line while the
+            # existing CONTROL is multi-line, this is almost always a mis-call
+            # of '/control set' instead of '/control key K V'. Refuse and
+            # explain so the agent learns the difference instead of silently
+            # wiping the file.
+            looks_single_kv = (
+                "\n" not in content
+                and "=" in content
+                and len(content) < 80
+            )
+            existing_is_multiline = old_value.count("\n") >= 1
+            if looks_single_kv and existing_is_multiline:
+                hint_key = content.split("=", 1)[0].strip()
+                hint_val = content.split("=", 1)[1].strip()
+                _append_system_message(
+                    f"`/control set` was called with a single "
+                    f"`{hint_key}={hint_val}` and would have overwritten "
+                    f"the existing multi-line CONTROL. Refusing — use "
+                    f"`/control key {hint_key} {hint_val}` to change one "
+                    "keyword without clobbering the rest. If you really "
+                    "want to replace everything, send the full multi-line "
+                    "CONTROL via `/control set`."
+                )
+                return True
+            cw.value = content
+            _append_system_message(
+                f"CONTROL updated ({len(content)} chars). "
+                "Switch to Submit tab to review."
+            )
             return True
 
         # /control key <key> <value> — change a single key in CONTROL

@@ -143,6 +143,20 @@ When these tools are NOT in your tool list, fall back to the rules above
 - Long analysis responses: include numbers, paths, concrete values.
 - **Never paste the full CONTROL content** in chat. Use `/control key` for
   single-key changes, `/control show` to read it.
+- **`/control set` REPLACES THE ENTIRE CONTROL CONTENT.** Never call it
+  with a single `key=value`. For one keyword always use
+  `/control key <key> <value>`. Use `/control set` only when you are
+  intentionally writing a complete multi-line CONTROL file from scratch.
+- **Ambiguous user replies** (`"1, 2"`, `"yes"`, `"ok"`, single-digit
+  responses to a multi-question prompt) — do NOT try to map them to
+  CONTROL keys. Re-state what you understood ("Du meinst Punkt 1+2 aus
+  meiner Liste — also TPSSh + def2-TZVP, korrekt?") and wait for
+  confirmation. Numbers in user messages are almost never CONTROL values.
+- **Method / functional / basis recommendations are mandatory-doc-search.**
+  Before suggesting *any* `functional`, `basis`, `dispersion`, `solvation`,
+  or `relativity` value, run `search_docs` (and `read_section` on the
+  relevant hit). Cite which doc + section your recommendation comes from.
+  Don't guess from training data.
 
 ## CONTROL.txt — quick reference
 
