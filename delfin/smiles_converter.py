@@ -811,9 +811,11 @@ def _all_polyhedra_codes(n_coord: int, metal_symbol: str,
     (stable order, additive vs ``legacy_codes``).
     When DELFIN_ALL_POLYHEDRA=0: return ``legacy_codes`` unchanged.
 
-    User-Direktive 2026-05-05: "wir muessen IMMER ALLE koordinationsisomere
-    bauen und generieren" - DELFIN must enumerate ALL polyhedra per CN, not
-    pick one preferred via metal-identity heuristic.
+    Coordination-isomer completeness contract: DELFIN must enumerate ALL
+    polyhedra possible for a given coordination number, not pick one
+    preferred candidate via a metal-identity heuristic.  Picking by
+    metal-identity hides isomers the chemistry actually permits and that
+    DFT-ranking downstream needs to discriminate.
     """
     # Iter-5: default flipped 1→0 (was Iter-2A default-ON, but pumps low-fidelity
     # polyhedra into pool — see iter5_polyhedron_md_forensik.md).  Opt-in via
@@ -981,9 +983,8 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
 
     Apply post-ETKDG/UFF ring-attached H projection to ``results`` if this
     is the outer (non dual-parse) call and the DELFIN_BAUSTEIN4 env-flag
-    is set.  Per User-Direktive ("π-System rotiert mit entsprechenden H
-    atomen"): every transformation that moves a π-frame must drag attached
-    H atoms rigidly with the ring.  Iter-9 H1 and Iter-12/13 B3 already
+    is set.  π-rigid-body invariant: every transformation that moves a
+    π-frame must drag attached H atoms rigidly with the ring.  Iter-9 H1 and Iter-12/13 B3 already
     handle some cases; B4 is the universal final pass.
 
     Bit-exact when ``DELFIN_BAUSTEIN4=0`` (default).  Operates on XYZ text
@@ -13933,6 +13934,28 @@ _ITER8_1_EXTRA_THRESHOLDS = {
     "no_metal":    9999, # no metal, no extras — no filter
 }
 
+# Iter-8.4a: sigma chelate-cap restoration (forward-port from 123a130).
+# When the sigma class loses topology %match because chelate-cap tightening
+# reduced ETKDG trial counts (HEAD: 8/15/20/40 at >90/>60/>30/>20 atom
+# fragments), restore the historical wider trial counts for the sigma class
+# only.  d8 / d10 metals with crowded chelates need >12 trials to find the
+# correct bite-angle conformer.  Default OFF: bit-exact HEAD when env-flag
+# is unset.  Class-dispatched in smiles_to_xyz_isomers entry.
+_SIGMA_CHELATE_CAPS_123A: Dict[str, int] = {
+    "cap_90": 8,    # >90 atoms — keep HEAD cap
+    "cap_60": 15,   # >60 atoms — keep HEAD cap
+    "cap_30": 40,   # >30 atoms — restore champion (HEAD: 40 already)
+    "cap_20": 40,   # >20 atoms — restore champion (HEAD: 20 → 40)
+}
+_ITER84_SIGMA_CAPS_OVERRIDE: Optional[Dict[str, int]] = None
+"""Module-global override for ``_chelate_conformer_candidates`` cap values.
+Set at the entry of ``smiles_to_xyz_isomers`` when both
+``DELFIN_SIGMA_PORT_123A130_ITER8=1`` AND the parent mol classifies as
+'sigma'.  ``None`` (default) means use HEAD baseline caps unchanged.
+Process-safe under multiprocessing pool_evaluator (each worker is a
+separate process); recursive smiles_to_xyz_isomers calls within the same
+mol re-set to the same value (deterministic from class)."""
+
 
 def _count_extra_heavy_bonds(xyz_delfin: str, original_smiles: str) -> int:
     """Fast detector-faithful extra-bond count for class-dispatched filtering.
@@ -18704,19 +18727,34 @@ def _chelate_conformer_candidates(
     # correct pose lives past the 8-/15-seed window can be recovered
     # by raising the cap for that run.
     _frag_n = frag_mol.GetNumAtoms()
+    # Iter-8.4a: when the sigma chelate-cap port is active (module-global
+    # ``_ITER84_SIGMA_CAPS_OVERRIDE`` set by smiles_to_xyz_isomers entry),
+    # use the wider 123a130 caps instead of HEAD baselines.  ``None``
+    # preserves HEAD bit-exactness.
+    _iter84_caps = _ITER84_SIGMA_CAPS_OVERRIDE
+    if _iter84_caps is not None:
+        cap_90 = _iter84_caps["cap_90"]
+        cap_60 = _iter84_caps["cap_60"]
+        cap_30 = _iter84_caps["cap_30"]
+        cap_20 = _iter84_caps["cap_20"]
+    else:
+        cap_90 = DELFIN_CHELATE_CAP_90
+        cap_60 = DELFIN_CHELATE_CAP_60
+        cap_30 = DELFIN_CHELATE_CAP_30
+        cap_20 = int(os.environ.get('DELFIN_CHELATE_CAP_20', '20'))
     if _frag_n > 90:
-        n_trials = min(n_trials, DELFIN_CHELATE_CAP_90)
+        n_trials = min(n_trials, cap_90)
     elif _frag_n > 60:
-        n_trials = min(n_trials, DELFIN_CHELATE_CAP_60)
+        n_trials = min(n_trials, cap_60)
     elif _frag_n > 30:
-        n_trials = min(n_trials, DELFIN_CHELATE_CAP_30)
+        n_trials = min(n_trials, cap_30)
     elif _frag_n > 20:
         # Moderate-size ligands (terpyridines ~22 atoms, salen-biphep ~25):
         # default n_trials of 40 yields diminishing returns past ~20 trials.
         # Halving here recovers ~60s per such SMILES from blocking subprocess
         # without measurable loss in conformer diversity (env override:
-        # DELFIN_CHELATE_CAP_20).
-        n_trials = min(n_trials, int(os.environ.get('DELFIN_CHELATE_CAP_20', '20')))
+        # DELFIN_CHELATE_CAP_20; Iter-8.4a sigma override widens to 40).
+        n_trials = min(n_trials, cap_20)
 
     for seed in _SEEDS[:n_trials]:
         cid = _try_embed(frag_mol, seed)
@@ -19332,13 +19370,12 @@ def _snap_aromatic_rings_to_plane(
             offsets = centered @ normal
             rms = float(np.sqrt(float((offsets * offsets).mean())))
             #
-            # Iter-9 fix (User-Direktive 2026-05-01): attached H atoms must
-            # follow the π-system rigid-body — F20 detector confirmed cf1d480
-            # baseline (083-JARVOQ pyridine) had H atoms 0.5-1.4 Å out of
-            # ring plane.  Heavy-atom ring is planar but H placement was
-            # arbitrary (RDKit ETKDG on kekulized SMILES with [N+] cations).
-            # Project H onto ring plane via outward-radial placement at
-            # element-specific ideal C-H length.
+            # Aromatic-H plane invariant: ring-attached H must follow the
+            # π-system as a rigid body.  RDKit ETKDG on kekulized SMILES
+            # (especially with cations like [N+]) produces a planar
+            # heavy-atom ring but places ring-H 0.5-1.4 Å out of plane.
+            # Project each ring-H onto the ring plane via outward-radial
+            # placement at the element-specific ideal X-H bond length.
             #
             # H-projection runs INDEPENDENTLY of heavy-atom snap: even when
             # ring is already planar (rms < threshold) the H atoms can still
@@ -23232,6 +23269,15 @@ def smiles_to_xyz_isomers(
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
 
+    # Iter-8.4a: reset module-global override at every function entry.
+    # The override is then re-set further down once the parent mol has
+    # been parsed and ``_classify_complex_class`` can run.  Resetting at
+    # entry guarantees no leak from a previous SMILES call when the
+    # current SMILES exits early (no_metal short-circuit, RDKit error,
+    # hapto failfast, etc.) before the class-dispatch block is reached.
+    global _ITER84_SIGMA_CAPS_OVERRIDE
+    _ITER84_SIGMA_CAPS_OVERRIDE = None
+
     has_metal = contains_metal(smiles)
     hapto_mode = _hapto_approx_enabled(hapto_approx)
 
@@ -23815,6 +23861,18 @@ def smiles_to_xyz_isomers(
             _multisigma_dispatch = (_classify_complex_class(mol) == "multi_sigma")
         except Exception:
             _multisigma_dispatch = False
+    # Iter-8.4a sigma chelate-cap port (123a130).  Sets module-global
+    # ``_ITER84_SIGMA_CAPS_OVERRIDE`` when env=1 AND class='sigma' so
+    # that ``_chelate_conformer_candidates`` widens ETKDG trial caps for
+    # d8 / d10 chelate cohorts that lose the correct bite-angle
+    # conformer under HEAD's tight caps.  ``global`` already declared at
+    # function entry where the override is reset to None on every call.
+    if bool(_delfin_env_int("DELFIN_SIGMA_PORT_123A130_ITER8", 0)):
+        try:
+            if _classify_complex_class(mol) == "sigma":
+                _ITER84_SIGMA_CAPS_OVERRIDE = _SIGMA_CHELATE_CAPS_123A
+        except Exception:
+            pass
     _relax_skip_threshold = float(os.environ.get(
         'DELFIN_RELAX_SKIP_THRESHOLD', '0.7'
     ))
@@ -24762,9 +24820,8 @@ def smiles_to_xyz_isomers(
         results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-14 Baustein 4: post-B3 rigid-π H projection ────────────────────
-    # Per User-Direktive ("π-System rotiert mit entsprechenden H atomen"):
-    # every transformation that moves a π-frame must drag attached H atoms
-    # rigidly with the ring.  Iter-9 H1 handles ring-snap-time projection;
+    # π-rigid-body invariant: every transformation that moves a π-frame
+    # must drag attached H atoms rigidly with the ring.  Iter-9 H1 handles ring-snap-time projection;
     # Iter-12/13 B3 handles X-side rotation around donors (BFS includes H).
     # B4 is the universal final pass that re-projects ring-attached H onto
     # current ring planes after all upstream operations.  Per-conformer,

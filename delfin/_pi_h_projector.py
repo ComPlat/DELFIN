@@ -6,9 +6,10 @@ detected π-system (5/6-membered planar ring of C/N/O/S — aromatic / Cp / η^n
 ligand), project ring-attached H atoms onto the ring plane along the outward
 in-plane radial direction (parent → centroid).
 
-Per User-Direktive ("π-System rotiert mit entsprechenden H atomen"): every
-geometric transformation upstream that rotates/tilts/shifts a π-frame must
-drag attached H atoms rigidly with the ring.  Iter-9 H1 already handles
+Invariant: π-systems must rotate as rigid bodies including their attached
+H atoms.  Any upstream transformation that rotates/tilts/shifts a π-frame
+without dragging the ring-attached H rigidly leaves those H atoms in stale
+positions, breaking aromatic planarity and π-overlap.  Iter-9 H1 already handles
 ring-snap-time projection inside ``_snap_aromatic_rings_to_plane`` (heavy-atom
 snap in the molecule conformer).  Iter-12/13 B3 already handles rotation of
 the X-side around a coordinated donor (BFS includes attached H).  Other
