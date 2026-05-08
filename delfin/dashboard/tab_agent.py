@@ -1467,28 +1467,20 @@ def create_tab(ctx):
         layout=widgets.Layout(display="none", margin="0 0 8px 0"),
     )
 
-    # Workspace-roots editor: lets the user grant the KIT agent access to
-    # additional directories beyond the repo root (e.g. /home/.../TestOpt).
+    # KIT workspace-roots status: read-only line that shows where the agent
+    # can write/edit/bash. Adding new roots happens through the chat — the
+    # agent calls remember_permission(kind='extra_dir', value=...) and the
+    # Self-Modification Guard panel takes the user's confirmation.
     kit_dirs_status = widgets.HTML(value="")
-    kit_dirs_input = widgets.Text(
-        value="",
-        placeholder="Absoluter Pfad — z.B. /home/.../TestOpt",
-        layout=widgets.Layout(width="55%"),
-    )
-    kit_dirs_add_btn = widgets.Button(
-        description="Verzeichnis erlauben",
-        button_style="info",
-        tooltip="Erlaubt dem KIT-Agent, in diesem Pfad zu lesen/schreiben/ausführen",
-    )
 
     def _refresh_kit_dirs_status():
         eng = state.get("engine")
         if eng is None or not hasattr(eng, "list_kit_workspace_dirs"):
-            kit_dirs_status.value = "<small><i>Kein KIT-Engine aktiv.</i></small>"
+            kit_dirs_status.value = ""
             return
         roots = eng.list_kit_workspace_dirs()
         if not roots:
-            kit_dirs_status.value = "<small><i>(KIT nicht aktiv)</i></small>"
+            kit_dirs_status.value = ""
             return
 
         snapshot: dict = {}
@@ -1497,56 +1489,22 @@ def create_tab(ctx):
                 snapshot = eng.kit_settings_snapshot() or {}
             except Exception:
                 snapshot = {}
-        persisted_dirs = set(snapshot.get("extra_workspace_dirs", []) or [])
         allow_count = len(snapshot.get("allow_patterns", []) or [])
         deny_count = len(snapshot.get("deny_patterns", []) or [])
-        default_mode = snapshot.get("default_mode") or "default"
 
-        repo_root = roots[0]
-        items = [f"<li><code>{repo_root}</code> <small>(repo)</small></li>"]
-        for r in roots[1:]:
-            tag = ("<small>(gespeichert)</small>" if r in persisted_dirs
-                   else "<small>(temporär)</small>")
-            items.append(f"<li><code>{r}</code> {tag}</li>")
-
-        kit_dirs_status.value = (
-            "<small><b>KIT-Agent darf operieren in:</b>"
-            f"<ul style='margin:2px 0 4px 18px'>{''.join(items)}</ul>"
-            f"<i>Persistiert in <code>~/.delfin/settings.json</code> &middot; "
-            f"Modus: <code>{default_mode}</code> &middot; "
-            f"erlaubte Patterns: {allow_count} &middot; "
-            f"verweigerte Patterns: {deny_count}</i></small>"
+        # One-line summary: roots inline, comma-separated, repo first.
+        roots_html = " · ".join(
+            f"<code>{r}</code>" + (" <small>(repo)</small>" if i == 0 else "")
+            for i, r in enumerate(roots)
         )
-
-    def _on_kit_add_dir(_btn):
-        path = (kit_dirs_input.value or "").strip()
-        if not path:
-            return
-        eng = state.get("engine")
-        if eng is None or not hasattr(eng, "add_kit_workspace_dir"):
-            _append_system_message("KIT-Engine ist nicht aktiv (Provider != KIT?).")
-            return
-        ok, msg = eng.add_kit_workspace_dir(path)
-        _append_system_message(("✔ " if ok else "✗ ") + msg)
-        if ok:
-            kit_dirs_input.value = ""
-        _refresh_kit_dirs_status()
-
-    kit_dirs_add_btn.on_click(_on_kit_add_dir)
-    kit_dirs_row = widgets.VBox(
-        [
-            widgets.HTML("<b>Erlaubte Verzeichnisse</b> "
-                         "<small>(zusätzlich zum Repo-Root, "
-                         "gespeichert in <code>~/.delfin/settings.json</code>)</small>"),
-            widgets.HBox([kit_dirs_input, kit_dirs_add_btn]),
-            kit_dirs_status,
-        ],
-        layout=widgets.Layout(
-            border="1px solid #888",
-            padding="6px",
-            margin="4px 0 6px 0",
-        ),
-    )
+        kit_dirs_status.value = (
+            "<small><b>Schreibrechte:</b> " + roots_html
+            + f" &middot; allow-Patterns: {allow_count}"
+            + f" &middot; deny-Patterns: {deny_count}"
+            + " &middot; <i>außerhalb: nur Lesen mit Confirm</i>"
+            + "<br><i>Tipp: <code>'arbeite auch in /pfad'</code> "
+            + "im Chat &rarr; Agent merkt's sich nach einem Klick.</i></small>"
+        )
 
     # KIT permission-mode picker (Claude-Code-style chip + cycle button).
     # Top-of-chat chip = current mode + verbose label.
@@ -1693,7 +1651,7 @@ def create_tab(ctx):
                     return eng.persist_kit_pattern(pattern, kind=kind)
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
-                kit_confirm_container.children = (kit_dirs_row, panel)
+                kit_confirm_container.children = (panel,)
                 state["_kit_confirm_broker"] = broker
             except Exception as exc:
                 _append_system_message(f"KIT confirm broker init failed: {exc}")
@@ -1715,7 +1673,10 @@ def create_tab(ctx):
 
     # Input area
     input_textarea = widgets.Textarea(
-        placeholder="Message the agent... (Enter = send, Shift+Enter = newline)",
+        placeholder=(
+            "Message the agent... (Enter = send, Shift+Enter = newline)\n"
+            "Tipp KIT: 'arbeite auch in /pfad' → Agent merkt's nach 1 Klick."
+        ),
         layout=widgets.Layout(width="100%", height="80px"),
     )
     input_textarea.add_class("delfin-agent-input")
@@ -2010,7 +1971,7 @@ def create_tab(ctx):
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_confirm_container, chat_html,
+         kit_mode_row, kit_dirs_status, kit_confirm_container, chat_html,
          plan_accept_btn,
          working_html, queue_html, approval_row, question_row, input_row],
     )
