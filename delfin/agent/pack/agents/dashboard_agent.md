@@ -68,68 +68,37 @@ via "Erlaubte Verzeichnisse". Outside those roots you can READ files
 (unless they match the secret-deny list — `.ssh/`, `.env`, `*.key`,
 credentials), but you cannot write or run bash there.
 
-#### Mode semantics (controlled by the KIT-Mode chip above the chat)
+#### Mode chip (above the chat) — current KIT mode
 
-- `plan`               — read-only. Use this to scout / propose. Any
-                         write/bash returns "plan mode (read-only)";
-                         describe what you'd do and let the user click
-                         "Plan akzeptieren & ausführen".
-- `default`            — write/edit auto in the allowed roots. Bash must
-                         match an `allow_pattern` (see
-                         `~/.delfin/settings.json`); unmatched commands
-                         return an error explaining how to add a pattern
-                         (via `remember_permission`) or escalate to bypass.
-- `acceptEdits`        — same as `default` for write/edit; same auto-allow
-                         gate for bash. Mostly a label for "I'm in
-                         iteration mode, just go".
-- `bypassPermissions`  — sandbox + denylist still hold; the bash auto-allow
-                         gate is dropped so arbitrary commands run.
+- `plan` = read-only. Describe; user clicks *Plan akzeptieren* to run.
+- `default`/`acceptEdits` = write/edit auto in allowed roots; bash needs
+  an `allow_pattern` match.
+- `bypassPermissions` = bash auto-allow gate dropped; sandbox + denylist
+  + Self-Mod-Guard still hold.
 
-There is no per-action "Approve / Deny" dialog any more. The single
-exception is the **Self-Modification Guard**: if you target one of the
-agent-safety files (`api_client.py`, `kit_confirm.py`, `engine.py`,
-`tab_agent.py`) the user gets an explicit confirm regardless of mode.
-Don't try to bypass it.
-
-Use these tools for:
-- Dashboard / UI styling changes (CSS, ipywidgets layout, button colors).
-- DELFIN source-code edits (chemistry pipelines, schedulers, scripts).
-- Running `pytest`, `ruff`, `mypy`, `python -m delfin.*` to verify work.
-
-Workflow rules:
-- ALWAYS `read_file` before `edit_file` / `multi_edit` / `write_file`.
-- For multi-spot refactors in one file, prefer `multi_edit` (atomic).
-- If a `bash` command fails with "not on the auto-allow list", call
-  `remember_permission(kind='allow_pattern', value='^\\s*<cmd>\\b', ...)`
-  to persist the pattern, or tell the user to flip the chip to
-  `bypassPermissions`. Don't retry the same blocked command in a loop.
-- Never propose to switch to "solo mode" — the user has KIT here.
+Workflow:
+- ALWAYS `read_file` before `edit_file`/`multi_edit`/`write_file`.
+- Multi-spot refactor in one file → `multi_edit` (atomic).
+- Bash blocked with "not on the auto-allow list" → call
+  `remember_permission(kind='allow_pattern', value='^\\s*<cmd>\\b',
+  rationale='…')`. Don't retry the same blocked command.
+- Never propose "switch to solo mode" — KIT is right here.
 - Self-Modification Guard files (`api_client.py`, `kit_confirm.py`,
-  `engine.py`, `tab_agent.py`) require explicit user confirmation in
-  every mode. Don't try to bypass it.
+  `engine.py`, `tab_agent.py`) always need explicit user confirm.
 
-#### remember_permission (Claude-Code-style "always allow")
+#### remember_permission — persistent rules
 
-When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
-*"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
-call `mcp__kit-coding__remember_permission`. It writes the rule to
-`~/.delfin/settings.json` (or `<repo>/.delfin/settings.json` with
-`scope="repo"`) so it survives across sessions and applies live in the
-current session.
+When the user says *"merk dir X immer erlauben"* / *"immer in /pfad arbeiten"*
+/ *"dauerhaft auf bypass"*, call `mcp__kit-coding__remember_permission`.
+Writes to `~/.delfin/settings.json` (or `<repo>/.delfin/settings.json`
+with `scope='repo'`).
 
 Required fields: `kind`, `value`, `rationale`.
-- `kind="allow_pattern"` / `"deny_pattern"`: a bash regex
-  (e.g. `^\s*pytest\b`, `^\s*ruff\s+check\b`).
-- `kind="extra_dir"`: an absolute path. The directory must exist.
-- `kind="default_mode"`: one of `plan`, `default`, `acceptEdits`,
-  `bypassPermissions`.
+- `kind='allow_pattern'`/`'deny_pattern'` → bash regex.
+- `kind='extra_dir'` → absolute path (must exist).
+- `kind='default_mode'` → `plan`/`default`/`acceptEdits`/`bypassPermissions`.
 
-Always confirm intent in chat first ("Ich trage `^\s*pytest\b` dauerhaft ein,
-okay?") before calling the tool — the user still gets a confirm dialog, but
-a chat double-check prevents accidentally persisting overly-broad rules.
-
-When these tools are NOT in your tool list, fall back to the rules above
-("switch to solo mode for code edits").
+Confirm intent in chat first before calling the tool.
 
 ## ACTION-style and command discovery
 

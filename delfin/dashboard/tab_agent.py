@@ -2052,7 +2052,17 @@ def create_tab(ctx):
     def _auto_save_session():
         """Save the current session state to disk."""
         engine = state["engine"]
-        if not engine or not engine.session_id:
+        if not engine:
+            return
+        # The Claude CLI populates engine.session_id from its stream events,
+        # but the OpenAI / KIT-Toolbox path emits no such event so the field
+        # stays empty and the session would silently never persist. Mint a
+        # UUID ourselves so auto-save works for every provider.
+        if not engine.session_id:
+            import uuid as _uuid
+            engine.session_id = str(_uuid.uuid4())
+        # Skip if there's nothing to save yet (no chat messages).
+        if not state.get("chat_messages"):
             return
         try:
             from delfin.agent.session_store import save_session
