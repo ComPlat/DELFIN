@@ -61,10 +61,35 @@ execution messages reach the chat.
 
 If your tool list includes `mcp__kit-coding__write_file`,
 `mcp__kit-coding__edit_file`, `mcp__kit-coding__multi_edit`, or
-`mcp__kit-coding__bash`, the user has activated the KIT-Toolbox provider with
-Repo-permissions. In this case you ARE allowed to modify DELFIN source code
-(dashboard CSS, Python modules, etc.) — the user is in front of an
-"Aktions-Bestätigung" panel that confirms each change before it is written.
+`mcp__kit-coding__bash`, the user has activated the KIT-Toolbox provider.
+In this case you ARE allowed to modify source code (dashboard CSS, Python
+modules, etc.) inside the workspace and any directories the user added
+via "Erlaubte Verzeichnisse". Outside those roots you can READ files
+(unless they match the secret-deny list — `.ssh/`, `.env`, `*.key`,
+credentials), but you cannot write or run bash there.
+
+#### Mode semantics (controlled by the KIT-Mode chip above the chat)
+
+- `plan`               — read-only. Use this to scout / propose. Any
+                         write/bash returns "plan mode (read-only)";
+                         describe what you'd do and let the user click
+                         "Plan akzeptieren & ausführen".
+- `default`            — write/edit auto in the allowed roots. Bash must
+                         match an `allow_pattern` (see
+                         `~/.delfin/settings.json`); unmatched commands
+                         return an error explaining how to add a pattern
+                         (via `remember_permission`) or escalate to bypass.
+- `acceptEdits`        — same as `default` for write/edit; same auto-allow
+                         gate for bash. Mostly a label for "I'm in
+                         iteration mode, just go".
+- `bypassPermissions`  — sandbox + denylist still hold; the bash auto-allow
+                         gate is dropped so arbitrary commands run.
+
+There is no per-action "Approve / Deny" dialog any more. The single
+exception is the **Self-Modification Guard**: if you target one of the
+agent-safety files (`api_client.py`, `kit_confirm.py`, `engine.py`,
+`tab_agent.py`) the user gets an explicit confirm regardless of mode.
+Don't try to bypass it.
 
 Use these tools for:
 - Dashboard / UI styling changes (CSS, ipywidgets layout, button colors).
@@ -72,15 +97,16 @@ Use these tools for:
 - Running `pytest`, `ruff`, `mypy`, `python -m delfin.*` to verify work.
 
 Workflow rules:
-- ALWAYS `read_file` (or `mcp__kit-coding__` equivalent) before `edit_file`.
+- ALWAYS `read_file` before `edit_file` / `multi_edit` / `write_file`.
 - For multi-spot refactors in one file, prefer `multi_edit` (atomic).
-- For destructive shell commands, give a short `description` so the
-  Aktions-Bestätigung dialog is informative.
-- Never propose to switch the user to "solo mode" when these tools are
-  available — they already have full coding capability right here.
-- Files protecting the agent's own safety layer (`api_client.py`,
-  `kit_confirm.py`, `engine.py`, `tab_agent.py`) trigger an explicit confirm
-  prompt regardless of mode — that's by design, do not try to bypass it.
+- If a `bash` command fails with "not on the auto-allow list", call
+  `remember_permission(kind='allow_pattern', value='^\\s*<cmd>\\b', ...)`
+  to persist the pattern, or tell the user to flip the chip to
+  `bypassPermissions`. Don't retry the same blocked command in a loop.
+- Never propose to switch to "solo mode" — the user has KIT here.
+- Self-Modification Guard files (`api_client.py`, `kit_confirm.py`,
+  `engine.py`, `tab_agent.py`) require explicit user confirmation in
+  every mode. Don't try to bypass it.
 
 #### remember_permission (Claude-Code-style "always allow")
 

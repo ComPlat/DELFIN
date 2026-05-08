@@ -1544,6 +1544,27 @@ class _DocToolExecutor:
             return json.dumps({"error": "path is required"})
         root = perms.workspace if perms is not None else self._repo_root()
         full = (root / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
+
+        # Read-side denylist: even when reading absolute paths outside the
+        # workspace (which IS allowed — the agent should be able to peek at
+        # other repos / configs / data), refuse to surface secrets.
+        if perms is not None:
+            try:
+                resolved = full.expanduser().resolve()
+            except Exception:
+                resolved = full
+            check_path = str(resolved)
+            in_root = perms.find_root_for(resolved) is not None
+            rel_for_glob = (
+                str(resolved.relative_to(perms.find_root_for(resolved)))
+                if in_root else check_path
+            ).replace("\\", "/")
+            if perms.matches_path_deny(rel_for_glob):
+                return json.dumps({"error": (
+                    f"read_file: '{rel_path}' matches a deny-glob "
+                    "(secrets / .ssh / .env / *.key — refusing to read)."
+                )})
+
         if not full.exists():
             return json.dumps({"error": f"File not found: {rel_path}"})
         if full.is_dir():
@@ -1689,13 +1710,17 @@ class _DocToolExecutor:
                 rel_str = path_arg.replace("\\", "/")
             is_protected = perms.matches_path_protected(rel_str)
             if is_protected:
-                # Force explicit user confirmation regardless of mode.
+                # Self-Modification Guard: editing the agent's own safety
+                # layer (api_client.py / kit_confirm.py / engine.py /
+                # tab_agent.py) ALWAYS requires explicit user confirmation,
+                # regardless of mode. Without a callback the gate refuses
+                # rather than silently proceeding.
                 if perms.confirm_callback is None:
                     return (
                         f"'{name}' targets the agent's own safety layer "
-                        f"('{rel_str}'). This always requires explicit user "
-                        "confirmation but no confirm_callback is configured — "
-                        "refusing to proceed."
+                        f"('{rel_str}'). The Self-Modification Guard requires "
+                        "explicit user confirmation but no confirm_callback "
+                        "is configured — refusing to proceed."
                     )
                 preview = (
                     "[SELF-MODIFICATION GUARD]\n"
@@ -1709,21 +1734,11 @@ class _DocToolExecutor:
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
                 return None if ok else f"user denied '{name}' on protected path '{rel_str}'"
-            if mode == "acceptEdits" or mode == "bypassPermissions":
-                return None
-            # mode == "default": ask the callback.
-            if perms.confirm_callback is None:
-                return (
-                    f"'{name}' on '{path_arg}' requires user confirmation, but "
-                    "no confirm_callback is configured. Set permissions.mode "
-                    "to 'acceptEdits' or pass a confirm_callback."
-                )
-            preview = self._build_change_preview(name, args, resolved)
-            try:
-                ok = bool(perms.confirm_callback(name, args, preview))
-            except Exception as exc:
-                return f"confirm_callback raised: {exc}"
-            return None if ok else f"user denied '{name}' on '{path_arg}'"
+            # Non-protected paths in default/acceptEdits/bypass: allow.
+            # Sandbox (_resolve_in_workspace), path_deny_globs and
+            # Self-Mod-Guard above already enforce the boundaries the user
+            # explicitly granted via "Erlaubte Verzeichnisse" / settings.json.
+            return None
 
         if name == "bash":
             cmd = args.get("command", "") or ""
@@ -1733,22 +1748,23 @@ class _DocToolExecutor:
             if denied:
                 return f"command rejected by deny-pattern {denied!r}: refusing to run."
             if mode == "bypassPermissions":
+                # Bypass: only the deny-list still applies; everything else
+                # runs unattended. Use this only inside trusted workflows.
                 return None
             if perms.matches_bash_auto_allow(cmd):
                 return None
-            if perms.confirm_callback is None:
-                return (
-                    f"bash command requires user confirmation, but no "
-                    "confirm_callback is configured. Either configure one, "
-                    "use mode='bypassPermissions' for trusted environments, "
-                    f"or restrict to auto-allow patterns. Command: {cmd[:200]}"
-                )
-            preview = f"$ {cmd}\n(description: {args.get('description', '<none>')})"
-            try:
-                ok = bool(perms.confirm_callback(name, args, preview))
-            except Exception as exc:
-                return f"confirm_callback raised: {exc}"
-            return None if ok else "user denied bash command"
+            # default / acceptEdits: command must match an auto-allow regex.
+            # Per-action confirm dialogs are gone — the user controls policy
+            # by adding allow_patterns (via remember_permission or the
+            # Aktions-Bestätigung "Dauerhaft speichern" checkbox), or by
+            # switching the mode chip to bypassPermissions.
+            return (
+                f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                f"(mode={mode}). Add a regex pattern with "
+                "remember_permission(kind='allow_pattern', value='^\\\\s*<cmd>\\\\b'), "
+                "or switch the KIT-Mode chip to 'bypassPermissions' for "
+                "trusted scratch work."
+            )
 
         return None
 

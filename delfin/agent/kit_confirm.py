@@ -1,31 +1,27 @@
-"""Threaded confirmation broker for KIT-Toolbox coding-agent tools.
+"""Self-Modification Guard broker for KIT-Toolbox coding-agent tools.
+
+Since the per-action confirm dialog has been retired in favour of mode-
+based control (mode chip in the dashboard) plus sandbox + denylist
+enforcement, this broker now only handles the one remaining mandatory
+case: the Self-Modification Guard. The guard fires whenever the agent
+tries to write/edit a path that matches ``path_protected_globs`` (the
+agent's own safety layer: api_client.py, kit_confirm.py, engine.py,
+tab_agent.py, plus the remember_permission tool).
 
 The agent stream runs in a worker thread; tool execution happens inline
-on that worker. When a tool requires user approval, the worker thread
-must block while the UI thread (Jupyter/ipywidgets) renders Approve/Deny
-buttons. This module provides a broker that bridges the two threads.
+on that worker. When the guard fires, the worker thread blocks while
+the UI thread (Jupyter/ipywidgets) renders Approve/Deny buttons. This
+module provides the threading bridge.
 
-Usage in a dashboard tab:
+Usage in a dashboard tab::
 
     broker = KitConfirmBroker()
-    panel  = broker.build_widget()        # ipywidgets container
+    panel  = broker.build_widget()        # ipywidgets container (slim)
     engine.set_kit_confirm_callback(broker.callback)
 
-When the agent calls a destructive tool, the worker thread blocks in
-``broker.callback(...)``. The broker pushes a request onto a queue;
-the UI thread polls it (via a background loop or a signal) and renders
-buttons. Clicking a button resolves the request — the worker thread
-unblocks and the tool either runs or returns a denial error.
-
-Auto-approve modes:
-    - "always_approve_session"  : every request returns True until reset
-    - "always_deny_session"     : every request returns False
-    - "manual" (default)        : user clicks each request
-
-Per-pattern remember:
-    The broker maintains a session-level allowlist: when the user clicks
-    "Approve & remember 'cmd-prefix'" the prefix is added; subsequent
-    requests matching it auto-approve without prompting.
+The mode dropdown / session-allowlist / counters / history panel from
+earlier revisions has been removed — those were redundant with the KIT
+mode chip and ``~/.delfin/settings.json`` and just added noise.
 """
 
 from __future__ import annotations
@@ -64,42 +60,30 @@ class KitConfirmBroker:
         self._pending: deque[_ConfirmRequest] = deque()
         self._history: list[_ConfirmRequest] = []
         self._seq = 0
-        self._mode = "manual"  # manual | always_approve_session | always_deny_session
-        self._allowed_patterns: list[str] = []
-        self._denied_patterns: list[str] = []
         self._timeout_s = default_timeout_s
         self._on_request: Optional[Any] = None  # UI callback to refresh the panel
         # Optional persistence hook: callable(kind, pattern) -> (ok, msg).
-        # When the user ticks "Dauerhaft speichern" + clicks Erlauben/Ablehnen,
-        # the broker forwards the suggested pattern here. The dashboard wires
-        # this to engine.persist_kit_pattern so it survives across sessions.
+        # When a remember_permission request goes through the broker and the
+        # user ticks "Dauerhaft speichern", the broker forwards the
+        # suggested pattern here. The dashboard wires this to
+        # engine.persist_kit_pattern so it survives across sessions.
         self._persist_callback: Optional[Any] = persist_callback
         # ipywidgets handles (lazy)
         self._panel: Any = None
-        self._mode_dropdown: Any = None
-        self._status_label: Any = None
         self._requests_box: Any = None
         self._toast: Any = None
 
     # -- public API --------------------------------------------------------
 
     def callback(self, tool_name: str, args: dict, preview: str) -> bool:
-        """Called from the agent worker thread. Blocks until decided."""
-        cmd = args.get("command", "") if tool_name == "bash" else args.get("path", "")
+        """Called from the agent worker thread. Blocks until decided.
 
-        # Session-level deny-list wins over allow-list (defensive).
+        With the per-action confirm dialog retired, this is now invoked
+        only by the Self-Modification Guard (and ``remember_permission``,
+        which uses the same threading bridge). No session-level allowlist
+        is consulted — every call blocks for an explicit user decision.
+        """
         with self._lock:
-            for pat in list(self._denied_patterns):
-                if pat and pat in cmd:
-                    return False
-            for pat in list(self._allowed_patterns):
-                if pat and pat in cmd:
-                    return True
-            if self._mode == "always_approve_session":
-                return True
-            if self._mode == "always_deny_session":
-                return False
-
             self._seq += 1
             req = _ConfirmRequest(
                 seq=self._seq,
@@ -129,17 +113,13 @@ class KitConfirmBroker:
             if not decided and req.decision is None:
                 req.decision = False  # timeout = deny
 
-            if req.remember_pattern and req.decision is True:
-                if req.remember_pattern not in self._allowed_patterns:
-                    self._allowed_patterns.append(req.remember_pattern)
-            elif req.remember_pattern and req.decision is False:
-                if req.remember_pattern not in self._denied_patterns:
-                    self._denied_patterns.append(req.remember_pattern)
-
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
 
-        # Persistence happens outside the lock (may do JSON I/O).
+        # remember_permission piggy-backs on this broker; if the user ticked
+        # "Dauerhaft speichern" the persist callback writes to settings.json.
+        # Self-Modification Guard requests never set persist_pattern (a
+        # "always allow rewriting api_client.py" rule would defeat the guard).
         if persist_cb and persist_pat:
             kind = "allow" if req.decision else "deny"
             try:
@@ -147,7 +127,7 @@ class KitConfirmBroker:
             except Exception as exc:
                 ok, msg = False, f"persist failed: {exc}"
             self._set_toast(
-                f"{'✔' if ok else '✗'} dauerhaft: {msg}"
+                f"{'OK' if ok else 'FAIL'} dauerhaft: {msg}"
             )
 
         self._refresh_panel()
@@ -157,51 +137,30 @@ class KitConfirmBroker:
         """Bind/unbind the persistence hook (callable(kind, pattern) -> (ok, msg))."""
         self._persist_callback = callback
 
-    def reset_session(self) -> None:
-        """Clear all session state (allow/deny lists, history)."""
-        with self._lock:
-            self._allowed_patterns.clear()
-            self._denied_patterns.clear()
-            self._history.clear()
-            self._mode = "manual"
-        self._refresh_panel()
-
-    def set_mode(self, mode: str) -> None:
-        if mode not in {"manual", "always_approve_session", "always_deny_session"}:
-            raise ValueError(f"unknown mode: {mode}")
-        with self._lock:
-            self._mode = mode
-            if mode != "manual":
-                # Resolve all pending so the worker isn't stuck.
-                decision = (mode == "always_approve_session")
-                for req in list(self._pending):
-                    req.decision = decision
-                    req.event.set()
-                self._pending.clear()
-        self._refresh_panel()
-
     def snapshot(self) -> dict:
         """Inspect current state (for tests/CLI)."""
         with self._lock:
             return {
-                "mode": self._mode,
                 "pending": [
                     {"seq": r.seq, "tool": r.tool_name, "args": r.args}
                     for r in self._pending
                 ],
                 "history": [
                     {"seq": r.seq, "tool": r.tool_name,
-                     "decision": r.decision, "remember": r.remember_pattern}
+                     "decision": r.decision}
                     for r in self._history
                 ],
-                "allowed_patterns": list(self._allowed_patterns),
-                "denied_patterns": list(self._denied_patterns),
             }
 
     # -- ipywidgets UI -----------------------------------------------------
 
     def build_widget(self):
-        """Construct the confirmation panel (lazy import for headless tests)."""
+        """Construct the Self-Modification-Guard panel (lazy import).
+
+        The panel is collapsed (display:none) when no requests are pending
+        so it doesn't clutter the chat — it pops into view only when the
+        agent tries to edit a protected path and asks for approval.
+        """
         try:
             import ipywidgets as widgets
         except Exception as exc:
@@ -210,70 +169,35 @@ class KitConfirmBroker:
         if self._panel is not None:
             return self._panel
 
-        self._mode_dropdown = widgets.Dropdown(
-            options=[
-                ("Manuell bestätigen (sicher)", "manual"),
-                ("Diese Session: alles erlauben", "always_approve_session"),
-                ("Diese Session: alles ablehnen", "always_deny_session"),
-            ],
-            value="manual",
-            description="KIT-Modus:",
-            style={"description_width": "initial"},
-        )
-        self._mode_dropdown.observe(self._on_mode_change, names="value")
-
-        reset_btn = widgets.Button(
-            description="Session-Allowlist zurücksetzen",
-            button_style="warning",
-            tooltip="Alle gemerkten Erlaub-/Verweiger-Patterns löschen",
-        )
-        reset_btn.on_click(lambda _b: self.reset_session())
-
-        self._status_label = widgets.HTML(value=self._render_status_html())
+        self._status_label = widgets.HTML(value="")
         self._requests_box = widgets.VBox([])
         self._toast = widgets.HTML(value="")
 
         self._panel = widgets.VBox(
             [
-                widgets.HTML("<b>KIT-Toolbox – Aktions-Bestätigung</b>"),
-                widgets.HBox([self._mode_dropdown, reset_btn]),
-                self._status_label,
+                widgets.HTML(
+                    "<b>Self-Modification Guard</b> "
+                    "<small>(forciert Confirm wenn der Agent seine eigene "
+                    "Sicherheitsschicht ändern will — egal in welchem Mode)</small>"
+                ),
                 self._toast,
                 self._requests_box,
             ],
             layout=widgets.Layout(
-                border="1px solid #888",
+                border="1px solid #c5221f",
                 padding="6px",
                 margin="6px 0",
+                display="none",
             ),
         )
         self._refresh_panel()
         return self._panel
 
-    def _on_mode_change(self, change) -> None:
-        try:
-            self.set_mode(change["new"])
-        except Exception:
-            pass
-
-    def _render_status_html(self) -> str:
-        with self._lock:
-            allow = len(self._allowed_patterns)
-            deny = len(self._denied_patterns)
-            hist = len(self._history)
-            mode = self._mode
-        return (
-            f"<small>Modus: <code>{mode}</code> &middot; "
-            f"erlaubte Patterns: {allow} &middot; "
-            f"verweigerte Patterns: {deny} &middot; "
-            f"Historie: {hist} Entscheidung(en)</small>"
-        )
-
     def _refresh_panel(self) -> None:
         if self._requests_box is None:
             return
         try:
-            import ipywidgets as widgets
+            import ipywidgets as widgets  # noqa: F401
         except Exception:
             return
 
@@ -286,8 +210,11 @@ class KitConfirmBroker:
 
         try:
             self._requests_box.children = tuple(rows)
-            if self._status_label is not None:
-                self._status_label.value = self._render_status_html()
+            # Auto-collapse when nothing is pending — the panel only matters
+            # while the agent is waiting on a Self-Mod-Guard or a
+            # remember_permission decision.
+            if self._panel is not None:
+                self._panel.layout.display = "" if pending else "none"
         except Exception:
             pass
 
