@@ -25132,6 +25132,18 @@ def smiles_to_xyz_isomers(
                 _iter81_threshold = _ITER8_1_EXTRA_THRESHOLDS.get(
                     _iter81_class, 9999
                 )
+                # Iter-8.4c: when DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8=1 AND
+                # class='sigma', override the disabled-default (9999) with
+                # tau=3.  Voll-pool sigma frame median is 0 extras with a
+                # thin tail at 3-8 extras representing d8-pincer regression
+                # cases; capping at 3 drops the catastrophic tail without
+                # touching well-formed frames.  Best-of-K fallback below
+                # guarantees ≥2 frames per SMILES so the filter cannot
+                # empty the result set.  Default OFF preserves bit-exact
+                # HEAD when env-flag unset.
+                if (_iter81_class == "sigma"
+                    and bool(_delfin_env_int("DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8", 0))):
+                    _iter81_threshold = 3
                 if _iter81_threshold < 9999:
                     # Score each frame by extra-bond count
                     _scored = []
