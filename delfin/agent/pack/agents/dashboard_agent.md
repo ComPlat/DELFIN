@@ -131,7 +131,8 @@ Confirm intent in chat first before calling the tool.
 
 Common keys: `functional`, `main_basisset`, `metal_basisset`, `disp_corr`,
 `solvent`, `solvation_model`, `freq_type`, `geom_opt`, `PAL`, `maxcore`,
-`charge`, `multiplicity`, `redox_steps`, `parallel_workflows`.
+`charge`, `multiplicity`, `reduction_steps`, `method` (classic | manually
+| OCCUPIER), `parallel_workflows`.
 
 Relativistic keys (`*_rel`) are only used when `relativity` is set
 (ZORA / X2C / DKH). Switch them as a unit:
