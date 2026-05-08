@@ -24482,7 +24482,26 @@ def smiles_to_xyz_isomers(
     # idealised pre-UFF placements that keep the trans symmetry intact.
     # Pure additive: never touches existing entries, only appends new
     # XYZ-signature-distinct ones.  Toggle via DELFIN_TRANS_PASS_ENABLED.
-    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
+    # Iter-8.5b: when DELFIN_ITER85_PUMP_SKIP_CLASSES contains the parent
+    # mol's class, skip the trans-effect pass.  e6761e4 (champion for
+    # hapto / multi-hapto / multi-σ) does not run a trans-effect pass
+    # for those classes; the pass adds frames that often violate
+    # chemistry filters at downstream gates.  Reusing the comma-separated
+    # class list pattern from Iter-8.5a.  Default empty set = bit-exact.
+    _iter85b_pump_skip_classes = set(
+        x.strip() for x in (
+            os.environ.get("DELFIN_ITER85_PUMP_SKIP_CLASSES", "") or ""
+        ).split(",") if x.strip()
+    )
+    _iter85b_pump_skip = False
+    if has_metal and _iter85b_pump_skip_classes:
+        try:
+            _iter85b_pump_skip = (
+                _classify_complex_class(mol) in _iter85b_pump_skip_classes
+            )
+        except Exception:
+            _iter85b_pump_skip = False
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE and not _iter85b_pump_skip:
         try:
             _emit_all_trans_by_type_arrangements(
                 mol, results, dtype_map, apply_uff, max_isomers,
@@ -24511,7 +24530,11 @@ def smiles_to_xyz_isomers(
             )
         except Exception:
             _iter84b_skip_pucker = False
-    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE and not _iter84b_skip_pucker:
+    # Iter-8.5b: same class-list as the trans-effect skip above.  When the
+    # parent mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, skip the
+    # pucker pass too.  Combined with 8.4b's sigma-specific skip, the
+    # pucker pass is now class-list-dispatched.
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE and not _iter84b_skip_pucker and not _iter85b_pump_skip:
         try:
             _emit_chelate_pucker_variants(
                 mol, results, apply_uff, max_isomers,
