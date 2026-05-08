@@ -1671,7 +1671,12 @@ class _DocToolExecutor:
         mode = perms.mode
 
         if mode == "plan":
-            return f"plan mode is read-only — '{name}' rejected"
+            return (
+                f"plan mode (read-only) — '{name}' rejected. "
+                "Describe the proposed change in chat instead. "
+                "The user can click 'Plan akzeptieren & ausführen' or "
+                "switch the mode chip to 'acceptEdits' to proceed."
+            )
 
         if name in ("write_file", "edit_file", "multi_edit"):
             path_arg = args.get("path", "")

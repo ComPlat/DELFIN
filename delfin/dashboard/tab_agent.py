@@ -1548,6 +1548,135 @@ def create_tab(ctx):
         ),
     )
 
+    # KIT permission-mode picker (Claude-Code-style chip + cycle button).
+    # Top-of-chat chip = current mode + verbose label.
+    # Quick button next to Send = compact cycle button.
+    _KIT_MODE_ORDER = ("plan", "default", "acceptEdits", "bypassPermissions")
+    _KIT_MODE_VISUAL = {
+        "plan":              ("Plan", "#5f6368", "#f1f3f4",
+                              "Read-only · Agent schlägt vor, führt nichts aus"),
+        "default":           ("Default", "#1a73e8", "#e8f0fe",
+                              "Schreiben/Bash bestätigt jeden Schritt"),
+        "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
+                              "Schreiben/Edit auto · Bash bestätigt"),
+        "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
+                              "Alles auto · Sandbox + Denylist gelten weiter"),
+    }
+
+    kit_mode_chip = widgets.Button(
+        description="Plan",
+        tooltip="Click cycelt: plan → default → acceptEdits → bypass",
+        layout=widgets.Layout(width="auto", height="32px",
+                              margin="0 6px 0 0", display="none"),
+    )
+    kit_mode_label = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    kit_mode_row = widgets.HBox(
+        [widgets.HTML("<small><b>KIT-Mode:</b></small>"),
+         kit_mode_chip, kit_mode_label],
+        layout=widgets.Layout(
+            align_items="center",
+            margin="2px 0 4px 0",
+            display="none",
+        ),
+    )
+
+    kit_mode_quick_btn = widgets.Button(
+        description="Plan",
+        tooltip="Cycle KIT mode (next: default)",
+        layout=widgets.Layout(width="80px", height="80px",
+                              margin="0 0 0 4px", display="none"),
+    )
+
+    def _refresh_kit_mode_chip():
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        if perms is None:
+            for w in (kit_mode_chip, kit_mode_label, kit_mode_quick_btn):
+                w.layout.display = "none"
+            kit_mode_row.layout.display = "none"
+            _refresh_plan_accept_btn()
+            return
+        mode = perms.mode if perms.mode in _KIT_MODE_VISUAL else "default"
+        label, fg, bg, tip = _KIT_MODE_VISUAL[mode]
+        # Top chip
+        kit_mode_chip.description = label
+        kit_mode_chip.tooltip = tip
+        kit_mode_chip.style.button_color = bg
+        kit_mode_label.value = (
+            f"<small style='color:{fg}; margin-left:6px'>{tip}</small>"
+        )
+        kit_mode_chip.layout.display = ""
+        kit_mode_label.layout.display = ""
+        kit_mode_row.layout.display = "flex"
+        # Quick button next to Send
+        idx = _KIT_MODE_ORDER.index(mode)
+        next_mode = _KIT_MODE_ORDER[(idx + 1) % len(_KIT_MODE_ORDER)]
+        kit_mode_quick_btn.description = label
+        kit_mode_quick_btn.tooltip = (
+            f"KIT-Mode: {label}\nClick cycelt → {next_mode}"
+        )
+        kit_mode_quick_btn.style.button_color = bg
+        kit_mode_quick_btn.layout.display = ""
+        _refresh_plan_accept_btn()
+
+    def _cycle_kit_mode(_btn=None):
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        if perms is None:
+            return
+        cur = perms.mode if perms.mode in _KIT_MODE_ORDER else "default"
+        nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
+        ok = bool(eng.set_kit_permission_mode(nxt))
+        if ok:
+            _append_system_message(f"KIT-Mode → {nxt}")
+        _refresh_kit_mode_chip()
+
+    kit_mode_chip.on_click(_cycle_kit_mode)
+    kit_mode_quick_btn.on_click(_cycle_kit_mode)
+
+    # Plan-mode accept button: shown only after agent answered while in plan mode.
+    plan_accept_btn = widgets.Button(
+        description="Plan akzeptieren & ausführen",
+        button_style="success",
+        tooltip=("Schaltet auf 'acceptEdits' und prompted den Agent, "
+                 "den vorgeschlagenen Plan jetzt auszuführen."),
+        layout=widgets.Layout(display="none", margin="4px 0"),
+    )
+
+    def _refresh_plan_accept_btn():
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        # Show when we're in plan mode AND the agent has produced at least
+        # one assistant message in this session.
+        has_assistant_turn = bool(state.get("_kit_plan_has_response"))
+        if perms is not None and perms.mode == "plan" and has_assistant_turn:
+            plan_accept_btn.layout.display = ""
+        else:
+            plan_accept_btn.layout.display = "none"
+
+    def _on_plan_accept(_btn):
+        eng = state.get("engine")
+        if eng is None or not hasattr(eng, "set_kit_permission_mode"):
+            return
+        if not eng.set_kit_permission_mode("acceptEdits"):
+            _append_system_message("Mode-Wechsel auf acceptEdits fehlgeschlagen.")
+            return
+        _append_system_message("Mode → acceptEdits · sende Plan-Ausführungsbefehl …")
+        state["_kit_plan_has_response"] = False
+        _refresh_kit_mode_chip()
+        # Inject a follow-up user message that triggers execution.
+        try:
+            input_textarea.value = (
+                "Bitte den vorgeschlagenen Plan jetzt ausführen. "
+                "Nutze die KIT-Toolbox-Tools (write_file/edit_file/bash) "
+                "und melde nach jedem Schritt kurz, was du tust."
+            )
+            _on_send(None)
+        except Exception as exc:
+            _append_system_message(f"Auto-Send fehlgeschlagen: {exc}")
+
+    plan_accept_btn.on_click(_on_plan_accept)
+
     def _ensure_kit_broker():
         """Build/return the KitConfirmBroker bound to this tab."""
         if state.get("_kit_confirm_broker") is None:
@@ -1576,6 +1705,7 @@ def create_tab(ctx):
         kit_confirm_container.layout.display = "flex" if visible else "none"
         if visible:
             _refresh_kit_dirs_status()
+        _refresh_kit_mode_chip()
 
     # Chat display
     chat_html = widgets.HTML(
@@ -1595,7 +1725,7 @@ def create_tab(ctx):
         layout=widgets.Layout(width="80px", height="80px"),
     )
     input_row = widgets.HBox(
-        [input_textarea, send_btn],
+        [input_textarea, send_btn, kit_mode_quick_btn],
         layout=widgets.Layout(margin="6px 0 0 0"),
     )
     input_row.add_class("delfin-agent-send-row")
@@ -1879,7 +2009,10 @@ def create_tab(ctx):
     # -- layout assembly ---------------------------------------------------
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
-         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box, kit_confirm_container, chat_html, working_html, queue_html, approval_row, question_row, input_row],
+         status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
+         kit_mode_row, kit_confirm_container, chat_html,
+         plan_accept_btn,
+         working_html, queue_html, approval_row, question_row, input_row],
     )
 
     if not _yaml_ok:
@@ -2708,6 +2841,15 @@ def create_tab(ctx):
                  "role_label": role_label, "_streaming": not finalize}
             )
         _refresh_chat_html(streaming=not finalize)
+        if finalize and content.strip():
+            # Plan-mode "Akzeptieren"-Button erscheint, sobald der Agent eine
+            # Plan-Antwort abgeschlossen hat. Wir merken uns nur den letzten
+            # Status — beim Wechsel auf acceptEdits zurücksetzen.
+            state["_kit_plan_has_response"] = True
+            try:
+                _refresh_plan_accept_btn()
+            except Exception:
+                pass
 
     # HTML cache: stores rendered HTML for messages that haven't changed.
     # During streaming, only the last (assistant) message is re-rendered.
