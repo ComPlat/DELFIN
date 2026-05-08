@@ -23884,13 +23884,45 @@ def smiles_to_xyz_isomers(
     _relaxed = _collect_fp_label_pairs(relax_hard_chem_filters=True) if (
         conf_ids and has_metal and not _strict_sufficient
     ) else []
-    _merged: Dict[tuple, Tuple[str, int, float]] = {}
-    for fp, lbl, cid, sc in _strict:
-        if fp not in _merged or sc < _merged[fp][2]:
-            _merged[fp] = (lbl, cid, sc)
-    for fp, lbl, cid, sc in _relaxed:
-        if fp not in _merged or sc < _merged[fp][2]:
-            _merged[fp] = (lbl, cid, sc)
+    # Iter-8.5a: per-class hard-reject merge (M_A from e6761e4 forensik).
+    # When parent mol's class is in DELFIN_ITER85_HARD_REJECT_CLASSES,
+    # skip the relaxed-pass merge entirely and use only the strict-pass
+    # output.  e6761e4 ran strict-only on hapto / multi-hapto / multi-σ
+    # cohorts; the relaxed-pass merge in HEAD lets through frames with
+    # extra heavy bonds that the champion would have rejected.  The
+    # tighter strict-only contract reduces extras-per-frame by 20-30 %
+    # on those cohorts at the cost of fewer total frames.
+    # Default: empty class set → bit-exact HEAD union-merge behaviour.
+    # Activate via comma-separated list in
+    # DELFIN_ITER85_HARD_REJECT_CLASSES, e.g. "hapto,multi_hapto".
+    _iter85_hard_classes = set(
+        x.strip() for x in (
+            os.environ.get("DELFIN_ITER85_HARD_REJECT_CLASSES", "") or ""
+        ).split(",") if x.strip()
+    )
+    _iter85_hard_dispatch = False
+    if _iter85_hard_classes:
+        try:
+            _iter85_hard_dispatch = (
+                _classify_complex_class(mol) in _iter85_hard_classes
+            )
+        except Exception:
+            _iter85_hard_dispatch = False
+    if _iter85_hard_dispatch:
+        # Strict-only contract: drop relaxed-pass entirely
+        _merged: Dict[tuple, Tuple[str, int, float]] = {}
+        for fp, lbl, cid, sc in _strict:
+            if fp not in _merged or sc < _merged[fp][2]:
+                _merged[fp] = (lbl, cid, sc)
+    else:
+        # HEAD baseline: union-merge of strict + relaxed
+        _merged = {}
+        for fp, lbl, cid, sc in _strict:
+            if fp not in _merged or sc < _merged[fp][2]:
+                _merged[fp] = (lbl, cid, sc)
+        for fp, lbl, cid, sc in _relaxed:
+            if fp not in _merged or sc < _merged[fp][2]:
+                _merged[fp] = (lbl, cid, sc)
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = [
         (fp, lbl, cid, sc) for fp, (lbl, cid, sc) in _merged.items()
     ]
