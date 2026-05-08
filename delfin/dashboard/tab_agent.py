@@ -1498,12 +1498,12 @@ def create_tab(ctx):
             for i, r in enumerate(roots)
         )
         kit_dirs_status.value = (
-            "<small><b>Schreibrechte:</b> " + roots_html
-            + f" &middot; allow-Patterns: {allow_count}"
-            + f" &middot; deny-Patterns: {deny_count}"
-            + " &middot; <i>außerhalb: nur Lesen mit Confirm</i>"
-            + "<br><i>Tipp: <code>'arbeite auch in /pfad'</code> "
-            + "im Chat &rarr; Agent merkt's sich nach einem Klick.</i></small>"
+            "<small><b>Write access:</b> " + roots_html
+            + f" &middot; allow-patterns: {allow_count}"
+            + f" &middot; deny-patterns: {deny_count}"
+            + " &middot; <i>outside: read-only with confirm</i>"
+            + "<br><i>Tip: say <code>'also work in /path'</code> in chat "
+            + "&rarr; agent persists it after one confirm click.</i></small>"
         )
 
     # KIT permission-mode picker (Claude-Code-style chip + cycle button).
@@ -1675,7 +1675,8 @@ def create_tab(ctx):
     input_textarea = widgets.Textarea(
         placeholder=(
             "Message the agent... (Enter = send, Shift+Enter = newline)\n"
-            "Tipp KIT: 'arbeite auch in /pfad' → Agent merkt's nach 1 Klick."
+            "KIT tip: say 'also work in /path' to grant write access — "
+            "the agent persists it after one confirm click."
         ),
         layout=widgets.Layout(width="100%", height="80px"),
     )
