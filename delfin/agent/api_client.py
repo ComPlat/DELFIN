@@ -1669,6 +1669,86 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "schedule_wakeup",
+            "description": (
+                "Schedule a single future agent invocation. Mirrors "
+                "Claude Code's ScheduleWakeup. Use when you need to "
+                "check back on something later (long-running build, "
+                "external job). The dashboard will fire the prompt "
+                "back at the chosen time. Persists across restarts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delay_seconds": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "maximum": 3600,
+                        "description": "When to fire (60 to 3600 sec).",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Prompt to fire on wake-up.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short telemetry reason.",
+                    },
+                },
+                "required": ["delay_seconds", "prompt", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_create",
+            "description": (
+                "Create a recurring scheduled invocation (interval-based). "
+                "DELFIN's minimal cron substitute: a single ``every_seconds`` "
+                "interval, no full cron expressions. Persists across restarts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "every_seconds": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "description": "Interval between fires (>= 60).",
+                    },
+                    "prompt": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "fire_immediately": {"type": "boolean"},
+                },
+                "required": ["every_seconds", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_list",
+            "description": "List all active scheduled / cron entries.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_delete",
+            "description": "Delete a scheduled / cron entry by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string"},
+                },
+                "required": ["entry_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "enter_worktree",
             "description": (
                 "Create a temporary git worktree on a fresh branch "
@@ -2331,6 +2411,11 @@ class _DocToolExecutor:
             return self._execute_enter_worktree(arguments, permissions)
         if name == "exit_worktree":
             return self._execute_exit_worktree(arguments, permissions)
+
+        # Scheduler: one-shot wake-ups + interval cron.
+        if name in ("schedule_wakeup", "cron_create",
+                    "cron_list", "cron_delete"):
+            return self._execute_scheduler(name, arguments)
 
         # Planning tools — pure metadata operations on the workspace's
         # task store; no permission gate needed (the JSON file lives
@@ -3787,6 +3872,59 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Scheduler / cron ---------------------------------------------
+
+    def _execute_scheduler(self, name: str, arguments: dict) -> str:
+        from . import scheduler as _sched
+        sch = _sched.get_scheduler()
+        try:
+            if name == "schedule_wakeup":
+                ent = sch.schedule_once(
+                    delay_seconds=int(arguments.get("delay_seconds", 0)),
+                    prompt=str(arguments.get("prompt", "")),
+                    reason=str(arguments.get("reason", "")),
+                )
+                return json.dumps({
+                    "status": "ok",
+                    "id": ent.id,
+                    "fires_at_epoch": ent.next_fire_at,
+                })
+            if name == "cron_create":
+                ent = sch.schedule_interval(
+                    every_seconds=int(arguments.get("every_seconds", 0)),
+                    prompt=str(arguments.get("prompt", "")),
+                    reason=str(arguments.get("reason", "")),
+                    fire_immediately=bool(arguments.get("fire_immediately", False)),
+                )
+                return json.dumps({
+                    "status": "ok",
+                    "id": ent.id,
+                    "next_fire_at": ent.next_fire_at,
+                })
+            if name == "cron_list":
+                entries = sch.list_entries()
+                return json.dumps({
+                    "entries": [
+                        {
+                            "id": e.id, "kind": e.kind,
+                            "every_seconds": e.every_seconds,
+                            "next_fire_at": e.next_fire_at,
+                            "fire_count": e.fire_count,
+                            "prompt": e.prompt[:120],
+                            "reason": e.reason,
+                        }
+                        for e in entries
+                    ],
+                })
+            if name == "cron_delete":
+                ok = sch.delete(str(arguments.get("entry_id", "")))
+                return json.dumps({"status": "ok" if ok else "not_found"})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps({"error": f"unknown scheduler op: {name!r}"})
+
     # ------- Git worktree isolation ---------------------------------------
 
     def _execute_enter_worktree(
@@ -4358,14 +4496,38 @@ class OpenAIClient(_BaseClient):
                               "skill",
                               "subagent",
                               "enter_worktree",
-                              "exit_worktree"}
+                              "exit_worktree",
+                              "schedule_wakeup",
+                              "cron_create",
+                              "cron_list",
+                              "cron_delete"}
         if has_coding:
-            advertised_tools = _DOC_TOOLS_OPENAI
+            advertised_tools = list(_DOC_TOOLS_OPENAI)
         else:
             advertised_tools = [
                 t for t in _DOC_TOOLS_OPENAI
                 if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
             ]
+
+        # Augment with MCP tools discovered from configured servers.
+        # Failures (missing config, server crash) leave the registry
+        # empty — the agent simply won't see those tools.
+        try:
+            from . import mcp_client as _mcp
+            _ws = self._permissions.workspace if self._permissions else None
+            _registry = _mcp.get_registry(_ws)
+            _mcp_tools = _registry.discover_all()
+            for _tool in _mcp_tools:
+                advertised_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": _tool.namespaced_name,
+                        "description": _tool.description or _tool.name,
+                        "parameters": _tool.schema or {"type": "object"},
+                    },
+                })
+        except Exception:
+            _mcp_tools = []
 
         _total_in = 0
         _total_out = 0
@@ -4491,24 +4653,45 @@ class OpenAIClient(_BaseClient):
                                             "skill",
                                             "subagent",
                                             "enter_worktree",
-                                            "exit_worktree")
+                                            "exit_worktree",
+                                            "schedule_wakeup",
+                                            "cron_create",
+                                            "cron_list",
+                                            "cron_delete")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
+
+                    # MCP tools come prefixed mcp__server__name and route
+                    # through the registry, bypassing the doc executor.
+                    is_mcp = fn_name.startswith("mcp__")
 
                     # Emit tool_use event for UI display
                     yield StreamEvent(
                         type="tool_use",
-                        tool_name=f"mcp__{ns_prefix}__{fn_name}",
+                        tool_name=fn_name if is_mcp
+                                  else f"mcp__{ns_prefix}__{fn_name}",
                         tool_input=json.dumps(fn_args),
                     )
 
-                    result = _doc_executor.execute(
-                        fn_name, fn_args, permissions=self._permissions
-                    )
+                    if is_mcp:
+                        try:
+                            from . import mcp_client as _mcp
+                            _ws = (self._permissions.workspace
+                                   if self._permissions else None)
+                            result = _mcp.get_registry(_ws).call(fn_name, fn_args)
+                        except Exception as exc:
+                            result = json.dumps({
+                                "error": f"MCP dispatch failed: {exc}"
+                            })
+                    else:
+                        result = _doc_executor.execute(
+                            fn_name, fn_args, permissions=self._permissions
+                        )
 
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
-                        tool_name=f"mcp__{ns_prefix}__{fn_name}",
+                        tool_name=fn_name if is_mcp
+                                  else f"mcp__{ns_prefix}__{fn_name}",
                         tool_output=result[:2000],
                     )
 
