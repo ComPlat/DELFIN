@@ -308,6 +308,13 @@ class AgentEngine:
         self.compaction_summaries: dict[str, str] = {}
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
+        # Auto-compact configuration. Threshold is a fraction of the
+        # context window; once an estimated turn would exceed it, the
+        # engine summarises older messages before sending. Set
+        # ``auto_compact_pct`` to 0 to disable.
+        self.context_window_tokens: int = 100_000
+        self.auto_compact_pct: float = 0.80
+        self.last_compaction_info: dict[str, int] | None = None
         # A6 — last cost_usd snapshot at outcome time; the next outcome's
         # delta is (current cost_usd - this). Reset together with cost_usd
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
@@ -603,14 +610,38 @@ class AgentEngine:
         """
         self._stop_requested = False
 
+        # UserPromptSubmit hooks — fire BEFORE the message is appended so a
+        # blocking hook can short-circuit the turn entirely. Stop hooks are
+        # fired in the finally-block at the end of the turn.
+        try:
+            from . import hooks as _hooks_mod
+            _kperms = getattr(self, "kit_permissions", None)
+            _ws = _kperms.workspace if _kperms else None
+            _hooks_cfg = _hooks_mod.load_hooks(_ws) if _ws else _hooks_mod.HooksConfig()
+            if not _hooks_cfg.is_empty():
+                _ups = _hooks_mod.run_hooks(
+                    "UserPromptSubmit", _hooks_cfg,
+                    user_prompt=user_message, workspace=_ws,
+                )
+                _blk = _hooks_mod.first_block(_ups)
+                if _blk is not None:
+                    _reason = _blk.reason or _blk.stderr or "blocked by UserPromptSubmit hook"
+                    if on_token:
+                        on_token(f"\n[hook block] {_reason}\n")
+                    return f"[hook block] {_reason}"
+        except Exception:
+            _hooks_cfg = None
+            _ws = None
+
         self.messages.append({"role": "user", "content": user_message})
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
 
-        # Mid-conversation compaction for long solo sessions (Feature 3)
-        if self.current_role in ("solo_agent", "dashboard_agent"):
-            self._compact_history()
+        # Mid-conversation compaction. Fires for solo/dashboard on the
+        # legacy message-count threshold, and for any role when the
+        # token-budget threshold is exceeded.
+        self._compact_history()
 
         system_prompt = self._build_current_system_prompt(
             memory_context,
@@ -712,6 +743,16 @@ class AgentEngine:
             if not chunks:
                 self.messages.pop()
             raise
+        finally:
+            # Stop hooks — fire after the stream finishes (success or
+            # exception). Failures are silenced so a misconfigured hook
+            # never bubbles up.
+            try:
+                if _hooks_cfg is not None and not _hooks_cfg.is_empty():
+                    from . import hooks as _hm2
+                    _hm2.run_hooks("Stop", _hooks_cfg, workspace=_ws)
+            except Exception:
+                pass
 
         full_response = "".join(chunks)
         if full_response:
@@ -768,12 +809,43 @@ class AgentEngine:
     _COMPACTION_THRESHOLD = 12  # messages before compaction triggers
     _KEEP_RECENT = 4            # keep last 4 messages intact
 
+    def _estimate_context_tokens(self) -> int:
+        """Rough char/4 estimate of tokens in the current message list."""
+        total_chars = 0
+        for m in self.messages:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        total_chars += len(str(part.get("text", "")))
+        return total_chars // 4
+
+    def _should_auto_compact(self) -> bool:
+        """True if estimated context exceeds the configured fraction."""
+        if not self.auto_compact_pct or not self.context_window_tokens:
+            return False
+        budget = int(self.context_window_tokens * float(self.auto_compact_pct))
+        return self._estimate_context_tokens() > budget
+
     def _compact_history(self) -> None:
         """Summarize older messages, keeping recent ones intact.
 
-        Only runs for solo/dashboard modes with long conversations.
+        Triggers under EITHER condition:
+        - the message count exceeds the legacy threshold (solo/dashboard)
+        - the estimated context tokens exceed ``auto_compact_pct`` of
+          ``context_window_tokens``  (any role, any backend)
+
         Uses extractive summarization (no extra API call).
         """
+        msg_threshold_hit = (
+            self.current_role in ("solo_agent", "dashboard_agent")
+            and len(self.messages) >= self._COMPACTION_THRESHOLD
+        )
+        token_threshold_hit = self._should_auto_compact()
+        if not (msg_threshold_hit or token_threshold_hit):
+            return
         if len(self.messages) < self._COMPACTION_THRESHOLD:
             return
 
@@ -798,10 +870,21 @@ class AgentEngine:
         if not summary:
             return
 
+        n_compacted = len(old_msgs)
+        tokens_before = self._estimate_context_tokens()
+
         self.messages = [
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + recent
+
+        tokens_after = self._estimate_context_tokens()
+        self.last_compaction_info = {
+            "messages_compacted": n_compacted,
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+            "tokens_saved": max(0, tokens_before - tokens_after),
+        }
 
         # CLI backend: by default tear down the persistent process so the
         # next stream_message starts fresh and the compacted history

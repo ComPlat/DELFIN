@@ -1871,7 +1871,33 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
-        result = self._dispatch(name, arguments, permissions)
+        # Settings-driven PreToolUse hooks (Claude-Code-compatible).
+        # A blocking hook short-circuits dispatch and surfaces the
+        # reason back to the agent as the tool result so it can react.
+        block_reason = ""
+        if permissions is not None:
+            try:
+                from . import hooks as _hooks_mod
+                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                if not cfg.is_empty():
+                    pre_results = _hooks_mod.run_hooks(
+                        "PreToolUse", cfg,
+                        tool_name=name, arguments=arguments,
+                        workspace=permissions.workspace,
+                    )
+                    blk = _hooks_mod.first_block(pre_results)
+                    if blk is not None:
+                        block_reason = blk.reason or blk.stderr or "blocked by PreToolUse hook"
+            except Exception:
+                pass
+
+        if block_reason:
+            result = json.dumps({
+                "error": "blocked_by_hook",
+                "reason": block_reason[:1200],
+            })
+        else:
+            result = self._dispatch(name, arguments, permissions)
 
         # Track mtime after a successful read_file so edit_file can verify the
         # file hasn't changed since the agent last read it.
@@ -1890,6 +1916,23 @@ class _DocToolExecutor:
         if permissions is not None and permissions.post_tool_hook:
             try:
                 permissions.post_tool_hook(name, arguments, result)
+            except Exception:
+                pass
+
+        # Settings-driven PostToolUse hooks. Output goes to stderr/audit
+        # (not back to the model) so a noisy linter doesn't pollute the
+        # tool result the agent reads.
+        if permissions is not None and not block_reason:
+            try:
+                from . import hooks as _hooks_mod
+                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                if not cfg.is_empty():
+                    _hooks_mod.run_hooks(
+                        "PostToolUse", cfg,
+                        tool_name=name,
+                        arguments={**arguments, "result_preview": (result or "")[:400]},
+                        workspace=permissions.workspace,
+                    )
             except Exception:
                 pass
 

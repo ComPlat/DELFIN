@@ -6677,7 +6677,21 @@ def create_tab(ctx):
 
                     # Load persistent memory for system prompt
                     from delfin.agent.memory_store import format_memory_context
+                    from delfin.agent.project_memory import load_project_memory
                     _memory = format_memory_context(task_text=original_task)
+                    # Auto-load CLAUDE.md / AGENTS.md / DELFIN.md from cwd up.
+                    try:
+                        _kperms = engine.kit_permissions
+                        _extra = list(_kperms.extra_workspace_dirs) if _kperms else []
+                        _ws = _kperms.workspace if _kperms else None
+                    except Exception:
+                        _extra = []
+                        _ws = None
+                    _proj_mem = load_project_memory(
+                        cwd=_ws, extra_roots=_extra,
+                    )
+                    if _proj_mem:
+                        _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
 
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
