@@ -6086,7 +6086,30 @@ def create_tab(ctx):
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel",
         }
-        if _first_token in _SLASH_PREFIXES:
+        # Skill expansion: a /<name> that isn't a built-in slash command
+        # but matches a discovered skill gets replaced by the skill's
+        # body before the message hits the agent. Args after the name
+        # are forwarded into the skill block.
+        if (user_text.startswith("/")
+                and _first_token not in _SLASH_PREFIXES
+                and "/" not in _first_token[1:]
+                and len(_first_token) > 1
+                and not _first_token.startswith("/.")):
+            try:
+                from delfin.agent import skills as _skills_mod
+                _engine = state.get("engine")
+                _ws = None
+                if _engine and getattr(_engine, "kit_permissions", None):
+                    _ws = _engine.kit_permissions.workspace
+                _skill_name = _first_token[1:]
+                _sk = _skills_mod.get_skill(_skill_name, _ws)
+            except Exception:
+                _sk = None
+            if _sk is not None:
+                rest = user_text[len(_first_token):].strip()
+                expanded = _skills_mod.render_skill_invocation(_sk, rest)
+                user_text = expanded + ("\n\n" + rest if rest else "")
+        elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
             _append_chat_message("user", user_text)
             _handle_slash_command(user_text)

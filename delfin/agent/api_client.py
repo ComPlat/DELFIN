@@ -802,6 +802,18 @@ class KitToolPermissions:
     confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
     pre_tool_hook: Optional[Callable[[str, dict], None]] = None
     post_tool_hook: Optional[Callable[[str, dict, str], None]] = None
+    # Structured-question UI binding. Receives the full ask_user_question
+    # arguments dict and must return a dict with at least {"answers": [...]}.
+    # When None, calls to ``ask_user_question`` return a not-available
+    # error to the model so it falls back to plain-prose questions.
+    ask_user_callback: Optional[Callable[[dict], dict]] = None
+    # Plan-approval callback: receives the plan markdown the agent
+    # submitted via ``exit_plan_mode`` and must return a dict::
+    #   {"approved": bool, "new_mode": "default"|"acceptEdits"|"bypassPermissions"}
+    # When None, the executor records the plan locally and switches
+    # to "default" mode silently — useful for tests/headless runs.
+    plan_approval_callback: Optional[Callable[[str], dict]] = None
+    last_approved_plan: str = ""
     read_tracker: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1652,6 +1664,138 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "skill",
+            "description": (
+                "Invoke a user- or project-scoped skill (a "
+                "Markdown playbook). Skills live in "
+                "~/.delfin/skills/<name>/SKILL.md or "
+                "<workspace>/.delfin/skills/<name>/SKILL.md. The "
+                "skill's body is returned verbatim — read it and "
+                "follow the instructions. Use this when the user "
+                "types '/skill-name' or when you want to consult an "
+                "established playbook (e.g. /security-review, /init). "
+                "Pass `args` to forward parameters to the skill."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name without the leading slash.",
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": (
+                            "Optional free-text arguments forwarded "
+                            "to the skill body."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exit_plan_mode",
+            "description": (
+                "Submit the finalized plan to the user for approval. "
+                "Mirrors Claude Code's ExitPlanMode. ONLY call this in "
+                "'plan' mode after you've assembled a complete plan; "
+                "while in plan mode, write/edit/bash tools are blocked. "
+                "On approval the agent's mode switches to "
+                "'acceptEdits' (or whatever the user picks) so the "
+                "next turn can actually execute the plan. Pass the "
+                "full plan as Markdown — bullet lists are ideal. "
+                "Don't use this for clarifying questions; use "
+                "ask_user_question for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "Final plan in Markdown. Should describe "
+                            "every step you intend to take, in order, "
+                            "and call out anything risky or "
+                            "irreversible."
+                        ),
+                    },
+                },
+                "required": ["plan"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user_question",
+            "description": (
+                "Ask the user a structured multi-choice question and "
+                "wait for their answer. Mirrors Claude Code's "
+                "AskUserQuestion. Useful for clarifying ambiguous "
+                "instructions, getting design decisions, choosing "
+                "between approaches. Returns JSON with the user's "
+                "selected option label(s). Don't use for free-text "
+                "questions — just write them out as plain prose. "
+                "Don't use for plan approval — emit ExitPlanMode "
+                "instead. Has no effect when the agent runs without "
+                "an ask-user UI bound (e.g. headless scripts) and "
+                "returns an error in that case."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "Full question, ending with a question "
+                            "mark. Be specific."
+                        ),
+                    },
+                    "header": {
+                        "type": "string",
+                        "description": (
+                            "Short label / chip (max 12 chars) shown "
+                            "alongside the question."
+                        ),
+                    },
+                    "options": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["label"],
+                        },
+                        "description": (
+                            "Mutually-exclusive choices. Each option "
+                            "has a short label and an optional "
+                            "description that explains the trade-off. "
+                            "Always 2-6 options."
+                        ),
+                    },
+                    "multiSelect": {
+                        "type": "boolean",
+                        "description": (
+                            "Allow selecting multiple options "
+                            "(default false)."
+                        ),
+                    },
+                },
+                "required": ["question", "options"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "notebook_read",
             "description": (
                 "Read a Jupyter notebook (.ipynb) cell-aware: returns "
@@ -2043,6 +2187,23 @@ class _DocToolExecutor:
                     return json.dumps({"error": gate_err})
                 return self._execute_notebook_edit(arguments, permissions)
             return self._execute_notebook_read(arguments, permissions)
+
+        # Structured user question: surfaces a dialog in the UI and
+        # blocks until the user picks an option. Headless callers
+        # (no ask_user_callback) get an explicit not-available error.
+        if name == "ask_user_question":
+            return self._execute_ask_user_question(arguments, permissions)
+
+        # Plan-mode roundtrip. exit_plan_mode submits the plan and (on
+        # approval) flips the permission mode so subsequent turns can
+        # actually act on the plan.
+        if name == "exit_plan_mode":
+            return self._execute_exit_plan_mode(arguments, permissions)
+
+        # Skill invocation: returns the skill body so the agent reads
+        # and follows it. Read-only filesystem access, no gate needed.
+        if name == "skill":
+            return self._execute_skill(arguments, permissions)
 
         # Planning tools — pure metadata operations on the workspace's
         # task store; no permission gate needed (the JSON file lives
@@ -2460,8 +2621,10 @@ class _DocToolExecutor:
             return (
                 f"plan mode (read-only) — '{name}' rejected. "
                 "Describe the proposed change in chat instead. "
-                "The user can click 'Plan akzeptieren & ausführen' or "
-                "switch the mode chip to 'acceptEdits' to proceed."
+                "When the plan is complete, call exit_plan_mode to "
+                "submit it for approval; the user can also click "
+                "'Plan akzeptieren & ausführen' or switch the mode "
+                "chip to 'acceptEdits' to proceed."
             )
 
         if name in ("write_file", "edit_file", "multi_edit"):
@@ -3497,6 +3660,168 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Skill invocation ---------------------------------------------
+
+    def _execute_skill(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Resolve a named skill and return its body verbatim.
+
+        Skills are project-overridable Markdown playbooks; this
+        executor just discovers and renders them. The agent is
+        expected to read the returned body and follow it.
+        """
+        from . import skills as _skills_mod
+        name = (arguments.get("name") or "").strip()
+        args = (arguments.get("args") or "").strip()
+        if not name:
+            return json.dumps({"error": "skill name must be non-empty"})
+        workspace = perms.workspace if perms is not None else None
+        sk = _skills_mod.get_skill(name, workspace)
+        if sk is None:
+            available = [s.name for s in _skills_mod.discover_skills(workspace)]
+            return json.dumps({
+                "error": f"skill '{name}' not found",
+                "available": available,
+            })
+        return json.dumps({
+            "status": "ok",
+            "skill": sk.name,
+            "description": sk.description,
+            "source": str(sk.source),
+            "content": _skills_mod.render_skill_invocation(sk, args),
+        }, ensure_ascii=False)
+
+    # ------- Plan-mode roundtrip ------------------------------------------
+
+    _VALID_POST_PLAN_MODES = ("default", "acceptEdits", "bypassPermissions")
+
+    def _execute_exit_plan_mode(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Submit a plan for approval. On approve, flip ``perms.mode``.
+
+        Plan-mode is read-only by contract; the only way out is for the
+        agent to surface the plan and for the user to acknowledge it.
+        Without a ``plan_approval_callback`` we accept silently and
+        switch to ``default`` so headless tests don't deadlock.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "exit_plan_mode requires permissions to be configured"
+            )})
+        plan = (arguments.get("plan") or "").strip()
+        if not plan:
+            return json.dumps({"error": "plan must be non-empty"})
+        if perms.mode != "plan":
+            return json.dumps({"error": (
+                f"exit_plan_mode is only valid while in 'plan' mode "
+                f"(current mode: {perms.mode!r})"
+            )})
+        approved = True
+        new_mode = "default"
+        if perms.plan_approval_callback is not None:
+            try:
+                resp = perms.plan_approval_callback(plan)
+            except Exception as exc:
+                return json.dumps({"error": f"plan approval raised: {exc}"})
+            if not isinstance(resp, dict):
+                return json.dumps({"error": (
+                    "plan_approval_callback must return a dict "
+                    "{approved: bool, new_mode?: str}"
+                )})
+            approved = bool(resp.get("approved", False))
+            requested_mode = (resp.get("new_mode") or "default")
+            if requested_mode not in self._VALID_POST_PLAN_MODES:
+                return json.dumps({"error": (
+                    f"plan_approval_callback returned unsupported "
+                    f"new_mode: {requested_mode!r}. Use one of "
+                    f"{list(self._VALID_POST_PLAN_MODES)}."
+                )})
+            new_mode = requested_mode
+        if approved:
+            perms.mode = new_mode
+            perms.last_approved_plan = plan
+            return json.dumps({
+                "status": "approved",
+                "new_mode": new_mode,
+                "plan_chars": len(plan),
+            })
+        return json.dumps({
+            "status": "rejected",
+            "mode": perms.mode,
+        })
+
+    # ------- Structured user question -------------------------------------
+
+    def _execute_ask_user_question(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Surface a multi-choice question to the user via the bound UI.
+
+        Validates the schema (2-6 options, each with a label) and
+        delegates to ``perms.ask_user_callback``. Returns a JSON payload
+        with the selected ``answers`` (list of label strings). When the
+        callback raises or no UI is bound, returns an explicit error so
+        the agent can fall back to a plain-prose question.
+        """
+        question = (arguments.get("question") or "").strip()
+        options = arguments.get("options") or []
+        header = (arguments.get("header") or "").strip()
+        multi_select = bool(arguments.get("multiSelect", False))
+        if not question:
+            return json.dumps({"error": "question must be non-empty"})
+        if not isinstance(options, list) or not (2 <= len(options) <= 6):
+            return json.dumps({"error": (
+                "options must be a list of 2-6 entries"
+            )})
+        norm_options: list[dict] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                return json.dumps({"error": (
+                    "each option must be {label, description?}"
+                )})
+            label = (opt.get("label") or "").strip()
+            if not label:
+                return json.dumps({"error": "each option needs a label"})
+            norm_options.append({
+                "label": label,
+                "description": (opt.get("description") or "").strip(),
+            })
+        if perms is None or perms.ask_user_callback is None:
+            return json.dumps({
+                "error": "ask_user_question is not available in this context",
+                "hint": (
+                    "Fall back to asking the question in plain prose; "
+                    "no interactive UI is bound to this agent."
+                ),
+            })
+        normalised = {
+            "question": question,
+            "header": header,
+            "options": norm_options,
+            "multiSelect": multi_select,
+        }
+        try:
+            result = perms.ask_user_callback(normalised)
+        except Exception as exc:
+            return json.dumps({"error": f"ask_user failed: {exc}"})
+        if not isinstance(result, dict):
+            return json.dumps({"error": "ask_user returned non-dict result"})
+        answers = result.get("answers")
+        if not isinstance(answers, list) or not all(
+            isinstance(a, str) for a in answers
+        ):
+            return json.dumps({"error": (
+                "ask_user must return {'answers': list[str]}"
+            )})
+        if not multi_select and len(answers) > 1:
+            answers = answers[:1]
+        return json.dumps({
+            "answers": answers,
+            "multiSelect": multi_select,
+        })
+
     # ------- Planning tools (TaskCreate / Update / List) ------------------
 
     def _task_store(self, perms: "KitToolPermissions"):
@@ -3739,7 +4064,10 @@ class OpenAIClient(_BaseClient):
                               "bash_output", "bash_kill",
                               "notebook_read", "notebook_edit",
                               "task_create", "task_update", "task_list",
-                              "web_search", "web_fetch"}
+                              "web_search", "web_fetch",
+                              "ask_user_question",
+                              "exit_plan_mode",
+                              "skill"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -3866,7 +4194,10 @@ class OpenAIClient(_BaseClient):
                                             "task_update",
                                             "task_list",
                                             "web_search",
-                                            "web_fetch")
+                                            "web_fetch",
+                                            "ask_user_question",
+                                            "exit_plan_mode",
+                                            "skill")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display
