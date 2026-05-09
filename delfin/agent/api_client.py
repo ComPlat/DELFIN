@@ -814,6 +814,11 @@ class KitToolPermissions:
     # to "default" mode silently — useful for tests/headless runs.
     plan_approval_callback: Optional[Callable[[str], dict]] = None
     last_approved_plan: str = ""
+    # Sub-agent runner: set by OpenAIClient on attach so the
+    # ``subagent`` tool can fire a child loop without _DocToolExecutor
+    # holding a back-reference to the client. Signature:
+    #   (subagent_type: str, description: str, prompt: str) -> dict payload
+    subagent_runner: Optional[Callable[..., dict]] = None
     read_tracker: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -1664,6 +1669,116 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "enter_worktree",
+            "description": (
+                "Create a temporary git worktree on a fresh branch "
+                "for the current task. Mirrors Claude Code's "
+                "EnterWorktree. Subsequent edits/bash should run "
+                "inside the returned worktree path; the user's main "
+                "tree is untouched. The branch is auto-cleaned on "
+                "exit_worktree if no commits were made. Pass the "
+                "repository root (defaults to the current workspace)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_dir": {
+                        "type": "string",
+                        "description": (
+                            "Repository root (default: current "
+                            "workspace). Must be a git repo."
+                        ),
+                    },
+                    "branch_prefix": {
+                        "type": "string",
+                        "description": "Prefix for the auto-generated branch (default: 'agent').",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exit_worktree",
+            "description": (
+                "Tear down a worktree previously created via "
+                "enter_worktree. If commits or unstaged changes "
+                "exist and keep_if_changed=true (default), the "
+                "worktree path and branch survive so the user can "
+                "review them; otherwise the directory and branch "
+                "are removed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Worktree path returned by enter_worktree.",
+                    },
+                    "keep_if_changed": {
+                        "type": "boolean",
+                        "description": "Keep dir+branch if changes detected (default true).",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subagent",
+            "description": (
+                "Delegate a self-contained task to an isolated "
+                "sub-agent. Mirrors Claude Code's Agent tool. The "
+                "sub-agent runs its own tool-calling loop with a "
+                "narrow tool set (read-only by default) and returns "
+                "a single summary. Use for: parallel research, "
+                "read-only audits, planning that should not edit. "
+                "Pick subagent_type carefully — 'explore' / 'plan' / "
+                "'code-reviewer' are read-only; 'general-purpose' "
+                "inherits the parent's full permissions. Hard caps: "
+                "30 tool calls, 60s wall clock, 8k output tokens."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subagent_type": {
+                        "type": "string",
+                        "enum": [
+                            "explore",
+                            "plan",
+                            "code-reviewer",
+                            "general-purpose",
+                        ],
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Brief 3-7 word label for the task "
+                            "(e.g. 'find audit-log call-sites')."
+                        ),
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Self-contained briefing — the "
+                            "sub-agent has NO context from the "
+                            "parent conversation. State the goal, "
+                            "the relevant files, anything ruled "
+                            "out, and the desired form of the "
+                            "answer."
+                        ),
+                    },
+                },
+                "required": ["subagent_type", "description", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "skill",
             "description": (
                 "Invoke a user- or project-scoped skill (a "
@@ -2204,6 +2319,18 @@ class _DocToolExecutor:
         # and follows it. Read-only filesystem access, no gate needed.
         if name == "skill":
             return self._execute_skill(arguments, permissions)
+
+        # Sub-agent delegation: spawn an isolated tool-calling loop
+        # via the runner the parent OpenAIClient attached.
+        if name == "subagent":
+            return self._execute_subagent(arguments, permissions)
+
+        # Worktree isolation: create / tear down a temporary
+        # git-worktree-on-branch sandbox for the current task.
+        if name == "enter_worktree":
+            return self._execute_enter_worktree(arguments, permissions)
+        if name == "exit_worktree":
+            return self._execute_exit_worktree(arguments, permissions)
 
         # Planning tools — pure metadata operations on the workspace's
         # task store; no permission gate needed (the JSON file lives
@@ -3660,6 +3787,138 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Git worktree isolation ---------------------------------------
+
+    def _execute_enter_worktree(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import worktree as _wt
+        repo_arg = (arguments.get("repo_dir") or "").strip()
+        prefix = (arguments.get("branch_prefix") or "agent").strip() or "agent"
+        if repo_arg:
+            repo_dir = Path(repo_arg).expanduser()
+        else:
+            if perms is None:
+                return json.dumps({"error": (
+                    "repo_dir is required when no workspace is configured"
+                )})
+            repo_dir = perms.workspace
+        try:
+            info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
+        except _wt.WorktreeError as exc:
+            return json.dumps({"error": str(exc)})
+        # Register the worktree path under the agent's allowed roots so
+        # subsequent edit/bash calls succeed without manual remember_*.
+        if perms is not None:
+            try:
+                perms.add_extra_dir(info.path)
+            except Exception:
+                pass
+        return json.dumps({
+            "status": "ok",
+            "path": str(info.path),
+            "branch": info.branch,
+            "base_ref": info.base_ref,
+            "repo_dir": str(info.repo_dir),
+        })
+
+    def _execute_exit_worktree(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import worktree as _wt
+        path_arg = (arguments.get("path") or "").strip()
+        keep_if_changed = bool(arguments.get("keep_if_changed", True))
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        wt_path = Path(path_arg).expanduser()
+        if not wt_path.is_dir():
+            return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        # Reconstruct minimal info from `git -C wt_path status` + branch
+        try:
+            head = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(wt_path), text=True,
+            ).strip()
+            base = subprocess.check_output(
+                ["git", "merge-base", head, head],   # current HEAD as a stand-in
+                cwd=str(wt_path), text=True,
+            ).strip()
+            # Find the source repo via `git worktree list`
+            source = subprocess.check_output(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=str(wt_path), text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            return json.dumps({"error": f"git query failed: {exc}"})
+        except FileNotFoundError:
+            return json.dumps({"error": "git is not installed"})
+        # Pick the FIRST `worktree` block from the list — that's the main repo.
+        repo_dir = wt_path
+        for line in source.splitlines():
+            if line.startswith("worktree "):
+                repo_dir = Path(line.removeprefix("worktree ").strip())
+                break
+        info = _wt.WorktreeInfo(
+            repo_dir=repo_dir,
+            path=wt_path,
+            branch=head,
+            base_ref=base,
+            created_at=0.0,
+        )
+        try:
+            _wt.exit_worktree(info, keep_if_changed=keep_if_changed)
+        except _wt.WorktreeError as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "status": "ok",
+            "had_changes": info.had_changes,
+            "kept": info.final_path is not None,
+            "final_path": str(info.final_path) if info.final_path else "",
+            "branch": info.branch,
+        })
+
+    # ------- Sub-agent delegation -----------------------------------------
+
+    def _execute_subagent(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import subagents as _sa
+        sa_type = (arguments.get("subagent_type") or "").strip()
+        description = (arguments.get("description") or "").strip()
+        prompt = arguments.get("prompt") or ""
+        if not sa_type:
+            return json.dumps({"error": "subagent_type is required"})
+        if sa_type not in _sa.SUBAGENT_PRESETS:
+            return json.dumps({
+                "error": f"unknown subagent_type: {sa_type!r}",
+                "available": list(_sa.SUBAGENT_PRESETS),
+            })
+        if not description:
+            return json.dumps({"error": "description is required"})
+        if not prompt or len(prompt) < 20:
+            return json.dumps({"error": (
+                "prompt must brief the sub-agent thoroughly (>=20 chars)"
+            )})
+        if perms is None or perms.subagent_runner is None:
+            return json.dumps({
+                "error": "subagent runner not attached",
+                "hint": (
+                    "subagent requires the parent OpenAIClient to "
+                    "have set perms.subagent_runner. Currently None."
+                ),
+            })
+        try:
+            payload = perms.subagent_runner(
+                subagent_type=sa_type,
+                description=description,
+                prompt=prompt,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"subagent runner raised: {exc}"})
+        if not isinstance(payload, dict):
+            return json.dumps({"error": "runner must return a dict payload"})
+        return json.dumps(payload, ensure_ascii=False)
+
     # ------- Skill invocation ---------------------------------------------
 
     def _execute_skill(
@@ -3996,10 +4255,39 @@ class OpenAIClient(_BaseClient):
         self.client = openai.OpenAI(**kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
+        self._attach_subagent_runner(permissions)
+
+    def _attach_subagent_runner(
+        self, permissions: Optional["KitToolPermissions"],
+    ) -> None:
+        """Wire ``permissions.subagent_runner`` to a closure over self.
+
+        Idempotent — re-binding on every set_permissions ensures a
+        sub-agent always runs against the current parent client.
+        """
+        if permissions is None:
+            return
+        from . import subagents as _sa
+
+        def _runner(*, subagent_type: str, description: str, prompt: str) -> dict:
+            res = _sa.run_subagent(
+                subagent_type=subagent_type,
+                description=description,
+                prompt=prompt,
+                parent_client=self,
+                parent_perms=self._permissions,
+            )
+            return res.to_payload()
+
+        try:
+            permissions.subagent_runner = _runner
+        except Exception:
+            pass
 
     def set_permissions(self, permissions: Optional["KitToolPermissions"]) -> None:
         """Replace the KIT-Toolbox permissions policy at runtime."""
         self._permissions = permissions
+        self._attach_subagent_runner(permissions)
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
@@ -4067,7 +4355,10 @@ class OpenAIClient(_BaseClient):
                               "web_search", "web_fetch",
                               "ask_user_question",
                               "exit_plan_mode",
-                              "skill"}
+                              "skill",
+                              "subagent",
+                              "enter_worktree",
+                              "exit_worktree"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -4197,7 +4488,10 @@ class OpenAIClient(_BaseClient):
                                             "web_fetch",
                                             "ask_user_question",
                                             "exit_plan_mode",
-                                            "skill")
+                                            "skill",
+                                            "subagent",
+                                            "enter_worktree",
+                                            "exit_worktree")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display
