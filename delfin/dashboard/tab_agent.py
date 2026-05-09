@@ -923,6 +923,51 @@ def _md_to_html(text: str) -> str:
     return escaped
 
 
+def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
+    """Render a +/- diff for a write/edit operation, always visible in chat.
+
+    The user has explicitly asked to see every code change in the
+    dashboard rather than have it tucked behind a `<details>` summary.
+    This helper renders all `-` lines first then all `+` lines (mirroring
+    `Edit`/`Write` semantics where the substring is replaced rather than
+    line-diffed). For long blocks the middle portion is folded into a
+    `<details>` so the head + tail remain visible without overwhelming
+    the chat — head + tail is what tells you "did the right thing happen
+    at the start" and "did the right thing land at the end".
+    """
+    old_lines = old.split("\n") if old else []
+    new_lines = new.split("\n") if new else []
+    diff_lines: list[str] = []
+    for ln in old_lines:
+        diff_lines.append(f'<span class="tool-diff-old">- {_e(ln)}</span>')
+    for ln in new_lines:
+        diff_lines.append(f'<span class="tool-diff-new">+ {_e(ln)}</span>')
+
+    if not diff_lines:
+        return ""
+
+    style = (
+        'margin:4px 0; padding:4px 6px; font-size:11px; line-height:1.45; '
+        'background:rgba(127,127,127,0.06); border-left:2px solid #94a3b8;'
+    )
+    if len(diff_lines) <= soft_cap:
+        return f'<pre style="{style}">{chr(10).join(diff_lines)}</pre>'
+
+    half = max(soft_cap // 2, 8)
+    head = chr(10).join(diff_lines[:half])
+    middle = chr(10).join(diff_lines[half:-half])
+    tail = chr(10).join(diff_lines[-half:])
+    omitted = len(diff_lines) - 2 * half
+    return (
+        f'<pre style="{style} border-bottom:0;">{head}</pre>'
+        f'<details style="margin:0 0 0 0;"><summary style="font-size:10px; '
+        f'color:#9ca3af; padding:2px 6px; cursor:pointer;">'
+        f'… {omitted} more lines</summary>'
+        f'<pre style="{style} margin:0;">{middle}</pre></details>'
+        f'<pre style="{style} border-top:0;">{tail}</pre>'
+    )
+
+
 def _record_solo_turn_outcome(
     engine,
     user_task: str,
@@ -1667,14 +1712,26 @@ def create_tab(ctx):
             try:
                 from delfin.agent.kit_confirm import KitConfirmBroker
                 broker = KitConfirmBroker()
-                # Wire the "Dauerhaft speichern"-checkbox to the engine's
-                # persist hook. Bound lazily so it always picks up the
+                # Wire the "Erlauben + Dauerhaft" button to the engine's
+                # persist hooks. Bound lazily so it always picks up the
                 # currently-active engine (provider may switch at runtime).
-                def _persist(kind: str, pattern: str) -> tuple[bool, str]:
+                # ``kind`` is 'allow' / 'deny' (bash-pattern persistence)
+                # or 'extra_dir' (workspace-dir persistence — used when
+                # the user permanently grants access to a directory the
+                # agent tried to read).
+                def _persist(kind: str, value: str) -> tuple[bool, str]:
                     eng = state.get("engine")
-                    if eng is None or not hasattr(eng, "persist_kit_pattern"):
+                    if eng is None:
                         return False, "KIT-Engine nicht aktiv"
-                    return eng.persist_kit_pattern(pattern, kind=kind)
+                    if kind in ("allow", "deny"):
+                        if not hasattr(eng, "persist_kit_pattern"):
+                            return False, "persist_kit_pattern fehlt"
+                        return eng.persist_kit_pattern(value, kind=kind)
+                    if kind == "extra_dir":
+                        if not hasattr(eng, "add_kit_workspace_dir"):
+                            return False, "add_kit_workspace_dir fehlt"
+                        return eng.add_kit_workspace_dir(value, persist=True)
+                    return False, f"unbekannter persist-kind: {kind}"
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()
                 kit_confirm_container.children = (panel,)
@@ -6260,6 +6317,14 @@ def create_tab(ctx):
                         if full_thinking.strip():
                             _append_chat_message("thinking", full_thinking.strip())
                         thinking_chunks.clear()
+                    # KIT-Toolbox emits MCP-style names ("mcp__kit-coding__
+                    # edit_file"); strip the prefix so the renderer cascade
+                    # below can match on the bare tool name and produce the
+                    # same diff-block UX as Claude CLI's Edit/Write tools.
+                    if tool_name and tool_name.startswith("mcp__"):
+                        parts = tool_name.split("__")
+                        if len(parts) >= 3:
+                            tool_name = parts[-1]
                     # Parse tool input
                     try:
                         import json as _j
@@ -6346,59 +6411,80 @@ def create_tab(ctx):
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
 
-                    elif tool_name in ("Edit", "Write"):
-                        fpath = parsed.get("file_path", "")
+                    elif tool_name in (
+                        "Edit", "Write",
+                        "edit_file", "write_file", "multi_edit",
+                    ):
+                        # KIT-Toolbox uses 'path'; Claude CLI uses 'file_path'.
+                        fpath = parsed.get("file_path") or parsed.get("path") or ""
                         sp = _short_path(fpath)
-                        if tool_name == "Edit":
-                            old = parsed.get("old_string", "")
-                            new = parsed.get("new_string", "")
-                            old_p = _e(old[:100] + ("..." if len(old) > 100 else ""))
-                            new_p = _e(new[:100] + ("..." if len(new) > 100 else ""))
-                            # Build collapsible full diff if content is longer
-                            full_diff = ""
-                            if len(old) > 100 or len(new) > 100:
-                                diff_lines = []
-                                for dl in old.split("\n"):
-                                    diff_lines.append(f'<span class="tool-diff-old">- {_e(dl)}</span>')
-                                for dl in new.split("\n"):
-                                    diff_lines.append(f'<span class="tool-diff-new">+ {_e(dl)}</span>')
-                                _max_diff = 20
-                                shown = diff_lines[:_max_diff]
-                                extra = f"\n... ({len(diff_lines) - _max_diff} more lines)" if len(diff_lines) > _max_diff else ""
-                                full_diff = (
-                                    f'\n<details><summary>full diff ({len(old.split(chr(10)))}→{len(new.split(chr(10)))} lines)</summary>'
-                                    f'<pre style="font-size:10px;">{chr(10).join(shown)}{_e(extra)}</pre></details>'
-                                )
+
+                        # Display label normalises capitalised + lowercase forms
+                        # so the user sees a consistent "Edit"/"Write"/"MultiEdit"
+                        # banner regardless of which provider produced the call.
+                        label = {
+                            "Edit": "Edit", "edit_file": "Edit",
+                            "Write": "Write", "write_file": "Write",
+                            "multi_edit": "MultiEdit",
+                        }.get(tool_name, tool_name)
+
+                        if tool_name in ("Edit", "edit_file"):
+                            old = parsed.get("old_string", "") or ""
+                            new = parsed.get("new_string", "") or ""
+                            diff_html = _build_inline_diff(old, new, _e)
                             _append_tool_message(
-                                f'<span class="tool-name">Edit</span>  '
+                                f'<span class="tool-name">{label}</span>  '
                                 f'<span class="tool-path">{_e(sp)}</span>\n'
-                                f'  <span class="tool-diff-old">- {old_p}</span>\n'
-                                f'  <span class="tool-diff-new">+ {new_p}</span>'
-                                f'{full_diff}'
+                                f'{diff_html}'
+                            )
+                        elif tool_name == "multi_edit":
+                            edits = parsed.get("edits", []) or []
+                            blocks = []
+                            for i, ed in enumerate(edits):
+                                if not isinstance(ed, dict):
+                                    continue
+                                old = ed.get("old_string", "") or ""
+                                new = ed.get("new_string", "") or ""
+                                blocks.append(
+                                    f'<div style="font-size:10px; '
+                                    f'color:#9ca3af; margin-top:4px;">'
+                                    f'edit {i+1}/{len(edits)}</div>'
+                                    f'{_build_inline_diff(old, new, _e)}'
+                                )
+                            body = "\n".join(blocks) if blocks else ""
+                            _append_tool_message(
+                                f'<span class="tool-name">{label}</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>  '
+                                f'<span class="tool-param">'
+                                f'({len(edits)} edits)</span>\n{body}'
                             )
                         else:
-                            content = parsed.get("content", "")
-                            # Show preview of file content
-                            preview = ""
-                            if content:
-                                lines = content.split("\n")
-                                _max_preview = 10
-                                shown = lines[:_max_preview]
-                                extra = f"\n... ({len(lines) - _max_preview} more lines)" if len(lines) > _max_preview else ""
-                                preview = (
-                                    f'\n<details><summary>preview ({len(lines)} lines, {len(content)} chars)</summary>'
-                                    f'<pre style="font-size:10px;">{_e(chr(10).join(shown))}{_e(extra)}</pre></details>'
-                                )
+                            # Write or write_file — render full content as
+                            # a single + diff so the user sees what's being
+                            # written, not just a chars count.
+                            content = parsed.get("content", "") or ""
+                            diff_html = _build_inline_diff("", content, _e)
                             _append_tool_message(
-                                f'<span class="tool-name">Write</span>  '
-                                f'<span class="tool-path">{_e(sp)}</span>'
-                                f'  ({len(content)} chars)'
-                                f'{preview}'
+                                f'<span class="tool-name">{label}</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>  '
+                                f'<span class="tool-param">'
+                                f'({len(content)} chars, '
+                                f'{content.count(chr(10)) + 1} lines)</span>\n'
+                                f'{diff_html}'
                             )
+
                         state["recent_edits"].append({
                             "file": fpath, "tool": tool_name,
                         })
                         undo_btn.disabled = False
+
+                    elif tool_name == "bash":
+                        cmd = parsed.get("command", "") or ""
+                        if len(cmd) > 200:
+                            cmd = cmd[:200] + "..."
+                        _append_tool_message(
+                            f'<span class="tool-name">$</span> {_e(cmd)}'
+                        )
 
                     elif tool_name == "Agent":
                         desc = parsed.get("description", "")
@@ -6442,6 +6528,10 @@ def create_tab(ctx):
                     """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
                         return
+                    if tool_name and tool_name.startswith("mcp__"):
+                        parts = tool_name.split("__")
+                        if len(parts) >= 3:
+                            tool_name = parts[-1]
                     # Truncate for display
                     output = tool_output
                     _MAX_LINES = 8

@@ -43,7 +43,8 @@ class _ConfirmRequest:
     event: threading.Event = field(default_factory=threading.Event)
     decision: Optional[bool] = None
     remember_pattern: Optional[str] = None
-    persist_pattern: Optional[str] = None  # regex form for ~/.delfin/settings.json
+    persist_pattern: Optional[str] = None  # value for ~/.delfin/settings.json
+    persist_kind: Optional[str] = None     # 'allow_pattern' or 'extra_dir'
 
 
 class KitConfirmBroker:
@@ -115,15 +116,20 @@ class KitConfirmBroker:
 
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
+            persist_kind = req.persist_kind
 
-        # remember_permission piggy-backs on this broker; if the user ticked
-        # "Dauerhaft speichern" the persist callback writes to settings.json.
-        # Self-Modification Guard requests never set persist_pattern (a
-        # "always allow rewriting api_client.py" rule would defeat the guard).
-        if persist_cb and persist_pat:
-            kind = "allow" if req.decision else "deny"
+        # If the user clicked "Erlauben + Dauerhaft", forward the value
+        # to the engine's persist hook so it lands in settings.json AND
+        # applies to the live perms (so the next call doesn't re-prompt).
+        # Persist only fires when the user APPROVED — a deny + persist
+        # combination is meaningless for our supported kinds.
+        if persist_cb and persist_pat and req.decision:
+            if persist_kind == "extra_dir":
+                cb_kind = "extra_dir"
+            else:
+                cb_kind = "allow"
             try:
-                ok, msg = persist_cb(kind, persist_pat)
+                ok, msg = persist_cb(cb_kind, persist_pat)
             except Exception as exc:
                 ok, msg = False, f"persist failed: {exc}"
             self._set_toast(
@@ -219,69 +225,157 @@ class KitConfirmBroker:
             pass
 
     def _build_request_row(self, req: _ConfirmRequest, widgets):
-        title = f"#{req.seq}  {req.tool_name}"
+        # ---- 1. Classify the request and compute what (if anything) can
+        # be persisted. The user wants the dauerhaft-button to be
+        # actionable when it makes sense, and CLEARLY explain why it's
+        # disabled when it doesn't. -----------------------------------
+        tool = req.tool_name
+        cmd = req.args.get("command", "") if tool == "bash" else ""
+        path_arg = req.args.get("path", "") if tool != "bash" else ""
+        rationale = (req.args.get("rationale", "")
+                     or req.args.get("description", "")).strip()
+
         persist_pat = ""
-        if req.tool_name == "bash":
-            cmd = req.args.get("command", "")
-            subtitle = f"<code>{_html_escape(cmd[:200])}</code>"
-            suggested_pattern = _suggest_bash_pattern(cmd)
+        persist_kind = ""        # 'allow_pattern' / 'extra_dir' / ''
+        persist_disabled_reason = ""
+        if tool == "bash":
             persist_pat = _suggest_persist_pattern(cmd)
-        elif req.tool_name in ("write_file", "edit_file", "multi_edit"):
-            subtitle = f"<code>{_html_escape(req.args.get('path', ''))}</code>"
-            suggested_pattern = req.args.get("path", "")
+            persist_kind = "allow_pattern"
+            if not persist_pat:
+                persist_disabled_reason = (
+                    "Kein generalisierbares Pattern aus dem Bash-Befehl "
+                    "ableitbar — kannst du im Chat mit "
+                    "remember_permission(...) selbst formulieren."
+                )
+        elif tool in ("write_file", "edit_file", "multi_edit"):
+            # The Self-Modification Guard fires for these. Permanently
+            # disabling the guard for protected files would defeat its
+            # purpose, so we don't expose a 'dauerhaft' button here.
+            persist_disabled_reason = (
+                "Self-Modification Guard: das Dauerhaft-Erlauben für "
+                "Schreiben in geschützte Dateien (api_client.py, "
+                "kit_confirm.py, engine.py, tab_agent.py) ist bewusst "
+                "nicht möglich — diese Schicht muss jedes Mal explizit "
+                "freigegeben werden. Klick 'Erlauben' für DIESE Aktion."
+            )
+        elif tool == "read_file":
+            # outside-workspace read: persisting = adding the parent
+            # directory as extra_workspace_dir.
+            from pathlib import Path
+            try:
+                parent = str(Path(path_arg).expanduser().resolve().parent)
+                persist_pat = parent
+                persist_kind = "extra_dir"
+            except Exception:
+                persist_disabled_reason = "Pfad nicht auflösbar."
+        elif tool in ("remember_permission", "remember_permission_bundle"):
+            # The click IS the persistence — no separate dauerhaft option.
+            persist_disabled_reason = (
+                "Diese Tool-Aktion IST die Persistenz: ein Klick auf "
+                "'Erlauben' schreibt die Regel direkt in settings.json. "
+                "Ablehnen verwirft sie."
+            )
+
+        # ---- 2. Header: tool name + path/cmd snippet + rationale ----
+        if tool == "bash":
+            subtitle = f'$&nbsp;<code>{_html_escape(cmd[:200])}</code>'
+        elif path_arg:
+            subtitle = f'<code>{_html_escape(path_arg)}</code>'
         else:
             subtitle = ""
-            suggested_pattern = ""
+        rationale_html = (
+            f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
+            f'<i>Begründung Agent:</i> {_html_escape(rationale)}</div>'
+            if rationale else ""
+        )
 
-        preview = widgets.HTML(
+        # ---- 3. Vorschau IMMER sichtbar (nicht in <details>) --------
+        preview_pre = (
+            f'<pre style="max-height:280px; overflow:auto; '
+            f'font-size:11px; line-height:1.4; padding:6px; '
+            f'background:rgba(127,127,127,0.06); '
+            f'border-left:2px solid #94a3b8; margin:4px 0;">'
+            f'{_html_escape(req.preview[:6000])}'
+            f'{"…" if len(req.preview) > 6000 else ""}'
+            f'</pre>'
+        )
+
+        header = widgets.HTML(
             value=(
-                f"<b>{title}</b><br>{subtitle}"
-                f"<details><summary>Vorschau</summary>"
-                f"<pre style='max-height:240px; overflow:auto'>"
-                f"{_html_escape(req.preview[:4000])}</pre></details>"
+                f'<b>#{req.seq} &middot; {tool}</b>'
+                f'{("&nbsp;&middot;&nbsp;" + subtitle) if subtitle else ""}'
+                f'{rationale_html}'
+                f'{preview_pre}'
             )
         )
-        approve = widgets.Button(description="Erlauben", button_style="success")
-        deny = widgets.Button(description="Ablehnen", button_style="danger")
-        remember = widgets.Checkbox(
-            value=False,
-            description=(f"Diese Session merken ({suggested_pattern[:40]})"
-                         if suggested_pattern else "Diese Session merken"),
-            indent=False,
-        )
-        persist_box = widgets.Checkbox(
-            value=False,
-            description=(f"Dauerhaft speichern ({persist_pat[:40]})"
-                         if persist_pat else "Dauerhaft speichern"),
-            indent=False,
-            disabled=(not persist_pat or self._persist_callback is None),
-            tooltip=(
-                "Schreibt das Pattern nach ~/.delfin/settings.json — "
-                "der Agent fragt für passende Befehle in zukünftigen Sessions "
-                "nicht mehr nach."
-                if persist_pat else
-                "Persistenz nur für Bash-Befehle verfügbar."
-            ),
-        )
 
-        def _decide(ok: bool):
+        # ---- 4. Dauerhaft-Status row: explicit target file --------
+        target_path = ""
+        try:
+            from . import kit_settings as _ks
+            target_path = str(_ks.USER_SETTINGS_PATH)
+        except Exception:
+            target_path = "~/.delfin/settings.json"
+        persist_status: Any
+        if persist_pat and self._persist_callback is not None:
+            kind_label = (
+                "Bash-Allow-Pattern" if persist_kind == "allow_pattern"
+                else "extra_workspace_dir" if persist_kind == "extra_dir"
+                else persist_kind
+            )
+            persist_status = widgets.HTML(value=(
+                f'<div style="font-size:10px; color:#6b7280; margin:2px 0;">'
+                f'Bei <b>Dauerhaft</b>: <code>{_html_escape(persist_pat)}</code> '
+                f'({kind_label}) → <code>{_html_escape(target_path)}</code>'
+                f'</div>'
+            ))
+        elif persist_disabled_reason:
+            persist_status = widgets.HTML(value=(
+                f'<div style="font-size:10px; color:#a16207; margin:2px 0;">'
+                f'<b>Dauerhaft</b> nicht verfügbar: '
+                f'{_html_escape(persist_disabled_reason)}'
+                f'</div>'
+            ))
+        else:
+            persist_status = widgets.HTML(value="")
+
+        # ---- 5. Buttons --------------------------------------------
+        approve = widgets.Button(
+            description="Erlauben (1×)", button_style="success",
+            tooltip="Diese eine Aktion durchführen, in zukünftigen "
+                    "Sessions wieder fragen.",
+        )
+        approve_persist = widgets.Button(
+            description="Erlauben + Dauerhaft",
+            button_style="info",
+            tooltip=(
+                f"Aktion erlauben UND Regel nach {target_path} schreiben "
+                "(gilt in zukünftigen Sessions ohne erneutes Fragen)."
+            ),
+            disabled=(not persist_pat or self._persist_callback is None),
+        )
+        deny = widgets.Button(description="Ablehnen", button_style="danger")
+
+        def _decide(ok: bool, persist: bool = False):
             with self._lock:
                 req.decision = ok
-                if remember.value and suggested_pattern:
-                    req.remember_pattern = suggested_pattern
-                if persist_box.value and persist_pat:
+                if persist and persist_pat:
                     req.persist_pattern = persist_pat
+                    req.persist_kind = persist_kind
             req.event.set()
             self._refresh_panel()
 
-        approve.on_click(lambda _b: _decide(True))
-        deny.on_click(lambda _b: _decide(False))
+        approve.on_click(lambda _b: _decide(True, persist=False))
+        approve_persist.on_click(lambda _b: _decide(True, persist=True))
+        deny.on_click(lambda _b: _decide(False, persist=False))
 
         return widgets.VBox(
-            [preview, widgets.HBox([approve, deny, remember, persist_box])],
+            [header,
+             persist_status,
+             widgets.HBox([approve, approve_persist, deny])],
             layout=widgets.Layout(
                 border="1px solid #ccc",
-                padding="4px",
+                padding="6px",
                 margin="2px 0",
             ),
         )
