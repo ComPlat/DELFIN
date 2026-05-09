@@ -117,6 +117,34 @@ sees a single confirm dialog with every rule listed; deny aborts the
 whole bundle atomically. Don't propose `git push` / `git commit -m` /
 `git status` — those are already on the default auto-allow list.
 
+## Long-running jobs (background bash)
+
+For commands that take longer than ~60s (Bayesian-opt runs, training,
+big pytest sessions): use `bash_background` instead of `bash`. It
+returns a `job_id` immediately so you can keep working.
+
+- `bash_background(command, description, cwd?)` → `{job_id, pid, ...}`.
+- `bash_status(job_id)` → running flag, exit_code, elapsed_s.
+- `bash_output(job_id, head_lines=60, tail_lines=200)` → live stdout
+  + stderr (head + tail kept; tracebacks survive).
+- `bash_kill(job_id)` → SIGTERM then SIGKILL.
+
+Pattern: kick off the long task, then move on to other work (read
+files, edit code, plan next steps). Periodically `bash_status` /
+`bash_output` to check progress. Same safety gate as foreground bash
+(deny-list, secret scanner, sandbox cwd).
+
+## Jupyter notebooks (.ipynb)
+
+`read_file` would dump the JSON; `edit_file` would corrupt cell
+delimiters. Use cell-aware tools instead:
+
+- `notebook_read(path)` → list of `{idx, cell_type, source,
+  output_summary}`. Outputs are summarised — image base64 is dropped.
+- `notebook_edit(path, cell_idx, mode, source?, cell_type?)`. Modes:
+  `replace`, `insert_before`, `insert_after`, `delete`. Always
+  `notebook_read` first to get current indices.
+
 ## Project-dev workflow (in user's own project)
 
 Once the bundle is in place, the typical loop is:
@@ -168,31 +196,18 @@ about agent-profile internals or you are debugging profile behavior.
 5. **Verify your work.** Run the verification checklist (see below).
 6. **Report minimally.** Keep answers short and efficient. file:line + what changed, one sentence. No fluff, no decorative prose.
 
-## Verification checklist (after every code edit)
+## After every code edit
 
-Run these three checks in parallel after modifying any .py file:
-1. `python -m pytest tests/ -x -q` — regression check
-2. `python3 -c "import ast; ast.parse(open('EDITED_FILE').read()); print('OK')"` — syntax
-3. `git diff --stat` — confirm only intended files changed
+Run in parallel: pytest on the affected module (`pytest tests/test_X.py -q`),
+syntax check (`python3 -c "import ast; ast.parse(open('FILE').read())"`),
+`git diff --stat`. Max 2 retries on failure, then report.
 
-If pytest fails: read the error, fix the root cause, retest. Max 2 retries,
-then report the failure to the user with the traceback.
+**Don't claim success without at least running pytest.** During multi-step
+work (3+ tool calls) emit a one-line progress status every 3rd tool call.
 
-**Do NOT report success without running at least pytest.**
-
-## Progress signals
-
-During multi-step research or implementation (3+ tool calls), emit a
-one-line status after every 3rd tool call. Example:
-"3 files checked, error found in config.py:451."
-Silent stretches make the user wonder if you're stuck.
-
-## Risk flagging
-
-Before editing files that affect SLURM, scheduling, or runtime behavior
-(backend_slurm.py, runtime_setup.py, qm_runtime.py, orca_recovery.py,
-parallel_classic_manually.py), state the risk in one line:
-"This affects SLURM job submission — proceeding."
+Before editing SLURM / runtime files (backend_slurm.py, runtime_setup.py,
+qm_runtime.py, orca_recovery.py, parallel_classic_manually.py): state
+the risk in one line, then proceed.
 
 ## When to ask vs. just do it
 
@@ -226,23 +241,12 @@ parallel_classic_manually.py), state the risk in one line:
 - Don't retry the same command blindly — fix the underlying issue
 - If you're stuck after 2 attempts, tell the user what you tried and ask for help
 
-## CRITICAL: When Bash commands are blocked by permissions
+## When bash is blocked
 
-The dashboard permission system may block Bash commands. When a command is denied:
-
-1. **STOP. Do NOT retry the blocked command or any variation of it.**
-   Retrying a denied command will ALWAYS be denied again. Never retry.
-2. Use Python-only alternatives for verification:
-   - Syntax: `python3 -c "import ast; ast.parse(open('file.py').read()); print('OK')"`
-   - Import: `python3 -c "from module import func; print('OK')"`
-3. If git commands are blocked, tell the user exactly what to run:
-   ```
-   Please run these commands manually:
-   git add file1.py file2.py
-   git commit -m "descriptive message"
-   ```
-4. If tests are blocked, summarize your changes and ask the user to run tests.
-5. **Move on** to the next part of your task. Do not get stuck on a blocked command.
+A denied command will stay denied — don't retry. Either call
+`remember_permission(kind='allow_pattern', ...)` to add a regex,
+fall back to a Python-only verification (`python3 -c "import ast; ast.parse(open('f').read())"`),
+or ask the user to run it manually. Then move on.
 
 ## Git workflow
 

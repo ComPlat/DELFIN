@@ -1400,6 +1400,220 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_background",
+            "description": (
+                "Start a long-running shell command and return a job_id "
+                "IMMEDIATELY without waiting for completion. Use this for "
+                "Bayesian-opt runs, training loops, large pytest sessions, "
+                "or any command expected to take longer than ~60s. The "
+                "command runs through the SAME safety gate as bash "
+                "(workspace sandbox, deny-list, secret scanner, "
+                "auto-allow patterns). Output is streamed to tempfiles; "
+                "read incrementally with bash_output(job_id). Check "
+                "completion with bash_status(job_id). Stop with "
+                "bash_kill(job_id). Hard timeout 24h."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command (passed to /bin/bash -c).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what the command does.",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Working directory (workspace-relative or "
+                            "absolute under an allowed root). Defaults to "
+                            "the workspace."
+                        ),
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": (
+                            "Hard kill timeout in seconds. Default 86400 "
+                            "(24h). The command is SIGTERM'd at the "
+                            "deadline, then SIGKILL'd."
+                        ),
+                    },
+                },
+                "required": ["command", "description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_status",
+            "description": (
+                "Check the status of a background bash job. Returns "
+                "running flag, exit_code (None while running), elapsed "
+                "seconds, the command, and the cwd. Use AFTER "
+                "bash_background to know when the job has finished."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_output",
+            "description": (
+                "Read what a background job has written so far to stdout "
+                "and stderr. Smart-truncates to head+tail when output "
+                "is long (so the tail with the traceback is always "
+                "visible). Safe to call WHILE the job is still running "
+                "— it shows the latest output, not a final snapshot."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                    "head_lines": {
+                        "type": "integer",
+                        "description": "Lines to keep from the start (default 60).",
+                    },
+                    "tail_lines": {
+                        "type": "integer",
+                        "description": "Lines to keep from the end (default 200).",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_read",
+            "description": (
+                "Read a Jupyter notebook (.ipynb) cell-aware: returns "
+                "an ordered list of {idx, cell_type, source, "
+                "output_summary}. Outputs are summarised (counts + "
+                "MIME types) — the agent rarely needs the full base64 "
+                "image data and the chat would drown in it. Use this "
+                "instead of read_file for .ipynb files; read_file "
+                "would dump the JSON structure verbatim."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Notebook path (workspace-relative or "
+                            "absolute under an allowed root)."
+                        ),
+                    },
+                    "max_source_chars": {
+                        "type": "integer",
+                        "description": (
+                            "Per-cell source cap; cells longer than "
+                            "this are truncated head+tail with a "
+                            "marker. Default 4000."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_edit",
+            "description": (
+                "Modify a single cell in a Jupyter notebook (.ipynb) "
+                "atomically. Modes: 'replace' (overwrite cell at idx), "
+                "'insert_before' / 'insert_after' (add a new cell), "
+                "'delete' (remove cell at idx). Always call "
+                "notebook_read FIRST to know the indexes. Source must "
+                "be the full cell text (not a substring). Use this "
+                "instead of edit_file/write_file for .ipynb files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Notebook path.",
+                    },
+                    "cell_idx": {
+                        "type": "integer",
+                        "description": (
+                            "0-based cell index. For insert_before / "
+                            "insert_after, this is the reference cell."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "replace", "insert_before",
+                            "insert_after", "delete",
+                        ],
+                        "description": "What to do at cell_idx.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Full cell text (required except for "
+                            "mode='delete'). Use real newlines, not "
+                            "escaped \\\\n."
+                        ),
+                    },
+                    "cell_type": {
+                        "type": "string",
+                        "enum": ["code", "markdown", "raw"],
+                        "description": (
+                            "Cell type for replace / insert. Default 'code'."
+                        ),
+                    },
+                },
+                "required": ["path", "cell_idx", "mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_kill",
+            "description": (
+                "Stop a background bash job. Sends SIGTERM to the entire "
+                "process group, waits ~3s, then sends SIGKILL if needed. "
+                "Use when a long-running optimization needs to be aborted "
+                "early or you mis-typed the command."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
 ]
 
 
@@ -1539,13 +1753,18 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"],
     ) -> str:
         # Coding-agent tools are only available with explicit permissions.
-        if name in ("write_file", "edit_file", "multi_edit", "bash"):
+        if name in ("write_file", "edit_file", "multi_edit",
+                    "bash", "bash_background"):
             if permissions is None:
                 return json.dumps({"error": (
                     f"Tool '{name}' requires permissions to be configured. "
                     "Pass a KitToolPermissions instance to OpenAIClient."
                 )})
-            gate_err = self._run_permission_gate(name, arguments, permissions)
+            # bash_background reuses the bash gate verbatim — the
+            # command, cwd, deny-list, secret scanner, and auto-allow
+            # check are identical; only the execution model differs.
+            gate_name = "bash" if name == "bash_background" else name
+            gate_err = self._run_permission_gate(gate_name, arguments, permissions)
             if gate_err is not None:
                 return json.dumps({"error": gate_err})
             if name == "write_file":
@@ -1556,6 +1775,35 @@ class _DocToolExecutor:
                 return self._execute_multi_edit(arguments, permissions)
             if name == "bash":
                 return self._execute_bash(arguments, permissions)
+            if name == "bash_background":
+                return self._execute_bash_background(arguments, permissions)
+
+        # Background-job inspection tools — no command execution, just
+        # reading the registry. Permissions optional.
+        if name in ("bash_status", "bash_output", "bash_kill"):
+            if name == "bash_status":
+                return self._execute_bash_status(arguments)
+            if name == "bash_output":
+                return self._execute_bash_output(arguments)
+            if name == "bash_kill":
+                return self._execute_bash_kill(arguments)
+
+        # Notebook tools — file-level operations, sandbox + Self-Mod-Guard
+        # apply for the write side via the same gate as edit_file.
+        if name in ("notebook_read", "notebook_edit"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured."
+                )})
+            if name == "notebook_edit":
+                # Reuse edit_file's gate (Self-Mod-Guard, sandbox check).
+                gate_err = self._run_permission_gate(
+                    "edit_file", arguments, permissions
+                )
+                if gate_err is not None:
+                    return json.dumps({"error": gate_err})
+                return self._execute_notebook_edit(arguments, permissions)
+            return self._execute_notebook_read(arguments, permissions)
 
         if name == "remember_permission":
             if permissions is None:
@@ -2662,6 +2910,254 @@ class _DocToolExecutor:
             "cwd": self._display_path(run_cwd, perms) or ".",
         }, ensure_ascii=False)
 
+    # ------- Background bash jobs ----------------------------------------
+
+    def _execute_bash_background(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Start a long-running shell command in the background.
+
+        Same gate as :meth:`_execute_bash` (already run by ``_dispatch``):
+        sandbox + deny-list + secret-scanner + auto-allow check. Returns
+        a ``job_id`` immediately so the agent can keep working while the
+        command runs. Output goes to tempfiles read via ``bash_output``.
+        """
+        cmd = arguments.get("command", "") or ""
+        description = arguments.get("description", "") or ""
+        cwd_arg = arguments.get("cwd", "") or ""
+        timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
+
+        if cwd_arg:
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            if err:
+                return json.dumps({"error": err})
+            if not cwd_resolved.is_dir():
+                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+            run_cwd = cwd_resolved
+        else:
+            run_cwd = perms.workspace
+
+        try:
+            from . import bash_jobs as _bj
+            job = _bj.get_registry().start(
+                command=cmd,
+                cwd=str(run_cwd),
+                description=description,
+                timeout_s=timeout_s,
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"failed to start job: {exc}"})
+
+        return json.dumps({
+            "status": "started",
+            "job_id": job.job_id,
+            "pid": job.proc.pid,
+            "command": cmd[:500],
+            "description": description,
+            "cwd": self._display_path(run_cwd, perms) or ".",
+            "timeout_s": timeout_s,
+            "hint": (
+                f"Use bash_status({job.job_id!r}) and "
+                f"bash_output({job.job_id!r}) to monitor; "
+                f"bash_kill({job.job_id!r}) to stop."
+            ),
+        }, ensure_ascii=False)
+
+    def _execute_bash_status(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        try:
+            from . import bash_jobs as _bj
+            job = _bj.get_registry().get(job_id)
+        except Exception as exc:
+            return json.dumps({"error": f"registry error: {exc}"})
+        if job is None:
+            return json.dumps({"error": f"unknown job_id: {job_id}"})
+        return json.dumps(job.status_dict(), ensure_ascii=False)
+
+    def _execute_bash_output(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        head = int(arguments.get("head_lines", 60) or 60)
+        tail = int(arguments.get("tail_lines", 200) or 200)
+        try:
+            from . import bash_jobs as _bj
+            reg = _bj.get_registry()
+            job = reg.get(job_id)
+            if job is None:
+                return json.dumps({"error": f"unknown job_id: {job_id}"})
+            payload = _bj.read_output(job, head_lines=head, tail_lines=tail)
+        except Exception as exc:
+            return json.dumps({"error": f"output read failed: {exc}"})
+        # Merge with status so the agent doesn't need a second call.
+        payload.update({
+            k: v for k, v in job.status_dict().items()
+            if k in {"job_id", "running", "exit_code", "elapsed_s"}
+        })
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _execute_bash_kill(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        try:
+            from . import bash_jobs as _bj
+            ok, msg = _bj.get_registry().kill(job_id)
+        except Exception as exc:
+            return json.dumps({"error": f"kill failed: {exc}"})
+        return json.dumps({
+            "status": "ok" if ok else "error",
+            "job_id": job_id,
+            "message": msg,
+        }, ensure_ascii=False)
+
+    # ------- Jupyter notebook tools --------------------------------------
+
+    def _execute_notebook_read(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "") or ""
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            # Fall back to the read-access gate so cross-root reads
+            # still go through the secret-deny + outside-workspace
+            # confirm flow that read_file uses.
+            from pathlib import Path as _P
+            try:
+                resolved = _P(path_arg).expanduser().resolve()
+            except Exception:
+                return json.dumps({"error": err})
+            err2 = self._check_read_access(perms, resolved, label=path_arg)
+            if err2:
+                return json.dumps({"error": err2})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+        if resolved.suffix.lower() != ".ipynb":
+            return json.dumps({"error": (
+                f"notebook_read expects a .ipynb file; got "
+                f"{resolved.suffix!r}. Use read_file for plain text."
+            )})
+
+        try:
+            from . import notebook_tools as _nb
+            cells = _nb.read_cells(resolved, max_source_chars=max_chars)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"not valid JSON / nbformat: {exc}"})
+        except Exception as exc:
+            return json.dumps({"error": f"notebook read failed: {exc}"})
+
+        # Track the read for the edit-tracker (so notebook_edit can
+        # later check the file hasn't changed since this read).
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        return json.dumps({
+            "path": self._display_path(resolved, perms),
+            "cell_count": len(cells),
+            "cells": [
+                {
+                    "idx": c.idx,
+                    "cell_type": c.cell_type,
+                    "source": c.source,
+                    "output_summary": c.output_summary,
+                }
+                for c in cells
+            ],
+        }, ensure_ascii=False)
+
+    def _execute_notebook_edit(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "") or ""
+        cell_idx = arguments.get("cell_idx")
+        mode = (arguments.get("mode", "") or "").strip()
+        source = arguments.get("source")
+        cell_type = (arguments.get("cell_type", "code") or "code").strip()
+
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        if cell_idx is None:
+            return json.dumps({"error": "cell_idx is required"})
+        try:
+            cell_idx = int(cell_idx)
+        except (TypeError, ValueError):
+            return json.dumps({"error": f"cell_idx must be int, got {cell_idx!r}"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+        if resolved.suffix.lower() != ".ipynb":
+            return json.dumps({"error": (
+                f"notebook_edit expects a .ipynb file; got "
+                f"{resolved.suffix!r}. Use edit_file for plain text."
+            )})
+
+        # Same read-baseline check as edit_file: notebook must have been
+        # read first so the agent's mental model of cell indices is up
+        # to date.
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call notebook_read on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"notebook '{path_arg}' was modified since last "
+                "notebook_read. Re-read first."
+            )})
+
+        try:
+            from . import notebook_tools as _nb
+            n_before, n_after = _nb.apply_edit(
+                resolved, cell_idx=cell_idx, mode=mode,
+                source=source, cell_type=cell_type,
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"notebook edit failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        disp = self._display_path(resolved, perms)
+        delta = n_after - n_before
+        delta_str = (
+            f"+{delta}" if delta > 0 else f"{delta}" if delta < 0 else "0"
+        )
+        return json.dumps({
+            "status": "ok",
+            "path": disp,
+            "mode": mode,
+            "cell_idx": cell_idx,
+            "cell_type": cell_type if mode != "delete" else None,
+            "cells_before": n_before,
+            "cells_after": n_after,
+            "cells_delta": delta_str,
+        }, ensure_ascii=False)
+
 
 # Singleton — shared across all OpenAIClient instances.
 _doc_executor = _DocToolExecutor()
@@ -2787,7 +3283,10 @@ class OpenAIClient(_BaseClient):
 
         _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit",
                               "bash", "remember_permission",
-                              "remember_permission_bundle"}
+                              "remember_permission_bundle",
+                              "bash_background", "bash_status",
+                              "bash_output", "bash_kill",
+                              "notebook_read", "notebook_edit"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -2903,7 +3402,13 @@ class OpenAIClient(_BaseClient):
                     is_coding = fn_name in ("write_file", "edit_file",
                                             "multi_edit", "bash",
                                             "remember_permission",
-                                            "remember_permission_bundle")
+                                            "remember_permission_bundle",
+                                            "bash_background",
+                                            "bash_status",
+                                            "bash_output",
+                                            "bash_kill",
+                                            "notebook_read",
+                                            "notebook_edit")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display
