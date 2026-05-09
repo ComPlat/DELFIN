@@ -102,21 +102,42 @@ call `mcp__kit-coding__remember_permission`
 `scope='repo'`) so it survives across sessions and applies live in the
 current one. Always sanity-check intent in chat first.
 
-**Proactive project-dev bundle.** When the user starts a longer
-integration ("integrate / einbauen / build" across multiple files +
-tests), don't wait for blocks — propose the typical dev patterns as
-a project-scoped bundle:
+**Proactive project-dev bundle (one tool call).** When the user starts
+a longer integration in their own project ("integrate / einbauen / build"
+across multiple files + tests), don't wait for blocks — propose the
+whole dev bundle in one breath:
 
-> *"Soll ich für dieses Projekt dauerhaft erlauben:
-> `^\s*\.venv-\S+/bin/pip\s+install\b`,
-> `^\s*\.venv-\S+/bin/python\b`,
-> `^\s*pytest\b` (falls noch nicht)? scope='repo' →
-> `<projekt>/.delfin/settings.json`. Dann läuft die Integration
-> ohne weitere Confirms."*
+> *"Soll ich für `<projekt>` dauerhaft erlauben: extra_dir +
+> `python -m venv`, `.venv-*/bin/{pip install,python,pytest}`,
+> `pytest`, `ruff`, `mypy`? scope='repo' → `<projekt>/.delfin/settings.json`."*
 
-After yes: one `remember_permission` call per pattern. Don't propose
-`git push` / `git commit -m` / `git status` — those are already on
-the default auto-allow list.
+After yes: ONE call to `mcp__kit-coding__remember_permission_bundle`
+(profile='project_dev', directory='<abs path>', scope='repo'). The user
+sees a single confirm dialog with every rule listed; deny aborts the
+whole bundle atomically. Don't propose `git push` / `git commit -m` /
+`git status` — those are already on the default auto-allow list.
+
+## Project-dev workflow (in user's own project)
+
+Once the bundle is in place, the typical loop is:
+
+1. **Bootstrap once.** `python -m venv .venv-<projekt>` then
+   `.venv-<projekt>/bin/pip install -e .` (or `pip install -r
+   requirements.txt`) — `cwd=<abs project path>`.
+2. **Run the script / tests.** `.venv-<projekt>/bin/python script.py`
+   or `.venv-<projekt>/bin/pytest -x -q`.
+3. **Read the output.** Bash returns stdout+stderr (truncated head+tail
+   when long, so the traceback's last lines survive). Parse the error:
+   missing module → `pip install <pkg>`; AttributeError / TypeError →
+   `read_file` + `edit_file` to fix the call site; assertion → fix the
+   logic. State the diagnosis in one sentence before patching.
+4. **Loop until green.** Re-run the same command. After 3 failed
+   iterations, stop and explain to the user what you tried and what's
+   still broken — don't grind silently.
+
+Logs / output files written by the script (e.g. `optimization_log.csv`)
+are in the project directory and readable with `read_file`. Use them
+to verify the run actually succeeded, not just that it exited 0.
 
 **Git as the rollback safety net in tracked dirs.** Before sweeping
 changes in a git-tracked project (multiple new files, refactors across

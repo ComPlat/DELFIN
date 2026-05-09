@@ -1175,7 +1175,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "read with read_file before editing. old_string must match "
                 "EXACTLY once unless replace_all=true. Returns a unified diff. "
                 "Preserve indentation exactly as shown in read_file output "
-                "(strip the line-number prefix, keep leading whitespace)."
+                "(strip the line-number prefix, keep leading whitespace). "
+                "If the exact match fails, a whitespace-tolerant fallback "
+                "tries again (re-indents new_string to match the file). "
+                "When the fallback engages, the success message says "
+                "'fuzzy match' — re-read and copy the block verbatim next time."
             ),
             "parameters": {
                 "type": "object",
@@ -1299,6 +1303,62 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "remember_permission_bundle",
+            "description": (
+                "One-shot setup for a typical project: persist an "
+                "extra_workspace_dir AND the bash auto-allow patterns the "
+                "agent needs to actually develop in it (create venv, "
+                "pip install, run scripts, run tests). All persistence is "
+                "atomic — user gets a SINGLE confirm dialog listing every "
+                "rule about to be written. Use when the user says things "
+                "like 'arbeite immer in /pfad' or 'integriere meine "
+                "optimizer in projektX'. Profile 'project_dev' allows: "
+                "'python -m venv ...', '<dir>/.venv-*/bin/pip install', "
+                "'<dir>/.venv-*/bin/python', 'pytest', 'ruff', 'mypy'. "
+                "ALWAYS state in chat what you are about to add before "
+                "calling this."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "string",
+                        "enum": ["project_dev"],
+                        "description": (
+                            "Bundle preset. 'project_dev' is the only "
+                            "profile so far — venv + pip + python + "
+                            "pytest + ruff + mypy."
+                        ),
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the project. Becomes an "
+                            "extra_workspace_dir; venv allow-patterns "
+                            "are scoped to subdirs of this path."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "repo"],
+                        "description": (
+                            "Default 'repo' — writes to "
+                            "<directory>/.delfin/settings.json so the "
+                            "rules travel with the project."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-line justification (e.g. 'enable Bayesian-opt project workflow').",
+                    },
+                },
+                "required": ["profile", "directory", "rationale"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
             "description": (
                 "Execute a shell command inside the workspace. The command runs "
@@ -1341,6 +1401,44 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         },
     },
 ]
+
+
+def _smart_truncate(text: str, cap: int, label: str) -> str:
+    """Cap a long output by keeping HEAD and TAIL.
+
+    Pure head-truncation hides the most useful part of a Python error:
+    tracebacks live at the END. So when output exceeds ``cap``, keep
+    roughly 30% from the start and 70% from the end with a marker in
+    between explaining how many chars were dropped. Stays a no-op when
+    text fits.
+    """
+    if not text or len(text) <= cap:
+        return text
+    head_size = max(cap // 3, 256)
+    tail_size = cap - head_size
+    if tail_size < 256:
+        # Fall back to plain head-truncation for very small caps.
+        omitted = len(text) - cap
+        return text[:cap] + f"\n... ({label} truncated, {omitted} chars omitted)"
+
+    head = text[:head_size]
+    # Snap head to a line boundary if possible so we don't slice mid-line.
+    nl = head.rfind("\n")
+    if nl > head_size * 0.6:
+        head = head[: nl + 1]
+        tail_size = cap - len(head)
+
+    tail = text[-tail_size:]
+    nl = tail.find("\n")
+    if 0 < nl < tail_size * 0.4:
+        tail = tail[nl + 1:]
+
+    omitted = len(text) - len(head) - len(tail)
+    marker = (
+        f"\n... ({label} truncated, {omitted} chars from the middle "
+        f"omitted; head and tail preserved so tracebacks survive)\n"
+    )
+    return head + marker + tail
 
 
 class _DocToolExecutor:
@@ -1465,6 +1563,13 @@ class _DocToolExecutor:
                     "remember_permission requires KIT permissions to be configured."
                 )})
             return self._execute_remember_permission(arguments, permissions)
+
+        if name == "remember_permission_bundle":
+            if permissions is None:
+                return json.dumps({"error": (
+                    "remember_permission_bundle requires KIT permissions to be configured."
+                )})
+            return self._execute_remember_permission_bundle(arguments, permissions)
 
         # Calc search tools
         if name in ("search_calcs", "get_calc_info", "calc_summary"):
@@ -2075,8 +2180,40 @@ class _DocToolExecutor:
             return json.dumps({"error": f"cannot read file: {exc}"})
 
         count = old_text.count(old_string)
+        fuzzy_note = ""
         if count == 0:
-            return json.dumps({"error": f"old_string not found in '{path_arg}'"})
+            # Exact match failed. Try Aider-style fuzzy match as fallback —
+            # but only when not in replace_all mode (fuzzy + replace_all is
+            # too dangerous).
+            if not replace_all:
+                from . import editblock as _editblock
+                fm = _editblock.fuzzy_replace(old_text, old_string, new_string)
+                if fm is not None:
+                    new_text = fm.new_text
+                    try:
+                        resolved.write_text(new_text, encoding="utf-8")
+                    except Exception as exc:
+                        return json.dumps({"error": f"write failed: {exc}"})
+                    try:
+                        perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+                    except Exception:
+                        pass
+                    disp = self._display_path(resolved, perms)
+                    diff = self._make_diff(old_text, new_text, disp)
+                    indent_note = (
+                        f", indent {fm.indent_shift}" if fm.indent_shift else ""
+                    )
+                    return (
+                        f"Edited {disp} (1 replacement, fuzzy match: "
+                        f"{fm.strategy}{indent_note} — old_string did not "
+                        f"match exactly; whitespace-tolerant fallback found "
+                        f"a unique match):\n\n{diff}"
+                    )
+            return json.dumps({"error": (
+                f"old_string not found in '{path_arg}' "
+                "(neither exact nor whitespace-tolerant match). "
+                "Re-read the file and copy the target block verbatim."
+            )})
         if count > 1 and not replace_all:
             return json.dumps({"error": (
                 f"old_string matches {count} times in '{path_arg}'. "
@@ -2102,7 +2239,7 @@ class _DocToolExecutor:
         disp = self._display_path(resolved, perms)
         diff = self._make_diff(old_text, new_text, disp)
         replaced = count if replace_all else 1
-        return f"Edited {disp} ({replaced} replacement(s)):\n\n{diff}"
+        return f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n{diff}"
 
     def _execute_multi_edit(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -2142,6 +2279,7 @@ class _DocToolExecutor:
 
         text = old_text
         per_edit_replacements: list[int] = []
+        fuzzy_edits: list[int] = []
         for i, ed in enumerate(edits):
             if not isinstance(ed, dict):
                 return json.dumps({"error": f"edit #{i+1} is not an object"})
@@ -2154,9 +2292,20 @@ class _DocToolExecutor:
                 return json.dumps({"error": f"edit #{i+1}: new_string must differ from old_string"})
             count = text.count(o)
             if count == 0:
+                # Try fuzzy fallback (only when not replace_all; ambiguous
+                # then). If still no unique match, fail the whole batch.
+                if not replace_all:
+                    from . import editblock as _editblock
+                    fm = _editblock.fuzzy_replace(text, o, n)
+                    if fm is not None:
+                        text = fm.new_text
+                        per_edit_replacements.append(1)
+                        fuzzy_edits.append(i + 1)
+                        continue
                 return json.dumps({"error": (
                     f"edit #{i+1}: old_string not found "
-                    f"(after applying earlier edits in this batch)"
+                    f"(neither exact nor whitespace-tolerant match, "
+                    f"after applying earlier edits in this batch)"
                 )})
             if count > 1 and not replace_all:
                 return json.dumps({"error": (
@@ -2179,9 +2328,14 @@ class _DocToolExecutor:
         disp = self._display_path(resolved, perms)
         diff = self._make_diff(old_text, text, disp)
         total = sum(per_edit_replacements)
+        fuzzy_note = (
+            f", fuzzy fallback used for edit(s) {fuzzy_edits}"
+            if fuzzy_edits else ""
+        )
         return (
             f"Multi-edited {disp} "
-            f"({len(edits)} edit(s), {total} replacement(s) total):\n\n{diff}"
+            f"({len(edits)} edit(s), {total} replacement(s) total"
+            f"{fuzzy_note}):\n\n{diff}"
         )
 
     def _execute_remember_permission(
@@ -2286,6 +2440,168 @@ class _DocToolExecutor:
             "path": scope_path,
         })
 
+    # Bundle profiles: name -> list of allow-pattern templates. The
+    # placeholder ``{dir_re}`` is replaced with a regex-escaped form of the
+    # bundle directory so patterns are scoped to that project (avoids
+    # accidentally matching unrelated venvs elsewhere on the user's
+    # filesystem).
+    # The venv-tool pattern that's repeated for absolute and relative form;
+    # covers everything the agent typically needs to develop a Python
+    # project: package management, script execution, tests, linters,
+    # formatters, type-check, coverage, doc build. New venv tools should
+    # be added to BOTH the absolute and relative pattern below.
+    _VENV_TOOL_BIN = (
+        r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
+        r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
+    )
+
+    _BUNDLE_PROFILES = {
+        "project_dev": [
+            # venv creation
+            r"^\s*python(?:\d(?:\.\d+)?)?\s+-m\s+venv\s+\S+\s*$",
+            # absolute-path venv tools (when agent issues commands with
+            # the full venv path — e.g. when cwd is elsewhere)
+            r"^\s*{dir_re}/\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            # relative-path venv tools (when cwd is the project)
+            r"^\s*\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            # globally-available test / lint / format tooling
+            r"^\s*pytest\b",
+            r"^\s*ruff\s+(?:check|format)\b",
+            r"^\s*black\b",
+            r"^\s*isort\b",
+            r"^\s*mypy\s+\S",
+            r"^\s*coverage\b",
+            r"^\s*tox\b",
+        ],
+    }
+
+    def _execute_remember_permission_bundle(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Persist a curated bundle of permission rules in one confirm step.
+
+        For ``profile='project_dev'``: registers ``directory`` as an
+        ``extra_workspace_dir`` and adds the standard venv/pip/python/
+        pytest/ruff/mypy auto-allow patterns. Patterns containing the
+        ``{dir_re}`` placeholder are scoped to that project's path so
+        they don't leak to unrelated venvs elsewhere.
+
+        The user sees a SINGLE confirm dialog summarizing every rule
+        about to be written; deny aborts the whole bundle (atomic).
+        """
+        profile = (arguments.get("profile", "") or "").strip()
+        directory = (arguments.get("directory", "") or "").strip()
+        scope = (arguments.get("scope", "repo") or "repo").strip().lower()
+        rationale = (arguments.get("rationale", "") or "").strip()
+
+        if profile not in self._BUNDLE_PROFILES:
+            return json.dumps({"error": (
+                f"unknown profile: {profile!r}. "
+                f"Known: {sorted(self._BUNDLE_PROFILES)}"
+            )})
+        if not directory:
+            return json.dumps({"error": "directory must be non-empty"})
+        if scope not in {"user", "repo"}:
+            return json.dumps({"error": f"scope must be 'user' or 'repo', got {scope!r}"})
+
+        # Validate directory exists and resolve to its canonical form.
+        try:
+            dir_path = Path(directory).expanduser().resolve()
+        except Exception as exc:
+            return json.dumps({"error": f"invalid directory: {exc}"})
+        if not dir_path.is_dir():
+            return json.dumps({"error": f"directory not found or not a dir: {directory}"})
+
+        # Build the concrete pattern list for this directory.
+        dir_re = re.escape(str(dir_path))
+        templates = self._BUNDLE_PROFILES[profile]
+        patterns = [t.format(dir_re=dir_re) for t in templates]
+
+        try:
+            from . import kit_settings as _kit_settings
+        except Exception as exc:
+            return json.dumps({"error": f"kit_settings import failed: {exc}"})
+
+        scope_path = (
+            str(_kit_settings.repo_settings_path(dir_path))
+            if scope == "repo" else str(_kit_settings.USER_SETTINGS_PATH)
+        )
+
+        preview_lines = [
+            f"remember_permission_bundle  (profile={profile})",
+            f"  scope:     {scope}  ->  {scope_path}",
+            f"  rationale: {rationale or '(none)'}",
+            "",
+            f"Will register extra_workspace_dir:",
+            f"    {dir_path}",
+            "",
+            "Will append the following bash auto-allow patterns:",
+        ]
+        for p in patterns:
+            preview_lines.append(f"    {p}")
+        preview_lines.append("")
+        preview_lines.append(
+            "All rules are written atomically. Deny aborts the whole bundle."
+        )
+        preview = "\n".join(preview_lines)
+
+        if perms.confirm_callback is None:
+            return json.dumps({"error": (
+                "remember_permission_bundle needs a user-confirm callback. "
+                "Run inside the dashboard with the KIT confirm panel mounted."
+            )})
+        try:
+            ok = bool(perms.confirm_callback(
+                "remember_permission_bundle",
+                {"profile": profile, "directory": str(dir_path),
+                 "scope": scope, "rationale": rationale,
+                 "patterns": patterns},
+                preview,
+            ))
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        if not ok:
+            return json.dumps({"status": "denied", "profile": profile,
+                               "directory": str(dir_path)})
+
+        # Apply atomically. If the directory step or any pattern fails,
+        # roll back what we already wrote so the user isn't left with a
+        # half-applied bundle.
+        applied_patterns: list[str] = []
+        try:
+            resolved_dir = perms.add_extra_dir(str(dir_path))
+            _kit_settings.persist_extra_dir(
+                resolved_dir,
+                scope=scope,
+                repo_dir=dir_path if scope == "repo" else perms.workspace,
+            )
+            for p in patterns:
+                _kit_settings.persist_pattern(
+                    p, kind="allow", scope=scope,
+                    repo_dir=dir_path if scope == "repo" else perms.workspace,
+                )
+                if p not in perms.bash_auto_allow_patterns:
+                    perms.bash_auto_allow_patterns = (
+                        perms.bash_auto_allow_patterns + (p,)
+                    )
+                applied_patterns.append(p)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc),
+                               "applied_patterns": applied_patterns})
+        except Exception as exc:
+            return json.dumps({"error": f"persist failed: {exc}",
+                               "applied_patterns": applied_patterns})
+
+        return json.dumps({
+            "status": "persisted",
+            "profile": profile,
+            "directory": str(resolved_dir),
+            "scope": scope,
+            "path": scope_path,
+            "patterns": patterns,
+            "patterns_count": len(patterns),
+        })
+
     def _execute_bash(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
@@ -2333,10 +2649,8 @@ class _DocToolExecutor:
         out = proc.stdout or ""
         err = proc.stderr or ""
         cap = perms.max_output_chars
-        if len(out) > cap:
-            out = out[:cap] + f"\n... (stdout truncated, {len(proc.stdout) - cap} chars omitted)"
-        if len(err) > cap:
-            err = err[:cap] + f"\n... (stderr truncated, {len(proc.stderr) - cap} chars omitted)"
+        out = _smart_truncate(out, cap, "stdout")
+        err = _smart_truncate(err, cap, "stderr")
 
         return json.dumps({
             "exit_code": proc.returncode,
@@ -2472,7 +2786,8 @@ class OpenAIClient(_BaseClient):
         has_coding = self._permissions is not None
 
         _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit",
-                              "bash", "remember_permission"}
+                              "bash", "remember_permission",
+                              "remember_permission_bundle"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -2587,7 +2902,8 @@ class OpenAIClient(_BaseClient):
                     # the UI/Whitelist layer can distinguish them from doc tools.
                     is_coding = fn_name in ("write_file", "edit_file",
                                             "multi_edit", "bash",
-                                            "remember_permission")
+                                            "remember_permission",
+                                            "remember_permission_bundle")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display
