@@ -1669,6 +1669,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "project_introspect",
+            "description": (
+                "One-call snapshot of the workspace's state: "
+                "existing venv(s) with Python version + installed "
+                "package count, manifest files (pyproject / "
+                "requirements / Pipfile / Cargo.toml / package.json), "
+                "test framework, src vs flat layout, git branch + "
+                "dirty status. Call this at the START of a "
+                "session in an unfamiliar project — it spares you "
+                "3-5 read_file calls. The agent can then decide "
+                "freely what to do next: install a single dep, run "
+                "tests, refactor — no workflow is implied."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_tests",
             "description": (
                 "Run pytest with structured JSON output (uses "
@@ -2592,6 +2611,10 @@ class _DocToolExecutor:
             return self._execute_push_notification(arguments)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
+
+        # Phase 7: one-call project introspection.
+        if name == "project_introspect":
+            return self._execute_project_introspect(arguments, permissions)
 
         # Phase 6: structured test runner, patch applier, code nav.
         if name == "run_tests":
@@ -4056,6 +4079,19 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Phase 7: project introspection -------------------------------
+
+    def _execute_project_introspect(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import project_introspect as _pi
+        if perms is None:
+            return json.dumps({"error": (
+                "project_introspect needs a workspace via permissions"
+            )})
+        report = _pi.introspect(perms.workspace)
+        return json.dumps(report, ensure_ascii=False)
+
     # ------- Phase 6: tests / patch / code nav ----------------------------
 
     def _execute_run_tests(
@@ -4815,7 +4851,8 @@ class OpenAIClient(_BaseClient):
                               "run_tests",
                               "apply_patch",
                               "find_definition",
-                              "find_references"}
+                              "find_references",
+                              "project_introspect"}
         if has_coding:
             advertised_tools = list(_DOC_TOOLS_OPENAI)
         else:
@@ -4978,7 +5015,8 @@ class OpenAIClient(_BaseClient):
                                             "run_tests",
                                             "apply_patch",
                                             "find_definition",
-                                            "find_references")
+                                            "find_references",
+                                            "project_introspect")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # MCP tools come prefixed mcp__server__name and route
