@@ -2051,13 +2051,336 @@ def create_tab(ctx):
 
         return reg
 
+    # -- Phase 5 UI hookups -----------------------------------------------
+    # Live task ticker — reflects TaskStore state, refreshed on tool result.
+    task_ticker_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 4px 0"),
+    )
+
+    def _refresh_task_ticker():
+        try:
+            from delfin.agent.task_ticker import render_html as _tt_render
+            eng = state.get("engine")
+            ws = None
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+            if ws is None:
+                ws = ctx.repo_dir or Path.cwd()
+            task_ticker_html.value = _tt_render(ws)
+        except Exception:
+            task_ticker_html.value = ""
+
+    # Status line footer — token / mode / branch summary.
+    status_line_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="4px 0 0 0"),
+    )
+
+    def _refresh_status_line():
+        try:
+            from delfin.agent.status_line import (
+                StatusContext as _SC, render_status_line as _r_status,
+            )
+            eng = state.get("engine")
+            ws = None
+            mode = "default"
+            tokens = 0
+            cost = 0.0
+            model = ""
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+                    mode = kp.mode
+                tokens = (eng.token_usage.get("input", 0)
+                          + eng.token_usage.get("output", 0))
+                cost = eng.cost_usd
+                model = getattr(eng.client, "model", "")
+            ctx_obj = _SC(
+                workspace=ws, mode=mode, model=model,
+                tokens=tokens, cost_usd=cost,
+            )
+            line = _r_status(ctx_obj)
+            status_line_html.value = (
+                f"<div style='font-family:monospace;font-size:11px;"
+                f"color:#777;border-top:1px solid #333;padding:3px 6px;'>"
+                f"{line}</div>" if line else ""
+            )
+        except Exception:
+            status_line_html.value = ""
+
+    # AskUserQuestion modal — shown only while a tool call is pending.
+    ask_user_label = widgets.HTML(value="")
+    ask_user_buttons = widgets.HBox([],
+        layout=widgets.Layout(flex_flow="row wrap", gap="6px"))
+    ask_user_box = widgets.VBox(
+        [ask_user_label, ask_user_buttons],
+        layout=widgets.Layout(
+            display="none",
+            border="2px solid #0a84ff",
+            padding="8px",
+            margin="6px 0",
+            background_color="#0a84ff15",
+        ),
+    )
+    state["_ask_user_event"] = None
+    state["_ask_user_result"] = None
+
+    def _show_ask_user_modal(args: dict) -> dict:
+        """Build buttons for each option and block until the user clicks."""
+        import threading as _th
+        question = args.get("question", "")
+        header = args.get("header", "")
+        options = args.get("options", []) or []
+        multi = bool(args.get("multiSelect", False))
+        ev = _th.Event()
+        result = {"answers": []}
+        state["_ask_user_event"] = ev
+        state["_ask_user_result"] = result
+        from html import escape as _esc
+        header_html = (f"<span style='background:#0a84ff;color:white;"
+                       f"padding:2px 6px;border-radius:3px;font-size:11px;"
+                       f"margin-right:6px;'>{_esc(header)}</span>"
+                       if header else "")
+        ask_user_label.value = (
+            f"<div style='font-size:14px;'>{header_html}"
+            f"<b>{_esc(question)}</b></div>"
+        )
+        chosen: set[str] = set()
+        button_widgets: list = []
+
+        def _make_handler(label: str, btn):
+            def _on_click(_b):
+                if multi:
+                    if label in chosen:
+                        chosen.discard(label)
+                        btn.button_style = ""
+                    else:
+                        chosen.add(label)
+                        btn.button_style = "primary"
+                else:
+                    chosen.clear()
+                    chosen.add(label)
+                    result["answers"] = [label]
+                    ev.set()
+            return _on_click
+
+        for opt in options:
+            label = opt.get("label", "")
+            desc = opt.get("description", "")
+            btn = widgets.Button(
+                description=label[:60],
+                tooltip=desc[:200],
+                layout=widgets.Layout(width="auto"),
+            )
+            btn.on_click(_make_handler(label, btn))
+            button_widgets.append(btn)
+        if multi:
+            confirm_btn = widgets.Button(
+                description="OK", button_style="success",
+                layout=widgets.Layout(width="60px"),
+            )
+            def _on_confirm(_b):
+                result["answers"] = list(chosen)
+                ev.set()
+            confirm_btn.on_click(_on_confirm)
+            button_widgets.append(confirm_btn)
+        ask_user_buttons.children = tuple(button_widgets)
+        ask_user_box.layout.display = ""
+        # Block up to 5 minutes
+        ev.wait(timeout=300)
+        ask_user_box.layout.display = "none"
+        ask_user_label.value = ""
+        ask_user_buttons.children = ()
+        state["_ask_user_event"] = None
+        state["_ask_user_result"] = None
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    # ExitPlanMode approval — uses existing plan_accept_btn but flips perms
+    # via the structured callback so the tool result reflects the choice.
+    state["_plan_approval_event"] = None
+    state["_plan_approval_result"] = None
+
+    def _show_plan_approval(plan: str) -> dict:
+        """Render the plan as a system message, wait for user click."""
+        import threading as _th
+        ev = _th.Event()
+        result: dict = {"approved": False, "new_mode": "default"}
+        state["_plan_approval_event"] = ev
+        state["_plan_approval_result"] = result
+        # Surface the plan so the user sees what they're approving.
+        _append_system_message(
+            "📋 **Plan zur Freigabe** (klicke 'Plan akzeptieren' "
+            "oder wechsle Mode-Chip):\n\n" + plan
+        )
+        # Reuse existing plan_accept_btn machinery — the callback below
+        # observes state changes from _on_plan_accept.
+        state["_kit_plan_has_response"] = True
+        _refresh_plan_accept_btn()
+        ev.wait(timeout=600)   # 10 min
+        return result
+
+    # Hook into the existing _on_plan_accept: register a second on_click
+    # handler that signals any pending exit_plan_mode tool call. The
+    # original handler (registered earlier) still does its UI/mode work
+    # — both fire on click.
+    def _on_plan_accept_phase5(_btn):
+        ev = state.get("_plan_approval_event")
+        result = state.get("_plan_approval_result")
+        if ev is not None and result is not None:
+            result["approved"] = True
+            result["new_mode"] = "acceptEdits"
+            ev.set()
+
+    plan_accept_btn.on_click(_on_plan_accept_phase5)
+
+    # Image upload widget alongside chat input.
+    image_upload = widgets.FileUpload(
+        accept="image/png,image/jpeg,image/webp,image/gif",
+        multiple=True,
+        description="📎 Bilder",
+        layout=widgets.Layout(width="100px"),
+    )
+    state["_pending_images"] = []
+
+    def _on_image_upload(change):
+        """Save uploaded images to <workspace>/.delfin/uploads/ for the agent.
+
+        Full multimodal-content (base64 in the API call) requires client
+        surgery the dashboard can't do safely from here, so we go with
+        the next best thing: drop the file under the workspace and let
+        the agent read it via read_file / notebook_read / image-aware
+        downstream tooling. The agent learns about the upload via a
+        system message inserted on the next send.
+        """
+        from delfin.agent.image_input import _ALLOWED_MIMES
+        files = image_upload.value
+        eng = state.get("engine")
+        ws = None
+        if eng is not None:
+            kp = getattr(eng, "kit_permissions", None)
+            if kp is not None:
+                ws = kp.workspace
+        if ws is None:
+            ws = ctx.repo_dir or Path.cwd()
+        upload_dir = Path(ws) / ".delfin" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[Path] = []
+        items = (files.items() if isinstance(files, dict)
+                 else [(f["name"], f) for f in files])
+        for fname, fmeta in items:
+            mime = (fmeta.get("type")
+                    or fmeta.get("metadata", {}).get("type", ""))
+            if mime not in _ALLOWED_MIMES:
+                _append_system_message(f"Bild ignoriert (MIME): {fname}")
+                continue
+            content = fmeta.get("content") or fmeta.get("data")
+            if isinstance(content, memoryview):
+                content = bytes(content)
+            try:
+                target = upload_dir / Path(fname).name
+                target.write_bytes(content)
+                saved.append(target)
+            except OSError as exc:
+                _append_system_message(f"Bild speichern fehlgeschlagen: {exc}")
+        state["_pending_images"] = saved
+        if saved:
+            paths = "\n".join(f"  - {p}" for p in saved)
+            _append_system_message(
+                f"🖼️ {len(saved)} Bild(er) gespeichert — werden bei der "
+                f"nächsten Nachricht erwähnt:\n{paths}"
+            )
+
+    image_upload.observe(_on_image_upload, names="value")
+
+    # Resume-Last-Session button.
+    resume_last_btn = widgets.Button(
+        description="↩ Letzte Session",
+        tooltip="Lädt die zuletzt aktive Session aus ~/.delfin/agent_sessions",
+        layout=widgets.Layout(width="160px"),
+    )
+
+    def _on_resume_last(_btn):
+        try:
+            from delfin.agent.session_store import resume_latest
+            data = resume_latest(max_age_s=7 * 86_400)
+        except Exception as exc:
+            _append_system_message(f"Resume fehlgeschlagen: {exc}")
+            return
+        if data is None:
+            _append_system_message(
+                "Keine kürzliche Session gefunden (älter als 7 Tage oder leer)."
+            )
+            return
+        sid = str(data.get("session_id", ""))
+        if not sid:
+            _append_system_message("Session-Datei ist defekt (kein session_id).")
+            return
+        try:
+            _load_saved_session(sid)
+        except Exception as exc:
+            _append_system_message(f"Session-Laden fehlgeschlagen: {exc}")
+
+    resume_last_btn.on_click(_on_resume_last)
+
+    # Phase-5 wiring helper: bind callbacks on the engine's permissions
+    # object every time _ensure_engine produces a new engine.
+    def _wire_phase5_callbacks(engine):
+        if engine is None:
+            return
+        kp = getattr(engine, "kit_permissions", None)
+        if kp is None:
+            return
+        try:
+            kp.ask_user_callback = _show_ask_user_modal
+            kp.plan_approval_callback = _show_plan_approval
+        except Exception:
+            pass
+        # Scheduler fire-callback: when a wake-up triggers, drop the prompt
+        # into the input box and send. The thread runs in the scheduler's
+        # background, so we marshal back to the UI thread via input_textarea.
+        try:
+            from delfin.agent import scheduler as _sched_mod
+            sch = _sched_mod.get_scheduler()
+
+            def _on_wake(entry):
+                try:
+                    input_textarea.value = (
+                        f"[scheduled] {entry.reason or entry.prompt}\n\n"
+                        f"{entry.prompt}"
+                    )
+                    _on_send(None)
+                except Exception:
+                    pass
+
+            sch.set_fire_callback(_on_wake)
+        except Exception:
+            pass
+        _refresh_task_ticker()
+        _refresh_status_line()
+
+    state["_wire_phase5_callbacks"] = _wire_phase5_callbacks
+
     # -- layout assembly ---------------------------------------------------
+    # Augment the existing controls row with the resume button.
+    try:
+        controls_row.children = tuple(controls_row.children) + (resume_last_btn,)
+    except Exception:
+        pass
+
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_dirs_status, kit_confirm_container, chat_html,
-         plan_accept_btn,
-         working_html, queue_html, approval_row, question_row, input_row],
+         kit_mode_row, kit_dirs_status, kit_confirm_container,
+         task_ticker_html, chat_html,
+         plan_accept_btn, ask_user_box,
+         working_html, queue_html, approval_row, question_row,
+         widgets.HBox([image_upload, input_row],
+                      layout=widgets.Layout(align_items="flex-start")),
+         status_line_html],
     )
 
     if not _yaml_ok:
@@ -2342,6 +2665,14 @@ def create_tab(ctx):
 
             state["engine"] = engine
             ctx.agent_engine = engine
+            # Phase 5 wiring: bind ask_user / plan-approval / scheduler
+            # callbacks now that the engine + perms exist.
+            try:
+                _wire_p5 = state.get("_wire_phase5_callbacks")
+                if _wire_p5 is not None:
+                    _wire_p5(engine)
+            except Exception:
+                pass
             return engine
         except Exception as exc:
             _append_system_message(f"Engine error: {exc}")
@@ -3088,6 +3419,11 @@ def create_tab(ctx):
                 active_gate_text=active_gate.get("title", ""),
             )
         _update_cycle_inspector()
+        # Phase 5e: status-line footer mirrors the same engine snapshot.
+        try:
+            _refresh_status_line()
+        except Exception:
+            pass
         _update_inspector_actions()
         _update_inspector_detail()
 
@@ -6555,6 +6891,14 @@ def create_tab(ctx):
                         parts = tool_name.split("__")
                         if len(parts) >= 3:
                             tool_name = parts[-1]
+                    # Phase 5d: refresh the live task ticker whenever a
+                    # task_* tool fires so the panel reflects new state
+                    # without waiting for the next user turn.
+                    if tool_name in ("task_create", "task_update", "task_list"):
+                        try:
+                            _refresh_task_ticker()
+                        except Exception:
+                            pass
                     # Truncate for display
                     output = tool_output
                     _MAX_LINES = 8
@@ -6719,6 +7063,25 @@ def create_tab(ctx):
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
                     # so we do not pay twice for the same profile tokens.
+                    # Phase 5f: note pending image uploads so the agent
+                    # knows where to find them. Cleared after dispatch.
+                    _pending_imgs = state.get("_pending_images") or []
+                    if _pending_imgs:
+                        _img_lines = "\n".join(
+                            f"  - {p}" for p in _pending_imgs
+                        )
+                        current_msg = (
+                            f"{current_msg}\n\n"
+                            f"[The user attached these image files — "
+                            f"read them via read_file or describe them "
+                            f"using whatever vision tools you have:\n"
+                            f"{_img_lines}]"
+                        )
+                        state["_pending_images"] = []
+                        try:
+                            image_upload.value = ()
+                        except Exception:
+                            pass
                     _denied = state.get("_denied_commands", [])
                     if _denied:
                         _denial_ctx = (
