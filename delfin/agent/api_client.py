@@ -1504,6 +1504,154 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "web_search",
+            "description": (
+                "Search the web via DuckDuckGo HTML and return a list "
+                "of {title, url, snippet} results. Use this when "
+                "Jerome's project needs API specifics from a library "
+                "that isn't in DELFIN's indexed docs (BoTorch, Ax, "
+                "scikit-optimize, etc.). Don't use it for things you "
+                "can find in the codebase — Grep / Read first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search terms (3-10 words ideal).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Cap on hits (default 8, max 20).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": (
+                "Download a single URL and return plain text. HTML "
+                "is stripped to readable text; text/* is passed "
+                "through. Binaries / PDFs are refused (use bash + "
+                "curl + a tempfile for those). Localhost / RFC1918 / "
+                "*.internal hosts are blocked. 1 MB / 50k char cap."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute http(s) URL to fetch.",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": "Request timeout (default 15).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_create",
+            "description": (
+                "Add a planning task to this project's persistent task "
+                "list (mirrors Claude Code's TaskCreate). Useful for "
+                "multi-step integrations: 'integrate BoTorch wrapper', "
+                "'add comparison notebook', 'write regression tests'. "
+                "Tasks survive session restarts via "
+                "<workspace>/.delfin/session_tasks.json. Status starts "
+                "at 'pending'; switch to 'in_progress' when you start "
+                "work and 'completed' when done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Short imperative title (3-8 words).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What needs to be done (multiline OK).",
+                    },
+                    "active_form": {
+                        "type": "string",
+                        "description": (
+                            "Optional present-continuous form for "
+                            "spinners (e.g. 'Integrating BoTorch')."
+                        ),
+                    },
+                },
+                "required": ["subject"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_update",
+            "description": (
+                "Update an existing task: change status, subject, "
+                "description, or active_form. Use status='in_progress' "
+                "when starting and 'completed' immediately when done — "
+                "don't batch completion messages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "ID returned by task_create.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending", "in_progress",
+                            "completed", "deleted",
+                        ],
+                    },
+                    "subject": {"type": "string"},
+                    "description": {"type": "string"},
+                    "active_form": {"type": "string"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_list",
+            "description": (
+                "List all tasks for the current workspace. By default "
+                "deleted tasks are filtered out. Use this to recap "
+                "progress at the start of a multi-day session, or to "
+                "find what's left when picking up a paused project."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_deleted": {
+                        "type": "boolean",
+                        "description": (
+                            "Include tasks with status='deleted' "
+                            "(default false)."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "notebook_read",
             "description": (
                 "Read a Jupyter notebook (.ipynb) cell-aware: returns "
@@ -1744,7 +1892,55 @@ class _DocToolExecutor:
                 permissions.post_tool_hook(name, arguments, result)
             except Exception:
                 pass
+
+        # Audit log: record every code-modifying or persistence action
+        # for retracing and rollback. Failures are silent (the audit
+        # log must never disturb the tool path it observes).
+        try:
+            self._audit_call(name, arguments, permissions, result)
+        except Exception:
+            pass
+
         return result
+
+    _AUDITED_TOOLS = frozenset({
+        "write_file", "edit_file", "multi_edit",
+        "bash", "bash_background", "bash_kill",
+        "notebook_edit",
+        "remember_permission", "remember_permission_bundle",
+    })
+
+    def _audit_call(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+        result: str,
+    ) -> None:
+        """Append one audit-log line if ``name`` is a tracked tool."""
+        if name not in self._AUDITED_TOOLS:
+            return
+        from . import audit_log as _al
+        # Best-effort decision parsing.
+        decision = "ok"
+        if isinstance(result, str):
+            if result.startswith('{"error"'):
+                decision = "denied"
+            elif '"status": "denied"' in result[:200]:
+                decision = "denied"
+        mode = ""
+        session_id = ""
+        if permissions is not None:
+            mode = getattr(permissions, "mode", "") or ""
+        record = _al.make_record(
+            tool=name,
+            decision=decision,
+            mode=mode,
+            path=str(arguments.get("path", "")),
+            command=str(arguments.get("command", "")),
+            session_id=session_id,
+        )
+        _al.append(record)
 
     def _dispatch(
         self,
@@ -1804,6 +2000,29 @@ class _DocToolExecutor:
                     return json.dumps({"error": gate_err})
                 return self._execute_notebook_edit(arguments, permissions)
             return self._execute_notebook_read(arguments, permissions)
+
+        # Planning tools — pure metadata operations on the workspace's
+        # task store; no permission gate needed (the JSON file lives
+        # under the workspace, sandboxed by definition).
+        if name in ("task_create", "task_update", "task_list"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured."
+                )})
+            if name == "task_create":
+                return self._execute_task_create(arguments, permissions)
+            if name == "task_update":
+                return self._execute_task_update(arguments, permissions)
+            if name == "task_list":
+                return self._execute_task_list(arguments, permissions)
+
+        # Web tools — outbound HTTP, no filesystem side-effects. The
+        # web_tools module enforces its own URL deny-list (localhost /
+        # RFC1918 / cloud metadata) and binary-content rejection.
+        if name in ("web_search", "web_fetch"):
+            if name == "web_search":
+                return self._execute_web_search(arguments)
+            return self._execute_web_fetch(arguments)
 
         if name == "remember_permission":
             if permissions is None:
@@ -3235,6 +3454,118 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Planning tools (TaskCreate / Update / List) ------------------
+
+    def _task_store(self, perms: "KitToolPermissions"):
+        """Get the per-workspace TaskStore singleton."""
+        from . import agent_tasks as _at
+        return _at.get_store(perms.workspace)
+
+    def _execute_task_create(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        subject = (arguments.get("subject", "") or "").strip()
+        description = arguments.get("description", "") or ""
+        active_form = arguments.get("active_form", "") or ""
+        if not subject:
+            return json.dumps({"error": "subject must be non-empty"})
+        try:
+            task = self._task_store(perms).create(
+                subject, description, active_form
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_create failed: {exc}"})
+        return json.dumps({
+            "status": "created",
+            "task": task,
+            "hint": (
+                f"task #{task['id']} added. Mark in_progress when you "
+                "start, completed when done."
+            ),
+        }, ensure_ascii=False)
+
+    def _execute_task_update(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        try:
+            task_id = int(arguments.get("task_id"))
+        except (TypeError, ValueError):
+            return json.dumps({
+                "error": f"task_id must be int, got {arguments.get('task_id')!r}"
+            })
+        fields = {
+            k: arguments.get(k)
+            for k in ("status", "subject", "description", "active_form")
+            if arguments.get(k) is not None
+        }
+        if not fields:
+            return json.dumps({
+                "error": "at least one field (status / subject / description / active_form) must be provided"
+            })
+        try:
+            task = self._task_store(perms).update(task_id, **fields)
+        except KeyError as exc:
+            return json.dumps({"error": str(exc).strip("'")})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_update failed: {exc}"})
+        return json.dumps({"status": "updated", "task": task},
+                          ensure_ascii=False)
+
+    def _execute_task_list(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        include_deleted = bool(arguments.get("include_deleted", False))
+        try:
+            tasks = self._task_store(perms).list(
+                include_deleted=include_deleted
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"task_list failed: {exc}"})
+        # Group by status so the agent can summarise progress easily.
+        grouped: dict[str, list] = {
+            "in_progress": [], "pending": [],
+            "completed": [], "deleted": [],
+        }
+        for t in tasks:
+            grouped.setdefault(t.get("status", "pending"), []).append(t)
+        return json.dumps({
+            "count": len(tasks),
+            "by_status": {k: len(v) for k, v in grouped.items() if v},
+            "tasks": tasks,
+        }, ensure_ascii=False)
+
+    # ------- Web tools (search + fetch) -----------------------------------
+
+    def _execute_web_search(self, arguments: dict) -> str:
+        query = (arguments.get("query", "") or "").strip()
+        max_results = int(arguments.get("max_results", 8) or 8)
+        max_results = max(1, min(max_results, 20))
+        if not query:
+            return json.dumps({"error": "query must be non-empty"})
+        try:
+            from . import web_tools as _wt
+            payload = _wt.web_search(query, max_results=max_results)
+        except Exception as exc:
+            return json.dumps({"error": f"web_search failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _execute_web_fetch(self, arguments: dict) -> str:
+        url = (arguments.get("url", "") or "").strip()
+        timeout_s = int(arguments.get("timeout_s", 15) or 15)
+        timeout_s = max(1, min(timeout_s, 60))
+        if not url:
+            return json.dumps({"error": "url must be non-empty"})
+        try:
+            from . import web_tools as _wt
+            payload = _wt.web_fetch(url, timeout_s=timeout_s)
+        except Exception as exc:
+            return json.dumps({"error": f"web_fetch failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False)
+
 
 # Singleton — shared across all OpenAIClient instances.
 _doc_executor = _DocToolExecutor()
@@ -3363,7 +3694,9 @@ class OpenAIClient(_BaseClient):
                               "remember_permission_bundle",
                               "bash_background", "bash_status",
                               "bash_output", "bash_kill",
-                              "notebook_read", "notebook_edit"}
+                              "notebook_read", "notebook_edit",
+                              "task_create", "task_update", "task_list",
+                              "web_search", "web_fetch"}
         if has_coding:
             advertised_tools = _DOC_TOOLS_OPENAI
         else:
@@ -3485,7 +3818,12 @@ class OpenAIClient(_BaseClient):
                                             "bash_output",
                                             "bash_kill",
                                             "notebook_read",
-                                            "notebook_edit")
+                                            "notebook_edit",
+                                            "task_create",
+                                            "task_update",
+                                            "task_list",
+                                            "web_search",
+                                            "web_fetch")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # Emit tool_use event for UI display

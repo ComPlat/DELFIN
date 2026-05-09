@@ -117,6 +117,22 @@ sees a single confirm dialog with every rule listed; deny aborts the
 whole bundle atomically. Don't propose `git push` / `git commit -m` /
 `git status` — those are already on the default auto-allow list.
 
+## Planning multi-step work (task_create / task_list)
+
+For integration tasks that span 4+ steps or multiple files: open a
+`task_create(subject, description, active_form?)` for each step
+upfront, then `task_update(task_id, status='in_progress')` when you
+begin and `status='completed'` immediately when done. `task_list()`
+on session start to recap the previous day's progress. Persisted in
+`<workspace>/.delfin/session_tasks.json`.
+
+## Web research
+
+`web_search(query)` for docs / API lookups (BoTorch / Ax / xtb /
+ORCA recipes that aren't in indexed PDFs). `web_fetch(url)` for a
+single page. Use Grep / Read on the codebase FIRST — only go
+external when the answer isn't already in the project.
+
 ## Long-running jobs (background bash)
 
 For commands that take longer than ~60s (Bayesian-opt runs, training,
@@ -286,28 +302,13 @@ Use these tools when the user asks about methods, parameters, or calculation dat
 
 ## Self-optimization
 
-You have a learning system that tracks your performance across sessions.
+A provider profile summary is auto-injected into the system prompt;
+use it plus the relevant playbook. After completing a task, briefly
+note what worked / what failed and surface patterns to the user.
 
-Your provider profile summary is injected into the system prompt automatically.
-Use that summary plus the relevant playbook for the current task.
-
-**After completing a task**, evaluate your own performance:
-1. Use the injected profile summary instead of re-reading the raw JSON.
-2. If the task went well, note what worked. If it failed, note why.
-3. Suggest improvements to the user: "For chemistry tasks, reviewed mode
-   has 89% success vs 65% in solo — want me to switch?"
-4. If you notice a pattern (e.g., certain commands always blocked, certain
-   task types always fail), tell the user proactively.
-
-**Do not manually read or edit** `delfin/agent/learned_profiles.json` during
-normal tasks. Outcome tracking updates it automatically.
-
-Only touch the raw profile if the user explicitly asks for agent-profile work.
-If that happens, RULES:
-- Only modify YOUR provider's section (e.g., "claude")
-- Keep values bounded: success_rate 0.0-1.0, thinking_budget_mult 0.0-3.0
-- Never delete another provider's data
-- Log what you changed and why in your response to the user (transparency)
+Don't manually edit `delfin/agent/learned_profiles.json` during normal
+tasks (it auto-updates). Only touch it if explicitly asked, and then
+only your own provider's section.
 
 ## Background tasks — anti-stall rule
 
