@@ -7612,24 +7612,99 @@ def create_tab(ctx):
         push_status_html.value = ""
 
     def _on_undo(button):
-        """Revert the last file edit via git checkout."""
+        """Revert the last file edit.
+
+        The repo to operate on is determined by walking up from the
+        edited file until a ``.git`` directory is found \u2014 necessary
+        because the agent now writes into extra_workspace_dirs that are
+        unrelated to ``ctx.repo_dir`` (e.g. Jerome's TestOpt project
+        while the dashboard runs from the DELFIN repo).
+
+        If the edit was a fresh ``write_file`` (untracked file in git),
+        the file is unlinked instead of checked out \u2014 ``git checkout``
+        on an untracked path fails silently and would leave the file in
+        place.
+        """
         if not state["recent_edits"]:
             return
         import subprocess as _sp
+        from pathlib import Path as _Path
         last = state["recent_edits"].pop()
-        fpath = last["file"]
-        short = fpath.replace(str(ctx.repo_dir or ""), "").lstrip("/")
+        fpath = _Path(last["file"]).expanduser().resolve()
+        if not fpath.exists() and last.get("tool") not in ("Write", "write_file"):
+            _append_system_message(f"Undo: file no longer exists: {fpath}")
+            undo_btn.disabled = len(state["recent_edits"]) == 0
+            return
+
+        # Find the enclosing git repo by walking up.
+        repo_root = None
+        cur = fpath if fpath.is_dir() else fpath.parent
+        while True:
+            if (cur / ".git").exists():
+                repo_root = cur
+                break
+            if cur == cur.parent:
+                break
+            cur = cur.parent
+
+        short = str(fpath)
+        if repo_root is not None:
+            try:
+                short = str(fpath.relative_to(repo_root))
+            except ValueError:
+                pass
+
         try:
-            result = _sp.run(
-                ["git", "checkout", "--", fpath],
+            if repo_root is None:
+                # Not under git \u2014 best we can do is unlink fresh writes;
+                # for edits we have no baseline to roll back to.
+                if last.get("tool") in ("Write", "write_file"):
+                    fpath.unlink(missing_ok=True)
+                    _append_system_message(
+                        f"\u21a9 Removed (no git): {fpath}"
+                    )
+                else:
+                    _append_system_message(
+                        f"Undo unavailable for {fpath}: not under git, "
+                        "and the original content was not saved before "
+                        "the edit. Tip: keep the project under git for "
+                        "reliable undo."
+                    )
+                undo_btn.disabled = len(state["recent_edits"]) == 0
+                return
+
+            # File under git: check if tracked or fresh.
+            ls = _sp.run(
+                ["git", "ls-files", "--error-unmatch", str(fpath)],
                 capture_output=True, text=True,
-                cwd=str(ctx.repo_dir or "."), timeout=10,
+                cwd=str(repo_root), timeout=5,
             )
-            if result.returncode == 0:
-                _append_system_message(f"\u21a9 Reverted: {short}")
+            tracked = ls.returncode == 0
+
+            if not tracked and last.get("tool") in ("Write", "write_file"):
+                # Fresh untracked file the agent created \u2014 just unlink.
+                fpath.unlink(missing_ok=True)
+                _append_system_message(
+                    f"\u21a9 Removed new file: {short}"
+                )
+            elif tracked:
+                result = _sp.run(
+                    ["git", "checkout", "--", str(fpath)],
+                    capture_output=True, text=True,
+                    cwd=str(repo_root), timeout=10,
+                )
+                if result.returncode == 0:
+                    _append_system_message(f"\u21a9 Reverted: {short}")
+                else:
+                    _append_system_message(
+                        f"Undo failed for {short}: "
+                        f"{result.stderr.strip()[:120]}"
+                    )
             else:
                 _append_system_message(
-                    f"Undo failed: {result.stderr.strip()[:100]}"
+                    f"Undo unavailable for untracked edit on {short}. "
+                    "Add the file to git first if you want this kind of "
+                    "undo to work."
                 )
         except Exception as exc:
             _append_system_message(f"Undo error: {exc}")
@@ -7928,9 +8003,16 @@ def _estimate_cost_str(
     backend: str, input_tokens: int, output_tokens: int,
     provider: str = "claude",
 ) -> str:
-    """Rough cost string."""
+    """Rough cost string for the dashboard status row."""
     if provider == "kit":
-        return "free (KIT)"
+        # KIT-Toolbox is provided by KIT — no per-call USD cost, but
+        # there's a quota and the user explicitly asked to see the
+        # burn rate. Showing tokens spent makes runaway agents
+        # visible without faking a price.
+        total = input_tokens + output_tokens
+        if total <= 0:
+            return "KIT (no usage yet)"
+        return f"KIT quota: {total:,} tokens"
     if backend == "cli":
         return "included in subscription"
     if provider == "openai":

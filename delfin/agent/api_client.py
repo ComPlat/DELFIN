@@ -2385,7 +2385,8 @@ class _DocToolExecutor:
         disp = self._display_path(resolved, perms)
         diff = self._make_diff(old_text, content, disp)
         action = "created" if not existed else "overwritten"
-        return f"File {action}: {disp}\n\n{diff}"
+        test_hint = self._suggest_test_for_edit(resolved, perms)
+        return f"File {action}: {disp}\n\n{diff}{test_hint}"
 
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -2487,7 +2488,11 @@ class _DocToolExecutor:
         disp = self._display_path(resolved, perms)
         diff = self._make_diff(old_text, new_text, disp)
         replaced = count if replace_all else 1
-        return f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n{diff}"
+        test_hint = self._suggest_test_for_edit(resolved, perms)
+        return (
+            f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
+            f"{diff}{test_hint}"
+        )
 
     def _execute_multi_edit(
         self, arguments: dict, perms: "KitToolPermissions"
@@ -2580,11 +2585,83 @@ class _DocToolExecutor:
             f", fuzzy fallback used for edit(s) {fuzzy_edits}"
             if fuzzy_edits else ""
         )
+        test_hint = self._suggest_test_for_edit(resolved, perms)
         return (
             f"Multi-edited {disp} "
             f"({len(edits)} edit(s), {total} replacement(s) total"
-            f"{fuzzy_note}):\n\n{diff}"
+            f"{fuzzy_note}):\n\n{diff}{test_hint}"
         )
+
+    def _suggest_test_for_edit(
+        self, resolved: Path, perms: "KitToolPermissions"
+    ) -> str:
+        """Return a one-line hint pointing the agent at the matching test
+        module after a successful edit, or '' if there's no obvious match.
+
+        This is the lightweight half of the auto-test loop: instead of
+        spawning pytest unconditionally (which would burn cycles on every
+        no-op edit), we surface the test file's path so the agent's next
+        bash call naturally lands on the right verification command.
+        Conventions covered:
+
+            edited        →  test candidate
+            ----------------+------------------------
+            foo/bar.py    →  tests/test_bar.py
+                             tests/foo/test_bar.py
+                             foo/tests/test_bar.py
+                             test_bar.py (next to source)
+
+        Skipped when: file isn't .py, or no tests directory exists
+        anywhere in the workspace tree.
+        """
+        if resolved.suffix != ".py":
+            return ""
+        if resolved.name.startswith("test_") or resolved.name.endswith("_test.py"):
+            # Editing a test file itself — the agent should run THIS file.
+            try:
+                root = perms.find_root_for(resolved)
+                rel = resolved.relative_to(root) if root else resolved
+            except Exception:
+                rel = resolved
+            return f"\n\nTip: this is a test file — verify via `pytest {rel} -q`."
+        try:
+            root = perms.find_root_for(resolved)
+        except Exception:
+            root = None
+        if root is None:
+            return ""
+        stem = resolved.stem
+        # Subpath of the edited file relative to its workspace root, used
+        # to locate sibling tests/ dirs and mirrored test trees.
+        try:
+            rel = resolved.relative_to(root)
+        except Exception:
+            return ""
+        candidates = [
+            root / "tests" / f"test_{stem}.py",
+            root / "tests" / f"{stem}_test.py",
+            root / "test" / f"test_{stem}.py",
+            resolved.parent / f"test_{stem}.py",
+            resolved.parent / "tests" / f"test_{stem}.py",
+        ]
+        # Mirror the source layout under tests/, e.g.
+        # delfin/agent/api_client.py → tests/agent/test_api_client.py.
+        if len(rel.parts) > 1:
+            mirror = root / "tests" / rel.parent / f"test_{stem}.py"
+            candidates.insert(2, mirror)
+
+        for cand in candidates:
+            try:
+                if cand.is_file():
+                    cand_rel = cand.relative_to(root)
+                    return (
+                        f"\n\nTip: matching test file is `{cand_rel}` — "
+                        f"verify via `pytest {cand_rel} -q --timeout=30` "
+                        "before reporting success."
+                    )
+            except Exception:
+                continue
+        return ""
 
     def _execute_remember_permission(
         self, arguments: dict, perms: "KitToolPermissions"
