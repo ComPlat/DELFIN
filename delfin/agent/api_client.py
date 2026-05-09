@@ -1669,6 +1669,54 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "push_notification",
+            "description": (
+                "Send a desktop notification. Local-only "
+                "(notify-send / terminal-notifier / Win toast). "
+                "Use sparingly: when a long task finishes or "
+                "approval is required."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["low", "normal", "critical"],
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remote_trigger",
+            "description": (
+                "POST a small JSON payload to the user-configured "
+                "remoteTrigger webhook (settings.json -> "
+                "remoteTrigger.url). HTTPS only; private / "
+                "metadata IPs blocked. The URL is NOT chosen by "
+                "the agent — only what the user pre-configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event": {"type": "string"},
+                    "payload": {
+                        "type": "object",
+                        "description": "Free-form JSON-serialisable body.",
+                    },
+                },
+                "required": ["event"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_wakeup",
             "description": (
                 "Schedule a single future agent invocation. Mirrors "
@@ -2416,6 +2464,12 @@ class _DocToolExecutor:
         if name in ("schedule_wakeup", "cron_create",
                     "cron_list", "cron_delete"):
             return self._execute_scheduler(name, arguments)
+
+        # Notifications + remote triggers.
+        if name == "push_notification":
+            return self._execute_push_notification(arguments)
+        if name == "remote_trigger":
+            return self._execute_remote_trigger(arguments, permissions)
 
         # Planning tools — pure metadata operations on the workspace's
         # task store; no permission gate needed (the JSON file lives
@@ -3872,6 +3926,35 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Notifications / remote triggers ------------------------------
+
+    def _execute_push_notification(self, arguments: dict) -> str:
+        from . import notify as _n
+        title = str(arguments.get("title", "")).strip() or "delfin agent"
+        body = str(arguments.get("body", ""))
+        urgency = str(arguments.get("urgency", "normal"))
+        ok = _n.send_notification(title, body, urgency=urgency)
+        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+
+    def _execute_remote_trigger(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import notify as _n
+        event = str(arguments.get("event", "")).strip()
+        if not event:
+            return json.dumps({"error": "event is required"})
+        payload = arguments.get("payload") or {}
+        if not isinstance(payload, dict):
+            return json.dumps({"error": "payload must be a JSON object"})
+        full = {"event": event, **payload}
+        ws = perms.workspace if perms else None
+        result = _n.send_remote_trigger(full, workspace=ws)
+        return json.dumps({
+            "sent": result.sent,
+            "status_code": result.status_code,
+            "error": result.error,
+        })
+
     # ------- Scheduler / cron ---------------------------------------------
 
     def _execute_scheduler(self, name: str, arguments: dict) -> str:
@@ -4500,7 +4583,9 @@ class OpenAIClient(_BaseClient):
                               "schedule_wakeup",
                               "cron_create",
                               "cron_list",
-                              "cron_delete"}
+                              "cron_delete",
+                              "push_notification",
+                              "remote_trigger"}
         if has_coding:
             advertised_tools = list(_DOC_TOOLS_OPENAI)
         else:
@@ -4657,7 +4742,9 @@ class OpenAIClient(_BaseClient):
                                             "schedule_wakeup",
                                             "cron_create",
                                             "cron_list",
-                                            "cron_delete")
+                                            "cron_delete",
+                                            "push_notification",
+                                            "remote_trigger")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # MCP tools come prefixed mcp__server__name and route
