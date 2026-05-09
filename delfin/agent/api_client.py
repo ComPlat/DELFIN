@@ -1669,6 +1669,128 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "run_tests",
+            "description": (
+                "Run pytest with structured JSON output (uses "
+                "pytest-json-report when installed, junitxml as "
+                "fallback). Returns pass / fail / error counts plus "
+                "a list of failures with node-id + truncated message. "
+                "Prefer this over `bash python -m pytest` — parsing "
+                "human-readable pytest output is fragile and the "
+                "agent often misses the failing test ID."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Pytest path / nodeid (e.g. 'tests/' or "
+                            "'tests/test_x.py::test_y'). Empty = "
+                            "discovery from cwd."
+                        ),
+                    },
+                    "pytest_args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Extra pytest CLI args (-x, -k, -m, ...).",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "minimum": 5, "maximum": 1800,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": (
+                "Apply a unified-diff patch to files in the "
+                "workspace. Use for bulk changes (5+ hunks) where "
+                "edit_file would need many round-trips. Atomic: on "
+                "any hunk failure NO files are mutated. Pass "
+                "check_only=true for a dry-run validation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "diff": {
+                        "type": "string",
+                        "description": (
+                            "Full unified diff (must include "
+                            "--- a/file / +++ b/file headers and "
+                            "@@ hunk markers)."
+                        ),
+                    },
+                    "check_only": {"type": "boolean"},
+                },
+                "required": ["diff"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_definition",
+            "description": (
+                "Locate the definition of a symbol in the "
+                "workspace. Python uses jedi (precise, follows "
+                "imports); other languages fall back to a "
+                "language-aware grep. Returns matches with file + "
+                "line + preview."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Identifier (no qualification needed).",
+                    },
+                    "file_hint": {
+                        "type": "string",
+                        "description": (
+                            "Optional file (workspace-relative) to "
+                            "anchor the search — speeds jedi up for "
+                            "large repos."
+                        ),
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["auto", "python", "any"],
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_references",
+            "description": (
+                "Find every place a symbol is referenced. Same "
+                "backends as find_definition. Capped at 50 matches."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "file_hint": {"type": "string"},
+                    "language": {
+                        "type": "string",
+                        "enum": ["auto", "python", "any"],
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "push_notification",
             "description": (
                 "Send a desktop notification. Local-only "
@@ -2470,6 +2592,14 @@ class _DocToolExecutor:
             return self._execute_push_notification(arguments)
         if name == "remote_trigger":
             return self._execute_remote_trigger(arguments, permissions)
+
+        # Phase 6: structured test runner, patch applier, code nav.
+        if name == "run_tests":
+            return self._execute_run_tests(arguments, permissions)
+        if name == "apply_patch":
+            return self._execute_apply_patch(arguments, permissions)
+        if name in ("find_definition", "find_references"):
+            return self._execute_code_nav(name, arguments, permissions)
 
         # Planning tools — pure metadata operations on the workspace's
         # task store; no permission gate needed (the JSON file lives
@@ -3926,6 +4056,102 @@ class _DocToolExecutor:
             "cells_delta": delta_str,
         }, ensure_ascii=False)
 
+    # ------- Phase 6: tests / patch / code nav ----------------------------
+
+    def _execute_run_tests(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import test_runner as _tr
+        if perms is None:
+            return json.dumps({"error": (
+                "run_tests needs a workspace via permissions"
+            )})
+        target = str(arguments.get("target", "") or "")
+        pytest_args = arguments.get("pytest_args") or []
+        if not isinstance(pytest_args, list):
+            return json.dumps({"error": "pytest_args must be a list"})
+        timeout = int(arguments.get("timeout_s", 300) or 300)
+        result = _tr.run_tests(
+            workspace=perms.workspace,
+            target=target,
+            pytest_args=[str(a) for a in pytest_args],
+            timeout_s=timeout,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_apply_patch(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import patch_apply as _pa
+        if perms is None:
+            return json.dumps({"error": (
+                "apply_patch needs a workspace via permissions"
+            )})
+        diff = arguments.get("diff", "")
+        if not isinstance(diff, str) or not diff.strip():
+            return json.dumps({"error": "diff must be a non-empty string"})
+        check_only = bool(arguments.get("check_only", False))
+        # Plan-mode contract: still read-only.
+        if perms.mode == "plan" and not check_only:
+            return json.dumps({"error": (
+                "plan mode (read-only) — apply_patch with "
+                "check_only=true is allowed; use exit_plan_mode to "
+                "actually apply."
+            )})
+        # Self-Mod-Guard: scan diff file headers for protected paths
+        # and require explicit confirm even in bypass mode.
+        try:
+            files = _pa._files_in_diff(diff)
+        except Exception:
+            files = []
+        for rel in files:
+            if perms.matches_path_protected(rel):
+                if perms.confirm_callback is None:
+                    return json.dumps({"error": (
+                        f"path is self-mod-guarded: {rel}. "
+                        "apply_patch refuses without an explicit "
+                        "user-confirm binding."
+                    )})
+                preview = "\n".join(diff.splitlines()[:30])
+                if not perms.confirm_callback(
+                    "apply_patch",
+                    {"file": rel, "files": files},
+                    preview,
+                ):
+                    return json.dumps({"error": (
+                        f"user denied apply_patch on protected {rel}"
+                    )})
+        result = _pa.apply_patch(
+            workspace=perms.workspace,
+            diff_text=diff,
+            check_only=check_only,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_code_nav(
+        self, name: str, arguments: dict,
+        perms: Optional["KitToolPermissions"],
+    ) -> str:
+        from . import code_nav as _cn
+        if perms is None:
+            return json.dumps({"error": (
+                f"{name} needs a workspace via permissions"
+            )})
+        symbol = str(arguments.get("symbol", "") or "")
+        file_hint = str(arguments.get("file_hint", "") or "")
+        language = str(arguments.get("language", "auto") or "auto")
+        if name == "find_definition":
+            result = _cn.find_definition(
+                perms.workspace, symbol,
+                file_hint=file_hint, language=language,
+            )
+        else:
+            result = _cn.find_references(
+                perms.workspace, symbol,
+                file_hint=file_hint, language=language,
+            )
+        return json.dumps(result, ensure_ascii=False)
+
     # ------- Notifications / remote triggers ------------------------------
 
     def _execute_push_notification(self, arguments: dict) -> str:
@@ -4585,7 +4811,11 @@ class OpenAIClient(_BaseClient):
                               "cron_list",
                               "cron_delete",
                               "push_notification",
-                              "remote_trigger"}
+                              "remote_trigger",
+                              "run_tests",
+                              "apply_patch",
+                              "find_definition",
+                              "find_references"}
         if has_coding:
             advertised_tools = list(_DOC_TOOLS_OPENAI)
         else:
@@ -4744,7 +4974,11 @@ class OpenAIClient(_BaseClient):
                                             "cron_list",
                                             "cron_delete",
                                             "push_notification",
-                                            "remote_trigger")
+                                            "remote_trigger",
+                                            "run_tests",
+                                            "apply_patch",
+                                            "find_definition",
+                                            "find_references")
                     ns_prefix = "kit-coding" if is_coding else "delfin-docs"
 
                     # MCP tools come prefixed mcp__server__name and route
