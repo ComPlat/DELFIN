@@ -20881,6 +20881,29 @@ def _generate_topological_isomers(
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
 
+    # Iter-8.5b INNER: same env-flag and class-list as the outer trans/pucker
+    # skip (commit 2c1070e).  Three inner pump-pass sites in this function
+    # over-generate seeds per permutation: (1) template-loop iterates every
+    # ranked template CID, (2) balloon-builder appends a from-scratch scaffold,
+    # (3) chelate-rank variants enumerate alternative puckers.  When the env
+    # class-list contains the parent mol's class, the inner pumps are trimmed
+    # to a single deterministic seed (template-loop: first success only;
+    # balloon + chelate-ranks: skipped entirely).  Default empty set =
+    # bit-exact (every inner pump runs as before).
+    _iter85b_pump_skip_inner = False
+    try:
+        _iter85b_inner_classes = set(
+            x.strip() for x in (
+                os.environ.get("DELFIN_ITER85_PUMP_SKIP_CLASSES", "") or ""
+            ).split(",") if x.strip()
+        )
+        if _iter85b_inner_classes:
+            _iter85b_pump_skip_inner = (
+                _classify_complex_class(mol) in _iter85b_inner_classes
+            )
+    except Exception:
+        _iter85b_pump_skip_inner = False
+
     _prof = profile if profile is not None else _resolve_quality_profile(None)
     _prof_ranks    = int(_prof.get("ranks", DELFIN_CHELATE_RANK_VARIANTS))
     _prof_topk     = int(_prof.get("topk", DELFIN_TOPO_TEMPLATE_TOP_K))
@@ -21208,6 +21231,14 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                    # Iter-8.5b INNER site 1 (template-loop): when the parent
+                    # mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, take
+                    # only the first successful template seed per perm
+                    # instead of iterating every ranked template CID.  Mirrors
+                    # the outer 8.5b additive-skip philosophy at the inner
+                    # pump.  Default off = bit-exact (loop continues).
+                    if _iter85b_pump_skip_inner:
+                        break
             except Exception as exc:
                 logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
                 continue
@@ -21221,34 +21252,39 @@ def _generate_topological_isomers(
             # XYZ signature, no mono-metal variety is lost — balloon
             # only increases the candidate pool.  Deterministic by
             # construction (fixed chelate-conformer seed schedule).
-            try:
-                xyz_bln = _build_topology_xyz_from_scratch(
-                    mol, metal_idx, donor_indices, pm, gn,
-                    chelate_rank=0,
-                )
-                if xyz_bln is not None:
-                    _sig_bln = _xyz_sig(xyz_bln)
-                    if _sig_bln not in _pre_uff_seen:
-                        _pre_uff_seen.add(_sig_bln)
-                        coord_c_bln = None
-                        if apply_uff:
-                            try:
-                                coord_c_bln = _build_coordination_constraints_from_xyz(
-                                    mol, xyz_bln,
-                                )
-                            except Exception:
-                                pass
-                        _key = (tuple(cf), tuple(pm))
-                        _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
-                        _conf_idx = _variant_counter[_key] - 1
-                        _pre_uff_batch.append(
-                            (cf, pm, gn, xyz_bln, coord_c_bln, _conf_idx)
-                        )
-            except Exception as bln_exc:
-                logger.debug(
-                    "Balloon builder raised for (%s, perm=%s): %s",
-                    cf[0], pm, bln_exc,
-                )
+            # Iter-8.5b INNER site 2 (balloon-builder): when the parent
+            # mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, skip the
+            # balloon additive emission for this perm.  Default off =
+            # bit-exact (block runs as before).
+            if not _iter85b_pump_skip_inner:
+                try:
+                    xyz_bln = _build_topology_xyz_from_scratch(
+                        mol, metal_idx, donor_indices, pm, gn,
+                        chelate_rank=0,
+                    )
+                    if xyz_bln is not None:
+                        _sig_bln = _xyz_sig(xyz_bln)
+                        if _sig_bln not in _pre_uff_seen:
+                            _pre_uff_seen.add(_sig_bln)
+                            coord_c_bln = None
+                            if apply_uff:
+                                try:
+                                    coord_c_bln = _build_coordination_constraints_from_xyz(
+                                        mol, xyz_bln,
+                                    )
+                                except Exception:
+                                    pass
+                            _key = (tuple(cf), tuple(pm))
+                            _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
+                            _conf_idx = _variant_counter[_key] - 1
+                            _pre_uff_batch.append(
+                                (cf, pm, gn, xyz_bln, coord_c_bln, _conf_idx)
+                            )
+                except Exception as bln_exc:
+                    logger.debug(
+                        "Balloon builder raised for (%s, perm=%s): %s",
+                        cf[0], pm, bln_exc,
+                    )
 
             # Additional chelate-rank variants: enumerate alternative
             # chelate puckers (rank 1..N-1) for every (CF, perm).  The
@@ -21259,6 +21295,12 @@ def _generate_topological_isomers(
             # ``-confN`` labelled variant in the output so flexible
             # chelates (salen, cryptand, ethylenediamine) no longer
             # collapse to a single best-scoring pucker.
+            # Iter-8.5b INNER site 3 (chelate-rank-variants): when the
+            # parent mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES,
+            # skip the chelate-rank pump entirely for this perm.
+            # Default off = bit-exact (loop runs as before).
+            if _iter85b_pump_skip_inner:
+                continue
             if _CHELATE_RANK_VARIANTS <= 1:
                 continue
             for _crank in range(1, _CHELATE_RANK_VARIANTS):
@@ -23413,7 +23455,7 @@ def smiles_to_xyz_isomers(
             # ONLY for single-metal complexes.  Multi-metal complexes fall back
             # to the Iter-1 σ-guard behaviour (sigma-mixed -> skip OB-WRS).
             # See project_iter7_3way_findings.md for the per-class delta.
-            _hapto_123a_port_raw = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 1))
+            _hapto_123a_port_raw = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 0))
             if _hapto_123a_port_raw and _mol_hapto_gate is not None:
                 try:
                     _n_metals_check = sum(
