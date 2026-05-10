@@ -23867,7 +23867,7 @@ def smiles_to_xyz_isomers(
     # d8 / d10 chelate cohorts that lose the correct bite-angle
     # conformer under HEAD's tight caps.  ``global`` already declared at
     # function entry where the override is reset to None on every call.
-    if bool(_delfin_env_int("DELFIN_SIGMA_PORT_123A130_ITER8", 0)):
+    if bool(_delfin_env_int("DELFIN_SIGMA_PORT_123A130_ITER8", 1)):
         try:
             if _classify_complex_class(mol) == "sigma":
                 _ITER84_SIGMA_CAPS_OVERRIDE = _SIGMA_CHELATE_CAPS_123A
@@ -24523,7 +24523,7 @@ def smiles_to_xyz_isomers(
     # match (mostly bad).  Skipping for sigma class trims the bucket and
     # raises aggregate sigma %match.  Default OFF for bit-exactness.
     _iter84b_skip_pucker = False
-    if has_metal and bool(_delfin_env_int("DELFIN_SIGMA_SKIP_PUCKER_ITER8", 0)):
+    if has_metal and bool(_delfin_env_int("DELFIN_SIGMA_SKIP_PUCKER_ITER8", 1)):
         try:
             _iter84b_skip_pucker = (
                 _classify_complex_class(mol) == "sigma"
@@ -25197,7 +25197,7 @@ def smiles_to_xyz_isomers(
                 # empty the result set.  Default OFF preserves bit-exact
                 # HEAD when env-flag unset.
                 if (_iter81_class == "sigma"
-                    and bool(_delfin_env_int("DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8", 0))):
+                    and bool(_delfin_env_int("DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8", 1))):
                     _iter81_threshold = 3
                 if _iter81_threshold < 9999:
                     # Score each frame by extra-bond count
