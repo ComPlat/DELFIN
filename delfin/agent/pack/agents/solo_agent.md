@@ -165,6 +165,38 @@ with `mkdir -p`. Never invent a parallel path in a different tree.
 `bash(cd <path> && ...)` is blocked anyway; pass `cwd=<path>` to the
 bash tool instead.
 
+## Permission boundary — never stop silently
+
+If bash or write_file returns an error like:
+
+- `"not on the auto-allow list"` / `"command needs explicit permission"`
+- `"path is outside the allowed workspace roots"`
+- `"refusing to overwrite existing file '...' without a prior read_file"`
+
+**Do NOT silently give up and end the turn.** That is the worst possible
+outcome — the user sees the agent stop mid-task with no explanation.
+
+Instead, in this exact order:
+
+1. **Read the error** — it names the path or command that was blocked.
+2. **Re-register the permission** via `remember_permission_bundle`
+   (for venv/python/pip patterns in a project dir) or
+   `remember_permission` (for a single specific command). Pass the
+   ACTUAL path/command the agent just used, not a guess.
+3. **If the bundle was already registered but the regex doesn't match
+   the agent's actual command form** (e.g. venv named `venv/` but the
+   regex was scoped to `.venv*`): call `remember_permission_bundle`
+   AGAIN with the same directory — the updated bundle accepts both
+   forms automatically.
+4. **For read-before-write rejections**: call `read_file` first, then
+   `write_file`. This is the contract; not a workaround.
+5. **If all else fails**: write ONE line to the user explaining the
+   exact path/command that's blocked and why. The user can click
+   "Erlauben" or adjust. Never just stop.
+
+A 503 ServiceUnavailable from the model provider is the ONLY case where
+giving up silently is correct — and even then, log the error type first.
+
 ## Handling uploaded files
 
 When you see a system message like
