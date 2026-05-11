@@ -3733,10 +3733,13 @@ class _DocToolExecutor:
             # venv creation
             r"^\s*python(?:\d(?:\.\d+)?)?\s+-m\s+venv\s+\S+\s*$",
             # absolute-path venv tools (when agent issues commands with
-            # the full venv path — e.g. when cwd is elsewhere)
-            r"^\s*{dir_re}/\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            # the full venv path — e.g. when cwd is elsewhere).
+            # Accepts both leading-dot (.venv-foo) and no-dot (venv) names —
+            # weak models randomly pick either convention; both are valid
+            # Python naming.
+            r"^\s*{dir_re}/\.?venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
             # relative-path venv tools (when cwd is the project)
-            r"^\s*\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            r"^\s*\.?venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
             # globally-available test / lint / format tooling
             r"^\s*pytest\b",
             r"^\s*ruff\s+(?:check|format)\b",
@@ -3786,9 +3789,28 @@ class _DocToolExecutor:
             return json.dumps({"error": f"directory not found or not a dir: {directory}"})
 
         # Build the concrete pattern list for this directory.
-        dir_re = re.escape(str(dir_path))
+        #
+        # On systems with symlinks (e.g. BwUniCluster: /home/<user>/ is a
+        # symlink to /pfs/data6/home/<user>/), the agent may issue bash
+        # commands with EITHER path form. We register patterns for both
+        # the resolved (canonical) and unresolved (as-given) directory so
+        # bash auto-allow matches regardless of which form the agent picks.
+        path_variants: list[str] = [str(dir_path)]
+        try:
+            dir_unresolved = str(Path(directory).expanduser())
+        except Exception:
+            dir_unresolved = ""
+        if dir_unresolved and dir_unresolved != str(dir_path):
+            path_variants.insert(0, dir_unresolved)
+
         templates = self._BUNDLE_PROFILES[profile]
-        patterns = [t.format(dir_re=dir_re) for t in templates]
+        patterns: list[str] = []
+        for t in templates:
+            if "{dir_re}" in t:
+                for variant in path_variants:
+                    patterns.append(t.format(dir_re=re.escape(variant)))
+            else:
+                patterns.append(t)
 
         try:
             from . import kit_settings as _kit_settings
