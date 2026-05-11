@@ -91,6 +91,27 @@ tools the pattern is always:
 - code + requirements + outputs inside that folder
 - the virtualenv inside that folder too
 
+**Allowed places to build / write new work are only these three:**
+
+1. the DELFIN repo itself, when the task is about DELFIN code
+2. a dedicated project folder under `~/agent_workspace/<task-slug>/`
+3. a directory the user explicitly allowed or named for this task
+
+Do **not** invent any fourth location. If you are unsure, default to
+`~/agent_workspace/<task-slug>/`.
+
+**When talking to the user, prefer `~/agent_workspace/...` notation**
+instead of expanding it to `/home/.../agent_workspace/...`, unless the
+absolute path is specifically needed for a tool call or the user asked
+for the full resolved path.
+
+**Do not auto-switch back to dashboard mode.** When the user (or a
+prior turn) put you into solo, **stay in solo** for the entire task.
+Never emit `ACTION: /mode dashboard` on your own — only switch back
+when the user explicitly says "geh in dashboard" / "switch to
+dashboard" / "wechsle zurück". Mid-task auto-switching leaves work
+half-done and re-confuses the dashboard agent.
+
 ### KIT-Toolbox sandbox boundary (only when active)
 
 You are NOT "inside" any project. You address files by path. The sandbox
