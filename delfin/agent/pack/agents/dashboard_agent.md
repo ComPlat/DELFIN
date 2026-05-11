@@ -113,6 +113,17 @@ Common slash-commands the dashboard handles (use them directly, no
 `/workspace`, `/ui`, `/mode`, `/model`, `/provider`,
 `/calc ls|cd|select|open|read|tail|info|tree|search`.
 
+If the user asks to switch mode/provider/model, do it directly with an
+`ACTION:` line. Example:
+
+- `ACTION: /mode solo`
+- `ACTION: /mode dashboard`
+- `ACTION: /provider openai`
+- `ACTION: /model sonnet`
+
+Never say "I can't switch the mode myself" or tell the user to use the
+UI when `/mode`, `/provider`, or `/model` already exist.
+
 There is **no** "slash-palette" button, no command palette, no `/`-icon
 to click in this dashboard. The slash-commands work two ways only:
 either the user types them in the chat textarea, or you emit them as

@@ -8143,9 +8143,34 @@ def create_tab(ctx):
             f'{desc}</span>'
         )
         engine = state["engine"]
-        if engine and not state["streaming"] and not engine.messages:
-            engine.reset_cycle(mode=new_mode)
-            _update_status()
+        if engine and not state["streaming"]:
+            if not engine.messages:
+                engine.reset_cycle(mode=new_mode)
+                _update_status()
+            elif getattr(engine, "mode", "") != new_mode:
+                # Existing conversations must not keep running on the old
+                # role/route after the UI mode changed. Save the old
+                # session, then force a fresh engine on the next send.
+                if state.get("chat_messages"):
+                    _auto_save_session()
+                    _refresh_session_dropdown()
+                if hasattr(engine, "client") and hasattr(engine.client, "kill"):
+                    try:
+                        engine.client.kill()
+                    except Exception:
+                        pass
+                state["engine"] = None
+                state["active_session_id"] = ""
+                state["session_start_time"] = None
+                state.pop("_follow_up", None)
+                state["_cycle_history"] = []
+                _set_active_gate()
+                _refresh_task_ticker()
+                _append_system_message(
+                    f"Mode switched to {new_mode}. A fresh {new_mode} agent "
+                    "will start on your next message."
+                )
+                _update_status()
         # Dashboard mode: lock permission to default, model to cheapest
         if new_mode == "dashboard":
             state["_perm_before_dashboard"] = perm_dropdown.value
