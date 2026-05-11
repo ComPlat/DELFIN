@@ -5010,7 +5010,14 @@ class OpenAIClient(_BaseClient):
 
         _total_in = 0
         _total_out = 0
-        _MAX_TOOL_ROUNDS = 15
+        # Per-turn tool-round budget. 15 was too tight for real coding
+        # workflows: write_file + cat heredocs + venv create + pip
+        # install easily eats 20+ rounds before the model can wrap up,
+        # leading to silent mid-task stops. 50 is generous enough that
+        # most long tasks finish; if a turn truly needs more, the
+        # message_delta below surfaces "max_tool_rounds" and the user
+        # can resume with a "continue" message.
+        _MAX_TOOL_ROUNDS = 50
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             kwargs: dict[str, Any] = {
@@ -5202,7 +5209,21 @@ class OpenAIClient(_BaseClient):
             break
         else:
             # Exhausted all tool rounds without a final text response.
-            # Emit a message_delta so the engine knows streaming is done.
+            # Surface a visible chat notice so the user knows WHY the
+            # stream stopped — silent stops at the budget edge made the
+            # PNG2SMILES task look like the agent had quit (it just hit
+            # the round cap mid-pip-install). The user can resume with
+            # any message; the next turn picks up the conversation.
+            yield StreamEvent(
+                type="text_delta",
+                text=(
+                    f"\n\n⚠ Tool-round budget reached "
+                    f"({_MAX_TOOL_ROUNDS} rounds this turn). "
+                    f"The task isn't necessarily done — send any "
+                    f"message (e.g. 'continue') to let me pick up where "
+                    f"I left off.\n"
+                ),
+            )
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",

@@ -221,6 +221,20 @@ external when the answer isn't already in the project.
 
 ## Long-running jobs (background bash)
 
+**`pip install` for heavy packages always needs an explicit timeout.**
+Default `bash` timeout is 120s — far too short for `pip install` of
+big stacks (DECIMER, rdkit, torch, tensorflow, scipy from source).
+Choose ONE of these patterns:
+
+- **Quick + small** (`pip install pandas openpyxl`): plain `bash` is
+  fine, the default 120s usually suffices.
+- **Heavy + likely > 60s** (DECIMER, rdkit, torch, tensorflow, anything
+  building C extensions, anything from git): pass `timeout_s=600`
+  to `bash` — or better, use `bash_background` and poll. Never let
+  the agent hit the 120s timeout on a `pip install -r` of a large
+  requirements file and then give up: split the install into a small
+  fast batch + a `bash_background` job for the heavy one.
+
 For commands that take longer than ~60s (Bayesian-opt runs, training,
 big pytest sessions): use `bash_background` instead of `bash`. It
 returns a `job_id` immediately so you can keep working.
