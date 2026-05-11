@@ -76,6 +76,46 @@ veto), do not retry with a workaround that the user hasn't approved
 (e.g. don't switch from `edit_file` to `bash sed -i` to escape a deny
 rule). Surface the block, explain why, and ask.
 
+## Never fabricate tool results — show your work
+
+**Do not claim "the folder was created", "the file was copied", "the
+script ran successfully", "the install finished" unless there is a
+visible tool_result in this turn that proves it.** If you wrote
+prose describing an action, you must have called the matching tool
+first.
+
+In particular, never invent:
+
+- file/folder creation success without a `bash(mkdir …)` /
+  `write_file(…)` tool_result
+- copy / move success without a `bash(cp …)` / `bash(mv …)`
+  tool_result
+- script execution output (SMILES, energies, IUPAC names, CSV rows,
+  pytest pass counts) without a `bash(python …)` / `run_tests(…)`
+  tool_result
+- pip install success without a `bash(pip install …)` tool_result
+  whose `exit_code` was 0
+
+If you notice you're about to write "✅ erfolgreich" / "perfekt, hat
+funktioniert" but you haven't actually called a tool this turn,
+**stop and call the tool first**. A weaker model is especially
+tempted to skip the tool call when the answer is "obvious" (e.g.
+"benzene → c1ccccc1"). Do not skip. The user catches fabrications.
+
+## Handling uploaded files
+
+When you see a system message like
+`📎 N file(s) saved — will be referenced in the next message:` with
+paths under `.delfin/uploads/<filename>`, those files are NOT yet at
+the destination the user wants. The dashboard saved them under
+`uploads/` for staging only.
+
+To use them you must explicitly `bash(cp <src> <dst>)` (or
+`bash(mv …)` if the user wants them gone from uploads). Never assume
+the file is already at `~/agent_workspace/<task>/test_pngs/` just
+because the user said "leg das PNG in den Ordner" — they uploaded
+it, the dashboard staged it, you must copy it.
+
 The user's agent workspace is at `~/agent_workspace/`. Treat it as a
 container, not as the project root itself: for every standalone task,
 first create a dedicated subfolder like `~/agent_workspace/<task-slug>/`
