@@ -769,6 +769,21 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
     "search_docs", "read_section", "list_docs", "list_sections",
 })
 
+# Tools advertised to the dashboard-agent role. Mutating tools (bash,
+# write_file, edit_file, ...) are deliberately excluded — the dashboard
+# agent drives the UI via ACTION: slash-commands, not via direct file or
+# shell access. Keep this list small and read-only.
+_DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
+    # Doc / calc search — the dashboard agent's research surface.
+    "search_docs", "read_section", "list_docs", "list_sections",
+    "search_calcs", "get_calc_info", "calc_summary",
+    # Web research as last-resort fallback.
+    "web_search", "web_fetch",
+    # Structured UX & planning.
+    "ask_user_question",
+    "task_create", "task_update", "task_list",
+})
+
 
 def _is_delfin_workspace(workspace: Path | str | None) -> bool:
     """Return True iff *workspace* looks like a DELFIN source tree.
@@ -830,6 +845,10 @@ class KitToolPermissions:
 
     workspace: Path
     mode: str = "default"
+    # The active agent role from the engine — used to gate the tool
+    # surface (e.g. dashboard_agent gets a read-only allow-list).
+    # Empty string means "no role-based filtering".
+    agent_role: str = ""
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
@@ -4910,6 +4929,20 @@ class OpenAIClient(_BaseClient):
             advertised_tools = [
                 t for t in _DOC_TOOLS_OPENAI
                 if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
+            ]
+
+        # Strip ALL mutating tools when the active role is dashboard_agent
+        # — the dashboard agent drives the UI via ACTION: slash-commands
+        # and must not have bash / write / edit / apply_patch in its
+        # surface, regardless of what the user prompt or coding mode says.
+        # This is the code-level enforcement that backs the prompt's
+        # "no code changes in dashboard mode" rule.
+        _agent_role = getattr(self._permissions, "agent_role", "") or ""
+        if _agent_role == "dashboard_agent":
+            advertised_tools = [
+                t for t in advertised_tools
+                if t.get("function", {}).get("name")
+                in _DASHBOARD_AGENT_ALLOWED_TOOLS
             ]
 
         # Strip DELFIN-only tools when the workspace is not a DELFIN repo.

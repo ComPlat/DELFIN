@@ -667,6 +667,16 @@ class AgentEngine:
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
 
+        # Sync the current role onto the KitToolPermissions so the
+        # api_client can gate the advertised tool surface per-role
+        # (dashboard_agent gets read-only; coding roles get the full set).
+        try:
+            _kp = getattr(self, "kit_permissions", None)
+            if _kp is not None:
+                _kp.agent_role = self.current_role or ""
+        except Exception:
+            pass
+
         chunks: list[str] = []
         try:
             for event in self.client.stream_message(
