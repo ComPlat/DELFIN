@@ -23455,7 +23455,44 @@ def smiles_to_xyz_isomers(
             # ONLY for single-metal complexes.  Multi-metal complexes fall back
             # to the Iter-1 σ-guard behaviour (sigma-mixed -> skip OB-WRS).
             # See project_iter7_3way_findings.md for the per-class delta.
-            _hapto_123a_port_raw = bool(_delfin_env_int("DELFIN_HAPTO_123A_PORT", 0))
+            # Iter-8.6d (2026-05-11): class-conditional hapto-port restore.
+            # 8.6a (commit 7b2bb19) globally flipped HAPTO_123A_PORT default
+            # 1 -> 0, winning sigma topology (+16.62pp) but breaking hapto
+            # chemistry: 4 calibrated brid_hapto detectors put 8.6a at rank
+            # 60/63 with 34094 spurious chelate frames; per-bond diagnostic
+            # shows hapto intact-rate 43.2% (8.4abc) -> 20.7% (8.6a) = 2.4x
+            # worse than 123a130 (49.1%). See CALIBRATION_DAY1_findings.md.
+            # Class-conditional restore: port=1 for hapto/multi_hapto (where
+            # 8.4abc was better), port=0 default for sigma/multi_sigma
+            # (preserves 8.6a sigma topology win). Default class-list
+            # "hapto,multi_hapto" applies the iter-8.6d behaviour; set the
+            # env-var explicitly empty to fall back to the legacy 8.6a
+            # scalar DELFIN_HAPTO_123A_PORT (back-compat). Mimics pattern
+            # at smiles_converter.py:20890 (DELFIN_ITER85_PUMP_SKIP_CLASSES).
+            _hapto_123a_port_raw = False
+            try:
+                _hapto_123a_port_classes = set(
+                    x.strip() for x in (
+                        os.environ.get(
+                            "DELFIN_HAPTO_123A_PORT_CLASSES",
+                            "hapto,multi_hapto",
+                        ) or ""
+                    ).split(",") if x.strip()
+                )
+                if _hapto_123a_port_classes and _mol_hapto_gate is not None:
+                    _hapto_123a_port_raw = (
+                        _classify_complex_class(_mol_hapto_gate)
+                        in _hapto_123a_port_classes
+                    )
+                else:
+                    # Empty class-list -> back-compat scalar fallback
+                    _hapto_123a_port_raw = bool(
+                        _delfin_env_int("DELFIN_HAPTO_123A_PORT", 0)
+                    )
+            except Exception:
+                _hapto_123a_port_raw = bool(
+                    _delfin_env_int("DELFIN_HAPTO_123A_PORT", 0)
+                )
             if _hapto_123a_port_raw and _mol_hapto_gate is not None:
                 try:
                     _n_metals_check = sum(
@@ -26784,8 +26821,24 @@ def _build_coordination_constraints_from_xyz(
             )
             if m_idx not in base["fix_atoms"]:
                 base["fix_atoms"].append(m_idx)
+            # Iter-8.6e (2026-05-11): env-flag controlled donor-relax.
+            # When DELFIN_UFF_RELAX_DONORS=1, monodentate donors are NOT
+            # frozen during UFF.  M-D distance constraints (added above)
+            # keep bond lengths near the lookup-table values, but L-M-L
+            # angles can relax based on donor-mixing / trans-influence
+            # chemistry — breaking the idealized-template Td/Oh/SP output
+            # that shows perfect symmetric angles regardless of donor
+            # identity (User pattern 2026-05-11 "sp3-C unrealistische Td").
+            # Default OFF: bit-exact pre-8.6e behaviour.
+            _uff_relax_donors = bool(
+                _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 0)
+            )
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
+                    continue
+                if _uff_relax_donors:
+                    # Skip freezing; rely on M-D distance constraint to
+                    # preserve bond length while UFF relaxes the angle.
                     continue
                 if d_idx not in base["fix_atoms"]:
                     base["fix_atoms"].append(d_idx)
