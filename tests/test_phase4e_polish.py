@@ -74,6 +74,22 @@ def test_task_ticker_hide_completed(fresh_workspace):
     assert "done" not in html
 
 
+def test_task_ticker_filters_by_session(fresh_workspace):
+    store = get_store(fresh_workspace)
+    store.create("session A", "", session_id="sess-a")
+    store.create("session B", "", session_id="sess-b")
+
+    html_a = TT.render_html(fresh_workspace, session_id="sess-a")
+    html_b = TT.render_html(fresh_workspace, session_id="sess-b")
+    html_blank = TT.render_html(fresh_workspace, session_id="")
+
+    assert "session A" in html_a
+    assert "session B" not in html_a
+    assert "session B" in html_b
+    assert "session A" not in html_b
+    assert "No tasks yet" in html_blank
+
+
 # ---- status_line -----------------------------------------------------------
 
 

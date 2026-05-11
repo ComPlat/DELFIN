@@ -64,6 +64,25 @@ def test_task_persists_across_reload(workspace):
     assert out["tasks"][0]["subject"] == "Persist me"
 
 
+def test_tasks_are_scoped_to_session(workspace):
+    perms_a = KitToolPermissions(
+        workspace=workspace, mode="default", task_session_id="session-a"
+    )
+    perms_b = KitToolPermissions(
+        workspace=workspace, mode="default", task_session_id="session-b"
+    )
+    _doc_executor.execute("task_create", {"subject": "Only A"}, perms_a)
+    _doc_executor.execute("task_create", {"subject": "Only B"}, perms_b)
+
+    out_a = json.loads(_doc_executor.execute("task_list", {}, perms_a))
+    out_b = json.loads(_doc_executor.execute("task_list", {}, perms_b))
+
+    assert out_a["count"] == 1
+    assert out_a["tasks"][0]["subject"] == "Only A"
+    assert out_b["count"] == 1
+    assert out_b["tasks"][0]["subject"] == "Only B"
+
+
 def test_task_update_unknown_id(workspace):
     perms = KitToolPermissions(workspace=workspace, mode="default")
     out = json.loads(_doc_executor.execute("task_update", {

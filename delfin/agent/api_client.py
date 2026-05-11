@@ -849,6 +849,9 @@ class KitToolPermissions:
     # surface (e.g. dashboard_agent gets a read-only allow-list).
     # Empty string means "no role-based filtering".
     agent_role: str = ""
+    # Dashboard / UI session that owns the current task list. Empty means
+    # "no active session-scoped task filter".
+    task_session_id: str = ""
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
@@ -1648,11 +1651,13 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "task_create",
             "description": (
-                "Add a planning task to this project's persistent task "
-                "list (mirrors Claude Code's TaskCreate). Useful for "
+                "Add a planning task to this session's task list within "
+                "the current project (mirrors Claude Code's TaskCreate). "
+                "Useful for "
                 "multi-step integrations: 'integrate BoTorch wrapper', "
                 "'add comparison notebook', 'write regression tests'. "
-                "Tasks survive session restarts via "
+                "Tasks survive session restarts for the same saved session "
+                "via "
                 "<workspace>/.delfin/session_tasks.json. Status starts "
                 "at 'pending'; switch to 'in_progress' when you start "
                 "work and 'completed' when done."
@@ -4651,7 +4656,8 @@ class _DocToolExecutor:
             return json.dumps({"error": "subject must be non-empty"})
         try:
             task = self._task_store(perms).create(
-                subject, description, active_form
+                subject, description, active_form,
+                session_id=getattr(perms, "task_session_id", "") or "",
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
@@ -4699,9 +4705,11 @@ class _DocToolExecutor:
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
         include_deleted = bool(arguments.get("include_deleted", False))
+        _sid = getattr(perms, "task_session_id", "") or ""
         try:
             tasks = self._task_store(perms).list(
-                include_deleted=include_deleted
+                include_deleted=include_deleted,
+                session_id=_sid if _sid else None,
             )
         except Exception as exc:
             return json.dumps({"error": f"task_list failed: {exc}"})

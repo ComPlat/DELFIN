@@ -10,6 +10,7 @@ two simultaneous projects don't share task lists.
 Tasks are intentionally simple records:
 
 * ``id`` — integer, monotonically increasing within a workspace
+* ``session_id`` — owning chat/session id within that workspace
 * ``subject`` — short imperative title shown in the dashboard list
 * ``description`` — what needs to be done (multiline OK)
 * ``status`` — ``pending`` / ``in_progress`` / ``completed`` / ``deleted``
@@ -79,7 +80,7 @@ class TaskStore:
     # -- public API --------------------------------------------------------
 
     def create(self, subject: str, description: str = "",
-               active_form: str = "") -> dict:
+               active_form: str = "", session_id: str = "") -> dict:
         if not subject.strip():
             raise ValueError("subject must be non-empty")
         with self._lock:
@@ -89,6 +90,7 @@ class TaskStore:
             now = _now_iso()
             task = {
                 "id": tid,
+                "session_id": str(session_id or "").strip(),
                 "subject": subject.strip(),
                 "description": description,
                 "active_form": active_form or "",
@@ -130,10 +132,17 @@ class TaskStore:
                     return t
         return None
 
-    def list(self, *, include_deleted: bool = False) -> list[dict]:
+    def list(
+        self, *, include_deleted: bool = False, session_id: str | None = None
+    ) -> list[dict]:
         with self._lock:
             data = self._load()
         tasks = data.get("tasks", []) or []
+        if session_id is not None:
+            if session_id == "":
+                tasks = []
+            else:
+                tasks = [t for t in tasks if t.get("session_id", "") == session_id]
         if not include_deleted:
             tasks = [t for t in tasks if t.get("status") != "deleted"]
         return tasks

@@ -58,12 +58,13 @@ def _sorted(tasks: Iterable[dict]) -> list[dict]:
 def render_html(
     workspace: Path | str,
     *,
+    session_id: str | None = None,
     show_completed: bool = True,
     max_rows: int = 30,
 ) -> str:
     """Return an HTML fragment listing tasks, ready for ipywidgets HTML."""
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False)
+    raw = store.list(include_deleted=False, session_id=session_id)
     if not show_completed:
         raw = [t for t in raw if t.get("status") != "completed"]
     if not raw:
@@ -101,10 +102,12 @@ def render_html(
     )
 
 
-def render_text(workspace: Path | str, *, max_rows: int = 30) -> str:
+def render_text(
+    workspace: Path | str, *, session_id: str | None = None, max_rows: int = 30
+) -> str:
     """Plain-text rendering for logs / headless contexts."""
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False)
+    raw = store.list(include_deleted=False, session_id=session_id)
     if not raw:
         return "(no tasks)"
     lines: list[str] = []

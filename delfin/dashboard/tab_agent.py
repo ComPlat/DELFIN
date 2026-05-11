@@ -2184,7 +2184,9 @@ def create_tab(ctx):
                     ws = kp.workspace
             if ws is None:
                 ws = ctx.repo_dir or Path.cwd()
-            task_ticker_html.value = _tt_render(ws)
+            task_ticker_html.value = _tt_render(
+                ws, session_id=str(state.get("active_session_id", "") or "")
+            )
         except Exception:
             task_ticker_html.value = ""
 
@@ -2460,6 +2462,7 @@ def create_tab(ctx):
         if kp is None:
             return
         try:
+            _ensure_task_session_id(engine, create=False)
             kp.ask_user_callback = _show_ask_user_modal
             kp.plan_approval_callback = _show_plan_approval
         except Exception:
@@ -2570,8 +2573,12 @@ def create_tab(ctx):
         # stays empty and the session would silently never persist. Mint a
         # UUID ourselves so auto-save works for every provider.
         if not engine.session_id:
-            import uuid as _uuid
-            engine.session_id = str(_uuid.uuid4())
+            state_sid = str(state.get("active_session_id", "") or "").strip()
+            if state_sid:
+                engine.session_id = state_sid
+            else:
+                import uuid as _uuid
+                engine.session_id = str(_uuid.uuid4())
         # Skip if there's nothing to save yet (no chat messages).
         if not state.get("chat_messages"):
             return
@@ -2591,6 +2598,12 @@ def create_tab(ctx):
                 cost_usd=estate["cost_usd"],
             )
             state["active_session_id"] = engine.session_id
+            try:
+                kp = getattr(engine, "kit_permissions", None)
+                if kp is not None:
+                    kp.task_session_id = engine.session_id
+            except Exception:
+                pass
             _refresh_session_dropdown()
         except Exception:
             pass  # non-critical — don't break the chat
@@ -2633,8 +2646,15 @@ def create_tab(ctx):
         state["_cycle_history"] = data.get("cycle_history", [])
         state["_mode_manual_override"] = True
         state["active_session_id"] = session_id
+        try:
+            kp = getattr(engine, "kit_permissions", None)
+            if kp is not None:
+                kp.task_session_id = session_id
+        except Exception:
+            pass
         _set_active_gate()
         _refresh_chat_html()
+        _refresh_task_ticker()
         _update_status()
         _update_button_states()
 
@@ -2658,6 +2678,25 @@ def create_tab(ctx):
             mode_dropdown.value = new_mode
         finally:
             state["_mode_change_internal"] = False
+
+    def _ensure_task_session_id(engine=None, *, create: bool = False) -> str:
+        """Return/sync the current task session id for dashboard tasks."""
+        sid = str(state.get("active_session_id", "") or "").strip()
+        if not sid and engine is not None:
+            sid = str(getattr(engine, "session_id", "") or "").strip()
+            if sid:
+                state["active_session_id"] = sid
+        if not sid and create:
+            import uuid as _uuid
+            sid = str(_uuid.uuid4())
+            state["active_session_id"] = sid
+        try:
+            kp = getattr(engine, "kit_permissions", None)
+            if kp is not None:
+                kp.task_session_id = sid
+        except Exception:
+            pass
+        return sid
 
     def _dropdown_values(options) -> list[str]:
         """Normalize ipywidgets dropdown options to a list of values.
@@ -6935,6 +6974,7 @@ def create_tab(ctx):
             state["_deny_count"] = 0  # Reset retry counter for new message
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
+        _ensure_task_session_id(engine, create=True)
         _update_button_states()
         _set_working(True, "Thinking...")
 
@@ -8045,6 +8085,12 @@ def create_tab(ctx):
         state["chat_messages"].clear()
         state["streaming"] = False
         state["active_session_id"] = ""
+        try:
+            kp = getattr(engine, "kit_permissions", None) if engine else None
+            if kp is not None:
+                kp.task_session_id = ""
+        except Exception:
+            pass
         state["recent_edits"].clear()
         state.pop("_mode_suggested", None)
         state.pop("_pending_mode_msg", None)
@@ -8060,6 +8106,7 @@ def create_tab(ctx):
         undo_btn.disabled = True
         session_dropdown.value = ""
         _refresh_chat_html()
+        _refresh_task_ticker()
         _update_status()
         _update_button_states()
 
