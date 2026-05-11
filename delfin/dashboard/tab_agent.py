@@ -2659,6 +2659,20 @@ def create_tab(ctx):
         finally:
             state["_mode_change_internal"] = False
 
+    def _dropdown_values(options) -> list[str]:
+        """Normalize ipywidgets dropdown options to a list of values.
+
+        ipywidgets accepts either plain strings like ["dashboard", "solo"]
+        or (label, value) tuples. Slash-command handlers must support both.
+        """
+        vals: list[str] = []
+        for opt in options or []:
+            if isinstance(opt, (tuple, list)) and len(opt) >= 2:
+                vals.append(str(opt[1]))
+            else:
+                vals.append(str(opt))
+        return vals
+
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
         if provider_dropdown.value == "kit":
@@ -4051,7 +4065,9 @@ def create_tab(ctx):
         # /mode <name>
         if cmd.startswith("/mode "):
             name = cmd[6:].strip()
-            opts = [v for _, v in mode_dropdown.options] if hasattr(mode_dropdown, 'options') else []
+            opts = _dropdown_values(
+                mode_dropdown.options if hasattr(mode_dropdown, "options") else []
+            )
             if not opts:
                 opts = [mode_dropdown.value]
             if name in opts:
