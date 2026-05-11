@@ -1134,8 +1134,13 @@ def create_tab(ctx):
             ("o4-mini", "o4-mini"),
             ("o3", "o3"),
         ],
+        # Mirrors the live KIT-Toolbox /models response as of 2026-05.
+        # Kept generous so a failed/empty fetch still gives users every
+        # selectable model — the live fetch overwrites this when it
+        # succeeds, so any newer additions appear automatically.
         "kit": [
             ("Azure GPT-5.1", "azure.gpt-5.1"),
+            ("Azure GPT-5.4", "azure.gpt-5.4"),
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
@@ -1144,6 +1149,11 @@ def create_tab(ctx):
             ("Azure GPT-4.1", "azure.gpt-4.1"),
             ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
             ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
+            ("KIT gpt-oss 120B", "kit.gpt-oss-120b"),
+            ("KIT gemma4 31B-it", "kit.gemma4-31b-it"),
+            ("KIT minimax m2.7 229B", "kit.minimax-m2.7-229b"),
+            ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
+            ("KIT qwen3.5 397B-A17b", "kit.qwen3.5-397b-A17b"),
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
@@ -1151,8 +1161,11 @@ def create_tab(ctx):
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
                        "kit": "azure.gpt-5-nano"}
 
-    # Skip patterns: models that should not appear in the dropdown
+    # Skip patterns: models that should not appear in the dropdown.
+    # Embedding models can't generate chat completions — they'd error
+    # out on the first send, so we hide them from the chat-model picker.
     _KIT_SKIP = {"standard-external", "standard-extern", "standard-local"}
+    _MODEL_ID_HIDE_SUBSTRINGS = ("embedding", "embed-")
 
     def _fetch_models(provider):
         """Fetch model list from API. Returns [(label, id), ...] or None."""
@@ -1189,6 +1202,11 @@ def create_tab(ctx):
                 mid = m.get("id", "")
                 if not mid or mid in _KIT_SKIP:
                     continue
+                # Hide embedding / re-ranker models — they can't generate
+                # chat completions and would error out at send time.
+                if any(sub in mid.lower()
+                       for sub in _MODEL_ID_HIDE_SUBSTRINGS):
+                    continue
                 label = mid.replace("azure.", "Azure ").replace("kit.", "KIT ")
                 result.append((label, mid))
             # Sort: azure/cloud first, then local, alphabetically within groups
@@ -1217,6 +1235,23 @@ def create_tab(ctx):
     _init_fetched = _fetch_models(_init_provider)
     if _init_fetched:
         _PROVIDER_MODELS[_init_provider] = _init_fetched
+    # Stash init-fetch result so we can emit a status banner once
+    # _append_system_message is wired up further down the build.
+    state["_models_init_status"] = {
+        "provider": _init_provider,
+        "live": bool(_init_fetched),
+        "count": (
+            len(_init_fetched) if _init_fetched
+            else len(_PROVIDER_MODELS[_init_provider])
+        ),
+        "key_present": (
+            bool(os.environ.get("KIT_TOOLBOX_API_KEY", ""))
+            if _init_provider == "kit"
+            else bool(os.environ.get("OPENAI_API_KEY", ""))
+            if _init_provider == "openai"
+            else True
+        ),
+    }
     _init_models = _PROVIDER_MODELS[_init_provider]
     _init_default = _PROVIDER_DEFAULTS.get(_init_provider, _init_models[0][1])
     _init_valid = {v for _, v in _init_models}
@@ -1227,6 +1262,55 @@ def create_tab(ctx):
         layout=widgets.Layout(width="170px"),
         style={"description_width": "45px"},
     )
+    model_dropdown.add_class("delfin-agent-model-dropdown")
+    # Hidden refresh-trigger button — clicked programmatically from JS
+    # when the user opens the model dropdown. Keeps the live fetch
+    # off the visible UI while still giving users a fresh list every
+    # time they want to pick a model.
+    model_refresh_btn = widgets.Button(
+        description="↻",
+        tooltip="hidden auto-refresh trigger",
+        layout=widgets.Layout(width="0px", height="0px",
+                              display="none"),
+    )
+    model_refresh_btn.add_class("delfin-agent-model-refresh")
+
+    def _on_refresh_models(_btn):
+        provider = provider_dropdown.value
+        fetched = _fetch_models(provider)
+        if fetched:
+            _PROVIDER_MODELS[provider] = fetched
+            model_dropdown.options = fetched
+            valid = {v for _, v in fetched}
+            if model_dropdown.value not in valid:
+                model_dropdown.value = fetched[0][1]
+            model_refresh_btn.tooltip = (
+                f"Refresh model list. Current: LIVE "
+                f"({len(fetched)} models)"
+            )
+            _append_system_message(
+                f"↻ {len(fetched)} models loaded live from {provider}."
+            )
+        else:
+            hint = ""
+            if provider == "kit" and not os.environ.get(
+                "KIT_TOOLBOX_API_KEY", ""
+            ):
+                hint = (
+                    " → KIT_TOOLBOX_API_KEY is not set in the dashboard "
+                    "process. Set it before startup or via "
+                    "`os.environ['KIT_TOOLBOX_API_KEY']='…'` in a "
+                    "notebook cell and press ↻ again."
+                )
+            elif provider == "openai" and not os.environ.get(
+                "OPENAI_API_KEY", ""
+            ):
+                hint = " → OPENAI_API_KEY is not set."
+            _append_system_message(
+                f"↻ Live fetch failed, fallback list active.{hint}"
+            )
+
+    model_refresh_btn.on_click(_on_refresh_models)
     # Effort selector (only affects API backend; CLI manages thinking internally)
     effort_dropdown = widgets.Dropdown(
         options=[
@@ -1354,9 +1438,11 @@ def create_tab(ctx):
 
     controls_row = widgets.VBox([
         widgets.HBox(
-            [mode_dropdown, provider_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+            [mode_dropdown, provider_dropdown, model_dropdown,
+             effort_dropdown, perm_dropdown,
              new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
-             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
+             model_refresh_btn],
             layout=widgets.Layout(flex_flow="row wrap"),
         ),
         mode_desc_html,
@@ -1685,10 +1771,10 @@ def create_tab(ctx):
 
     # Plan-mode accept button: shown only after agent answered while in plan mode.
     plan_accept_btn = widgets.Button(
-        description="Plan akzeptieren & ausführen",
+        description="Accept plan & execute",
         button_style="success",
-        tooltip=("Schaltet auf 'acceptEdits' und prompted den Agent, "
-                 "den vorgeschlagenen Plan jetzt auszuführen."),
+        tooltip=("Switches to 'acceptEdits' and prompts the agent to "
+                 "execute the proposed plan now."),
         layout=widgets.Layout(display="none", margin="4px 0"),
     )
 
@@ -1708,21 +1794,21 @@ def create_tab(ctx):
         if eng is None or not hasattr(eng, "set_kit_permission_mode"):
             return
         if not eng.set_kit_permission_mode("acceptEdits"):
-            _append_system_message("Mode-Wechsel auf acceptEdits fehlgeschlagen.")
+            _append_system_message("Mode switch to acceptEdits failed.")
             return
-        _append_system_message("Mode → acceptEdits · sende Plan-Ausführungsbefehl …")
+        _append_system_message("Mode → acceptEdits · sending plan-execute command …")
         state["_kit_plan_has_response"] = False
         _refresh_kit_mode_chip()
         # Inject a follow-up user message that triggers execution.
         try:
             input_textarea.value = (
-                "Bitte den vorgeschlagenen Plan jetzt ausführen. "
-                "Nutze die KIT-Toolbox-Tools (write_file/edit_file/bash) "
-                "und melde nach jedem Schritt kurz, was du tust."
+                "Please execute the proposed plan now. "
+                "Use the KIT-Toolbox tools (write_file / edit_file / bash) "
+                "and briefly report after each step what you did."
             )
             _on_send(None)
         except Exception as exc:
-            _append_system_message(f"Auto-Send fehlgeschlagen: {exc}")
+            _append_system_message(f"Auto-send failed: {exc}")
 
     plan_accept_btn.on_click(_on_plan_accept)
 
@@ -2311,11 +2397,11 @@ def create_tab(ctx):
             if isinstance(content, memoryview):
                 content = bytes(content)
             if not content:
-                _append_system_message(f"Datei leer, übersprungen: {fname}")
+                _append_system_message(f"File empty, skipped: {fname}")
                 continue
             if len(content) > _UPLOAD_SIZE_CAP:
                 _append_system_message(
-                    f"Datei zu groß (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
+                    f"File too large (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
                     f"{fname}"
                 )
                 continue
@@ -2324,23 +2410,21 @@ def create_tab(ctx):
                 target.write_bytes(content)
                 saved.append(target)
             except OSError as exc:
-                _append_system_message(
-                    f"Datei speichern fehlgeschlagen: {exc}"
-                )
+                _append_system_message(f"Save failed: {exc}")
         state["_pending_images"] = saved
         if saved:
             paths = "\n".join(f"  - {p}" for p in saved)
             _append_system_message(
-                f"📎 {len(saved)} Datei(en) gespeichert — werden bei der "
-                f"nächsten Nachricht erwähnt:\n{paths}"
+                f"📎 {len(saved)} file(s) saved — will be referenced in "
+                f"the next message:\n{paths}"
             )
 
     image_upload.observe(_on_image_upload, names="value")
 
     # Resume-Last-Session button.
     resume_last_btn = widgets.Button(
-        description="↩ Letzte Session",
-        tooltip="Lädt die zuletzt aktive Session aus ~/.delfin/agent_sessions",
+        description="↩ Last session",
+        tooltip="Load the most recent session from ~/.delfin/agent_sessions",
         layout=widgets.Layout(width="160px"),
     )
 
@@ -2349,21 +2433,21 @@ def create_tab(ctx):
             from delfin.agent.session_store import resume_latest
             data = resume_latest(max_age_s=7 * 86_400)
         except Exception as exc:
-            _append_system_message(f"Resume fehlgeschlagen: {exc}")
+            _append_system_message(f"Resume failed: {exc}")
             return
         if data is None:
             _append_system_message(
-                "Keine kürzliche Session gefunden (älter als 7 Tage oder leer)."
+                "No recent session found (older than 7 days or empty)."
             )
             return
         sid = str(data.get("session_id", ""))
         if not sid:
-            _append_system_message("Session-Datei ist defekt (kein session_id).")
+            _append_system_message("Session file is corrupt (no session_id).")
             return
         try:
             _load_saved_session(sid)
         except Exception as exc:
-            _append_system_message(f"Session-Laden fehlgeschlagen: {exc}")
+            _append_system_message(f"Session load failed: {exc}")
 
     resume_last_btn.on_click(_on_resume_last)
 
@@ -8340,8 +8424,72 @@ def create_tab(ctx):
             }
         }
     }, true);
+
+    /* Auto-refresh model list when the model dropdown is opened.
+       We listen on mousedown — that fires *before* the native select
+       expands its options, so by the time the user picks a value the
+       live list is already populated. We throttle to avoid hammering
+       the API: max one fetch every 5 seconds per dropdown. */
+    var _lastModelRefresh = 0;
+    document.addEventListener('mousedown', function(e) {
+        var wrapper = e.target.closest
+            ? e.target.closest('.delfin-agent-model-dropdown')
+            : null;
+        if (!wrapper) return;
+        var now = Date.now();
+        if (now - _lastModelRefresh < 5000) return;
+        _lastModelRefresh = now;
+        var refresh = document.querySelector(
+            '.delfin-agent-model-refresh button'
+        );
+        if (refresh) refresh.click();
+    }, true);
 })();
 """
+
+    # Emit init-status banner for the initial /models fetch so the user
+    # immediately knows whether the dropdown is showing live or fallback
+    # data. Surfaces the API-key hint when the live fetch silently fell
+    # back — the most common cause of "I only see 9 models".
+    # Note: claude has no /models endpoint — its list is intentionally
+    # hard-coded (CLI manages the actual model selection), so we don't
+    # call that a "failure".
+    _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
+    try:
+        _mst = state.get("_models_init_status") or {}
+        _mp = _mst.get("provider", "")
+        _mc = _mst.get("count", 0)
+        if _mp not in _LIVE_FETCH_PROVIDERS:
+            # No live fetch for this provider by design (claude has no
+            # /models endpoint, list is hard-coded). Stay quiet — the
+            # dropdown already shows what's available.
+            pass
+        elif _mst.get("live"):
+            # Stay quiet on success too — no news is good news.
+            pass
+        else:
+            if not _mst.get("key_present"):
+                _key_name = (
+                    "KIT_TOOLBOX_API_KEY" if _mp == "kit"
+                    else "OPENAI_API_KEY"
+                )
+                _hint = (
+                    f" — {_key_name} is not set in the dashboard "
+                    f"process. Set it before startup or via a notebook "
+                    f"cell (`import os; "
+                    f"os.environ['{_key_name}']='…'`) and press ↻."
+                )
+            else:
+                _hint = (
+                    " — Live fetch failed (network/auth). "
+                    "Press ↻ next to the model dropdown to retry."
+                )
+            _append_system_message(
+                f"⚠ Models: fallback active for {_mp} "
+                f"({_mc} models){_hint}"
+            )
+    except Exception:
+        pass
 
     tab_widget = agent_content
     return tab_widget, {"init_js": _enter_key_init_js}
