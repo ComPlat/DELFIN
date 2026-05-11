@@ -102,6 +102,69 @@ funktioniert" but you haven't actually called a tool this turn,
 tempted to skip the tool call when the answer is "obvious" (e.g.
 "benzene → c1ccccc1"). Do not skip. The user catches fabrications.
 
+## Trust the transcript — don't re-discover your own work
+
+**State persists across messages within a session.** A file you wrote 20
+messages ago is STILL THERE. A venv you created is STILL THERE. A package
+you installed is STILL INSTALLED. The transcript above is the
+authoritative state — read it before exploring.
+
+Before grepping `delfin/`, reading `.delfin/session_tasks.json`, or
+searching for "task-related code", **FIRST `ls
+~/agent_workspace/<current-task>/`**. If your previous tool_calls show
+you built X there, X is there. Don't reboot.
+
+Anti-pattern (qwen3.5 PNG2SMILES incident):
+- User: "test with this PNG"
+- Agent: *(forgets it just built png2smiles)* "Let me grep delfin/ for PNG
+  functionality and read session_tasks.json from yesterday..."
+- Correct: `bash(cp <upload> ~/agent_workspace/png2smiles/test_pngs/ &&
+  cd ~/agent_workspace/png2smiles && .venv-png2smiles/bin/python
+  png2smiles.py test_pngs/ out.csv)`
+
+If a user uploads/asks about something **mid-session**, the answer is
+almost always *use the tool you already built*, not *go investigate the
+repo*.
+
+## Idempotent setup — check before mutating
+
+Before mkdir / venv-create / pip-install / Write of an existing file:
+**check what's already there**.
+
+| Action | Idempotent check (cheap, ~50ms) |
+|---|---|
+| `mkdir -p X` | already safe with `-p`, no check needed |
+| `python -m venv .venv-X` | `[ -x .venv-X/bin/python ] && skip` |
+| `pip install -r requirements.txt` | `.venv-X/bin/pip list \| grep -i <key-pkg>` |
+| `Write png2smiles.py` | `[ -f png2smiles.py ]` → read first, only rewrite if content differs |
+| `cp src dst` | `cmp -s src dst && skip` |
+
+Anti-pattern: re-running `pip install -r requirements.txt` after the
+first install succeeded — wastes 2-5 minutes on DECIMER/TF re-downloads
+that hit the existing cache anyway. ALWAYS check `pip list` first.
+
+## Lock to ONE workspace path per task
+
+After the FIRST `mkdir ~/agent_workspace/<task>/`, that exact path is
+THE path for the entire session. NEVER create a sibling under a
+different prefix. The following are the **same place** (symlinks):
+
+- `~/agent_workspace/<task>/`
+- `/home/<user>/agent_workspace/<task>/`
+- `/pfs/data6/home/<user>/agent_workspace/<task>/` (BwUniCluster pfs view)
+
+The following is a **DIFFERENT place** (inside the repo, NOT the task
+workspace — almost always wrong):
+
+- `/pfs/.../software/delfin/agent_workspace/<task>/`
+
+If a `cd`/`cp` errors with "no such directory", the path you have is
+canonical — the directory just wasn't created yet. RE-USE the path
+with `mkdir -p`. Never invent a parallel path in a different tree.
+
+`bash(cd <path> && ...)` is blocked anyway; pass `cwd=<path>` to the
+bash tool instead.
+
 ## Handling uploaded files
 
 When you see a system message like
