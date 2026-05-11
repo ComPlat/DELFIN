@@ -448,6 +448,21 @@ export PYTHONNOUSERSITE=1
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PIP_NO_INPUT=1
 
+# Capture DELFIN git commit on the login/source side and pass it through
+# so compute nodes (where the package is often installed without a .git
+# tree, or git is missing from PATH) still log a meaningful commit hash
+# instead of "unknown". User can override by exporting before sbatch.
+if [ -z "${DELFIN_GIT_COMMIT:-}" ] && [ -n "${DELFIN_DIR:-}" ] && [ -d "$DELFIN_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    _delfin_commit="$(git -C "$DELFIN_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+    if [ -n "$_delfin_commit" ]; then
+        if ! git -C "$DELFIN_DIR" diff-index --quiet HEAD -- 2>/dev/null; then
+            _delfin_commit="${_delfin_commit}-dirty"
+        fi
+        export DELFIN_GIT_COMMIT="$_delfin_commit"
+    fi
+    unset _delfin_commit
+fi
+
 # Redirect cache directories to SSD when available
 if [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
     export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$STAGE_BASE/.cache_${SLURM_JOB_ID:-0}}"
