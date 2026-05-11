@@ -12860,7 +12860,20 @@ def _build_hapto_scaffold(
     _organic_rings = []
     for ring in _all_rings:
         ring_set = set(ring)
-        if ring_set <= all_hapto_atoms:
+        # Iter-8.10 (2026-05-11): skip rings that have ANY overlap with
+        # hapto atoms (not just rings ENTIRELY inside hapto set). Previous
+        # condition `<= all_hapto_atoms` left mixed rings (hapto + non-hapto
+        # members) to be polygon-placed by _place_ring_inline, which
+        # OVERWRITES the already-placed hapto coordinates with a generic
+        # n-gon. Caused GIQRAA Fe CN10 (2× η4-diene): only 5/8 Fe-C bonds
+        # at correct 2.011Å, 3 hapto-Cs scattered at 2.78-3.0Å. Same
+        # ZOQTEE Ru CN12: 9/12 correct.  Fix (Subagent-validated):
+        #   GIQRAA: 5/8 → 8/8 hapto Fe-C correct
+        #   ZOQTEE: 9/12 → 12/12 hapto Ru-C correct
+        # Bug pre-dates HEAD (81f8a1f also has it). No env-flag needed —
+        # the previous behavior is objectively broken for multi-fragment
+        # hapto. Non-hapto ring atoms fall through to BFS-VSEPR placement.
+        if ring_set & all_hapto_atoms:
             continue
         if any(mol.GetAtomWithIdx(a).GetSymbol() in _METAL_SET for a in ring):
             continue
@@ -25433,6 +25446,22 @@ def smiles_to_xyz_isomers(
                     # Best-of-K fallback
                     _n_total = len(results)
                     _k_min = max(2, int(round(0.3 * _n_total)))
+                    # Iter-8.10b (2026-05-11, Subagent 1 forensik):
+                    # preserve frames with DISTINCT base labels — the
+                    # extras-filter killed FIRCOY/TIYRUR 5→2 and 3→2 even
+                    # though distinct isomer-labels (e.g. all-trans,
+                    # N-trans, O-trans, all-cis) were present. Per dual
+                    # contract "alle isomere", every distinct base-label
+                    # frame must survive regardless of extras-count.
+                    # Env-gate DELFIN_ITER81_PRESERVE_DISTINCT_LABELS
+                    # default 1 (active); set to 0 for legacy extras-only.
+                    if _delfin_env_int("DELFIN_ITER81_PRESERVE_DISTINCT_LABELS", 1):
+                        import re as _re_lbl
+                        _unique_bases = {
+                            _re_lbl.sub(r'-(?:conf)?\d+$', '', d)
+                            for _, d in results
+                        }
+                        _k_min = max(_k_min, min(_n_total, len(_unique_bases)))
                     if len(_kept) < _k_min:
                         _scored.sort(key=lambda t: t[0])
                         _kept = [(x, d) for _, x, d in _scored[:_k_min]]
