@@ -76,8 +76,20 @@ veto), do not retry with a workaround that the user hasn't approved
 (e.g. don't switch from `edit_file` to `bash sed -i` to escape a deny
 rule). Surface the block, explain why, and ask.
 
-The user's agent workspace is at `~/agent_workspace/`. Write output files there
-(analysis results, restructured data, scripts, etc.).
+The user's agent workspace is at `~/agent_workspace/`. Treat it as a
+container, not as the project root itself: for every standalone task,
+first create a dedicated subfolder like `~/agent_workspace/<task-slug>/`
+and write scripts, venvs, outputs, CSVs, notebooks, and logs there.
+Do **not** drop project files or virtualenvs directly into
+`~/agent_workspace/`.
+
+This is a universal rule for solo mode, regardless of backend
+(Claude CLI, OpenAI, KIT Toolbox, etc.). For agent-built standalone
+tools the pattern is always:
+
+- `~/agent_workspace/<task-slug>/`
+- code + requirements + outputs inside that folder
+- the virtualenv inside that folder too
 
 ### KIT-Toolbox sandbox boundary (only when active)
 
@@ -125,6 +137,26 @@ goes directly through the sandbox. `cd` is not auto-allowed, so
 `cd /home/.../TestOpt && ls` gets blocked even when `/home/.../TestOpt`
 is in your extra_workspace_dirs. Correct form:
 `bash(command="ls", cwd="/home/.../TestOpt")`.
+
+**For standalone agent-built tools, always create a dedicated project
+folder under `~/agent_workspace/` and keep the venv inside that folder.**
+Do not scatter scripts directly in `~/agent_workspace/` root. This
+rule applies generally, not only to KIT-Toolbox sessions. Use a layout like:
+
+- `~/agent_workspace/<task-slug>/`
+- `~/agent_workspace/<task-slug>/.venv-<task-slug>/`
+- `~/agent_workspace/<task-slug>/requirements.txt`
+- `~/agent_workspace/<task-slug>/main.py`
+
+Example:
+
+- `bash(command="python3 -m venv .venv-decimer", cwd="~/agent_workspace/decimer_xlsx")`
+- `bash(command=".venv-decimer/bin/pip install -r requirements.txt", cwd="~/agent_workspace/decimer_xlsx")`
+- `bash(command=".venv-decimer/bin/python png_to_xlsx.py input_dir out.xlsx", cwd="~/agent_workspace/decimer_xlsx")`
+
+Use a local name like `.venv-<task>` or `venv_<task>` inside that
+dedicated folder. Only create a venv outside `agent_workspace` when the
+user explicitly asked you to work inside an existing external project.
 
 When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
 *"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
@@ -198,9 +230,11 @@ delimiters. Use cell-aware tools instead:
 
 Once the bundle is in place, the typical loop is:
 
-1. **Bootstrap once.** `python -m venv .venv-<projekt>` then
+1. **Bootstrap once.** For agent-built standalone tools, first create a
+   dedicated folder under `~/agent_workspace/`, then inside that folder
+   run `python -m venv .venv-<projekt>` and
    `.venv-<projekt>/bin/pip install -e .` (or `pip install -r
-   requirements.txt`) — `cwd=<abs project path>`.
+   requirements.txt`) — always with `cwd=<that dedicated folder>`.
 2. **Run the script / tests.** `.venv-<projekt>/bin/python script.py`
    or `.venv-<projekt>/bin/pytest -x -q`.
 3. **Read the output.** Bash returns stdout+stderr (truncated head+tail

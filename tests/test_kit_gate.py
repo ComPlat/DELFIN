@@ -157,6 +157,21 @@ def test_bash_auto_allow_match_proceeds(workspace):
     assert err is None
 
 
+@pytest.mark.parametrize("cmd", [
+    ".venv-demo/bin/pip install -r requirements.txt",
+    ".venv-demo/bin/python main.py",
+    "venv_demo/bin/pip install decimer",
+    "venv_demo/bin/pytest -q",
+])
+def test_bash_workspace_local_venv_tools_auto_allowed(workspace, cmd):
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(),
+    )
+    err = _gate(perms, "bash", {"command": cmd, "description": "venv tool"})
+    assert err is None, f"expected workspace-local venv tool allow for {cmd!r}, got: {err}"
+
+
 def test_bash_no_match_default_fails_clearly(workspace):
     """In default mode, an unmatched command must fail with a clear hint —
     no confirm dialog popped, no silent allow."""

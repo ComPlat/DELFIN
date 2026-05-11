@@ -961,6 +961,28 @@ class KitToolPermissions:
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
                 return True
+        # Workspace-local virtualenv tool invocations are safe to
+        # auto-allow in default mode because sandboxing still confines
+        # them to the allowed roots. Support both hidden `.venv-*` and
+        # plain `venv-*` names, plus absolute or cwd-relative forms.
+        _tool = (
+            r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
+            r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
+        )
+        _m_rel = re.match(
+            rf"^\s*((?:\.?venv)[\w.-]*/bin/{_tool})\b", cmd, re.IGNORECASE
+        )
+        _m_abs = re.match(
+            rf"^\s*((?:~|/)[^\s]*/(?:\.?venv)[\w.-]*/bin/{_tool})\b",
+            cmd, re.IGNORECASE,
+        )
+        candidate = None
+        if _m_rel:
+            candidate = (self.workspace / _m_rel.group(1)).resolve(strict=False)
+        elif _m_abs:
+            candidate = Path(_m_abs.group(1)).expanduser().resolve(strict=False)
+        if candidate is not None and self.find_root_for(candidate) is not None:
+            return True
         return False
 
 
