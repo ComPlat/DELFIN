@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -49,15 +50,21 @@ def normalize_str(value: Any) -> str:
 def get_git_commit_info() -> Optional[str]:
     """Get current git commit hash and status for reproducibility tracking.
 
+    Resolution order:
+        1. DELFIN_GIT_COMMIT env var (set by SLURM wrapper or user).
+        2. git rev-parse on the package install directory.
+        3. delfin/_commit.txt baked at install/build time.
+
     Returns:
         String like "0558f4b" or "0558f4b-dirty" if uncommitted changes,
-        or None if not in a git repository.
+        or None if no source could resolve a commit hash.
     """
-    try:
-        # Get the directory where DELFIN is installed
-        delfin_dir = Path(__file__).parent.parent
+    env_commit = os.environ.get("DELFIN_GIT_COMMIT", "").strip()
+    if env_commit:
+        return env_commit
 
-        # Get commit hash (short)
+    try:
+        delfin_dir = Path(__file__).parent.parent
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=delfin_dir,
@@ -65,26 +72,29 @@ def get_git_commit_info() -> Optional[str]:
             text=True,
             timeout=2
         )
-
-        if result.returncode != 0:
-            return None
-
-        commit_hash = result.stdout.strip()
-
-        # Check if there are uncommitted changes
-        result = subprocess.run(
-            ["git", "diff-index", "--quiet", "HEAD", "--"],
-            cwd=delfin_dir,
-            timeout=2
-        )
-
-        if result.returncode != 0:
-            commit_hash += "-dirty"
-
-        return commit_hash
-
+        if result.returncode == 0:
+            commit_hash = result.stdout.strip()
+            result = subprocess.run(
+                ["git", "diff-index", "--quiet", "HEAD", "--"],
+                cwd=delfin_dir,
+                timeout=2
+            )
+            if result.returncode != 0:
+                commit_hash += "-dirty"
+            return commit_hash
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
-        return None
+        pass
+
+    try:
+        commit_file = Path(__file__).parent / "_commit.txt"
+        if commit_file.is_file():
+            baked = commit_file.read_text().strip()
+            if baked:
+                return baked
+    except Exception:
+        pass
+
+    return None
 
 
 # ------------------------------------------------------------------------------------
