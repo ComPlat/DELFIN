@@ -10115,27 +10115,25 @@ def create_tab(ctx):
                 engine.reset_cycle(mode=new_mode)
                 _update_status()
             elif getattr(engine, "mode", "") != new_mode:
-                # Existing conversations must not keep running on the old
-                # role/route after the UI mode changed. Save the old
-                # session, then force a fresh engine on the next send.
+                # Mode-switch mid-conversation: preserve message history
+                # so the new agent sees the user's prompt and doesn't
+                # have to ask for a re-paste. Role-tracking is reset
+                # because the new mode has a different role route, but
+                # the conversation thread is kept intact. Save the old
+                # session first so the original mode's run remains
+                # browsable in the session list.
                 if state.get("chat_messages"):
                     _auto_save_session()
                     _refresh_session_dropdown()
-                if hasattr(engine, "client") and hasattr(engine.client, "kill"):
-                    try:
-                        engine.client.kill()
-                    except Exception:
-                        pass
-                state["engine"] = None
-                state["active_session_id"] = ""
-                state["session_start_time"] = None
+                engine.reset_cycle(mode=new_mode, preserve_messages=True)
                 state.pop("_follow_up", None)
                 state["_cycle_history"] = []
                 _set_active_gate()
                 _refresh_task_ticker()
                 _append_system_message(
-                    f"Mode switched to {new_mode}. A fresh {new_mode} agent "
-                    "will start on your next message."
+                    f"Mode switched to {new_mode}. Continuing with the "
+                    "existing conversation — no need to re-send your "
+                    "prompt."
                 )
                 _update_status()
         # Dashboard mode: lock permission to default, model to cheapest
