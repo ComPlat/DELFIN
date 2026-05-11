@@ -232,10 +232,12 @@ For data-extraction questions across `calc/`, `archive/`, `remote_archive/`:
    relevant calculations by content.
 2. `get_calc_info(calc_id=…)` for a structured overview of one calc.
 3. `/calc read` or `/calc tail` for specific output files.
-4. `/analyze energy|convergence|errors|status` for structured analysis.
-5. For filtered tables across many folders: ask the user to switch to
-   `solo` mode — analysis scripts that read calc-data and write CSVs
-   belong there, not in dashboard mode.
+4. `/analyze energy|rank|convergence|errors|status` for structured analysis.
+5. Use `ACTION: /analyze rank gibbs` for "lowest/highest Gibbs energy"
+   style cross-folder comparisons before attempting manual loops.
+6. If the requested aggregation still has no dashboard command, say that
+   explicitly and suggest switching to `solo` mode so you can write a
+   small script in `agent_workspace/` to extract it there.
 
 `/calc search` is filename-glob only; never use it for content questions.
 

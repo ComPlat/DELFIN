@@ -3721,6 +3721,7 @@ def create_tab(ctx):
                 "  /calc search <p> — Search files by glob pattern\n"
                 "  /analyze <dir>   — Full analysis (energy+convergence+errors)\n"
                 "  /analyze energy <dir> — Extract energies (Gibbs/ZPE/electronic)\n"
+                "  /analyze rank <type> [limit] [root] — Rank energies across folders\n"
                 "  /analyze convergence <dir> — Check SCF convergence\n"
                 "  /analyze errors <dir> — Scan for ORCA errors\n"
                 "  /analyze status  — Overview of all calc folders\n"
@@ -4940,6 +4941,121 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        # /analyze rank <type> [limit] [root]
+        # Cross-folder energy ranking: scans every *.out in calc/,
+        # archive/, and remote_archive/, extracts the requested energy
+        # type, sorts ascending (lower = better for gibbs/electronic/zpe).
+        # One tool call instead of ~50 cd/ls/tail rounds.
+        if cmd.startswith("/analyze rank"):
+            rest = text[len("/analyze rank"):].strip().split()
+            if not rest:
+                _append_system_message(
+                    "Usage: /analyze rank <type> [limit] [root]\n"
+                    "  type   : gibbs | electronic | spe | zpe\n"
+                    "  limit  : how many top hits to show (default 10)\n"
+                    "  root   : calc | archive | remote_archive | all "
+                    "(default all)"
+                )
+                return True
+            etype_raw = rest[0].lower()
+            _ETYPE_ALIASES = {
+                "gibbs": "gibbs", "g": "gibbs", "gfe": "gibbs",
+                "electronic": "electronic", "e": "electronic",
+                "spe": "electronic", "single": "electronic",
+                "zpe": "zpe", "z": "zpe",
+            }
+            etype = _ETYPE_ALIASES.get(etype_raw)
+            if etype is None:
+                _append_system_message(
+                    f"Unknown energy type: {etype_raw}. "
+                    f"Choose from: gibbs, electronic, spe, zpe."
+                )
+                return True
+            limit = 10
+            root_filter = "all"
+            for arg in rest[1:]:
+                if arg.isdigit():
+                    limit = max(1, min(int(arg), 100))
+                elif arg.lower() in ("calc", "archive", "remote_archive",
+                                      "remote", "all"):
+                    root_filter = (
+                        "remote_archive" if arg.lower() == "remote"
+                        else arg.lower()
+                    )
+            try:
+                from delfin.energies import (
+                    find_gibbs_energy, find_ZPE, find_electronic_energy,
+                )
+            except ImportError:
+                _append_system_message("Energy parsing not available.")
+                return True
+            _extractor = {
+                "gibbs": find_gibbs_energy,
+                "electronic": find_electronic_energy,
+                "zpe": find_ZPE,
+            }[etype]
+            roots: list[tuple[str, Path]] = []
+            if root_filter in ("calc", "all"):
+                roots.append(("calc", ctx.calc_dir))
+            if root_filter in ("archive", "all"):
+                roots.append(("archive", ctx.archive_dir))
+            if root_filter in ("remote_archive", "all"):
+                _ra = ctx.runtime_settings.get("remote_archive_dir", "")
+                if _ra:
+                    roots.append(("remote_archive", Path(_ra)))
+            import time as _time
+            t0 = _time.monotonic()
+            _BUDGET_S = 15.0   # hard cap to keep dashboard responsive
+            results: list[tuple[float, str, str]] = []
+            scanned = 0
+            for root_name, root in roots:
+                if not root.is_dir():
+                    continue
+                # Limit recursion depth and skip obvious cache dirs.
+                for out_file in root.rglob("*.out"):
+                    if _time.monotonic() - t0 > _BUDGET_S:
+                        break
+                    parts = out_file.parts
+                    if any(p.startswith(".") or p == "__pycache__"
+                           for p in parts):
+                        continue
+                    scanned += 1
+                    val = _extractor(str(out_file))
+                    if val is None:
+                        continue
+                    try:
+                        rel = str(out_file.relative_to(root))
+                    except ValueError:
+                        rel = str(out_file)
+                    results.append((float(val), root_name, rel))
+                if _time.monotonic() - t0 > _BUDGET_S:
+                    break
+            results.sort(key=lambda r: r[0])
+            elapsed = _time.monotonic() - t0
+            header = (
+                f"Energy ranking — {etype} (ascending, lowest first). "
+                f"Scanned {scanned} .out files in "
+                f"{', '.join(r[0] for r in roots)} "
+                f"in {elapsed:.1f}s. Showing top {min(limit, len(results))} "
+                f"of {len(results)} with extractable {etype}:"
+            )
+            if not results:
+                _append_system_message(
+                    f"{header}\n  (no {etype} values found)"
+                )
+                return True
+            lines = [header]
+            for rank, (val, root_name, rel) in enumerate(results[:limit], 1):
+                lines.append(f"  {rank:2d}. {val:>16.6f} Eh  "
+                              f"[{root_name}] {rel}")
+            if elapsed > _BUDGET_S:
+                lines.append(
+                    f"  (time budget reached at {_BUDGET_S}s — "
+                    f"more .out files were not scanned)"
+                )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd.startswith("/analyze convergence "):
             folder = text[len("/analyze convergence"):].strip()
             target = _resolve_calc_path(folder)
@@ -5035,7 +5151,12 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
-        if cmd.startswith("/analyze ") and not cmd.startswith("/analyze energy") and not cmd.startswith("/analyze convergence") and not cmd.startswith("/analyze errors") and cmd != "/analyze status":
+        if (cmd.startswith("/analyze ")
+                and not cmd.startswith("/analyze energy")
+                and not cmd.startswith("/analyze rank")
+                and not cmd.startswith("/analyze convergence")
+                and not cmd.startswith("/analyze errors")
+                and cmd != "/analyze status"):
             # /analyze <folder> — full analysis
             folder = text[len("/analyze"):].strip()
             target = _resolve_calc_path(folder)
