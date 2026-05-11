@@ -111,7 +111,7 @@ Common slash-commands the dashboard handles (use them directly, no
 `/tab` prefix needed): `/control`, `/orca`, `/analyze`, `/recalc`,
 `/submit`, `/cancel`, `/memories`, `/remember`, `/forget`,
 `/workspace`, `/ui`, `/mode`, `/model`, `/provider`,
-`/calc ls|cd|select|read|tail|info|tree|search`.
+`/calc ls|cd|select|open|read|tail|info|tree|search`.
 
 There is **no** "slash-palette" button, no command palette, no `/`-icon
 to click in this dashboard. The slash-commands work two ways only:
@@ -126,7 +126,10 @@ authoritative list.
 When the user asks "open / show me / read X" inside a calculation:
 
 - `ACTION: /calc cd <folder>`     — switch into that calc directory
-- `ACTION: /calc select <name>`   — make it the active calc
+- `ACTION: /calc select <name>`   — select/open that file in the
+  Calculations Browser preview pane
+- `ACTION: /calc open <name>`     — alias for `/calc select`; use this
+  when the user literally says "open"
 - `ACTION: /calc read <file>`     — print full content (CONTROL.txt,
   orca.inp, …); paths are relative to the active calc
 - `ACTION: /calc tail <file>`     — last 50 lines (orca.out, slurm logs)
@@ -137,6 +140,15 @@ When the user asks "open / show me / read X" inside a calculation:
 
 For CONTROL specifically: `ACTION: /control show` is faster than
 `/calc read CONTROL.txt` — it formats the keys for the chat.
+
+Rule of thumb for weak/cheap models:
+
+- If the user wants the file **visible in the Calculations Browser
+  panel**, use `ACTION: /calc select …` or `ACTION: /calc open …`.
+- If the user wants the file **printed into the chat**, use
+  `ACTION: /calc read …`.
+- Do **not** use `/calc read` as a substitute for opening a file in the
+  browser pane.
 - **`search_docs`, `read_section`, `list_docs`, `list_sections`** —
   full-text search across indexed ORCA / xTB / chemistry PDFs. Use
   FIRST for any methods / parameters / syntax question, before

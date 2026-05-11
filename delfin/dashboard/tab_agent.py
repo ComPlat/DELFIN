@@ -3727,7 +3727,8 @@ def create_tab(ctx):
                 "Calculations & analysis:\n"
                 "  /calc ls [path]  — List calc directories/files\n"
                 "  /calc cd <path>  — Navigate calc folder (syncs browser)\n"
-                "  /calc select <f> — Select file in browser (opens options dropdown)\n"
+                "  /calc select <f> — Open/select file in browser preview\n"
+                "  /calc open <f> — Alias for /calc select\n"
                 "  /calc read <file> — Read a calc file\n"
                 "  /calc tail <file> — Read last 8KB of output\n"
                 "  /calc info <dir> — Show folder summary & status\n"
@@ -4812,22 +4813,28 @@ def create_tab(ctx):
             _append_system_message(f"calc dir: calc/{cur}")
             return True
 
-        # /calc select <filename> — select a file in the browser (triggers options dropdown)
-        if cmd.startswith("/calc select "):
-            filename = text[len("/calc select"):].strip()
+        # /calc select|open <filename> — open/select a file in the browser
+        # so it appears in the Calculations preview pane.
+        if cmd.startswith("/calc select ") or cmd.startswith("/calc open "):
+            filename = (
+                text[len("/calc select"):].strip()
+                if cmd.startswith("/calc select ")
+                else text[len("/calc open"):].strip()
+            )
             _path_w = ctx.calc_browser_refs.get("calc_path_input")
             if not _path_w:
                 _append_system_message("Calc browser not available.")
                 return True
             # Navigate the browser directly to the file — this triggers
-            # the browser's own path handler which opens the file and
-            # populates the options dropdown (Recalc/Smart Recalc/etc.)
+            # the browser's own path handler which selects the file,
+            # opens the preview pane, and also refreshes the options
+            # dropdown (Recalc/Smart Recalc/etc.).
             target = _resolve_calc_path(filename)
             if not target.exists():
                 _append_system_message(f"Not found: {filename}")
                 return True
             _path_w.value = str(target)
-            _append_system_message(f"Selected: {target.name}")
+            _append_system_message(f"Opened in browser: {target.name}")
             return True
 
         if cmd.startswith("/calc read "):
