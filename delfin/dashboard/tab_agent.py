@@ -943,6 +943,1091 @@ def _md_to_html(text: str) -> str:
     return escaped
 
 
+# ---------------------------------------------------------------------------
+# Slash-command catalog (used by the discoverable command palette)
+# ---------------------------------------------------------------------------
+
+# Each tuple: (category, command, summary, has_args)
+# - command: literal prefix to insert into the input (no trailing space → user
+#   completes; trailing space → ready to type args)
+# - has_args: True means the command takes arguments — palette adds a trailing
+#   space so the user starts typing immediately
+_SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
+    # Session
+    ("Session", "/help", "Show this help", False),
+    ("Session", "/clear", "Clear chat history", False),
+    ("Session", "/cost", "Show token usage & cost", False),
+    ("Session", "/usage", "Detailed token usage & session stats", False),
+    ("Session", "/status", "Show engine status", False),
+    ("Session", "/compact", "Summarize context to reduce tokens", False),
+    ("Session", "/undo", "Undo last agent turn (drop from context)", False),
+    ("Session", "/retry", "Regenerate last response", False),
+    ("Session", "/stop", "Stop current generation", False),
+    ("Session", "/reset", "Reset engine for new cycle", False),
+    ("Session", "/export", "Export chat as Markdown", False),
+    ("Session", "/search", "Search in chat history", True),
+    # Engine config
+    ("Engine", "/provider", "Switch provider (claude/openai/kit)", True),
+    ("Engine", "/model", "Switch model (depends on provider)", True),
+    ("Engine", "/effort", "Set effort (low/medium/high/xhigh)", True),
+    ("Engine", "/mode", "Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)", True),
+    ("Engine", "/perms", "Show or set permission profile", True),
+    ("Engine", "/perm-cycle", "Cycle through permission profiles", False),
+    # Git
+    ("Git", "/git status", "Show git status", False),
+    ("Git", "/git diff", "Show staged/unstaged changes", False),
+    ("Git", "/git log", "Show recent commits", False),
+    ("Git", "/git branch", "Show branches", False),
+    # Memory
+    ("Memory", "/remember", "Save a persistent memory", True),
+    ("Memory", "/memories", "List all memories", False),
+    ("Memory", "/forget", "Delete a memory by index", True),
+    # Workspace (agent_workspace/)
+    ("Workspace", "/workspace ls", "List files in agent workspace", False),
+    ("Workspace", "/workspace read", "Read a workspace file", True),
+    ("Workspace", "/workspace clean", "Remove all workspace files", False),
+    # Dashboard navigation
+    ("Dashboard", "/tab", "Switch tab (submit/orca/jobs/calc/settings)", True),
+    ("Dashboard", "/jobs", "Switch to Job Status tab", False),
+    ("Dashboard", "/jobs check", "Check for new job-state events now", False),
+    ("Dashboard", "/ui list", "List all controllable widgets", False),
+    ("Dashboard", "/ui", "Manipulate a widget (show/click/value/...)", True),
+    # CONTROL
+    ("CONTROL", "/control show", "Show CONTROL content from Submit tab", False),
+    ("CONTROL", "/control set", "Replace entire CONTROL content", True),
+    ("CONTROL", "/control key", "Set one CONTROL key (e.g. functional BP86)", True),
+    ("CONTROL", "/control validate", "Validate CONTROL syntax", False),
+    # ORCA Builder
+    ("ORCA", "/orca show", "Show ORCA Builder settings", False),
+    ("ORCA", "/orca set", "Set an ORCA Builder param", True),
+    ("ORCA", "/orca submit", "Submit ORCA job", False),
+    # Submit
+    ("Submit", "/submit", "Submit job from current Submit tab state", False),
+    # Calculations / archive browsing
+    ("Calc", "/calc ls", "List directories/files", True),
+    ("Calc", "/calc cd", "Navigate calc folder (syncs browser)", True),
+    ("Calc", "/calc select", "Select file in browser", True),
+    ("Calc", "/calc read", "Read a calc file", True),
+    ("Calc", "/calc tail", "Read last 8KB (convergence check)", True),
+    ("Calc", "/calc info", "Show folder summary & status", True),
+    ("Calc", "/calc tree", "Show directory tree", True),
+    ("Calc", "/calc search", "Search files by glob pattern", True),
+    # Analysis
+    ("Analysis", "/analyze", "Full analysis (energy + convergence + errors)", True),
+    ("Analysis", "/analyze energy", "Extract Gibbs/ZPE/electronic energies", True),
+    ("Analysis", "/analyze convergence", "Check SCF convergence", True),
+    ("Analysis", "/analyze errors", "Scan for ORCA error patterns", True),
+    ("Analysis", "/analyze status", "Overview of all calc folders", False),
+    # Recalc / cancel (destructive — confirmations enforced)
+    ("Recalc", "/recalc check", "Check if recalc needed (safe)", True),
+    ("Recalc", "/recalc check-all", "Scan all folders (safe)", False),
+    ("Recalc", "/recalc", "Submit recalc (confirms first)", True),
+    ("Recalc", "/recalc auto", "Recalc all that need it (confirms first)", False),
+    ("Recalc", "/cancel", "Cancel a job (confirms first)", True),
+    ("Recalc", "/cancel all", "Cancel all active jobs (confirms first)", False),
+    # Batch
+    ("Batch", "/batch from-calc", "Build batch from calc folders (optional glob)", True),
+    ("Batch", "/batch add", "Add one entry (Name;SMILES;...)", True),
+    ("Batch", "/batch show", "Show current batch content", False),
+    ("Batch", "/batch clear", "Clear batch field", False),
+)
+
+
+def _filter_slash_commands(
+    commands: tuple[tuple[str, str, str, bool], ...],
+    query: str,
+) -> list[tuple[str, str, str, bool]]:
+    """Case-insensitive filter on command + summary + category.
+
+    An empty query returns everything in catalog order.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return list(commands)
+    out: list[tuple[str, str, str, bool]] = []
+    for entry in commands:
+        category, cmd, summary, _ = entry
+        haystack = f"{cmd} {summary} {category}".lower()
+        if q in haystack:
+            out.append(entry)
+    return out
+
+
+def _render_slash_palette_html(
+    commands: list[tuple[str, str, str, bool]],
+    query: str = "",
+) -> str:
+    """Render the slash-command palette as grouped HTML.
+
+    The output is wrapped in ``<div class="delfin-slash-palette">`` and each
+    command row carries a ``data-command`` attribute so a click handler can
+    insert it into the input.  Inline styling keeps the palette portable.
+    """
+    if not commands:
+        q = _html.escape(query)
+        return (
+            '<div class="delfin-slash-palette" '
+            'style="padding:10px;background:#fff;border:1px solid #e5e7eb;'
+            'border-radius:6px;color:#6b7280;font-size:12px;">'
+            f'No commands match <code>{q}</code>.</div>'
+        )
+
+    grouped: dict[str, list[tuple[str, str, str, bool]]] = {}
+    for entry in commands:
+        grouped.setdefault(entry[0], []).append(entry)
+
+    sections: list[str] = []
+    for category, entries in grouped.items():
+        rows: list[str] = []
+        for cat, cmd, summary, has_args in entries:
+            insert = cmd + (" " if has_args else "")
+            rows.append(
+                '<div class="slash-row" '
+                f'data-command="{_html.escape(insert)}" '
+                'style="display:flex;gap:10px;padding:5px 8px;cursor:pointer;'
+                'border-radius:4px;">'
+                f'<code style="color:#3b82f6;font-size:12px;font-weight:600;'
+                'min-width:160px;">'
+                f'{_html.escape(cmd)}</code>'
+                f'<span style="color:#374151;font-size:12px;">'
+                f'{_html.escape(summary)}</span>'
+                '</div>'
+            )
+        sections.append(
+            f'<div style="margin-bottom:8px;">'
+            f'<div style="font-size:10px;font-weight:700;color:#6b7280;'
+            f'text-transform:uppercase;letter-spacing:0.4px;'
+            f'padding:3px 8px;">{_html.escape(category)}</div>'
+            + "".join(rows) +
+            '</div>'
+        )
+
+    return (
+        '<div class="delfin-slash-palette" '
+        'style="max-height:340px;overflow-y:auto;background:#f9fafb;'
+        'border:1px solid #e5e7eb;border-radius:6px;padding:6px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + "".join(sections) +
+        '</div>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# D1 — confirmation extraction helpers
+# ---------------------------------------------------------------------------
+
+# German + English phrases that signal the agent is asking the user to
+# confirm before it proceeds.  Used to surface Approve/Deny buttons
+# instead of waiting for a free-text "yes".
+_CONFIRMATION_PATTERNS: tuple[str, ...] = (
+    "soll ich", "soll das", "darf ich",
+    "should i", "shall i",
+    "okay so?", "okay so",
+    "willst du", "möchtest du",
+    "weitermachen?", "ausführen?", "submitten?", "submit?",
+    "proceed?", "confirm?", "go ahead?",
+    "shall we", "do you want",
+)
+
+
+def _extract_action_commands(agent_text: str) -> list[str]:
+    """Pull every ``ACTION: /command`` line out of an agent response.
+
+    Returns the bare slash-commands (no ``ACTION:`` prefix), in original
+    order.  Only single-line ACTIONs are recognised (matches the existing
+    dispatcher in ``_dashboard_auto_exec``).
+    """
+    if not agent_text:
+        return []
+    out: list[str] = []
+    for raw in agent_text.splitlines():
+        line = raw.rstrip()
+        if line.startswith("ACTION:"):
+            cmd = line[len("ACTION:"):].strip()
+            if cmd.startswith("/"):
+                out.append(cmd)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# D2 — context-aware suggestion when the user switches dashboard tabs
+# ---------------------------------------------------------------------------
+
+# Tab-name → one-shot suggestion the agent surfaces when the user lands
+# on that tab.  Keys match the titles registered in
+# ``delfin/dashboard/__init__.py``'s tab_specs.  Empty value means
+# "never suggest anything for this tab".
+_TAB_SUGGESTIONS: dict[str, str] = {
+    "Submit Job":
+        "Soll ich die aktuellen CONTROL-Werte validieren oder einen Submit "
+        "vorbereiten?",
+    "Recalc":
+        "Soll ich `/recalc check-all` laufen lassen, um Folder mit "
+        "fehlgeschlagenen oder unvollständigen Jobs zu finden?",
+    "Job Status":
+        "Soll ich die letzten Job-Events prüfen (`/jobs check`) und "
+        "fehlgeschlagene Jobs analysieren?",
+    "Calculations":
+        "Soll ich eine Energie-Tabelle für alle Folder hier erzeugen "
+        "(`/skill energy-table`)?",
+    "Literature":
+        "Soll ich nach einem Thema in der DELFIN-Literatur (search_docs) "
+        "suchen — z. B. Funktional/Basis für dein aktuelles System?",
+    "ORCA Builder":
+        "Soll ich aus dem aktuellen Builder-State eine ORCA-Input-Datei "
+        "generieren oder die Parameter prüfen?",
+    "Agent Activity": "",
+    "DELFIN Agent": "",
+    "Archive": "",
+    "Remote Archive": "",
+    "Settings": "",
+}
+
+
+def _suggestion_for_tab(tab_name: str) -> str | None:
+    """Return the one-shot suggestion for ``tab_name`` or ``None``.
+
+    Unknown tabs and tabs explicitly mapped to "" return ``None`` so
+    the caller knows there's nothing to show.
+    """
+    if not tab_name:
+        return None
+    suggestion = _TAB_SUGGESTIONS.get(tab_name)
+    if suggestion:
+        return suggestion
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Helper: distinguish "interactive approval needed" from "structurally
+# blocked" denials so we can show the right message instead of an
+# Approve/Deny prompt that won't actually unblock anything.
+# ---------------------------------------------------------------------------
+
+def _extract_denied_tool_name(denied_raw: str) -> str:
+    """Pull ``tool_name`` from a permission-denied payload.
+
+    The payload is a Python-literal dict produced by the CLI; we accept
+    string and dict inputs, return ``""`` if no tool name can be read.
+    """
+    if not denied_raw:
+        return ""
+    if isinstance(denied_raw, dict):
+        return str(denied_raw.get("tool_name", "") or "")
+    import ast as _ast
+    try:
+        d = _ast.literal_eval(denied_raw) if str(denied_raw).strip().startswith("{") else {}
+    except Exception:
+        d = {}
+    if isinstance(d, dict):
+        return str(d.get("tool_name", "") or "")
+    return ""
+
+
+def _tool_in_allowlist(tool_name: str, cli_tools: list[str] | None) -> bool:
+    """Return True if ``tool_name`` is permitted by the CLI tool allow-list.
+
+    A ``None`` allow-list means no restriction (CLI default = all tools
+    available). An entry like ``"Bash(git *)"`` counts as enabling the
+    ``Bash`` tool — patterns are interactive guards on top, not extra
+    blocks. Empty list explicitly disallows everything.
+    """
+    if not tool_name:
+        return False
+    if cli_tools is None:
+        return True
+    base_names = {entry.split("(", 1)[0].strip() for entry in cli_tools}
+    return tool_name in base_names
+
+
+def _is_structurally_blocked(denied_raw: str, cli_tools: list[str] | None) -> bool:
+    """``True`` when the denied tool is missing from the CLI allow-list.
+
+    In that case Approve/Deny buttons can't help — the CLI subprocess
+    rejects the call before any interactive prompt fires. The caller
+    should surface a mode-switch hint instead of the normal prompt.
+    """
+    if cli_tools is None:
+        return False
+    tool = _extract_denied_tool_name(denied_raw)
+    if not tool:
+        return False
+    return not _tool_in_allowlist(tool, cli_tools)
+
+
+def _should_show_action_confirmation(agent_text: str) -> bool:
+    """Decision rule for the D1 confirm-buttons: agent proposed
+    ``ACTION:`` lines AND its prose explicitly invites confirmation.
+
+    Returns False if either signal is missing — auto-exec then runs
+    normally and the user types "ja"/"nein" as before.
+    """
+    if not agent_text:
+        return False
+    if not _extract_action_commands(agent_text):
+        return False
+    return _text_requests_confirmation(agent_text)
+
+
+def _render_action_confirmation_html(commands: list[str]) -> str:
+    """Render the proposed ACTION list as a compact preview."""
+    if not commands:
+        return ""
+    rows = "".join(
+        f'<li style="font-family:monospace;font-size:11px;color:#92400e;'
+        f'padding:2px 0;">{_html.escape(cmd[:160])}</li>'
+        for cmd in commands
+    )
+    return (
+        '<div style="flex:1;min-width:0;">'
+        '<div style="font-size:11px;font-weight:700;color:#92400e;'
+        'margin-bottom:4px;">'
+        f'Soll ich diese {len(commands)} Aktion(en) ausführen?</div>'
+        '<ul style="list-style:disc;margin:0;padding-left:20px;">'
+        + rows + '</ul></div>'
+    )
+
+
+def _text_requests_confirmation(agent_text: str) -> bool:
+    """Heuristic: does the agent's text invite explicit user confirmation?
+
+    Trigger phrases match common German + English question patterns that
+    follow proposed actions.  Used to decide whether to show
+    Approve/Deny buttons instead of streaming auto-execution.
+    """
+    if not agent_text:
+        return False
+    haystack = agent_text.lower()
+    return any(p in haystack for p in _CONFIRMATION_PATTERNS)
+
+
+def _render_molecule_to_png_b64(
+    mol_or_smiles, *, size: tuple[int, int] = (320, 240)
+) -> str | None:
+    """Render an RDKit Mol or SMILES string to a base64 PNG.
+
+    Returns ``None`` if RDKit is unavailable or the molecule is invalid.
+    Used by the artifact renderer to draw 2D structures inline in the chat.
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import Draw, AllChem
+    except ImportError:
+        return None
+    try:
+        if isinstance(mol_or_smiles, str):
+            mol = Chem.MolFromSmiles(mol_or_smiles)
+        else:
+            mol = mol_or_smiles
+        if mol is None:
+            return None
+        # Compute 2D coords if missing (XYZ-derived mols often lack them)
+        if mol.GetNumConformers() == 0 or not mol.GetConformer().Is3D() is False:
+            try:
+                AllChem.Compute2DCoords(mol)
+            except Exception:
+                pass
+        img = Draw.MolToImage(mol, size=size)
+        import base64, io
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:
+        return None
+
+
+def _render_xyz_summary(path) -> tuple[int, str] | None:
+    """Parse an XYZ file and return ``(atom_count, summary_string)``.
+
+    Summary is a compact "C12 H10 O2"-style formula plus first three
+    atom lines.  Returns None for unreadable / non-XYZ files.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+    try:
+        n_atoms = int(lines[0].strip().split()[0])
+    except (ValueError, IndexError):
+        return None
+    # Skip comment line (second line) and parse atoms
+    atom_lines = lines[2:2 + n_atoms]
+    if not atom_lines:
+        return None
+    counts: dict[str, int] = {}
+    for raw in atom_lines:
+        parts = raw.strip().split()
+        if not parts:
+            continue
+        sym = parts[0]
+        counts[sym] = counts.get(sym, 0) + 1
+    formula = " ".join(
+        f"{sym}{n}" if n > 1 else sym
+        for sym, n in sorted(counts.items())
+    )
+    return n_atoms, formula
+
+
+def _render_artifact_inline(path) -> str | None:
+    """Render a workspace artifact as inline HTML for the chat.
+
+    Supported types:
+        - PNG / JPG / GIF: base64 ``<img>`` (Voila-safe — no file:// link)
+        - SVG: inline SVG (kept under 200kB to avoid blowing up the DOM)
+        - CSV / TSV: first 12 rows as a compact table
+        - JSON: pretty-printed up to 6kB inside ``<pre>``
+
+    Returns ``None`` for unsupported types or unreadable files so the
+    caller can simply skip them.
+    """
+    from pathlib import Path
+
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return None
+    except OSError:
+        return None
+
+    suffix = p.suffix.lower()
+    name_html = _html.escape(p.name)
+
+    # ---- Images via base64 ---------------------------------------------
+    if suffix in (".png", ".jpg", ".jpeg", ".gif"):
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return None
+        # Cap raster images at ~2 MB to keep the chat snappy
+        if len(data) > 2_000_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'📷 <code>{name_html}</code> ({len(data) // 1024} KB) — '
+                f'too large to embed inline.</div>'
+            )
+        import base64
+        b64 = base64.b64encode(data).decode("ascii")
+        mime = "image/jpeg" if suffix in (".jpg", ".jpeg") else f"image/{suffix[1:]}"
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📷 <code>{name_html}</code></div>'
+            f'<img src="data:{mime};base64,{b64}" '
+            f'style="max-width:100%;border-radius:4px;display:block;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- Inline SVG ----------------------------------------------------
+    if suffix == ".svg":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if len(text) > 200_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'🎨 <code>{name_html}</code> ({len(text) // 1024} KB) — '
+                f'too large to embed inline.</div>'
+            )
+        # Strip a leading XML declaration for clean inline embedding
+        if text.lstrip().startswith("<?xml"):
+            text = text.split("?>", 1)[-1]
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🎨 <code>{name_html}</code></div>'
+            f'<div style="max-width:100%;overflow:auto;">{text}</div></div>'
+        )
+
+    # ---- CSV / TSV preview ---------------------------------------------
+    if suffix in (".csv", ".tsv"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        sep = "\t" if suffix == ".tsv" else ","
+        all_lines = [ln for ln in text.splitlines() if ln.strip()]
+        if not all_lines:
+            return None
+        rows = [ln.split(sep) for ln in all_lines[:12]]
+        max_cols = max(len(r) for r in rows)
+        header = rows[0]
+        body = rows[1:]
+        head_html = "".join(
+            f'<th style="background:#f3f4f6;padding:4px 8px;'
+            f'text-align:left;font-size:11px;color:#374151;'
+            f'border-bottom:1px solid #e5e7eb;">{_html.escape(c)}</th>'
+            for c in header
+        )
+        body_html_rows: list[str] = []
+        for row in body:
+            cells = "".join(
+                f'<td style="padding:4px 8px;font-size:11px;color:#1f2937;'
+                f'border-bottom:1px solid #f3f4f6;">{_html.escape(c)}</td>'
+                for c in row
+            )
+            body_html_rows.append(f'<tr>{cells}</tr>')
+        more = ""
+        if len(all_lines) > 12:
+            more = (
+                f'<div style="font-size:10px;color:#9ca3af;'
+                f'padding:4px 0 0 0;">'
+                f'… {len(all_lines) - 12} more rows</div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📊 <code>{name_html}</code> '
+            f'({max_cols} cols, {len(all_lines)} rows)</div>'
+            f'<div style="overflow-x:auto;"><table style="border-collapse:collapse;'
+            f'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+            f'<thead><tr>{head_html}</tr></thead>'
+            f'<tbody>{"".join(body_html_rows)}</tbody></table></div>'
+            f'{more}</div>'
+        )
+
+    # ---- SMILES file (single SMILES per line) --------------------------
+    if suffix == ".smi":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return None
+        if not text:
+            return None
+        first = text.splitlines()[0].split()[0]
+        b64 = _render_molecule_to_png_b64(first)
+        if b64 is None:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'🧪 <code>{name_html}</code> SMILES: '
+                f'<code>{_html.escape(first[:120])}</code></div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🧪 <code>{name_html}</code> '
+            f'<code style="color:#374151;">{_html.escape(first[:120])}</code></div>'
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="display:block;border-radius:4px;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- 2D structure files (.mol, .sdf) --------------------------------
+    if suffix in (".mol", ".sdf"):
+        try:
+            from rdkit import Chem
+        except ImportError:
+            return None
+        try:
+            if suffix == ".sdf":
+                supplier = Chem.SDMolSupplier(str(p))
+                mol = next((m for m in supplier if m is not None), None)
+            else:
+                mol = Chem.MolFromMolFile(str(p))
+        except Exception:
+            mol = None
+        if mol is None:
+            return None
+        b64 = _render_molecule_to_png_b64(mol)
+        if b64 is None:
+            return None
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'🧪 <code>{name_html}</code> '
+            f'({mol.GetNumAtoms()} atoms, {mol.GetNumBonds()} bonds)</div>'
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="display:block;border-radius:4px;" '
+            f'alt="{name_html}"/></div>'
+        )
+
+    # ---- XYZ coordinates: formula summary + first atoms -----------------
+    if suffix == ".xyz":
+        summary = _render_xyz_summary(p)
+        if summary is None:
+            return None
+        n_atoms, formula = summary
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'⚛️ <code>{name_html}</code> '
+            f'({n_atoms} atoms)</div>'
+            f'<div style="font-size:13px;color:#1f2937;font-family:monospace;'
+            f'padding:4px 0;">{_html.escape(formula)}</div></div>'
+        )
+
+    # ---- JSON pretty-print ---------------------------------------------
+    if suffix == ".json":
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        if len(text) > 6_000:
+            return (
+                f'<div class="delfin-artifact" style="font-size:11px;'
+                f'color:#9ca3af;padding:6px 0;">'
+                f'📄 <code>{name_html}</code> ({len(text) // 1024} KB JSON) — '
+                f'too large to inline; open the file directly.</div>'
+            )
+        return (
+            f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+            f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+            f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+            f'📄 <code>{name_html}</code></div>'
+            f'<pre style="margin:0;padding:6px;background:#f9fafb;'
+            f'border-radius:4px;font-size:11px;max-height:240px;'
+            f'overflow:auto;">{_html.escape(text)}</pre></div>'
+        )
+
+    return None
+
+
+def _build_full_transcript_handoff(
+    chat_messages: list[dict],
+    old_mode: str,
+    new_mode: str,
+    *,
+    max_chars_per_msg: int = 4000,
+) -> str:
+    """Format the UI conversation history as a single handoff message.
+
+    Used when the user switches modes mid-session — the new engine
+    starts with no message history, so we replay the conversation as
+    one user-side block at the top of the next turn so the model has
+    the full context without re-asking. Per-message text is capped at
+    ``max_chars_per_msg`` to keep huge runs from blowing the context.
+
+    Returns an empty string when there is nothing to hand off (no
+    chat_messages, or only system banners).
+
+    Roles understood: ``user``, ``assistant``, ``system``, ``tool``.
+    Empty content is skipped. ``role`` keys missing or unknown are
+    rendered under a ``Note`` heading so nothing silently disappears.
+    """
+    if not chat_messages:
+        return ""
+
+    def _truncate(text: str) -> str:
+        if not isinstance(text, str):
+            text = str(text or "")
+        if len(text) <= max_chars_per_msg:
+            return text
+        head = max_chars_per_msg - 64
+        return text[:head] + f"\n... [truncated {len(text) - head} chars]"
+
+    rendered: list[str] = []
+    for msg in chat_messages:
+        role = (msg.get("role") or "").strip().lower()
+        content = msg.get("content")
+        if not content:
+            continue
+        body = _truncate(content)
+        if role == "user":
+            heading = "User"
+        elif role == "assistant":
+            heading = "Assistant"
+        elif role == "system":
+            heading = "System"
+        elif role == "tool":
+            tool_name = msg.get("tool_name") or "tool"
+            heading = f"Tool ({tool_name})"
+        else:
+            heading = f"Note ({role or 'unknown'})"
+        rendered.append(f"### {heading}\n{body}")
+
+    if not rendered:
+        return ""
+
+    header = (
+        f"[Mode switch: {old_mode or '?'} → {new_mode}]\n\n"
+        f"You are now operating as the **{new_mode}** agent. The user "
+        f"kept the same conversation; below is the full prior transcript "
+        f"so you can continue without re-asking for context. Pick up "
+        f"where the previous mode left off."
+    )
+    return "\n\n".join(
+        [header, "--- Prior conversation (full transcript) ---", *rendered,
+         "--- End of prior context ---"]
+    )
+
+
+def _format_session_boot(
+    *,
+    outcomes: list | None = None,
+    jobs: list | None = None,
+    commits: list | None = None,
+    calc_path: str = "",
+    branch: str = "",
+    max_chars: int = 2400,
+) -> str:
+    """Render a one-shot "session boot" snippet for the dashboard agent.
+
+    Goal: on the first user message of a fresh session, give the agent
+    enough domain context to answer "what's going on?" without firing a
+    dozen tool calls. Cap is tight (~600 tokens) — this is a *primer*,
+    not a replacement for live state.
+
+    All inputs are optional: missing data → that block is skipped.
+    Empty everything → returns "" so the caller can omit the block.
+
+    ``outcomes`` items may be ``CycleOutcome`` dataclasses or plain
+    dicts (so the helper stays mock-friendly in tests).
+    """
+    parts: list[str] = []
+
+    def _attr(o, name, default=""):
+        if isinstance(o, dict):
+            return o.get(name, default)
+        return getattr(o, name, default)
+
+    if outcomes:
+        recent = outcomes[-5:]
+        lines = ["Recent outcomes (last 5 cycles):"]
+        for o in recent:
+            verdict = _attr(o, "verdict", "?") or "?"
+            mode = _attr(o, "mode", "")
+            task = _attr(o, "task", "") or ""
+            cost = _attr(o, "cost_usd", 0.0) or 0.0
+            task_short = str(task).replace("\n", " ")[:60]
+            lines.append(
+                f"  [{verdict}] {mode}: {task_short!r} (${float(cost):.3f})"
+            )
+        parts.append("\n".join(lines))
+
+    if jobs:
+        # Group by status for a compact summary
+        from collections import Counter
+        statuses = Counter()
+        named: list[str] = []
+        for j in jobs:
+            status = (_attr(j, "status", "") or "").upper()
+            statuses[status] += 1
+            name = _attr(j, "name", "") or _attr(j, "job_id", "")
+            if name and len(named) < 8:
+                named.append(f"{name}({status[:1] or '?'})")
+        summary = ", ".join(f"{k}:{v}" for k, v in statuses.most_common())
+        line = f"Active SLURM jobs: {summary}"
+        if named:
+            line += f" — {', '.join(named)}"
+        parts.append(line)
+
+    if commits:
+        head = "Recent commits:"
+        body = "\n".join(f"  {c}" for c in commits[:3])
+        parts.append(f"{head}\n{body}")
+
+    if branch:
+        parts.append(f"Active branch: {branch}")
+
+    if calc_path:
+        parts.append(f"Active calc folder: {calc_path}")
+
+    if not parts:
+        return ""
+
+    body = "\n\n".join(parts)
+    if len(body) > max_chars:
+        body = body[: max_chars - 32].rstrip() + "\n... [truncated]"
+    return f"[Session boot context]\n{body}"
+
+
+def _format_solo_domain_state(snapshot: dict) -> str:
+    """Render a compact ``[Domain state]`` block for the solo-mode prompt.
+
+    Empty values are skipped.  The block is intentionally short — solo
+    mode focuses on code, not UI; this is just the *background* state
+    so the agent doesn't have to ask "what folder are you in?".
+
+    ``snapshot`` keys (all optional):
+        - ``calc_dir`` (str): root of the active calculations folder
+        - ``selected`` (str): currently selected file/folder, relative to calc_dir
+        - ``control`` (dict): {functional, basis, pal, charge, mult, ...}
+        - ``orca_builder`` (dict): {method, basis, charge, mult, ...}
+        - ``job_summary`` (str): one-line job overview ("2 RUNNING, 5 PENDING")
+        - ``workspace_files`` (list[str]): file names in agent_workspace/
+        - ``active_tab`` (str): currently open dashboard tab
+        - ``perm_profile`` (str): active permission profile
+    """
+    if not snapshot:
+        return ""
+
+    lines: list[str] = []
+
+    calc_dir = (snapshot.get("calc_dir") or "").strip()
+    if calc_dir:
+        lines.append(f"calc_dir: {calc_dir}")
+
+    selected = (snapshot.get("selected") or "").strip()
+    if selected:
+        lines.append(f"selected: {selected}")
+
+    control = snapshot.get("control") or {}
+    if isinstance(control, dict):
+        ctl_parts: list[str] = []
+        functional = control.get("functional")
+        basis = control.get("main_basisset") or control.get("basis")
+        if functional and basis:
+            ctl_parts.append(f"{functional}/{basis}")
+        elif functional:
+            ctl_parts.append(str(functional))
+        for k in ("PAL", "charge", "multiplicity", "solvent"):
+            v = control.get(k)
+            if v not in (None, "", 0):
+                ctl_parts.append(f"{k}={v}")
+        if ctl_parts:
+            lines.append("control: " + ", ".join(ctl_parts))
+
+    builder = snapshot.get("orca_builder") or {}
+    if isinstance(builder, dict):
+        b_parts: list[str] = []
+        m = builder.get("method")
+        b = builder.get("basis")
+        if m and b:
+            b_parts.append(f"{m}/{b}")
+        elif m:
+            b_parts.append(str(m))
+        for k in ("charge", "mult", "pal"):
+            v = builder.get(k)
+            if v not in (None, "", 0):
+                b_parts.append(f"{k}={v}")
+        if b_parts:
+            lines.append("orca_builder: " + ", ".join(b_parts))
+
+    job_summary = (snapshot.get("job_summary") or "").strip()
+    if job_summary:
+        lines.append(f"jobs: {job_summary}")
+
+    ws = snapshot.get("workspace_files") or []
+    if isinstance(ws, list) and ws:
+        preview = ", ".join(str(f) for f in ws[:8])
+        tail = f" (+{len(ws) - 8} more)" if len(ws) > 8 else ""
+        lines.append(f"workspace: {preview}{tail}")
+
+    active_tab = (snapshot.get("active_tab") or "").strip()
+    if active_tab:
+        lines.append(f"active_tab: {active_tab}")
+
+    perm = (snapshot.get("perm_profile") or "").strip()
+    if perm:
+        lines.append(f"perms: {perm}")
+
+    if not lines:
+        return ""
+    return "--- Domain State ---\n" + "\n".join(lines)
+
+
+def _render_subagent_pane_html(calls: list[dict]) -> str:
+    """Render the active/completed subagent calls as a compact panel.
+
+    Each call dict has: ``subagent_type`` (str), ``description`` (str),
+    ``prompt`` (str), ``status`` ("running" | "done"), ``output`` (str).
+    Returns empty string if there are no calls — caller hides the widget.
+    """
+    if not calls:
+        return ""
+    n_running = sum(1 for c in calls if c.get("status") == "running")
+    rows: list[str] = []
+    for call in calls:
+        status = call.get("status", "running")
+        if status == "running":
+            glyph, color = "↻", "#3b82f6"
+        else:
+            glyph, color = "✓", "#10b981"
+        sub_type = _html.escape(str(call.get("subagent_type") or "agent"))
+        desc = _html.escape(str(call.get("description") or "")[:80])
+        prompt_preview = _html.escape(
+            str(call.get("prompt") or "")[:200].replace("\n", " ").strip()
+        )
+        output = call.get("output") or ""
+        details = ""
+        if output:
+            output_preview = _html.escape(str(output)[:600])
+            details = (
+                '<details style="margin-top:4px;">'
+                '<summary style="cursor:pointer;font-size:11px;color:#6b7280;">'
+                f'Result ({len(str(output))} chars)</summary>'
+                '<pre style="margin:4px 0 0 0;padding:6px 8px;'
+                'background:#f3f4f6;border-radius:4px;font-size:11px;'
+                'white-space:pre-wrap;max-height:160px;overflow-y:auto;">'
+                f'{output_preview}</pre></details>'
+            )
+        rows.append(
+            f'<li style="padding:6px 8px;border-bottom:1px solid #f3f4f6;">'
+            f'<div style="display:flex;gap:8px;align-items:center;">'
+            f'<span style="color:{color};font-weight:700;">{glyph}</span>'
+            f'<span style="background:#dbeafe;color:#1e40af;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:8px;'
+            f'text-transform:uppercase;">{sub_type}</span>'
+            f'<span style="color:#1f2937;font-size:12px;font-weight:600;">'
+            f'{desc}</span></div>'
+            + (f'<div style="font-size:11px;color:#6b7280;margin-top:2px;'
+               f'padding-left:24px;">{prompt_preview}…</div>' if prompt_preview else '')
+            + details
+            + '</li>'
+        )
+
+    n_total = len(calls)
+    header = (
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'gap:8px;margin-bottom:6px;">'
+        f'<div style="font-size:11px;font-weight:700;color:#374151;'
+        f'text-transform:uppercase;letter-spacing:0.4px;">Sub-Agents</div>'
+        f'<div style="font-size:11px;color:#6b7280;">'
+        f'{n_total} call(s)'
+        + (f' · {n_running} running' if n_running else '')
+        + '</div></div>'
+    )
+    return (
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#fff;padding:10px 12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + header
+        + '<ul style="list-style:none;margin:0;padding:0;">'
+        + "".join(rows) + '</ul></div>'
+    )
+
+
+def _render_todo_pane_html(todos: list[dict]) -> str:
+    """Render the TodoWrite plan as a persistent sidebar HTML block.
+
+    Returns an empty string if there are no todos — the caller should
+    hide the widget.  Each todo carries ``content``, ``status``, and
+    ``activeForm`` (shown while ``status == "in_progress"``).
+    """
+    if not todos:
+        return ""
+    n_done = sum(1 for t in todos if t.get("status") == "completed")
+    n_total = len(todos)
+    n_in_progress = sum(1 for t in todos if t.get("status") == "in_progress")
+
+    rows: list[str] = []
+    for t in todos:
+        status = t.get("status", "pending")
+        if status == "completed":
+            glyph, color, opacity = "✓", "#10b981", "0.55"
+            text = t.get("content", "")
+        elif status == "in_progress":
+            glyph, color, opacity = "→", "#3b82f6", "1.0"
+            text = t.get("activeForm") or t.get("content", "")
+        else:
+            glyph, color, opacity = "○", "#9ca3af", "0.85"
+            text = t.get("content", "")
+        text = _html.escape(str(text)[:160])
+        rows.append(
+            f'<li style="display:flex;gap:8px;padding:4px 0;opacity:{opacity};">'
+            f'<span style="color:{color};font-weight:700;flex:0 0 16px;">{glyph}</span>'
+            f'<span style="color:#1f2937;font-size:12px;line-height:1.4;">{text}</span>'
+            '</li>'
+        )
+
+    progress_pct = int((n_done / n_total) * 100) if n_total else 0
+    header = (
+        f'<div style="display:flex;align-items:center;justify-content:space-between;'
+        f'gap:8px;margin-bottom:6px;">'
+        f'<div style="font-size:11px;font-weight:700;color:#374151;'
+        f'text-transform:uppercase;letter-spacing:0.4px;">Plan</div>'
+        f'<div style="font-size:11px;color:#6b7280;">'
+        f'{n_done}/{n_total} done'
+        + (f' · {n_in_progress} active' if n_in_progress else '')
+        + '</div></div>'
+        f'<div style="height:3px;background:#e5e7eb;border-radius:2px;'
+        f'overflow:hidden;margin-bottom:8px;">'
+        f'<div style="height:100%;width:{progress_pct}%;'
+        f'background:linear-gradient(90deg,#3b82f6,#10b981);"></div></div>'
+    )
+    return (
+        '<div style="border:1px solid #e5e7eb;border-radius:8px;'
+        'background:#f9fafb;padding:10px 12px;'
+        'font-family:-apple-system,BlinkMacSystemFont,sans-serif;">'
+        + header
+        + '<ul style="list-style:none;margin:0;padding:0;">'
+        + "".join(rows) + '</ul></div>'
+    )
+
+
+_FAIL_PHRASES = (
+    "i'm unable", "i am unable", "i cannot", "can't complete",
+    "ich kann nicht", "ich konnte nicht", "konnte das nicht",
+    "abgebrochen", "aborting", "i give up", "ich gebe auf",
+    "blocked by", "blockiert durch", "permission denied",
+)
+_PARTIAL_PHRASES = (
+    "couldn't fully", "konnte nicht vollständig", "teilweise erfolgreich",
+    "partially", "incomplete", "unfinished", "not all of", "nur einen teil",
+)
+
+
+def _compute_turn_verdict(
+    *,
+    engine,
+    response_text: str,
+    denied_commands: list[str],
+    state: dict,
+    error_type: str | None = None,
+) -> str:
+    """Decide PASS / FAIL / PARTIAL for a finished conversational turn.
+
+    Heuristics are deliberately conservative — a wrong FAIL erodes trust
+    in the success-rate metric faster than missing the occasional real
+    failure does. The default is PASS.
+
+    FAIL triggers (any):
+    - explicit error_type (exception bubbled up from the stream loop)
+    - stop_requested AND we have very little assistant output
+    - denied commands present AND response contains a give-up phrase
+
+    PARTIAL triggers (when no FAIL):
+    - response ends with the QUESTION: tag (agent paused for the user)
+    - response contains an "incomplete" phrase
+    - denied commands present (work continued, but with restrictions)
+
+    Otherwise: PASS.
+    """
+    text = (response_text or "").strip()
+    text_low = text.lower()
+
+    # ---- FAIL conditions -----------------------------------------------
+    if error_type:
+        return "FAIL"
+
+    if getattr(engine, "_stop_requested", False) and len(text) < 80:
+        # User hit stop and the agent had barely produced anything.
+        return "FAIL"
+
+    if denied_commands and any(p in text_low for p in _FAIL_PHRASES):
+        # Tool calls were blocked AND the agent surrendered.
+        return "FAIL"
+
+    # ---- PARTIAL conditions --------------------------------------------
+    # Look at the tail (last 800 chars) — most "I need more info" markers
+    # show up at the end of the assistant reply.
+    tail = text[-800:].lower()
+    if "question:" in tail:
+        return "PARTIAL"
+
+    if any(p in text_low for p in _PARTIAL_PHRASES):
+        return "PARTIAL"
+
+    if denied_commands:
+        # Tool calls were blocked but the agent didn't surrender — counts
+        # as PARTIAL (the user got something, but not everything).
+        return "PARTIAL"
+
+    return "PASS"
+
+
 def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
     """Render a +/- diff for a write/edit operation, always visible in chat.
 
@@ -988,32 +2073,82 @@ def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
     )
 
 
-def _record_solo_turn_outcome(
+def _record_turn_outcome(
     engine,
     user_task: str,
     response_text: str,
     state: dict,
     start_time: float | None,
+    *,
+    error_type: str | None = None,
 ) -> dict[str, str]:
-    """Persist one completed solo turn into outcome history/profile."""
-    if getattr(engine, "mode", "") != "solo":
-        return {}
+    """Persist one completed turn into outcome history/profile.
+
+    Tracks every conversational mode (solo, dashboard, quick, …) so the
+    Activity tab can show real PASS/FAIL/PARTIAL across mode usage.
+    Pipeline-internal cycles (session_manager etc.) still go through
+    engine.record_cycle_outcome from the cycle gate, not this helper.
+
+    B3: when ``state['_retry_pending_retries']`` > 0 (set by
+    ``_retry_last``), the result of this turn is treated as a retry of
+    the LAST outcome — we bump that outcome's retries counter and
+    update its verdict in place instead of writing a fresh row.
+    """
     if not (user_task or "").strip() or not (response_text or "").strip():
         return {}
 
-    denied_commands = []
+    denied_commands: list[str] = []
     if isinstance(state, dict):
         denied_commands = list(state.get("_denied_commands", []))
 
+    verdict = _compute_turn_verdict(
+        engine=engine,
+        response_text=response_text,
+        denied_commands=denied_commands,
+        state=state,
+        error_type=error_type,
+    )
+
+    pending_retries = 0
+    if isinstance(state, dict):
+        pending_retries = int(state.get("_retry_pending_retries", 0) or 0)
+
+    if pending_retries > 0:
+        # Update last outcome's retries + verdict in place. Always
+        # consume the flag so we don't double-bump on the next normal
+        # turn even if the update fails.
+        try:
+            from delfin.agent.outcome_tracker import update_last_outcome
+            ok = update_last_outcome(
+                retries=pending_retries,
+                verdict=verdict,
+                denied_commands=denied_commands,
+                error_type=error_type,
+            )
+        except Exception:
+            ok = False
+        if isinstance(state, dict):
+            state["_retry_pending_retries"] = 0
+        if ok:
+            return {"retried": str(pending_retries), "verdict": verdict}
+        # Fall through to a normal append if the bump failed (file
+        # missing, permissions, etc.) — better to record something than
+        # nothing.
+
     try:
         return engine.record_cycle_outcome(
-            verdict="PASS",
+            verdict=verdict,
             user_task=user_task[:200],
             denied_commands=denied_commands,
+            error_type=error_type,
             start_time=start_time,
         )
     except Exception:
         return {}
+
+
+# Backwards-compat alias — old callers might still import this name.
+_record_solo_turn_outcome = _record_turn_outcome
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +2191,15 @@ def create_tab(ctx):
         "_generation_id": 0,      # monotonic counter — prevents stale worker cleanup
         "active_session_id": "",  # currently loaded CLI session ID
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
+        "current_todos": [],      # latest TodoWrite payload (list of {content, status, activeForm})
+        "subagent_calls": [],     # active/completed Agent tool calls for the subagent panel
+        "_ws_known_files": set(),  # snapshot of agent_workspace at turn start (D4)
+        "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
+        "_job_event_thread": None,  # background watcher (D5)
+        "_job_event_thread_stop": False,
+        "_seen_tab_suggestions": set(),  # tab names that already had a suggestion (D2)
+        "_pending_action_text": "",      # raw agent text awaiting Approve/Deny (D1)
+        "_pending_action_commands": [],  # parsed commands awaiting Approve/Deny (D1)
         "message_queue": [],      # queued messages sent while agent is busy
         "session_start_time": None,  # monotonic time of first message
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
@@ -1317,12 +2461,13 @@ def create_tab(ctx):
             ("Low", "low"),
             ("Medium", "medium"),
             ("High", "high"),
+            ("Extra High", "xhigh"),
         ],
         value="medium",
         description="Effort:",
         layout=widgets.Layout(width="155px"),
         style={"description_width": "42px"},
-        tooltip="Thinking budget (only works with API backend; CLI manages thinking internally)",
+        tooltip="Thinking budget multiplier. xhigh = 3× base (capped at 200k tokens).",
     )
 
     # Unified permission profile selector
@@ -1357,7 +2502,7 @@ def create_tab(ctx):
         if _saved_model in _valid_models:
             model_dropdown.value = _saved_model
         _saved_effort = _saved.get("effort", "")
-        if _saved_effort in ("low", "medium", "high"):
+        if _saved_effort in ("low", "medium", "high", "xhigh"):
             effort_dropdown.value = _saved_effort
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
         # Migrate old permission names to new profiles
@@ -1468,8 +2613,14 @@ def create_tab(ctx):
         layout=widgets.Layout(width="70px"),
         tooltip="Delete the selected session",
     )
+    fork_session_btn = widgets.Button(
+        description="Fork",
+        button_style="warning",
+        layout=widgets.Layout(width="70px"),
+        tooltip="Duplicate the selected session under a new ID",
+    )
     session_row = widgets.HBox(
-        [session_dropdown, load_session_btn, delete_session_btn],
+        [session_dropdown, load_session_btn, fork_session_btn, delete_session_btn],
         layout=widgets.Layout(margin="0 0 6px 0"),
     )
 
@@ -1509,6 +2660,29 @@ def create_tab(ctx):
         ),
     )
     approval_row.add_class("delfin-agent-approval-row")
+
+    # D1: Action-confirmation row — shown when the agent proposes ACTION:
+    # commands AND ends with a confirmation question.  Lets the user
+    # Approve/Deny via clicks instead of typing "ja".
+    action_confirm_html = widgets.HTML(value="")
+    action_approve_btn = widgets.Button(
+        description="Ausführen",
+        button_style="success",
+        layout=widgets.Layout(width="120px", height="34px"),
+    )
+    action_deny_btn = widgets.Button(
+        description="Abbrechen",
+        button_style="danger",
+        layout=widgets.Layout(width="110px", height="34px"),
+    )
+    action_confirm_row = widgets.HBox(
+        [action_confirm_html, action_approve_btn, action_deny_btn],
+        layout=widgets.Layout(
+            margin="4px 0", padding="6px 10px",
+            display="none", flex_flow="row wrap", gap="6px",
+        ),
+    )
+    action_confirm_row.add_class("delfin-agent-approval-row")
 
     # Interactive question widgets (option buttons shown when agent asks)
     question_hint_html = widgets.HTML(value="")
@@ -1612,6 +2786,21 @@ def create_tab(ctx):
         layout=widgets.Layout(margin="0 0 8px 0"),
     )
     inspector_detail_box.add_class("delfin-cycle-detail-box")
+
+    # TodoWrite pane — persistent plan visible while the agent works.
+    # Hidden by default; revealed on the first TodoWrite tool call.
+    todo_pane_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(display="none", margin="0 0 6px 0"),
+    )
+
+    # Sub-agent pane — surface ``Agent`` tool calls (general-purpose, Explore,
+    # Plan, …) with their status and result.  Hidden until first call.
+    subagent_pane_html = widgets.HTML(
+        value="",
+        layout=widgets.Layout(display="none", margin="0 0 6px 0"),
+    )
+
 
     # KIT-Toolbox confirmation broker (lazy — only built when KIT becomes
     # the active provider). The container is always present; the broker
@@ -1859,6 +3048,84 @@ def create_tab(ctx):
         value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
         layout=widgets.Layout(min_height="200px"),
     )
+
+    # ----- Slash-command palette (discoverable command browser) -----
+    palette_toggle_btn = widgets.Button(
+        description="/", icon="terminal",
+        layout=widgets.Layout(width="40px", height="32px"),
+        tooltip="Show / browse slash commands",
+    )
+    palette_search = widgets.Text(
+        placeholder="Filter commands… (e.g. control, recalc, git)",
+        layout=widgets.Layout(width="100%", height="32px", display="none"),
+    )
+    palette_select = widgets.Select(
+        options=[],
+        rows=10,
+        layout=widgets.Layout(width="100%", display="none", margin="4px 0"),
+    )
+    palette_row = widgets.HBox(
+        [palette_toggle_btn, palette_search],
+        layout=widgets.Layout(gap="6px", align_items="center"),
+    )
+
+    def _palette_format_options(query: str = "") -> list[tuple[str, str]]:
+        """Return Select options: ('/cmd  —  summary', insert-text).
+
+        Built-in slash commands first, then any installed skills as
+        ``/skill <name>`` entries (filtered by the same query).
+        """
+        items = _filter_slash_commands(_SLASH_COMMANDS, query)
+        out: list[tuple[str, str]] = [
+            (f"{cmd:<22}  {summary}",
+             cmd + (" " if has_args else ""))
+            for _category, cmd, summary, has_args in items
+        ]
+        # Append discovered skills, filtered by the same query.
+        try:
+            from delfin.agent.skills import discover_skills
+            q = (query or "").strip().lower()
+            for skill in discover_skills():
+                hay = f"/skill {skill.name} {skill.title} {skill.description}".lower()
+                if not q or q in hay:
+                    label = f"/skill {skill.name:<14}  {skill.title}"
+                    out.append((label, skill.slash_command))
+        except Exception:
+            pass
+        if not out:
+            return [("(no matches)", "")]
+        return out
+
+    def _palette_set_visible(visible: bool) -> None:
+        palette_search.layout.display = "block" if visible else "none"
+        palette_select.layout.display = "block" if visible else "none"
+        if visible:
+            palette_search.value = ""
+            palette_select.options = _palette_format_options("")
+        else:
+            palette_select.value = None
+
+    def _on_palette_toggle(_btn) -> None:
+        _palette_set_visible(palette_select.layout.display == "none")
+
+    def _on_palette_search(change) -> None:
+        palette_select.options = _palette_format_options(change.get("new", ""))
+
+    def _on_palette_select(change) -> None:
+        insert = change.get("new", "")
+        if not insert:
+            return
+        # Insert at start of input (palette is for starting commands)
+        input_textarea.value = insert
+        _palette_set_visible(False)
+        try:
+            input_textarea.focus()
+        except Exception:
+            pass
+
+    palette_toggle_btn.on_click(_on_palette_toggle)
+    palette_search.observe(_on_palette_search, names="value")
+    palette_select.observe(_on_palette_select, names="value")
 
     # Input area — textarea stretches to take all remaining width;
     # send + mode buttons keep fixed footprint at full input height
@@ -2503,9 +3770,13 @@ def create_tab(ctx):
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
          kit_mode_row, kit_dirs_status, kit_confirm_container,
-         task_ticker_html, chat_html,
+         task_ticker_html,
+         todo_pane_html, subagent_pane_html,
+         chat_html,
          plan_accept_btn, ask_user_box,
-         working_html, queue_html, approval_row, question_row,
+         working_html, queue_html,
+         approval_row, action_confirm_row, question_row,
+         palette_row, palette_select,
          widgets.HBox(
              [image_upload, input_row],
              layout=widgets.Layout(
@@ -2769,10 +4040,17 @@ def create_tab(ctx):
 
             # Auto-inject doc server MCP config if docs are enabled
             try:
-                from delfin.doc_server.config import ensure_mcp_config
-                _mcp_cfg = ensure_mcp_config(_mcp_cfg)
+                from delfin.doc_server.config import ensure_mcp_config as _ensure_docs_mcp
+                _mcp_cfg = _ensure_docs_mcp(_mcp_cfg)
             except ImportError:
                 pass  # doc_server or mcp not installed
+
+            # Auto-inject ops server MCP config (typed DELFIN workflow tools)
+            try:
+                from delfin.ops_server.config import ensure_mcp_config as _ensure_ops_mcp
+                _mcp_cfg = _ensure_ops_mcp(_mcp_cfg, workspace=str(repo_dir))
+            except ImportError:
+                pass  # ops_server or mcp not installed
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
@@ -2823,6 +4101,7 @@ def create_tab(ctx):
                 allowed_tools=_cli_tools,
                 extra_dirs=_extra_dirs,
                 agent_workspace_dir=_ws_dir,
+                effort=str(effort_dropdown.value or ""),
                 kit_confirm_callback=_kit_callback,
             )
 
@@ -2886,6 +4165,154 @@ def create_tab(ctx):
         .tool-name, .tool-path, .tool-param CSS classes.
         """
         _append_chat_message("tool", html_content)
+
+    def _show_action_confirmation(agent_text: str, commands: list[str]) -> None:
+        """D1: surface Approve/Deny buttons for a list of pending ACTIONs.
+
+        Stores the originating agent text so Approve can re-run
+        ``_dashboard_auto_exec`` without re-prompting the model.
+        """
+        action_confirm_html.value = _render_action_confirmation_html(commands)
+        action_confirm_row.layout.display = "flex"
+        state["_pending_action_text"] = agent_text
+        state["_pending_action_commands"] = list(commands)
+
+    def _hide_action_confirmation() -> None:
+        action_confirm_html.value = ""
+        action_confirm_row.layout.display = "none"
+        state["_pending_action_text"] = ""
+        state["_pending_action_commands"] = []
+
+    def _on_actions_approve(_btn=None) -> None:
+        text = state.get("_pending_action_text") or ""
+        _hide_action_confirmation()
+        if not text:
+            return
+        try:
+            results = _dashboard_auto_exec(text, force_no_confirm=True)
+        except Exception as exc:
+            _append_system_message(f"Action execution failed: {exc}")
+            return
+        if results:
+            _append_system_message(
+                f"User approved → executed {len(results)} action(s)."
+            )
+
+    def _on_actions_deny(_btn=None) -> None:
+        commands = list(state.get("_pending_action_commands") or [])
+        _hide_action_confirmation()
+        _append_system_message(
+            "User declined → actions NOT executed: "
+            + (", ".join(commands[:3]) + ("..." if len(commands) > 3 else ""))
+        )
+        # Feed the refusal back to the agent so it knows to plan differently.
+        try:
+            input_textarea.value = "Bitte die Aktionen NICHT ausführen — anderen Vorschlag machen."
+        except Exception:
+            pass
+
+    def _on_dashboard_tab_change(change=None) -> None:
+        """D2: when the user switches tabs, surface a one-shot suggestion
+        from the agent perspective.  Triggers at most once per tab per
+        session (tracked in ``state["_seen_tab_suggestions"]``)."""
+        tabs = getattr(ctx, "tabs_widget", None)
+        if tabs is None or not ctx.tab_indices:
+            return
+        try:
+            idx = tabs.selected_index
+            tab_name = next(
+                (t for t, i in ctx.tab_indices.items() if i == idx),
+                "",
+            )
+        except Exception:
+            return
+        if not tab_name:
+            return
+        seen = state.setdefault("_seen_tab_suggestions", set())
+        if tab_name in seen:
+            return
+        suggestion = _suggestion_for_tab(tab_name)
+        if not suggestion:
+            return
+        seen.add(tab_name)
+        # Only inject if the engine is initialised (otherwise we'd queue
+        # messages that confuse a fresh session).
+        if state.get("engine") is None:
+            return
+        _append_system_message(f"💡 [{tab_name}] {suggestion}")
+
+    def _check_job_events_once() -> int:
+        """D5: poll the backend, diff against last-seen statuses, and
+        inject system messages for notable transitions.
+
+        Returns the number of system messages emitted (0 when nothing
+        changed or no backend).  Safe to call from the UI thread.
+        """
+        from delfin.dashboard.job_events import (
+            diff_job_states, format_job_event_message,
+            is_notable_event, snapshot_jobs,
+        )
+        backend = getattr(ctx, "backend", None)
+        if backend is None:
+            return 0
+        try:
+            jobs = backend.list_jobs()
+        except Exception:
+            return 0
+        current = snapshot_jobs(jobs)
+        previous = state.get("_job_states_seen") or {}
+        events = diff_job_states(previous, current)
+        emitted = 0
+        for event in events:
+            if not is_notable_event(event):
+                continue
+            try:
+                msg = format_job_event_message(event)
+            except Exception:
+                continue
+            _append_system_message(msg)
+            emitted += 1
+        # Update snapshot to a tiny status-only dict so we don't pin
+        # JobInfo references in memory.
+        state["_job_states_seen"] = {
+            jid: getattr(info, "status", "") or info.get("status", "")
+            if isinstance(info, dict) else getattr(info, "status", "")
+            for jid, info in current.items()
+        }
+        return emitted
+
+    def _start_job_event_watcher(interval: float = 30.0) -> None:
+        """Launch a daemon thread that calls _check_job_events_once()
+        every ``interval`` seconds. Idempotent — a second call is a no-op
+        while a watcher is already running."""
+        if state.get("_job_event_thread") is not None:
+            return
+        if getattr(ctx, "backend", None) is None:
+            return
+        state["_job_event_thread_stop"] = False
+
+        def _loop() -> None:
+            while not state.get("_job_event_thread_stop"):
+                try:
+                    _check_job_events_once()
+                except Exception:
+                    pass
+                # Cooperative sleep so stop is responsive
+                slept = 0.0
+                while slept < interval and not state.get(
+                    "_job_event_thread_stop"
+                ):
+                    time.sleep(0.5)
+                    slept += 0.5
+            state["_job_event_thread"] = None
+
+        t = threading.Thread(target=_loop, daemon=True, name="delfin-jobs-watch")
+        state["_job_event_thread"] = t
+        t.start()
+
+    def _stop_job_event_watcher() -> None:
+        """Signal the watcher loop to exit; safe to call multiple times."""
+        state["_job_event_thread_stop"] = True
 
     def _record_cycle_event(kind: str, title: str, detail: str = "", role: str = ""):
         history = state.setdefault("_cycle_history", [])
@@ -3718,6 +5145,36 @@ def create_tab(ctx):
             _append_system_message(block_msg)
             return True
 
+        # /skill <name>  — expand a skill markdown into the input field
+        if cmd.startswith("/skill "):
+            try:
+                from delfin.agent.skills import (
+                    get_skill, render_skill_invocation, discover_skills,
+                )
+            except Exception as exc:  # pragma: no cover
+                _append_system_message(f"Skill system unavailable: {exc}")
+                return True
+            name = cmd[len("/skill "):].strip()
+            if not name:
+                names = [s.name for s in discover_skills()]
+                _append_system_message(
+                    "Available skills:\n  " + "\n  ".join(names) if names
+                    else "No skills installed in ~/.delfin/skills/."
+                )
+                return True
+            skill = get_skill(name)
+            if skill is None:
+                _append_system_message(f"Unknown skill '{name}'.")
+                return True
+            # Inline-expand: load the skill body into the input so the user
+            # can review / edit before sending.
+            input_textarea.value = render_skill_invocation(skill)
+            _append_system_message(
+                f"Skill '{skill.name}' loaded into the input. "
+                "Review and press Send to run it."
+            )
+            return True
+
         if cmd == "/help":
             _append_system_message(
                 "Available commands:\n"
@@ -3739,7 +5196,7 @@ def create_tab(ctx):
                 "  /git branch      — Show branches\n"
                 "  /provider <name> — Switch provider (claude/openai)\n"
                 "  /model <name>    — Switch model (depends on provider)\n"
-                "  /effort <lvl>    — Set effort (low/medium/high)\n"
+                "  /effort <lvl>    — Set effort (low/medium/high/xhigh)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
                 "  /perms [profile] — Show/set permission profile (plan/ask_all/repo_free/all_free)\n"
                 "  /reset           — Reset engine for new cycle\n"
@@ -4089,10 +5546,10 @@ def create_tab(ctx):
                 )
             return True
 
-        # /effort <level>
+        # /effort <level>  — accepts low/medium/high/xhigh
         if cmd.startswith("/effort "):
             level = cmd[8:].strip()
-            valid = {"low", "medium", "high"}
+            valid = {"low", "medium", "high", "xhigh"}
             if level in valid:
                 effort_dropdown.value = level
                 _append_system_message(f"Effort set to {level}.")
@@ -4777,6 +6234,19 @@ def create_tab(ctx):
                     pass
             ctx.select_tab("Job Status")
             _append_system_message("Switched to Job Status tab.")
+            return True
+
+        # /jobs check — D5: manually trigger the proactive watcher once
+        if cmd == "/jobs check":
+            try:
+                emitted = _check_job_events_once()
+            except Exception as exc:
+                _append_system_message(f"Job event check failed: {exc}")
+                return True
+            if emitted == 0:
+                _append_system_message(
+                    "No job-state changes since the last check."
+                )
             return True
 
         # -- Calculations browsing (all SAFE) --------------------------------
@@ -5497,8 +6967,31 @@ def create_tab(ctx):
                     all_folders.append(folder.name)
 
                 if not all_folders:
-                    hint = f" matching '{name_filter}'" if name_filter else ""
-                    _append_system_message(f"No calculation folders{hint} found.")
+                    if name_filter and (
+                        name_filter.lower().endswith(".xyz")
+                        or "." in name_filter
+                    ):
+                        # Common mistake: agent passed a file pattern as
+                        # if the filter applied to file contents. Spell
+                        # out the actual semantics.
+                        _append_system_message(
+                            f"No calculation folders matching folder-name "
+                            f"glob '{name_filter}'.\n"
+                            f"Tip: /batch from-calc (no filter) already "
+                            f"walks every calc folder and collects each "
+                            f"folder's initial.xyz / input.txt / coords.xyz "
+                            f"automatically. The optional filter is for "
+                            f"folder names (e.g. /batch from-calc Casagrande*), "
+                            f"NOT for files inside the folders."
+                        )
+                    else:
+                        hint = (
+                            f" matching folder-name glob '{name_filter}'"
+                            if name_filter else ""
+                        )
+                        _append_system_message(
+                            f"No calculation folders{hint} found."
+                        )
                     return True
 
                 # Set marked paths in batch state
@@ -5594,6 +7087,107 @@ def create_tab(ctx):
 
     # -- dashboard mode helpers --------------------------------------------
 
+    def _collect_solo_domain_snapshot() -> dict:
+        """Collect a compact dict of dashboard/calc state for solo mode.
+
+        Pure data — handed to the module-level :func:`_format_solo_domain_state`
+        for rendering.  Each lookup is wrapped so a missing widget never
+        breaks the snapshot.
+        """
+        snap: dict = {"calc_dir": str(ctx.calc_dir)}
+
+        # Selected file / folder in the calc browser
+        try:
+            cb = ctx.calc_browser_refs or {}
+            cur_path = state.get("_agent_calc_path", "") or ""
+            sel_widget = cb.get("calc_selected") or cb.get("calc_search")
+            sel = ""
+            if sel_widget is not None and getattr(sel_widget, "value", ""):
+                sel = str(sel_widget.value)
+            if cur_path:
+                snap["selected"] = (
+                    f"{cur_path}/{sel}".strip("/") if sel else cur_path
+                )
+        except Exception:
+            pass
+
+        # CONTROL keys parsed from the Submit tab textarea
+        try:
+            cw = ctx.submit_refs.get("control_widget")
+            text = (cw.value if cw else "") or ""
+            ctl: dict[str, str] = {}
+            for raw_line in text.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                ctl[k.strip()] = v.strip()
+            if ctl:
+                snap["control"] = ctl
+        except Exception:
+            pass
+
+        # ORCA Builder (dropdown values)
+        try:
+            refs = ctx.orca_builder_refs or {}
+            builder: dict = {}
+            for key, snap_key in (
+                ("orca_method", "method"), ("orca_basis", "basis"),
+                ("orca_charge", "charge"), ("orca_mult", "mult"),
+                ("orca_pal", "pal"),
+            ):
+                w = refs.get(key)
+                if w is not None and getattr(w, "value", "") not in ("", None):
+                    builder[snap_key] = w.value
+            if builder:
+                snap["orca_builder"] = builder
+        except Exception:
+            pass
+
+        # Job summary (compact "N RUNNING, M PENDING" string)
+        try:
+            jrefs = ctx.job_status_refs or {}
+            counts = jrefs.get("status_counts")
+            if isinstance(counts, dict) and counts:
+                parts = [
+                    f"{n} {st}" for st, n in sorted(counts.items()) if n
+                ]
+                if parts:
+                    snap["job_summary"] = ", ".join(parts)
+        except Exception:
+            pass
+
+        # Workspace inventory (small)
+        try:
+            files = sorted(
+                p.name for p in ctx.agent_dir.iterdir() if p.is_file()
+            )
+            if files:
+                snap["workspace_files"] = files[:20]
+        except Exception:
+            pass
+
+        # Active tab title for cross-tab awareness
+        try:
+            tabs = ctx.tabs_widget
+            if tabs is not None and ctx.tab_indices:
+                idx = tabs.selected_index
+                title = next(
+                    (t for t, i in ctx.tab_indices.items() if i == idx),
+                    "",
+                )
+                if title:
+                    snap["active_tab"] = title
+        except Exception:
+            pass
+
+        # Permission profile
+        perm = state.get("_perm_profile", "")
+        if perm:
+            snap["perm_profile"] = perm
+
+        return snap
+
     def _build_dashboard_context() -> str:
         """Build current dashboard state as context for the dashboard agent."""
         parts = []
@@ -5648,6 +7242,115 @@ def create_tab(ctx):
         except Exception:
             pass
         return "\n".join(parts)
+
+    def _build_dashboard_session_boot() -> str:
+        """Collect once-per-session domain snapshot and format it.
+
+        Used on the FIRST user-send of a fresh session so the agent
+        starts with the same domain awareness a returning developer
+        would have: recent outcomes, active jobs, recent commits,
+        active branch, current calc folder.
+        """
+        outcomes: list = []
+        try:
+            from delfin.agent.outcome_tracker import load_outcomes
+            outcomes = load_outcomes(max_entries=5)
+        except Exception:
+            outcomes = []
+
+        jobs: list = []
+        try:
+            backend = getattr(ctx, "backend", None)
+            if backend is not None and hasattr(backend, "list_jobs"):
+                jobs = list(backend.list_jobs() or [])
+        except Exception:
+            jobs = []
+
+        commits: list[str] = []
+        branch_name = ""
+        try:
+            import subprocess as _sp
+            _r = _sp.run(
+                ["git", "log", "-3", "--oneline"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _r.returncode == 0:
+                commits = [
+                    line for line in _r.stdout.splitlines() if line.strip()
+                ]
+            _b = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _b.returncode == 0:
+                branch_name = _b.stdout.strip()
+        except Exception:
+            pass
+
+        calc_path = ""
+        try:
+            _w = ctx.calc_browser_refs.get("calc_path_input")
+            if _w and _w.value:
+                calc_path = str(_w.value)
+        except Exception:
+            calc_path = ""
+
+        return _format_session_boot(
+            outcomes=outcomes,
+            jobs=jobs,
+            commits=commits,
+            calc_path=calc_path,
+            branch=branch_name,
+        )
+
+    def _build_solo_session_boot() -> str:
+        """One-shot domain primer for SOLO-mode first-send.
+
+        Solo agents do code work, not workflow orchestration, so the
+        primer skips active SLURM jobs and active calc-folder (those
+        belong to dashboard). Keeps recent outcomes (last sessions'
+        successes/failures inform the next task), active branch, and
+        recent commits — exactly the orient-yourself info a returning
+        developer would want.
+        """
+        outcomes: list = []
+        try:
+            from delfin.agent.outcome_tracker import load_outcomes
+            outcomes = load_outcomes(max_entries=5)
+        except Exception:
+            outcomes = []
+
+        commits: list[str] = []
+        branch_name = ""
+        try:
+            import subprocess as _sp
+            _r = _sp.run(
+                ["git", "log", "-3", "--oneline"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _r.returncode == 0:
+                commits = [
+                    line for line in _r.stdout.splitlines() if line.strip()
+                ]
+            _b = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(ctx.repo_dir or Path.cwd()),
+                capture_output=True, text=True, timeout=2,
+            )
+            if _b.returncode == 0:
+                branch_name = _b.stdout.strip()
+        except Exception:
+            pass
+
+        return _format_session_boot(
+            outcomes=outcomes,
+            commits=commits,
+            branch=branch_name,
+            # jobs + calc_path intentionally omitted for solo
+        )
 
     # -- command safety tiers (enforced at CODE level, not prompt) ----------
 
@@ -5874,7 +7577,7 @@ def create_tab(ctx):
         "komplett", "gesamt",
     )
 
-    def _dashboard_auto_exec(agent_text: str):
+    def _dashboard_auto_exec(agent_text: str, force_no_confirm: bool = False):
         """Scan agent output for ACTION: /command lines and execute them.
 
         Safety enforcement (code-level, not prompt-level):
@@ -5882,7 +7585,23 @@ def create_tab(ctx):
           archive/remote_archive=read-only (writes blocked, reads allowed), unknown=blocked
         - Tier 3: max 1 per response, bulk ops need explicit user intent
         - Workspace zone: tier 3 skips confirmation gate
+
+        D1 — when the agent ends its response with a confirmation question
+        and proposes ACTIONs, surface Approve/Deny buttons instead of
+        running auto-exec.  ``force_no_confirm=True`` bypasses this gate
+        (used by the Approve handler).
         """
+        # D1 short-circuit: agent is asking for confirmation → show
+        # Approve/Deny buttons and skip auto-exec until the user clicks.
+        if (
+            not force_no_confirm
+            and _should_show_action_confirmation(agent_text)
+        ):
+            commands_preview = _extract_action_commands(agent_text)
+            if commands_preview:
+                _show_action_confirmation(agent_text, commands_preview)
+                return []  # nothing executed — wait for the user
+
         import re as _re
 
         lines = agent_text.split("\n")
@@ -6161,6 +7880,12 @@ def create_tab(ctx):
             engine.messages.pop()
         _refresh_chat_html()
         if last_user_text:
+            # B3 — flag the next outcome write as a retry attempt so it
+            # bumps the previous outcome's retries counter instead of
+            # appending a fresh entry. Counter persists across the send
+            # cycle and is consumed (cleared) by _record_turn_outcome.
+            _prev_retries = int(state.get("_retry_pending_retries", 0))
+            state["_retry_pending_retries"] = _prev_retries + 1
             # Re-send via the send flow
             input_textarea.value = last_user_text
             _on_send(None)
@@ -7205,9 +8930,23 @@ def create_tab(ctx):
                     elif tool_name == "Agent":
                         desc = parsed.get("description", "")
                         prompt = parsed.get("prompt", "")[:80]
+                        sub_type = parsed.get("subagent_type", "general-purpose")
+                        # Append to subagent panel state and refresh widget.
+                        state["subagent_calls"].append({
+                            "subagent_type": sub_type,
+                            "description": desc,
+                            "prompt": parsed.get("prompt", ""),
+                            "status": "running",
+                            "output": "",
+                        })
+                        _pane_html = _render_subagent_pane_html(state["subagent_calls"])
+                        if _pane_html:
+                            subagent_pane_html.value = _pane_html
+                            subagent_pane_html.layout.display = "block"
+                        # Keep the inline tool message for chat-history continuity
                         _append_tool_message(
                             f'<span class="tool-name">Agent</span>  '
-                            f'<span class="tool-param">{_e(desc)}</span>'
+                            f'<span class="tool-param">[{_e(sub_type)}] {_e(desc)}</span>'
                             + (f'\n  {_e(prompt)}...' if prompt else '')
                         )
 
@@ -7225,6 +8964,56 @@ def create_tab(ctx):
                             f'<span class="tool-path">{_e(url[:100])}</span>'
                         )
 
+                    elif tool_name == "TodoWrite":
+                        todos = parsed.get("todos") or []
+                        # Persist current todo plan for inspectors / status line
+                        state["current_todos"] = todos
+                        # Update the persistent plan pane (visible while agent works)
+                        _pane_html = _render_todo_pane_html(todos)
+                        if _pane_html:
+                            todo_pane_html.value = _pane_html
+                            todo_pane_html.layout.display = "block"
+                        else:
+                            todo_pane_html.value = ""
+                            todo_pane_html.layout.display = "none"
+                        if not todos:
+                            _append_tool_message(
+                                '<span class="tool-name">TodoWrite</span>  '
+                                '<span class="tool-param">cleared</span>'
+                            )
+                        else:
+                            _STATUS_GLYPH = {
+                                "completed":   "[x]",
+                                "in_progress": "[~]",
+                                "pending":     "[ ]",
+                            }
+                            _STATUS_COLOR = {
+                                "completed":   "tool-diff-new",
+                                "in_progress": "tool-name",
+                                "pending":     "tool-param",
+                            }
+                            n_done = sum(1 for t in todos if t.get("status") == "completed")
+                            n_total = len(todos)
+                            lines = [
+                                f'<span class="tool-name">TodoWrite</span>  '
+                                f'<span class="tool-param">{n_done}/{n_total} done</span>'
+                            ]
+                            for t in todos:
+                                status = t.get("status", "pending")
+                                glyph = _STATUS_GLYPH.get(status, "[ ]")
+                                cls = _STATUS_COLOR.get(status, "tool-param")
+                                # Show activeForm while running, content otherwise
+                                if status == "in_progress":
+                                    text = t.get("activeForm") or t.get("content", "")
+                                else:
+                                    text = t.get("content", "")
+                                text = text[:120]
+                                lines.append(
+                                    f'  <span class="{cls}">{_e(glyph)}</span> '
+                                    f'<span class="tool-param">{_e(text)}</span>'
+                                )
+                            _append_tool_message("\n".join(lines))
+
                     else:
                         # Generic: show first meaningful param
                         param = ""
@@ -7240,6 +9029,33 @@ def create_tab(ctx):
                             f'<span class="tool-name">{_e(tool_name)}</span>  {param}'
                         )
 
+                def _emit_new_workspace_artifacts() -> None:
+                    """D4: scan agent_workspace for newly created files and
+                    append inline previews (PNG/SVG/CSV/JSON) to the chat."""
+                    try:
+                        before = state.get("_ws_known_files") or set()
+                        current = {
+                            p.name: p for p in ctx.agent_dir.iterdir()
+                            if p.is_file()
+                        }
+                    except Exception:
+                        return
+                    new_names = set(current.keys()) - set(before)
+                    if not new_names:
+                        return
+                    for name in sorted(new_names):
+                        path = current.get(name)
+                        if path is None:
+                            continue
+                        try:
+                            html_block = _render_artifact_inline(path)
+                        except Exception:
+                            html_block = None
+                        if html_block:
+                            _append_tool_message(html_block)
+                    # Update the snapshot so we don't re-emit the same artifact.
+                    state["_ws_known_files"] = set(current.keys())
+
                 def _on_tool_result(tool_name, tool_output):
                     """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
@@ -7248,6 +9064,17 @@ def create_tab(ctx):
                         parts = tool_name.split("__")
                         if len(parts) >= 3:
                             tool_name = parts[-1]
+                    # Subagent panel: mark the next running call as done.
+                    if tool_name == "Agent":
+                        for entry in state["subagent_calls"]:
+                            if entry.get("status") == "running":
+                                entry["status"] = "done"
+                                entry["output"] = tool_output
+                                break
+                        _pane_html = _render_subagent_pane_html(state["subagent_calls"])
+                        if _pane_html:
+                            subagent_pane_html.value = _pane_html
+                            subagent_pane_html.layout.display = "block"
                     # Phase 5d: refresh the live task ticker whenever a
                     # task_* tool fires so the panel reflects new state
                     # without waiting for the next user turn.
@@ -7291,6 +9118,26 @@ def create_tab(ctx):
                             f'{_html.escape(output)}</span>'
                         )
 
+                    # D4: After file-creating tools, surface any new artifacts
+                    # in the chat so the user sees plots/CSVs without
+                    # leaving the conversation. The MCP plot tool writes
+                    # PNGs straight into agent_workspace/, so it qualifies
+                    # too; check the tool-name suffix because MCP tools
+                    # are namespaced as ``mcp__<server>__<name>``.
+                    _is_file_creating_tool = (
+                        tool_name in ("Write", "Edit", "Bash", "NotebookEdit")
+                        or tool_name.endswith("__plot_energy_distribution")
+                        or tool_name.endswith("__plot_energy_correlation")
+                        or tool_name.endswith("__plot_orbital_diagram")
+                        or tool_name.endswith("__plot_optimization_convergence")
+                        or tool_name.endswith("__plot_uvvis_spectrum")
+                        or tool_name.endswith("__plot_scf_convergence")
+                        or tool_name.endswith("__plot_population_charges")
+                        or tool_name.endswith("__plot_vibrational_spectrum")
+                    )
+                    if _is_file_creating_tool:
+                        _emit_new_workspace_artifacts()
+
                 def _on_permission_denied(description):
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label)
@@ -7298,6 +9145,25 @@ def create_tab(ctx):
                     denied_raw = str(description)
                     readable = _format_tool_description(denied_raw)
                     state["_last_denied"] = denied_raw
+                    # Step 5 — distinguish "interactive approval" from
+                    # "structurally blocked": if the denied tool isn't in
+                    # the CLI allowlist for the current mode, Approve/Deny
+                    # can't help. Tell the user what to switch instead.
+                    _engine_obj = state.get("engine")
+                    _allowed = getattr(
+                        getattr(_engine_obj, "client", None), "allowed_tools", None,
+                    )
+                    if _is_structurally_blocked(denied_raw, _allowed):
+                        _tool = _extract_denied_tool_name(denied_raw) or "this tool"
+                        _append_system_message(
+                            f"⛔ {_tool} is blocked by the {mode_dropdown.value} "
+                            f"mode CLI allowlist — Approve won't help. "
+                            f"Switch the Mode dropdown to **solo** "
+                            f"(live, conversation context is preserved) "
+                            f"or run the action manually."
+                        )
+                        engine.request_stop()
+                        return
                     # Accumulate denied commands for context injection
                     _denied_cmds = state.setdefault("_denied_commands", [])
                     if readable not in _denied_cmds:
@@ -7331,22 +9197,72 @@ def create_tab(ctx):
                     # Show approval buttons for interactive approval
                     _show_approval_prompt(denied_raw, denied_raw)
 
-                # Effort multiplier: scales the role-specific budget
-                _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0}
+                # Effort multiplier: scales the role-specific budget.
+                # xhigh applies an aggressive multiplier and a higher cap.
+                _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0, "xhigh": 3.0}
                 _mult = _effort_mult.get(effort_dropdown.value, 1.0)
+                _budget_cap = 200_000 if effort_dropdown.value == "xhigh" else 128_000
 
                 # Store original user task for handoff messages
                 original_task = user_text
-                # Dashboard mode: inject current widget state so the agent
-                # can read CONTROL, ORCA settings, etc. without tool calls.
+                # S1 — Per-turn live state goes into the SYSTEM prompt via
+                # engine.set_live_state(), not into the user message body.
+                # That keeps engine.messages history small and cache-friendly:
+                # old turns no longer carry their stale dashboard state.
+                _live_state_text = ""
                 if mode_dropdown.value == "dashboard":
-                    _ctx_text = _build_dashboard_context()
-                    current_msg = (
-                        f"[Dashboard state]\n{_ctx_text}\n\n"
-                        f"[User request]\n{user_text}"
-                    )
-                else:
-                    current_msg = user_text
+                    try:
+                        _live_state_text = _build_dashboard_context()
+                    except Exception:
+                        _live_state_text = ""
+                elif mode_dropdown.value == "solo":
+                    try:
+                        _solo_snap = _collect_solo_domain_snapshot()
+                        _live_state_text = _format_solo_domain_state(_solo_snap)
+                    except Exception:
+                        _live_state_text = ""
+                if hasattr(engine, "set_live_state"):
+                    engine.set_live_state(_live_state_text)
+                current_msg = user_text
+
+                # S4 — Session boot context: ONCE on the first user-send of
+                # a fresh dashboard session. Gives the agent a 600-token
+                # primer (recent outcomes, SLURM jobs, commits, calc-folder)
+                # so it doesn't have to fire a dozen tool calls just to
+                # know "where are we and what just failed?".
+                if mode_dropdown.value == "dashboard" and not engine.messages:
+                    try:
+                        _boot = _build_dashboard_session_boot()
+                    except Exception:
+                        _boot = ""
+                    if _boot:
+                        current_msg = f"{_boot}\n\n{current_msg}"
+                elif mode_dropdown.value == "solo" and not engine.messages:
+                    try:
+                        _boot = _build_solo_session_boot()
+                    except Exception:
+                        _boot = ""
+                    if _boot:
+                        current_msg = f"{_boot}\n\n{current_msg}"
+
+                # Live mode-switch handoff: if the user just changed mode,
+                # _on_mode_change stashed a full-transcript block here.
+                # Prepend it to the first user message of the new engine so
+                # the model picks up where the previous mode left off.
+                _handoff = state.pop("_pending_mode_handoff", "")
+                if _handoff:
+                    current_msg = f"{_handoff}\n\n{current_msg}"
+
+                # D4: snapshot agent_workspace before the turn so we can
+                # diff and inline-render any new artifacts the agent
+                # creates (PNG/SVG/CSV/JSON).
+                try:
+                    state["_ws_known_files"] = {
+                        p.name for p in ctx.agent_dir.iterdir() if p.is_file()
+                    }
+                except Exception:
+                    state["_ws_known_files"] = set()
+
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
 
@@ -7377,7 +9293,7 @@ def create_tab(ctx):
                             _cur_role,
                             task_class=_task_class,
                         )
-                        _budget = min(int(_base_budget * _mult), 128000)
+                        _budget = min(int(_base_budget * _mult), _budget_cap)
 
                     # Per-role model: switch to optimal model (Claude only)
                     _effective_model = model_dropdown.value
@@ -7469,7 +9385,14 @@ def create_tab(ctx):
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI
                     # via ACTION: /command lines. Safety tiers still enforced.
-                    _MAX_ACTION_CONT = 10
+                    # S6: cap at 4 continuation rounds. More than that means
+                    # the model is in a confused loop — stop and let the
+                    # user redirect rather than burn tokens. Live-state was
+                    # set once at turn-start; do NOT regenerate it inside
+                    # the continuation loop (it didn't change between
+                    # ACTION: rounds, and a fresh state would invalidate
+                    # the prompt cache for every continuation turn).
+                    _MAX_ACTION_CONT = 4
                     _cont_turn = 0
                     while chunks and _cont_turn < _MAX_ACTION_CONT:
                         _cont_turn += 1
@@ -7510,6 +9433,15 @@ def create_tab(ctx):
                         )
                         if chunks:
                             _update_last_assistant("".join(chunks), role_label, finalize=True)
+                    # Cap-hit notification — only when the loop actually
+                    # exhausted all rounds without finishing on its own.
+                    if _cont_turn >= _MAX_ACTION_CONT and chunks:
+                        _post_raw = "".join(chunks)
+                        if _extract_action_commands(_post_raw):
+                            _append_system_message(
+                                f"⏸ Stopped after {_MAX_ACTION_CONT} ACTION rounds — "
+                                f"agent kept emitting commands. Send a follow-up to continue."
+                            )
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
@@ -7521,9 +9453,16 @@ def create_tab(ctx):
                         if _q_info:
                             _show_question_ui(_q_info)
 
-                    # Solo outcome tracking: persist every completed user turn.
-                    if engine.mode == "solo" and chunks:
-                        _record_solo_turn_outcome(
+                    # B1 — Outcome tracking for ALL conversational modes,
+                    # not just solo. Pipeline modes still go through the
+                    # cycle gate's record_cycle_outcome; this captures the
+                    # interactive dashboard / solo / quick / reviewed / etc.
+                    # turns the user actually drives.
+                    if chunks and engine.mode in (
+                        "solo", "dashboard", "quick", "reviewed",
+                        "tdd", "cluster", "full",
+                    ):
+                        _record_turn_outcome(
                             engine,
                             user_task=original_task,
                             response_text="".join(chunks),
@@ -7531,18 +9470,27 @@ def create_tab(ctx):
                             start_time=_turn_start_time,
                         )
 
-                    # Show per-role cost (only for pipeline modes, not solo/dashboard)
+                    # S7 — Show per-turn cost in ALL modes including solo +
+                    # dashboard. Pipeline rows stay verbose (they include the
+                    # role label so the user can attribute cost per agent);
+                    # solo/dashboard get a single compact line.
                     _role_cost = engine.cost_usd - _cost_before
                     _role_in = engine.token_usage["input"] - _in_before
                     _role_out = engine.token_usage["output"] - _out_before
-                    _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
-                    if _is_pipeline_mode and (_role_in > 0 or _role_out > 0):
+                    if _role_in > 0 or _role_out > 0:
                         _cost_str = f"${_role_cost:.3f}" if _role_cost > 0 else ""
-                        _append_system_message(
-                            f"{role_label}: {_role_in:,} in / {_role_out:,} out"
-                            f"{' · ' + _cost_str if _cost_str else ''}"
-                            f" [{_effective_model}]"
-                        )
+                        _is_pipeline_mode = engine.mode not in ("solo", "dashboard")
+                        if _is_pipeline_mode:
+                            _append_system_message(
+                                f"{role_label}: {_role_in:,} in / {_role_out:,} out"
+                                f"{' · ' + _cost_str if _cost_str else ''}"
+                                f" [{_effective_model}]"
+                            )
+                        elif _cost_str:
+                            _append_system_message(
+                                f"Turn cost: {_cost_str} "
+                                f"({_role_in:,} in / {_role_out:,} out · {_effective_model})"
+                            )
 
                     if engine._stop_requested:
                         break
@@ -7558,6 +9506,24 @@ def create_tab(ctx):
                             _passed.add(_ms)
                             _append_system_message(
                                 f"Cost milestone: ${engine.cost_usd:.2f} (passed ${_ms:.0f})"
+                            )
+
+                    # S7 — Soft-limit banner: show ONCE per session when the
+                    # configured threshold is crossed. Doesn't stop anything;
+                    # the user decides whether to /stop or continue.
+                    if not state.get("_cost_soft_limit_warned"):
+                        try:
+                            _soft = float(
+                                _get_agent_settings().get("cost_soft_limit_usd", 5.0)
+                            )
+                        except (TypeError, ValueError):
+                            _soft = 5.0
+                        if _soft > 0 and engine.cost_usd >= _soft:
+                            state["_cost_soft_limit_warned"] = True
+                            _append_system_message(
+                                f"💸 Cost soft-limit reached: ${engine.cost_usd:.2f} "
+                                f"≥ ${_soft:.2f}. Continue or /stop — limit "
+                                f"configurable via agent.cost_soft_limit_usd."
                             )
 
                     # --- Auto-advance logic ---
@@ -8134,6 +10100,7 @@ def create_tab(ctx):
 
     def _on_mode_change(change):
         new_mode = change["new"]
+        old_mode = (change.get("old") or "")
         if not state.get("_mode_change_internal"):
             state["_mode_manual_override"] = True
         # Update mode description label
@@ -8527,6 +10494,27 @@ def create_tab(ctx):
             _on_new_cycle(button)
         _refresh_session_dropdown()
 
+    def _on_fork_session(button):
+        sid = session_dropdown.value
+        if not sid or state["streaming"]:
+            return
+        try:
+            from delfin.agent.session_store import fork_session
+            new_sid = fork_session(sid)
+        except Exception as exc:
+            _append_system_message(f"Fork failed: {exc}")
+            return
+        if not new_sid:
+            _append_system_message(f"Could not fork session '{sid}'.")
+            return
+        _refresh_session_dropdown()
+        session_dropdown.value = new_sid
+        _load_saved_session(new_sid)
+        _append_system_message(
+            f"Forked session '{sid[:8]}…' → '{new_sid}'. "
+            "You are now editing the fork; the original is unchanged."
+        )
+
     # -- wire events -------------------------------------------------------
     send_btn.on_click(_on_send)
     stop_btn.on_click(_on_stop)
@@ -8539,6 +10527,9 @@ def create_tab(ctx):
     inspector_detail_dropdown.observe(_on_inspector_detail_change, names="value")
     load_session_btn.on_click(_on_load_session)
     delete_session_btn.on_click(_on_delete_session)
+    fork_session_btn.on_click(_on_fork_session)
+    action_approve_btn.on_click(_on_actions_approve)
+    action_deny_btn.on_click(_on_actions_deny)
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)
@@ -8569,6 +10560,35 @@ def create_tab(ctx):
     _update_status()
     _update_button_states()
     _refresh_session_dropdown()
+
+    # D5: prime the job-state snapshot so the first real transition we
+    # observe doesn't get reported as a "first time seen" non-event.
+    try:
+        _check_job_events_once()
+    except Exception:
+        pass
+    # Start the periodic watcher so users see job transitions without
+    # actively polling /jobs.  The thread is a daemon and exits with
+    # the Python session.
+    try:
+        _start_job_event_watcher()
+    except Exception:
+        pass
+
+    # D2: observe dashboard tab changes for one-shot context suggestions.
+    # ctx.tabs_widget is created later in delfin.dashboard.__init__ — it
+    # may already be set or arrive shortly after.  We re-attempt on first
+    # send if it's not ready yet.
+    def _try_attach_tab_observer() -> None:
+        tabs = getattr(ctx, "tabs_widget", None)
+        if tabs is None:
+            return
+        try:
+            tabs.observe(_on_dashboard_tab_change, names="selected_index")
+        except Exception:
+            pass
+
+    _try_attach_tab_observer()
 
     # Apply solo-minimal UI at startup (default mode is dashboard)
     _init_mode = mode_dropdown.value
@@ -8750,6 +10770,13 @@ def create_tab(ctx):
         pass
 
     tab_widget = agent_content
+    # A2b — expose the agent-tab state to other tabs (Activity tab's live
+    # pane reads engine status, session cost, streaming flag, perms).
+    # Read-only contract: other tabs MUST NOT mutate this dict.
+    try:
+        ctx.agent_state = state
+    except Exception:
+        pass
     return tab_widget, {"init_js": _enter_key_init_js}
 
 

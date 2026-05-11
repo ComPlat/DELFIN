@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,113 @@ class PromptLoader:
             )
         except Exception:
             return ""
+
+    def _load_external_memory_context(
+        self,
+        max_chars: int = 6000,
+        memory_root: Path | None = None,
+    ) -> str:
+        """Load the user's Claude Code memory for the current repo.
+
+        Looks at ``~/.claude/projects/<slug>/memory/MEMORY.md`` and the
+        ``[Title](file.md)`` references inside it.  Returns a flat
+        markdown string suitable for prompt injection, capped at
+        ``max_chars`` so it can never blow up the context.
+
+        The repo is mapped to a slug by replacing ``/`` with ``-`` —
+        Claude Code's own convention.  Empty string if nothing is found.
+
+        Failures (no home dir, missing files, encoding issues) degrade
+        silently to an empty string — this is best-effort context.
+        """
+        try:
+            home = Path.home()
+        except Exception:
+            return ""
+        repo_root = Path(self.repo_root).resolve()
+        slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+        base = (
+            memory_root if memory_root is not None
+            else home / ".claude" / "projects" / slug / "memory"
+        )
+        index = base / "MEMORY.md"
+        if not index.exists():
+            return ""
+
+        try:
+            index_text = index.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+        chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
+        # Pull in every "[Title](file.md)" target referenced from MEMORY.md
+        import re as _re
+        seen: set[str] = set()
+        for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
+            title, rel = match.group(1), match.group(2).strip()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            target = (base / rel).resolve()
+            try:
+                if not target.is_file():
+                    continue
+                # Defence-in-depth: don't read outside the memory dir
+                target.relative_to(base.resolve())
+                body = target.read_text(encoding="utf-8", errors="replace").strip()
+            except (OSError, ValueError):
+                continue
+            chunks.append(f"# {title} ({rel})\n{body}")
+
+        joined = "\n\n".join(chunks).strip()
+        if len(joined) <= max_chars:
+            return joined
+        return joined[:max_chars] + f"\n\n... [truncated, {len(joined) - max_chars} chars omitted]"
+
+    def _build_session_env_block(self) -> str:
+        """Build a CLI-style environment summary for the system prompt.
+
+        Mirrors what the Claude Code CLI injects at session start:
+        cwd, git branch, short status, and recent commits.  Keeps the
+        block under ~12 lines so it doesn't crowd the prompt.
+
+        Failures (no git, detached HEAD, etc.) are degraded gracefully.
+        """
+        repo = self.repo_root
+        lines: list[str] = [f"cwd: {repo}"]
+
+        def _git(*args: str) -> str:
+            try:
+                out = subprocess.run(
+                    ["git", *args], cwd=str(repo),
+                    capture_output=True, text=True, timeout=2.0,
+                )
+                if out.returncode == 0:
+                    return out.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                pass
+            return ""
+
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch and branch != "HEAD":
+            lines.append(f"branch: {branch}")
+
+        status = _git("status", "--porcelain")
+        if status:
+            entries = [ln for ln in status.splitlines() if ln.strip()]
+            preview = ", ".join(entries[:5])
+            tail = f" (+{len(entries) - 5} more)" if len(entries) > 5 else ""
+            lines.append(f"status: {len(entries)} change(s) — {preview}{tail}")
+        else:
+            lines.append("status: clean")
+
+        commits = _git("log", "--oneline", "-5")
+        if commits:
+            lines.append("recent commits:")
+            for line in commits.splitlines()[:5]:
+                lines.append(f"  {line}")
+
+        return "\n".join(lines)
 
     def _load_repo_map_context(self, task_text: str) -> str:
         """Load a compact task-scoped repository map."""
@@ -479,6 +587,7 @@ class PromptLoader:
         memory_context: str = "",
         task_text: str = "",
         session_key: str = "",
+        live_state: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -522,14 +631,17 @@ class PromptLoader:
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 sections.append(role_prompt)
+
+            # CLI-style environment block: cwd, branch, status, recent commits
+            env_block = self._build_session_env_block()
+            if env_block:
+                sections.append(f"--- Session Environment ---\n{env_block}")
+
             ctx_text = self._cached_read(
                 self.agent_dir / "shared" / "delfin_context.md"
             )
             if ctx_text:
-                lines = ctx_text.splitlines()
-                sections.append(
-                    "--- Project Context ---\n" + "\n".join(lines[:18])
-                )
+                sections.append(f"--- Project Context ---\n{ctx_text}")
 
             # Layer 1: Task-aware (briefing + decomposition for complex tasks)
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
@@ -565,6 +677,25 @@ class PromptLoader:
                 if not self._should_skip_section("memory", role_id):
                     sections.append(f"--- Project Memory ---\n{memory_context}")
                     injected.append("memory")
+
+            # Layer 3b: External Memory — bridge to the user's
+            # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
+            # solo mode inherits the same memories the terminal CLI uses.
+            try:
+                ext_mem = self._load_external_memory_context()
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
+
+            # Live state (Dashboard widgets, calc folder, jobs) — placed
+            # just before the attention anchor so the agent always reads
+            # the freshest UI state but doesn't get distracted from the
+            # role anchor.
+            if live_state:
+                sections.append(f"--- Live state ---\n{live_state}")
+                injected.append("live_state")
 
             # Attention anchor (always last — recency bias)
             sections.append(self._build_critical_anchor(role_id))
@@ -799,12 +930,32 @@ class PromptLoader:
                 sections.append(f"--- Project Memory ---\n{memory_context}")
                 injected.append("memory")
 
+        # 8b. External Memory bridge — same source the terminal CLI reads
+        # (~/.claude/projects/<slug>/memory/MEMORY.md). Solo gets the full
+        # 6 KB cap; dashboard gets a tighter 2 KB cap because its turns are
+        # short and we don't want to drown a haiku-class model in memos.
+        if role_id == "dashboard_agent":
+            try:
+                ext_mem = self._load_external_memory_context(max_chars=2000)
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
+
         # 9. Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):
             if not self._should_skip_section("profile", role_id):
                 sections.append(f"--- Provider Profile ---\n{profile_ctx}")
                 injected.append("profile")
+
+        # 9b. Live state (per-turn UI snapshot, e.g. Dashboard widgets +
+        # active calc folder). Placed before the attention anchor so it's
+        # the last domain content the model sees.
+        if live_state:
+            sections.append(f"--- Live state ---\n{live_state}")
+            injected.append("live_state")
 
         # 10. Attention anchor (always last — recency bias)
         sections.append(self._build_critical_anchor(role_id))

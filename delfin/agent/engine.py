@@ -229,6 +229,8 @@ _DASHBOARD_TOOLS = frozenset({
 # MCP documentation server tools — allowed for ALL roles so every agent
 # can look up ORCA manual sections, xTB docs, methodology, etc.
 _DOC_TOOL_PREFIX = "mcp__delfin-docs__"
+_OPS_TOOL_PREFIX = "mcp__delfin-ops__"
+_MCP_TOOL_PREFIXES = (_DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX)
 # KIT-Toolbox coding-agent tools (write_file, edit_file, multi_edit, bash) are
 # emitted with this prefix by api_client.py. They are gated by the
 # KitToolPermissions layer (sandbox + denylist + confirm-callback), not by the
@@ -283,6 +285,7 @@ class AgentEngine:
         allowed_tools: list[str] | None = None,
         extra_dirs: list[str] | None = None,
         agent_workspace_dir: str = "",
+        effort: str = "",
         kit_confirm_callback=None,
     ):
         self.repo_dir = Path(repo_dir)
@@ -295,11 +298,13 @@ class AgentEngine:
         except Exception:
             self._is_delfin_workspace = False
         self.loader = PromptLoader(repo_dir=pack_dir)
+        self.effort = (effort or "").strip().lower()
         self.client = create_client(
             backend=backend, provider=provider, api_key=api_key,
             model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir), mcp_config=mcp_config,
             allowed_tools=allowed_tools, extra_dirs=extra_dirs,
+            effort=self.effort,
             kit_confirm_callback=kit_confirm_callback,
         )
         self.backend = backend
@@ -331,6 +336,10 @@ class AgentEngine:
         self._prompt_session_serial: int = 1
         self._stop_requested = False
         self._lock = threading.Lock()
+        # Live state: a per-turn snippet (Dashboard widget state, calc folder,
+        # etc.) appended to the system prompt — keeps it OUT of the user
+        # message body so it doesn't accumulate in self.messages history.
+        self._live_state: str = ""
 
         # Context engineering features (all opt-in, default off)
         self._context_tracker = None  # type: Any  # ContextUsageTracker
@@ -574,6 +583,7 @@ class AgentEngine:
             memory_context=memory_context,
             task_text=task_text,
             session_key=f"engine-session-{self._prompt_session_serial}",
+            live_state=self._live_state,
         )
 
     def stream_response(
@@ -703,10 +713,10 @@ class AgentEngine:
                     role_id = self.route[self.current_role_index] if self.route else ""
                     allowed = _ROLE_TOOL_WHITELIST.get(role_id)
                     if allowed is not None and event.tool_name not in allowed:
-                        # Allow MCP doc server tools for all roles, plus the
-                        # KIT-Toolbox coding tools (already permission-gated).
+                        # Allow MCP doc + ops server tools for all roles, plus
+                        # the KIT-Toolbox coding tools (already permission-gated).
                         if not (
-                            event.tool_name.startswith(_DOC_TOOL_PREFIX)
+                            event.tool_name.startswith(_MCP_TOOL_PREFIXES)
                             or event.tool_name.startswith(_KIT_CODING_PREFIX)
                         ):
                             # Block unauthorized tool — don't call on_tool_use
@@ -1224,6 +1234,16 @@ class AgentEngine:
     def request_stop(self) -> None:
         """Request the current streaming response to stop."""
         self._stop_requested = True
+
+    def set_live_state(self, text: str) -> None:
+        """Update the per-turn live-state snippet.
+
+        The string is appended to the system prompt (cache-friendly,
+        regenerated only when needed) instead of being baked into the
+        user message body — so old turns in ``self.messages`` don't
+        carry stale dashboard state forever.
+        """
+        self._live_state = text or ""
 
     def reset_cycle(self, mode: str | None = None) -> None:
         """Reset the engine for a new work cycle."""

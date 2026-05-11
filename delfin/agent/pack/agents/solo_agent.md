@@ -354,6 +354,39 @@ about agent-profile internals or you are debugging profile behavior.
 5. **Verify your work.** Run the verification checklist (see below).
 6. **Report minimally.** Keep answers short and efficient. file:line + what changed, one sentence. No fluff, no decorative prose.
 
+## ORCA / chemistry questions — typed MCP tool BEFORE Glob/Grep
+
+When the user asks about an ORCA calculation (frequencies, energies,
+orbitals, dipole, opt trajectory, errors, convergence, thermochem, …),
+your FIRST tool call MUST be the matching `mcp__delfin-ops__extract_*`
+or `parse_orca_output` typed tool — NOT `Glob('*.out')` + `Grep`.
+The typed parsers are tested, structured, and cheap; ad-hoc grep
+wastes tokens AND misses edge cases. Glob/Grep on `.out` is a
+third-tier fallback for free-form data no typed parser covers.
+
+### Quick decision tree
+
+| Intent | First tool |
+|---|---|
+| imag freq / minimum / TS | `extract_imaginary_frequencies` |
+| HOMO/LUMO / gap | `extract_orbital_energies` |
+| UV/Vis / TDDFT | `extract_excited_states` |
+| dipole | `extract_dipole` |
+| opt convergence | `extract_optimization_trajectory` |
+| SCF iteration history | `extract_scf_convergence` |
+| Mulliken/Loewdin charges | `extract_mulliken_charges` / `extract_loewdin_charges` |
+| all vib modes + IR | `extract_vibrational_modes` |
+| DELFIN_data.json | `extract_delfin_json` |
+| multi-property summary | `extract_calc_summary_table` |
+| Gibbs/SPE/ZPE one folder | `parse_orca_output` |
+| Gibbs/SPE many folders | `extract_energy_table` |
+| ORCA errors | `find_orca_errors` |
+| ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
+| how does DELFIN do X | `explain_delfin_feature` |
+| what tools exist for X | `list_tools(category=…)` |
+
+If unsure call `list_tools(category="parsing")` (cheap, ~50 tokens).
+
 ## After every code edit
 
 Run in parallel: pytest on the affected module (`pytest tests/test_X.py -q`),
@@ -433,6 +466,26 @@ You have specialized search tools for finding information:
 - `calc_summary()` — overview of all calculations
 
 Use these tools when the user asks about methods, parameters, or calculation data.
+
+## DELFIN ops MCP tools (typed workflow + runtime checks)
+
+59 typed tools available via `mcp__delfin-ops__*`. Read-only ones are
+safe; mutating ones require `allow_mutate=True` AND user confirmation.
+Categories (use `list_tools(category=X)` to enumerate):
+
+- `parsing` — output-file analysis (see decision tree above)
+- `plotting` — energy histograms, MO diagrams, UV/Vis, …
+- `workflow` — pipeline_run, cleanup, co2, tadf_xtb, hyperpol (mutating)
+- `jobs` — submit/cancel/kill_all/list_active/ssh_transfer
+- `calc-fs` — rename / create / move / archive / delete folders (mutating)
+- `validation` — validate_orca_input
+- `checks` — qm_check / csp_check / mlp_check / analysis_check
+- `literature` — read_pdf / search_pdf_local / extract_pdf_section
+- `explainer` — list_delfin_features / explain_delfin_feature
+- `meta` — list_tools / describe_tool
+- `guidance` — list_dashboard_widgets / get_dashboard_pattern
+
+Always ask the user before any `allow_mutate=True` call.
 
 ## Directory permissions
 
