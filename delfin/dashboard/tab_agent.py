@@ -7566,16 +7566,27 @@ def create_tab(ctx):
 
     # Bulk operation intent detection.
     # Requires BOTH an action keyword AND a scope keyword in the user's
-    # last message.  This prevents the agent from self-triggering bulk ops
-    # by mentioning just one keyword in its own output.
+    # recent messages (last 3, to allow "kill alle" → "yes" follow-up).
+    # This prevents the agent from self-triggering bulk ops by mentioning
+    # just one keyword in its own output, while letting the user confirm
+    # with a short "ja" / "yes" / "ok" without re-typing the full intent.
     _BULK_ACTION_KW = (
         "recalc", "neuberechn", "submit", "absend", "abschick",
-        "cancel", "abbrech", "stopp",
+        "cancel", "abbrech", "stopp", "stop",
+        # killing / terminating phrasings (added 2026-05-11 after the
+        # "kill alle running jobs" user-request was blocked because
+        # "kill" was missing from the list).
+        "kill", "killen", "terminate", "terminier", "beenden",
+        "halt", "shutdown", "zerstör",
     )
     _BULK_SCOPE_KW = (
         "all", "alle", "auto", "alles", "every", "sämtliche", "bulk",
-        "komplett", "gesamt",
+        "komplett", "gesamt", "running", "laufend", "aktiv",
     )
+    # How many of the most recent user messages to scan for intent.
+    # Set to 3 so "kill alle running jobs" → agent asks "soll ich?" →
+    # user says "ja" still finds the original action+scope intent.
+    _BULK_INTENT_LOOKBACK = 3
 
     def _dashboard_auto_exec(agent_text: str, force_no_confirm: bool = False):
         """Scan agent output for ACTION: /command lines and execute them.
@@ -7659,17 +7670,33 @@ def create_tab(ctx):
                     results.append("BLOCKED: max 1 destructive action per response")
                     continue
 
-                # Bulk ops need explicit user intent (action + scope)
+                # Bulk ops need explicit user intent (action + scope) in
+                # the last N user messages \u2014 not just the immediate one,
+                # so "kill alle running jobs" \u2192 "ja" follow-up still
+                # finds the action+scope keywords in recent history.
                 cl = cmd_line.lower().strip()
                 if cl in ("/recalc auto", "/cancel all"):
-                    user_msg = state.get("_last_user_message", "").lower()
-                    has_action = any(kw in user_msg for kw in _BULK_ACTION_KW)
-                    has_scope = any(kw in user_msg for kw in _BULK_SCOPE_KW)
+                    recent_user_msgs: list[str] = []
+                    for m in reversed(state.get("chat_messages", []) or []):
+                        if m.get("role") == "user":
+                            recent_user_msgs.append(
+                                str(m.get("content", "")).lower()
+                            )
+                            if len(recent_user_msgs) >= _BULK_INTENT_LOOKBACK:
+                                break
+                    # Backward-compat fallback: include _last_user_message
+                    # in case chat_messages wasn't populated yet.
+                    fallback = state.get("_last_user_message", "").lower()
+                    if fallback and fallback not in recent_user_msgs:
+                        recent_user_msgs.append(fallback)
+                    haystack = " ".join(recent_user_msgs)
+                    has_action = any(kw in haystack for kw in _BULK_ACTION_KW)
+                    has_scope = any(kw in haystack for kw in _BULK_SCOPE_KW)
                     if not (has_action and has_scope):
                         _append_system_message(
                             "\u26d4 Blocked: Bulk operation requires explicit "
-                            "user request (e.g. 'recalc alle'). "
-                            "Report findings and ask the user."
+                            "user request (e.g. 'kill alle', 'cancel all', "
+                            "'recalc alle'). Report findings and ask the user."
                         )
                         results.append("BLOCKED: bulk op without user intent")
                         continue
