@@ -1253,19 +1253,45 @@ class AgentEngine:
         """
         self._live_state = text or ""
 
-    def reset_cycle(self, mode: str | None = None) -> None:
-        """Reset the engine for a new work cycle."""
+    def reset_cycle(
+        self,
+        mode: str | None = None,
+        preserve_messages: bool = False,
+    ) -> None:
+        """Reset the engine for a new work cycle.
+
+        Parameters
+        ----------
+        mode : str, optional
+            If given and different from current, switch to this mode
+            (reloads role definitions and system prompts).
+        preserve_messages : bool
+            If True, KEEP the message history. Used for mode-switches
+            mid-conversation (dashboard → solo) so the new agent sees
+            the user's prompt without forcing a re-paste. Defaults to
+            False for backward compatibility (true reset).
+        """
         # Kill the persistent CLI process so a fresh one starts
         if hasattr(self.client, "kill"):
             self.client.kill()
-        self.messages.clear()
-        self.role_outputs.clear()
-        self.compaction_summaries.clear()
-        self.current_role_index = 0
-        self.token_usage = {"input": 0, "output": 0}
-        self.cost_usd = 0.0
-        self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
-        self.session_id = ""  # New session for new cycle
+        if not preserve_messages:
+            self.messages.clear()
+            self.role_outputs.clear()
+            self.compaction_summaries.clear()
+            self.current_role_index = 0
+            self.token_usage = {"input": 0, "output": 0}
+            self.cost_usd = 0.0
+            self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
+            self.session_id = ""  # New session for new cycle
+        else:
+            # Mode-switch with continuity: keep messages so the new
+            # agent sees the user's prompt history, but reset
+            # role-tracking since the new mode has a different role
+            # route. role_outputs and compaction_summaries are
+            # role-keyed and stale for the new mode — drop them.
+            self.role_outputs.clear()
+            self.compaction_summaries.clear()
+            self.current_role_index = 0
         self.loader.reset_session_prompt_state(
             f"engine-session-{self._prompt_session_serial}"
         )
