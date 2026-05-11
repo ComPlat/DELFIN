@@ -750,6 +750,26 @@ _AGENT_CSS = """\
 .delfin-agent-question-row .widget-checkbox label {
     font-size: 12px;
 }
+/* Image upload sits flush with textarea: same 80px height, content
+   stacked vertically (icon over label) so nothing truncates with "...".
+   Without this, FileUpload renders icon + label on one line which then
+   overflows the 90px width. */
+.delfin-agent-upload {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 4px 2px !important;
+    line-height: 1.15 !important;
+    font-size: 11px !important;
+    white-space: normal !important;
+    text-align: center !important;
+    margin: 0 !important;
+}
+.delfin-agent-upload i.fa {
+    margin: 0 0 3px 0 !important;
+    font-size: 16px;
+}
 </style>
 """
 
@@ -1754,14 +1774,18 @@ def create_tab(ctx):
         layout=widgets.Layout(min_height="200px"),
     )
 
-    # Input area
+    # Input area — textarea stretches to take all remaining width;
+    # send + mode buttons keep fixed footprint at full input height
+    # so the row looks like one coherent strip.
     input_textarea = widgets.Textarea(
         placeholder=(
             "Message the agent... (Enter = send, Shift+Enter = newline)\n"
             "KIT tip: say 'also work in /path' to grant write access — "
             "the agent persists it after one confirm click."
         ),
-        layout=widgets.Layout(width="100%", height="80px"),
+        layout=widgets.Layout(
+            flex="1 1 auto", width="auto", height="80px",
+        ),
     )
     input_textarea.add_class("delfin-agent-input")
     send_btn = widgets.Button(
@@ -1769,9 +1793,15 @@ def create_tab(ctx):
         button_style="primary",
         layout=widgets.Layout(width="80px", height="80px"),
     )
+    # image_upload is created later (line ~2240) but inserted here so
+    # the whole row [📎 | textarea | Send | quick-mode] is one strip.
     input_row = widgets.HBox(
         [input_textarea, send_btn, kit_mode_quick_btn],
-        layout=widgets.Layout(margin="6px 0 0 0"),
+        layout=widgets.Layout(
+            margin="0 0 0 4px",
+            flex="1 1 auto", width="auto",
+            align_items="flex-start",
+        ),
     )
     input_row.add_class("delfin-agent-send-row")
 
@@ -2237,26 +2267,31 @@ def create_tab(ctx):
 
     plan_accept_btn.on_click(_on_plan_accept_phase5)
 
-    # Image upload widget alongside chat input.
+    # File upload widget alongside chat input. Matches the textarea
+    # height (80px) so the input row looks like one coherent strip.
+    # Accepts any file type; uploads land in <workspace>/.delfin/uploads/
+    # and the agent picks them up via read_file / notebook_read.
     image_upload = widgets.FileUpload(
-        accept="image/png,image/jpeg,image/webp,image/gif",
         multiple=True,
-        description="📎 Bilder",
-        layout=widgets.Layout(width="100px"),
+        description="📎 Files",
+        layout=widgets.Layout(width="90px", height="80px"),
     )
+    image_upload.add_class("delfin-agent-upload")
     state["_pending_images"] = []
 
-    def _on_image_upload(change):
-        """Save uploaded images to <workspace>/.delfin/uploads/ for the agent.
+    # Hard size cap per file to keep dashboard memory bounded. 32 MB is
+    # generous for code, configs, PDFs, and small datasets but blocks
+    # accidental drops of huge archives.
+    _UPLOAD_SIZE_CAP = 32 * 1024 * 1024
 
-        Full multimodal-content (base64 in the API call) requires client
-        surgery the dashboard can't do safely from here, so we go with
-        the next best thing: drop the file under the workspace and let
-        the agent read it via read_file / notebook_read / image-aware
-        downstream tooling. The agent learns about the upload via a
-        system message inserted on the next send.
+    def _on_image_upload(change):
+        """Save uploaded files to <workspace>/.delfin/uploads/ for the agent.
+
+        Drops the file under the workspace and lets the agent read it via
+        read_file / notebook_read / find_definition / etc. The agent
+        learns about the upload via a system message inserted on the
+        next send.
         """
-        from delfin.agent.image_input import _ALLOWED_MIMES
         files = image_upload.value
         eng = state.get("engine")
         ws = None
@@ -2272,25 +2307,31 @@ def create_tab(ctx):
         items = (files.items() if isinstance(files, dict)
                  else [(f["name"], f) for f in files])
         for fname, fmeta in items:
-            mime = (fmeta.get("type")
-                    or fmeta.get("metadata", {}).get("type", ""))
-            if mime not in _ALLOWED_MIMES:
-                _append_system_message(f"Bild ignoriert (MIME): {fname}")
-                continue
             content = fmeta.get("content") or fmeta.get("data")
             if isinstance(content, memoryview):
                 content = bytes(content)
+            if not content:
+                _append_system_message(f"Datei leer, übersprungen: {fname}")
+                continue
+            if len(content) > _UPLOAD_SIZE_CAP:
+                _append_system_message(
+                    f"Datei zu groß (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
+                    f"{fname}"
+                )
+                continue
             try:
                 target = upload_dir / Path(fname).name
                 target.write_bytes(content)
                 saved.append(target)
             except OSError as exc:
-                _append_system_message(f"Bild speichern fehlgeschlagen: {exc}")
+                _append_system_message(
+                    f"Datei speichern fehlgeschlagen: {exc}"
+                )
         state["_pending_images"] = saved
         if saved:
             paths = "\n".join(f"  - {p}" for p in saved)
             _append_system_message(
-                f"🖼️ {len(saved)} Bild(er) gespeichert — werden bei der "
+                f"📎 {len(saved)} Datei(en) gespeichert — werden bei der "
                 f"nächsten Nachricht erwähnt:\n{paths}"
             )
 
@@ -2378,8 +2419,14 @@ def create_tab(ctx):
          task_ticker_html, chat_html,
          plan_accept_btn, ask_user_box,
          working_html, queue_html, approval_row, question_row,
-         widgets.HBox([image_upload, input_row],
-                      layout=widgets.Layout(align_items="flex-start")),
+         widgets.HBox(
+             [image_upload, input_row],
+             layout=widgets.Layout(
+                 width="100%",
+                 align_items="flex-start",
+                 margin="6px 0 0 0",
+             ),
+         ),
          status_line_html],
     )
 
@@ -7005,6 +7052,9 @@ def create_tab(ctx):
                         _route_info = _AE.recommend_task_route(
                             original_task or current_msg,
                             engine.mode,
+                            is_delfin_workspace=getattr(
+                                engine, "_is_delfin_workspace", True,
+                            ),
                         )
                         _task_class = _route_info.get("task_class", "")
                     except Exception:
@@ -7063,7 +7113,7 @@ def create_tab(ctx):
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
                     # so we do not pay twice for the same profile tokens.
-                    # Phase 5f: note pending image uploads so the agent
+                    # Phase 5f: note pending file uploads so the agent
                     # knows where to find them. Cleared after dispatch.
                     _pending_imgs = state.get("_pending_images") or []
                     if _pending_imgs:
@@ -7072,9 +7122,10 @@ def create_tab(ctx):
                         )
                         current_msg = (
                             f"{current_msg}\n\n"
-                            f"[The user attached these image files — "
-                            f"read them via read_file or describe them "
-                            f"using whatever vision tools you have:\n"
+                            f"[The user attached these files — "
+                            f"read them with read_file (for text/code/configs) "
+                            f"or notebook_read (for .ipynb). Images can be "
+                            f"described with whatever vision tools you have:\n"
                             f"{_img_lines}]"
                         )
                         state["_pending_images"] = []

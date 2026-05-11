@@ -286,6 +286,14 @@ class AgentEngine:
         kit_confirm_callback=None,
     ):
         self.repo_dir = Path(repo_dir)
+        # DELFIN-bias gate: chemistry/cluster escalation patterns and
+        # DELFIN-specific tools are only applied when the engine is
+        # rooted in a DELFIN tree. Generic projects get a clean agent.
+        try:
+            from .api_client import _is_delfin_workspace
+            self._is_delfin_workspace: bool = _is_delfin_workspace(self.repo_dir)
+        except Exception:
+            self._is_delfin_workspace = False
         self.loader = PromptLoader(repo_dir=pack_dir)
         self.client = create_client(
             backend=backend, provider=provider, api_key=api_key,
@@ -1284,7 +1292,10 @@ class AgentEngine:
 
         task_class = ""
         try:
-            route_info = self.recommend_task_route(user_task, self.mode)
+            route_info = self.recommend_task_route(
+                user_task, self.mode,
+                is_delfin_workspace=self._is_delfin_workspace,
+            )
             task_class = route_info.get("task_class", "")
         except Exception:
             pass
@@ -1681,7 +1692,10 @@ class AgentEngine:
         return None
 
     @staticmethod
-    def recommend_task_route(user_message: str, current_mode: str = "dashboard") -> dict[str, Any]:
+    def recommend_task_route(
+        user_message: str, current_mode: str = "dashboard",
+        *, is_delfin_workspace: bool = True,
+    ) -> dict[str, Any]:
         """Recommend the cheapest capable mode for a task.
 
         Returns a dict with:
@@ -1691,6 +1705,11 @@ class AgentEngine:
         - ``confidence``: low / medium / high
         - ``reasons``: short rationale list
         - ``risk_flags``: reviewed / cluster / full flags when present
+
+        When ``is_delfin_workspace`` is False, chemistry / DELFIN-file
+        escalation patterns are skipped so generic projects don't get
+        flagged as "review-needed" just because they mention "orca" or
+        contain a file called ``calculators.py``.
         """
         text = user_message or ""
         lower = text.lower()
@@ -1699,8 +1718,12 @@ class AgentEngine:
         def _contains_any(keywords: tuple[str, ...]) -> list[str]:
             return [kw for kw in keywords if kw in lower]
 
-        dashboard_hits = _contains_any(_DASHBOARD_KEYWORDS)
-        chemistry_hits = _contains_any(_CHEMISTRY_KEYWORDS)
+        dashboard_hits = (
+            _contains_any(_DASHBOARD_KEYWORDS) if is_delfin_workspace else []
+        )
+        chemistry_hits = (
+            _contains_any(_CHEMISTRY_KEYWORDS) if is_delfin_workspace else []
+        )
         code_change_hits = _contains_any(_CODE_CHANGE_KEYWORDS)
         code_question_hits = _contains_any(_CODE_QUESTION_KEYWORDS)
         code_hint_hits = _contains_any(_FILE_OR_CODE_HINTS)
@@ -1708,12 +1731,13 @@ class AgentEngine:
         cluster_hits = _contains_any(_CLUSTER_RISK_KEYWORDS)
         full_hits = _contains_any(_FULL_RISK_KEYWORDS)
 
-        for pattern, mode in _ESCALATION_PATTERNS:
-            if re.search(pattern, text):
-                if mode == "cluster":
-                    cluster_hits.append(pattern)
-                elif mode == "reviewed":
-                    reviewed_hits.append(pattern)
+        if is_delfin_workspace:
+            for pattern, mode in _ESCALATION_PATTERNS:
+                if re.search(pattern, text):
+                    if mode == "cluster":
+                        cluster_hits.append(pattern)
+                    elif mode == "reviewed":
+                        reviewed_hits.append(pattern)
 
         dashboard_score = len(dashboard_hits) * 2 + (3 if stripped.startswith("/") else 0)
         chemistry_score = len(chemistry_hits) * 2

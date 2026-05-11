@@ -749,9 +749,48 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*timeout\s+\d",
     r"^\s*xargs\s+",
     r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
-    r"^\s*xtb\s+\S+\.xyz\b",                                 # DELFIN-spezifisch: read-only xtb-Aufruf
-    r"^\s*delfin(?:-\w+)?\b",                                # delfin-CLI-Wrapper
 )
+
+# DELFIN-specific bash auto-allow patterns — merged into the auto-allow
+# list only when the workspace is actually a DELFIN repository.
+# Keeping them out by default avoids surprising "agent runs xtb on user
+# files" behaviour for non-DELFIN projects.
+_DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
+    r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
+    r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
+)
+
+
+# DELFIN-only tool names. Filtered out of the advertised tool list when
+# the workspace isn't a DELFIN repo, so generic projects don't see a
+# search_calcs/get_calc_info that would return zero results anyway.
+_DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
+    "search_calcs", "get_calc_info", "calc_summary",
+    "search_docs", "read_section", "list_docs", "list_sections",
+})
+
+
+def _is_delfin_workspace(workspace: Path | str | None) -> bool:
+    """Return True iff *workspace* looks like a DELFIN source tree.
+
+    Detection rule: either ``delfin/agent/__init__.py`` or
+    ``delfin/__init__.py`` is present at the workspace root. Errs on
+    the side of "not DELFIN" — false negatives just mean Jerome's
+    private project gets a leaner tool surface, which is the goal.
+    """
+    if workspace is None:
+        return False
+    try:
+        ws = Path(workspace).expanduser().resolve()
+    except Exception:
+        return False
+    if not ws.is_dir():
+        return False
+    if (ws / "delfin" / "agent" / "__init__.py").is_file():
+        return True
+    if (ws / "delfin" / "__init__.py").is_file():
+        return True
+    return False
 
 # Path globs (relative to workspace) where writes/edits are forbidden.
 _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
@@ -837,6 +876,18 @@ class KitToolPermissions:
             if p not in resolved_extra:
                 resolved_extra.append(p)
         self.extra_workspace_dirs = tuple(resolved_extra)
+        self.is_delfin_workspace = _is_delfin_workspace(self.workspace)
+        # Merge in DELFIN-only bash patterns only inside the DELFIN repo so
+        # generic projects don't get an auto-allowed ``xtb`` / ``delfin``
+        # surface they never asked for. Only extends the default tuple —
+        # callers who passed a custom tuple are respected as-is.
+        if (
+            self.is_delfin_workspace
+            and self.bash_auto_allow_patterns is _DEFAULT_BASH_AUTO_ALLOW
+        ):
+            self.bash_auto_allow_patterns = (
+                _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
+            )
 
     def all_workspace_roots(self) -> tuple[Path, ...]:
         return (self.workspace,) + tuple(self.extra_workspace_dirs)
@@ -4859,6 +4910,19 @@ class OpenAIClient(_BaseClient):
             advertised_tools = [
                 t for t in _DOC_TOOLS_OPENAI
                 if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
+            ]
+
+        # Strip DELFIN-only tools when the workspace is not a DELFIN repo.
+        # Generic projects shouldn't see search_calcs / get_calc_info /
+        # search_docs etc. — those would just return empty results and
+        # pollute the agent's tool surface.
+        _is_delfin = bool(getattr(self._permissions, "is_delfin_workspace",
+                                   False))
+        if not _is_delfin:
+            advertised_tools = [
+                t for t in advertised_tools
+                if t.get("function", {}).get("name")
+                not in _DELFIN_ONLY_TOOL_NAMES
             ]
 
         # Augment with MCP tools discovered from configured servers.
