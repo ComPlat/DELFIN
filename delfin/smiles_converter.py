@@ -23006,8 +23006,29 @@ def _emit_chelate_pucker_variants(
                     continue
                 seen_sigs.add(sig2)
                 label = f"pucker-{ring_size} {ptype}"
-                results.append((new_xyz, label))
-                n_added += 1
+                # Iter-8.7 every-append gate (123a130 port, env-gated, default OFF)
+                _gate_pass = True
+                if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                    try:
+                        _flat = _flatten_sp2_atoms_xyz(new_xyz, mol)
+                        if _flat:
+                            new_xyz = _flat
+                    except Exception:
+                        pass
+                    try:
+                        _mt_g = Chem.RWMol(mol); _mt_g.RemoveAllConformers()
+                        _c_g = _xyz_to_rdkit_conformer(_mt_g.GetMol(), new_xyz)
+                        if _c_g is None:
+                            _gate_pass = False
+                        else:
+                            _ci_g = _mt_g.AddConformer(_c_g, assignId=True)
+                            if _has_severe_covalent_distortion(_mt_g.GetMol(), _ci_g):
+                                _gate_pass = False
+                    except Exception:
+                        _gate_pass = False
+                if _gate_pass:
+                    results.append((new_xyz, label))
+                    n_added += 1
             except Exception:
                 continue
 
@@ -23290,6 +23311,28 @@ def _emit_all_trans_by_type_arrangements(
                         f"{t}+{t}" for t, _ in ordered
                     )
                     label = f"trans-{geom} {type_str}"
+                    # Iter-8.7 every-append gate (123a130, env-gated default OFF)
+                    _gate_pass = True
+                    if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                        try:
+                            _flat = _flatten_sp2_atoms_xyz(xyz, mol)
+                            if _flat:
+                                xyz = _flat
+                        except Exception:
+                            pass
+                        try:
+                            _mt_g = Chem.RWMol(mol); _mt_g.RemoveAllConformers()
+                            _c_g = _xyz_to_rdkit_conformer(_mt_g.GetMol(), xyz)
+                            if _c_g is None:
+                                _gate_pass = False
+                            else:
+                                _ci_g = _mt_g.AddConformer(_c_g, assignId=True)
+                                if _has_severe_covalent_distortion(_mt_g.GetMol(), _ci_g):
+                                    _gate_pass = False
+                        except Exception:
+                            _gate_pass = False
+                    if not _gate_pass:
+                        continue
                     results.append((xyz, label))
                     n_added += 1
                     if len(results) >= max_isomers:
@@ -25227,6 +25270,23 @@ def smiles_to_xyz_isomers(
                             continue
                         _gie_existing_fps.add(_mfp)
                         _gie_existing_sigs.add(_heavy)
+                        # Iter-8.7 every-append gate (123a130, env-gated, default OFF)
+                        _gate_pass = True
+                        if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                            try:
+                                _flat = _flatten_sp2_atoms_xyz(_refined, mol)
+                                if _flat:
+                                    _refined = _flat
+                            except Exception:
+                                pass
+                            try:
+                                # _mt + _mci already built above; check distortion
+                                if _has_severe_covalent_distortion(_mt.GetMol(), _mci):
+                                    _gate_pass = False
+                            except Exception:
+                                _gate_pass = False
+                        if not _gate_pass:
+                            continue
                         _gie_isomer_n += 1
                         results.append((_refined, f'Isomer {_gie_isomer_n}'))
                         _gie_n_room -= 1
@@ -25250,11 +25310,32 @@ def smiles_to_xyz_isomers(
     ):
         try:
             _h1_results: List[Tuple[str, str]] = []
+            _h1_gate_on = bool(_delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0))
             for _h1_xyz, _h1_lbl in results:
                 try:
                     _h1_xyz_snapped = _snap_aromatic_rings_in_xyz(
                         _h1_xyz, mol, rms_threshold=0.05,
                     )
+                    # Iter-8.7 every-append gate on snapped frame
+                    if _h1_gate_on:
+                        try:
+                            _flat = _flatten_sp2_atoms_xyz(_h1_xyz_snapped, mol)
+                            if _flat:
+                                _h1_xyz_snapped = _flat
+                        except Exception:
+                            pass
+                        try:
+                            _mt_g = Chem.RWMol(mol); _mt_g.RemoveAllConformers()
+                            _c_g = _xyz_to_rdkit_conformer(_mt_g.GetMol(), _h1_xyz_snapped)
+                            if _c_g is not None:
+                                _ci_g = _mt_g.AddConformer(_c_g, assignId=True)
+                                if _has_severe_covalent_distortion(_mt_g.GetMol(), _ci_g):
+                                    # fall back to unsnapped frame
+                                    _h1_results.append((_h1_xyz, _h1_lbl))
+                                    continue
+                        except Exception:
+                            _h1_results.append((_h1_xyz, _h1_lbl))
+                            continue
                     _h1_results.append((_h1_xyz_snapped, _h1_lbl))
                 except Exception as _h1_inner_exc:
                     logger.debug(
