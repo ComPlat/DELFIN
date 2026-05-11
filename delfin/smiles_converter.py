@@ -18285,6 +18285,17 @@ def _label_from_canonical_form(cf: tuple) -> str:
             return 'all-cis'
         if len(same) == len(pairs):
             return 'all-trans'
+        # Iter-8.6j (2026-05-11): join ALL same-pair elements (not just
+        # first) so MA3BC2-type fingerprints don't collapse to the same
+        # base label.  Previously OH-1 (Cl-Cl + N-N both trans) and OH-2
+        # (Cl-Cl trans only) both returned "Cl-trans" → downstream label-
+        # dedup at ~24492 merged them, dropping FIRCOY/DEQVIE/TIYRUR to 2
+        # frames despite group-theory predicting 4-6.  Joining via '+'
+        # makes labels distinct: "Cl-trans" vs "Cl+N-trans" → survive
+        # base-collapse. Env-gate DELFIN_OH_LABEL_RICH default 1 (active).
+        if _delfin_env_int('DELFIN_OH_LABEL_RICH', 1):
+            same_elems = sorted({_strip(p[0]) for p in same})
+            return f"{'+'.join(same_elems)}-trans"
         return f'{_strip(same[0][0])}-trans'
     if geom == 'SQ':
         pairs = cf[1]
