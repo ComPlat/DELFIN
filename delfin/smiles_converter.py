@@ -12894,17 +12894,42 @@ def _build_hapto_scaffold(
         else:
             bond_dir = np.array([1.0, 0.0, 0.0])
 
-        # Ring plane CONTAINS the bond_dir (metal-anchor axis is in the
-        # ring plane, not perpendicular to it).  Polygon centre is at
-        # distance radius from anchor along bond_dir (away from parent).
-        # Anchor sits at angle=0 in (-bond_dir, perp_in_plane) basis so
-        # any pre-placed anchor (e.g. a σ-donor positioned at correct
-        # M-D distance for a piano-stool complex) stays fixed at its
-        # original coords.  Universal: applies to every ring placement,
-        # the previous geometry (bond_dir as ring normal) was incorrect
-        # — it moved every anchor by ~radius·sqrt(2) ≈ 2 Å on each call.
-        ring_center = anchor_pos + bond_dir * radius
-        perp_in_plane, _ = _ortho_basis(bond_dir)
+        # Iter-8.8 (2026-05-11): Per-ring chemistry-correct dispatch.
+        #
+        # Two geometric regimes, decided by ring membership in
+        # all_hapto_atoms:
+        #
+        # (A) Hapto-coordinated ring (Cp / arene / diene η-bonded to
+        #     metal): bond_dir is the metal→ring axis = ring NORMAL.
+        #     Ring plane is perpendicular to bond_dir.  81f8a1f formula.
+        #     (User pattern: hapto fragments destroyed in HEAD post-Iter-5)
+        #
+        # (B) Pendant organic ring (phenyl substituent on σ-donor,
+        #     fused-aromatic side-arm): bond_dir lies IN the ring plane
+        #     (the σ-bond is one ring edge).  HEAD/Iter-5 formula.
+        #
+        # env-flag DELFIN_HAPTO_LEGACY_RING_PLANE: default 1 (chemistry-
+        # correct dispatch active); set to 0 for legacy HEAD-only formula.
+        _legacy_ring_plane = bool(
+            _delfin_env_int("DELFIN_HAPTO_LEGACY_RING_PLANE", 1)
+        )
+        _ring_is_hapto = (
+            _legacy_ring_plane
+            and any(a in all_hapto_atoms for a in ring_tuple)
+        )
+
+        if _ring_is_hapto:
+            # 81f8a1f hapto-ring: bond_dir is ring NORMAL.  Polygon centre
+            # at radius along bond_dir from anchor.  Anchor preserved at
+            # angle = anchor_offset.
+            u_r, v_r = _ortho_basis(bond_dir)
+            ring_center = anchor_pos + bond_dir * radius
+        else:
+            # HEAD/Iter-5 pendant ring: bond_dir IN ring plane.  Polygon
+            # centre at radius along bond_dir from anchor.  Anchor at
+            # angle=0 in (-bond_dir, perp_in_plane) basis.
+            ring_center = anchor_pos + bond_dir * radius
+            perp_in_plane, _ = _ortho_basis(bond_dir)
 
         ring_adj = {a: [] for a in ring_tuple}
         for a in ring_tuple:
@@ -12927,12 +12952,25 @@ def _build_hapto_scaffold(
         if len(chain) != rsize:
             return False
 
-        for k, atom_idx in enumerate(chain):
-            angle = 2.0 * np.pi * k / rsize
-            coords[atom_idx] = ring_center + radius * (
-                np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
-            )
-            placed.add(atom_idx)
+        if _ring_is_hapto:
+            # 81f8a1f formula: anchor preserved at its angle in (u_r, v_r)
+            anchor_offset = float(np.arctan2(
+                float(np.dot(anchor_pos - ring_center, v_r)),
+                float(np.dot(anchor_pos - ring_center, u_r)),
+            ))
+            for k, atom_idx in enumerate(chain):
+                angle = anchor_offset + 2.0 * np.pi * k / rsize
+                coords[atom_idx] = ring_center + radius * (
+                    np.cos(angle) * u_r + np.sin(angle) * v_r
+                )
+                placed.add(atom_idx)
+        else:
+            for k, atom_idx in enumerate(chain):
+                angle = 2.0 * np.pi * k / rsize
+                coords[atom_idx] = ring_center + radius * (
+                    np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
+                )
+                placed.add(atom_idx)
         return True
 
     # ---- BFS propagate remaining atoms with VSEPR local geometry ----
@@ -26821,17 +26859,19 @@ def _build_coordination_constraints_from_xyz(
             )
             if m_idx not in base["fix_atoms"]:
                 base["fix_atoms"].append(m_idx)
-            # Iter-8.6e (2026-05-11): env-flag controlled donor-relax.
-            # When DELFIN_UFF_RELAX_DONORS=1, monodentate donors are NOT
-            # frozen during UFF.  M-D distance constraints (added above)
-            # keep bond lengths near the lookup-table values, but L-M-L
-            # angles can relax based on donor-mixing / trans-influence
-            # chemistry — breaking the idealized-template Td/Oh/SP output
-            # that shows perfect symmetric angles regardless of donor
-            # identity (User pattern 2026-05-11 "sp3-C unrealistische Td").
-            # Default OFF: bit-exact pre-8.6e behaviour.
+            # Iter-8.6e/i (2026-05-11): env-flag controlled donor-relax.
+            # When DELFIN_UFF_RELAX_DONORS=1 (DEFAULT since 8.6i), monodentate
+            # donors are NOT frozen during UFF.  M-D distance constraints
+            # (added above) keep bond lengths near the lookup-table values,
+            # but L-M-L angles can relax based on donor-mixing /
+            # trans-influence chemistry — breaking the idealized-template
+            # Td/Oh/SP output that shows perfect symmetric angles regardless
+            # of donor identity.  Validated: CESNIZ Ru CN6 4 -> 8 unique
+            # isomers, CPOENR Re CN6 1 -> 4 unique isomers, FUPVOB Zn(Br2N2)
+            # Td angle-range 0° -> 5.93° (chemistry-realistic).  Set env to
+            # 0 explicitly for legacy pre-8.6e behaviour.
             _uff_relax_donors = bool(
-                _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 0)
+                _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 1)
             )
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
