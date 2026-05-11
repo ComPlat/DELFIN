@@ -12908,10 +12908,13 @@ def _build_hapto_scaffold(
         #     fused-aromatic side-arm): bond_dir lies IN the ring plane
         #     (the σ-bond is one ring edge).  HEAD/Iter-5 formula.
         #
-        # env-flag DELFIN_HAPTO_LEGACY_RING_PLANE: default 1 (chemistry-
-        # correct dispatch active); set to 0 for legacy HEAD-only formula.
+        # env-flag DELFIN_HAPTO_LEGACY_RING_PLANE: default 0 (HEAD/Iter-5
+        # formula active across all rings).  Default REVERTED 2026-05-11
+        # after smoke500 with default=1 showed sigma -2.8pp topo
+        # regression with no measurable hapto/multi-hapto compensation;
+        # leaves dispatch as opt-in env=1 for per-SMILES experiments.
         _legacy_ring_plane = bool(
-            _delfin_env_int("DELFIN_HAPTO_LEGACY_RING_PLANE", 1)
+            _delfin_env_int("DELFIN_HAPTO_LEGACY_RING_PLANE", 0)
         )
         _ring_is_hapto = (
             _legacy_ring_plane
@@ -26859,19 +26862,22 @@ def _build_coordination_constraints_from_xyz(
             )
             if m_idx not in base["fix_atoms"]:
                 base["fix_atoms"].append(m_idx)
-            # Iter-8.6e/i (2026-05-11): env-flag controlled donor-relax.
-            # When DELFIN_UFF_RELAX_DONORS=1 (DEFAULT since 8.6i), monodentate
-            # donors are NOT frozen during UFF.  M-D distance constraints
-            # (added above) keep bond lengths near the lookup-table values,
-            # but L-M-L angles can relax based on donor-mixing /
-            # trans-influence chemistry — breaking the idealized-template
-            # Td/Oh/SP output that shows perfect symmetric angles regardless
-            # of donor identity.  Validated: CESNIZ Ru CN6 4 -> 8 unique
-            # isomers, CPOENR Re CN6 1 -> 4 unique isomers, FUPVOB Zn(Br2N2)
-            # Td angle-range 0° -> 5.93° (chemistry-realistic).  Set env to
-            # 0 explicitly for legacy pre-8.6e behaviour.
+            # Iter-8.6e (2026-05-11): env-flag controlled donor-relax.
+            # When DELFIN_UFF_RELAX_DONORS=1, monodentate donors are NOT
+            # frozen during UFF.  M-D distance constraints (added above)
+            # keep bond lengths near the lookup-table values, but L-M-L
+            # angles can relax based on donor-mixing / trans-influence
+            # chemistry.  Validated: CESNIZ Ru CN6 4 -> 8 unique isomers,
+            # CPOENR Re CN6 1 -> 4 unique isomers (single-SMILES per-frame
+            # tests).
+            #
+            # Iter-8.6i DEFAULT-FLIP REVERTED 2026-05-11: smoke500 with
+            # env=1 default showed sigma topo_pct -2.8pp regression
+            # (84.9% -> 82.1%) with NO compensating hapto/multi-hapto
+            # gain.  Default kept OFF (0); opt-in via env=1 for the
+            # per-SMILES isomer recovery (CESNIZ/CPOENR pattern).
             _uff_relax_donors = bool(
-                _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 1)
+                _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 0)
             )
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
