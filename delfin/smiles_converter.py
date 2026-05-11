@@ -26920,16 +26920,25 @@ def _build_coordination_constraints_from_xyz(
                 donor_indices.append(nbr.GetIdx())
 
             # M-D distance constraints from lookup table.
-            for d_idx in donor_indices:
-                key = tuple(sorted((m_idx, d_idx)))
-                if key in seen_dist:
-                    continue
-                seen_dist.add(key)
-                d_sym = mol_template.GetAtomWithIdx(d_idx).GetSymbol()
-                if d_sym in _METAL_SET:
-                    continue
-                bl = float(_get_ml_bond_length(m_sym, d_sym))
-                base["distances"].append((m_idx, d_idx, bl))
+            # Iter-8.6h (2026-05-11): env-flag DELFIN_UFF_NO_MD_CONSTRAINT
+            # default 0.  When 1, M-D distance constraint is NOT added —
+            # UFF optimizes M-D freely, allowing convergence to UFF
+            # equilibrium (typically shorter than lookup-table values,
+            # closer to 6efa34e/81f8a1f champion Fe-O 1.887 vs HEAD 1.999).
+            # M-D invariant still protected by downstream
+            # _verify_metal_connectivity (donor-drift catch).
+            _skip_md_dist = bool(_delfin_env_int("DELFIN_UFF_NO_MD_CONSTRAINT", 0))
+            if not _skip_md_dist:
+                for d_idx in donor_indices:
+                    key = tuple(sorted((m_idx, d_idx)))
+                    if key in seen_dist:
+                        continue
+                    seen_dist.add(key)
+                    d_sym = mol_template.GetAtomWithIdx(d_idx).GetSymbol()
+                    if d_sym in _METAL_SET:
+                        continue
+                    bl = float(_get_ml_bond_length(m_sym, d_sym))
+                    base["distances"].append((m_idx, d_idx, bl))
 
             # FREEZE metal + monodentate-donor atoms during UFF.
             # The topology builder placed donors at the ideal symmetric
