@@ -245,3 +245,70 @@ def fork_session(
     out_path.write_text(json.dumps(data, ensure_ascii=False, indent=1))
     _chmod_user_only(out_path)
     return new_id
+
+
+def resume_latest(*, max_age_s: int | None = None) -> dict[str, Any] | None:
+    """Return the most recently updated session, or None.
+
+    Parameters
+    ----------
+    max_age_s : int, optional
+        If set, ignore sessions whose ``updated_at`` is older than
+        this many seconds. Useful for "resume only if I was just
+        working on it" UX.
+    """
+    summaries = list_sessions(limit=1)
+    if not summaries:
+        return None
+    head = summaries[0]
+    if max_age_s is not None and head.get("updated_at"):
+        if time.time() - float(head["updated_at"]) > max_age_s:
+            return None
+    return load_session(str(head["session_id"]))
+
+
+def cleanup_old_sessions(*, max_age_days: int = 30) -> int:
+    """Prune session files older than ``max_age_days``. Returns count."""
+    if not _SESSIONS_DIR.exists():
+        return 0
+    cutoff = time.time() - max_age_days * 86_400
+    removed = 0
+    for f in _SESSIONS_DIR.glob("*.json"):
+        try:
+            mtime = f.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def find_sessions(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Substring search over session titles + first user message."""
+    needle = query.strip().lower()
+    if not needle:
+        return list_sessions(limit=limit)
+    out: list[dict[str, Any]] = []
+    for s in list_sessions(limit=200):
+        if needle in str(s.get("title", "")).lower():
+            out.append(s)
+            continue
+        # Cheap dive into the file for first-message match
+        full = load_session(str(s["session_id"]))
+        if not full:
+            continue
+        msgs = full.get("chat_messages") or []
+        first_user = ""
+        for m in msgs:
+            if m.get("role") == "user":
+                first_user = str(m.get("content", ""))
+                break
+        if needle in first_user.lower():
+            out.append(s)
+        if len(out) >= limit:
+            break
+    return out

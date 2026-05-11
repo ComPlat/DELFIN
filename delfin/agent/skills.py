@@ -1,151 +1,179 @@
-"""Skill registry for the DELFIN agent.
+"""User-invocable skills (Claude-Code-compatible).
 
-A *skill* is a small, named markdown prompt the user can invoke from the
-dashboard via ``/skill <name>``.  The body of the skill is sent to the
-agent as a user message — the same effect as if the user had typed the
-prompt themselves, but kept reusable and discoverable.
+Skills are short, parameterised playbooks the user can invoke from
+the chat input via ``/<skill-name>`` or that the agent can invoke via
+the ``Skill`` tool. They live as Markdown files with a YAML
+front-matter::
 
-Skill files live under ``delfin/agent/pack/skills/``.  Each ``<name>.md``
-file follows a tiny convention so we don't need a YAML parser dependency
-for the body:
+    ---
+    name: security-review
+    description: Run a security audit of pending changes
+    ---
 
-    # <Title>
-    > <Optional one-line description>
+    # Security review
 
-    <Skill body — full prompt sent to the agent>
+    1. Inspect every changed file for hardcoded secrets …
 
-The leading ``#`` is the title (used in the palette).  A line beginning
-with ``>`` immediately after is treated as the short summary.  Anything
-else is the skill body.
+Search order (later wins on name collision):
 
-If a skill file is malformed (missing title), it is silently ignored.
+  1. ``~/.delfin/skills/<name>/SKILL.md``        — user-global
+  2. ``~/.delfin/skills/<name>.md``              — user-global flat
+  3. ``<workspace>/.delfin/skills/<name>/SKILL.md`` — project-scoped
+  4. ``<workspace>/.delfin/skills/<name>.md``    — project-scoped flat
+
+The loader is intentionally permissive: missing front-matter is
+tolerated (the file's first heading becomes the description). Only
+file IO errors silently skip a candidate.
 """
+
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable
 
 
-# ---------------------------------------------------------------------------
-# Skill record
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
+@dataclass
 class Skill:
-    """One named skill loaded from disk."""
+    name: str
+    description: str
+    body: str
+    source: Path
 
-    name: str          # filename stem, e.g. ``tune-control``
-    title: str         # user-visible title (from the leading ``# ...``)
-    description: str   # one-line summary (from a leading ``> ...`` line)
-    body: str          # full prompt text sent to the agent
-    source_path: str   # absolute path of the MD file (for debugging)
-
-    @property
-    def slash_command(self) -> str:
-        """The full slash-command including the ``/skill`` prefix."""
-        return f"/skill {self.name}"
-
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-
-_DEFAULT_DIR = Path(__file__).resolve().parent / "pack" / "skills"
+    def to_summary(self) -> dict:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "source": str(self.source),
+        }
 
 
-def parse_skill_text(name: str, text: str, source_path: str = "") -> Skill | None:
-    """Parse skill markdown into a ``Skill`` record.
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_\-]{0,63}$")
 
-    Returns ``None`` if the file does not start with a ``# Title`` line.
-    """
-    if not text or not text.strip():
-        return None
 
-    lines = text.splitlines()
-    title = ""
-    description = ""
-    body_start = 0
-
-    # First non-blank line must be the title (# Heading)
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Extract YAML-style front-matter; return (meta, remaining_body)."""
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("\n", 1)
+    if len(parts) < 2:
+        return {}, text
+    rest = parts[1]
+    end = rest.find("\n---")
+    if end < 0:
+        return {}, text
+    block = rest[:end]
+    body = rest[end + 4 :].lstrip("\n")
+    meta: dict[str, str] = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
             continue
-        if stripped.startswith("#"):
-            title = stripped.lstrip("#").strip()
-            body_start = i + 1
-        break
-
-    if not title:
-        return None
-
-    # Optional description on a leading ``>`` line
-    while body_start < len(lines):
-        candidate = lines[body_start].strip()
-        if not candidate:
-            body_start += 1
+        if ":" not in line:
             continue
-        if candidate.startswith(">"):
-            description = candidate.lstrip(">").strip()
-            body_start += 1
-        break
-
-    body = "\n".join(lines[body_start:]).strip()
-    return Skill(
-        name=name,
-        title=title,
-        description=description,
-        body=body,
-        source_path=source_path,
-    )
+        k, _, v = line.partition(":")
+        meta[k.strip()] = v.strip().strip("\"").strip("'")
+    return meta, body
 
 
-def discover_skills(skills_dir: Path | None = None) -> list[Skill]:
-    """Return all valid skills found in ``skills_dir``.
+def _first_heading(body: str) -> str:
+    for line in body.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            return line.lstrip("#").strip()
+    return ""
 
-    Sorted alphabetically by name for deterministic UI ordering.
-    """
-    base = skills_dir if skills_dir is not None else _DEFAULT_DIR
-    if not base.is_dir():
-        return []
 
-    out: list[Skill] = []
-    for path in sorted(base.glob("*.md")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        skill = parse_skill_text(path.stem, text, source_path=str(path))
-        if skill is not None:
-            out.append(skill)
+def _skill_dirs(workspace: Path | None) -> list[Path]:
+    out: list[Path] = [Path.home() / ".delfin" / "skills"]
+    if workspace is not None:
+        out.append(Path(workspace) / ".delfin" / "skills")
     return out
 
 
-def find_skill(name: str, skills_dir: Path | None = None) -> Skill | None:
-    """Find a single skill by name (case-insensitive)."""
-    target = (name or "").strip().lower()
-    if not target:
+def _candidates_in_dir(d: Path) -> Iterable[Path]:
+    if not d.is_dir():
+        return ()
+    found: list[Path] = []
+    try:
+        for child in d.iterdir():
+            if child.is_dir():
+                p = child / "SKILL.md"
+                if p.is_file():
+                    found.append(p)
+            elif child.suffix == ".md" and child.name != "SKILL.md":
+                found.append(child)
+    except OSError:
+        pass
+    return found
+
+
+def _load_one(path: Path) -> Skill | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
         return None
-    for skill in discover_skills(skills_dir):
-        if skill.name.lower() == target:
-            return skill
+    if not text.strip():
+        return None
+    meta, body = _parse_frontmatter(text)
+    name = (meta.get("name") or "").strip()
+    if not name:
+        # Folder-style: parent dir name; flat-style: stem
+        if path.name == "SKILL.md":
+            name = path.parent.name
+        else:
+            name = path.stem
+    if not _SKILL_NAME_RE.match(name):
+        return None
+    description = (meta.get("description") or "").strip()
+    if not description:
+        description = _first_heading(body)
+    return Skill(
+        name=name,
+        description=description,
+        body=body.strip() or text.strip(),
+        source=path,
+    )
+
+
+def discover_skills(workspace: Path | str | None = None) -> list[Skill]:
+    """Return all skills found in user + project directories.
+
+    On name collisions the later (project-scoped) skill wins, mirroring
+    Claude Code's "project overrides user" semantics.
+    """
+    by_name: dict[str, Skill] = {}
+    for d in _skill_dirs(Path(workspace) if workspace else None):
+        for path in _candidates_in_dir(d):
+            sk = _load_one(path)
+            if sk is None:
+                continue
+            by_name[sk.name] = sk
+    return sorted(by_name.values(), key=lambda s: s.name)
+
+
+def get_skill(
+    name: str, workspace: Path | str | None = None,
+) -> Skill | None:
+    """Look up a single skill by name."""
+    for sk in discover_skills(workspace):
+        if sk.name == name:
+            return sk
     return None
 
 
-def format_skill_message(skill: Skill) -> str:
-    """Build the user-message expansion for a skill invocation.
-
-    Adds a tiny header so the agent knows which skill is active and the
-    user's intent, without obscuring the original skill body.
-    """
-    header = f"[Skill: {skill.title}]"
-    return f"{header}\n\n{skill.body}".strip()
+def render_skill_invocation(skill: Skill, args: str = "") -> str:
+    """Render the skill body into a ready-to-inject prompt block."""
+    args = (args or "").strip()
+    header = f"--- Skill: {skill.name} ---"
+    arg_line = f"\nArguments: {args}\n" if args else "\n"
+    return f"{header}{arg_line}\n{skill.body}\n--- end skill ---\n"
 
 
 __all__ = [
     "Skill",
-    "parse_skill_text",
     "discover_skills",
-    "find_skill",
-    "format_skill_message",
+    "get_skill",
+    "render_skill_invocation",
 ]

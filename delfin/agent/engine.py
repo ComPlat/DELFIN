@@ -231,6 +231,12 @@ _DASHBOARD_TOOLS = frozenset({
 _DOC_TOOL_PREFIX = "mcp__delfin-docs__"
 _OPS_TOOL_PREFIX = "mcp__delfin-ops__"
 _MCP_TOOL_PREFIXES = (_DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX)
+# KIT-Toolbox coding-agent tools (write_file, edit_file, multi_edit, bash) are
+# emitted with this prefix by api_client.py. They are gated by the
+# KitToolPermissions layer (sandbox + denylist + confirm-callback), not by the
+# role whitelist below — so we always let them through when KIT permissions
+# have been wired up.
+_KIT_CODING_PREFIX = "mcp__kit-coding__"
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -280,8 +286,17 @@ class AgentEngine:
         extra_dirs: list[str] | None = None,
         agent_workspace_dir: str = "",
         effort: str = "",
+        kit_confirm_callback=None,
     ):
         self.repo_dir = Path(repo_dir)
+        # DELFIN-bias gate: chemistry/cluster escalation patterns and
+        # DELFIN-specific tools are only applied when the engine is
+        # rooted in a DELFIN tree. Generic projects get a clean agent.
+        try:
+            from .api_client import _is_delfin_workspace
+            self._is_delfin_workspace: bool = _is_delfin_workspace(self.repo_dir)
+        except Exception:
+            self._is_delfin_workspace = False
         self.loader = PromptLoader(repo_dir=pack_dir)
         self.effort = (effort or "").strip().lower()
         self.client = create_client(
@@ -290,6 +305,7 @@ class AgentEngine:
             cwd=str(self.repo_dir), mcp_config=mcp_config,
             allowed_tools=allowed_tools, extra_dirs=extra_dirs,
             effort=self.effort,
+            kit_confirm_callback=kit_confirm_callback,
         )
         self.backend = backend
         self.provider = provider
@@ -305,6 +321,13 @@ class AgentEngine:
         self.compaction_summaries: dict[str, str] = {}
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
+        # Auto-compact configuration. Threshold is a fraction of the
+        # context window; once an estimated turn would exceed it, the
+        # engine summarises older messages before sending. Set
+        # ``auto_compact_pct`` to 0 to disable.
+        self.context_window_tokens: int = 100_000
+        self.auto_compact_pct: float = 0.80
+        self.last_compaction_info: dict[str, int] | None = None
         # A6 — last cost_usd snapshot at outcome time; the next outcome's
         # delta is (current cost_usd - this). Reset together with cost_usd
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
@@ -360,6 +383,144 @@ class AgentEngine:
         """Enable/disable cheap-model context distillation."""
         if self._distiller is not None:
             self._distiller.enabled = enabled
+
+    # -- KIT-Toolbox coding-agent permissions --------------------------------
+
+    @property
+    def kit_permissions(self):
+        """KitToolPermissions instance bound to the client (None if not KIT)."""
+        return getattr(self.client, "_permissions", None)
+
+    def set_kit_confirm_callback(self, callback) -> bool:
+        """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
+
+        Returns True when the callback was attached, False when the active
+        client does not have KIT permissions (e.g. provider != 'kit').
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False
+        perms.confirm_callback = callback
+        return True
+
+    def set_kit_permission_mode(self, mode: str) -> bool:
+        """Switch the KIT permission mode at runtime.
+
+        Accepts 'plan', 'default', 'acceptEdits', 'bypassPermissions'.
+        Returns True on success, False if no KIT permissions are bound or
+        the mode is unknown.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False
+        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+            return False
+        perms.mode = mode
+        return True
+
+    def add_kit_workspace_dir(self, path, *,
+                              persist: bool = True,
+                              scope: str = "user") -> tuple[bool, str]:
+        """Allow the KIT-Toolbox agent to operate inside an additional directory.
+
+        Returns (ok, message). The path must exist and be a directory; on
+        success the directory is added to ``extra_workspace_dirs``. When
+        ``persist`` is True (default) the path is also written to the
+        persisted KIT settings (``~/.delfin/settings.json`` for ``scope='user'``,
+        ``<repo>/.delfin/settings.json`` for ``scope='repo'``) so it survives
+        across sessions.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        try:
+            resolved = perms.add_extra_dir(path)
+        except ValueError as exc:
+            return False, str(exc)
+        if persist:
+            try:
+                from . import kit_settings as _kit_settings
+                _kit_settings.persist_extra_dir(
+                    resolved, scope=scope, repo_dir=self.repo_dir
+                )
+            except Exception as exc:
+                return True, f"added (in-memory only — persist failed: {exc}): {resolved}"
+        return True, f"added: {resolved}"
+
+    def list_kit_workspace_dirs(self) -> list[str]:
+        """Return all workspace roots the KIT agent may touch (as strings)."""
+        perms = self.kit_permissions
+        if perms is None:
+            return []
+        return [str(p) for p in perms.all_workspace_roots()]
+
+    def remove_kit_workspace_dir(self, path, *,
+                                 scope: str = "user") -> tuple[bool, str]:
+        """Drop ``path`` from the persisted KIT settings (in-memory dirs stay
+        until next reload — recreate the engine to clear them entirely)."""
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.remove_extra_dir(
+                path, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        return True, f"removed from persisted settings: {path}"
+
+    def persist_kit_pattern(self, pattern: str, *,
+                            kind: str = "allow",
+                            scope: str = "user") -> tuple[bool, str]:
+        """Write a bash regex pattern to the persisted KIT settings and apply
+        it to the live permissions. ``kind`` is 'allow' or 'deny'."""
+        perms = self.kit_permissions
+        if perms is None:
+            return False, "KIT permissions are not active (provider != 'kit')."
+        if kind not in {"allow", "deny"}:
+            return False, f"kind must be 'allow' or 'deny', got {kind!r}"
+        if not pattern:
+            return False, "pattern must be non-empty"
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.persist_pattern(
+                pattern, kind=kind, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        # Apply to live perms so the next call benefits without restart.
+        if kind == "allow":
+            if pattern not in perms.bash_auto_allow_patterns:
+                perms.bash_auto_allow_patterns = (
+                    perms.bash_auto_allow_patterns + (pattern,)
+                )
+        else:
+            if pattern not in perms.bash_deny_patterns:
+                perms.bash_deny_patterns = (
+                    perms.bash_deny_patterns + (pattern,)
+                )
+        return True, f"persisted {kind}-pattern: {pattern}"
+
+    def persist_kit_default_mode(self, mode: str, *,
+                                 scope: str = "user") -> tuple[bool, str]:
+        """Persist the default permission mode and apply it live."""
+        if mode not in {"plan", "default", "acceptEdits", "bypassPermissions"}:
+            return False, f"unknown mode: {mode!r}"
+        try:
+            from . import kit_settings as _kit_settings
+            _kit_settings.persist_default_mode(
+                mode, scope=scope, repo_dir=self.repo_dir
+            )
+        except Exception as exc:
+            return False, f"persist failed: {exc}"
+        self.set_kit_permission_mode(mode)
+        return True, f"persisted default_mode: {mode}"
+
+    def kit_settings_snapshot(self) -> dict:
+        """Return the merged KIT settings as a dict (for UI / debugging)."""
+        try:
+            from . import kit_settings as _kit_settings
+            return _kit_settings.load(repo_dir=self.repo_dir).to_dict()
+        except Exception:
+            return {}
 
     def _load_mode(self, mode: str) -> None:
         """Load a mode definition from the LITE manifest."""
@@ -467,14 +628,38 @@ class AgentEngine:
         """
         self._stop_requested = False
 
+        # UserPromptSubmit hooks — fire BEFORE the message is appended so a
+        # blocking hook can short-circuit the turn entirely. Stop hooks are
+        # fired in the finally-block at the end of the turn.
+        try:
+            from . import hooks as _hooks_mod
+            _kperms = getattr(self, "kit_permissions", None)
+            _ws = _kperms.workspace if _kperms else None
+            _hooks_cfg = _hooks_mod.load_hooks(_ws) if _ws else _hooks_mod.HooksConfig()
+            if not _hooks_cfg.is_empty():
+                _ups = _hooks_mod.run_hooks(
+                    "UserPromptSubmit", _hooks_cfg,
+                    user_prompt=user_message, workspace=_ws,
+                )
+                _blk = _hooks_mod.first_block(_ups)
+                if _blk is not None:
+                    _reason = _blk.reason or _blk.stderr or "blocked by UserPromptSubmit hook"
+                    if on_token:
+                        on_token(f"\n[hook block] {_reason}\n")
+                    return f"[hook block] {_reason}"
+        except Exception:
+            _hooks_cfg = None
+            _ws = None
+
         self.messages.append({"role": "user", "content": user_message})
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
 
-        # Mid-conversation compaction for long solo sessions (Feature 3)
-        if self.current_role in ("solo_agent", "dashboard_agent"):
-            self._compact_history()
+        # Mid-conversation compaction. Fires for solo/dashboard on the
+        # legacy message-count threshold, and for any role when the
+        # token-budget threshold is exceeded.
+        self._compact_history()
 
         system_prompt = self._build_current_system_prompt(
             memory_context,
@@ -491,6 +676,16 @@ class AgentEngine:
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)
+
+        # Sync the current role onto the KitToolPermissions so the
+        # api_client can gate the advertised tool surface per-role
+        # (dashboard_agent gets read-only; coding roles get the full set).
+        try:
+            _kp = getattr(self, "kit_permissions", None)
+            if _kp is not None:
+                _kp.agent_role = self.current_role or ""
+        except Exception:
+            pass
 
         chunks: list[str] = []
         try:
@@ -518,8 +713,12 @@ class AgentEngine:
                     role_id = self.route[self.current_role_index] if self.route else ""
                     allowed = _ROLE_TOOL_WHITELIST.get(role_id)
                     if allowed is not None and event.tool_name not in allowed:
-                        # Allow MCP doc + ops server tools for all roles
-                        if not event.tool_name.startswith(_MCP_TOOL_PREFIXES):
+                        # Allow MCP doc + ops server tools for all roles, plus
+                        # the KIT-Toolbox coding tools (already permission-gated).
+                        if not (
+                            event.tool_name.startswith(_MCP_TOOL_PREFIXES)
+                            or event.tool_name.startswith(_KIT_CODING_PREFIX)
+                        ):
                             # Block unauthorized tool — don't call on_tool_use
                             continue
                     # Defense-in-depth: dashboard_agent Write restricted to workspace
@@ -572,6 +771,16 @@ class AgentEngine:
             if not chunks:
                 self.messages.pop()
             raise
+        finally:
+            # Stop hooks — fire after the stream finishes (success or
+            # exception). Failures are silenced so a misconfigured hook
+            # never bubbles up.
+            try:
+                if _hooks_cfg is not None and not _hooks_cfg.is_empty():
+                    from . import hooks as _hm2
+                    _hm2.run_hooks("Stop", _hooks_cfg, workspace=_ws)
+            except Exception:
+                pass
 
         full_response = "".join(chunks)
         if full_response:
@@ -628,12 +837,43 @@ class AgentEngine:
     _COMPACTION_THRESHOLD = 12  # messages before compaction triggers
     _KEEP_RECENT = 4            # keep last 4 messages intact
 
+    def _estimate_context_tokens(self) -> int:
+        """Rough char/4 estimate of tokens in the current message list."""
+        total_chars = 0
+        for m in self.messages:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        total_chars += len(str(part.get("text", "")))
+        return total_chars // 4
+
+    def _should_auto_compact(self) -> bool:
+        """True if estimated context exceeds the configured fraction."""
+        if not self.auto_compact_pct or not self.context_window_tokens:
+            return False
+        budget = int(self.context_window_tokens * float(self.auto_compact_pct))
+        return self._estimate_context_tokens() > budget
+
     def _compact_history(self) -> None:
         """Summarize older messages, keeping recent ones intact.
 
-        Only runs for solo/dashboard modes with long conversations.
+        Triggers under EITHER condition:
+        - the message count exceeds the legacy threshold (solo/dashboard)
+        - the estimated context tokens exceed ``auto_compact_pct`` of
+          ``context_window_tokens``  (any role, any backend)
+
         Uses extractive summarization (no extra API call).
         """
+        msg_threshold_hit = (
+            self.current_role in ("solo_agent", "dashboard_agent")
+            and len(self.messages) >= self._COMPACTION_THRESHOLD
+        )
+        token_threshold_hit = self._should_auto_compact()
+        if not (msg_threshold_hit or token_threshold_hit):
+            return
         if len(self.messages) < self._COMPACTION_THRESHOLD:
             return
 
@@ -658,10 +898,21 @@ class AgentEngine:
         if not summary:
             return
 
+        n_compacted = len(old_msgs)
+        tokens_before = self._estimate_context_tokens()
+
         self.messages = [
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + recent
+
+        tokens_after = self._estimate_context_tokens()
+        self.last_compaction_info = {
+            "messages_compacted": n_compacted,
+            "tokens_before": tokens_before,
+            "tokens_after": tokens_after,
+            "tokens_saved": max(0, tokens_before - tokens_after),
+        }
 
         # CLI backend: by default tear down the persistent process so the
         # next stream_message starts fresh and the compacted history
@@ -1071,7 +1322,10 @@ class AgentEngine:
 
         task_class = ""
         try:
-            route_info = self.recommend_task_route(user_task, self.mode)
+            route_info = self.recommend_task_route(
+                user_task, self.mode,
+                is_delfin_workspace=self._is_delfin_workspace,
+            )
             task_class = route_info.get("task_class", "")
         except Exception:
             pass
@@ -1468,7 +1722,10 @@ class AgentEngine:
         return None
 
     @staticmethod
-    def recommend_task_route(user_message: str, current_mode: str = "dashboard") -> dict[str, Any]:
+    def recommend_task_route(
+        user_message: str, current_mode: str = "dashboard",
+        *, is_delfin_workspace: bool = True,
+    ) -> dict[str, Any]:
         """Recommend the cheapest capable mode for a task.
 
         Returns a dict with:
@@ -1478,6 +1735,11 @@ class AgentEngine:
         - ``confidence``: low / medium / high
         - ``reasons``: short rationale list
         - ``risk_flags``: reviewed / cluster / full flags when present
+
+        When ``is_delfin_workspace`` is False, chemistry / DELFIN-file
+        escalation patterns are skipped so generic projects don't get
+        flagged as "review-needed" just because they mention "orca" or
+        contain a file called ``calculators.py``.
         """
         text = user_message or ""
         lower = text.lower()
@@ -1486,8 +1748,12 @@ class AgentEngine:
         def _contains_any(keywords: tuple[str, ...]) -> list[str]:
             return [kw for kw in keywords if kw in lower]
 
-        dashboard_hits = _contains_any(_DASHBOARD_KEYWORDS)
-        chemistry_hits = _contains_any(_CHEMISTRY_KEYWORDS)
+        dashboard_hits = (
+            _contains_any(_DASHBOARD_KEYWORDS) if is_delfin_workspace else []
+        )
+        chemistry_hits = (
+            _contains_any(_CHEMISTRY_KEYWORDS) if is_delfin_workspace else []
+        )
         code_change_hits = _contains_any(_CODE_CHANGE_KEYWORDS)
         code_question_hits = _contains_any(_CODE_QUESTION_KEYWORDS)
         code_hint_hits = _contains_any(_FILE_OR_CODE_HINTS)
@@ -1495,12 +1761,13 @@ class AgentEngine:
         cluster_hits = _contains_any(_CLUSTER_RISK_KEYWORDS)
         full_hits = _contains_any(_FULL_RISK_KEYWORDS)
 
-        for pattern, mode in _ESCALATION_PATTERNS:
-            if re.search(pattern, text):
-                if mode == "cluster":
-                    cluster_hits.append(pattern)
-                elif mode == "reviewed":
-                    reviewed_hits.append(pattern)
+        if is_delfin_workspace:
+            for pattern, mode in _ESCALATION_PATTERNS:
+                if re.search(pattern, text):
+                    if mode == "cluster":
+                        cluster_hits.append(pattern)
+                    elif mode == "reviewed":
+                        reviewed_hits.append(pattern)
 
         dashboard_score = len(dashboard_hits) * 2 + (3 if stripped.startswith("/") else 0)
         chemistry_score = len(chemistry_hits) * 2

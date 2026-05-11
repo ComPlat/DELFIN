@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import difflib
+import fnmatch
 import importlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Callable, Generator, Optional
 
 
 def _auto_install(package: str, pip_spec: str = "") -> None:
@@ -664,6 +669,336 @@ class APIClient(_BaseClient):
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
+# KIT-Toolbox coding-agent permissions (Claude-Code-style safety layer)
+# ---------------------------------------------------------------------------
+
+# Bash patterns that are ALWAYS rejected (case-insensitive substring/regex
+# match against the raw command string). Keep this list tight: false positives
+# block the user, but missing entries can cause real damage.
+_DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
+    r"\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\b",
+    r"\brm\s+-[a-zA-Z]*\s+/(?:\s|$)",
+    r"\bdd\s+if=",
+    r"\bdd\s+of=/dev/",
+    r"\bmkfs(\.|\s)",
+    r"\b(shutdown|reboot|halt|poweroff|init\s+0|init\s+6)\b",
+    r"\bsudo\b",
+    r"(?:^|\s)su\s+-",
+    r"git\s+push\s+(?:[^|;&]*\s)?(?:--force(?!-with-lease)|-f\b)",
+    r"git\s+reset\s+--hard\b",
+    r"git\s+branch\s+-D\b",
+    r"git\s+branch\s+-d\b",                # local branch delete (gentle form)
+    r"git\s+branch\s+--delete\b",
+    r"git\s+push\s+[^|;&]*--delete\b",     # remote branch delete
+    r"git\s+push\s+\S+\s+:\S",             # legacy 'git push origin :branch' delete
+    r"git\s+tag\s+-d\b",                   # tag delete
+    r"git\s+tag\s+--delete\b",
+    r"git\s+worktree\s+remove\b",
+    r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d",
+    r"git\s+update-ref\s+-d\b",
+    r"git\s+filter-(?:branch|repo)\b",     # history rewriting
+    r">\s*/dev/(sd|nvme|hd|xvd)",
+    r">\s*/etc/",
+    r"\bchmod\s+-?R?\s*777\b",
+    r":\s*\(\s*\)\s*\{",  # fork bomb
+    r"\bcurl\b[^|;]*\|\s*(?:sh|bash|zsh)",
+    r"\bwget\b[^|;]*\|\s*(?:sh|bash|zsh)",
+    r"--break-system-packages\b",
+    r"\bnpm\s+publish\b",
+    r"\bpip\s+install\b[^|;]*--target\s+/(?:usr|etc|bin|lib|var)",
+    r"\bcrontab\s+-r\b",
+)
+
+# Bash patterns that are auto-approved in mode="default" without callback.
+# Two categories:
+#   (a) Read-only / informational shell commands.
+#   (b) Coding-workflow commands that are ubiquitous and not destructive
+#       outside the workspace (test runners, formatters, type checkers,
+#       compile-only invocations). Anything that pushes to remote, publishes,
+#       installs into system paths, or touches /dev|/etc must NOT be here —
+#       the bash deny-list catches the obvious cases anyway.
+_DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
+    # -- (a) read-only / info --------------------------------------------
+    r"^\s*(?:ls|pwd|whoami|hostname|uname|id|date|uptime|df|du|free|tree)\b",
+    r"^\s*(?:cat|head|tail|wc|file|stat|which|type|env|printenv|sort|uniq|cut|tr)\b",
+    r"^\s*(?:basename|dirname|realpath|readlink)\b",
+    r"^\s*echo\b",
+    r"^\s*find\b(?![^|;&]*-delete)(?![^|;&]*-exec[^|;&]*rm)",
+    r"^\s*grep\b", r"^\s*rg\b", r"^\s*ag\b",
+    r"^\s*sed\s+-n\b",                                       # read-only sed
+    r"^\s*awk\s+",                                           # awk has no destructive default
+    r"^\s*jq\b", r"^\s*yq\b",
+    r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
+    r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+list|tag\s*$|"
+    r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|switch|checkout|add|"
+    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message|push|stash|init)\b",
+    r"^\s*tar\s+-?t",                                        # tar list-only
+    r"^\s*unzip\s+-l\b",
+    # -- (b) coding workflow ---------------------------------------------
+    r"^\s*python3?\s+-c\s+",
+    r"^\s*python3?\s+--version\b",
+    r"^\s*python3?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
+    r"pip\s+show|pip\s+list|pip\s+freeze|"
+    r"compileall|json\.tool|http\.server|delfin(?:\.\w+)*)\b",
+    r"^\s*python3?\s+\S+\.py\b",                             # run a script in repo
+    r"^\s*pip\s+(?:show|list|freeze|check)\b",
+    r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
+    r"^\s*(?:pytest|py\.test)\b",
+    r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
+    r"^\s*(?:nox|tox)\s+--?l", r"^\s*tox\s+-e\b",
+    r"^\s*make(?!\s+(?:clean|distclean|uninstall|purge))\b",
+    r"^\s*mkdir\s+-p\b",
+    r"^\s*touch\s+(?!/)",                                    # only relative paths
+    r"^\s*cp\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",         # disallow copy to system dirs
+    r"^\s*mv\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",
+    r"^\s*chmod\s+(?:[ugoa+=-]+|[0-7]{3,4})\s+",             # any chmod except 777 (deny-list)
+    r"^\s*time\s+",
+    r"^\s*timeout\s+\d",
+    r"^\s*xargs\s+",
+    r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
+)
+
+# DELFIN-specific bash auto-allow patterns — merged into the auto-allow
+# list only when the workspace is actually a DELFIN repository.
+# Keeping them out by default avoids surprising "agent runs xtb on user
+# files" behaviour for non-DELFIN projects.
+_DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
+    r"^\s*xtb\s+\S+\.xyz\b",          # read-only xtb invocation
+    r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
+)
+
+
+# DELFIN-only tool names. Filtered out of the advertised tool list when
+# the workspace isn't a DELFIN repo, so generic projects don't see a
+# search_calcs/get_calc_info that would return zero results anyway.
+_DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
+    "search_calcs", "get_calc_info", "calc_summary",
+    "search_docs", "read_section", "list_docs", "list_sections",
+})
+
+# Tools advertised to the dashboard-agent role. Mutating tools (bash,
+# write_file, edit_file, ...) are deliberately excluded — the dashboard
+# agent drives the UI via ACTION: slash-commands, not via direct file or
+# shell access. Keep this list small and read-only.
+_DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
+    # Doc / calc search — the dashboard agent's research surface.
+    "search_docs", "read_section", "list_docs", "list_sections",
+    "search_calcs", "get_calc_info", "calc_summary",
+    # Web research as last-resort fallback.
+    "web_search", "web_fetch",
+    # Structured UX & planning.
+    "ask_user_question",
+    "task_create", "task_update", "task_list",
+})
+
+
+def _is_delfin_workspace(workspace: Path | str | None) -> bool:
+    """Return True iff *workspace* looks like a DELFIN source tree.
+
+    Detection rule: either ``delfin/agent/__init__.py`` or
+    ``delfin/__init__.py`` is present at the workspace root. Errs on
+    the side of "not DELFIN" — false negatives just mean Jerome's
+    private project gets a leaner tool surface, which is the goal.
+    """
+    if workspace is None:
+        return False
+    try:
+        ws = Path(workspace).expanduser().resolve()
+    except Exception:
+        return False
+    if not ws.is_dir():
+        return False
+    if (ws / "delfin" / "agent" / "__init__.py").is_file():
+        return True
+    if (ws / "delfin" / "__init__.py").is_file():
+        return True
+    return False
+
+# Path globs (relative to workspace) where writes/edits are forbidden.
+_DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
+    ".git/**", "**/.git/**",
+    ".env", ".env.*", "**/.env", "**/.env.*",
+    "**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx",
+    "**/.ssh/**", "**/.gnupg/**",
+    "**/credentials*", "**/secrets*", "**/*.secret",
+    "**/.netrc", "**/.aws/credentials",
+)
+
+# Self-modification protection: paths that are still WRITABLE, but always
+# require explicit user confirmation — even in 'acceptEdits' or
+# 'bypassPermissions' modes. The agent must not silently rewrite its own
+# safety layer or the dashboard wiring that hosts the confirmation UI.
+_DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
+    "delfin/agent/api_client.py",
+    "delfin/agent/kit_confirm.py",
+    "delfin/agent/engine.py",
+    "delfin/dashboard/tab_agent.py",
+)
+
+
+@dataclass
+class KitToolPermissions:
+    """Permission policy for KIT-Toolbox coding-agent tools.
+
+    mode:
+        - "plan"               -> read-only (no write/edit/bash)
+        - "default"            -> destructive ops require confirm_callback;
+                                  bash auto-allow list bypasses callback
+        - "acceptEdits"        -> write/edit auto-allowed (sandbox-checked);
+                                  bash still gated by callback / auto-allow
+        - "bypassPermissions"  -> sandbox + denylist still enforced, but no
+                                  user confirmation prompted (use sparingly)
+    """
+
+    workspace: Path
+    mode: str = "default"
+    # The active agent role from the engine — used to gate the tool
+    # surface (e.g. dashboard_agent gets a read-only allow-list).
+    # Empty string means "no role-based filtering".
+    agent_role: str = ""
+    # Dashboard / UI session that owns the current task list. Empty means
+    # "no active session-scoped task filter".
+    task_session_id: str = ""
+    bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
+    bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
+    path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
+    path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
+    extra_workspace_dirs: tuple[Path, ...] = ()
+    bash_timeout_s: int = 120
+    bash_max_timeout_s: int = 600
+    max_output_chars: int = 12_000
+    confirm_callback: Optional[Callable[[str, dict, str], bool]] = None
+    pre_tool_hook: Optional[Callable[[str, dict], None]] = None
+    post_tool_hook: Optional[Callable[[str, dict, str], None]] = None
+    # Structured-question UI binding. Receives the full ask_user_question
+    # arguments dict and must return a dict with at least {"answers": [...]}.
+    # When None, calls to ``ask_user_question`` return a not-available
+    # error to the model so it falls back to plain-prose questions.
+    ask_user_callback: Optional[Callable[[dict], dict]] = None
+    # Plan-approval callback: receives the plan markdown the agent
+    # submitted via ``exit_plan_mode`` and must return a dict::
+    #   {"approved": bool, "new_mode": "default"|"acceptEdits"|"bypassPermissions"}
+    # When None, the executor records the plan locally and switches
+    # to "default" mode silently — useful for tests/headless runs.
+    plan_approval_callback: Optional[Callable[[str], dict]] = None
+    last_approved_plan: str = ""
+    # Sub-agent runner: set by OpenAIClient on attach so the
+    # ``subagent`` tool can fire a child loop without _DocToolExecutor
+    # holding a back-reference to the client. Signature:
+    #   (subagent_type: str, description: str, prompt: str) -> dict payload
+    subagent_runner: Optional[Callable[..., dict]] = None
+    read_tracker: dict[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.workspace = Path(self.workspace).expanduser().resolve()
+        valid = {"plan", "default", "acceptEdits", "bypassPermissions"}
+        if self.mode not in valid:
+            raise ValueError(f"mode must be one of {valid}, got {self.mode!r}")
+        resolved_extra: list[Path] = []
+        for d in self.extra_workspace_dirs or ():
+            try:
+                p = Path(d).expanduser().resolve()
+            except Exception:
+                continue
+            if p == self.workspace:
+                continue
+            if p not in resolved_extra:
+                resolved_extra.append(p)
+        self.extra_workspace_dirs = tuple(resolved_extra)
+        self.is_delfin_workspace = _is_delfin_workspace(self.workspace)
+        # Merge in DELFIN-only bash patterns only inside the DELFIN repo so
+        # generic projects don't get an auto-allowed ``xtb`` / ``delfin``
+        # surface they never asked for. Only extends the default tuple —
+        # callers who passed a custom tuple are respected as-is.
+        if (
+            self.is_delfin_workspace
+            and self.bash_auto_allow_patterns is _DEFAULT_BASH_AUTO_ALLOW
+        ):
+            self.bash_auto_allow_patterns = (
+                _DEFAULT_BASH_AUTO_ALLOW + _DELFIN_BASH_AUTO_ALLOW
+            )
+
+    def all_workspace_roots(self) -> tuple[Path, ...]:
+        return (self.workspace,) + tuple(self.extra_workspace_dirs)
+
+    def add_extra_dir(self, path) -> Path:
+        """Add ``path`` to the allowed workspace roots.
+
+        Returns the resolved path. Raises ValueError if the path does not
+        exist or is not a directory. Idempotent: re-adding is a no-op.
+        """
+        p = Path(path).expanduser().resolve()
+        if not p.exists():
+            raise ValueError(f"path does not exist: {p}")
+        if not p.is_dir():
+            raise ValueError(f"path is not a directory: {p}")
+        if p == self.workspace or p in self.extra_workspace_dirs:
+            return p
+        self.extra_workspace_dirs = tuple(self.extra_workspace_dirs) + (p,)
+        return p
+
+    def find_root_for(self, resolved: Path) -> Optional[Path]:
+        """Return the workspace root that contains ``resolved``, or None."""
+        for root in self.all_workspace_roots():
+            try:
+                resolved.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
+
+    def matches_path_deny(self, rel_path: str) -> bool:
+        rp = rel_path.replace("\\", "/")
+        return any(fnmatch.fnmatch(rp, g) for g in self.path_deny_globs)
+
+    def matches_path_protected(self, rel_path: str) -> bool:
+        """Self-modification guard: paths that always require explicit confirm,
+        even in 'acceptEdits' or 'bypassPermissions'. Used for the agent's own
+        safety layer (api_client.py, kit_confirm.py, engine.py, tab_agent.py)."""
+        rp = rel_path.replace("\\", "/")
+        return any(fnmatch.fnmatch(rp, g) for g in self.path_protected_globs)
+
+    def matches_bash_deny(self, cmd: str) -> Optional[str]:
+        for pat in self.bash_deny_patterns:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return pat
+        return None
+
+    def matches_bash_auto_allow(self, cmd: str) -> bool:
+        for pat in self.bash_auto_allow_patterns:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return True
+        # Workspace-local virtualenv tool invocations are safe to
+        # auto-allow in default mode because sandboxing still confines
+        # them to the allowed roots. Support both hidden `.venv-*` and
+        # plain `venv-*` names, plus absolute or cwd-relative forms.
+        _tool = (
+            r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
+            r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
+        )
+        _m_rel = re.match(
+            rf"^\s*((?:\.?venv)[\w.-]*/bin/{_tool})\b", cmd, re.IGNORECASE
+        )
+        _m_abs = re.match(
+            rf"^\s*((?:~|/)[^\s]*/(?:\.?venv)[\w.-]*/bin/{_tool})\b",
+            cmd, re.IGNORECASE,
+        )
+        candidate = None
+        if _m_rel:
+            candidate = (self.workspace / _m_rel.group(1)).resolve(strict=False)
+        elif _m_abs:
+            candidate = Path(_m_abs.group(1)).expanduser().resolve(strict=False)
+        if candidate is not None and self.find_root_for(candidate) is not None:
+            return True
+        return False
+
+
+def _default_kit_permissions(cwd: Optional[Path] = None) -> KitToolPermissions:
+    """Conservative defaults: workspace = cwd, mode = 'default'."""
+    return KitToolPermissions(workspace=Path(cwd or Path.cwd()))
+
+
+# ---------------------------------------------------------------------------
 # Local doc-search tools (function calling for non-CLI backends)
 # ---------------------------------------------------------------------------
 
@@ -830,16 +1165,29 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a file from the DELFIN repository. Returns the file content. "
-                "Use for .py, .json, .md, .yaml, .txt, .xyz, .out files. "
-                "For large files, use offset and limit to read a specific range."
+                "Read a file. Accepts BOTH a workspace-relative path "
+                "(e.g. 'delfin/agent/foo.py') AND an absolute path "
+                "(e.g. '/home/user/project/foo.py'). When the user is "
+                "working in an extra_workspace_dir (granted via the "
+                "'Erlaubte Verzeichnisse' panel or remember_permission), "
+                "ALWAYS use the absolute path — relative paths only ever "
+                "resolve against the primary workspace root and will look "
+                "in the wrong place. Returns file content. Secret-deny "
+                "globs (.ssh/, .env, *.key, credentials, *.pem) are "
+                "always refused, even with a callback."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path relative to repo root (e.g. 'delfin/agent/learned_profiles.json')",
+                        "description": (
+                            "File path. Workspace-relative (e.g. "
+                            "'delfin/agent/foo.py') OR absolute (e.g. "
+                            "'/home/user/TestOpt/Simulation/foo.py'). "
+                            "Use the absolute form for any file outside "
+                            "the primary workspace."
+                        ),
                     },
                     "offset": {
                         "type": "integer",
@@ -902,7 +1250,1189 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             },
         },
     },
+    # -- Coding-agent tools (sandbox + permission-gated) --
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": (
+                "Create a new file or fully overwrite an existing file. "
+                "Path may be workspace-relative OR an absolute path inside "
+                "any allowed workspace root (workspace + extra_workspace_dirs). "
+                "When working in a user-granted directory like "
+                "/home/<user>/<project>, USE THE ABSOLUTE PATH — relative "
+                "paths only resolve against the primary workspace. For "
+                "existing files, call read_file first. Returns a unified "
+                "diff. Use edit_file for partial changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "File path. Workspace-relative OR absolute (when "
+                            "the target lives in an extra_workspace_dir, e.g. "
+                            "'/home/user/TestOpt/Simulation/foo.py')."
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file content to write.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace an exact substring in a file. The file must have been "
+                "read with read_file before editing. old_string must match "
+                "EXACTLY once unless replace_all=true. Returns a unified diff. "
+                "Preserve indentation exactly as shown in read_file output "
+                "(strip the line-number prefix, keep leading whitespace). "
+                "If the exact match fails, a whitespace-tolerant fallback "
+                "tries again (re-indents new_string to match the file). "
+                "When the fallback engages, the success message says "
+                "'fuzzy match' — re-read and copy the block verbatim next time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "File path. Workspace-relative OR absolute "
+                            "(use absolute when the file is in an "
+                            "extra_workspace_dir like /home/user/project)."
+                        ),
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "Exact substring to replace. Include enough context for uniqueness.",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "Replacement text. Must differ from old_string.",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every occurrence (default false).",
+                    },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "multi_edit",
+            "description": (
+                "Apply a sequence of edits to a single file atomically. Each edit "
+                "is an object with old_string, new_string, and optional replace_all. "
+                "Edits run in order against the file's current text; if any edit "
+                "fails (no match, ambiguous match, identical strings) NOTHING is "
+                "written. The file must have been read with read_file first. "
+                "Use this for refactors that touch several spots in one file."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "File path. Workspace-relative OR absolute "
+                            "(use absolute when the file is in an "
+                            "extra_workspace_dir like /home/user/project)."
+                        ),
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "Ordered list of edits to apply.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string"},
+                                "new_string": {"type": "string"},
+                                "replace_all": {"type": "boolean"},
+                            },
+                            "required": ["old_string", "new_string"],
+                        },
+                    },
+                },
+                "required": ["path", "edits"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_permission",
+            "description": (
+                "Persist a KIT-Toolbox permission rule to ~/.delfin/settings.json "
+                "(or <repo>/.delfin/settings.json with scope='repo'). Mirrors the "
+                "Claude Code 'always allow X' pattern — once stored, matching "
+                "actions in future sessions skip the user-confirm dialog. "
+                "ALWAYS confirm with the user before calling this; the user can "
+                "still revoke afterwards by editing the JSON file. "
+                "kind='allow_pattern' / 'deny_pattern' append a regex to the "
+                "Bash auto-allow / deny list. kind='extra_dir' adds a workspace "
+                "root. kind='default_mode' sets the persisted permission mode."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["allow_pattern", "deny_pattern",
+                                 "extra_dir", "default_mode"],
+                        "description": "What to persist.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": (
+                            "For allow_pattern/deny_pattern: a Python regex "
+                            "(e.g. '^\\\\s*pytest\\\\b'). For extra_dir: an "
+                            "absolute path. For default_mode: one of 'plan', "
+                            "'default', 'acceptEdits', 'bypassPermissions'."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "repo"],
+                        "description": (
+                            "user (default) -> ~/.delfin/settings.json. "
+                            "repo -> <repo>/.delfin/settings.json."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-line justification shown to the user.",
+                    },
+                },
+                "required": ["kind", "value", "rationale"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember_permission_bundle",
+            "description": (
+                "One-shot setup for a typical project: persist an "
+                "extra_workspace_dir AND the bash auto-allow patterns the "
+                "agent needs to actually develop in it (create venv, "
+                "pip install, run scripts, run tests). All persistence is "
+                "atomic — user gets a SINGLE confirm dialog listing every "
+                "rule about to be written. Use when the user says things "
+                "like 'arbeite immer in /pfad' or 'integriere meine "
+                "optimizer in projektX'. Profile 'project_dev' allows: "
+                "'python -m venv ...', '<dir>/.venv-*/bin/pip install', "
+                "'<dir>/.venv-*/bin/python', 'pytest', 'ruff', 'mypy'. "
+                "ALWAYS state in chat what you are about to add before "
+                "calling this."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "string",
+                        "enum": ["project_dev"],
+                        "description": (
+                            "Bundle preset. 'project_dev' is the only "
+                            "profile so far — venv + pip + python + "
+                            "pytest + ruff + mypy."
+                        ),
+                    },
+                    "directory": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the project. Becomes an "
+                            "extra_workspace_dir; venv allow-patterns "
+                            "are scoped to subdirs of this path."
+                        ),
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["user", "repo"],
+                        "description": (
+                            "Default 'repo' — writes to "
+                            "<directory>/.delfin/settings.json so the "
+                            "rules travel with the project."
+                        ),
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-line justification (e.g. 'enable Bayesian-opt project workflow').",
+                    },
+                },
+                "required": ["profile", "directory", "rationale"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": (
+                "Execute a shell command inside the workspace. The command runs "
+                "with a configurable timeout and returns stdout+stderr (truncated). "
+                "Destructive patterns (rm -rf, dd, sudo, force-push, reset --hard, "
+                "fork bombs, pipe-to-shell, etc.) are rejected. Always include a "
+                "short description so the user can audit. For long-running tasks, "
+                "raise timeout_s; do not use background loops or sleep-polling."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command (passed to /bin/bash -c).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what the command does (5-12 words).",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default 120, max 600).",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Working directory for the command. Accepts a "
+                            "workspace-relative path OR an absolute path that "
+                            "lives under one of the allowed roots (workspace + "
+                            "extra_workspace_dirs). ALWAYS use this parameter "
+                            "to enter another directory — never prepend "
+                            "`cd /path &&` to the command, that defeats the "
+                            "auto-allow gate. Defaults to the workspace root."
+                        ),
+                    },
+                },
+                "required": ["command", "description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_background",
+            "description": (
+                "Start a long-running shell command and return a job_id "
+                "IMMEDIATELY without waiting for completion. Use this for "
+                "Bayesian-opt runs, training loops, large pytest sessions, "
+                "or any command expected to take longer than ~60s. The "
+                "command runs through the SAME safety gate as bash "
+                "(workspace sandbox, deny-list, secret scanner, "
+                "auto-allow patterns). Output is streamed to tempfiles; "
+                "read incrementally with bash_output(job_id). Check "
+                "completion with bash_status(job_id). Stop with "
+                "bash_kill(job_id). Hard timeout 24h."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command (passed to /bin/bash -c).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what the command does.",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Working directory (workspace-relative or "
+                            "absolute under an allowed root). Defaults to "
+                            "the workspace."
+                        ),
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": (
+                            "Hard kill timeout in seconds. Default 86400 "
+                            "(24h). The command is SIGTERM'd at the "
+                            "deadline, then SIGKILL'd."
+                        ),
+                    },
+                },
+                "required": ["command", "description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_status",
+            "description": (
+                "Check the status of a background bash job. Returns "
+                "running flag, exit_code (None while running), elapsed "
+                "seconds, the command, and the cwd. Use AFTER "
+                "bash_background to know when the job has finished."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_output",
+            "description": (
+                "Read what a background job has written so far to stdout "
+                "and stderr. Smart-truncates to head+tail when output "
+                "is long (so the tail with the traceback is always "
+                "visible). Safe to call WHILE the job is still running "
+                "— it shows the latest output, not a final snapshot."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                    "head_lines": {
+                        "type": "integer",
+                        "description": "Lines to keep from the start (default 60).",
+                    },
+                    "tail_lines": {
+                        "type": "integer",
+                        "description": "Lines to keep from the end (default 200).",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Search the web via DuckDuckGo HTML and return a list "
+                "of {title, url, snippet} results. Use this when "
+                "Jerome's project needs API specifics from a library "
+                "that isn't in DELFIN's indexed docs (BoTorch, Ax, "
+                "scikit-optimize, etc.). Don't use it for things you "
+                "can find in the codebase — Grep / Read first."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search terms (3-10 words ideal).",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Cap on hits (default 8, max 20).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": (
+                "Download a single URL and return plain text. HTML "
+                "is stripped to readable text; text/* is passed "
+                "through. Binaries / PDFs are refused (use bash + "
+                "curl + a tempfile for those). Localhost / RFC1918 / "
+                "*.internal hosts are blocked. 1 MB / 50k char cap."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute http(s) URL to fetch.",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": "Request timeout (default 15).",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_create",
+            "description": (
+                "Add a planning task to this session's task list within "
+                "the current project (mirrors Claude Code's TaskCreate). "
+                "Useful for "
+                "multi-step integrations: 'integrate BoTorch wrapper', "
+                "'add comparison notebook', 'write regression tests'. "
+                "Tasks survive session restarts for the same saved session "
+                "via "
+                "<workspace>/.delfin/session_tasks.json. Status starts "
+                "at 'pending'; switch to 'in_progress' when you start "
+                "work and 'completed' when done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subject": {
+                        "type": "string",
+                        "description": "Short imperative title (3-8 words).",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "What needs to be done (multiline OK).",
+                    },
+                    "active_form": {
+                        "type": "string",
+                        "description": (
+                            "Optional present-continuous form for "
+                            "spinners (e.g. 'Integrating BoTorch')."
+                        ),
+                    },
+                },
+                "required": ["subject"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_update",
+            "description": (
+                "Update an existing task: change status, subject, "
+                "description, or active_form. Use status='in_progress' "
+                "when starting and 'completed' immediately when done — "
+                "don't batch completion messages."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "ID returned by task_create.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "pending", "in_progress",
+                            "completed", "deleted",
+                        ],
+                    },
+                    "subject": {"type": "string"},
+                    "description": {"type": "string"},
+                    "active_form": {"type": "string"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_list",
+            "description": (
+                "List all tasks for the current workspace. By default "
+                "deleted tasks are filtered out. Use this to recap "
+                "progress at the start of a multi-day session, or to "
+                "find what's left when picking up a paused project."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_deleted": {
+                        "type": "boolean",
+                        "description": (
+                            "Include tasks with status='deleted' "
+                            "(default false)."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "project_introspect",
+            "description": (
+                "One-call snapshot of the workspace's state: "
+                "existing venv(s) with Python version + installed "
+                "package count, manifest files (pyproject / "
+                "requirements / Pipfile / Cargo.toml / package.json), "
+                "test framework, src vs flat layout, git branch + "
+                "dirty status. Call this at the START of a "
+                "session in an unfamiliar project — it spares you "
+                "3-5 read_file calls. The agent can then decide "
+                "freely what to do next: install a single dep, run "
+                "tests, refactor — no workflow is implied."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_tests",
+            "description": (
+                "Run pytest with structured JSON output (uses "
+                "pytest-json-report when installed, junitxml as "
+                "fallback). Returns pass / fail / error counts plus "
+                "a list of failures with node-id + truncated message. "
+                "Prefer this over `bash python -m pytest` — parsing "
+                "human-readable pytest output is fragile and the "
+                "agent often misses the failing test ID."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Pytest path / nodeid (e.g. 'tests/' or "
+                            "'tests/test_x.py::test_y'). Empty = "
+                            "discovery from cwd."
+                        ),
+                    },
+                    "pytest_args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Extra pytest CLI args (-x, -k, -m, ...).",
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "minimum": 5, "maximum": 1800,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": (
+                "Apply a unified-diff patch to files in the "
+                "workspace. Use for bulk changes (5+ hunks) where "
+                "edit_file would need many round-trips. Atomic: on "
+                "any hunk failure NO files are mutated. Pass "
+                "check_only=true for a dry-run validation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "diff": {
+                        "type": "string",
+                        "description": (
+                            "Full unified diff (must include "
+                            "--- a/file / +++ b/file headers and "
+                            "@@ hunk markers)."
+                        ),
+                    },
+                    "check_only": {"type": "boolean"},
+                },
+                "required": ["diff"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_definition",
+            "description": (
+                "Locate the definition of a symbol in the "
+                "workspace. Python uses jedi (precise, follows "
+                "imports); other languages fall back to a "
+                "language-aware grep. Returns matches with file + "
+                "line + preview."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Identifier (no qualification needed).",
+                    },
+                    "file_hint": {
+                        "type": "string",
+                        "description": (
+                            "Optional file (workspace-relative) to "
+                            "anchor the search — speeds jedi up for "
+                            "large repos."
+                        ),
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["auto", "python", "any"],
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_references",
+            "description": (
+                "Find every place a symbol is referenced. Same "
+                "backends as find_definition. Capped at 50 matches."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "file_hint": {"type": "string"},
+                    "language": {
+                        "type": "string",
+                        "enum": ["auto", "python", "any"],
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "push_notification",
+            "description": (
+                "Send a desktop notification. Local-only "
+                "(notify-send / terminal-notifier / Win toast). "
+                "Use sparingly: when a long task finishes or "
+                "approval is required."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["low", "normal", "critical"],
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remote_trigger",
+            "description": (
+                "POST a small JSON payload to the user-configured "
+                "remoteTrigger webhook (settings.json -> "
+                "remoteTrigger.url). HTTPS only; private / "
+                "metadata IPs blocked. The URL is NOT chosen by "
+                "the agent — only what the user pre-configured."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event": {"type": "string"},
+                    "payload": {
+                        "type": "object",
+                        "description": "Free-form JSON-serialisable body.",
+                    },
+                },
+                "required": ["event"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_wakeup",
+            "description": (
+                "Schedule a single future agent invocation. Mirrors "
+                "Claude Code's ScheduleWakeup. Use when you need to "
+                "check back on something later (long-running build, "
+                "external job). The dashboard will fire the prompt "
+                "back at the chosen time. Persists across restarts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "delay_seconds": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "maximum": 3600,
+                        "description": "When to fire (60 to 3600 sec).",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Prompt to fire on wake-up.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Short telemetry reason.",
+                    },
+                },
+                "required": ["delay_seconds", "prompt", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_create",
+            "description": (
+                "Create a recurring scheduled invocation (interval-based). "
+                "DELFIN's minimal cron substitute: a single ``every_seconds`` "
+                "interval, no full cron expressions. Persists across restarts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "every_seconds": {
+                        "type": "integer",
+                        "minimum": 60,
+                        "description": "Interval between fires (>= 60).",
+                    },
+                    "prompt": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "fire_immediately": {"type": "boolean"},
+                },
+                "required": ["every_seconds", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_list",
+            "description": "List all active scheduled / cron entries.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cron_delete",
+            "description": "Delete a scheduled / cron entry by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entry_id": {"type": "string"},
+                },
+                "required": ["entry_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enter_worktree",
+            "description": (
+                "Create a temporary git worktree on a fresh branch "
+                "for the current task. Mirrors Claude Code's "
+                "EnterWorktree. Subsequent edits/bash should run "
+                "inside the returned worktree path; the user's main "
+                "tree is untouched. The branch is auto-cleaned on "
+                "exit_worktree if no commits were made. Pass the "
+                "repository root (defaults to the current workspace)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo_dir": {
+                        "type": "string",
+                        "description": (
+                            "Repository root (default: current "
+                            "workspace). Must be a git repo."
+                        ),
+                    },
+                    "branch_prefix": {
+                        "type": "string",
+                        "description": "Prefix for the auto-generated branch (default: 'agent').",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exit_worktree",
+            "description": (
+                "Tear down a worktree previously created via "
+                "enter_worktree. If commits or unstaged changes "
+                "exist and keep_if_changed=true (default), the "
+                "worktree path and branch survive so the user can "
+                "review them; otherwise the directory and branch "
+                "are removed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Worktree path returned by enter_worktree.",
+                    },
+                    "keep_if_changed": {
+                        "type": "boolean",
+                        "description": "Keep dir+branch if changes detected (default true).",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subagent",
+            "description": (
+                "Delegate a self-contained task to an isolated "
+                "sub-agent. Mirrors Claude Code's Agent tool. The "
+                "sub-agent runs its own tool-calling loop with a "
+                "narrow tool set (read-only by default) and returns "
+                "a single summary. Use for: parallel research, "
+                "read-only audits, planning that should not edit. "
+                "Pick subagent_type carefully — 'explore' / 'plan' / "
+                "'code-reviewer' are read-only; 'general-purpose' "
+                "inherits the parent's full permissions. Hard caps: "
+                "30 tool calls, 60s wall clock, 8k output tokens."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subagent_type": {
+                        "type": "string",
+                        "enum": [
+                            "explore",
+                            "plan",
+                            "code-reviewer",
+                            "general-purpose",
+                        ],
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Brief 3-7 word label for the task "
+                            "(e.g. 'find audit-log call-sites')."
+                        ),
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Self-contained briefing — the "
+                            "sub-agent has NO context from the "
+                            "parent conversation. State the goal, "
+                            "the relevant files, anything ruled "
+                            "out, and the desired form of the "
+                            "answer."
+                        ),
+                    },
+                },
+                "required": ["subagent_type", "description", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill",
+            "description": (
+                "Invoke a user- or project-scoped skill (a "
+                "Markdown playbook). Skills live in "
+                "~/.delfin/skills/<name>/SKILL.md or "
+                "<workspace>/.delfin/skills/<name>/SKILL.md. The "
+                "skill's body is returned verbatim — read it and "
+                "follow the instructions. Use this when the user "
+                "types '/skill-name' or when you want to consult an "
+                "established playbook (e.g. /security-review, /init). "
+                "Pass `args` to forward parameters to the skill."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name without the leading slash.",
+                    },
+                    "args": {
+                        "type": "string",
+                        "description": (
+                            "Optional free-text arguments forwarded "
+                            "to the skill body."
+                        ),
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "exit_plan_mode",
+            "description": (
+                "Submit the finalized plan to the user for approval. "
+                "Mirrors Claude Code's ExitPlanMode. ONLY call this in "
+                "'plan' mode after you've assembled a complete plan; "
+                "while in plan mode, write/edit/bash tools are blocked. "
+                "On approval the agent's mode switches to "
+                "'acceptEdits' (or whatever the user picks) so the "
+                "next turn can actually execute the plan. Pass the "
+                "full plan as Markdown — bullet lists are ideal. "
+                "Don't use this for clarifying questions; use "
+                "ask_user_question for those."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": (
+                            "Final plan in Markdown. Should describe "
+                            "every step you intend to take, in order, "
+                            "and call out anything risky or "
+                            "irreversible."
+                        ),
+                    },
+                },
+                "required": ["plan"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user_question",
+            "description": (
+                "Ask the user a structured multi-choice question and "
+                "wait for their answer. Mirrors Claude Code's "
+                "AskUserQuestion. Useful for clarifying ambiguous "
+                "instructions, getting design decisions, choosing "
+                "between approaches. Returns JSON with the user's "
+                "selected option label(s). Don't use for free-text "
+                "questions — just write them out as plain prose. "
+                "Don't use for plan approval — emit ExitPlanMode "
+                "instead. Has no effect when the agent runs without "
+                "an ask-user UI bound (e.g. headless scripts) and "
+                "returns an error in that case."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "Full question, ending with a question "
+                            "mark. Be specific."
+                        ),
+                    },
+                    "header": {
+                        "type": "string",
+                        "description": (
+                            "Short label / chip (max 12 chars) shown "
+                            "alongside the question."
+                        ),
+                    },
+                    "options": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 6,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["label"],
+                        },
+                        "description": (
+                            "Mutually-exclusive choices. Each option "
+                            "has a short label and an optional "
+                            "description that explains the trade-off. "
+                            "Always 2-6 options."
+                        ),
+                    },
+                    "multiSelect": {
+                        "type": "boolean",
+                        "description": (
+                            "Allow selecting multiple options "
+                            "(default false)."
+                        ),
+                    },
+                },
+                "required": ["question", "options"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_read",
+            "description": (
+                "Read a Jupyter notebook (.ipynb) cell-aware: returns "
+                "an ordered list of {idx, cell_type, source, "
+                "output_summary}. Outputs are summarised (counts + "
+                "MIME types) — the agent rarely needs the full base64 "
+                "image data and the chat would drown in it. Use this "
+                "instead of read_file for .ipynb files; read_file "
+                "would dump the JSON structure verbatim."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Notebook path (workspace-relative or "
+                            "absolute under an allowed root)."
+                        ),
+                    },
+                    "max_source_chars": {
+                        "type": "integer",
+                        "description": (
+                            "Per-cell source cap; cells longer than "
+                            "this are truncated head+tail with a "
+                            "marker. Default 4000."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notebook_edit",
+            "description": (
+                "Modify a single cell in a Jupyter notebook (.ipynb) "
+                "atomically. Modes: 'replace' (overwrite cell at idx), "
+                "'insert_before' / 'insert_after' (add a new cell), "
+                "'delete' (remove cell at idx). Always call "
+                "notebook_read FIRST to know the indexes. Source must "
+                "be the full cell text (not a substring). Use this "
+                "instead of edit_file/write_file for .ipynb files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Notebook path.",
+                    },
+                    "cell_idx": {
+                        "type": "integer",
+                        "description": (
+                            "0-based cell index. For insert_before / "
+                            "insert_after, this is the reference cell."
+                        ),
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": [
+                            "replace", "insert_before",
+                            "insert_after", "delete",
+                        ],
+                        "description": "What to do at cell_idx.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": (
+                            "Full cell text (required except for "
+                            "mode='delete'). Use real newlines, not "
+                            "escaped \\\\n."
+                        ),
+                    },
+                    "cell_type": {
+                        "type": "string",
+                        "enum": ["code", "markdown", "raw"],
+                        "description": (
+                            "Cell type for replace / insert. Default 'code'."
+                        ),
+                    },
+                },
+                "required": ["path", "cell_idx", "mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash_kill",
+            "description": (
+                "Stop a background bash job. Sends SIGTERM to the entire "
+                "process group, waits ~3s, then sends SIGKILL if needed. "
+                "Use when a long-running optimization needs to be aborted "
+                "early or you mis-typed the command."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "ID returned by bash_background.",
+                    },
+                },
+                "required": ["job_id"],
+            },
+        },
+    },
 ]
+
+
+def _smart_truncate(text: str, cap: int, label: str) -> str:
+    """Cap a long output by keeping HEAD and TAIL.
+
+    Pure head-truncation hides the most useful part of a Python error:
+    tracebacks live at the END. So when output exceeds ``cap``, keep
+    roughly 30% from the start and 70% from the end with a marker in
+    between explaining how many chars were dropped. Stays a no-op when
+    text fits.
+    """
+    if not text or len(text) <= cap:
+        return text
+    head_size = max(cap // 3, 256)
+    tail_size = cap - head_size
+    if tail_size < 256:
+        # Fall back to plain head-truncation for very small caps.
+        omitted = len(text) - cap
+        return text[:cap] + f"\n... ({label} truncated, {omitted} chars omitted)"
+
+    head = text[:head_size]
+    # Snap head to a line boundary if possible so we don't slice mid-line.
+    nl = head.rfind("\n")
+    if nl > head_size * 0.6:
+        head = head[: nl + 1]
+        tail_size = cap - len(head)
+
+    tail = text[-tail_size:]
+    nl = tail.find("\n")
+    if 0 < nl < tail_size * 0.4:
+        tail = tail[nl + 1:]
+
+    omitted = len(text) - len(head) - len(tail)
+    marker = (
+        f"\n... ({label} truncated, {omitted} chars from the middle "
+        f"omitted; head and tail preserved so tracebacks survive)\n"
+    )
+    return head + marker + tail
 
 
 class _DocToolExecutor:
@@ -955,8 +2485,286 @@ class _DocToolExecutor:
         except Exception:
             return False
 
-    def execute(self, name: str, arguments: dict) -> str:
-        """Execute a doc/calc tool by name. Returns the result string."""
+    def execute(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"] = None,
+    ) -> str:
+        """Execute a doc/calc/coding tool by name. Returns the result string.
+
+        ``permissions`` activates the coding-agent tools (write_file, edit_file,
+        bash) and gates them through workspace sandbox + denylist + optional
+        confirm callback. When None, those tools are unavailable.
+        """
+        if permissions is not None and permissions.pre_tool_hook:
+            try:
+                permissions.pre_tool_hook(name, arguments)
+            except Exception:
+                pass
+
+        # Settings-driven PreToolUse hooks (Claude-Code-compatible).
+        # A blocking hook short-circuits dispatch and surfaces the
+        # reason back to the agent as the tool result so it can react.
+        block_reason = ""
+        if permissions is not None:
+            try:
+                from . import hooks as _hooks_mod
+                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                if not cfg.is_empty():
+                    pre_results = _hooks_mod.run_hooks(
+                        "PreToolUse", cfg,
+                        tool_name=name, arguments=arguments,
+                        workspace=permissions.workspace,
+                    )
+                    blk = _hooks_mod.first_block(pre_results)
+                    if blk is not None:
+                        block_reason = blk.reason or blk.stderr or "blocked by PreToolUse hook"
+            except Exception:
+                pass
+
+        if block_reason:
+            result = json.dumps({
+                "error": "blocked_by_hook",
+                "reason": block_reason[:1200],
+            })
+        else:
+            result = self._dispatch(name, arguments, permissions)
+
+        # Track mtime after a successful read_file so edit_file can verify the
+        # file hasn't changed since the agent last read it.
+        if (
+            permissions is not None
+            and name == "read_file"
+            and not result.startswith('{"error"')
+        ):
+            try:
+                full = self._workspace_root(permissions) / arguments.get("path", "")
+                if full.is_file():
+                    permissions.read_tracker[str(full.resolve())] = full.stat().st_mtime
+            except Exception:
+                pass
+
+        if permissions is not None and permissions.post_tool_hook:
+            try:
+                permissions.post_tool_hook(name, arguments, result)
+            except Exception:
+                pass
+
+        # Settings-driven PostToolUse hooks. Output goes to stderr/audit
+        # (not back to the model) so a noisy linter doesn't pollute the
+        # tool result the agent reads.
+        if permissions is not None and not block_reason:
+            try:
+                from . import hooks as _hooks_mod
+                cfg = _hooks_mod.load_hooks(permissions.workspace)
+                if not cfg.is_empty():
+                    _hooks_mod.run_hooks(
+                        "PostToolUse", cfg,
+                        tool_name=name,
+                        arguments={**arguments, "result_preview": (result or "")[:400]},
+                        workspace=permissions.workspace,
+                    )
+            except Exception:
+                pass
+
+        # Audit log: record every code-modifying or persistence action
+        # for retracing and rollback. Failures are silent (the audit
+        # log must never disturb the tool path it observes).
+        try:
+            self._audit_call(name, arguments, permissions, result)
+        except Exception:
+            pass
+
+        return result
+
+    _AUDITED_TOOLS = frozenset({
+        "write_file", "edit_file", "multi_edit",
+        "bash", "bash_background", "bash_kill",
+        "notebook_edit",
+        "remember_permission", "remember_permission_bundle",
+    })
+
+    def _audit_call(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+        result: str,
+    ) -> None:
+        """Append one audit-log line if ``name`` is a tracked tool."""
+        if name not in self._AUDITED_TOOLS:
+            return
+        from . import audit_log as _al
+        # Best-effort decision parsing.
+        decision = "ok"
+        if isinstance(result, str):
+            if result.startswith('{"error"'):
+                decision = "denied"
+            elif '"status": "denied"' in result[:200]:
+                decision = "denied"
+        mode = ""
+        session_id = ""
+        if permissions is not None:
+            mode = getattr(permissions, "mode", "") or ""
+        record = _al.make_record(
+            tool=name,
+            decision=decision,
+            mode=mode,
+            path=str(arguments.get("path", "")),
+            command=str(arguments.get("command", "")),
+            session_id=session_id,
+        )
+        _al.append(record)
+
+    def _dispatch(
+        self,
+        name: str,
+        arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+    ) -> str:
+        # Coding-agent tools are only available with explicit permissions.
+        if name in ("write_file", "edit_file", "multi_edit",
+                    "bash", "bash_background"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured. "
+                    "Pass a KitToolPermissions instance to OpenAIClient."
+                )})
+            # bash_background reuses the bash gate verbatim — the
+            # command, cwd, deny-list, secret scanner, and auto-allow
+            # check are identical; only the execution model differs.
+            gate_name = "bash" if name == "bash_background" else name
+            gate_err = self._run_permission_gate(gate_name, arguments, permissions)
+            if gate_err is not None:
+                return json.dumps({"error": gate_err})
+            if name == "write_file":
+                return self._execute_write_file(arguments, permissions)
+            if name == "edit_file":
+                return self._execute_edit_file(arguments, permissions)
+            if name == "multi_edit":
+                return self._execute_multi_edit(arguments, permissions)
+            if name == "bash":
+                return self._execute_bash(arguments, permissions)
+            if name == "bash_background":
+                return self._execute_bash_background(arguments, permissions)
+
+        # Background-job inspection tools — no command execution, just
+        # reading the registry. Permissions optional.
+        if name in ("bash_status", "bash_output", "bash_kill"):
+            if name == "bash_status":
+                return self._execute_bash_status(arguments)
+            if name == "bash_output":
+                return self._execute_bash_output(arguments)
+            if name == "bash_kill":
+                return self._execute_bash_kill(arguments)
+
+        # Notebook tools — file-level operations, sandbox + Self-Mod-Guard
+        # apply for the write side via the same gate as edit_file.
+        if name in ("notebook_read", "notebook_edit"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured."
+                )})
+            if name == "notebook_edit":
+                # Reuse edit_file's gate (Self-Mod-Guard, sandbox check).
+                gate_err = self._run_permission_gate(
+                    "edit_file", arguments, permissions
+                )
+                if gate_err is not None:
+                    return json.dumps({"error": gate_err})
+                return self._execute_notebook_edit(arguments, permissions)
+            return self._execute_notebook_read(arguments, permissions)
+
+        # Structured user question: surfaces a dialog in the UI and
+        # blocks until the user picks an option. Headless callers
+        # (no ask_user_callback) get an explicit not-available error.
+        if name == "ask_user_question":
+            return self._execute_ask_user_question(arguments, permissions)
+
+        # Plan-mode roundtrip. exit_plan_mode submits the plan and (on
+        # approval) flips the permission mode so subsequent turns can
+        # actually act on the plan.
+        if name == "exit_plan_mode":
+            return self._execute_exit_plan_mode(arguments, permissions)
+
+        # Skill invocation: returns the skill body so the agent reads
+        # and follows it. Read-only filesystem access, no gate needed.
+        if name == "skill":
+            return self._execute_skill(arguments, permissions)
+
+        # Sub-agent delegation: spawn an isolated tool-calling loop
+        # via the runner the parent OpenAIClient attached.
+        if name == "subagent":
+            return self._execute_subagent(arguments, permissions)
+
+        # Worktree isolation: create / tear down a temporary
+        # git-worktree-on-branch sandbox for the current task.
+        if name == "enter_worktree":
+            return self._execute_enter_worktree(arguments, permissions)
+        if name == "exit_worktree":
+            return self._execute_exit_worktree(arguments, permissions)
+
+        # Scheduler: one-shot wake-ups + interval cron.
+        if name in ("schedule_wakeup", "cron_create",
+                    "cron_list", "cron_delete"):
+            return self._execute_scheduler(name, arguments)
+
+        # Notifications + remote triggers.
+        if name == "push_notification":
+            return self._execute_push_notification(arguments)
+        if name == "remote_trigger":
+            return self._execute_remote_trigger(arguments, permissions)
+
+        # Phase 7: one-call project introspection.
+        if name == "project_introspect":
+            return self._execute_project_introspect(arguments, permissions)
+
+        # Phase 6: structured test runner, patch applier, code nav.
+        if name == "run_tests":
+            return self._execute_run_tests(arguments, permissions)
+        if name == "apply_patch":
+            return self._execute_apply_patch(arguments, permissions)
+        if name in ("find_definition", "find_references"):
+            return self._execute_code_nav(name, arguments, permissions)
+
+        # Planning tools — pure metadata operations on the workspace's
+        # task store; no permission gate needed (the JSON file lives
+        # under the workspace, sandboxed by definition).
+        if name in ("task_create", "task_update", "task_list"):
+            if permissions is None:
+                return json.dumps({"error": (
+                    f"Tool '{name}' requires permissions to be configured."
+                )})
+            if name == "task_create":
+                return self._execute_task_create(arguments, permissions)
+            if name == "task_update":
+                return self._execute_task_update(arguments, permissions)
+            if name == "task_list":
+                return self._execute_task_list(arguments, permissions)
+
+        # Web tools — outbound HTTP, no filesystem side-effects. The
+        # web_tools module enforces its own URL deny-list (localhost /
+        # RFC1918 / cloud metadata) and binary-content rejection.
+        if name in ("web_search", "web_fetch"):
+            if name == "web_search":
+                return self._execute_web_search(arguments)
+            return self._execute_web_fetch(arguments)
+
+        if name == "remember_permission":
+            if permissions is None:
+                return json.dumps({"error": (
+                    "remember_permission requires KIT permissions to be configured."
+                )})
+            return self._execute_remember_permission(arguments, permissions)
+
+        if name == "remember_permission_bundle":
+            if permissions is None:
+                return json.dumps({"error": (
+                    "remember_permission_bundle requires KIT permissions to be configured."
+                )})
+            return self._execute_remember_permission_bundle(arguments, permissions)
+
         # Calc search tools
         if name in ("search_calcs", "get_calc_info", "calc_summary"):
             return self._execute_calc(name, arguments)
@@ -1016,13 +2824,13 @@ class _DocToolExecutor:
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
 
-        # Repo file access tools
+        # Repo file access tools (workspace-aware when permissions are set)
         if name == "read_file":
-            return self._execute_read_file(arguments)
+            return self._execute_read_file(arguments, permissions)
         elif name == "grep_file":
-            return self._execute_grep_file(arguments)
+            return self._execute_grep_file(arguments, permissions)
         elif name == "list_files":
-            return self._execute_list_files(arguments)
+            return self._execute_list_files(arguments, permissions)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
@@ -1071,11 +2879,22 @@ class _DocToolExecutor:
                 return candidate
         return Path.cwd()
 
-    def _execute_read_file(self, arguments: dict) -> str:
+    def _execute_read_file(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         rel_path = arguments.get("path", "")
         if not rel_path:
             return json.dumps({"error": "path is required"})
-        full = self._repo_root() / rel_path
+        root = perms.workspace if perms is not None else self._repo_root()
+        full = (root / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
+
+        # Read-gate: secrets are hard-denied; reads outside the allowed
+        # workspace roots require an explicit user confirmation.
+        if perms is not None:
+            err = self._check_read_access(perms, full, label=rel_path)
+            if err is not None:
+                return json.dumps({"error": err})
+
         if not full.exists():
             return json.dumps({"error": f"File not found: {rel_path}"})
         if full.is_dir():
@@ -1093,13 +2912,24 @@ class _DocToolExecutor:
             result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
         return result
 
-    def _execute_grep_file(self, arguments: dict) -> str:
+    def _execute_grep_file(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         import re as _re
         pattern = arguments.get("pattern", "")
         if not pattern:
             return json.dumps({"error": "pattern is required"})
-        search_path = self._repo_root() / (arguments.get("path", "") or "")
+        root = perms.workspace if perms is not None else self._repo_root()
+        rel = arguments.get("path", "") or ""
+        search_path = (root / rel) if not Path(rel).is_absolute() else Path(rel)
         max_results = arguments.get("max_results", 30) or 30
+
+        # Read-gate on the search root: secret-deny is hard, outside-workspace
+        # needs user confirm. (Per-file deny still applies inside the loop.)
+        if perms is not None:
+            err = self._check_read_access(perms, search_path, label=rel or "(workspace)")
+            if err is not None:
+                return json.dumps({"error": err})
         try:
             regex = _re.compile(pattern, _re.IGNORECASE)
         except _re.error as exc:
@@ -1114,8 +2944,11 @@ class _DocToolExecutor:
             try:
                 for i, line in enumerate(fp.read_text(encoding="utf-8", errors="replace").splitlines()):
                     if regex.search(line):
-                        rel = fp.relative_to(self._repo_root())
-                        matches.append(f"{rel}:{i + 1}: {line.rstrip()[:200]}")
+                        try:
+                            rel_match = fp.relative_to(root)
+                        except ValueError:
+                            rel_match = fp
+                        matches.append(f"{rel_match}:{i + 1}: {line.rstrip()[:200]}")
                         if len(matches) >= max_results:
                             break
             except Exception:
@@ -1124,10 +2957,12 @@ class _DocToolExecutor:
                 break
         return "\n".join(matches) if matches else "No matches found."
 
-    def _execute_list_files(self, arguments: dict) -> str:
+    def _execute_list_files(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
         import fnmatch
         pattern = arguments.get("pattern", "*")
-        root = self._repo_root()
+        root = perms.workspace if perms is not None else self._repo_root()
         matches = []
         for fp in sorted(root.rglob("*")):
             if not fp.is_file():
@@ -1140,6 +2975,1813 @@ class _DocToolExecutor:
                 if len(matches) >= 50:
                     break
         return "\n".join(matches) if matches else "No files matching pattern."
+
+    # -- Coding-agent helpers (sandbox + permission gating) -------------------
+
+    def _workspace_root(self, perms: "KitToolPermissions") -> Path:
+        return perms.workspace
+
+    def _display_path(self, resolved: Path, perms: "KitToolPermissions") -> str:
+        """Render a resolved path as workspace-relative when possible, else absolute."""
+        root = perms.find_root_for(resolved)
+        if root is not None:
+            try:
+                return str(resolved.relative_to(root)).replace("\\", "/")
+            except Exception:
+                pass
+        return str(resolved)
+
+    def _resolve_in_workspace(
+        self, rel_path: str, perms: "KitToolPermissions"
+    ) -> tuple[Optional[Path], Optional[str]]:
+        """Resolve ``rel_path`` against the workspace and verify containment.
+
+        Returns (resolved_path, error_message). If error_message is non-None,
+        the path is rejected and resolved_path is None.
+        """
+        if not rel_path:
+            return None, "path is required"
+        ws = perms.workspace
+        candidate = (ws / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception as exc:
+            return None, f"cannot resolve path: {exc}"
+        root = perms.find_root_for(resolved)
+        if root is None:
+            roots_str = ", ".join(str(r) for r in perms.all_workspace_roots())
+            return None, (
+                f"path is outside the allowed workspace roots [{roots_str}]: "
+                f"{rel_path}"
+            )
+        try:
+            rel_str = str(resolved.relative_to(root)).replace("\\", "/")
+        except ValueError:
+            rel_str = rel_path.replace("\\", "/")
+        if perms.matches_path_deny(rel_str):
+            return None, f"path is on the deny-list (.git, secrets, keys, .env, ...): {rel_str}"
+        return resolved, None
+
+    def _scan_bash_for_secrets(
+        self, cmd: str, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Scan a bash command for path-references to secret-deny globs.
+
+        Bash can reach arbitrary paths via ``cat /home/.../.ssh/id_rsa`` even
+        when its ``cwd`` is sandboxed. The standard bash deny-list catches
+        catastrophic patterns (``rm -rf /``, ``sudo``, ``curl|sh``) but is
+        agnostic of secret paths. This scanner extracts any ``/`` or ``~``
+        rooted path-like token from the command and tests it against
+        ``perms.path_deny_globs``. Returns the offending token, or None.
+
+        It's intentionally permissive — false positives only block the
+        offending command, not the workflow.
+        """
+        # Strip quoted strings entirely from the scan: even a benign
+        # `echo "/home/user/.ssh"` shouldn't be confusing. We replace
+        # contents but keep the structure so the regex still locks onto
+        # standalone path tokens elsewhere.
+        cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", " ", cmd)
+        # Match absolute /paths and ~ / $HOME prefixed paths.
+        candidates = set(re.findall(
+            r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+",
+            cleaned,
+        ))
+        for tok in candidates:
+            try:
+                p = Path(tok.replace("$HOME", "~")).expanduser()
+            except Exception:
+                continue
+            try:
+                resolved = p.resolve(strict=False)
+            except Exception:
+                resolved = p
+            in_root = perms.find_root_for(resolved)
+            if in_root is not None:
+                try:
+                    rel = str(resolved.relative_to(in_root)).replace("\\", "/")
+                except Exception:
+                    rel = str(resolved).replace("\\", "/")
+            else:
+                rel = str(resolved).replace("\\", "/")
+            if perms.matches_path_deny(rel):
+                return tok
+        return None
+
+    def _check_read_access(
+        self, perms: "KitToolPermissions", path: Path, label: str = ""
+    ) -> Optional[str]:
+        """Gate read-style tools (read_file, grep_file).
+
+        Policy:
+          - Secret-deny globs (`.ssh/`, `.env`, `*.key`, ...) ALWAYS reject —
+            no confirm-callback can override.
+          - Paths inside any allowed workspace root: allow.
+          - Paths outside: require explicit user confirmation via
+            ``perms.confirm_callback``. Without a callback the read is
+            refused so the agent can't silently scan the user's home dir.
+        """
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            resolved = path
+
+        # Build the string we test against deny-globs: workspace-relative
+        # when possible (so globs like ".env" match), else absolute.
+        in_root = perms.find_root_for(resolved)
+        if in_root is not None:
+            try:
+                rel_for_glob = str(resolved.relative_to(in_root)).replace("\\", "/")
+            except Exception:
+                rel_for_glob = str(resolved).replace("\\", "/")
+        else:
+            rel_for_glob = str(resolved).replace("\\", "/")
+
+        # Hard secret-deny: secrets are NEVER readable, no confirm option.
+        if perms.matches_path_deny(rel_for_glob):
+            return (
+                f"read denied: '{label or rel_for_glob}' matches a secret "
+                "deny-glob (.ssh/, .env, *.key, credentials, *.pem). "
+                "These are never readable, regardless of mode or confirm."
+            )
+
+        # Inside any allowed root: free read.
+        if in_root is not None:
+            return None
+
+        # Outside the sandbox: ask the user.
+        if perms.confirm_callback is None:
+            return (
+                f"read denied: '{label or resolved}' is outside the allowed "
+                "workspace roots and no confirm callback is configured. "
+                "Add the directory via 'Erlaubte Verzeichnisse' or "
+                "remember_permission(kind='extra_dir', ...) to read it."
+            )
+        preview = (
+            "[OUTSIDE-WORKSPACE READ]\n"
+            f"The agent wants to read a file outside the allowed roots:\n"
+            f"  {resolved}\n\n"
+            "Approving this read does NOT add the directory to the "
+            "permanent workspace list — it only allows this single read."
+        )
+        try:
+            ok = bool(perms.confirm_callback(
+                "read_file", {"path": str(resolved)}, preview
+            ))
+        except Exception as exc:
+            return f"confirm_callback raised: {exc}"
+        if not ok:
+            return f"read denied: user declined read of '{resolved}'"
+        return None
+
+    def _run_permission_gate(
+        self, name: str, args: dict, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Run the policy + callback gate. Returns error string or None."""
+        mode = perms.mode
+
+        if mode == "plan":
+            return (
+                f"plan mode (read-only) — '{name}' rejected. "
+                "Describe the proposed change in chat instead. "
+                "When the plan is complete, call exit_plan_mode to "
+                "submit it for approval; the user can also click "
+                "'Plan akzeptieren & ausführen' or switch the mode "
+                "chip to 'acceptEdits' to proceed."
+            )
+
+        if name in ("write_file", "edit_file", "multi_edit"):
+            path_arg = args.get("path", "")
+            resolved, err = self._resolve_in_workspace(path_arg, perms)
+            if err:
+                return err
+            try:
+                rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+            except Exception:
+                rel_str = path_arg.replace("\\", "/")
+            is_protected = perms.matches_path_protected(rel_str)
+            if is_protected:
+                # Self-Modification Guard: editing the agent's own safety
+                # layer (api_client.py / kit_confirm.py / engine.py /
+                # tab_agent.py) ALWAYS requires explicit user confirmation,
+                # regardless of mode. Without a callback the gate refuses
+                # rather than silently proceeding.
+                if perms.confirm_callback is None:
+                    return (
+                        f"'{name}' targets the agent's own safety layer "
+                        f"('{rel_str}'). The Self-Modification Guard requires "
+                        "explicit user confirmation but no confirm_callback "
+                        "is configured — refusing to proceed."
+                    )
+                preview = (
+                    "[SELF-MODIFICATION GUARD]\n"
+                    "This file is part of the agent's own safety layer.\n"
+                    "Approving this will let the agent rewrite the code that "
+                    "controls its own permissions.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+                try:
+                    ok = bool(perms.confirm_callback(name, args, preview))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                return None if ok else f"user denied '{name}' on protected path '{rel_str}'"
+            # Non-protected paths in default/acceptEdits/bypass: allow.
+            # Sandbox (_resolve_in_workspace), path_deny_globs and
+            # Self-Mod-Guard above already enforce the boundaries the user
+            # explicitly granted via "Erlaubte Verzeichnisse" / settings.json.
+            return None
+
+        if name == "bash":
+            cmd = args.get("command", "") or ""
+            if not cmd.strip():
+                return "command is required"
+            denied = perms.matches_bash_deny(cmd)
+            if denied:
+                return f"command rejected by deny-pattern {denied!r}: refusing to run."
+            secret_hit = self._scan_bash_for_secrets(cmd, perms)
+            if secret_hit is not None:
+                return (
+                    f"bash command references a secret-deny path ({secret_hit!r}). "
+                    "Reading or touching .ssh/.env/*.key/credentials via the "
+                    "shell is blocked — the read deny-list applies to bash too."
+                )
+            if mode == "bypassPermissions":
+                # Bypass: only the deny-list still applies; everything else
+                # runs unattended. Use this only inside trusted workflows.
+                return None
+            if perms.matches_bash_auto_allow(cmd):
+                return None
+            # default / acceptEdits: command must match an auto-allow regex.
+            # Per-action confirm dialogs are gone — the user controls policy
+            # by adding allow_patterns (via remember_permission or the
+            # Aktions-Bestätigung "Dauerhaft speichern" checkbox), or by
+            # switching the mode chip to bypassPermissions.
+            hint = ""
+            if cmd.lstrip().startswith(("cd ", "cd\t")):
+                hint = (
+                    " HINT: this command starts with 'cd' — use the bash "
+                    "tool's `cwd` parameter (it accepts absolute paths "
+                    "inside allowed roots) instead of 'cd /path && …'. "
+                    "Rerun with cwd=<path> and the actual command."
+                )
+            return (
+                f"bash: '{cmd[:120]}' is not on the auto-allow list "
+                f"(mode={mode}). Add a regex pattern with "
+                "remember_permission(kind='allow_pattern', value='^\\\\s*<cmd>\\\\b'), "
+                "or switch the KIT-Mode chip to 'bypassPermissions' for "
+                "trusted scratch work." + hint
+            )
+
+        return None
+
+    def _build_change_preview(
+        self, name: str, args: dict, resolved_path: Optional[Path]
+    ) -> str:
+        try:
+            if resolved_path is None or not resolved_path.exists():
+                old_text = ""
+            else:
+                old_text = resolved_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            old_text = ""
+        if name == "write_file":
+            new_text = args.get("content", "") or ""
+        elif name == "edit_file":
+            old_s = args.get("old_string", "")
+            new_s = args.get("new_string", "")
+            if args.get("replace_all"):
+                new_text = old_text.replace(old_s, new_s)
+            else:
+                new_text = old_text.replace(old_s, new_s, 1)
+        elif name == "multi_edit":
+            new_text = old_text
+            for ed in args.get("edits", []) or []:
+                o = ed.get("old_string", "")
+                n = ed.get("new_string", "")
+                if not o or o == n:
+                    continue
+                if ed.get("replace_all"):
+                    new_text = new_text.replace(o, n)
+                else:
+                    new_text = new_text.replace(o, n, 1)
+        else:
+            return ""
+        return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
+
+    @staticmethod
+    def _make_diff(old: str, new: str, label: str, max_lines: int = 200) -> str:
+        diff = list(difflib.unified_diff(
+            old.splitlines(keepends=False),
+            new.splitlines(keepends=False),
+            fromfile=f"a/{label}",
+            tofile=f"b/{label}",
+            lineterm="",
+            n=3,
+        ))
+        if not diff:
+            return "(no changes)"
+        if len(diff) > max_lines:
+            diff = diff[:max_lines] + [f"... ({len(diff) - max_lines} more diff lines truncated)"]
+        return "\n".join(diff)
+
+    def _execute_write_file(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        content = arguments.get("content", "")
+        if content is None:
+            return json.dumps({"error": "content is required"})
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+
+        existed = resolved.exists()
+        if existed:
+            tracked = perms.read_tracker.get(str(resolved))
+            try:
+                current_mtime = resolved.stat().st_mtime
+            except Exception:
+                current_mtime = None
+            if tracked is None:
+                return json.dumps({"error": (
+                    f"refusing to overwrite existing file '{path_arg}' without "
+                    "a prior read_file in this session — call read_file first."
+                )})
+            if current_mtime is not None and current_mtime > tracked + 1e-3:
+                return json.dumps({"error": (
+                    f"file '{path_arg}' was modified since last read_file "
+                    "(mtime mismatch). Re-read before writing."
+                )})
+            try:
+                old_text = resolved.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                return json.dumps({"error": f"cannot read existing file: {exc}"})
+        else:
+            old_text = ""
+
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, content, disp)
+        action = "created" if not existed else "overwritten"
+        test_hint = self._suggest_test_for_edit(resolved, perms)
+        return f"File {action}: {disp}\n\n{diff}{test_hint}"
+
+    def _execute_edit_file(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        old_string = arguments.get("old_string", "")
+        new_string = arguments.get("new_string", "")
+        replace_all = bool(arguments.get("replace_all", False))
+        if old_string == new_string:
+            return json.dumps({"error": "new_string must differ from old_string"})
+        if not old_string:
+            return json.dumps({"error": "old_string is required"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call read_file on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"file '{path_arg}' was modified since last read_file. Re-read first."
+            )})
+
+        try:
+            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return json.dumps({"error": f"cannot read file: {exc}"})
+
+        count = old_text.count(old_string)
+        fuzzy_note = ""
+        if count == 0:
+            # Exact match failed. Try Aider-style fuzzy match as fallback —
+            # but only when not in replace_all mode (fuzzy + replace_all is
+            # too dangerous).
+            if not replace_all:
+                from . import editblock as _editblock
+                fm = _editblock.fuzzy_replace(old_text, old_string, new_string)
+                if fm is not None:
+                    new_text = fm.new_text
+                    try:
+                        resolved.write_text(new_text, encoding="utf-8")
+                    except Exception as exc:
+                        return json.dumps({"error": f"write failed: {exc}"})
+                    try:
+                        perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+                    except Exception:
+                        pass
+                    disp = self._display_path(resolved, perms)
+                    diff = self._make_diff(old_text, new_text, disp)
+                    indent_note = (
+                        f", indent {fm.indent_shift}" if fm.indent_shift else ""
+                    )
+                    return (
+                        f"Edited {disp} (1 replacement, fuzzy match: "
+                        f"{fm.strategy}{indent_note} — old_string did not "
+                        f"match exactly; whitespace-tolerant fallback found "
+                        f"a unique match):\n\n{diff}"
+                    )
+            return json.dumps({"error": (
+                f"old_string not found in '{path_arg}' "
+                "(neither exact nor whitespace-tolerant match). "
+                "Re-read the file and copy the target block verbatim."
+            )})
+        if count > 1 and not replace_all:
+            return json.dumps({"error": (
+                f"old_string matches {count} times in '{path_arg}'. "
+                "Provide more surrounding context to make it unique, or pass replace_all=true."
+            )})
+
+        new_text = (
+            old_text.replace(old_string, new_string)
+            if replace_all
+            else old_text.replace(old_string, new_string, 1)
+        )
+
+        try:
+            resolved.write_text(new_text, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, new_text, disp)
+        replaced = count if replace_all else 1
+        test_hint = self._suggest_test_for_edit(resolved, perms)
+        return (
+            f"Edited {disp} ({replaced} replacement(s)){fuzzy_note}:\n\n"
+            f"{diff}{test_hint}"
+        )
+
+    def _execute_multi_edit(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "")
+        edits = arguments.get("edits", []) or []
+        if not isinstance(edits, list) or not edits:
+            return json.dumps({"error": "edits must be a non-empty list"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call read_file on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"file '{path_arg}' was modified since last read_file. Re-read first."
+            )})
+
+        try:
+            old_text = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return json.dumps({"error": f"cannot read file: {exc}"})
+
+        text = old_text
+        per_edit_replacements: list[int] = []
+        fuzzy_edits: list[int] = []
+        for i, ed in enumerate(edits):
+            if not isinstance(ed, dict):
+                return json.dumps({"error": f"edit #{i+1} is not an object"})
+            o = ed.get("old_string", "")
+            n = ed.get("new_string", "")
+            replace_all = bool(ed.get("replace_all", False))
+            if not o:
+                return json.dumps({"error": f"edit #{i+1}: old_string is required"})
+            if o == n:
+                return json.dumps({"error": f"edit #{i+1}: new_string must differ from old_string"})
+            count = text.count(o)
+            if count == 0:
+                # Try fuzzy fallback (only when not replace_all; ambiguous
+                # then). If still no unique match, fail the whole batch.
+                if not replace_all:
+                    from . import editblock as _editblock
+                    fm = _editblock.fuzzy_replace(text, o, n)
+                    if fm is not None:
+                        text = fm.new_text
+                        per_edit_replacements.append(1)
+                        fuzzy_edits.append(i + 1)
+                        continue
+                return json.dumps({"error": (
+                    f"edit #{i+1}: old_string not found "
+                    f"(neither exact nor whitespace-tolerant match, "
+                    f"after applying earlier edits in this batch)"
+                )})
+            if count > 1 and not replace_all:
+                return json.dumps({"error": (
+                    f"edit #{i+1}: old_string matches {count} times. "
+                    "Add context to make it unique, or set replace_all=true."
+                )})
+            text = text.replace(o, n) if replace_all else text.replace(o, n, 1)
+            per_edit_replacements.append(count if replace_all else 1)
+
+        try:
+            resolved.write_text(text, encoding="utf-8")
+        except Exception as exc:
+            return json.dumps({"error": f"write failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        disp = self._display_path(resolved, perms)
+        diff = self._make_diff(old_text, text, disp)
+        total = sum(per_edit_replacements)
+        fuzzy_note = (
+            f", fuzzy fallback used for edit(s) {fuzzy_edits}"
+            if fuzzy_edits else ""
+        )
+        test_hint = self._suggest_test_for_edit(resolved, perms)
+        return (
+            f"Multi-edited {disp} "
+            f"({len(edits)} edit(s), {total} replacement(s) total"
+            f"{fuzzy_note}):\n\n{diff}{test_hint}"
+        )
+
+    def _suggest_test_for_edit(
+        self, resolved: Path, perms: "KitToolPermissions"
+    ) -> str:
+        """Return a one-line hint pointing the agent at the matching test
+        module after a successful edit, or '' if there's no obvious match.
+
+        This is the lightweight half of the auto-test loop: instead of
+        spawning pytest unconditionally (which would burn cycles on every
+        no-op edit), we surface the test file's path so the agent's next
+        bash call naturally lands on the right verification command.
+        Conventions covered:
+
+            edited        →  test candidate
+            ----------------+------------------------
+            foo/bar.py    →  tests/test_bar.py
+                             tests/foo/test_bar.py
+                             foo/tests/test_bar.py
+                             test_bar.py (next to source)
+
+        Skipped when: file isn't .py, or no tests directory exists
+        anywhere in the workspace tree.
+        """
+        if resolved.suffix != ".py":
+            return ""
+        if resolved.name.startswith("test_") or resolved.name.endswith("_test.py"):
+            # Editing a test file itself — the agent should run THIS file.
+            try:
+                root = perms.find_root_for(resolved)
+                rel = resolved.relative_to(root) if root else resolved
+            except Exception:
+                rel = resolved
+            return f"\n\nTip: this is a test file — verify via `pytest {rel} -q`."
+        try:
+            root = perms.find_root_for(resolved)
+        except Exception:
+            root = None
+        if root is None:
+            return ""
+        stem = resolved.stem
+        # Subpath of the edited file relative to its workspace root, used
+        # to locate sibling tests/ dirs and mirrored test trees.
+        try:
+            rel = resolved.relative_to(root)
+        except Exception:
+            return ""
+        candidates = [
+            root / "tests" / f"test_{stem}.py",
+            root / "tests" / f"{stem}_test.py",
+            root / "test" / f"test_{stem}.py",
+            resolved.parent / f"test_{stem}.py",
+            resolved.parent / "tests" / f"test_{stem}.py",
+        ]
+        # Mirror the source layout under tests/, e.g.
+        # delfin/agent/api_client.py → tests/agent/test_api_client.py.
+        if len(rel.parts) > 1:
+            mirror = root / "tests" / rel.parent / f"test_{stem}.py"
+            candidates.insert(2, mirror)
+
+        for cand in candidates:
+            try:
+                if cand.is_file():
+                    cand_rel = cand.relative_to(root)
+                    return (
+                        f"\n\nTip: matching test file is `{cand_rel}` — "
+                        f"verify via `pytest {cand_rel} -q --timeout=30` "
+                        "before reporting success."
+                    )
+            except Exception:
+                continue
+        return ""
+
+    def _execute_remember_permission(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Persist a KIT permission rule to ~/.delfin/settings.json.
+
+        Always routes through ``perms.confirm_callback`` so the user gets a
+        chance to deny — even in 'acceptEdits'/'bypassPermissions' modes.
+        Updates ``perms`` in-place so the rule takes effect immediately.
+        """
+        kind = (arguments.get("kind", "") or "").strip()
+        value = (arguments.get("value", "") or "").strip()
+        scope = (arguments.get("scope", "user") or "user").strip().lower()
+        rationale = (arguments.get("rationale", "") or "").strip()
+
+        if kind not in {"allow_pattern", "deny_pattern",
+                        "extra_dir", "default_mode"}:
+            return json.dumps({"error": f"unknown kind: {kind!r}"})
+        if not value:
+            return json.dumps({"error": "value must be non-empty"})
+        if scope not in {"user", "repo"}:
+            return json.dumps({"error": f"scope must be 'user' or 'repo', got {scope!r}"})
+
+        # Build a human-readable preview for the confirm dialog.
+        try:
+            from . import kit_settings as _kit_settings
+        except Exception as exc:
+            return json.dumps({"error": f"kit_settings import failed: {exc}"})
+
+        scope_path = (
+            str(_kit_settings.repo_settings_path(perms.workspace))
+            if scope == "repo" else str(_kit_settings.USER_SETTINGS_PATH)
+        )
+        preview = (
+            f"remember_permission\n"
+            f"  kind:      {kind}\n"
+            f"  value:     {value}\n"
+            f"  scope:     {scope}  ->  {scope_path}\n"
+            f"  rationale: {rationale or '(none)'}\n"
+            f"\nThis writes the rule to the JSON file. Future sessions will load it on startup."
+        )
+
+        # Always require user confirmation regardless of mode.
+        if perms.confirm_callback is None:
+            return json.dumps({"error": (
+                "remember_permission needs a user-confirm callback. "
+                "Run inside the dashboard with the KIT confirm panel mounted."
+            )})
+        try:
+            ok = bool(perms.confirm_callback(
+                "remember_permission",
+                {"kind": kind, "value": value, "scope": scope,
+                 "rationale": rationale},
+                preview,
+            ))
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        if not ok:
+            return json.dumps({"status": "denied", "kind": kind, "value": value})
+
+        # Apply the change to disk and to the live permissions.
+        try:
+            if kind == "allow_pattern":
+                _kit_settings.persist_pattern(
+                    value, kind="allow", scope=scope, repo_dir=perms.workspace
+                )
+                if value not in perms.bash_auto_allow_patterns:
+                    perms.bash_auto_allow_patterns = (
+                        perms.bash_auto_allow_patterns + (value,)
+                    )
+            elif kind == "deny_pattern":
+                _kit_settings.persist_pattern(
+                    value, kind="deny", scope=scope, repo_dir=perms.workspace
+                )
+                if value not in perms.bash_deny_patterns:
+                    perms.bash_deny_patterns = (
+                        perms.bash_deny_patterns + (value,)
+                    )
+            elif kind == "extra_dir":
+                # Validate via add_extra_dir first (must exist + be a dir).
+                resolved = perms.add_extra_dir(value)
+                _kit_settings.persist_extra_dir(
+                    resolved, scope=scope, repo_dir=perms.workspace
+                )
+                value = str(resolved)
+            elif kind == "default_mode":
+                _kit_settings.persist_default_mode(
+                    value, scope=scope, repo_dir=perms.workspace
+                )
+                perms.mode = value
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"persist failed: {exc}"})
+
+        return json.dumps({
+            "status": "persisted",
+            "kind": kind,
+            "value": value,
+            "scope": scope,
+            "path": scope_path,
+        })
+
+    # Bundle profiles: name -> list of allow-pattern templates. The
+    # placeholder ``{dir_re}`` is replaced with a regex-escaped form of the
+    # bundle directory so patterns are scoped to that project (avoids
+    # accidentally matching unrelated venvs elsewhere on the user's
+    # filesystem).
+    # The venv-tool pattern that's repeated for absolute and relative form;
+    # covers everything the agent typically needs to develop a Python
+    # project: package management, script execution, tests, linters,
+    # formatters, type-check, coverage, doc build. New venv tools should
+    # be added to BOTH the absolute and relative pattern below.
+    _VENV_TOOL_BIN = (
+        r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
+        r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
+    )
+
+    _BUNDLE_PROFILES = {
+        "project_dev": [
+            # venv creation
+            r"^\s*python(?:\d(?:\.\d+)?)?\s+-m\s+venv\s+\S+\s*$",
+            # absolute-path venv tools (when agent issues commands with
+            # the full venv path — e.g. when cwd is elsewhere)
+            r"^\s*{dir_re}/\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            # relative-path venv tools (when cwd is the project)
+            r"^\s*\.venv[\w.-]*/bin/" + _VENV_TOOL_BIN + r"\b",
+            # globally-available test / lint / format tooling
+            r"^\s*pytest\b",
+            r"^\s*ruff\s+(?:check|format)\b",
+            r"^\s*black\b",
+            r"^\s*isort\b",
+            r"^\s*mypy\s+\S",
+            r"^\s*coverage\b",
+            r"^\s*tox\b",
+        ],
+    }
+
+    def _execute_remember_permission_bundle(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Persist a curated bundle of permission rules in one confirm step.
+
+        For ``profile='project_dev'``: registers ``directory`` as an
+        ``extra_workspace_dir`` and adds the standard venv/pip/python/
+        pytest/ruff/mypy auto-allow patterns. Patterns containing the
+        ``{dir_re}`` placeholder are scoped to that project's path so
+        they don't leak to unrelated venvs elsewhere.
+
+        The user sees a SINGLE confirm dialog summarizing every rule
+        about to be written; deny aborts the whole bundle (atomic).
+        """
+        profile = (arguments.get("profile", "") or "").strip()
+        directory = (arguments.get("directory", "") or "").strip()
+        scope = (arguments.get("scope", "repo") or "repo").strip().lower()
+        rationale = (arguments.get("rationale", "") or "").strip()
+
+        if profile not in self._BUNDLE_PROFILES:
+            return json.dumps({"error": (
+                f"unknown profile: {profile!r}. "
+                f"Known: {sorted(self._BUNDLE_PROFILES)}"
+            )})
+        if not directory:
+            return json.dumps({"error": "directory must be non-empty"})
+        if scope not in {"user", "repo"}:
+            return json.dumps({"error": f"scope must be 'user' or 'repo', got {scope!r}"})
+
+        # Validate directory exists and resolve to its canonical form.
+        try:
+            dir_path = Path(directory).expanduser().resolve()
+        except Exception as exc:
+            return json.dumps({"error": f"invalid directory: {exc}"})
+        if not dir_path.is_dir():
+            return json.dumps({"error": f"directory not found or not a dir: {directory}"})
+
+        # Build the concrete pattern list for this directory.
+        dir_re = re.escape(str(dir_path))
+        templates = self._BUNDLE_PROFILES[profile]
+        patterns = [t.format(dir_re=dir_re) for t in templates]
+
+        try:
+            from . import kit_settings as _kit_settings
+        except Exception as exc:
+            return json.dumps({"error": f"kit_settings import failed: {exc}"})
+
+        scope_path = (
+            str(_kit_settings.repo_settings_path(dir_path))
+            if scope == "repo" else str(_kit_settings.USER_SETTINGS_PATH)
+        )
+
+        preview_lines = [
+            f"remember_permission_bundle  (profile={profile})",
+            f"  scope:     {scope}  ->  {scope_path}",
+            f"  rationale: {rationale or '(none)'}",
+            "",
+            f"Will register extra_workspace_dir:",
+            f"    {dir_path}",
+            "",
+            "Will append the following bash auto-allow patterns:",
+        ]
+        for p in patterns:
+            preview_lines.append(f"    {p}")
+        preview_lines.append("")
+        preview_lines.append(
+            "All rules are written atomically. Deny aborts the whole bundle."
+        )
+        preview = "\n".join(preview_lines)
+
+        if perms.confirm_callback is None:
+            return json.dumps({"error": (
+                "remember_permission_bundle needs a user-confirm callback. "
+                "Run inside the dashboard with the KIT confirm panel mounted."
+            )})
+        try:
+            ok = bool(perms.confirm_callback(
+                "remember_permission_bundle",
+                {"profile": profile, "directory": str(dir_path),
+                 "scope": scope, "rationale": rationale,
+                 "patterns": patterns},
+                preview,
+            ))
+        except Exception as exc:
+            return json.dumps({"error": f"confirm_callback raised: {exc}"})
+        if not ok:
+            return json.dumps({"status": "denied", "profile": profile,
+                               "directory": str(dir_path)})
+
+        # Apply atomically. If the directory step or any pattern fails,
+        # roll back what we already wrote so the user isn't left with a
+        # half-applied bundle.
+        applied_patterns: list[str] = []
+        try:
+            resolved_dir = perms.add_extra_dir(str(dir_path))
+            _kit_settings.persist_extra_dir(
+                resolved_dir,
+                scope=scope,
+                repo_dir=dir_path if scope == "repo" else perms.workspace,
+            )
+            for p in patterns:
+                _kit_settings.persist_pattern(
+                    p, kind="allow", scope=scope,
+                    repo_dir=dir_path if scope == "repo" else perms.workspace,
+                )
+                if p not in perms.bash_auto_allow_patterns:
+                    perms.bash_auto_allow_patterns = (
+                        perms.bash_auto_allow_patterns + (p,)
+                    )
+                applied_patterns.append(p)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc),
+                               "applied_patterns": applied_patterns})
+        except Exception as exc:
+            return json.dumps({"error": f"persist failed: {exc}",
+                               "applied_patterns": applied_patterns})
+
+        return json.dumps({
+            "status": "persisted",
+            "profile": profile,
+            "directory": str(resolved_dir),
+            "scope": scope,
+            "path": scope_path,
+            "patterns": patterns,
+            "patterns_count": len(patterns),
+        })
+
+    def _execute_bash(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        cmd = arguments.get("command", "") or ""
+        description = arguments.get("description", "") or ""
+        timeout = int(arguments.get("timeout_s", perms.bash_timeout_s) or perms.bash_timeout_s)
+        timeout = max(1, min(timeout, perms.bash_max_timeout_s))
+        cwd_arg = arguments.get("cwd", "") or ""
+
+        if cwd_arg:
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            if err:
+                return json.dumps({"error": err})
+            if not cwd_resolved.is_dir():
+                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+            run_cwd = cwd_resolved
+        else:
+            run_cwd = perms.workspace
+
+        env = os.environ.copy()
+        env.setdefault("LC_ALL", "C.UTF-8")
+        env.setdefault("LANG", "C.UTF-8")
+
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.run(
+                ["/bin/bash", "-c", cmd],
+                cwd=str(run_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return json.dumps({
+                "error": f"command timed out after {timeout}s",
+                "command": cmd[:200],
+                "description": description,
+            })
+        except Exception as exc:
+            return json.dumps({"error": f"command failed to start: {exc}"})
+
+        elapsed = time.monotonic() - t0
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+        cap = perms.max_output_chars
+        out = _smart_truncate(out, cap, "stdout")
+        err = _smart_truncate(err, cap, "stderr")
+
+        return json.dumps({
+            "exit_code": proc.returncode,
+            "elapsed_s": round(elapsed, 3),
+            "stdout": out,
+            "stderr": err,
+            "command": cmd[:500],
+            "description": description,
+            "cwd": self._display_path(run_cwd, perms) or ".",
+        }, ensure_ascii=False)
+
+    # ------- Background bash jobs ----------------------------------------
+
+    def _execute_bash_background(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        """Start a long-running shell command in the background.
+
+        Same gate as :meth:`_execute_bash` (already run by ``_dispatch``):
+        sandbox + deny-list + secret-scanner + auto-allow check. Returns
+        a ``job_id`` immediately so the agent can keep working while the
+        command runs. Output goes to tempfiles read via ``bash_output``.
+        """
+        cmd = arguments.get("command", "") or ""
+        description = arguments.get("description", "") or ""
+        cwd_arg = arguments.get("cwd", "") or ""
+        timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
+
+        if cwd_arg:
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            if err:
+                return json.dumps({"error": err})
+            if not cwd_resolved.is_dir():
+                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+            run_cwd = cwd_resolved
+        else:
+            run_cwd = perms.workspace
+
+        try:
+            from . import bash_jobs as _bj
+            job = _bj.get_registry().start(
+                command=cmd,
+                cwd=str(run_cwd),
+                description=description,
+                timeout_s=timeout_s,
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"failed to start job: {exc}"})
+
+        return json.dumps({
+            "status": "started",
+            "job_id": job.job_id,
+            "pid": job.proc.pid,
+            "command": cmd[:500],
+            "description": description,
+            "cwd": self._display_path(run_cwd, perms) or ".",
+            "timeout_s": timeout_s,
+            "hint": (
+                f"Use bash_status({job.job_id!r}) and "
+                f"bash_output({job.job_id!r}) to monitor; "
+                f"bash_kill({job.job_id!r}) to stop."
+            ),
+        }, ensure_ascii=False)
+
+    def _execute_bash_status(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        try:
+            from . import bash_jobs as _bj
+            job = _bj.get_registry().get(job_id)
+        except Exception as exc:
+            return json.dumps({"error": f"registry error: {exc}"})
+        if job is None:
+            return json.dumps({"error": f"unknown job_id: {job_id}"})
+        return json.dumps(job.status_dict(), ensure_ascii=False)
+
+    def _execute_bash_output(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        head = int(arguments.get("head_lines", 60) or 60)
+        tail = int(arguments.get("tail_lines", 200) or 200)
+        try:
+            from . import bash_jobs as _bj
+            reg = _bj.get_registry()
+            job = reg.get(job_id)
+            if job is None:
+                return json.dumps({"error": f"unknown job_id: {job_id}"})
+            payload = _bj.read_output(job, head_lines=head, tail_lines=tail)
+        except Exception as exc:
+            return json.dumps({"error": f"output read failed: {exc}"})
+        # Merge with status so the agent doesn't need a second call.
+        payload.update({
+            k: v for k, v in job.status_dict().items()
+            if k in {"job_id", "running", "exit_code", "elapsed_s"}
+        })
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _execute_bash_kill(self, arguments: dict) -> str:
+        job_id = (arguments.get("job_id", "") or "").strip()
+        if not job_id:
+            return json.dumps({"error": "job_id is required"})
+        try:
+            from . import bash_jobs as _bj
+            ok, msg = _bj.get_registry().kill(job_id)
+        except Exception as exc:
+            return json.dumps({"error": f"kill failed: {exc}"})
+        return json.dumps({
+            "status": "ok" if ok else "error",
+            "job_id": job_id,
+            "message": msg,
+        }, ensure_ascii=False)
+
+    # ------- Jupyter notebook tools --------------------------------------
+
+    def _execute_notebook_read(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "") or ""
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            # Fall back to the read-access gate so cross-root reads
+            # still go through the secret-deny + outside-workspace
+            # confirm flow that read_file uses.
+            from pathlib import Path as _P
+            try:
+                resolved = _P(path_arg).expanduser().resolve()
+            except Exception:
+                return json.dumps({"error": err})
+            err2 = self._check_read_access(perms, resolved, label=path_arg)
+            if err2:
+                return json.dumps({"error": err2})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+        if resolved.suffix.lower() != ".ipynb":
+            return json.dumps({"error": (
+                f"notebook_read expects a .ipynb file; got "
+                f"{resolved.suffix!r}. Use read_file for plain text."
+            )})
+
+        try:
+            from . import notebook_tools as _nb
+            cells = _nb.read_cells(resolved, max_source_chars=max_chars)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"not valid JSON / nbformat: {exc}"})
+        except Exception as exc:
+            return json.dumps({"error": f"notebook read failed: {exc}"})
+
+        # Track the read for the edit-tracker (so notebook_edit can
+        # later check the file hasn't changed since this read).
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        return json.dumps({
+            "path": self._display_path(resolved, perms),
+            "cell_count": len(cells),
+            "cells": [
+                {
+                    "idx": c.idx,
+                    "cell_type": c.cell_type,
+                    "source": c.source,
+                    "output_summary": c.output_summary,
+                }
+                for c in cells
+            ],
+        }, ensure_ascii=False)
+
+    def _execute_notebook_edit(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        path_arg = arguments.get("path", "") or ""
+        cell_idx = arguments.get("cell_idx")
+        mode = (arguments.get("mode", "") or "").strip()
+        source = arguments.get("source")
+        cell_type = (arguments.get("cell_type", "code") or "code").strip()
+
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        if cell_idx is None:
+            return json.dumps({"error": "cell_idx is required"})
+        try:
+            cell_idx = int(cell_idx)
+        except (TypeError, ValueError):
+            return json.dumps({"error": f"cell_idx must be int, got {cell_idx!r}"})
+
+        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        if err:
+            return json.dumps({"error": err})
+        if not resolved.exists():
+            return json.dumps({"error": f"file not found: {path_arg}"})
+        if not resolved.is_file():
+            return json.dumps({"error": f"not a regular file: {path_arg}"})
+        if resolved.suffix.lower() != ".ipynb":
+            return json.dumps({"error": (
+                f"notebook_edit expects a .ipynb file; got "
+                f"{resolved.suffix!r}. Use edit_file for plain text."
+            )})
+
+        # Same read-baseline check as edit_file: notebook must have been
+        # read first so the agent's mental model of cell indices is up
+        # to date.
+        tracked = perms.read_tracker.get(str(resolved))
+        try:
+            current_mtime = resolved.stat().st_mtime
+        except Exception:
+            current_mtime = None
+        if tracked is None:
+            return json.dumps({"error": (
+                f"call notebook_read on '{path_arg}' before editing — "
+                "edits require an established read baseline."
+            )})
+        if current_mtime is not None and current_mtime > tracked + 1e-3:
+            return json.dumps({"error": (
+                f"notebook '{path_arg}' was modified since last "
+                "notebook_read. Re-read first."
+            )})
+
+        try:
+            from . import notebook_tools as _nb
+            n_before, n_after = _nb.apply_edit(
+                resolved, cell_idx=cell_idx, mode=mode,
+                source=source, cell_type=cell_type,
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"notebook edit failed: {exc}"})
+
+        try:
+            perms.read_tracker[str(resolved)] = resolved.stat().st_mtime
+        except Exception:
+            pass
+
+        disp = self._display_path(resolved, perms)
+        delta = n_after - n_before
+        delta_str = (
+            f"+{delta}" if delta > 0 else f"{delta}" if delta < 0 else "0"
+        )
+        return json.dumps({
+            "status": "ok",
+            "path": disp,
+            "mode": mode,
+            "cell_idx": cell_idx,
+            "cell_type": cell_type if mode != "delete" else None,
+            "cells_before": n_before,
+            "cells_after": n_after,
+            "cells_delta": delta_str,
+        }, ensure_ascii=False)
+
+    # ------- Phase 7: project introspection -------------------------------
+
+    def _execute_project_introspect(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import project_introspect as _pi
+        if perms is None:
+            return json.dumps({"error": (
+                "project_introspect needs a workspace via permissions"
+            )})
+        report = _pi.introspect(perms.workspace)
+        return json.dumps(report, ensure_ascii=False)
+
+    # ------- Phase 6: tests / patch / code nav ----------------------------
+
+    def _execute_run_tests(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import test_runner as _tr
+        if perms is None:
+            return json.dumps({"error": (
+                "run_tests needs a workspace via permissions"
+            )})
+        target = str(arguments.get("target", "") or "")
+        pytest_args = arguments.get("pytest_args") or []
+        if not isinstance(pytest_args, list):
+            return json.dumps({"error": "pytest_args must be a list"})
+        timeout = int(arguments.get("timeout_s", 300) or 300)
+        result = _tr.run_tests(
+            workspace=perms.workspace,
+            target=target,
+            pytest_args=[str(a) for a in pytest_args],
+            timeout_s=timeout,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_apply_patch(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import patch_apply as _pa
+        if perms is None:
+            return json.dumps({"error": (
+                "apply_patch needs a workspace via permissions"
+            )})
+        diff = arguments.get("diff", "")
+        if not isinstance(diff, str) or not diff.strip():
+            return json.dumps({"error": "diff must be a non-empty string"})
+        check_only = bool(arguments.get("check_only", False))
+        # Plan-mode contract: still read-only.
+        if perms.mode == "plan" and not check_only:
+            return json.dumps({"error": (
+                "plan mode (read-only) — apply_patch with "
+                "check_only=true is allowed; use exit_plan_mode to "
+                "actually apply."
+            )})
+        # Self-Mod-Guard: scan diff file headers for protected paths
+        # and require explicit confirm even in bypass mode.
+        try:
+            files = _pa._files_in_diff(diff)
+        except Exception:
+            files = []
+        for rel in files:
+            if perms.matches_path_protected(rel):
+                if perms.confirm_callback is None:
+                    return json.dumps({"error": (
+                        f"path is self-mod-guarded: {rel}. "
+                        "apply_patch refuses without an explicit "
+                        "user-confirm binding."
+                    )})
+                preview = "\n".join(diff.splitlines()[:30])
+                if not perms.confirm_callback(
+                    "apply_patch",
+                    {"file": rel, "files": files},
+                    preview,
+                ):
+                    return json.dumps({"error": (
+                        f"user denied apply_patch on protected {rel}"
+                    )})
+        result = _pa.apply_patch(
+            workspace=perms.workspace,
+            diff_text=diff,
+            check_only=check_only,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def _execute_code_nav(
+        self, name: str, arguments: dict,
+        perms: Optional["KitToolPermissions"],
+    ) -> str:
+        from . import code_nav as _cn
+        if perms is None:
+            return json.dumps({"error": (
+                f"{name} needs a workspace via permissions"
+            )})
+        symbol = str(arguments.get("symbol", "") or "")
+        file_hint = str(arguments.get("file_hint", "") or "")
+        language = str(arguments.get("language", "auto") or "auto")
+        if name == "find_definition":
+            result = _cn.find_definition(
+                perms.workspace, symbol,
+                file_hint=file_hint, language=language,
+            )
+        else:
+            result = _cn.find_references(
+                perms.workspace, symbol,
+                file_hint=file_hint, language=language,
+            )
+        return json.dumps(result, ensure_ascii=False)
+
+    # ------- Notifications / remote triggers ------------------------------
+
+    def _execute_push_notification(self, arguments: dict) -> str:
+        from . import notify as _n
+        title = str(arguments.get("title", "")).strip() or "delfin agent"
+        body = str(arguments.get("body", ""))
+        urgency = str(arguments.get("urgency", "normal"))
+        ok = _n.send_notification(title, body, urgency=urgency)
+        return json.dumps({"status": "ok" if ok else "noop", "sent": ok})
+
+    def _execute_remote_trigger(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import notify as _n
+        event = str(arguments.get("event", "")).strip()
+        if not event:
+            return json.dumps({"error": "event is required"})
+        payload = arguments.get("payload") or {}
+        if not isinstance(payload, dict):
+            return json.dumps({"error": "payload must be a JSON object"})
+        full = {"event": event, **payload}
+        ws = perms.workspace if perms else None
+        result = _n.send_remote_trigger(full, workspace=ws)
+        return json.dumps({
+            "sent": result.sent,
+            "status_code": result.status_code,
+            "error": result.error,
+        })
+
+    # ------- Scheduler / cron ---------------------------------------------
+
+    def _execute_scheduler(self, name: str, arguments: dict) -> str:
+        from . import scheduler as _sched
+        sch = _sched.get_scheduler()
+        try:
+            if name == "schedule_wakeup":
+                ent = sch.schedule_once(
+                    delay_seconds=int(arguments.get("delay_seconds", 0)),
+                    prompt=str(arguments.get("prompt", "")),
+                    reason=str(arguments.get("reason", "")),
+                )
+                return json.dumps({
+                    "status": "ok",
+                    "id": ent.id,
+                    "fires_at_epoch": ent.next_fire_at,
+                })
+            if name == "cron_create":
+                ent = sch.schedule_interval(
+                    every_seconds=int(arguments.get("every_seconds", 0)),
+                    prompt=str(arguments.get("prompt", "")),
+                    reason=str(arguments.get("reason", "")),
+                    fire_immediately=bool(arguments.get("fire_immediately", False)),
+                )
+                return json.dumps({
+                    "status": "ok",
+                    "id": ent.id,
+                    "next_fire_at": ent.next_fire_at,
+                })
+            if name == "cron_list":
+                entries = sch.list_entries()
+                return json.dumps({
+                    "entries": [
+                        {
+                            "id": e.id, "kind": e.kind,
+                            "every_seconds": e.every_seconds,
+                            "next_fire_at": e.next_fire_at,
+                            "fire_count": e.fire_count,
+                            "prompt": e.prompt[:120],
+                            "reason": e.reason,
+                        }
+                        for e in entries
+                    ],
+                })
+            if name == "cron_delete":
+                ok = sch.delete(str(arguments.get("entry_id", "")))
+                return json.dumps({"status": "ok" if ok else "not_found"})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"{name} failed: {exc}"})
+        return json.dumps({"error": f"unknown scheduler op: {name!r}"})
+
+    # ------- Git worktree isolation ---------------------------------------
+
+    def _execute_enter_worktree(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import worktree as _wt
+        repo_arg = (arguments.get("repo_dir") or "").strip()
+        prefix = (arguments.get("branch_prefix") or "agent").strip() or "agent"
+        if repo_arg:
+            repo_dir = Path(repo_arg).expanduser()
+        else:
+            if perms is None:
+                return json.dumps({"error": (
+                    "repo_dir is required when no workspace is configured"
+                )})
+            repo_dir = perms.workspace
+        try:
+            info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
+        except _wt.WorktreeError as exc:
+            return json.dumps({"error": str(exc)})
+        # Register the worktree path under the agent's allowed roots so
+        # subsequent edit/bash calls succeed without manual remember_*.
+        if perms is not None:
+            try:
+                perms.add_extra_dir(info.path)
+            except Exception:
+                pass
+        return json.dumps({
+            "status": "ok",
+            "path": str(info.path),
+            "branch": info.branch,
+            "base_ref": info.base_ref,
+            "repo_dir": str(info.repo_dir),
+        })
+
+    def _execute_exit_worktree(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import worktree as _wt
+        path_arg = (arguments.get("path") or "").strip()
+        keep_if_changed = bool(arguments.get("keep_if_changed", True))
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        wt_path = Path(path_arg).expanduser()
+        if not wt_path.is_dir():
+            return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        # Reconstruct minimal info from `git -C wt_path status` + branch
+        try:
+            head = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(wt_path), text=True,
+            ).strip()
+            base = subprocess.check_output(
+                ["git", "merge-base", head, head],   # current HEAD as a stand-in
+                cwd=str(wt_path), text=True,
+            ).strip()
+            # Find the source repo via `git worktree list`
+            source = subprocess.check_output(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=str(wt_path), text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            return json.dumps({"error": f"git query failed: {exc}"})
+        except FileNotFoundError:
+            return json.dumps({"error": "git is not installed"})
+        # Pick the FIRST `worktree` block from the list — that's the main repo.
+        repo_dir = wt_path
+        for line in source.splitlines():
+            if line.startswith("worktree "):
+                repo_dir = Path(line.removeprefix("worktree ").strip())
+                break
+        info = _wt.WorktreeInfo(
+            repo_dir=repo_dir,
+            path=wt_path,
+            branch=head,
+            base_ref=base,
+            created_at=0.0,
+        )
+        try:
+            _wt.exit_worktree(info, keep_if_changed=keep_if_changed)
+        except _wt.WorktreeError as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "status": "ok",
+            "had_changes": info.had_changes,
+            "kept": info.final_path is not None,
+            "final_path": str(info.final_path) if info.final_path else "",
+            "branch": info.branch,
+        })
+
+    # ------- Sub-agent delegation -----------------------------------------
+
+    def _execute_subagent(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import subagents as _sa
+        sa_type = (arguments.get("subagent_type") or "").strip()
+        description = (arguments.get("description") or "").strip()
+        prompt = arguments.get("prompt") or ""
+        if not sa_type:
+            return json.dumps({"error": "subagent_type is required"})
+        if sa_type not in _sa.SUBAGENT_PRESETS:
+            return json.dumps({
+                "error": f"unknown subagent_type: {sa_type!r}",
+                "available": list(_sa.SUBAGENT_PRESETS),
+            })
+        if not description:
+            return json.dumps({"error": "description is required"})
+        if not prompt or len(prompt) < 20:
+            return json.dumps({"error": (
+                "prompt must brief the sub-agent thoroughly (>=20 chars)"
+            )})
+        if perms is None or perms.subagent_runner is None:
+            return json.dumps({
+                "error": "subagent runner not attached",
+                "hint": (
+                    "subagent requires the parent OpenAIClient to "
+                    "have set perms.subagent_runner. Currently None."
+                ),
+            })
+        try:
+            payload = perms.subagent_runner(
+                subagent_type=sa_type,
+                description=description,
+                prompt=prompt,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"subagent runner raised: {exc}"})
+        if not isinstance(payload, dict):
+            return json.dumps({"error": "runner must return a dict payload"})
+        return json.dumps(payload, ensure_ascii=False)
+
+    # ------- Skill invocation ---------------------------------------------
+
+    def _execute_skill(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Resolve a named skill and return its body verbatim.
+
+        Skills are project-overridable Markdown playbooks; this
+        executor just discovers and renders them. The agent is
+        expected to read the returned body and follow it.
+        """
+        from . import skills as _skills_mod
+        name = (arguments.get("name") or "").strip()
+        args = (arguments.get("args") or "").strip()
+        if not name:
+            return json.dumps({"error": "skill name must be non-empty"})
+        workspace = perms.workspace if perms is not None else None
+        sk = _skills_mod.get_skill(name, workspace)
+        if sk is None:
+            available = [s.name for s in _skills_mod.discover_skills(workspace)]
+            return json.dumps({
+                "error": f"skill '{name}' not found",
+                "available": available,
+            })
+        return json.dumps({
+            "status": "ok",
+            "skill": sk.name,
+            "description": sk.description,
+            "source": str(sk.source),
+            "content": _skills_mod.render_skill_invocation(sk, args),
+        }, ensure_ascii=False)
+
+    # ------- Plan-mode roundtrip ------------------------------------------
+
+    _VALID_POST_PLAN_MODES = ("default", "acceptEdits", "bypassPermissions")
+
+    def _execute_exit_plan_mode(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Submit a plan for approval. On approve, flip ``perms.mode``.
+
+        Plan-mode is read-only by contract; the only way out is for the
+        agent to surface the plan and for the user to acknowledge it.
+        Without a ``plan_approval_callback`` we accept silently and
+        switch to ``default`` so headless tests don't deadlock.
+        """
+        if perms is None:
+            return json.dumps({"error": (
+                "exit_plan_mode requires permissions to be configured"
+            )})
+        plan = (arguments.get("plan") or "").strip()
+        if not plan:
+            return json.dumps({"error": "plan must be non-empty"})
+        if perms.mode != "plan":
+            return json.dumps({"error": (
+                f"exit_plan_mode is only valid while in 'plan' mode "
+                f"(current mode: {perms.mode!r})"
+            )})
+        approved = True
+        new_mode = "default"
+        if perms.plan_approval_callback is not None:
+            try:
+                resp = perms.plan_approval_callback(plan)
+            except Exception as exc:
+                return json.dumps({"error": f"plan approval raised: {exc}"})
+            if not isinstance(resp, dict):
+                return json.dumps({"error": (
+                    "plan_approval_callback must return a dict "
+                    "{approved: bool, new_mode?: str}"
+                )})
+            approved = bool(resp.get("approved", False))
+            requested_mode = (resp.get("new_mode") or "default")
+            if requested_mode not in self._VALID_POST_PLAN_MODES:
+                return json.dumps({"error": (
+                    f"plan_approval_callback returned unsupported "
+                    f"new_mode: {requested_mode!r}. Use one of "
+                    f"{list(self._VALID_POST_PLAN_MODES)}."
+                )})
+            new_mode = requested_mode
+        if approved:
+            perms.mode = new_mode
+            perms.last_approved_plan = plan
+            return json.dumps({
+                "status": "approved",
+                "new_mode": new_mode,
+                "plan_chars": len(plan),
+            })
+        return json.dumps({
+            "status": "rejected",
+            "mode": perms.mode,
+        })
+
+    # ------- Structured user question -------------------------------------
+
+    def _execute_ask_user_question(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        """Surface a multi-choice question to the user via the bound UI.
+
+        Validates the schema (2-6 options, each with a label) and
+        delegates to ``perms.ask_user_callback``. Returns a JSON payload
+        with the selected ``answers`` (list of label strings). When the
+        callback raises or no UI is bound, returns an explicit error so
+        the agent can fall back to a plain-prose question.
+        """
+        question = (arguments.get("question") or "").strip()
+        options = arguments.get("options") or []
+        header = (arguments.get("header") or "").strip()
+        multi_select = bool(arguments.get("multiSelect", False))
+        if not question:
+            return json.dumps({"error": "question must be non-empty"})
+        if not isinstance(options, list) or not (2 <= len(options) <= 6):
+            return json.dumps({"error": (
+                "options must be a list of 2-6 entries"
+            )})
+        norm_options: list[dict] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                return json.dumps({"error": (
+                    "each option must be {label, description?}"
+                )})
+            label = (opt.get("label") or "").strip()
+            if not label:
+                return json.dumps({"error": "each option needs a label"})
+            norm_options.append({
+                "label": label,
+                "description": (opt.get("description") or "").strip(),
+            })
+        if perms is None or perms.ask_user_callback is None:
+            return json.dumps({
+                "error": "ask_user_question is not available in this context",
+                "hint": (
+                    "Fall back to asking the question in plain prose; "
+                    "no interactive UI is bound to this agent."
+                ),
+            })
+        normalised = {
+            "question": question,
+            "header": header,
+            "options": norm_options,
+            "multiSelect": multi_select,
+        }
+        try:
+            result = perms.ask_user_callback(normalised)
+        except Exception as exc:
+            return json.dumps({"error": f"ask_user failed: {exc}"})
+        if not isinstance(result, dict):
+            return json.dumps({"error": "ask_user returned non-dict result"})
+        answers = result.get("answers")
+        if not isinstance(answers, list) or not all(
+            isinstance(a, str) for a in answers
+        ):
+            return json.dumps({"error": (
+                "ask_user must return {'answers': list[str]}"
+            )})
+        if not multi_select and len(answers) > 1:
+            answers = answers[:1]
+        return json.dumps({
+            "answers": answers,
+            "multiSelect": multi_select,
+        })
+
+    # ------- Planning tools (TaskCreate / Update / List) ------------------
+
+    def _task_store(self, perms: "KitToolPermissions"):
+        """Get the per-workspace TaskStore singleton."""
+        from . import agent_tasks as _at
+        return _at.get_store(perms.workspace)
+
+    def _execute_task_create(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        subject = (arguments.get("subject", "") or "").strip()
+        description = arguments.get("description", "") or ""
+        active_form = arguments.get("active_form", "") or ""
+        if not subject:
+            return json.dumps({"error": "subject must be non-empty"})
+        try:
+            task = self._task_store(perms).create(
+                subject, description, active_form,
+                session_id=getattr(perms, "task_session_id", "") or "",
+            )
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_create failed: {exc}"})
+        return json.dumps({
+            "status": "created",
+            "task": task,
+            "hint": (
+                f"task #{task['id']} added. Mark in_progress when you "
+                "start, completed when done."
+            ),
+        }, ensure_ascii=False)
+
+    def _execute_task_update(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        try:
+            task_id = int(arguments.get("task_id"))
+        except (TypeError, ValueError):
+            return json.dumps({
+                "error": f"task_id must be int, got {arguments.get('task_id')!r}"
+            })
+        fields = {
+            k: arguments.get(k)
+            for k in ("status", "subject", "description", "active_form")
+            if arguments.get(k) is not None
+        }
+        if not fields:
+            return json.dumps({
+                "error": "at least one field (status / subject / description / active_form) must be provided"
+            })
+        try:
+            task = self._task_store(perms).update(task_id, **fields)
+        except KeyError as exc:
+            return json.dumps({"error": str(exc).strip("'")})
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)})
+        except Exception as exc:
+            return json.dumps({"error": f"task_update failed: {exc}"})
+        return json.dumps({"status": "updated", "task": task},
+                          ensure_ascii=False)
+
+    def _execute_task_list(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        include_deleted = bool(arguments.get("include_deleted", False))
+        _sid = getattr(perms, "task_session_id", "") or ""
+        try:
+            tasks = self._task_store(perms).list(
+                include_deleted=include_deleted,
+                session_id=_sid if _sid else None,
+            )
+        except Exception as exc:
+            return json.dumps({"error": f"task_list failed: {exc}"})
+        # Group by status so the agent can summarise progress easily.
+        grouped: dict[str, list] = {
+            "in_progress": [], "pending": [],
+            "completed": [], "deleted": [],
+        }
+        for t in tasks:
+            grouped.setdefault(t.get("status", "pending"), []).append(t)
+        return json.dumps({
+            "count": len(tasks),
+            "by_status": {k: len(v) for k, v in grouped.items() if v},
+            "tasks": tasks,
+        }, ensure_ascii=False)
+
+    # ------- Web tools (search + fetch) -----------------------------------
+
+    def _execute_web_search(self, arguments: dict) -> str:
+        query = (arguments.get("query", "") or "").strip()
+        max_results = int(arguments.get("max_results", 8) or 8)
+        max_results = max(1, min(max_results, 20))
+        if not query:
+            return json.dumps({"error": "query must be non-empty"})
+        try:
+            from . import web_tools as _wt
+            payload = _wt.web_search(query, max_results=max_results)
+        except Exception as exc:
+            return json.dumps({"error": f"web_search failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _execute_web_fetch(self, arguments: dict) -> str:
+        url = (arguments.get("url", "") or "").strip()
+        timeout_s = int(arguments.get("timeout_s", 15) or 15)
+        timeout_s = max(1, min(timeout_s, 60))
+        if not url:
+            return json.dumps({"error": "url must be non-empty"})
+        try:
+            from . import web_tools as _wt
+            payload = _wt.web_fetch(url, timeout_s=timeout_s)
+        except Exception as exc:
+            return json.dumps({"error": f"web_fetch failed: {exc}"})
+        return json.dumps(payload, ensure_ascii=False)
 
 
 # Singleton — shared across all OpenAIClient instances.
@@ -1181,7 +4823,8 @@ class OpenAIClient(_BaseClient):
     }
 
     def __init__(self, api_key: str = "", model: str = "",
-                 base_url: str = "", key_env_var: str = "OPENAI_API_KEY"):
+                 base_url: str = "", key_env_var: str = "OPENAI_API_KEY",
+                 permissions: Optional["KitToolPermissions"] = None):
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -1200,6 +4843,41 @@ class OpenAIClient(_BaseClient):
         if base_url:
             kwargs["base_url"] = base_url
         self.client = openai.OpenAI(**kwargs)
+        # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
+        self._permissions: Optional[KitToolPermissions] = permissions
+        self._attach_subagent_runner(permissions)
+
+    def _attach_subagent_runner(
+        self, permissions: Optional["KitToolPermissions"],
+    ) -> None:
+        """Wire ``permissions.subagent_runner`` to a closure over self.
+
+        Idempotent — re-binding on every set_permissions ensures a
+        sub-agent always runs against the current parent client.
+        """
+        if permissions is None:
+            return
+        from . import subagents as _sa
+
+        def _runner(*, subagent_type: str, description: str, prompt: str) -> dict:
+            res = _sa.run_subagent(
+                subagent_type=subagent_type,
+                description=description,
+                prompt=prompt,
+                parent_client=self,
+                parent_perms=self._permissions,
+            )
+            return res.to_payload()
+
+        try:
+            permissions.subagent_runner = _runner
+        except Exception:
+            pass
+
+    def set_permissions(self, permissions: Optional["KitToolPermissions"]) -> None:
+        """Replace the KIT-Toolbox permissions policy at runtime."""
+        self._permissions = permissions
+        self._attach_subagent_runner(permissions)
 
     def switch_model(self, model: str) -> None:
         """Switch model (no process to kill, just update the name)."""
@@ -1255,10 +4933,98 @@ class OpenAIClient(_BaseClient):
         # Check if doc/calc tools are available
         has_doc_tools = _doc_executor._ensure_loaded()
         has_calc_tools = _doc_executor._ensure_calc_loaded()
+        has_coding = self._permissions is not None
+
+        _CODING_TOOL_NAMES = {"write_file", "edit_file", "multi_edit",
+                              "bash", "remember_permission",
+                              "remember_permission_bundle",
+                              "bash_background", "bash_status",
+                              "bash_output", "bash_kill",
+                              "notebook_read", "notebook_edit",
+                              "task_create", "task_update", "task_list",
+                              "web_search", "web_fetch",
+                              "ask_user_question",
+                              "exit_plan_mode",
+                              "skill",
+                              "subagent",
+                              "enter_worktree",
+                              "exit_worktree",
+                              "schedule_wakeup",
+                              "cron_create",
+                              "cron_list",
+                              "cron_delete",
+                              "push_notification",
+                              "remote_trigger",
+                              "run_tests",
+                              "apply_patch",
+                              "find_definition",
+                              "find_references",
+                              "project_introspect"}
+        if has_coding:
+            advertised_tools = list(_DOC_TOOLS_OPENAI)
+        else:
+            advertised_tools = [
+                t for t in _DOC_TOOLS_OPENAI
+                if t.get("function", {}).get("name") not in _CODING_TOOL_NAMES
+            ]
+
+        # Strip ALL mutating tools when the active role is dashboard_agent
+        # — the dashboard agent drives the UI via ACTION: slash-commands
+        # and must not have bash / write / edit / apply_patch in its
+        # surface, regardless of what the user prompt or coding mode says.
+        # This is the code-level enforcement that backs the prompt's
+        # "no code changes in dashboard mode" rule.
+        _agent_role = getattr(self._permissions, "agent_role", "") or ""
+        if _agent_role == "dashboard_agent":
+            advertised_tools = [
+                t for t in advertised_tools
+                if t.get("function", {}).get("name")
+                in _DASHBOARD_AGENT_ALLOWED_TOOLS
+            ]
+
+        # Strip DELFIN-only tools when the workspace is not a DELFIN repo.
+        # Generic projects shouldn't see search_calcs / get_calc_info /
+        # search_docs etc. — those would just return empty results and
+        # pollute the agent's tool surface.
+        _is_delfin = bool(getattr(self._permissions, "is_delfin_workspace",
+                                   False))
+        if not _is_delfin:
+            advertised_tools = [
+                t for t in advertised_tools
+                if t.get("function", {}).get("name")
+                not in _DELFIN_ONLY_TOOL_NAMES
+            ]
+
+        # Augment with MCP tools discovered from configured servers.
+        # Failures (missing config, server crash) leave the registry
+        # empty — the agent simply won't see those tools.
+        try:
+            from . import mcp_client as _mcp
+            _ws = self._permissions.workspace if self._permissions else None
+            _registry = _mcp.get_registry(_ws)
+            _mcp_tools = _registry.discover_all()
+            for _tool in _mcp_tools:
+                advertised_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": _tool.namespaced_name,
+                        "description": _tool.description or _tool.name,
+                        "parameters": _tool.schema or {"type": "object"},
+                    },
+                })
+        except Exception:
+            _mcp_tools = []
 
         _total_in = 0
         _total_out = 0
-        _MAX_TOOL_ROUNDS = 15
+        # Per-turn tool-round budget. 15 was too tight for real coding
+        # workflows: write_file + cat heredocs + venv create + pip
+        # install easily eats 20+ rounds before the model can wrap up,
+        # leading to silent mid-task stops. 50 is generous enough that
+        # most long tasks finish; if a turn truly needs more, the
+        # message_delta below surfaces "max_tool_rounds" and the user
+        # can resume with a "continue" message.
+        _MAX_TOOL_ROUNDS = 50
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             kwargs: dict[str, Any] = {
@@ -1279,8 +5045,8 @@ class OpenAIClient(_BaseClient):
             else:
                 kwargs["max_tokens"] = max_tokens
 
-            if (has_doc_tools or has_calc_tools) and not is_reasoning:
-                kwargs["tools"] = _DOC_TOOLS_OPENAI
+            if (has_doc_tools or has_calc_tools or has_coding) and not is_reasoning:
+                kwargs["tools"] = advertised_tools
 
             # Accumulate streamed tool calls (may arrive in chunks)
             _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
@@ -1358,19 +5124,74 @@ class OpenAIClient(_BaseClient):
                     except json.JSONDecodeError:
                         fn_args = {}
 
+                    # Coding-agent tools get a different namespace prefix so
+                    # the UI/Whitelist layer can distinguish them from doc tools.
+                    is_coding = fn_name in ("write_file", "edit_file",
+                                            "multi_edit", "bash",
+                                            "remember_permission",
+                                            "remember_permission_bundle",
+                                            "bash_background",
+                                            "bash_status",
+                                            "bash_output",
+                                            "bash_kill",
+                                            "notebook_read",
+                                            "notebook_edit",
+                                            "task_create",
+                                            "task_update",
+                                            "task_list",
+                                            "web_search",
+                                            "web_fetch",
+                                            "ask_user_question",
+                                            "exit_plan_mode",
+                                            "skill",
+                                            "subagent",
+                                            "enter_worktree",
+                                            "exit_worktree",
+                                            "schedule_wakeup",
+                                            "cron_create",
+                                            "cron_list",
+                                            "cron_delete",
+                                            "push_notification",
+                                            "remote_trigger",
+                                            "run_tests",
+                                            "apply_patch",
+                                            "find_definition",
+                                            "find_references",
+                                            "project_introspect")
+                    ns_prefix = "kit-coding" if is_coding else "delfin-docs"
+
+                    # MCP tools come prefixed mcp__server__name and route
+                    # through the registry, bypassing the doc executor.
+                    is_mcp = fn_name.startswith("mcp__")
+
                     # Emit tool_use event for UI display
                     yield StreamEvent(
                         type="tool_use",
-                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_name=fn_name if is_mcp
+                                  else f"mcp__{ns_prefix}__{fn_name}",
                         tool_input=json.dumps(fn_args),
                     )
 
-                    result = _doc_executor.execute(fn_name, fn_args)
+                    if is_mcp:
+                        try:
+                            from . import mcp_client as _mcp
+                            _ws = (self._permissions.workspace
+                                   if self._permissions else None)
+                            result = _mcp.get_registry(_ws).call(fn_name, fn_args)
+                        except Exception as exc:
+                            result = json.dumps({
+                                "error": f"MCP dispatch failed: {exc}"
+                            })
+                    else:
+                        result = _doc_executor.execute(
+                            fn_name, fn_args, permissions=self._permissions
+                        )
 
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
-                        tool_name=f"mcp__delfin-docs__{fn_name}",
+                        tool_name=fn_name if is_mcp
+                                  else f"mcp__{ns_prefix}__{fn_name}",
                         tool_output=result[:2000],
                     )
 
@@ -1395,7 +5216,21 @@ class OpenAIClient(_BaseClient):
             break
         else:
             # Exhausted all tool rounds without a final text response.
-            # Emit a message_delta so the engine knows streaming is done.
+            # Surface a visible chat notice so the user knows WHY the
+            # stream stopped — silent stops at the budget edge made the
+            # PNG2SMILES task look like the agent had quit (it just hit
+            # the round cap mid-pip-install). The user can resume with
+            # any message; the next turn picks up the conversation.
+            yield StreamEvent(
+                type="text_delta",
+                text=(
+                    f"\n\n⚠ Tool-round budget reached "
+                    f"({_MAX_TOOL_ROUNDS} rounds this turn). "
+                    f"The task isn't necessarily done — send any "
+                    f"message (e.g. 'continue') to let me pick up where "
+                    f"I left off.\n"
+                ),
+            )
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",
@@ -1610,6 +5445,28 @@ class CodexCLIClient(_BaseClient):
 # Factory
 # ---------------------------------------------------------------------------
 
+def _map_kit_permission_mode(permission_mode: str) -> str:
+    """Map dashboard CLI-permission strings to KitToolPermissions modes.
+
+    Cap at 'acceptEdits' for unknown values — destructive ops should never
+    silently pass through to bypassPermissions. Bash is still gated by
+    deny-list + auto-allow + callback regardless of mode.
+    """
+    pm = (permission_mode or "").strip()
+    table = {
+        "":                  "default",
+        "default":           "default",
+        "ask_all":           "default",
+        "plan":              "plan",
+        "acceptEdits":       "acceptEdits",
+        "auto":              "acceptEdits",
+        "repo_free":         "acceptEdits",
+        "bypassPermissions": "bypassPermissions",
+        "all_free":          "bypassPermissions",
+    }
+    return table.get(pm, "default")
+
+
 def create_client(
     backend: str = "cli",
     provider: str = "claude",
@@ -1622,6 +5479,7 @@ def create_client(
     allowed_tools: list[str] | None = None,
     extra_dirs: list[str] | None = None,
     effort: str = "",
+    kit_confirm_callback: Optional[Callable[[str, dict, str], bool]] = None,
 ) -> _BaseClient:
     """Create the appropriate client backend.
 
@@ -1649,10 +5507,70 @@ def create_client(
     """
     if provider == "kit":
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
+        kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+
+        # Pull persisted user/repo settings (Claude-Code-style two-tier
+        # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
+        # are empty if neither file exists.
+        try:
+            from . import kit_settings as _kit_settings  # local import to avoid cycle
+            persisted = _kit_settings.load(repo_dir=kit_workspace)
+        except Exception:
+            persisted = None
+
+        seen: list[Path] = []
+        # Caller-supplied extra_dirs first (e.g. CLI args), then persisted ones.
+        sources: list[str] = []
+        if extra_dirs:
+            sources.extend(extra_dirs)
+        if persisted is not None:
+            sources.extend(persisted.extra_workspace_dirs)
+        for d in sources:
+            try:
+                p = Path(d).expanduser().resolve()
+            except Exception:
+                continue
+            if p == kit_workspace or p in seen:
+                continue
+            if not p.exists() or not p.is_dir():
+                continue
+            seen.append(p)
+        kit_extra = tuple(seen)
+
+        # Mode: explicit caller arg wins over persisted default_mode.
+        if permission_mode:
+            kit_mode = _map_kit_permission_mode(permission_mode)
+        elif persisted is not None and persisted.default_mode in {
+            "plan", "default", "acceptEdits", "bypassPermissions"
+        }:
+            kit_mode = persisted.default_mode
+        else:
+            kit_mode = "default"
+
+        # Allow/deny patterns: append persisted ones to the built-in defaults.
+        allow_patterns = tuple(_DEFAULT_BASH_AUTO_ALLOW)
+        deny_patterns = tuple(_DEFAULT_BASH_DENY_PATTERNS)
+        if persisted is not None:
+            extra_allow = tuple(p for p in persisted.allow_patterns
+                                if p not in allow_patterns)
+            extra_deny = tuple(p for p in persisted.deny_patterns
+                               if p not in deny_patterns)
+            allow_patterns = allow_patterns + extra_allow
+            deny_patterns = deny_patterns + extra_deny
+
+        kit_perms = KitToolPermissions(
+            workspace=kit_workspace,
+            mode=kit_mode,
+            confirm_callback=kit_confirm_callback,
+            extra_workspace_dirs=kit_extra,
+            bash_auto_allow_patterns=allow_patterns,
+            bash_deny_patterns=deny_patterns,
+        )
         return OpenAIClient(
             api_key=kit_key, model=model,
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",
             key_env_var="KIT_TOOLBOX_API_KEY",
+            permissions=kit_perms,
         )
     if provider == "openai":
         if backend == "cli":

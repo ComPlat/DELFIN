@@ -750,6 +750,26 @@ _AGENT_CSS = """\
 .delfin-agent-question-row .widget-checkbox label {
     font-size: 12px;
 }
+/* Image upload sits flush with textarea: same 80px height, content
+   stacked vertically (icon over label) so nothing truncates with "...".
+   Without this, FileUpload renders icon + label on one line which then
+   overflows the 90px width. */
+.delfin-agent-upload {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 4px 2px !important;
+    line-height: 1.15 !important;
+    font-size: 11px !important;
+    white-space: normal !important;
+    text-align: center !important;
+    margin: 0 !important;
+}
+.delfin-agent-upload i.fa {
+    margin: 0 0 3px 0 !important;
+    font-size: 16px;
+}
 </style>
 """
 
@@ -2008,6 +2028,51 @@ def _compute_turn_verdict(
     return "PASS"
 
 
+def _build_inline_diff(old: str, new: str, _e, soft_cap: int = 60) -> str:
+    """Render a +/- diff for a write/edit operation, always visible in chat.
+
+    The user has explicitly asked to see every code change in the
+    dashboard rather than have it tucked behind a `<details>` summary.
+    This helper renders all `-` lines first then all `+` lines (mirroring
+    `Edit`/`Write` semantics where the substring is replaced rather than
+    line-diffed). For long blocks the middle portion is folded into a
+    `<details>` so the head + tail remain visible without overwhelming
+    the chat — head + tail is what tells you "did the right thing happen
+    at the start" and "did the right thing land at the end".
+    """
+    old_lines = old.split("\n") if old else []
+    new_lines = new.split("\n") if new else []
+    diff_lines: list[str] = []
+    for ln in old_lines:
+        diff_lines.append(f'<span class="tool-diff-old">- {_e(ln)}</span>')
+    for ln in new_lines:
+        diff_lines.append(f'<span class="tool-diff-new">+ {_e(ln)}</span>')
+
+    if not diff_lines:
+        return ""
+
+    style = (
+        'margin:4px 0; padding:4px 6px; font-size:11px; line-height:1.45; '
+        'background:rgba(127,127,127,0.06); border-left:2px solid #94a3b8;'
+    )
+    if len(diff_lines) <= soft_cap:
+        return f'<pre style="{style}">{chr(10).join(diff_lines)}</pre>'
+
+    half = max(soft_cap // 2, 8)
+    head = chr(10).join(diff_lines[:half])
+    middle = chr(10).join(diff_lines[half:-half])
+    tail = chr(10).join(diff_lines[-half:])
+    omitted = len(diff_lines) - 2 * half
+    return (
+        f'<pre style="{style} border-bottom:0;">{head}</pre>'
+        f'<details style="margin:0 0 0 0;"><summary style="font-size:10px; '
+        f'color:#9ca3af; padding:2px 6px; cursor:pointer;">'
+        f'… {omitted} more lines</summary>'
+        f'<pre style="{style} margin:0;">{middle}</pre></details>'
+        f'<pre style="{style} border-top:0;">{tail}</pre>'
+    )
+
+
 def _record_turn_outcome(
     engine,
     user_task: str,
@@ -2140,6 +2205,7 @@ def create_tab(ctx):
         "_agent_calc_path": "",       # relative path within calc_dir for browsing
         "_pending_dashboard_action": None,  # {action_id, description, callback}
         "_perm_profile": "ask_all",  # permission profile: plan/ask_all/repo_free/all_free
+        "_kit_confirm_broker": None,  # KitConfirmBroker (lazy-built when KIT is active)
         "_active_gate": None,        # {type, role, title, detail}
         "_cycle_history": [],        # recent gate / handoff / retry events
         "_inspector_detail_key": "", # selected cycle inspector detail entry
@@ -2178,7 +2244,10 @@ def create_tab(ctx):
                 "broad architectural changes. Most expensive, highest confidence.",
     }
     mode_dropdown = widgets.Dropdown(
-        options=["dashboard", "solo", "research", "quick", "reviewed", "tdd", "cluster", "full"],
+        # Only solo + dashboard are production-ready; the pipeline modes
+        # (research/quick/reviewed/tdd/cluster/full) are gated until they
+        # graduate from experimental status.
+        options=["dashboard", "solo"],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -2209,8 +2278,13 @@ def create_tab(ctx):
             ("o4-mini", "o4-mini"),
             ("o3", "o3"),
         ],
+        # Mirrors the live KIT-Toolbox /models response as of 2026-05.
+        # Kept generous so a failed/empty fetch still gives users every
+        # selectable model — the live fetch overwrites this when it
+        # succeeds, so any newer additions appear automatically.
         "kit": [
             ("Azure GPT-5.1", "azure.gpt-5.1"),
+            ("Azure GPT-5.4", "azure.gpt-5.4"),
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
@@ -2219,6 +2293,11 @@ def create_tab(ctx):
             ("Azure GPT-4.1", "azure.gpt-4.1"),
             ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
             ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
+            ("KIT gpt-oss 120B", "kit.gpt-oss-120b"),
+            ("KIT gemma4 31B-it", "kit.gemma4-31b-it"),
+            ("KIT minimax m2.7 229B", "kit.minimax-m2.7-229b"),
+            ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
+            ("KIT qwen3.5 397B-A17b", "kit.qwen3.5-397b-A17b"),
         ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
@@ -2226,8 +2305,11 @@ def create_tab(ctx):
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
                        "kit": "azure.gpt-5-nano"}
 
-    # Skip patterns: models that should not appear in the dropdown
+    # Skip patterns: models that should not appear in the dropdown.
+    # Embedding models can't generate chat completions — they'd error
+    # out on the first send, so we hide them from the chat-model picker.
     _KIT_SKIP = {"standard-external", "standard-extern", "standard-local"}
+    _MODEL_ID_HIDE_SUBSTRINGS = ("embedding", "embed-")
 
     def _fetch_models(provider):
         """Fetch model list from API. Returns [(label, id), ...] or None."""
@@ -2264,6 +2346,11 @@ def create_tab(ctx):
                 mid = m.get("id", "")
                 if not mid or mid in _KIT_SKIP:
                     continue
+                # Hide embedding / re-ranker models — they can't generate
+                # chat completions and would error out at send time.
+                if any(sub in mid.lower()
+                       for sub in _MODEL_ID_HIDE_SUBSTRINGS):
+                    continue
                 label = mid.replace("azure.", "Azure ").replace("kit.", "KIT ")
                 result.append((label, mid))
             # Sort: azure/cloud first, then local, alphabetically within groups
@@ -2292,6 +2379,23 @@ def create_tab(ctx):
     _init_fetched = _fetch_models(_init_provider)
     if _init_fetched:
         _PROVIDER_MODELS[_init_provider] = _init_fetched
+    # Stash init-fetch result so we can emit a status banner once
+    # _append_system_message is wired up further down the build.
+    state["_models_init_status"] = {
+        "provider": _init_provider,
+        "live": bool(_init_fetched),
+        "count": (
+            len(_init_fetched) if _init_fetched
+            else len(_PROVIDER_MODELS[_init_provider])
+        ),
+        "key_present": (
+            bool(os.environ.get("KIT_TOOLBOX_API_KEY", ""))
+            if _init_provider == "kit"
+            else bool(os.environ.get("OPENAI_API_KEY", ""))
+            if _init_provider == "openai"
+            else True
+        ),
+    }
     _init_models = _PROVIDER_MODELS[_init_provider]
     _init_default = _PROVIDER_DEFAULTS.get(_init_provider, _init_models[0][1])
     _init_valid = {v for _, v in _init_models}
@@ -2302,6 +2406,55 @@ def create_tab(ctx):
         layout=widgets.Layout(width="170px"),
         style={"description_width": "45px"},
     )
+    model_dropdown.add_class("delfin-agent-model-dropdown")
+    # Hidden refresh-trigger button — clicked programmatically from JS
+    # when the user opens the model dropdown. Keeps the live fetch
+    # off the visible UI while still giving users a fresh list every
+    # time they want to pick a model.
+    model_refresh_btn = widgets.Button(
+        description="↻",
+        tooltip="hidden auto-refresh trigger",
+        layout=widgets.Layout(width="0px", height="0px",
+                              display="none"),
+    )
+    model_refresh_btn.add_class("delfin-agent-model-refresh")
+
+    def _on_refresh_models(_btn):
+        provider = provider_dropdown.value
+        fetched = _fetch_models(provider)
+        if fetched:
+            _PROVIDER_MODELS[provider] = fetched
+            model_dropdown.options = fetched
+            valid = {v for _, v in fetched}
+            if model_dropdown.value not in valid:
+                model_dropdown.value = fetched[0][1]
+            model_refresh_btn.tooltip = (
+                f"Refresh model list. Current: LIVE "
+                f"({len(fetched)} models)"
+            )
+            _append_system_message(
+                f"↻ {len(fetched)} models loaded live from {provider}."
+            )
+        else:
+            hint = ""
+            if provider == "kit" and not os.environ.get(
+                "KIT_TOOLBOX_API_KEY", ""
+            ):
+                hint = (
+                    " → KIT_TOOLBOX_API_KEY is not set in the dashboard "
+                    "process. Set it before startup or via "
+                    "`os.environ['KIT_TOOLBOX_API_KEY']='…'` in a "
+                    "notebook cell and press ↻ again."
+                )
+            elif provider == "openai" and not os.environ.get(
+                "OPENAI_API_KEY", ""
+            ):
+                hint = " → OPENAI_API_KEY is not set."
+            _append_system_message(
+                f"↻ Live fetch failed, fallback list active.{hint}"
+            )
+
+    model_refresh_btn.on_click(_on_refresh_models)
     # Effort selector (only affects API backend; CLI manages thinking internally)
     effort_dropdown = widgets.Dropdown(
         options=[
@@ -2430,9 +2583,11 @@ def create_tab(ctx):
 
     controls_row = widgets.VBox([
         widgets.HBox(
-            [mode_dropdown, provider_dropdown, model_dropdown, effort_dropdown, perm_dropdown,
+            [mode_dropdown, provider_dropdown, model_dropdown,
+             effort_dropdown, perm_dropdown,
              new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
-             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html],
+             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
+             model_refresh_btn],
             layout=widgets.Layout(flex_flow="row wrap"),
         ),
         mode_desc_html,
@@ -2646,6 +2801,248 @@ def create_tab(ctx):
         layout=widgets.Layout(display="none", margin="0 0 6px 0"),
     )
 
+
+    # KIT-Toolbox confirmation broker (lazy — only built when KIT becomes
+    # the active provider). The container is always present; the broker
+    # widget is only mounted on demand so non-KIT users see nothing.
+    kit_confirm_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display="none", margin="0 0 8px 0"),
+    )
+
+    # KIT workspace-roots status: read-only line that shows where the agent
+    # can write/edit/bash. Adding new roots happens through the chat — the
+    # agent calls remember_permission(kind='extra_dir', value=...) and the
+    # Self-Modification Guard panel takes the user's confirmation.
+    kit_dirs_status = widgets.HTML(value="")
+
+    def _refresh_kit_dirs_status():
+        eng = state.get("engine")
+        if eng is None or not hasattr(eng, "list_kit_workspace_dirs"):
+            kit_dirs_status.value = ""
+            return
+        roots = eng.list_kit_workspace_dirs()
+        if not roots:
+            kit_dirs_status.value = ""
+            return
+
+        snapshot: dict = {}
+        if hasattr(eng, "kit_settings_snapshot"):
+            try:
+                snapshot = eng.kit_settings_snapshot() or {}
+            except Exception:
+                snapshot = {}
+        allow_count = len(snapshot.get("allow_patterns", []) or [])
+        deny_count = len(snapshot.get("deny_patterns", []) or [])
+
+        # One-line summary: roots inline, comma-separated, repo first.
+        roots_html = " · ".join(
+            f"<code>{r}</code>" + (" <small>(repo)</small>" if i == 0 else "")
+            for i, r in enumerate(roots)
+        )
+        kit_dirs_status.value = (
+            "<small><b>Write access:</b> " + roots_html
+            + f" &middot; allow-patterns: {allow_count}"
+            + f" &middot; deny-patterns: {deny_count}"
+            + " &middot; <i>outside: read-only with confirm</i>"
+            + "<br><i>Tip: say <code>'also work in /path'</code> in chat "
+            + "&rarr; agent persists it after one confirm click.</i></small>"
+        )
+
+    # KIT permission-mode picker (Claude-Code-style chip + cycle button).
+    # Top-of-chat chip = current mode + verbose label.
+    # Quick button next to Send = compact cycle button.
+    _KIT_MODE_ORDER = ("plan", "default", "acceptEdits", "bypassPermissions")
+    _KIT_MODE_VISUAL = {
+        "plan":              ("Plan", "#5f6368", "#f1f3f4",
+                              "Read-only · Agent schlägt vor, führt nichts aus"),
+        "default":           ("Default", "#1a73e8", "#e8f0fe",
+                              "Schreiben/Bash bestätigt jeden Schritt"),
+        "acceptEdits":       ("Accept Edits", "#e8710a", "#fef7e0",
+                              "Schreiben/Edit auto · Bash bestätigt"),
+        "bypassPermissions": ("Bypass", "#c5221f", "#fce8e6",
+                              "Alles auto · Sandbox + Denylist gelten weiter"),
+    }
+
+    kit_mode_chip = widgets.Button(
+        description="Plan",
+        tooltip="Click cycelt: plan → default → acceptEdits → bypass",
+        layout=widgets.Layout(width="auto", height="32px",
+                              margin="0 6px 0 0", display="none"),
+    )
+    kit_mode_label = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    kit_mode_row = widgets.HBox(
+        [widgets.HTML("<small><b>KIT-Mode:</b></small>"),
+         kit_mode_chip, kit_mode_label],
+        layout=widgets.Layout(
+            align_items="center",
+            margin="2px 0 4px 0",
+            display="none",
+        ),
+    )
+
+    kit_mode_quick_btn = widgets.Button(
+        description="Plan",
+        tooltip="Cycle KIT mode (next: default)",
+        layout=widgets.Layout(width="80px", height="80px",
+                              margin="0 0 0 4px", display="none"),
+    )
+
+    def _refresh_kit_mode_chip():
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        if perms is None:
+            for w in (kit_mode_chip, kit_mode_label, kit_mode_quick_btn):
+                w.layout.display = "none"
+            kit_mode_row.layout.display = "none"
+            _refresh_plan_accept_btn()
+            return
+        mode = perms.mode if perms.mode in _KIT_MODE_VISUAL else "default"
+        label, fg, bg, tip = _KIT_MODE_VISUAL[mode]
+        # Top chip
+        kit_mode_chip.description = label
+        kit_mode_chip.tooltip = tip
+        kit_mode_chip.style.button_color = bg
+        kit_mode_label.value = (
+            f"<small style='color:{fg}; margin-left:6px'>{tip}</small>"
+        )
+        kit_mode_chip.layout.display = ""
+        kit_mode_label.layout.display = ""
+        kit_mode_row.layout.display = "flex"
+        # Quick button next to Send
+        idx = _KIT_MODE_ORDER.index(mode)
+        next_mode = _KIT_MODE_ORDER[(idx + 1) % len(_KIT_MODE_ORDER)]
+        kit_mode_quick_btn.description = label
+        kit_mode_quick_btn.tooltip = (
+            f"KIT-Mode: {label}\nClick cycelt → {next_mode}"
+        )
+        kit_mode_quick_btn.style.button_color = bg
+        kit_mode_quick_btn.layout.display = ""
+        _refresh_plan_accept_btn()
+
+    # Bidirectional mapping between the KIT-Mode chip (4 modes) and the
+    # header Perms dropdown (4 profiles). They mean the same thing for KIT;
+    # syncing them avoids the "they disagreed and the engine took the
+    # dropdown value on recreation" surprise.
+    _CHIP_TO_PROFILE = {
+        "plan":              "plan",
+        "default":           "ask_all",
+        "acceptEdits":       "repo_free",
+        "bypassPermissions": "all_free",
+    }
+    _PROFILE_TO_CHIP = {v: k for k, v in _CHIP_TO_PROFILE.items()}
+
+    def _cycle_kit_mode(_btn=None):
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        if perms is None:
+            return
+        cur = perms.mode if perms.mode in _KIT_MODE_ORDER else "default"
+        nxt = _KIT_MODE_ORDER[(_KIT_MODE_ORDER.index(cur) + 1) % len(_KIT_MODE_ORDER)]
+        ok = bool(eng.set_kit_permission_mode(nxt))
+        if ok:
+            _append_system_message(f"KIT-Mode → {nxt}")
+            # Sync the header Perms dropdown so a future engine-recreate
+            # starts in the same mode. Suppress the dropdown's verbose
+            # "takes effect on next message" notice since the chip already
+            # took effect live.
+            target_profile = _CHIP_TO_PROFILE.get(nxt)
+            if target_profile and perm_dropdown.value != target_profile:
+                state["_chip_syncing_perm"] = True
+                try:
+                    perm_dropdown.value = target_profile
+                finally:
+                    state["_chip_syncing_perm"] = False
+        _refresh_kit_mode_chip()
+
+    kit_mode_chip.on_click(_cycle_kit_mode)
+    kit_mode_quick_btn.on_click(_cycle_kit_mode)
+
+    # Plan-mode accept button: shown only after agent answered while in plan mode.
+    plan_accept_btn = widgets.Button(
+        description="Accept plan & execute",
+        button_style="success",
+        tooltip=("Switches to 'acceptEdits' and prompts the agent to "
+                 "execute the proposed plan now."),
+        layout=widgets.Layout(display="none", margin="4px 0"),
+    )
+
+    def _refresh_plan_accept_btn():
+        eng = state.get("engine")
+        perms = getattr(eng, "kit_permissions", None) if eng is not None else None
+        # Show when we're in plan mode AND the agent has produced at least
+        # one assistant message in this session.
+        has_assistant_turn = bool(state.get("_kit_plan_has_response"))
+        if perms is not None and perms.mode == "plan" and has_assistant_turn:
+            plan_accept_btn.layout.display = ""
+        else:
+            plan_accept_btn.layout.display = "none"
+
+    def _on_plan_accept(_btn):
+        eng = state.get("engine")
+        if eng is None or not hasattr(eng, "set_kit_permission_mode"):
+            return
+        if not eng.set_kit_permission_mode("acceptEdits"):
+            _append_system_message("Mode switch to acceptEdits failed.")
+            return
+        _append_system_message("Mode → acceptEdits · sending plan-execute command …")
+        state["_kit_plan_has_response"] = False
+        _refresh_kit_mode_chip()
+        # Inject a follow-up user message that triggers execution.
+        try:
+            input_textarea.value = (
+                "Please execute the proposed plan now. "
+                "Use the KIT-Toolbox tools (write_file / edit_file / bash) "
+                "and briefly report after each step what you did."
+            )
+            _on_send(None)
+        except Exception as exc:
+            _append_system_message(f"Auto-send failed: {exc}")
+
+    plan_accept_btn.on_click(_on_plan_accept)
+
+    def _ensure_kit_broker():
+        """Build/return the KitConfirmBroker bound to this tab."""
+        if state.get("_kit_confirm_broker") is None:
+            try:
+                from delfin.agent.kit_confirm import KitConfirmBroker
+                broker = KitConfirmBroker()
+                # Wire the "Erlauben + Dauerhaft" button to the engine's
+                # persist hooks. Bound lazily so it always picks up the
+                # currently-active engine (provider may switch at runtime).
+                # ``kind`` is 'allow' / 'deny' (bash-pattern persistence)
+                # or 'extra_dir' (workspace-dir persistence — used when
+                # the user permanently grants access to a directory the
+                # agent tried to read).
+                def _persist(kind: str, value: str) -> tuple[bool, str]:
+                    eng = state.get("engine")
+                    if eng is None:
+                        return False, "KIT-Engine nicht aktiv"
+                    if kind in ("allow", "deny"):
+                        if not hasattr(eng, "persist_kit_pattern"):
+                            return False, "persist_kit_pattern fehlt"
+                        return eng.persist_kit_pattern(value, kind=kind)
+                    if kind == "extra_dir":
+                        if not hasattr(eng, "add_kit_workspace_dir"):
+                            return False, "add_kit_workspace_dir fehlt"
+                        return eng.add_kit_workspace_dir(value, persist=True)
+                    return False, f"unbekannter persist-kind: {kind}"
+                broker.set_persist_callback(_persist)
+                panel = broker.build_widget()
+                kit_confirm_container.children = (panel,)
+                state["_kit_confirm_broker"] = broker
+            except Exception as exc:
+                _append_system_message(f"KIT confirm broker init failed: {exc}")
+                state["_kit_confirm_broker"] = None
+        _refresh_kit_dirs_status()
+        return state.get("_kit_confirm_broker")
+
+    def _show_kit_confirm_panel(visible: bool) -> None:
+        kit_confirm_container.layout.display = "flex" if visible else "none"
+        if visible:
+            _refresh_kit_dirs_status()
+        _refresh_kit_mode_chip()
+
     # Chat display
     chat_html = widgets.HTML(
         value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
@@ -2730,10 +3127,18 @@ def create_tab(ctx):
     palette_search.observe(_on_palette_search, names="value")
     palette_select.observe(_on_palette_select, names="value")
 
-    # Input area
+    # Input area — textarea stretches to take all remaining width;
+    # send + mode buttons keep fixed footprint at full input height
+    # so the row looks like one coherent strip.
     input_textarea = widgets.Textarea(
-        placeholder="Message the agent... (Enter = send, Shift+Enter = newline)",
-        layout=widgets.Layout(width="100%", height="80px"),
+        placeholder=(
+            "Message the agent... (Enter = send, Shift+Enter = newline)\n"
+            "KIT tip: say 'also work in /path' to grant write access — "
+            "the agent persists it after one confirm click."
+        ),
+        layout=widgets.Layout(
+            flex="1 1 auto", width="auto", height="80px",
+        ),
     )
     input_textarea.add_class("delfin-agent-input")
     send_btn = widgets.Button(
@@ -2741,9 +3146,15 @@ def create_tab(ctx):
         button_style="primary",
         layout=widgets.Layout(width="80px", height="80px"),
     )
+    # image_upload is created later (line ~2240) but inserted here so
+    # the whole row [📎 | textarea | Send | quick-mode] is one strip.
     input_row = widgets.HBox(
-        [input_textarea, send_btn],
-        layout=widgets.Layout(margin="6px 0 0 0"),
+        [input_textarea, send_btn, kit_mode_quick_btn],
+        layout=widgets.Layout(
+            margin="0 0 0 4px",
+            flex="1 1 auto", width="auto",
+            align_items="flex-start",
+        ),
     )
     input_row.add_class("delfin-agent-send-row")
 
@@ -3023,13 +3434,358 @@ def create_tab(ctx):
 
         return reg
 
+    # -- Phase 5 UI hookups -----------------------------------------------
+    # Live task ticker — reflects TaskStore state, refreshed on tool result.
+    task_ticker_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 4px 0"),
+    )
+
+    def _refresh_task_ticker():
+        try:
+            from delfin.agent.task_ticker import render_html as _tt_render
+            eng = state.get("engine")
+            ws = None
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+            if ws is None:
+                ws = ctx.repo_dir or Path.cwd()
+            task_ticker_html.value = _tt_render(
+                ws, session_id=str(state.get("active_session_id", "") or "")
+            )
+        except Exception:
+            task_ticker_html.value = ""
+
+    # Status line footer — token / mode / branch summary.
+    status_line_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="4px 0 0 0"),
+    )
+
+    def _refresh_status_line():
+        try:
+            from delfin.agent.status_line import (
+                StatusContext as _SC, render_status_line as _r_status,
+            )
+            eng = state.get("engine")
+            ws = None
+            mode = "default"
+            tokens = 0
+            cost = 0.0
+            model = ""
+            if eng is not None:
+                kp = getattr(eng, "kit_permissions", None)
+                if kp is not None:
+                    ws = kp.workspace
+                    mode = kp.mode
+                tokens = (eng.token_usage.get("input", 0)
+                          + eng.token_usage.get("output", 0))
+                cost = eng.cost_usd
+                model = getattr(eng.client, "model", "")
+            ctx_obj = _SC(
+                workspace=ws, mode=mode, model=model,
+                tokens=tokens, cost_usd=cost,
+            )
+            line = _r_status(ctx_obj)
+            status_line_html.value = (
+                f"<div style='font-family:monospace;font-size:11px;"
+                f"color:#777;border-top:1px solid #333;padding:3px 6px;'>"
+                f"{line}</div>" if line else ""
+            )
+        except Exception:
+            status_line_html.value = ""
+
+    # AskUserQuestion modal — shown only while a tool call is pending.
+    ask_user_label = widgets.HTML(value="")
+    ask_user_buttons = widgets.HBox([],
+        layout=widgets.Layout(flex_flow="row wrap", gap="6px"))
+    ask_user_box = widgets.VBox(
+        [ask_user_label, ask_user_buttons],
+        layout=widgets.Layout(
+            display="none",
+            border="2px solid #0a84ff",
+            padding="8px",
+            margin="6px 0",
+            background_color="#0a84ff15",
+        ),
+    )
+    state["_ask_user_event"] = None
+    state["_ask_user_result"] = None
+
+    def _show_ask_user_modal(args: dict) -> dict:
+        """Build buttons for each option and block until the user clicks."""
+        import threading as _th
+        question = args.get("question", "")
+        header = args.get("header", "")
+        options = args.get("options", []) or []
+        multi = bool(args.get("multiSelect", False))
+        ev = _th.Event()
+        result = {"answers": []}
+        state["_ask_user_event"] = ev
+        state["_ask_user_result"] = result
+        from html import escape as _esc
+        header_html = (f"<span style='background:#0a84ff;color:white;"
+                       f"padding:2px 6px;border-radius:3px;font-size:11px;"
+                       f"margin-right:6px;'>{_esc(header)}</span>"
+                       if header else "")
+        ask_user_label.value = (
+            f"<div style='font-size:14px;'>{header_html}"
+            f"<b>{_esc(question)}</b></div>"
+        )
+        chosen: set[str] = set()
+        button_widgets: list = []
+
+        def _make_handler(label: str, btn):
+            def _on_click(_b):
+                if multi:
+                    if label in chosen:
+                        chosen.discard(label)
+                        btn.button_style = ""
+                    else:
+                        chosen.add(label)
+                        btn.button_style = "primary"
+                else:
+                    chosen.clear()
+                    chosen.add(label)
+                    result["answers"] = [label]
+                    ev.set()
+            return _on_click
+
+        for opt in options:
+            label = opt.get("label", "")
+            desc = opt.get("description", "")
+            btn = widgets.Button(
+                description=label[:60],
+                tooltip=desc[:200],
+                layout=widgets.Layout(width="auto"),
+            )
+            btn.on_click(_make_handler(label, btn))
+            button_widgets.append(btn)
+        if multi:
+            confirm_btn = widgets.Button(
+                description="OK", button_style="success",
+                layout=widgets.Layout(width="60px"),
+            )
+            def _on_confirm(_b):
+                result["answers"] = list(chosen)
+                ev.set()
+            confirm_btn.on_click(_on_confirm)
+            button_widgets.append(confirm_btn)
+        ask_user_buttons.children = tuple(button_widgets)
+        ask_user_box.layout.display = ""
+        # Block up to 5 minutes
+        ev.wait(timeout=300)
+        ask_user_box.layout.display = "none"
+        ask_user_label.value = ""
+        ask_user_buttons.children = ()
+        state["_ask_user_event"] = None
+        state["_ask_user_result"] = None
+        if not result["answers"]:
+            return {"answers": [], "timed_out": True}
+        return result
+
+    # ExitPlanMode approval — uses existing plan_accept_btn but flips perms
+    # via the structured callback so the tool result reflects the choice.
+    state["_plan_approval_event"] = None
+    state["_plan_approval_result"] = None
+
+    def _show_plan_approval(plan: str) -> dict:
+        """Render the plan as a system message, wait for user click."""
+        import threading as _th
+        ev = _th.Event()
+        result: dict = {"approved": False, "new_mode": "default"}
+        state["_plan_approval_event"] = ev
+        state["_plan_approval_result"] = result
+        # Surface the plan so the user sees what they're approving.
+        _append_system_message(
+            "📋 **Plan zur Freigabe** (klicke 'Plan akzeptieren' "
+            "oder wechsle Mode-Chip):\n\n" + plan
+        )
+        # Reuse existing plan_accept_btn machinery — the callback below
+        # observes state changes from _on_plan_accept.
+        state["_kit_plan_has_response"] = True
+        _refresh_plan_accept_btn()
+        ev.wait(timeout=600)   # 10 min
+        return result
+
+    # Hook into the existing _on_plan_accept: register a second on_click
+    # handler that signals any pending exit_plan_mode tool call. The
+    # original handler (registered earlier) still does its UI/mode work
+    # — both fire on click.
+    def _on_plan_accept_phase5(_btn):
+        ev = state.get("_plan_approval_event")
+        result = state.get("_plan_approval_result")
+        if ev is not None and result is not None:
+            result["approved"] = True
+            result["new_mode"] = "acceptEdits"
+            ev.set()
+
+    plan_accept_btn.on_click(_on_plan_accept_phase5)
+
+    # File upload widget alongside chat input. Matches the textarea
+    # height (80px) so the input row looks like one coherent strip.
+    # Accepts any file type; uploads land in <workspace>/.delfin/uploads/
+    # and the agent picks them up via read_file / notebook_read.
+    image_upload = widgets.FileUpload(
+        multiple=True,
+        description="📎 Files",
+        layout=widgets.Layout(width="90px", height="80px"),
+    )
+    image_upload.add_class("delfin-agent-upload")
+    state["_pending_images"] = []
+
+    # Hard size cap per file to keep dashboard memory bounded. 32 MB is
+    # generous for code, configs, PDFs, and small datasets but blocks
+    # accidental drops of huge archives.
+    _UPLOAD_SIZE_CAP = 32 * 1024 * 1024
+
+    def _on_image_upload(change):
+        """Save uploaded files to <workspace>/.delfin/uploads/ for the agent.
+
+        Drops the file under the workspace and lets the agent read it via
+        read_file / notebook_read / find_definition / etc. The agent
+        learns about the upload via a system message inserted on the
+        next send.
+        """
+        files = image_upload.value
+        eng = state.get("engine")
+        ws = None
+        if eng is not None:
+            kp = getattr(eng, "kit_permissions", None)
+            if kp is not None:
+                ws = kp.workspace
+        if ws is None:
+            ws = ctx.repo_dir or Path.cwd()
+        upload_dir = Path(ws) / ".delfin" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved: list[Path] = []
+        items = (files.items() if isinstance(files, dict)
+                 else [(f["name"], f) for f in files])
+        for fname, fmeta in items:
+            content = fmeta.get("content") or fmeta.get("data")
+            if isinstance(content, memoryview):
+                content = bytes(content)
+            if not content:
+                _append_system_message(f"File empty, skipped: {fname}")
+                continue
+            if len(content) > _UPLOAD_SIZE_CAP:
+                _append_system_message(
+                    f"File too large (>{_UPLOAD_SIZE_CAP // (1024*1024)} MB): "
+                    f"{fname}"
+                )
+                continue
+            try:
+                target = upload_dir / Path(fname).name
+                target.write_bytes(content)
+                saved.append(target)
+            except OSError as exc:
+                _append_system_message(f"Save failed: {exc}")
+        state["_pending_images"] = saved
+        if saved:
+            paths = "\n".join(f"  - {p}" for p in saved)
+            _append_system_message(
+                f"📎 {len(saved)} file(s) saved — will be referenced in "
+                f"the next message:\n{paths}"
+            )
+
+    image_upload.observe(_on_image_upload, names="value")
+
+    # Resume-Last-Session button.
+    resume_last_btn = widgets.Button(
+        description="↩ Last session",
+        tooltip="Load the most recent session from ~/.delfin/agent_sessions",
+        layout=widgets.Layout(width="160px"),
+    )
+
+    def _on_resume_last(_btn):
+        try:
+            from delfin.agent.session_store import resume_latest
+            data = resume_latest(max_age_s=7 * 86_400)
+        except Exception as exc:
+            _append_system_message(f"Resume failed: {exc}")
+            return
+        if data is None:
+            _append_system_message(
+                "No recent session found (older than 7 days or empty)."
+            )
+            return
+        sid = str(data.get("session_id", ""))
+        if not sid:
+            _append_system_message("Session file is corrupt (no session_id).")
+            return
+        try:
+            _load_saved_session(sid)
+        except Exception as exc:
+            _append_system_message(f"Session load failed: {exc}")
+
+    resume_last_btn.on_click(_on_resume_last)
+
+    # Phase-5 wiring helper: bind callbacks on the engine's permissions
+    # object every time _ensure_engine produces a new engine.
+    def _wire_phase5_callbacks(engine):
+        if engine is None:
+            return
+        kp = getattr(engine, "kit_permissions", None)
+        if kp is None:
+            return
+        try:
+            _ensure_task_session_id(engine, create=False)
+            kp.ask_user_callback = _show_ask_user_modal
+            kp.plan_approval_callback = _show_plan_approval
+        except Exception:
+            pass
+        # Scheduler fire-callback: when a wake-up triggers, drop the prompt
+        # into the input box and send. The thread runs in the scheduler's
+        # background, so we marshal back to the UI thread via input_textarea.
+        try:
+            from delfin.agent import scheduler as _sched_mod
+            sch = _sched_mod.get_scheduler()
+
+            def _on_wake(entry):
+                try:
+                    input_textarea.value = (
+                        f"[scheduled] {entry.reason or entry.prompt}\n\n"
+                        f"{entry.prompt}"
+                    )
+                    _on_send(None)
+                except Exception:
+                    pass
+
+            sch.set_fire_callback(_on_wake)
+        except Exception:
+            pass
+        _refresh_task_ticker()
+        _refresh_status_line()
+
+    state["_wire_phase5_callbacks"] = _wire_phase5_callbacks
+
     # -- layout assembly ---------------------------------------------------
+    # Augment the existing controls row with the resume button.
+    try:
+        controls_row.children = tuple(controls_row.children) + (resume_last_btn,)
+    except Exception:
+        pass
+
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         todo_pane_html, subagent_pane_html, chat_html, working_html, queue_html,
+         kit_mode_row, kit_dirs_status, kit_confirm_container,
+         task_ticker_html,
+         todo_pane_html, subagent_pane_html,
+         chat_html,
+         plan_accept_btn, ask_user_box,
+         working_html, queue_html,
          approval_row, action_confirm_row, question_row,
-         palette_row, palette_select, input_row],
+         palette_row, palette_select,
+         widgets.HBox(
+             [image_upload, input_row],
+             layout=widgets.Layout(
+                 width="100%",
+                 align_items="flex-start",
+                 margin="6px 0 0 0",
+             ),
+         ),
+         status_line_html],
     )
 
     if not _yaml_ok:
@@ -3081,7 +3837,21 @@ def create_tab(ctx):
     def _auto_save_session():
         """Save the current session state to disk."""
         engine = state["engine"]
-        if not engine or not engine.session_id:
+        if not engine:
+            return
+        # The Claude CLI populates engine.session_id from its stream events,
+        # but the OpenAI / KIT-Toolbox path emits no such event so the field
+        # stays empty and the session would silently never persist. Mint a
+        # UUID ourselves so auto-save works for every provider.
+        if not engine.session_id:
+            state_sid = str(state.get("active_session_id", "") or "").strip()
+            if state_sid:
+                engine.session_id = state_sid
+            else:
+                import uuid as _uuid
+                engine.session_id = str(_uuid.uuid4())
+        # Skip if there's nothing to save yet (no chat messages).
+        if not state.get("chat_messages"):
             return
         try:
             from delfin.agent.session_store import save_session
@@ -3099,6 +3869,12 @@ def create_tab(ctx):
                 cost_usd=estate["cost_usd"],
             )
             state["active_session_id"] = engine.session_id
+            try:
+                kp = getattr(engine, "kit_permissions", None)
+                if kp is not None:
+                    kp.task_session_id = engine.session_id
+            except Exception:
+                pass
             _refresh_session_dropdown()
         except Exception:
             pass  # non-critical — don't break the chat
@@ -3141,8 +3917,15 @@ def create_tab(ctx):
         state["_cycle_history"] = data.get("cycle_history", [])
         state["_mode_manual_override"] = True
         state["active_session_id"] = session_id
+        try:
+            kp = getattr(engine, "kit_permissions", None)
+            if kp is not None:
+                kp.task_session_id = session_id
+        except Exception:
+            pass
         _set_active_gate()
         _refresh_chat_html()
+        _refresh_task_ticker()
         _update_status()
         _update_button_states()
 
@@ -3166,6 +3949,39 @@ def create_tab(ctx):
             mode_dropdown.value = new_mode
         finally:
             state["_mode_change_internal"] = False
+
+    def _ensure_task_session_id(engine=None, *, create: bool = False) -> str:
+        """Return/sync the current task session id for dashboard tasks."""
+        sid = str(state.get("active_session_id", "") or "").strip()
+        if not sid and engine is not None:
+            sid = str(getattr(engine, "session_id", "") or "").strip()
+            if sid:
+                state["active_session_id"] = sid
+        if not sid and create:
+            import uuid as _uuid
+            sid = str(_uuid.uuid4())
+            state["active_session_id"] = sid
+        try:
+            kp = getattr(engine, "kit_permissions", None)
+            if kp is not None:
+                kp.task_session_id = sid
+        except Exception:
+            pass
+        return sid
+
+    def _dropdown_values(options) -> list[str]:
+        """Normalize ipywidgets dropdown options to a list of values.
+
+        ipywidgets accepts either plain strings like ["dashboard", "solo"]
+        or (label, value) tuples. Slash-command handlers must support both.
+        """
+        vals: list[str] = []
+        for opt in options or []:
+            if isinstance(opt, (tuple, list)) and len(opt) >= 2:
+                vals.append(str(opt[1]))
+            else:
+                vals.append(str(opt))
+        return vals
 
     def _resolve_backend():
         """Determine which backend to use: cli or api."""
@@ -3262,6 +4078,17 @@ def create_tab(ctx):
                     "Bash(python -m py_compile*)", "Bash(python3 -m py_compile*)",
                 ]
 
+            # KIT-Toolbox: build/refresh the confirmation broker BEFORE the
+            # engine, so its callback is wired in at construction time. Other
+            # providers leave the panel hidden.
+            _kit_callback = None
+            if provider == "kit":
+                broker = _ensure_kit_broker()
+                _kit_callback = broker.callback if broker is not None else None
+                _show_kit_confirm_panel(True)
+            else:
+                _show_kit_confirm_panel(False)
+
             engine = AgentEngine(
                 repo_dir=repo_dir,
                 backend=backend,
@@ -3275,6 +4102,7 @@ def create_tab(ctx):
                 extra_dirs=_extra_dirs,
                 agent_workspace_dir=_ws_dir,
                 effort=str(effort_dropdown.value or ""),
+                kit_confirm_callback=_kit_callback,
             )
 
             # Configure calc search directories for OpenAI function calling
@@ -3290,8 +4118,24 @@ def create_tab(ctx):
             except Exception:
                 pass
 
+            # Defense in depth: if for any reason the callback wasn't bound
+            # at construction (e.g. broker built later), bind at runtime.
+            if provider == "kit" and _kit_callback is not None:
+                try:
+                    engine.set_kit_confirm_callback(_kit_callback)
+                except Exception:
+                    pass
+
             state["engine"] = engine
             ctx.agent_engine = engine
+            # Phase 5 wiring: bind ask_user / plan-approval / scheduler
+            # callbacks now that the engine + perms exist.
+            try:
+                _wire_p5 = state.get("_wire_phase5_callbacks")
+                if _wire_p5 is not None:
+                    _wire_p5(engine)
+            except Exception:
+                pass
             return engine
         except Exception as exc:
             _append_system_message(f"Engine error: {exc}")
@@ -3994,6 +4838,15 @@ def create_tab(ctx):
                  "role_label": role_label, "_streaming": not finalize}
             )
         _refresh_chat_html(streaming=not finalize)
+        if finalize and content.strip():
+            # Plan-mode "Akzeptieren"-Button erscheint, sobald der Agent eine
+            # Plan-Antwort abgeschlossen hat. Wir merken uns nur den letzten
+            # Status — beim Wechsel auf acceptEdits zurücksetzen.
+            state["_kit_plan_has_response"] = True
+            try:
+                _refresh_plan_accept_btn()
+            except Exception:
+                pass
 
     # HTML cache: stores rendered HTML for messages that haven't changed.
     # During streaming, only the last (assistant) message is re-rendered.
@@ -4177,6 +5030,11 @@ def create_tab(ctx):
                 active_gate_text=active_gate.get("title", ""),
             )
         _update_cycle_inspector()
+        # Phase 5e: status-line footer mirrors the same engine snapshot.
+        try:
+            _refresh_status_line()
+        except Exception:
+            pass
         _update_inspector_actions()
         _update_inspector_detail()
 
@@ -4291,7 +5149,7 @@ def create_tab(ctx):
         if cmd.startswith("/skill "):
             try:
                 from delfin.agent.skills import (
-                    find_skill, format_skill_message, discover_skills,
+                    get_skill, render_skill_invocation, discover_skills,
                 )
             except Exception as exc:  # pragma: no cover
                 _append_system_message(f"Skill system unavailable: {exc}")
@@ -4301,18 +5159,18 @@ def create_tab(ctx):
                 names = [s.name for s in discover_skills()]
                 _append_system_message(
                     "Available skills:\n  " + "\n  ".join(names) if names
-                    else "No skills installed in delfin/agent/pack/skills/."
+                    else "No skills installed in ~/.delfin/skills/."
                 )
                 return True
-            skill = find_skill(name)
+            skill = get_skill(name)
             if skill is None:
                 _append_system_message(f"Unknown skill '{name}'.")
                 return True
             # Inline-expand: load the skill body into the input so the user
             # can review / edit before sending.
-            input_textarea.value = format_skill_message(skill)
+            input_textarea.value = render_skill_invocation(skill)
             _append_system_message(
-                f"Skill '{skill.title}' loaded into the input. "
+                f"Skill '{skill.name}' loaded into the input. "
                 "Review and press Send to run it."
             )
             return True
@@ -4365,7 +5223,8 @@ def create_tab(ctx):
                 "Calculations & analysis:\n"
                 "  /calc ls [path]  — List calc directories/files\n"
                 "  /calc cd <path>  — Navigate calc folder (syncs browser)\n"
-                "  /calc select <f> — Select file in browser (opens options dropdown)\n"
+                "  /calc select <f> — Open/select file in browser preview\n"
+                "  /calc open <f> — Alias for /calc select\n"
                 "  /calc read <file> — Read a calc file\n"
                 "  /calc tail <file> — Read last 8KB of output\n"
                 "  /calc info <dir> — Show folder summary & status\n"
@@ -4373,6 +5232,7 @@ def create_tab(ctx):
                 "  /calc search <p> — Search files by glob pattern\n"
                 "  /analyze <dir>   — Full analysis (energy+convergence+errors)\n"
                 "  /analyze energy <dir> — Extract energies (Gibbs/ZPE/electronic)\n"
+                "  /analyze rank <type> [limit] [root] — Rank energies across folders\n"
                 "  /analyze convergence <dir> — Check SCF convergence\n"
                 "  /analyze errors <dir> — Scan for ORCA errors\n"
                 "  /analyze status  — Overview of all calc folders\n"
@@ -4702,7 +5562,9 @@ def create_tab(ctx):
         # /mode <name>
         if cmd.startswith("/mode "):
             name = cmd[6:].strip()
-            opts = [v for _, v in mode_dropdown.options] if hasattr(mode_dropdown, 'options') else []
+            opts = _dropdown_values(
+                mode_dropdown.options if hasattr(mode_dropdown, "options") else []
+            )
             if not opts:
                 opts = [mode_dropdown.value]
             if name in opts:
@@ -4867,17 +5729,41 @@ def create_tab(ctx):
                 "jobs": "Job Status",
                 "orca": "ORCA Builder",
                 "calc": "Calculations",
+                # Common aliases — accept English plural/full forms and
+                # German equivalents so the agent doesn't have to guess.
+                "calcs": "Calculations",
+                "calculation": "Calculations",
+                "calculations": "Calculations",
+                "berechnung": "Calculations",
+                "berechnungen": "Calculations",
                 "archive": "Archive",
+                "archiv": "Archive",
                 "literature": "Literature",
+                "literatur": "Literature",
                 "agent": "Agent",
                 "settings": "Settings",
+                "einstellungen": "Settings",
+                "job": "Job Status",
+                "joblist": "Job Status",
+                "submit_job": "Submit Job",
+                "submitjob": "Submit Job",
+                "orca_builder": "ORCA Builder",
+                "orcabuilder": "ORCA Builder",
             }
+            # Canonical short keys to surface in error messages — keep the
+            # alias map fat but the help short.
+            _CANONICAL_TAB_KEYS = (
+                "submit", "recalc", "jobs", "orca", "calc",
+                "archive", "literature", "agent", "settings",
+            )
             title = _tab_map.get(tab_name.lower(), tab_name)
             if ctx.select_tab(title):
                 _append_system_message(f"Switched to tab: {title}")
             else:
-                avail = ", ".join(_tab_map.keys())
-                _append_system_message(f"Tab not found: {tab_name}\nAvailable: {avail}")
+                avail = ", ".join(_CANONICAL_TAB_KEYS)
+                _append_system_message(
+                    f"Tab not found: {tab_name}\nAvailable: {avail}"
+                )
             return True
 
         # /ui <widget> <property> [value] — modify dashboard widgets (session-only)
@@ -5123,14 +6009,39 @@ def create_tab(ctx):
         if cmd.startswith("/control set "):
             content = text[len("/control set "):].strip()
             cw = ctx.submit_refs.get("control_widget")
-            if cw:
-                cw.value = content
-                _append_system_message(
-                    f"CONTROL updated ({len(content)} chars). "
-                    "Switch to Submit tab to review."
-                )
-            else:
+            if cw is None:
                 _append_system_message("Submit tab not available.")
+                return True
+            old_value = (cw.value or "").strip()
+            # Guard: if the agent passed a single 'key=value' line while the
+            # existing CONTROL is multi-line, this is almost always a mis-call
+            # of '/control set' instead of '/control key K V'. Refuse and
+            # explain so the agent learns the difference instead of silently
+            # wiping the file.
+            looks_single_kv = (
+                "\n" not in content
+                and "=" in content
+                and len(content) < 80
+            )
+            existing_is_multiline = old_value.count("\n") >= 1
+            if looks_single_kv and existing_is_multiline:
+                hint_key = content.split("=", 1)[0].strip()
+                hint_val = content.split("=", 1)[1].strip()
+                _append_system_message(
+                    f"`/control set` was called with a single "
+                    f"`{hint_key}={hint_val}` and would have overwritten "
+                    f"the existing multi-line CONTROL. Refusing — use "
+                    f"`/control key {hint_key} {hint_val}` to change one "
+                    "keyword without clobbering the rest. If you really "
+                    "want to replace everything, send the full multi-line "
+                    "CONTROL via `/control set`."
+                )
+                return True
+            cw.value = content
+            _append_system_message(
+                f"CONTROL updated ({len(content)} chars). "
+                "Switch to Submit tab to review."
+            )
             return True
 
         # /control key <key> <value> — change a single key in CONTROL
@@ -5411,22 +6322,28 @@ def create_tab(ctx):
             _append_system_message(f"calc dir: calc/{cur}")
             return True
 
-        # /calc select <filename> — select a file in the browser (triggers options dropdown)
-        if cmd.startswith("/calc select "):
-            filename = text[len("/calc select"):].strip()
+        # /calc select|open <filename> — open/select a file in the browser
+        # so it appears in the Calculations preview pane.
+        if cmd.startswith("/calc select ") or cmd.startswith("/calc open "):
+            filename = (
+                text[len("/calc select"):].strip()
+                if cmd.startswith("/calc select ")
+                else text[len("/calc open"):].strip()
+            )
             _path_w = ctx.calc_browser_refs.get("calc_path_input")
             if not _path_w:
                 _append_system_message("Calc browser not available.")
                 return True
             # Navigate the browser directly to the file — this triggers
-            # the browser's own path handler which opens the file and
-            # populates the options dropdown (Recalc/Smart Recalc/etc.)
+            # the browser's own path handler which selects the file,
+            # opens the preview pane, and also refreshes the options
+            # dropdown (Recalc/Smart Recalc/etc.).
             target = _resolve_calc_path(filename)
             if not target.exists():
                 _append_system_message(f"Not found: {filename}")
                 return True
             _path_w.value = str(target)
-            _append_system_message(f"Selected: {target.name}")
+            _append_system_message(f"Opened in browser: {target.name}")
             return True
 
         if cmd.startswith("/calc read "):
@@ -5556,6 +6473,121 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        # /analyze rank <type> [limit] [root]
+        # Cross-folder energy ranking: scans every *.out in calc/,
+        # archive/, and remote_archive/, extracts the requested energy
+        # type, sorts ascending (lower = better for gibbs/electronic/zpe).
+        # One tool call instead of ~50 cd/ls/tail rounds.
+        if cmd.startswith("/analyze rank"):
+            rest = text[len("/analyze rank"):].strip().split()
+            if not rest:
+                _append_system_message(
+                    "Usage: /analyze rank <type> [limit] [root]\n"
+                    "  type   : gibbs | electronic | spe | zpe\n"
+                    "  limit  : how many top hits to show (default 10)\n"
+                    "  root   : calc | archive | remote_archive | all "
+                    "(default all)"
+                )
+                return True
+            etype_raw = rest[0].lower()
+            _ETYPE_ALIASES = {
+                "gibbs": "gibbs", "g": "gibbs", "gfe": "gibbs",
+                "electronic": "electronic", "e": "electronic",
+                "spe": "electronic", "single": "electronic",
+                "zpe": "zpe", "z": "zpe",
+            }
+            etype = _ETYPE_ALIASES.get(etype_raw)
+            if etype is None:
+                _append_system_message(
+                    f"Unknown energy type: {etype_raw}. "
+                    f"Choose from: gibbs, electronic, spe, zpe."
+                )
+                return True
+            limit = 10
+            root_filter = "all"
+            for arg in rest[1:]:
+                if arg.isdigit():
+                    limit = max(1, min(int(arg), 100))
+                elif arg.lower() in ("calc", "archive", "remote_archive",
+                                      "remote", "all"):
+                    root_filter = (
+                        "remote_archive" if arg.lower() == "remote"
+                        else arg.lower()
+                    )
+            try:
+                from delfin.energies import (
+                    find_gibbs_energy, find_ZPE, find_electronic_energy,
+                )
+            except ImportError:
+                _append_system_message("Energy parsing not available.")
+                return True
+            _extractor = {
+                "gibbs": find_gibbs_energy,
+                "electronic": find_electronic_energy,
+                "zpe": find_ZPE,
+            }[etype]
+            roots: list[tuple[str, Path]] = []
+            if root_filter in ("calc", "all"):
+                roots.append(("calc", ctx.calc_dir))
+            if root_filter in ("archive", "all"):
+                roots.append(("archive", ctx.archive_dir))
+            if root_filter in ("remote_archive", "all"):
+                _ra = ctx.runtime_settings.get("remote_archive_dir", "")
+                if _ra:
+                    roots.append(("remote_archive", Path(_ra)))
+            import time as _time
+            t0 = _time.monotonic()
+            _BUDGET_S = 15.0   # hard cap to keep dashboard responsive
+            results: list[tuple[float, str, str]] = []
+            scanned = 0
+            for root_name, root in roots:
+                if not root.is_dir():
+                    continue
+                # Limit recursion depth and skip obvious cache dirs.
+                for out_file in root.rglob("*.out"):
+                    if _time.monotonic() - t0 > _BUDGET_S:
+                        break
+                    parts = out_file.parts
+                    if any(p.startswith(".") or p == "__pycache__"
+                           for p in parts):
+                        continue
+                    scanned += 1
+                    val = _extractor(str(out_file))
+                    if val is None:
+                        continue
+                    try:
+                        rel = str(out_file.relative_to(root))
+                    except ValueError:
+                        rel = str(out_file)
+                    results.append((float(val), root_name, rel))
+                if _time.monotonic() - t0 > _BUDGET_S:
+                    break
+            results.sort(key=lambda r: r[0])
+            elapsed = _time.monotonic() - t0
+            header = (
+                f"Energy ranking — {etype} (ascending, lowest first). "
+                f"Scanned {scanned} .out files in "
+                f"{', '.join(r[0] for r in roots)} "
+                f"in {elapsed:.1f}s. Showing top {min(limit, len(results))} "
+                f"of {len(results)} with extractable {etype}:"
+            )
+            if not results:
+                _append_system_message(
+                    f"{header}\n  (no {etype} values found)"
+                )
+                return True
+            lines = [header]
+            for rank, (val, root_name, rel) in enumerate(results[:limit], 1):
+                lines.append(f"  {rank:2d}. {val:>16.6f} Eh  "
+                              f"[{root_name}] {rel}")
+            if elapsed > _BUDGET_S:
+                lines.append(
+                    f"  (time budget reached at {_BUDGET_S}s — "
+                    f"more .out files were not scanned)"
+                )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd.startswith("/analyze convergence "):
             folder = text[len("/analyze convergence"):].strip()
             target = _resolve_calc_path(folder)
@@ -5651,7 +6683,12 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
-        if cmd.startswith("/analyze ") and not cmd.startswith("/analyze energy") and not cmd.startswith("/analyze convergence") and not cmd.startswith("/analyze errors") and cmd != "/analyze status":
+        if (cmd.startswith("/analyze ")
+                and not cmd.startswith("/analyze energy")
+                and not cmd.startswith("/analyze rank")
+                and not cmd.startswith("/analyze convergence")
+                and not cmd.startswith("/analyze errors")
+                and cmd != "/analyze status"):
             # /analyze <folder> — full analysis
             folder = text[len("/analyze"):].strip()
             target = _resolve_calc_path(folder)
@@ -6643,7 +7680,25 @@ def create_tab(ctx):
             try:
                 handled = _handle_slash_command(cmd_line)
                 if not handled:
-                    _append_system_message(f"Unknown command: {short}")
+                    # Friendly hint: if the agent tried `/calc`, `/jobs`,
+                    # `/archive` etc. as a plain slash-command, suggest the
+                    # proper `/tab <name>` form. Saves a round-trip when
+                    # the agent meant "open this tab".
+                    _TAB_NAMES = {
+                        "submit", "recalc", "jobs", "orca", "calc",
+                        "archive", "literature", "agent", "settings",
+                        "calculations", "calculation", "calcs",
+                        "berechnung", "berechnungen", "literatur",
+                        "archiv", "einstellungen", "job",
+                    }
+                    _bare = cmd_line.strip().lstrip("/").split()[0].lower()
+                    if _bare in _TAB_NAMES:
+                        _append_system_message(
+                            f"Unknown command: {short}. "
+                            f"Did you mean: /tab {_bare} ?"
+                        )
+                    else:
+                        _append_system_message(f"Unknown command: {short}")
             except Exception as exc:
                 _append_system_message(f"Error executing {short}: {exc}")
             # Collect new system messages as feedback
@@ -7448,7 +8503,30 @@ def create_tab(ctx):
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel",
         }
-        if _first_token in _SLASH_PREFIXES:
+        # Skill expansion: a /<name> that isn't a built-in slash command
+        # but matches a discovered skill gets replaced by the skill's
+        # body before the message hits the agent. Args after the name
+        # are forwarded into the skill block.
+        if (user_text.startswith("/")
+                and _first_token not in _SLASH_PREFIXES
+                and "/" not in _first_token[1:]
+                and len(_first_token) > 1
+                and not _first_token.startswith("/.")):
+            try:
+                from delfin.agent import skills as _skills_mod
+                _engine = state.get("engine")
+                _ws = None
+                if _engine and getattr(_engine, "kit_permissions", None):
+                    _ws = _engine.kit_permissions.workspace
+                _skill_name = _first_token[1:]
+                _sk = _skills_mod.get_skill(_skill_name, _ws)
+            except Exception:
+                _sk = None
+            if _sk is not None:
+                rest = user_text[len(_first_token):].strip()
+                expanded = _skills_mod.render_skill_invocation(_sk, rest)
+                user_text = expanded + ("\n\n" + rest if rest else "")
+        elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
             _append_chat_message("user", user_text)
             _handle_slash_command(user_text)
@@ -7621,6 +8699,7 @@ def create_tab(ctx):
             state["_deny_count"] = 0  # Reset retry counter for new message
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
+        _ensure_task_session_id(engine, create=True)
         _update_button_states()
         _set_working(True, "Thinking...")
 
@@ -7679,6 +8758,14 @@ def create_tab(ctx):
                         if full_thinking.strip():
                             _append_chat_message("thinking", full_thinking.strip())
                         thinking_chunks.clear()
+                    # KIT-Toolbox emits MCP-style names ("mcp__kit-coding__
+                    # edit_file"); strip the prefix so the renderer cascade
+                    # below can match on the bare tool name and produce the
+                    # same diff-block UX as Claude CLI's Edit/Write tools.
+                    if tool_name and tool_name.startswith("mcp__"):
+                        parts = tool_name.split("__")
+                        if len(parts) >= 3:
+                            tool_name = parts[-1]
                     # Parse tool input
                     try:
                         import json as _j
@@ -7765,59 +8852,80 @@ def create_tab(ctx):
                             f'<span class="tool-name">$</span> {_e(cmd)}'
                         )
 
-                    elif tool_name in ("Edit", "Write"):
-                        fpath = parsed.get("file_path", "")
+                    elif tool_name in (
+                        "Edit", "Write",
+                        "edit_file", "write_file", "multi_edit",
+                    ):
+                        # KIT-Toolbox uses 'path'; Claude CLI uses 'file_path'.
+                        fpath = parsed.get("file_path") or parsed.get("path") or ""
                         sp = _short_path(fpath)
-                        if tool_name == "Edit":
-                            old = parsed.get("old_string", "")
-                            new = parsed.get("new_string", "")
-                            old_p = _e(old[:100] + ("..." if len(old) > 100 else ""))
-                            new_p = _e(new[:100] + ("..." if len(new) > 100 else ""))
-                            # Build collapsible full diff if content is longer
-                            full_diff = ""
-                            if len(old) > 100 or len(new) > 100:
-                                diff_lines = []
-                                for dl in old.split("\n"):
-                                    diff_lines.append(f'<span class="tool-diff-old">- {_e(dl)}</span>')
-                                for dl in new.split("\n"):
-                                    diff_lines.append(f'<span class="tool-diff-new">+ {_e(dl)}</span>')
-                                _max_diff = 20
-                                shown = diff_lines[:_max_diff]
-                                extra = f"\n... ({len(diff_lines) - _max_diff} more lines)" if len(diff_lines) > _max_diff else ""
-                                full_diff = (
-                                    f'\n<details><summary>full diff ({len(old.split(chr(10)))}→{len(new.split(chr(10)))} lines)</summary>'
-                                    f'<pre style="font-size:10px;">{chr(10).join(shown)}{_e(extra)}</pre></details>'
-                                )
+
+                        # Display label normalises capitalised + lowercase forms
+                        # so the user sees a consistent "Edit"/"Write"/"MultiEdit"
+                        # banner regardless of which provider produced the call.
+                        label = {
+                            "Edit": "Edit", "edit_file": "Edit",
+                            "Write": "Write", "write_file": "Write",
+                            "multi_edit": "MultiEdit",
+                        }.get(tool_name, tool_name)
+
+                        if tool_name in ("Edit", "edit_file"):
+                            old = parsed.get("old_string", "") or ""
+                            new = parsed.get("new_string", "") or ""
+                            diff_html = _build_inline_diff(old, new, _e)
                             _append_tool_message(
-                                f'<span class="tool-name">Edit</span>  '
+                                f'<span class="tool-name">{label}</span>  '
                                 f'<span class="tool-path">{_e(sp)}</span>\n'
-                                f'  <span class="tool-diff-old">- {old_p}</span>\n'
-                                f'  <span class="tool-diff-new">+ {new_p}</span>'
-                                f'{full_diff}'
+                                f'{diff_html}'
+                            )
+                        elif tool_name == "multi_edit":
+                            edits = parsed.get("edits", []) or []
+                            blocks = []
+                            for i, ed in enumerate(edits):
+                                if not isinstance(ed, dict):
+                                    continue
+                                old = ed.get("old_string", "") or ""
+                                new = ed.get("new_string", "") or ""
+                                blocks.append(
+                                    f'<div style="font-size:10px; '
+                                    f'color:#9ca3af; margin-top:4px;">'
+                                    f'edit {i+1}/{len(edits)}</div>'
+                                    f'{_build_inline_diff(old, new, _e)}'
+                                )
+                            body = "\n".join(blocks) if blocks else ""
+                            _append_tool_message(
+                                f'<span class="tool-name">{label}</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>  '
+                                f'<span class="tool-param">'
+                                f'({len(edits)} edits)</span>\n{body}'
                             )
                         else:
-                            content = parsed.get("content", "")
-                            # Show preview of file content
-                            preview = ""
-                            if content:
-                                lines = content.split("\n")
-                                _max_preview = 10
-                                shown = lines[:_max_preview]
-                                extra = f"\n... ({len(lines) - _max_preview} more lines)" if len(lines) > _max_preview else ""
-                                preview = (
-                                    f'\n<details><summary>preview ({len(lines)} lines, {len(content)} chars)</summary>'
-                                    f'<pre style="font-size:10px;">{_e(chr(10).join(shown))}{_e(extra)}</pre></details>'
-                                )
+                            # Write or write_file — render full content as
+                            # a single + diff so the user sees what's being
+                            # written, not just a chars count.
+                            content = parsed.get("content", "") or ""
+                            diff_html = _build_inline_diff("", content, _e)
                             _append_tool_message(
-                                f'<span class="tool-name">Write</span>  '
-                                f'<span class="tool-path">{_e(sp)}</span>'
-                                f'  ({len(content)} chars)'
-                                f'{preview}'
+                                f'<span class="tool-name">{label}</span>  '
+                                f'<span class="tool-path">{_e(sp)}</span>  '
+                                f'<span class="tool-param">'
+                                f'({len(content)} chars, '
+                                f'{content.count(chr(10)) + 1} lines)</span>\n'
+                                f'{diff_html}'
                             )
+
                         state["recent_edits"].append({
                             "file": fpath, "tool": tool_name,
                         })
                         undo_btn.disabled = False
+
+                    elif tool_name == "bash":
+                        cmd = parsed.get("command", "") or ""
+                        if len(cmd) > 200:
+                            cmd = cmd[:200] + "..."
+                        _append_tool_message(
+                            f'<span class="tool-name">$</span> {_e(cmd)}'
+                        )
 
                     elif tool_name == "Agent":
                         desc = parsed.get("description", "")
@@ -7952,6 +9060,10 @@ def create_tab(ctx):
                     """Append tool result as collapsible detail to the last tool message."""
                     if not tool_output:
                         return
+                    if tool_name and tool_name.startswith("mcp__"):
+                        parts = tool_name.split("__")
+                        if len(parts) >= 3:
+                            tool_name = parts[-1]
                     # Subagent panel: mark the next running call as done.
                     if tool_name == "Agent":
                         for entry in state["subagent_calls"]:
@@ -7963,6 +9075,14 @@ def create_tab(ctx):
                         if _pane_html:
                             subagent_pane_html.value = _pane_html
                             subagent_pane_html.layout.display = "block"
+                    # Phase 5d: refresh the live task ticker whenever a
+                    # task_* tool fires so the panel reflects new state
+                    # without waiting for the next user turn.
+                    if tool_name in ("task_create", "task_update", "task_list"):
+                        try:
+                            _refresh_task_ticker()
+                        except Exception:
+                            pass
                     # Truncate for display
                     output = tool_output
                     _MAX_LINES = 8
@@ -8158,6 +9278,9 @@ def create_tab(ctx):
                         _route_info = _AE.recommend_task_route(
                             original_task or current_msg,
                             engine.mode,
+                            is_delfin_workspace=getattr(
+                                engine, "_is_delfin_workspace", True,
+                            ),
                         )
                         _task_class = _route_info.get("task_class", "")
                     except Exception:
@@ -8197,11 +9320,45 @@ def create_tab(ctx):
 
                     # Load persistent memory for system prompt
                     from delfin.agent.memory_store import format_memory_context
+                    from delfin.agent.project_memory import load_project_memory
                     _memory = format_memory_context(task_text=original_task)
+                    # Auto-load CLAUDE.md / AGENTS.md / DELFIN.md from cwd up.
+                    try:
+                        _kperms = engine.kit_permissions
+                        _extra = list(_kperms.extra_workspace_dirs) if _kperms else []
+                        _ws = _kperms.workspace if _kperms else None
+                    except Exception:
+                        _extra = []
+                        _ws = None
+                    _proj_mem = load_project_memory(
+                        cwd=_ws, extra_roots=_extra,
+                    )
+                    if _proj_mem:
+                        _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
 
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
                     # so we do not pay twice for the same profile tokens.
+                    # Phase 5f: note pending file uploads so the agent
+                    # knows where to find them. Cleared after dispatch.
+                    _pending_imgs = state.get("_pending_images") or []
+                    if _pending_imgs:
+                        _img_lines = "\n".join(
+                            f"  - {p}" for p in _pending_imgs
+                        )
+                        current_msg = (
+                            f"{current_msg}\n\n"
+                            f"[The user attached these files — "
+                            f"read them with read_file (for text/code/configs) "
+                            f"or notebook_read (for .ipynb). Images can be "
+                            f"described with whatever vision tools you have:\n"
+                            f"{_img_lines}]"
+                        )
+                        state["_pending_images"] = []
+                        try:
+                            image_upload.value = ()
+                        except Exception:
+                            pass
                     _denied = state.get("_denied_commands", [])
                     if _denied:
                         _denial_ctx = (
@@ -8894,6 +10051,12 @@ def create_tab(ctx):
         state["chat_messages"].clear()
         state["streaming"] = False
         state["active_session_id"] = ""
+        try:
+            kp = getattr(engine, "kit_permissions", None) if engine else None
+            if kp is not None:
+                kp.task_session_id = ""
+        except Exception:
+            pass
         state["recent_edits"].clear()
         state.pop("_mode_suggested", None)
         state.pop("_pending_mode_msg", None)
@@ -8909,6 +10072,7 @@ def create_tab(ctx):
         undo_btn.disabled = True
         session_dropdown.value = ""
         _refresh_chat_html()
+        _refresh_task_ticker()
         _update_status()
         _update_button_states()
 
@@ -8946,53 +10110,34 @@ def create_tab(ctx):
             f'{desc}</span>'
         )
         engine = state["engine"]
-        # Live mode-switch with full-transcript handoff: works even mid-
-        # stream and even when the engine already has messages. The new
-        # engine is built lazily by _ensure_engine on the next Send,
-        # picking up mode_dropdown.value (= new_mode). The handoff text
-        # is stashed in state and prepended to the next user message.
-        has_history = bool(state.get("chat_messages")) or bool(
-            engine and engine.messages
-        )
-        if engine and has_history and old_mode and old_mode != new_mode:
-            was_streaming = state.get("streaming", False)
-            if was_streaming:
-                try:
-                    engine.request_stop()
-                    if hasattr(engine.client, "signal_stop"):
-                        engine.client.signal_stop()
-                except Exception:
-                    pass
-                state["streaming"] = False
-                state["_generation_id"] = state.get("_generation_id", 0) + 1
-                _set_working(False)
-            try:
-                handoff = _build_full_transcript_handoff(
-                    state["chat_messages"], old_mode, new_mode,
+        if engine and not state["streaming"]:
+            if not engine.messages:
+                engine.reset_cycle(mode=new_mode)
+                _update_status()
+            elif getattr(engine, "mode", "") != new_mode:
+                # Existing conversations must not keep running on the old
+                # role/route after the UI mode changed. Save the old
+                # session, then force a fresh engine on the next send.
+                if state.get("chat_messages"):
+                    _auto_save_session()
+                    _refresh_session_dropdown()
+                if hasattr(engine, "client") and hasattr(engine.client, "kill"):
+                    try:
+                        engine.client.kill()
+                    except Exception:
+                        pass
+                state["engine"] = None
+                state["active_session_id"] = ""
+                state["session_start_time"] = None
+                state.pop("_follow_up", None)
+                state["_cycle_history"] = []
+                _set_active_gate()
+                _refresh_task_ticker()
+                _append_system_message(
+                    f"Mode switched to {new_mode}. A fresh {new_mode} agent "
+                    "will start on your next message."
                 )
-            except Exception:
-                handoff = ""
-            # Discard the old engine; _ensure_engine will rebuild on the
-            # next send with the new mode and the correct allowlist.
-            try:
-                if hasattr(engine.client, "kill"):
-                    engine.client.kill()
-            except Exception:
-                pass
-            state["engine"] = None
-            ctx.agent_engine = None
-            if handoff:
-                state["_pending_mode_handoff"] = handoff
-            n_msgs = len(state.get("chat_messages") or [])
-            _append_system_message(
-                f"Mode {old_mode} → {new_mode}. Context preserved "
-                f"({n_msgs} message(s) handed off on next Send)."
-            )
-            _update_status()
-            _update_button_states()
-        elif engine and not state["streaming"] and not engine.messages:
-            engine.reset_cycle(mode=new_mode)
-            _update_status()
+                _update_status()
         # Dashboard mode: lock permission to default, model to cheapest
         if new_mode == "dashboard":
             state["_perm_before_dashboard"] = perm_dropdown.value
@@ -9041,6 +10186,11 @@ def create_tab(ctx):
             if hasattr(engine.client, "kill"):
                 engine.client.kill()
             state["engine"] = None
+        # Show/hide the KIT confirmation panel based on the new provider.
+        try:
+            _show_kit_confirm_panel(provider == "kit")
+        except Exception:
+            pass
         n_models = len(models)
         src = "live" if fetched else "fallback"
         _append_system_message(
@@ -9097,10 +10247,25 @@ def create_tab(ctx):
             return
         new_profile = change["new"]
         state["_perm_profile"] = new_profile
+        # If the change came from the KIT-Mode chip, the live perms.mode
+        # already reflects it and we don't need to recreate the engine.
+        # Just sync silently and return.
+        if state.get("_chip_syncing_perm"):
+            return
         engine = state["engine"]
         if engine:
+            # Apply to the live KIT engine immediately if we can — avoids
+            # the "next message" lag and keeps the chip + dropdown in sync.
+            chip_target = _PROFILE_TO_CHIP.get(new_profile)
+            if chip_target and hasattr(engine, "set_kit_permission_mode"):
+                if engine.set_kit_permission_mode(chip_target):
+                    _refresh_kit_mode_chip()
+                    _append_system_message(
+                        f"Permissions → **{new_profile}** (KIT mode: {chip_target})."
+                    )
+                    return
             state["engine"] = None
-            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")  # CLI default
+            cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
             _append_system_message(
                 f"Permissions → **{new_profile}** (CLI: {cli_perm}). "
                 f"Takes effect on next message."
@@ -9207,24 +10372,99 @@ def create_tab(ctx):
         push_status_html.value = ""
 
     def _on_undo(button):
-        """Revert the last file edit via git checkout."""
+        """Revert the last file edit.
+
+        The repo to operate on is determined by walking up from the
+        edited file until a ``.git`` directory is found \u2014 necessary
+        because the agent now writes into extra_workspace_dirs that are
+        unrelated to ``ctx.repo_dir`` (e.g. Jerome's TestOpt project
+        while the dashboard runs from the DELFIN repo).
+
+        If the edit was a fresh ``write_file`` (untracked file in git),
+        the file is unlinked instead of checked out \u2014 ``git checkout``
+        on an untracked path fails silently and would leave the file in
+        place.
+        """
         if not state["recent_edits"]:
             return
         import subprocess as _sp
+        from pathlib import Path as _Path
         last = state["recent_edits"].pop()
-        fpath = last["file"]
-        short = fpath.replace(str(ctx.repo_dir or ""), "").lstrip("/")
+        fpath = _Path(last["file"]).expanduser().resolve()
+        if not fpath.exists() and last.get("tool") not in ("Write", "write_file"):
+            _append_system_message(f"Undo: file no longer exists: {fpath}")
+            undo_btn.disabled = len(state["recent_edits"]) == 0
+            return
+
+        # Find the enclosing git repo by walking up.
+        repo_root = None
+        cur = fpath if fpath.is_dir() else fpath.parent
+        while True:
+            if (cur / ".git").exists():
+                repo_root = cur
+                break
+            if cur == cur.parent:
+                break
+            cur = cur.parent
+
+        short = str(fpath)
+        if repo_root is not None:
+            try:
+                short = str(fpath.relative_to(repo_root))
+            except ValueError:
+                pass
+
         try:
-            result = _sp.run(
-                ["git", "checkout", "--", fpath],
+            if repo_root is None:
+                # Not under git \u2014 best we can do is unlink fresh writes;
+                # for edits we have no baseline to roll back to.
+                if last.get("tool") in ("Write", "write_file"):
+                    fpath.unlink(missing_ok=True)
+                    _append_system_message(
+                        f"\u21a9 Removed (no git): {fpath}"
+                    )
+                else:
+                    _append_system_message(
+                        f"Undo unavailable for {fpath}: not under git, "
+                        "and the original content was not saved before "
+                        "the edit. Tip: keep the project under git for "
+                        "reliable undo."
+                    )
+                undo_btn.disabled = len(state["recent_edits"]) == 0
+                return
+
+            # File under git: check if tracked or fresh.
+            ls = _sp.run(
+                ["git", "ls-files", "--error-unmatch", str(fpath)],
                 capture_output=True, text=True,
-                cwd=str(ctx.repo_dir or "."), timeout=10,
+                cwd=str(repo_root), timeout=5,
             )
-            if result.returncode == 0:
-                _append_system_message(f"\u21a9 Reverted: {short}")
+            tracked = ls.returncode == 0
+
+            if not tracked and last.get("tool") in ("Write", "write_file"):
+                # Fresh untracked file the agent created \u2014 just unlink.
+                fpath.unlink(missing_ok=True)
+                _append_system_message(
+                    f"\u21a9 Removed new file: {short}"
+                )
+            elif tracked:
+                result = _sp.run(
+                    ["git", "checkout", "--", str(fpath)],
+                    capture_output=True, text=True,
+                    cwd=str(repo_root), timeout=10,
+                )
+                if result.returncode == 0:
+                    _append_system_message(f"\u21a9 Reverted: {short}")
+                else:
+                    _append_system_message(
+                        f"Undo failed for {short}: "
+                        f"{result.stderr.strip()[:120]}"
+                    )
             else:
                 _append_system_message(
-                    f"Undo failed: {result.stderr.strip()[:100]}"
+                    f"Undo unavailable for untracked edit on {short}. "
+                    "Add the file to git first if you want this kind of "
+                    "undo to work."
                 )
         except Exception as exc:
             _append_system_message(f"Undo error: {exc}")
@@ -9305,6 +10545,16 @@ def create_tab(ctx):
     model_dropdown.observe(_on_model_change, names="value")
     effort_dropdown.observe(_on_effort_change, names="value")
     perm_dropdown.observe(_on_perm_change, names="value")
+
+    # Initial KIT confirm-panel visibility based on saved provider.
+    try:
+        if provider_dropdown.value == "kit":
+            _ensure_kit_broker()
+            _show_kit_confirm_panel(True)
+        else:
+            _show_kit_confirm_panel(False)
+    except Exception:
+        pass
 
     # -- initial state -----------------------------------------------------
     _update_status()
@@ -9452,8 +10702,72 @@ def create_tab(ctx):
             }
         }
     }, true);
+
+    /* Auto-refresh model list when the model dropdown is opened.
+       We listen on mousedown — that fires *before* the native select
+       expands its options, so by the time the user picks a value the
+       live list is already populated. We throttle to avoid hammering
+       the API: max one fetch every 5 seconds per dropdown. */
+    var _lastModelRefresh = 0;
+    document.addEventListener('mousedown', function(e) {
+        var wrapper = e.target.closest
+            ? e.target.closest('.delfin-agent-model-dropdown')
+            : null;
+        if (!wrapper) return;
+        var now = Date.now();
+        if (now - _lastModelRefresh < 5000) return;
+        _lastModelRefresh = now;
+        var refresh = document.querySelector(
+            '.delfin-agent-model-refresh button'
+        );
+        if (refresh) refresh.click();
+    }, true);
 })();
 """
+
+    # Emit init-status banner for the initial /models fetch so the user
+    # immediately knows whether the dropdown is showing live or fallback
+    # data. Surfaces the API-key hint when the live fetch silently fell
+    # back — the most common cause of "I only see 9 models".
+    # Note: claude has no /models endpoint — its list is intentionally
+    # hard-coded (CLI manages the actual model selection), so we don't
+    # call that a "failure".
+    _LIVE_FETCH_PROVIDERS = {"kit", "openai"}
+    try:
+        _mst = state.get("_models_init_status") or {}
+        _mp = _mst.get("provider", "")
+        _mc = _mst.get("count", 0)
+        if _mp not in _LIVE_FETCH_PROVIDERS:
+            # No live fetch for this provider by design (claude has no
+            # /models endpoint, list is hard-coded). Stay quiet — the
+            # dropdown already shows what's available.
+            pass
+        elif _mst.get("live"):
+            # Stay quiet on success too — no news is good news.
+            pass
+        else:
+            if not _mst.get("key_present"):
+                _key_name = (
+                    "KIT_TOOLBOX_API_KEY" if _mp == "kit"
+                    else "OPENAI_API_KEY"
+                )
+                _hint = (
+                    f" — {_key_name} is not set in the dashboard "
+                    f"process. Set it before startup or via a notebook "
+                    f"cell (`import os; "
+                    f"os.environ['{_key_name}']='…'`) and press ↻."
+                )
+            else:
+                _hint = (
+                    " — Live fetch failed (network/auth). "
+                    "Press ↻ next to the model dropdown to retry."
+                )
+            _append_system_message(
+                f"⚠ Models: fallback active for {_mp} "
+                f"({_mc} models){_hint}"
+            )
+    except Exception:
+        pass
 
     tab_widget = agent_content
     # A2b — expose the agent-tab state to other tabs (Activity tab's live
@@ -9573,9 +10887,16 @@ def _estimate_cost_str(
     backend: str, input_tokens: int, output_tokens: int,
     provider: str = "claude",
 ) -> str:
-    """Rough cost string."""
+    """Rough cost string for the dashboard status row."""
     if provider == "kit":
-        return "free (KIT)"
+        # KIT-Toolbox is provided by KIT — no per-call USD cost, but
+        # there's a quota and the user explicitly asked to see the
+        # burn rate. Showing tokens spent makes runaway agents
+        # visible without faking a price.
+        total = input_tokens + output_tokens
+        if total <= 0:
+            return "KIT (no usage yet)"
+        return f"KIT quota: {total:,} tokens"
     if backend == "cli":
         return "included in subscription"
     if provider == "openai":

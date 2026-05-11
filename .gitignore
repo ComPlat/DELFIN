@@ -62,7 +62,6 @@ delfin/agent/*.local.json
 # Solver run logs (large, regenerated per run)
 censo.log
 *.log
-
 # Run-output artifacts (move to quality_framework/results/ instead)
 /reports/
 /topology_summary.json
