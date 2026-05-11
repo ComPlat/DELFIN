@@ -108,3 +108,44 @@ def test_slurm_memory_request_below_cap_keeps_request(monkeypatch):
 
     assert slurm == 360000
     assert budget == 8000  # request < cap, take request
+
+
+def test_sanitize_derates_maxcore_when_request_exceeds_slurm_cap(monkeypatch):
+    """PAL × maxcore > SLURM × headroom must derate maxcore so a single PAL-wide
+    job still fits the pool. Without this, the scheduler's memory gate blocks the
+    job forever and the SLURM allocation walltimes out at exit 138 (job 4233067
+    bug, 2026-05-08): pool 91800 MB, esd_S0 wants 12 × 9000 = 108000 MB, no
+    progress for 47 h, CPU utilised 29 s.
+    """
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "108000")
+    monkeypatch.delenv("SLURM_MEM_PER_CPU", raising=False)
+    manager = _make_manager()
+
+    sanitized = manager._sanitize_resource_config({"PAL": 12, "maxcore": 9000})
+
+    cap = int(108000 * _SLURM_MEM_HEADROOM)
+    assert sanitized["PAL"] == 12
+    assert sanitized["maxcore"] == cap // 12
+    assert sanitized["PAL"] * sanitized["maxcore"] <= cap
+
+
+def test_sanitize_keeps_maxcore_when_request_fits_slurm_cap(monkeypatch):
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "108000")
+    monkeypatch.delenv("SLURM_MEM_PER_CPU", raising=False)
+    manager = _make_manager()
+
+    sanitized = manager._sanitize_resource_config({"PAL": 12, "maxcore": 4000})
+
+    assert sanitized["maxcore"] == 4000
+
+
+def test_sanitize_derate_idempotent_under_slurm_cap(monkeypatch):
+    """Re-sanitizing an already-derated config must not derate again."""
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "108000")
+    monkeypatch.delenv("SLURM_MEM_PER_CPU", raising=False)
+    manager = _make_manager()
+
+    first = manager._sanitize_resource_config({"PAL": 12, "maxcore": 9000})
+    second = manager._sanitize_resource_config(first)
+
+    assert first["maxcore"] == second["maxcore"]
