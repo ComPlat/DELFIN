@@ -325,8 +325,16 @@ class AgentEngine:
         # context window; once an estimated turn would exceed it, the
         # engine summarises older messages before sending. Set
         # ``auto_compact_pct`` to 0 to disable.
+        #
+        # Threshold raised 0.80 → 0.95 (2026-05-11): weak MoE models like
+        # qwen3.5 397B-A17b lose long-context coherence around token ~3500
+        # and the original 0.80 threshold was compacting away the "I just
+        # built X" thread mid-task, causing the agent to re-discover and
+        # re-build its own work. 0.95 keeps the full thread until the
+        # context is almost full, trading a bit more API cost for far
+        # fewer context-loss double-work cycles.
         self.context_window_tokens: int = 100_000
-        self.auto_compact_pct: float = 0.80
+        self.auto_compact_pct: float = 0.95
         self.last_compaction_info: dict[str, int] | None = None
         # A6 — last cost_usd snapshot at outcome time; the next outcome's
         # delta is (current cost_usd - this). Reset together with cost_usd
