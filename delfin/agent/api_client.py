@@ -2882,7 +2882,7 @@ class _DocToolExecutor:
     def _execute_read_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
-        rel_path = arguments.get("path", "")
+        rel_path = self._get_path_arg(arguments)
         if not rel_path:
             return json.dumps({"error": "path is required"})
         root = perms.workspace if perms is not None else self._repo_root()
@@ -2990,6 +2990,27 @@ class _DocToolExecutor:
             except Exception:
                 pass
         return str(resolved)
+
+    @staticmethod
+    def _get_path_arg(arguments: dict) -> str:
+        """Extract a path argument tolerating common naming conventions.
+
+        Weak models (qwen3.5, gpt-4-mini, etc.) sometimes generate tool
+        calls using the Claude-Code naming convention (``file_path``)
+        when our schema actually declares ``path`` — or invent ``filename`` /
+        ``file`` / ``target``. Without this fallback, the tool returns
+        ``"path is required"`` and the agent silently retries 4× before
+        falling back to a heredoc bash hack.
+
+        Priority: ``path`` > ``file_path`` > ``filename`` > ``file`` > ``target``.
+        Strips whitespace; returns ``""`` when none of the keys yields a
+        non-empty string.
+        """
+        for k in ("path", "file_path", "filename", "file", "target"):
+            v = arguments.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
 
     def _resolve_in_workspace(
         self, rel_path: str, perms: "KitToolPermissions"
@@ -3287,7 +3308,7 @@ class _DocToolExecutor:
     def _execute_write_file(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
-        path_arg = arguments.get("path", "")
+        path_arg = self._get_path_arg(arguments)
         content = arguments.get("content", "")
         if content is None:
             return json.dumps({"error": "content is required"})
@@ -3339,7 +3360,7 @@ class _DocToolExecutor:
     def _execute_edit_file(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
-        path_arg = arguments.get("path", "")
+        path_arg = self._get_path_arg(arguments)
         old_string = arguments.get("old_string", "")
         new_string = arguments.get("new_string", "")
         replace_all = bool(arguments.get("replace_all", False))
@@ -3445,7 +3466,7 @@ class _DocToolExecutor:
     def _execute_multi_edit(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
-        path_arg = arguments.get("path", "")
+        path_arg = self._get_path_arg(arguments)
         edits = arguments.get("edits", []) or []
         if not isinstance(edits, list) or not edits:
             return json.dumps({"error": "edits must be a non-empty list"})
@@ -4067,7 +4088,7 @@ class _DocToolExecutor:
     def _execute_notebook_read(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
-        path_arg = arguments.get("path", "") or ""
+        path_arg = self._get_path_arg(arguments)
         if not path_arg:
             return json.dumps({"error": "path is required"})
         max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
@@ -4126,7 +4147,7 @@ class _DocToolExecutor:
     def _execute_notebook_edit(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
-        path_arg = arguments.get("path", "") or ""
+        path_arg = self._get_path_arg(arguments)
         cell_idx = arguments.get("cell_idx")
         mode = (arguments.get("mode", "") or "").strip()
         source = arguments.get("source")
