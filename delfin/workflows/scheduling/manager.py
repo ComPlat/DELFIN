@@ -207,16 +207,6 @@ class GlobalJobManager:
         budgeted_mem, slurm_mem = _budgeted_memory_mb(sanitized['PAL'], sanitized['maxcore'])
         self.total_memory = budgeted_mem
         self._slurm_node_memory_mb = slurm_mem
-        if slurm_mem is not None and budgeted_mem < sanitized['PAL'] * sanitized['maxcore']:
-            logger.warning(
-                "Pool memory budget capped to %d MB (SLURM allocation %d MB × %.0f%% headroom); "
-                "PAL × MaxCore would request %d MB. Concurrent ORCA jobs will be sequenced when "
-                "their combined memory exceeds the cap to prevent OOM.",
-                budgeted_mem,
-                slurm_mem,
-                _SLURM_MEM_HEADROOM * 100,
-                sanitized['PAL'] * sanitized['maxcore'],
-            )
         self.maxcore_per_job = sanitized['maxcore']
         self.max_jobs = sanitized['pal_jobs']
         self.parallel_mode = sanitized['parallel_mode']
@@ -416,6 +406,24 @@ class GlobalJobManager:
 
         pal = max(1, _safe_int(cfg.get('PAL'), self.total_cores or 1))
         maxcore = max(256, _safe_int(cfg.get('maxcore'), self.maxcore_per_job or 1000))
+
+        slurm_mem = _slurm_node_memory_mb()
+        if slurm_mem is not None and slurm_mem > 0:
+            cap = int(slurm_mem * _SLURM_MEM_HEADROOM)
+            if pal * maxcore > cap:
+                derated = max(256, cap // pal)
+                if derated < maxcore:
+                    logger.warning(
+                        "Derating maxcore %d MB → %d MB per core: PAL=%d × original "
+                        "maxcore would request %d MB, but SLURM allocation %d MB × "
+                        "%.0f%% headroom caps the pool at %d MB. Without this derate, "
+                        "a single PAL-wide ORCA job would never fit and the scheduler "
+                        "would deadlock until walltime.",
+                        maxcore, derated, pal,
+                        pal * maxcore, slurm_mem,
+                        _SLURM_MEM_HEADROOM * 100, cap,
+                    )
+                    maxcore = derated
 
         pal_jobs_raw = cfg.get('pal_jobs')
         pal_jobs = _safe_int(pal_jobs_raw, 0)
