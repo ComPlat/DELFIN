@@ -1025,6 +1025,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Recalc", "/recalc auto", "Recalc all that need it (confirms first)", False),
     ("Recalc", "/cancel", "Cancel a job (confirms first)", True),
     ("Recalc", "/cancel all", "Cancel all active jobs (confirms first)", False),
+    ("Recalc", "/cancel running", "Cancel only running (R) jobs", False),
+    ("Recalc", "/cancel pending", "Cancel only pending (PD) jobs", False),
     # Batch
     ("Batch", "/batch from-calc", "Build batch from calc folders (optional glob)", True),
     ("Batch", "/batch add", "Add one entry (Name;SMILES;...)", True),
@@ -5244,6 +5246,8 @@ def create_tab(ctx):
                 "  /recalc auto     — Recalc all that need it (confirms first)\n"
                 "  /cancel <job_id> — Cancel a job (confirms first)\n"
                 "  /cancel all      — Cancel all active jobs (confirms first)\n"
+                "  /cancel running  — Cancel only running (R) jobs\n"
+                "  /cancel pending  — Cancel only pending (PD) jobs\n"
                 "\n"
                 "Memory:\n"
                 "  /remember <text> — Save a persistent memory\n"
@@ -6875,14 +6879,42 @@ def create_tab(ctx):
 
         if cmd.startswith("/cancel "):
             target = text[len("/cancel"):].strip()
-            if target == "all":
+            if target in ("all", "running", "pending"):
+                # Filter by SLURM state. "all" = both pending+running,
+                # "running" = R only, "pending" = PD only.
+                if target == "running":
+                    state_match = {"RUNNING", "R"}
+                    label_human = "running"
+                elif target == "pending":
+                    state_match = {"PENDING", "PD"}
+                    label_human = "pending"
+                else:
+                    state_match = {"RUNNING", "R", "PENDING", "PD"}
+                    label_human = "active"
                 try:
                     jobs = ctx.backend.list_jobs()
-                    active = [j for j in jobs if j.status.upper() in ("RUNNING", "R", "PENDING", "PD")]
+                    active = [
+                        j for j in jobs
+                        if j.status.upper() in state_match
+                    ]
                 except Exception:
                     active = []
                 if not active:
-                    _append_system_message("No active jobs to cancel.")
+                    # Helpful hint when the user has 0 jobs but expected
+                    # to see some (often: they're looking at someone
+                    # else's jobs in squeue, or $USER points elsewhere).
+                    try:
+                        import os as _os
+                        my_user = _os.environ.get("USER", "?")
+                    except Exception:
+                        my_user = "?"
+                    _append_system_message(
+                        f"No {label_human} jobs to cancel for user "
+                        f"`{my_user}`. (DELFIN only sees your own jobs; "
+                        f"jobs from other users in the cluster queue are "
+                        f"visible in `squeue` but not cancellable from "
+                        f"this account.)"
+                    )
                     return True
                 names = ", ".join(f"{j.name}({j.job_id})" for j in active[:5])
                 if len(active) > 5:
@@ -6906,10 +6938,10 @@ def create_tab(ctx):
                         except Exception:
                             pass
                 _confirm_or_exec(
-                    "cancel_all",
-                    f"Cancel {len(active)} active jobs: {names}",
+                    "cancel_all" if target == "all" else f"cancel_{target}",
+                    f"Cancel {len(active)} {label_human} jobs: {names}",
                     _do_cancel_all,
-                    cmd_for_zone="/cancel all",
+                    cmd_for_zone=f"/cancel {target}",
                 )
             else:
                 job_id = target
@@ -7354,7 +7386,10 @@ def create_tab(ctx):
 
     # -- command safety tiers (enforced at CODE level, not prompt) ----------
 
-    _TIER3_EXACT = {"/submit", "/orca submit", "/recalc auto", "/cancel all"}
+    _TIER3_EXACT = {
+        "/submit", "/orca submit", "/recalc auto",
+        "/cancel all", "/cancel running", "/cancel pending",
+    }
     _TIER3_PREFIX = ("/recalc ", "/cancel ")
     _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0
 
@@ -7582,6 +7617,7 @@ def create_tab(ctx):
     _BULK_SCOPE_KW = (
         "all", "alle", "auto", "alles", "every", "sämtliche", "bulk",
         "komplett", "gesamt", "running", "laufend", "aktiv",
+        "pending", "wartend", "queued", "queue",
     )
     # How many of the most recent user messages to scan for intent.
     # Set to 3 so "kill alle running jobs" → agent asks "soll ich?" →
@@ -7675,7 +7711,10 @@ def create_tab(ctx):
                 # so "kill alle running jobs" \u2192 "ja" follow-up still
                 # finds the action+scope keywords in recent history.
                 cl = cmd_line.lower().strip()
-                if cl in ("/recalc auto", "/cancel all"):
+                if cl in (
+                    "/recalc auto",
+                    "/cancel all", "/cancel running", "/cancel pending",
+                ):
                     recent_user_msgs: list[str] = []
                     for m in reversed(state.get("chat_messages", []) or []):
                         if m.get("role") == "user":

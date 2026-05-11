@@ -48,8 +48,25 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
     )
 
+    # Filter toggle: show all jobs, only running (R), or only pending (PD).
+    # Backed by ``list_jobs()`` which already scopes to the current user
+    # via ``squeue -u $USER`` — so this filters the user's OWN jobs by
+    # state, never adds other users' jobs.
+    filter_toggle = widgets.ToggleButtons(
+        options=[('All', 'all'), ('Running', 'running'), ('Pending', 'pending')],
+        value='all',
+        description='Filter:',
+        button_style='',
+        layout=widgets.Layout(margin='0 0 0 10px'),
+        style={'description_width': '50px', 'button_width': '90px'},
+    )
+
     # -- state ----------------------------------------------------------
-    state = {'job_data': [], 'cancel_armed_job_id': None}
+    state = {
+        'job_data': [],
+        'cancel_armed_job_id': None,
+        'state_filter': 'all',
+    }
 
     def _reset_cancel_arm():
         state['cancel_armed_job_id'] = None
@@ -373,8 +390,23 @@ def create_tab(ctx):
             clear_output()
 
         try:
-            jobs = ctx.backend.list_jobs()
-            state['job_data'] = jobs
+            all_jobs = ctx.backend.list_jobs()
+            state['job_data'] = all_jobs
+
+            # Apply state filter (all / running / pending).
+            f = state.get('state_filter', 'all')
+            if f == 'running':
+                jobs = [
+                    j for j in all_jobs
+                    if (j.status or '').upper() in ('RUNNING', 'R')
+                ]
+            elif f == 'pending':
+                jobs = [
+                    j for j in all_jobs
+                    if (j.status or '').upper() in ('PENDING', 'PD')
+                ]
+            else:
+                jobs = list(all_jobs)
 
             if not jobs:
                 # Fallback: detect running processes if local queue is empty
@@ -436,13 +468,24 @@ def create_tab(ctx):
 
             with job_status_output:
                 clear_output()
-                running = sum(1 for j in jobs if j.status == 'RUNNING')
-                pending = sum(1 for j in jobs if j.status == 'PENDING')
+                # Counts use the FILTERED set; show total in parens when
+                # a filter is active so the user knows how many were
+                # hidden.
+                running = sum(
+                    1 for j in jobs
+                    if (j.status or '').upper() in ('RUNNING', 'R')
+                )
+                pending = sum(
+                    1 for j in jobs
+                    if (j.status or '').upper() in ('PENDING', 'PD')
+                )
                 parts = [f'{len(jobs)} job(s) shown']
                 if running:
                     parts.append(f'{running} running')
                 if pending:
                     parts.append(f'{pending} in queue')
+                if state.get('state_filter', 'all') != 'all':
+                    parts.append(f'(of {len(all_jobs)} total)')
                 print(', '.join(parts))
 
         except Exception as e:
@@ -560,9 +603,16 @@ def create_tab(ctx):
             _reset_cancel_arm()
 
     # -- wiring ---------------------------------------------------------
+    def _on_filter_change(change):
+        if change.get('name') != 'value':
+            return
+        state['state_filter'] = change['new']
+        refresh_job_list()
+
     refresh_button.on_click(refresh_job_list)
     cancel_button.on_click(cancel_selected_job)
     job_dropdown.observe(_on_job_selection_change, names='value')
+    filter_toggle.observe(_on_filter_change, names='value')
     # Only enable rebuild in local backend
     is_local_backend = not ctx.backend.supports_turbomole  # heuristic
     if is_local_backend:
@@ -572,7 +622,15 @@ def create_tab(ctx):
     # -- layout ---------------------------------------------------------
     tab_widget = widgets.VBox([
         widgets.HTML('<h3>Job Status</h3>'),
-        widgets.HTML('<p>Select a job and click CANCEL to cancel it. Click REFRESH to update.</p>'),
+        widgets.HTML(
+            '<p>Shows YOUR own jobs only (filtered by <code>squeue -u $USER</code>). '
+            'Use the filter to narrow by state. '
+            'Select a job and click CANCEL to cancel it. Click REFRESH to update.</p>'
+        ),
+        widgets.HBox(
+            [filter_toggle],
+            layout=widgets.Layout(margin='0 0 8px 0'),
+        ),
         job_table_html, job_start_html,
         widgets.HBox(
             [job_dropdown, cancel_button, refresh_button] + ([rebuild_button] if is_local_backend else []),
