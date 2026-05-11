@@ -4215,17 +4215,41 @@ def create_tab(ctx):
                 "jobs": "Job Status",
                 "orca": "ORCA Builder",
                 "calc": "Calculations",
+                # Common aliases — accept English plural/full forms and
+                # German equivalents so the agent doesn't have to guess.
+                "calcs": "Calculations",
+                "calculation": "Calculations",
+                "calculations": "Calculations",
+                "berechnung": "Calculations",
+                "berechnungen": "Calculations",
                 "archive": "Archive",
+                "archiv": "Archive",
                 "literature": "Literature",
+                "literatur": "Literature",
                 "agent": "Agent",
                 "settings": "Settings",
+                "einstellungen": "Settings",
+                "job": "Job Status",
+                "joblist": "Job Status",
+                "submit_job": "Submit Job",
+                "submitjob": "Submit Job",
+                "orca_builder": "ORCA Builder",
+                "orcabuilder": "ORCA Builder",
             }
+            # Canonical short keys to surface in error messages — keep the
+            # alias map fat but the help short.
+            _CANONICAL_TAB_KEYS = (
+                "submit", "recalc", "jobs", "orca", "calc",
+                "archive", "literature", "agent", "settings",
+            )
             title = _tab_map.get(tab_name.lower(), tab_name)
             if ctx.select_tab(title):
                 _append_system_message(f"Switched to tab: {title}")
             else:
-                avail = ", ".join(_tab_map.keys())
-                _append_system_message(f"Tab not found: {tab_name}\nAvailable: {avail}")
+                avail = ", ".join(_CANONICAL_TAB_KEYS)
+                _append_system_message(
+                    f"Tab not found: {tab_name}\nAvailable: {avail}"
+                )
             return True
 
         # /ui <widget> <property> [value] — modify dashboard widgets (session-only)
@@ -5754,7 +5778,25 @@ def create_tab(ctx):
             try:
                 handled = _handle_slash_command(cmd_line)
                 if not handled:
-                    _append_system_message(f"Unknown command: {short}")
+                    # Friendly hint: if the agent tried `/calc`, `/jobs`,
+                    # `/archive` etc. as a plain slash-command, suggest the
+                    # proper `/tab <name>` form. Saves a round-trip when
+                    # the agent meant "open this tab".
+                    _TAB_NAMES = {
+                        "submit", "recalc", "jobs", "orca", "calc",
+                        "archive", "literature", "agent", "settings",
+                        "calculations", "calculation", "calcs",
+                        "berechnung", "berechnungen", "literatur",
+                        "archiv", "einstellungen", "job",
+                    }
+                    _bare = cmd_line.strip().lstrip("/").split()[0].lower()
+                    if _bare in _TAB_NAMES:
+                        _append_system_message(
+                            f"Unknown command: {short}. "
+                            f"Did you mean: /tab {_bare} ?"
+                        )
+                    else:
+                        _append_system_message(f"Unknown command: {short}")
             except Exception as exc:
                 _append_system_message(f"Error executing {short}: {exc}")
             # Collect new system messages as feedback
