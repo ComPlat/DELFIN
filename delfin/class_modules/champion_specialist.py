@@ -108,12 +108,15 @@ class ChampionSpecialist:
             f"print('---ERR---'); "
             f"print(err if err is not None else '')"
         )
+        # Prevent recursion: subprocess must NOT trigger router again
+        env = {**os.environ, "PYTHONPATH": str(self.worktree_path)}
+        env.pop("DELFIN_ENSEMBLE_ROUTER", None)
         try:
             result = subprocess.run(
                 [sys.executable, "-c", driver],
                 capture_output=True, text=True,
                 timeout=self.subprocess_timeout,
-                env={**os.environ, "PYTHONPATH": str(self.worktree_path)},
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return None, f"specialist {self.id}: timeout after {self.subprocess_timeout}s"
