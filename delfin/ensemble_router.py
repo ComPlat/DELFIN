@@ -35,14 +35,16 @@ ROUTING_TABLE: dict[tuple[str, str], str] = {
     (COORD_MULTI_SIGMA, BLOCK_4D): "multi_sigma_123a130",
     (COORD_MULTI_SIGMA, BLOCK_5D): "multi_sigma_123a130",
     (COORD_MULTI_SIGMA, BLOCK_P):  "multi_sigma_123a130",
-    # sigma — 1e7eefe-prev-wt-control rank-1 in 3d/5d, 229e5dc in 4d, noHfix in Ln
-    (COORD_SIGMA, BLOCK_3D): "sigma_1e7eefe_prev",
+    # sigma — re-routed 2026-05-12 after smoke500 verdict:
+    # 1e7eefe-prev-wt-control had only ~5 files in sample → small-n misranking.
+    # noHfix archive has full pool + 1.50° SAFLOA cis_rmsd (champion).
+    (COORD_SIGMA, BLOCK_3D): "sigma_1e7eefe_noHfix",
     (COORD_SIGMA, BLOCK_4D): "sigma_229e5dc",
-    (COORD_SIGMA, BLOCK_5D): "sigma_1e7eefe_prev",
+    (COORD_SIGMA, BLOCK_5D): "sigma_1e7eefe_noHfix",
     (COORD_SIGMA, BLOCK_LN): "sigma_1e7eefe_noHfix",
-    # hapto — 1e7eefe-prev-wt-control 3d/4d, 3eb9aaa 5d, noHfix Ln, 5b3e0d2 p
-    (COORD_HAPTO, BLOCK_3D): "hapto_1e7eefe_prev",
-    (COORD_HAPTO, BLOCK_4D): "hapto_1e7eefe_prev",
+    # hapto — re-routed same reason: prefer noHfix for 3d/4d
+    (COORD_HAPTO, BLOCK_3D): "hapto_1e7eefe_noHfix",
+    (COORD_HAPTO, BLOCK_4D): "hapto_1e7eefe_noHfix",
     (COORD_HAPTO, BLOCK_5D): "hapto_3eb9aaa",
     (COORD_HAPTO, BLOCK_LN): "hapto_1e7eefe_noHfix",
     (COORD_HAPTO, BLOCK_P):  "hapto_5b3e0d2",

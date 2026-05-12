@@ -56,7 +56,8 @@ class ChampionSpecialist:
     archive_subdir: str
     worktree_path: Optional[Path] = None
     archive_base: Optional[Path] = None
-    subprocess_timeout: float = 60.0
+    subprocess_timeout: float = 180.0
+    subprocess_retries: int = 1
 
     def __post_init__(self):
         if self.worktree_path is None:
@@ -111,23 +112,35 @@ class ChampionSpecialist:
         # Prevent recursion: subprocess must NOT trigger router again
         env = {**os.environ, "PYTHONPATH": str(self.worktree_path)}
         env.pop("DELFIN_ENSEMBLE_ROUTER", None)
-        try:
-            result = subprocess.run(
-                [sys.executable, "-c", driver],
-                capture_output=True, text=True,
-                timeout=self.subprocess_timeout,
-                env=env,
-            )
-        except subprocess.TimeoutExpired:
-            return None, f"specialist {self.id}: timeout after {self.subprocess_timeout}s"
-        except Exception as exc:
-            return None, f"specialist {self.id}: subprocess error {exc}"
 
-        if result.returncode != 0:
-            short_stderr = result.stderr.strip().splitlines()[-1] if result.stderr else "no stderr"
-            return None, f"specialist {self.id}: exit {result.returncode}: {short_stderr[:200]}"
+        # Retry-loop for robustness against transient failures
+        last_error: Optional[str] = None
+        for attempt in range(self.subprocess_retries + 1):
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-c", driver],
+                    capture_output=True, text=True,
+                    timeout=self.subprocess_timeout,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired:
+                last_error = (f"specialist {self.id}: timeout after "
+                              f"{self.subprocess_timeout}s (attempt {attempt+1})")
+                continue
+            except Exception as exc:
+                last_error = f"specialist {self.id}: subprocess error {exc}"
+                continue
 
-        return self._parse_driver_output(result.stdout)
+            if result.returncode != 0:
+                short_stderr = (result.stderr.strip().splitlines()[-1]
+                                if result.stderr else "no stderr")
+                last_error = (f"specialist {self.id}: exit {result.returncode}: "
+                              f"{short_stderr[:200]}")
+                continue
+
+            return self._parse_driver_output(result.stdout)
+
+        return None, last_error or f"specialist {self.id}: all retries failed"
 
     @staticmethod
     def _parse_driver_output(out: str) -> Tuple[Optional[str], Optional[str]]:

@@ -100,10 +100,11 @@ class TestRouterLookup:
             spec = lookup_specialist_id(f)
             assert spec == "multi_sigma_123a130", f"{block}: got {spec}"
 
-    def test_sigma_3d_routes_to_1e7eefe_prev(self):
+    def test_sigma_3d_routes_to_1e7eefe_noHfix(self):
         f = ClassFeatures(COORD_SIGMA, BLOCK_3D, ("Fe",), 1,
                           False, False, False)
-        assert lookup_specialist_id(f) == "sigma_1e7eefe_prev"
+        # Re-routed 2026-05-12 after smoke500 verdict — noHfix has fuller pool
+        assert lookup_specialist_id(f) == "sigma_1e7eefe_noHfix"
 
     def test_sigma_4d_routes_to_229e5dc(self):
         f = ClassFeatures(COORD_SIGMA, BLOCK_4D, ("Mo",), 1,
