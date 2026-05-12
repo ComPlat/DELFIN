@@ -1241,18 +1241,9 @@ def _run_orca_isolated(
         return False
 
     finally:
-        # Rescue partial output BEFORE cleanup. ORCA may have crashed early
-        # (input syntax error, walltime kill, MPI fault) — the partial S0.out
-        # contains the ORCA header, version banner, and whatever SCF/OPT
-        # progress was made. Without this rescue, _cleanup_isolated_dir wipes
-        # it before the user can diagnose the failure.
-        try:
-            if iso_output.exists() and not output_path.exists():
-                shutil.copy2(iso_output, output_path)
-                logger.debug(f"Rescued partial output before cleanup: {output_path.name}")
-        except Exception as rescue_exc:  # noqa: BLE001
-            logger.debug(f"Could not rescue partial output {iso_output}: {rescue_exc}")
-        # Cleanup isolated directory
+        # ORCA stdout is now written directly to output_path (parent_dir),
+        # so no separate rescue copy is needed before cleanup. The aux-file
+        # copy-back above is best-effort and tolerates iso_dir vanishing.
         _cleanup_isolated_dir(iso_dir)
 
 
