@@ -5069,6 +5069,21 @@ class OpenAIClient(_BaseClient):
         # can resume with a "continue" message.
         _MAX_TOOL_ROUNDS = 50
 
+        # Consecutive identical-error abort.
+        # Some weaker models (qwen3.5 on KIT vllm) occasionally produce a
+        # malformed tool_call with empty function name + empty args. The
+        # dispatcher returns {"error": "Unknown tool: "} and the model,
+        # not recovering from the error, re-issues the same malformed
+        # call 20+ times until the round budget runs out. Track the last
+        # tool_result strings; if three rounds in a row produce IDENTICAL
+        # error results, abort with a clear chat message instead of
+        # bleeding rounds + tokens. The check only fires when all results
+        # in a round contain an `"error"` key, so legitimate repeated
+        # successful calls (e.g. polling bash_status) don't trip it.
+        _CONSECUTIVE_FAIL_LIMIT = 3
+        _last_error_signature: str | None = None
+        _consecutive_failure_count = 0
+
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             kwargs: dict[str, Any] = {
                 "model": self.model,
@@ -5159,13 +5174,44 @@ class OpenAIClient(_BaseClient):
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
 
+                # Track results from this round for consecutive-failure
+                # detection. Each entry is the tool_result string.
+                _round_results: list[str] = []
+
                 # Execute each tool call and append results
                 for tc in tc_list:
-                    fn_name = tc["function"]["name"]
+                    fn_name = (tc["function"]["name"] or "").strip()
                     try:
                         fn_args = json.loads(tc["function"]["arguments"])
                     except json.JSONDecodeError:
                         fn_args = {}
+
+                    # Empty-name guard: malformed tool-call from the model
+                    # (most common with qwen3.5 on KIT vllm). Return a
+                    # specific, actionable error so the model has a
+                    # chance to recover — and so the loop's consecutive-
+                    # failure detector can spot the pattern.
+                    if not fn_name:
+                        result = json.dumps({"error": (
+                            "malformed tool_call: function name is empty. "
+                            "Your previous output likely produced an empty "
+                            "or unparseable tool call. Either retry with a "
+                            "valid named tool, or tell the user something "
+                            "is wrong with the model output and stop calling "
+                            "tools this turn."
+                        )})
+                        yield StreamEvent(
+                            type="tool_result",
+                            tool_name="<malformed>",
+                            tool_output=result[:2000],
+                        )
+                        api_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        })
+                        _round_results.append(result)
+                        continue
 
                     # Coding-agent tools get a different namespace prefix so
                     # the UI/Whitelist layer can distinguish them from doc tools.
@@ -5243,6 +5289,51 @@ class OpenAIClient(_BaseClient):
                         "tool_call_id": tc["id"],
                         "content": result,
                     })
+                    _round_results.append(result)
+
+                # Consecutive-failure check. A "failure round" is one
+                # where every tool_result this round is an `{"error": …}`
+                # JSON and the joined signature matches the previous
+                # round. After N identical-error rounds, abort the loop
+                # with a visible chat notice. Saves $0.02-0.05 per
+                # malformed session compared to bleeding to the round cap.
+                def _is_error_result(s: str) -> bool:
+                    return s.lstrip().startswith('{"error"')
+                if _round_results and all(_is_error_result(r) for r in _round_results):
+                    signature = "|".join(_round_results)
+                    if signature == _last_error_signature:
+                        _consecutive_failure_count += 1
+                    else:
+                        _consecutive_failure_count = 1
+                        _last_error_signature = signature
+                    if _consecutive_failure_count >= _CONSECUTIVE_FAIL_LIMIT:
+                        yield StreamEvent(
+                            type="text_delta",
+                            text=(
+                                f"\n\n⚠ Aborting tool loop: {_consecutive_failure_count}"
+                                f" rounds in a row produced identical errors. "
+                                f"Last error: {_round_results[0][:200]}\n"
+                                f"This usually means the model is generating "
+                                f"malformed tool calls. Try: switch model "
+                                f"(dropdown → azure.gpt-5), restart session, or "
+                                f"reword the prompt.\n"
+                            ),
+                        )
+                        cost = self._estimate_cost(_total_in, _total_out)
+                        yield StreamEvent(
+                            type="message_delta",
+                            input_tokens=_total_in,
+                            output_tokens=_total_out,
+                            cost_usd=cost,
+                            stop_reason="consecutive_identical_errors",
+                        )
+                        return
+                else:
+                    # Reset on any non-failure round so the counter
+                    # only catches true error-loops, not transient
+                    # errors mixed with success.
+                    _last_error_signature = None
+                    _consecutive_failure_count = 0
 
                 # Loop back to get the model's next response
                 continue
