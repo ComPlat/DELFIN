@@ -919,6 +919,37 @@ def _delfin_env_int(name: str, default: int) -> int:
         return default
 
 
+def _class_conditional_flag(name: str, mol, default: int = 0) -> bool:
+    """Class-conditional env-flag (Iter-8.6c pattern, generalized Phase 3B).
+
+    Precedence:
+      1. If ``DELFIN_<name>_CLASSES`` is set (comma-separated class list)
+         → flag is True iff ``_classify_complex_class(mol)`` is in that list.
+      2. Else ``DELFIN_<name>`` integer (default ``default``).
+
+    Use to make per-class overrides without changing global defaults.
+    Empty ``_CLASSES`` env-var (= unset) → fall back to scalar flag.
+
+    Examples:
+        Default behaviour (no env set, default=0):
+            _class_conditional_flag("SIGMA_PORT_123A130_ITER8", mol)  → False
+        Enable only for hapto class:
+            export DELFIN_SIGMA_PORT_123A130_ITER8_CLASSES="hapto"
+            → True iff mol classifies as hapto, else False.
+    """
+    classes_env = f"{name}_CLASSES"
+    classes = {
+        x.strip() for x in (os.environ.get(classes_env, "") or "").split(",")
+        if x.strip()
+    }
+    if classes:
+        try:
+            return _classify_complex_class(mol) in classes
+        except Exception:
+            return False
+    return bool(_delfin_env_int(name, default))
+
+
 def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-13 Baustein 3 dispatch helper.
 
@@ -24054,7 +24085,7 @@ def smiles_to_xyz_isomers(
     # d8 / d10 chelate cohorts that lose the correct bite-angle
     # conformer under HEAD's tight caps.  ``global`` already declared at
     # function entry where the override is reset to None on every call.
-    if bool(_delfin_env_int("DELFIN_SIGMA_PORT_123A130_ITER8", 0)):
+    if _class_conditional_flag("DELFIN_SIGMA_PORT_123A130_ITER8", mol):
         try:
             if _classify_complex_class(mol) == "sigma":
                 _ITER84_SIGMA_CAPS_OVERRIDE = _SIGMA_CHELATE_CAPS_123A
@@ -24710,7 +24741,7 @@ def smiles_to_xyz_isomers(
     # match (mostly bad).  Skipping for sigma class trims the bucket and
     # raises aggregate sigma %match.  Default OFF for bit-exactness.
     _iter84b_skip_pucker = False
-    if has_metal and bool(_delfin_env_int("DELFIN_SIGMA_SKIP_PUCKER_ITER8", 0)):
+    if has_metal and _class_conditional_flag("DELFIN_SIGMA_SKIP_PUCKER_ITER8", mol):
         try:
             _iter84b_skip_pucker = (
                 _classify_complex_class(mol) == "sigma"
@@ -25422,7 +25453,8 @@ def smiles_to_xyz_isomers(
                 # empty the result set.  Default OFF preserves bit-exact
                 # HEAD when env-flag unset.
                 if (_iter81_class == "sigma"
-                    and bool(_delfin_env_int("DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8", 0))):
+                    and _class_conditional_flag(
+                        "DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8", mol)):
                     _iter81_threshold = 3
                 if _iter81_threshold < 9999:
                     # Score each frame by extra-bond count
