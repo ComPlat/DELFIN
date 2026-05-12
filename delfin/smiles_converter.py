@@ -22513,11 +22513,11 @@ def _generate_alternative_binding_modes(
     # wall-clock seconds have elapsed.  Partial results are returned.
     # Default 0 → disabled, bit-exact baseline behaviour.
     import time as _time_mod
-    _alt_budget_s = 0.0
+    _alt_budget_s = 60.0  # Phase 4D default-flip: 0 → 60 (multi-sigma timeout-mitigation)
     try:
-        _alt_budget_s = float(os.environ.get("DELFIN_ALT_MODE_BUDGET_S", "0") or 0)
+        _alt_budget_s = float(os.environ.get("DELFIN_ALT_MODE_BUDGET_S", "60") or 60)
     except Exception:
-        _alt_budget_s = 0.0
+        _alt_budget_s = 60.0
     _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
 
     for atom in mol.GetAtoms():
@@ -24200,9 +24200,11 @@ def smiles_to_xyz_isomers(
     # Iter-8.3 multi-σ champion forward-port (5b3e0d2). When env=1 AND class
     # is multi_sigma, bypass _strict_sufficient short-circuit and always run
     # the relaxed pass. Voll-pool multi-σ %match 49.45 → 63.36 (+13.91 pp),
-    # frame-ratio 3.54×. Default 0 first run; flip to 1 after acceptance.
+    # frame-ratio 3.54×.
+    # Phase 4D default-flip 2026-05-12: 0 → 1 — smoke500 verified
+    # +28.6pp multi-sigma + 3.9pp sigma with combined ALT_MODE_BUDGET=60.
     _multisigma_port_active = bool(_delfin_env_int(
-        "DELFIN_MULTISIGMA_PORT_5B3E0D2_ITER8", 0
+        "DELFIN_MULTISIGMA_PORT_5B3E0D2_ITER8", 1
     ))
     _multisigma_dispatch = False
     if _multisigma_port_active:
@@ -27681,12 +27683,14 @@ def _optimize_xyz_openbabel(
     # x ≈ 0).  A small ±0.05 Å offset on the frozen subset breaks the
     # symmetric stationary point while staying within the M-D tolerance
     # window of downstream _verify_metal_connectivity.  XYZ-hash-seeded
-    # → deterministic same-input → same-jitter.  Default OFF for byte-
-    # identical behaviour; opt-in via DELFIN_UFF_JITTER=1.
+    # → deterministic same-input → same-jitter.
+    # Phase 4D default-flip 2026-05-12: 0 → 1 — Agent A5 smoke500 verified
+    # all 4 classes improve or unchanged (+1.18pp sigma, +0.68pp hapto,
+    # +0.95pp multi-sigma; CESNIZ 0→6 isomers recovered).
     if (
         constraints
         and constraints.get("fix_atoms")
-        and _delfin_env_int("DELFIN_UFF_JITTER", 0)
+        and _delfin_env_int("DELFIN_UFF_JITTER", 1)
     ):
         try:
             _jitter_mag_ppm = _delfin_env_int("DELFIN_UFF_JITTER_PPM", 500)
