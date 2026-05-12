@@ -131,25 +131,43 @@ def _majority_block(metals: List[str]) -> str:
 def _heuristic_has_hapto(smiles: str) -> bool:
     """Detect hapto coordination heuristically.
 
-    Hapto = metal bonded to multiple atoms of the same aromatic/conjugated ring.
-    Signature in SMILES:
-      - Metal-bracket followed by multiple ring-closure digits like [Fe]12345...
-      - Or `(=` patterns with ring numbers attached to metal
-      - Or metal directly bonded to multiple atoms in same ring
+    Hapto = metal bonded to multiple atoms of the same aromatic/conjugated ring
+    (e.g. η5-Cp, η6-aren).
+
+    Conservative signature: ≥5 ring-closure digits IMMEDIATELY after metal
+    bracket (e.g. ``[Fe]12345...`` for η5-Cp).  Lower digit counts are
+    common in sigma-bonded ring-containing ligands (carboxylato, pyridyl,
+    chelate) and would over-trigger.  Also recognize the
+    ``[M](C/N...)1(C/N...)2(...)3(...)4`` η4 pattern with 4+ consecutive
+    ring-bonds.
+
+    Examples:
+      hapto:    [Fe]12345([CH]1)([CH]2)([CH]3)([CH]4)[CH]5    (η5-Cp)
+      sigma:    [Ni-3]234([O+]=C(...)...)[O+]=C(...)1...      (tri-carboxylato)
+      sigma:    [Fe-3](C1=...)(C2=...)C3=...                   (chelate-O,N)
     """
-    # Pattern: [<metal>]<digit>{2,} indicates multiple ring closures from metal
-    for m in _BRACKET_ATOM_RE.findall(smiles):
-        if m not in ALL_METALS:
-            continue
-    # Stronger heuristic: look for [<metal>][some chars]<digit><digit>+
-    # e.g. [Fe]12345, [Cr]([CH]1)([CH]2)...
-    pattern = re.compile(r"\[(?:[A-Z][a-z]?)(?:[+\-]\d*)?\](?:\d{2,}|\([^)]+\)\d|\d+\([^)]+\)\d)")
-    if pattern.search(smiles):
+    # Pattern 1: metal bracket directly followed by 5+ ring-closure digits
+    pat_5_consec = re.compile(r"\[[A-Z][a-z]?(?:[+\-]\d*)?\]\d{5,}")
+    if pat_5_consec.search(smiles):
         return True
-    # Or 3+ ring-closure digits immediately after metal bracket
-    pat2 = re.compile(r"\[[A-Z][a-z]?(?:[+\-]\d*)?\][0-9]{3,}")
-    if pat2.search(smiles):
+
+    # Pattern 2: metal bracket followed by 4+ ring closures interleaved with
+    # parenthesised C-only atom-groups (η4-piano-stool variant).
+    # Example: [Fe]1234([CH]1)([CH]2)([CH]3)[CH]4
+    pat_eta4 = re.compile(
+        r"\[[A-Z][a-z]?(?:[+\-]\d*)?\]\d{4}"  # 4 consecutive digits
+    )
+    if pat_eta4.search(smiles):
         return True
+
+    # Pattern 3: metal-bracket followed by (CH or aromatic-c) with ring digit
+    # and 4+ such patterns
+    pat_cp_ring = re.compile(
+        r"\[[A-Z][a-z]?(?:[+\-]\d*)?\](?:\([cC](?:H?)\d\)){4,}"
+    )
+    if pat_cp_ring.search(smiles):
+        return True
+
     return False
 
 
