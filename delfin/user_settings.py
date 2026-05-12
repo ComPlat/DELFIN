@@ -59,6 +59,19 @@ DEFAULT_SETTINGS = {
     "features": {
         "remote_archive_enabled": False,
     },
+    "scheduling": {
+        # Fraction of SLURM_MEM_PER_NODE the pool may promise. Default 0.90.
+        # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
+        # 0.50 wastes resources. Set lower (0.85) for correlation methods
+        # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
+        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # real RSS = 80-82 % of promised.
+        # Historical context: 5edfb89 (2026-05-05) introduced the cap at
+        # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
+        # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
+        # 2026-05-12 after Fritz-archive analysis.
+        "slurm_mem_headroom": 0.90,
+    },
     "ui": {
         "tabs": {
             "order": [],
@@ -169,6 +182,19 @@ def normalize_positive_float_setting(value, label, default, minimum=1.0):
         raise ValueError(f"{label} must be a number.") from exc
     if normalized < minimum:
         raise ValueError(f"{label} must be at least {minimum}.")
+    return float(normalized)
+
+
+def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
+    """Validate a float setting that must lie within a closed [min, max] range."""
+    if value in ("", None):
+        return float(default)
+    try:
+        normalized = float(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if normalized < minimum or normalized > maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return float(normalized)
 
 
@@ -382,6 +408,22 @@ def _normalized_settings_dict(payload):
     if "remote_archive_enabled" in normalized_features:
         normalized_features["remote_archive_enabled"] = bool(normalized_features["remote_archive_enabled"])
     normalized["features"] = normalized_features
+    scheduling = normalized.get("scheduling", {})
+    if scheduling is None:
+        scheduling = {}
+    if not isinstance(scheduling, dict):
+        raise ValueError("Settings key 'scheduling' must be a JSON object.")
+    scheduling_defaults = DEFAULT_SETTINGS.get("scheduling", {}) or {}
+    headroom_default = scheduling_defaults.get("slurm_mem_headroom", 0.90)
+    normalized["scheduling"] = {
+        "slurm_mem_headroom": normalize_fraction_setting(
+            scheduling.get("slurm_mem_headroom", headroom_default),
+            "SLURM memory headroom",
+            headroom_default,
+            minimum=0.50,
+            maximum=0.99,
+        ),
+    }
     docs = normalized.get("docs", {})
     if docs is None:
         docs = {}

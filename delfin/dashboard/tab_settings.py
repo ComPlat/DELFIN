@@ -241,6 +241,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         indent=False,
         layout=widgets.Layout(width='110px', height='28px'),
     )
+    slurm_mem_headroom_input = widgets.FloatSlider(
+        value=0.90,
+        min=0.50,
+        max=0.99,
+        step=0.01,
+        readout_format='.2f',
+        description='Headroom',
+        style={'description_width': '90px'},
+        continuous_update=False,
+        layout=widgets.Layout(width='420px', height='28px'),
+    )
+    slurm_mem_headroom_status = widgets.HTML(value='')
     calc_path_input = widgets.Text(
         placeholder=str(ctx.default_calc_dir),
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
@@ -1045,6 +1057,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         remote_archive_toggle.value = enabled
         state['remote_archive_enabled'] = enabled
 
+    def _set_scheduling_widgets(settings_payload):
+        scheduling = ((settings_payload or {}).get('scheduling') or {})
+        try:
+            value = float(scheduling.get('slurm_mem_headroom', 0.90))
+        except (TypeError, ValueError):
+            value = 0.90
+        value = max(0.50, min(0.99, value))
+        slurm_mem_headroom_input.value = value
+        slurm_mem_headroom_status.value = (
+            f'<span style="color:#455a64;">Active: '
+            f'<b>{value:.0%}</b> of SLURM_MEM_PER_NODE.</span>'
+        )
+
     def _available_tab_specs():
         return list(getattr(ctx, 'tab_specs', []) or [])
 
@@ -1272,6 +1297,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             _set_path_widgets({})
             _set_runtime_widgets({})
             _set_remote_archive_widget({})
+            _set_scheduling_widgets({})
             _set_tab_preferences({})
             _set_status(
                 (
@@ -1287,6 +1313,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_path_widgets(settings_payload)
         _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
+        _set_scheduling_widgets(settings_payload)
         _set_tab_preferences(settings_payload)
         runtime_payload = settings_payload.get('runtime', {}) or {}
         effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_summary(
@@ -2689,6 +2716,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             settings_payload['runtime'] = runtime_payload
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
+            settings_payload.setdefault('scheduling', {})
+            settings_payload['scheduling']['slurm_mem_headroom'] = float(
+                slurm_mem_headroom_input.value
+            )
             settings_payload.setdefault('ui', {})
             settings_payload['ui']['tabs'] = _normalized_tab_prefs()
             settings_payload = save_settings(settings_payload, settings_path)
@@ -3573,6 +3604,44 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     _load_role_model_settings()
 
     # ══════════════════════════════════════════════════════════════════════
+    # Section: Scheduling (SLURM memory headroom)
+    # ══════════════════════════════════════════════════════════════════════
+    scheduling_section = widgets.VBox(
+        [
+            widgets.HTML(
+                '<div style="color:#455a64; line-height:1.5;">'
+                '<b>SLURM memory headroom</b><br>'
+                'Fraction of <code>SLURM_MEM_PER_NODE</code> the DELFIN pool '
+                'may promise to ORCA jobs. The remainder stays free as a '
+                'safety reserve so the Linux cgroup OOM-killer never fires.'
+                '<br><br>'
+                '<b>Guidance</b><br>'
+                '• <code>0.95</code> — aggressive, only safe for pure DFT-OPT '
+                '(B3LYP/CAM-B3LYP/M06-2X with SVP/TZVP). Fritz archive shows '
+                'real RSS ≈ 80 % of <code>%maxcore × cores</code>.<br>'
+                '• <code>0.90</code> — <b>recommended default</b>. Safe for '
+                'all DFT setups including TDDFT, gives reasonable parallelism.<br>'
+                '• <code>0.85</code> — conservative. Required for correlation '
+                'methods (DLPNO-CCSD(T), MP2 gradients) where ORCA real RSS '
+                'can exceed <code>%maxcore</code>.<br>'
+                '• <code>≤ 0.80</code> — extra-paranoid; only needed if you '
+                'see repeated OOM-SIGKILLs (exit 137).<br><br>'
+                '<b>Background:</b> JEW-R465 (May 2026) was killed at '
+                '312 GB / 351 GB SLURM allocation by the cgroup OOM-killer '
+                'when two parallel OCCUPIER jobs requested their full '
+                '%maxcore at the same time. The headroom prevents this by '
+                'sequencing parallel jobs through the pool memory accountant.'
+                '</div>'
+            ),
+            widgets.HBox(
+                [slurm_mem_headroom_input, slurm_mem_headroom_status],
+                layout=_row_layout,
+            ),
+        ],
+        layout=_section_layout,
+    )
+
+    # ══════════════════════════════════════════════════════════════════════
     # Main accordion
     # ══════════════════════════════════════════════════════════════════════
     main_accordion = widgets.Accordion(
@@ -3581,6 +3650,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             tabs_section,
             runtime_section,
             tools_section,
+            scheduling_section,
             agent_section,
             developer_section,
             transfer_section,
@@ -3590,9 +3660,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     main_accordion.set_title(1, 'Dashboard Tabs')
     main_accordion.set_title(2, 'Runtime Backend')
     main_accordion.set_title(3, 'Tool Installation')
-    main_accordion.set_title(4, 'DELFIN Agent')
-    main_accordion.set_title(5, 'Developer')
-    main_accordion.set_title(6, 'SSH Transfer & Remote Archive')
+    main_accordion.set_title(4, 'Scheduling (SLURM memory headroom)')
+    main_accordion.set_title(5, 'DELFIN Agent')
+    main_accordion.set_title(6, 'Developer')
+    main_accordion.set_title(7, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = 0  # Workspace open by default
 
     tab = widgets.VBox(
