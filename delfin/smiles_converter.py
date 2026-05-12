@@ -25574,6 +25574,48 @@ def _topology_hard_gate_check(
     return xyz, None
 
 
+def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[str]]]:
+    """Phase 2: try class-aware ensemble router if DELFIN_ENSEMBLE_ROUTER>0.
+
+    Returns:
+        None — router disabled or no specialist routed (caller should
+               fall through to legacy conversion path).
+        (xyz, err) — specialist produced a result; caller should return this.
+
+    Modes:
+        0 (default): no-op, returns None.
+        1: try specialist, fall through if no match or specialist fails.
+        2: strict — specialist required, returns error tuple if no match.
+    """
+    mode = _delfin_env_int("DELFIN_ENSEMBLE_ROUTER", 0)
+    if mode == 0:
+        return None
+    try:
+        from delfin.class_modules.registry import register_all_specialists
+        from delfin.ensemble_router import route
+        register_all_specialists()
+        specialist = route(smiles)
+        if specialist is None:
+            if mode >= 2:
+                from delfin.classify import classify_smiles
+                f = classify_smiles(smiles)
+                return (None,
+                    f"ensemble_router strict: no specialist for "
+                    f"({f.coord_class}, {f.metal_block})")
+            return None  # fall through to legacy
+        xyz, err = specialist.convert(smiles)
+        if xyz is None and mode < 2:
+            return None  # let legacy retry
+        # Apply topology gate to specialist output
+        gated_xyz, gate_err = _topology_hard_gate_check(xyz, smiles)
+        if gate_err and mode < 2:
+            return None  # let legacy retry
+        return (gated_xyz, gate_err or err)
+    except Exception as exc:
+        logger.debug("ensemble_router skipped due to exception: %s", exc)
+        return None  # fall through
+
+
 def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,
@@ -25603,6 +25645,13 @@ def smiles_to_xyz(
         error = "RDKit is not installed. Install with: pip install rdkit"
         logger.error(error)
         return None, error
+
+    # Phase 2: try class-aware ensemble router (env-flag-gated, default OFF)
+    _router_result = _try_ensemble_router(smiles)
+    if _router_result is not None:
+        if output_path and _router_result[0]:
+            Path(output_path).write_text(_router_result[0], encoding='utf-8')
+        return _router_result
 
     import numpy as np  # local import: keeps module import cheap
 
