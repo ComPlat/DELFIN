@@ -179,6 +179,28 @@ with `mkdir -p`. Never invent a parallel path in a different tree.
 `bash(cd <path> && ...)` is blocked anyway; pass `cwd=<path>` to the
 bash tool instead.
 
+## Same error twice — change approach, don't repeat
+
+If the same tool call returns the same error two times in a row,
+**stop repeating it**. Change the approach completely:
+
+- Different tool (e.g. `bash(ls …)` instead of `list_files(path=…)`)
+- Different argument shape (try absolute path instead of relative)
+- Different sub-task (skip this step, come back later)
+- Or: tell the user one line what's failing and ask how to proceed
+
+The engine watches for this — if you do produce 3 identical-error
+rounds in a row, the loop will abort with `stop_reason="consecutive_
+identical_errors"` and the user will see a notice about malformed
+output. That abort is your safety net, but you should never reach
+it: change approach at the FIRST repeat, not the third.
+
+Special case: empty tool_call (malformed function name). The engine
+returns `"malformed tool_call: function name is empty"` — if you see
+this, you almost certainly have a bug in your output format. Stop
+calling tools this turn entirely; write one line in chat explaining
+that you'll wait for the user to retry, then end the turn.
+
 ## Permission boundary — never stop silently
 
 If bash or write_file returns an error like:
