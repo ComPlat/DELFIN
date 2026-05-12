@@ -11214,6 +11214,38 @@ def _correct_hapto_geometry(
                 if ni in ring:
                     sigma_ring_exclude.update(ring)
 
+    # Phase 6B (2026-05-12): per Wave-3A forensik, the BFS below over-extends
+    # in single-metal-multi-ligand complexes.  Sigma-donors of the SAME metal
+    # (and atoms one-hop from them) are pulled into the η-fragment by the
+    # existing "if nni in metals and nni != mi" check (only OTHER metals
+    # excluded).  Step 2 then rigid-translates the swollen fragment to the
+    # η-target distance, dragging σ-coord backbone atoms (CH2/Ph) to ~2.5 Å
+    # from M → spurious M-L extras and FICNAG/MIPSOW/Ir-η2-class failures.
+    # Fix (env-gated DELFIN_HAPTO_FRAG_STRICT default 0): pre-compute σ-donor
+    # set per metal INCLUDING same-metal σ-bonds, exclude both σ-donors and
+    # their immediate neighbors from BFS fragment growth.
+    same_metal_sigma_exclude: set = set()
+    if hapto_groups and _delfin_env_int("DELFIN_HAPTO_FRAG_STRICT", 0):
+        try:
+            for atom in mol.GetAtoms():
+                if atom.GetIdx() not in metals:
+                    continue
+                m_idx_local = atom.GetIdx()
+                for nbr in atom.GetNeighbors():
+                    ni_local = nbr.GetIdx()
+                    if ni_local in all_hapto:
+                        continue  # this neighbor is an η-atom, not σ-donor
+                    # ni_local is a σ-donor to metal m_idx_local
+                    same_metal_sigma_exclude.add(ni_local)
+                    # also exclude one-hop neighbors of the σ-donor
+                    for nn in mol.GetAtomWithIdx(ni_local).GetNeighbors():
+                        nni_local = nn.GetIdx()
+                        if nni_local in metals or nni_local in all_hapto:
+                            continue
+                        same_metal_sigma_exclude.add(nni_local)
+        except Exception:
+            same_metal_sigma_exclude.clear()
+
     # -- Find fragment for each group (BFS, excluding metal/other groups/bridges) --
     fragments: List[set] = []
     for gi, (mi, catoms) in enumerate(hapto_groups):
@@ -11229,6 +11261,9 @@ def _correct_hapto_geometry(
                     continue
                 # Exclude sigma donors to other metals and their ring atoms
                 if ni in sigma_ring_exclude:
+                    continue
+                # Phase 6B: also exclude same-metal σ-donors + 1-hop nbrs
+                if ni in same_metal_sigma_exclude:
                     continue
                 bonded_to_other = False
                 for nn in mol.GetAtomWithIdx(ni).GetNeighbors():
