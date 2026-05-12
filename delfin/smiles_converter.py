@@ -9748,6 +9748,44 @@ def _build_multimetal_hapto_sequential(
     # 6c: Skip pi-coplanarity for multi-metal — it moves atoms and
     # can re-introduce clashes that Step 6a resolved.
 
+    # Phase 6A (2026-05-12): conditional multi-hapto centroid re-correction.
+    # Per Wave-3B forensik (/tmp/wave3b_multihapto_v2.md): secondary-metal
+    # placement drags shared hapto atoms (C ∈ Cp(M1) AND σ-donor(M2)) toward
+    # M2, collapsing M1-centroid distance.  Fe-Cp-Ni-bimetallic observed:
+    # Fe-Cp2 1.65 → 1.012 Å (-39% off target).  This is the CORRECT location
+    # for the Wave-2C fix (Phase 5B was at line 9965 in hybrid fallback path,
+    # which multi-hapto SMILES never reach — explaining why Phase 5B failed).
+    # Conditional gate: only fires when an actual centroid is >20% off target
+    # AND env-flag set, so multi-sigma scaffolds (no hapto_groups) and
+    # already-correct geometries are untouched.
+    if (hapto_groups
+            and _delfin_env_int("DELFIN_MULTI_HAPTO_RECORRECT", 0)):
+        try:
+            conf_check = scaffold_mol.GetConformer(0)
+            needs_correction = False
+            for mi, catoms in hapto_groups:
+                if not catoms:
+                    continue
+                mpos = _gp(conf_check, mi)
+                cx = sum(_gp(conf_check, c)[0] for c in catoms) / len(catoms)
+                cy = sum(_gp(conf_check, c)[1] for c in catoms) / len(catoms)
+                cz = sum(_gp(conf_check, c)[2] for c in catoms) / len(catoms)
+                dx = mpos[0] - cx; dy = mpos[1] - cy; dz = mpos[2] - cz
+                d = (dx*dx + dy*dy + dz*dz) ** 0.5
+                metal_sym = scaffold_mol.GetAtomWithIdx(mi).GetSymbol()
+                target = _target_mc_dist(metal_sym, len(catoms))
+                if target > 0 and abs(d - target) / target > 0.20:
+                    needs_correction = True
+                    break
+            if needs_correction:
+                _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
+                logger.debug(
+                    "multi-hapto centroid re-correction applied "
+                    "(env DELFIN_MULTI_HAPTO_RECORRECT=1)"
+                )
+        except Exception as exc:
+            logger.debug("multi-hapto re-correction skipped: %s", exc)
+
     logger.info(
         "Sequential multi-metal: %d/%d atoms placed",
         len(trusted), mol.GetNumAtoms(),
