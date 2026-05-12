@@ -22503,9 +22503,32 @@ def _generate_alternative_binding_modes(
     """
     results: List[Tuple[str, str]] = []
 
+    # Iter-8.6 multi-σ timeout-mitigation: env-gated wall-clock budget.
+    # Multi-metal fragments fire 8-seed × 6 s ETKDG sweeps per rewire
+    # candidate; with ~12 alt donors × 2 metals × top_k=8 templates the
+    # cumulative cost exceeds the 600 s per-SMILES driver budget, so the
+    # outer pool_evaluator marks the SMILES as timeout and the entire
+    # multi-σ result set is lost.  When DELFIN_ALT_MODE_BUDGET_S is set
+    # to a positive integer, the candidate loop breaks once that many
+    # wall-clock seconds have elapsed.  Partial results are returned.
+    # Default 0 → disabled, bit-exact baseline behaviour.
+    import time as _time_mod
+    _alt_budget_s = 0.0
+    try:
+        _alt_budget_s = float(os.environ.get("DELFIN_ALT_MODE_BUDGET_S", "0") or 0)
+    except Exception:
+        _alt_budget_s = 0.0
+    _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
+
     for atom in mol.GetAtoms():
         if atom.GetSymbol() not in _METAL_SET:
             continue
+        if _alt_t0 is not None and (_time_mod.monotonic() - _alt_t0) > _alt_budget_s:
+            logger.debug(
+                "alt-binding budget %.1fs exceeded — stopping at metal loop",
+                _alt_budget_s,
+            )
+            return results
         metal_idx = atom.GetIdx()
         bonded = {nbr.GetIdx() for nbr in atom.GetNeighbors()}
         current_donors = list(bonded)
@@ -22530,6 +22553,12 @@ def _generate_alternative_binding_modes(
                 if not _is_viable_donor(mol, alt_d, bonded):
                     continue
                 if len(results) >= max_alternatives:
+                    return results
+                if _alt_t0 is not None and (_time_mod.monotonic() - _alt_t0) > _alt_budget_s:
+                    logger.debug(
+                        "alt-binding budget %.1fs exceeded — stopping at donor loop",
+                        _alt_budget_s,
+                    )
                     return results
 
                 alt_sym = mol.GetAtomWithIdx(alt_d).GetSymbol()
