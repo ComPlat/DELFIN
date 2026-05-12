@@ -10167,6 +10167,16 @@ def _fix_secondary_metal_distances(
 
     hapto_metals = {mi for mi, _ in hapto_groups}
 
+    # Collect ALL hapto-bound atoms across every hapto group.  These belong
+    # to another metal's η-coordination sphere and MUST NOT be dragged by
+    # the donor-pull below — doing so collapses the Cp/arene ring onto the
+    # wrong metal (e.g. Fe5 η5-Cp ring 2 in Fe-Cp-Ni-bimetallic case
+    # diagnosed 2026-05-12 — see /tmp/agent3_multi_hapto_recovery.md).
+    all_hapto_atoms: set = set()
+    for _mi_h, _catoms in hapto_groups:
+        for _a in _catoms:
+            all_hapto_atoms.add(_a)
+
     for atom in mol.GetAtoms():
         mi = atom.GetIdx()
         msym = atom.GetSymbol()
@@ -10212,6 +10222,12 @@ def _fix_secondary_metal_distances(
             dist = float(np.linalg.norm(dpos - mpos))
             if dist < 1e-8 or abs(dist - target) / target < 0.30:
                 continue
+            # Skip drag if donor is a hapto atom of ANOTHER metal — pulling
+            # it would shear the Cp/arene ring off its η-metal.  Verified
+            # on Fe-Cp-Ni-bimetallic: Fe5-centroid₂ collapsed 1.65 → 1.012 Å
+            # before this guard.  See /tmp/agent3_multi_hapto_recovery.md.
+            if di in all_hapto_atoms:
+                continue
             direction = (dpos - mpos) / dist
             delta = direction * (target - dist)
             # Limited BFS: donor + up to 5 non-metal, non-hapto neighbors
@@ -10227,6 +10243,10 @@ def _fix_secondary_metal_distances(
                         continue
                     # Don't cross into another donor's territory
                     if ni2 in set(donors) and ni2 != di:
+                        continue
+                    # Belt-and-braces: don't drag hapto atoms of another
+                    # metal even if BFS reaches them via a sigma neighbor.
+                    if ni2 in all_hapto_atoms:
                         continue
                     local_frag.add(ni2)
                     bfs_q.append(ni2)
