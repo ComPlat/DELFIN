@@ -171,12 +171,36 @@ class GlobalJobManager:
 
         Args:
             config: DELFIN configuration dictionary containing PAL, maxcore, etc.
+
+        Mutates `config` in place with the sanitized values (PAL, maxcore,
+        pal_jobs, parallel_mode). Required so that all downstream consumers
+        — _WorkflowManager → ClassicEngine.maxcore_mb, occupier.py / esd_input_
+        generator.py ORCA `%maxcore` writers, PipelineContext etc. — see the
+        same derated value when SLURM headroom forces a maxcore cap. Without
+        this propagation, Engine.maxcore_mb stayed at the original value, the
+        single PAL-wide ORCA job's memory_mb exceeded the pool budget, and
+        esd_S0 deadlocked until walltime (jobs 4233067 / 4649394 / 4649447,
+        2026-05-08…11).
+
+        Covers all entry points: initial submit (cli.py), --recalc /
+        --smart-recalc (cli.py path), IMAG (cli_imag.py), nested OCCUPIER
+        (occupier.py).
         """
         # Ensure previous shutdown/interrupt state doesn't leak into a new run
         self._shutdown_requested.clear()
 
         sanitized = self._sanitize_resource_config(config)
         requested_signature = self._config_signature_value(sanitized)
+
+        # Propagate sanitized values back to the caller's dict so all downstream
+        # readers see the derated maxcore, not the original CONTROL.txt value.
+        if isinstance(config, dict):
+            config.update({
+                'PAL': sanitized['PAL'],
+                'maxcore': sanitized['maxcore'],
+                'pal_jobs': sanitized['pal_jobs'],
+                'parallel_mode': sanitized['parallel_mode'],
+            })
 
         if self.pool is not None:
             if self._config_signature == requested_signature:
