@@ -19630,6 +19630,47 @@ def _snap_aromatic_rings_to_plane(
                     changed = True
                 except Exception:
                     continue
+        # Phase 5A (2026-05-12): universal H-bond-length normalization for
+        # non-ring/sp3/methyl/orphan H atoms.  Per Wave-2A forensik, η-isomer
+        # emit paths (HD-TA, OB-WRS) bypass the normal UFF+snap pipeline and
+        # produce collapsed C-H bonds (D-JESNAA01 H min 0.54 Å observed).
+        # Aromatic-H projection above only fixes ring-attached H; the
+        # additional pass below normalizes any other H whose parent-distance
+        # is outside [0.92, 1.20] Å to ideal X-H along the existing
+        # parent→H direction.  Env-gated default OFF for safety.
+        if _delfin_env_int("DELFIN_H_UNIVERSAL_NORMALIZE", 0):
+            try:
+                for atom in mol_template.GetAtoms():
+                    if atom.GetAtomicNum() != 1:
+                        continue
+                    nbrs = atom.GetNeighbors()
+                    if len(nbrs) != 1:
+                        continue
+                    parent = nbrs[0]
+                    if parent.GetIsAromatic() and parent.IsInRing():
+                        continue
+                    h_idx = atom.GetIdx()
+                    p_idx = parent.GetIdx()
+                    p_pos_o = conf.GetAtomPosition(p_idx)
+                    h_pos_o = conf.GetAtomPosition(h_idx)
+                    p_pos = np.array([p_pos_o.x, p_pos_o.y, p_pos_o.z])
+                    h_pos = np.array([h_pos_o.x, h_pos_o.y, h_pos_o.z])
+                    vec = h_pos - p_pos
+                    d = float(np.linalg.norm(vec))
+                    if d < 0.1:
+                        continue
+                    if 0.92 <= d <= 1.20:
+                        continue
+                    sym = parent.GetSymbol()
+                    d_xh = _ideal_xh.get(sym, 1.08)
+                    h_new = p_pos + vec / d * d_xh
+                    conf.SetAtomPosition(
+                        int(h_idx),
+                        (float(h_new[0]), float(h_new[1]), float(h_new[2])),
+                    )
+                    changed = True
+            except Exception as exc:
+                logger.debug("H universal-normalize skipped: %s", exc)
         return changed
     except Exception as exc:
         logger.debug("_snap_aromatic_rings_to_plane failed: %s", exc)
