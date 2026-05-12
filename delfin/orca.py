@@ -1174,29 +1174,49 @@ def _run_orca_isolated(
         except Exception as e:
             logger.debug(f"Could not rewrite paths in input: {e}")
 
-        # Run ORCA in the isolated directory
+        # Run ORCA in the isolated directory.
         # Each isolated job gets its own scratch subdirectory to prevent
-        # temp file collisions (e.g., V-matrix) between parallel ORCA jobs
-        iso_output = iso_dir / output_path.name
+        # temp file collisions (e.g., V-matrix) between parallel ORCA jobs.
+        #
+        # IMPORTANT: ORCA's main output (.out) is written DIRECTLY to
+        # parent_dir/<output_name>, NOT to iso_dir. This way:
+        #   1. The output file is visible in /calc/ via periodic sync from
+        #      the very first ORCA write (header, basis-set echo, SCF iters).
+        #   2. If iso_dir disappears mid-run (ORCA's own scratch cleanup,
+        #      Lustre/NFS glitch, MPI fault), the captured stdout/stderr
+        #      survives — we have a real diagnosis instead of "[Errno 2]
+        #      No such file or directory" with nothing to look at.
+        # Temp files (.gbw, .tmp, .densities, scratch artefacts) still land
+        # in iso_dir via working_dir, preserving the race-condition isolation
+        # between parallel ORCA jobs that the iso_dir was designed for.
+        # output_path is unique per workflow job (S0.out, S1.out, …) so writing
+        # directly to it cannot create a cross-job race.
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as mkdir_exc:  # noqa: BLE001
+            logger.debug(f"Could not pre-create parent dir {output_path.parent}: {mkdir_exc}")
         effective_scratch = scratch_subdir if scratch_subdir else Path(iso_dir.name)
         success = _run_orca_subprocess(
             orca_path,
             str(iso_input),
-            str(iso_output),
+            str(output_path),
             timeout,
             scratch_subdir=effective_scratch,
             working_dir=iso_dir,
         )
 
-        # Copy results back to original directory
-        # Output file
-        if iso_output.exists():
-            shutil.copy2(iso_output, output_path)
-
-        # Copy all regular files back to the original directory. This is more
-        # robust than enumerating extensions and ensures we don't miss files
-        # needed by subsequent steps (e.g., molden, trajectories, etc.).
-        for src in iso_dir.iterdir():
+        # Copy auxiliary files (.gbw, .densities, .opt, .engrad, .hess, …)
+        # from iso_dir back to parent_dir. The .out file is already there
+        # (written directly above). Defensive against iso_dir disappearing
+        # mid-iteration: each file copy is independently try/excepted, and
+        # the iterdir() itself is wrapped — if iso_dir is gone we still
+        # have the main .out from the direct write above.
+        try:
+            iso_entries = list(iso_dir.iterdir())
+        except OSError as iter_exc:
+            logger.debug(f"Could not list isolated dir {iso_dir} for aux-file copy: {iter_exc}")
+            iso_entries = []
+        for src in iso_entries:
             try:
                 if not src.is_file():
                     continue
