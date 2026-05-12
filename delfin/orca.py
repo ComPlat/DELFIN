@@ -732,16 +732,45 @@ def _run_orca_subprocess(
                     6: 'SIGABRT', 9: 'SIGKILL (likely OOM-killer)',
                     11: 'SIGSEGV (segfault)', 15: 'SIGTERM (timeout/cancelled)',
                 }
+                # Detect OOM-kill: SIGKILL via cgroup OOM-killer surfaces as
+                # exit code 137 (= 128 + 9) for the wrapped process or as
+                # negative -9 if Python observes the signal directly.
+                signal_num = None
                 if return_code > 128:
-                    sig = return_code - 128
-                    sig_name = _SIGNAL_NAMES.get(sig, f'signal {sig}')
+                    signal_num = return_code - 128
+                    sig_name = _SIGNAL_NAMES.get(signal_num, f'signal {signal_num}')
                     logger.error(f"ORCA killed by {sig_name} (exit code {return_code}) for {input_file_path}")
                 elif return_code < 0:
-                    sig_name = _SIGNAL_NAMES.get(-return_code, f'signal {-return_code}')
+                    signal_num = -return_code
+                    sig_name = _SIGNAL_NAMES.get(signal_num, f'signal {signal_num}')
                     logger.error(f"ORCA killed by {sig_name} for {input_file_path}")
                 else:
                     logger.error(f"ORCA failed with exit code {return_code} for {input_file_path}")
                 logger.error(f"Check {output_log} for details")
+
+                # OOM hint: if the kill looks like cgroup-OOM (SIGKILL/9), tell
+                # the user how to lower the SLURM memory headroom in the
+                # Dashboard Settings tab → "Scheduling" so the next run doesn't
+                # repeat the same crash.
+                if signal_num == 9:
+                    try:
+                        from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+                        current_headroom = _resolve_slurm_mem_headroom()
+                        suggested = max(0.50, round(current_headroom - 0.05, 2))
+                        logger.warning(
+                            "OOM-HINT: ORCA was SIGKILL'd — most likely the Linux "
+                            "cgroup OOM-killer (SLURM allocation exceeded). Current "
+                            "SLURM memory headroom is %.0f%% of SLURM_MEM_PER_NODE; "
+                            "lowering it to %.0f%% in Dashboard Settings → "
+                            "'Scheduling (SLURM memory headroom)' will sequence "
+                            "parallel jobs more aggressively and prevent repeated "
+                            "OOM-kills. (Or set env DELFIN_SLURM_MEM_HEADROOM=%.2f "
+                            "for a one-shot override.)",
+                            current_headroom * 100, suggested * 100, suggested,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not emit OOM hint", exc_info=True)
+
                 _cleanup_process_group()
                 return False
 

@@ -64,7 +64,81 @@ def _default_pal_jobs_for_makespan(pal: int) -> int:
     return max(1, min(8, int(math.ceil(pal / 12.0))))
 
 
-_SLURM_MEM_HEADROOM = 0.85
+_SLURM_MEM_HEADROOM_DEFAULT = 0.90
+_SLURM_MEM_HEADROOM_MIN = 0.50
+_SLURM_MEM_HEADROOM_MAX = 0.99
+
+
+def _resolve_slurm_mem_headroom() -> float:
+    """Return the active SLURM memory-headroom fraction.
+
+    Resolution order (first match wins):
+      1. Env var DELFIN_SLURM_MEM_HEADROOM — power-user override per-shell.
+      2. Dashboard Settings tab → scheduling.slurm_mem_headroom (persisted
+         in ~/.delfin_settings.json).
+      3. Default 0.90 (10 % reserve under SLURM_MEM_PER_NODE).
+
+    Values outside [0.50, 0.99] are clamped — anything ≥ 1.0 risks OOM-
+    SIGKILL because Linux cgroup is unforgiving.
+
+    History:
+      * 5edfb89 (2026-05-05) introduced the cap at 0.85 after JEW-R465
+        OOM-kill (312 GB / 351 GB SLURM, two parallel OCCUPIER jobs
+        SIGKILL after 48 h walltime).
+      * 2026-05-12 raised default to 0.90 after Fritz' archive analysis
+        showed DFT-OPT real RSS = 80 % of `%maxcore × cores`. Correlation
+        methods (DLPNO-CC, MP2) can still trip at 0.90 — set lower for
+        those workflows.
+      * 2026-05-12 also exposed as user-editable Dashboard Settings entry
+        so users can tune per-cluster / per-method without code changes.
+    """
+    raw = os.environ.get("DELFIN_SLURM_MEM_HEADROOM", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid DELFIN_SLURM_MEM_HEADROOM=%r — falling back to settings/default",
+                raw,
+            )
+            value = None
+    else:
+        value = None
+
+    if value is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+            value = float(
+                settings.get("scheduling", {}).get(
+                    "slurm_mem_headroom", _SLURM_MEM_HEADROOM_DEFAULT
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Could not load scheduling.slurm_mem_headroom from settings: {exc}")
+            value = _SLURM_MEM_HEADROOM_DEFAULT
+
+    if value < _SLURM_MEM_HEADROOM_MIN:
+        logger.warning(
+            "SLURM_MEM_HEADROOM %.2f below minimum %.2f — clamping",
+            value, _SLURM_MEM_HEADROOM_MIN,
+        )
+        return _SLURM_MEM_HEADROOM_MIN
+    if value > _SLURM_MEM_HEADROOM_MAX:
+        logger.warning(
+            "SLURM_MEM_HEADROOM %.2f above maximum %.2f — clamping "
+            "(values >= 1.0 risk OOM-SIGKILL)",
+            value, _SLURM_MEM_HEADROOM_MAX,
+        )
+        return _SLURM_MEM_HEADROOM_MAX
+    return value
+
+
+# Backwards-compatible alias. Existing tests, banner, and log messages
+# import this name. We keep it tied to the default so test code that
+# patches DEFAULT or asserts against a fixed value still works; live
+# scheduling uses _resolve_slurm_mem_headroom() to pick up overrides.
+_SLURM_MEM_HEADROOM = _SLURM_MEM_HEADROOM_DEFAULT
 
 
 def _slurm_node_memory_mb() -> Optional[int]:
@@ -100,7 +174,7 @@ def _budgeted_memory_mb(pal: int, maxcore_mb: int) -> Tuple[int, Optional[int]]:
     slurm_mem = _slurm_node_memory_mb()
     if slurm_mem is None or slurm_mem <= 0:
         return requested, None
-    cap = int(slurm_mem * _SLURM_MEM_HEADROOM)
+    cap = int(slurm_mem * _resolve_slurm_mem_headroom())
     return min(requested, cap), slurm_mem
 
 
@@ -268,7 +342,7 @@ class GlobalJobManager:
         if self._slurm_node_memory_mb is not None:
             banner_lines.append(
                 _banner_line(
-                    f"• SLURM mem cap: {self._slurm_node_memory_mb} MB ({_SLURM_MEM_HEADROOM:.0%} headroom)",
+                    f"• SLURM mem cap: {self._slurm_node_memory_mb} MB ({_resolve_slurm_mem_headroom():.0%} headroom)",
                     align="left",
                 )
             )
@@ -433,7 +507,8 @@ class GlobalJobManager:
 
         slurm_mem = _slurm_node_memory_mb()
         if slurm_mem is not None and slurm_mem > 0:
-            cap = int(slurm_mem * _SLURM_MEM_HEADROOM)
+            headroom = _resolve_slurm_mem_headroom()
+            cap = int(slurm_mem * headroom)
             if pal * maxcore > cap:
                 derated = max(256, cap // pal)
                 if derated < maxcore:
@@ -445,7 +520,7 @@ class GlobalJobManager:
                         "would deadlock until walltime.",
                         maxcore, derated, pal,
                         pal * maxcore, slurm_mem,
-                        _SLURM_MEM_HEADROOM * 100, cap,
+                        headroom * 100, cap,
                     )
                     maxcore = derated
 

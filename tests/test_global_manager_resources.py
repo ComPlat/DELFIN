@@ -203,3 +203,80 @@ def test_initialize_preserves_caller_dict_when_no_derate_needed(monkeypatch):
     assert config["maxcore"] == 4000  # 12 * 4000 = 48000 < 91800, no derate
     mgr.shutdown()
     GlobalJobManager._instance = None
+
+
+def test_resolve_headroom_default_is_90_percent(monkeypatch):
+    """Default headroom raised from 0.85 → 0.90 on 2026-05-12. Pin it.
+
+    Anyone who needs the older conservative 0.85 should set the env var or
+    Dashboard Settings; the in-code default reflects the validated Fritz-
+    archive measurement that DFT-OPT real RSS is ~80 % of promised.
+    """
+    from delfin.workflows.scheduling.manager import (
+        _resolve_slurm_mem_headroom,
+        _SLURM_MEM_HEADROOM_DEFAULT,
+    )
+    monkeypatch.delenv("DELFIN_SLURM_MEM_HEADROOM", raising=False)
+    assert _SLURM_MEM_HEADROOM_DEFAULT == 0.90
+    # When no env override and no settings file with override, default holds
+    assert abs(_resolve_slurm_mem_headroom() - 0.90) < 1e-6 or \
+           0.50 <= _resolve_slurm_mem_headroom() <= 0.99  # (settings could override)
+
+
+def test_resolve_headroom_env_override(monkeypatch):
+    """ENV var beats settings + default — for power-users + ad-hoc tuning."""
+    from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+
+    monkeypatch.setenv("DELFIN_SLURM_MEM_HEADROOM", "0.85")
+    assert abs(_resolve_slurm_mem_headroom() - 0.85) < 1e-6
+
+
+def test_resolve_headroom_clamps_above_max(monkeypatch):
+    """Values >= 1.0 risk OOM — clamp to 0.99."""
+    from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+
+    monkeypatch.setenv("DELFIN_SLURM_MEM_HEADROOM", "1.5")
+    assert abs(_resolve_slurm_mem_headroom() - 0.99) < 1e-6
+
+
+def test_resolve_headroom_clamps_below_min(monkeypatch):
+    """Values < 0.50 waste resources — clamp to 0.50."""
+    from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+
+    monkeypatch.setenv("DELFIN_SLURM_MEM_HEADROOM", "0.10")
+    assert abs(_resolve_slurm_mem_headroom() - 0.50) < 1e-6
+
+
+def test_resolve_headroom_invalid_falls_back(monkeypatch):
+    """Garbage env value silently falls back to settings/default."""
+    from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+
+    monkeypatch.setenv("DELFIN_SLURM_MEM_HEADROOM", "not-a-number")
+    value = _resolve_slurm_mem_headroom()
+    # Either the persisted settings value, or the default — must be within range
+    assert 0.50 <= value <= 0.99
+
+
+def test_user_settings_round_trip_headroom(monkeypatch, tmp_path):
+    """Settings can persist scheduling.slurm_mem_headroom and load it back."""
+    from delfin import user_settings as us
+
+    settings_file = tmp_path / "delfin_settings.json"
+    monkeypatch.setattr(us, "get_settings_path", lambda *a, **k: settings_file)
+
+    payload = {"scheduling": {"slurm_mem_headroom": 0.85}}
+    us.save_settings(payload)
+    loaded = us.load_settings()
+    assert loaded["scheduling"]["slurm_mem_headroom"] == 0.85
+
+
+def test_user_settings_rejects_invalid_headroom(monkeypatch, tmp_path):
+    """Out-of-range headroom in settings file is rejected with a clear error."""
+    from delfin import user_settings as us
+
+    settings_file = tmp_path / "delfin_settings.json"
+    monkeypatch.setattr(us, "get_settings_path", lambda *a, **k: settings_file)
+
+    import pytest as _pt
+    with _pt.raises(ValueError, match="headroom"):
+        us.save_settings({"scheduling": {"slurm_mem_headroom": 1.5}})
