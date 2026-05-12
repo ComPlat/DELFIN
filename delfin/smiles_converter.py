@@ -1001,32 +1001,36 @@ def _apply_uff_jitter(
         return xyz_delfin
 
 
-def _class_conditional_flag(name: str, mol, default: int = 0) -> bool:
+def _class_conditional_flag(name: str, mol, default: int = 0,
+                            default_classes=None) -> bool:
     """Class-conditional env-flag (Iter-8.6c pattern, generalized Phase 3B).
 
     Precedence:
       1. If ``DELFIN_<name>_CLASSES`` is set (comma-separated class list)
          → flag is True iff ``_classify_complex_class(mol)`` is in that list.
-      2. Else ``DELFIN_<name>`` integer (default ``default``).
+      2. Else if ``default_classes`` is provided (Wave-4 extension)
+         → flag is True iff ``_classify_complex_class(mol)`` is in that list,
+         AND ``DELFIN_<name>`` is not explicitly set to ``0``.
+      3. Else ``DELFIN_<name>`` integer (default ``default``).
 
-    Use to make per-class overrides without changing global defaults.
-    Empty ``_CLASSES`` env-var (= unset) → fall back to scalar flag.
-
-    Examples:
-        Default behaviour (no env set, default=0):
-            _class_conditional_flag("SIGMA_PORT_123A130_ITER8", mol)  → False
-        Enable only for hapto class:
-            export DELFIN_SIGMA_PORT_123A130_ITER8_CLASSES="hapto"
-            → True iff mol classifies as hapto, else False.
+    Wave-4 extension: ``default_classes`` lets us ship class-targeted
+    default-ON behaviour without forcing the operator to set an env-var.
+    Operator can still override via DELFIN_<name>_CLASSES (different list)
+    or DELFIN_<name>=0 (disable entirely).
     """
     classes_env = f"{name}_CLASSES"
-    classes = {
-        x.strip() for x in (os.environ.get(classes_env, "") or "").split(",")
-        if x.strip()
-    }
+    env_classes_raw = os.environ.get(classes_env, "") or ""
+    classes = {x.strip() for x in env_classes_raw.split(",") if x.strip()}
     if classes:
         try:
             return _classify_complex_class(mol) in classes
+        except Exception:
+            return False
+    if default_classes:
+        if _delfin_env_int(name, 1) == 0:
+            return False
+        try:
+            return _classify_complex_class(mol) in set(default_classes)
         except Exception:
             return False
     return bool(_delfin_env_int(name, default))
@@ -9759,7 +9763,10 @@ def _build_multimetal_hapto_sequential(
     # AND env-flag set, so multi-sigma scaffolds (no hapto_groups) and
     # already-correct geometries are untouched.
     if (hapto_groups
-            and _delfin_env_int("DELFIN_MULTI_HAPTO_RECORRECT", 0)):
+            and _class_conditional_flag(
+                "DELFIN_MULTI_HAPTO_RECORRECT", mol, default=0,
+                default_classes=("multi_hapto",),
+            )):
         try:
             conf_check = scaffold_mol.GetConformer(0)
             needs_correction = False
@@ -11225,7 +11232,10 @@ def _correct_hapto_geometry(
     # set per metal INCLUDING same-metal σ-bonds, exclude both σ-donors and
     # their immediate neighbors from BFS fragment growth.
     same_metal_sigma_exclude: set = set()
-    if hapto_groups and _delfin_env_int("DELFIN_HAPTO_FRAG_STRICT", 0):
+    if hapto_groups and _class_conditional_flag(
+        "DELFIN_HAPTO_FRAG_STRICT", mol, default=0,
+        default_classes=("hapto", "multi_hapto"),
+    ):
         try:
             for atom in mol.GetAtoms():
                 if atom.GetIdx() not in metals:
@@ -22634,9 +22644,21 @@ def _generate_alternative_binding_modes(
     # wall-clock seconds have elapsed.  Partial results are returned.
     # Default 0 → disabled, bit-exact baseline behaviour.
     import time as _time_mod
-    _alt_budget_s = 60.0  # Phase 4D default-flip: 0 → 60 (multi-sigma timeout-mitigation)
+    # Wave-4 (A+D forensik): Phase 4D's universal 60s cap killed large
+    # bimetallic multi-σ conversions (Sn-Ir, Sn-Rh, Os-Sn, Fe-Fe μ-O,
+    # In-Ru). class-conditional: 60s for sigma/hapto (safe), 0s/unlimited
+    # for multi_sigma/multi_hapto (needs 100-500s).  Env override still
+    # respected for testing.
     try:
-        _alt_budget_s = float(os.environ.get("DELFIN_ALT_MODE_BUDGET_S", "60") or 60)
+        _env_budget_raw = os.environ.get("DELFIN_ALT_MODE_BUDGET_S")
+        if _env_budget_raw is not None and _env_budget_raw.strip() != "":
+            _alt_budget_s = float(_env_budget_raw)
+        else:
+            try:
+                _cls = _classify_complex_class(mol)
+            except Exception:
+                _cls = "sigma"
+            _alt_budget_s = 0.0 if _cls in ("multi_sigma", "multi_hapto") else 60.0
     except Exception:
         _alt_budget_s = 60.0
     _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
@@ -27805,13 +27827,15 @@ def _optimize_xyz_openbabel(
     # symmetric stationary point while staying within the M-D tolerance
     # window of downstream _verify_metal_connectivity.  XYZ-hash-seeded
     # → deterministic same-input → same-jitter.
-    # Phase 4D default-flip 2026-05-12: 0 → 1 — Agent A5 smoke500 verified
-    # all 4 classes improve or unchanged (+1.18pp sigma, +0.68pp hapto,
-    # +0.95pp multi-sigma; CESNIZ 0→6 isomers recovered).
+    # Phase 4D default-flip 2026-05-12: 0 → 1 — smoke500-verified +1.18pp sigma.
+    # Wave-4 voll-pool 11363 (A+B+I+K): jitter causes M-D break +7.71pp,
+    # h-clash files% +11.44pp, poly_mean_dev_Oh +4.17°, F3-bond +7.8%, F19-Td
+    # +10.3% across all classes.  Net loss far exceeds sigma gain.
+    # Reverted default 1 → 0 (Wave-4 Bundle 1).  Env override still works.
     if (
         constraints
         and constraints.get("fix_atoms")
-        and _delfin_env_int("DELFIN_UFF_JITTER", 1)
+        and _delfin_env_int("DELFIN_UFF_JITTER", 0)
     ):
         try:
             _jitter_mag_ppm = _delfin_env_int("DELFIN_UFF_JITTER_PPM", 500)
