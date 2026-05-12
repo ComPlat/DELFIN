@@ -1945,6 +1945,7 @@ def create_tab(ctx):
                 print('Error: No valid batch entries.')
                 return
 
+            any_success = False
             for entry in entries:
                 line_no = entry.get('line_no', '?')
                 name_raw = entry.get('name', '').strip()
@@ -2017,6 +2018,7 @@ def create_tab(ctx):
                 )
 
                 if result.returncode == 0:
+                    any_success = True
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
                     if mode == 'delfin-co2-chain':
                         print(
@@ -2027,6 +2029,9 @@ def create_tab(ctx):
                         print(f'Submitted {safe_job_name} [{input_kind.upper()}] (ID: {job_id})')
                 else:
                     print(f'Failed {safe_job_name}: {result.stderr or result.stdout}')
+
+            if any_success:
+                reset_form()
 
     def reset_form():
         _cancel_batch_preview_timer()
