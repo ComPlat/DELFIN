@@ -786,9 +786,15 @@ FINAL_BACKUP_PID=""
 
 periodic_copy() {
     sleep 60
+    # Rescue ORCA isolated-dir files first so the .out header (and any
+    # partial SCF iterations) is visible in /calc/ even before ORCA finishes.
+    # Without this, S0.out only appears at preemptive-walltime sync or job
+    # end — invisible during the run, lost entirely if ORCA crashes early.
+    [ -d "$RUN_DIR" ] && rescue_iso_files
     [ -d "$RUN_DIR" ] && sync_results_back "initial-60s" "minimal"
     while true; do
         sleep "${SYNC_INTERVAL}"
+        [ -d "$RUN_DIR" ] && rescue_iso_files
         [ -d "$RUN_DIR" ] && sync_results_back "periodic" "minimal"
     done
 }
