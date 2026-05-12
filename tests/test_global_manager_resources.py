@@ -149,3 +149,57 @@ def test_sanitize_derate_idempotent_under_slurm_cap(monkeypatch):
     second = manager._sanitize_resource_config(first)
 
     assert first["maxcore"] == second["maxcore"]
+
+
+def test_initialize_propagates_derated_maxcore_to_caller_dict(monkeypatch):
+    """Manager must mutate the caller's config dict with the sanitized maxcore.
+
+    Without this, ClassicEngine.maxcore_mb (read from config.get('maxcore')
+    in classic.py:199) keeps the original 9000 MB while the pool was capped at
+    91800 MB. _resolve_memory(forced=12) then returns 12 * 9000 = 108000 MB,
+    pool gate 91800 < 108000 blocks forever, esd_S0 deadlocks until walltime
+    (job 4649394 bug, 2026-05-11). Covers all initialize() callers: cli.py
+    (initial submit + recalc), cli_imag.py, occupier.py (nested).
+    """
+    from delfin.global_manager import GlobalJobManager
+
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "108000")
+    monkeypatch.delenv("SLURM_MEM_PER_CPU", raising=False)
+
+    # Reset singleton so initialize creates a fresh pool
+    GlobalJobManager._instance = None
+    mgr = GlobalJobManager()
+
+    config = {"PAL": 12, "maxcore": 9000, "pal_jobs": 2}
+    mgr.initialize(config)
+
+    cap = int(108000 * _SLURM_MEM_HEADROOM)
+    expected_derated = cap // 12
+    assert config["maxcore"] == expected_derated, (
+        f"Caller's config dict not propagated: got maxcore={config['maxcore']}, "
+        f"expected derated {expected_derated}. Engine.maxcore_mb would stay "
+        f"at the un-derated value and trigger esd_S0 deadlock."
+    )
+    assert mgr.maxcore_per_job == expected_derated
+    assert config["PAL"] == 12
+    # cleanup so other tests get a fresh singleton
+    mgr.shutdown()
+    GlobalJobManager._instance = None
+
+
+def test_initialize_preserves_caller_dict_when_no_derate_needed(monkeypatch):
+    """When PAL × maxcore fits the SLURM cap, the caller's maxcore is unchanged."""
+    from delfin.global_manager import GlobalJobManager
+
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "108000")
+    monkeypatch.delenv("SLURM_MEM_PER_CPU", raising=False)
+
+    GlobalJobManager._instance = None
+    mgr = GlobalJobManager()
+
+    config = {"PAL": 12, "maxcore": 4000, "pal_jobs": 2}
+    mgr.initialize(config)
+
+    assert config["maxcore"] == 4000  # 12 * 4000 = 48000 < 91800, no derate
+    mgr.shutdown()
+    GlobalJobManager._instance = None
