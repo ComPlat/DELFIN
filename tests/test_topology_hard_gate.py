@@ -233,3 +233,74 @@ class TestMultiFragmentSmiles:
         result = validate_topology_invariant(xyz, smiles)
         # With 2-fragment SMILES, the lone Cl at distance is expected → ok
         assert result.n_fragments_smiles >= 1
+
+
+# ----------------------------------------------------------------------
+# Tests — env-flag wiring inside smiles_converter
+# ----------------------------------------------------------------------
+
+class TestEnvFlagWiring:
+    """Verify DELFIN_TOPOLOGY_HARD_GATE env-flag wiring in smiles_converter."""
+
+    def test_default_off_returns_xyz(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        # No env-flag → default 0 → return xyz unchanged
+        monkeypatch.delenv("DELFIN_TOPOLOGY_HARD_GATE", raising=False)
+        xyz_str = _build_xyz([("Fe", 0.0, 0.0, 0.0), ("Cl", 2.3, 0.0, 0.0)])
+        result_xyz, result_err = _topology_hard_gate_check(xyz_str, "[Fe][Cl]")
+        assert result_xyz is xyz_str  # returned unchanged
+        assert result_err is None
+
+    def test_mode_0_returns_xyz_unchanged(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        monkeypatch.setenv("DELFIN_TOPOLOGY_HARD_GATE", "0")
+        # Even a clearly broken XYZ passes through in mode 0
+        bad_xyz = _build_xyz([
+            ("Fe", 0.0, 0.0, 0.0),
+            ("Cl", 0.01, 0.0, 0.0),  # collision with Fe
+        ])
+        result_xyz, result_err = _topology_hard_gate_check(bad_xyz, "[Fe][Cl]")
+        assert result_xyz is bad_xyz
+        assert result_err is None
+
+    def test_mode_1_log_only_returns_xyz(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        monkeypatch.setenv("DELFIN_TOPOLOGY_HARD_GATE", "1")
+        bad_xyz = _build_xyz([
+            ("Fe", 0.0, 0.0, 0.0),
+            ("Cl", 0.01, 0.0, 0.0),
+        ])
+        result_xyz, result_err = _topology_hard_gate_check(bad_xyz, "[Fe][Cl]")
+        # Mode 1: log-only, still returns xyz
+        assert result_xyz is bad_xyz
+        assert result_err is None
+
+    def test_mode_2_rejects_bad_xyz(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        monkeypatch.setenv("DELFIN_TOPOLOGY_HARD_GATE", "2")
+        bad_xyz = _build_xyz([
+            ("Fe", 0.0, 0.0, 0.0),
+            ("Cl", 0.01, 0.0, 0.0),  # collision
+        ])
+        result_xyz, result_err = _topology_hard_gate_check(bad_xyz, "[Fe][Cl]")
+        assert result_xyz is None
+        assert result_err is not None
+        assert "topology_hard_gate" in result_err
+
+    def test_mode_2_accepts_good_xyz(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        monkeypatch.setenv("DELFIN_TOPOLOGY_HARD_GATE", "2")
+        good_xyz = _build_xyz([
+            ("Fe", 0.0, 0.0, 0.0),
+            ("Cl", 2.3, 0.0, 0.0),  # Fe-Cl bond OK
+        ])
+        result_xyz, result_err = _topology_hard_gate_check(good_xyz, "[Fe][Cl]")
+        assert result_xyz is good_xyz
+        assert result_err is None
+
+    def test_none_xyz_passes_through(self, monkeypatch):
+        from delfin.smiles_converter import _topology_hard_gate_check
+        monkeypatch.setenv("DELFIN_TOPOLOGY_HARD_GATE", "2")
+        result_xyz, result_err = _topology_hard_gate_check(None, "[Fe]")
+        assert result_xyz is None
+        assert result_err is None

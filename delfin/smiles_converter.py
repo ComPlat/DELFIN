@@ -25540,6 +25540,40 @@ def smiles_to_xyz_quick(
     return _mol_to_xyz(mol), None
 
 
+def _topology_hard_gate_check(
+    xyz: Optional[str], smiles: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Env-flag-gated runtime topology-invariant validation.
+
+    Modes (DELFIN_TOPOLOGY_HARD_GATE):
+        0 — gate off, return (xyz, None) unchanged (default).
+        1 — log-only: warn on violation but still return xyz.
+        2+ — reject: return (None, "topology_hard_gate: ...") on violation.
+
+    Säule 1 of Hybrid-Path. Per nature_project/15_HYBRID_PATH_FINAL.md.
+    """
+    if xyz is None:
+        return None, None
+    mode = _delfin_env_int("DELFIN_TOPOLOGY_HARD_GATE", 0)
+    if mode == 0:
+        return xyz, None
+    try:
+        from delfin.topology_hard_gate import validate_topology_invariant
+        result = validate_topology_invariant(xyz, smiles)
+        if not result.passed:
+            reasons = ",".join(sorted({v.kind for v in result.violations}))
+            if mode == 1:
+                logger.warning(
+                    "topology_hard_gate (log-only mode=1): %s [smiles=%s]",
+                    reasons, smiles[:80],
+                )
+                return xyz, None
+            return None, f"topology_hard_gate: {reasons}"
+    except Exception as exc:
+        logger.debug("topology_hard_gate skipped: %s", exc)
+    return xyz, None
+
+
 def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,
@@ -26268,7 +26302,8 @@ def smiles_to_xyz(
             Path(output_path).write_text(xyz_content, encoding='utf-8')
             logger.info(f"Converted SMILES to XYZ using {method}: {output_path}")
 
-        return xyz_content, None
+        # Säule 1: runtime topology-invariant gate (env-flag-gated, default OFF)
+        return _topology_hard_gate_check(xyz_content, smiles)
 
     except Exception as e:
         msg = str(e)
@@ -26278,13 +26313,13 @@ def smiles_to_xyz(
                 if output_path:
                     Path(output_path).write_text(legacy_xyz, encoding='utf-8')
                     logger.info(f"Converted SMILES to XYZ using unsanitized fallback: {output_path}")
-                return legacy_xyz, None
+                return _topology_hard_gate_check(legacy_xyz, smiles)
         # Last resort: multi-strategy fallback for metal complexes
         if has_metal:
             logger.info("Trying multi-strategy fallback after exception: %s", e)
             multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
             if multi_xyz:
-                return multi_xyz, None
+                return _topology_hard_gate_check(multi_xyz, smiles)
         error = f"Error converting SMILES to XYZ: {e}"
         logger.error(error, exc_info=True)
         return None, error
