@@ -9955,20 +9955,18 @@ def _build_hybrid_hapto_complex(
     except Exception:
         pass
 
-    # Phase 5B (2026-05-12): always run _correct_hapto_geometry, not just when
-    # there are no secondary metals.  Per Wave-2C forensik: in
-    # ferrocenophane-bridged topology (Fe-Cp-Ni-bimetallic et al.) the
-    # secondary-metal placement DRAGS shared hapto atoms (C23 ∈ η5-Cp(Fe)
-    # AND σ-donor(Ni)) toward the secondary metal, collapsing Fe-Cp2 to
-    # 1.012Å (-39% off 1.65Å target).  The Phase 4A donor-drag guard
-    # unblocks isomer search but does not undo the geometry drift; the
-    # gate here previously SKIPPED the rigid-body Cp re-translation that
-    # would have repaired it.  Now run unconditionally to restore Cp
-    # geometry after any secondary-metal placement.
-    try:
-        _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
-    except Exception:
-        pass
+    # Phase 5B REVERTED (2026-05-12): unconditional _correct_hapto_geometry
+    # caused multi-sigma regression 42.9% → 0% (5 failed instead of 1)
+    # because the function disturbs multi-sigma scaffolds that have no
+    # hapto groups.  Per Wave-2C forensik the gate should be
+    # CONDITIONAL on Cp-centroid > 20% off target, not unconditional.
+    # Reverting to original gate.  Surgical conditional fix is future
+    # work; multi-hapto class stays at 0% topology pass for now.
+    if not secondary_metals:
+        try:
+            _correct_hapto_geometry(scaffold_mol, 0, hapto_groups)
+        except Exception:
+            pass
 
     # Final clash resolution: _enforce_donor_pi_coplanarity may have moved
     # atoms (especially H) into metal clash zones.
