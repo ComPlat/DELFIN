@@ -25592,6 +25592,7 @@ def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[
         return None
     try:
         from delfin.class_modules.registry import register_all_specialists
+        from delfin.class_modules.smiles_name_lookup import get_name_for_smiles
         from delfin.ensemble_router import route
         register_all_specialists()
         specialist = route(smiles)
@@ -25603,7 +25604,10 @@ def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[
                     f"ensemble_router strict: no specialist for "
                     f"({f.coord_class}, {f.metal_block})")
             return None  # fall through to legacy
-        xyz, err = specialist.convert(smiles)
+        # D2: pass name so archive_readback can short-circuit to cached
+        # champion XYZ when SMILES is in a known pool.
+        smi_name = get_name_for_smiles(smiles)
+        xyz, err = specialist.convert(smiles, name=smi_name)
         if xyz is None and mode < 2:
             return None  # let legacy retry
         # Apply topology gate to specialist output
