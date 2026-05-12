@@ -132,12 +132,10 @@ class TestRouterEnvFlag:
         )
         assert xyz.startswith("FALLBACK-")
 
-    def test_mode_1_falls_back_when_no_specialist(self, monkeypatch):
+    def test_mode_1_falls_back_when_no_route(self, monkeypatch):
         monkeypatch.setenv("DELFIN_ENSEMBLE_ROUTER", "1")
-        # No specialists registered → must fall back
-        xyz, err = route_or_fallback(
-            "[Fe-2]([Cl])([Cl])([Cl])[Cl]", self._fallback,
-        )
+        # s-block sodium not in routing table → must fall back
+        xyz, err = route_or_fallback("[Na+]", self._fallback)
         assert xyz is not None
         assert xyz.startswith("FALLBACK-")
 
@@ -170,6 +168,112 @@ class TestRoutingSummary:
 # ----------------------------------------------------------------------
 # End-to-end: gold-standard SMILES through classifier
 # ----------------------------------------------------------------------
+
+class TestChampionSpecialist:
+    """Tests for ChampionSpecialist + registry (Phase 2B)."""
+
+    def test_registry_register_all(self):
+        from delfin.class_modules.registry import (
+            register_all_specialists, _INITIALIZED,
+        )
+        # Idempotent
+        n1 = register_all_specialists()
+        n2 = register_all_specialists()
+        # First call registers (or 0 if already done), second always 0
+        assert n2 == 0
+
+    def test_specialist_protocol_fields(self):
+        from delfin.class_modules.registry import register_all_specialists
+        from delfin.class_modules import get_specialist
+        register_all_specialists()
+        spec = get_specialist("multi_sigma_123a130")
+        assert spec is not None
+        assert spec.id == "multi_sigma_123a130"
+        assert spec.source_commit == "123a130"
+        assert hasattr(spec, "convert")
+
+    def test_specialist_is_available_when_worktree_exists(self):
+        from delfin.class_modules.registry import register_all_specialists
+        from delfin.class_modules import get_specialist
+        register_all_specialists()
+        spec = get_specialist("multi_sigma_123a130")
+        # Worktree at /home/qmchem_max/agent_workspace/commit_sweep/worktrees/123a130
+        # should exist
+        assert spec.is_available()
+
+    def test_parse_driver_output_well_formed(self):
+        from delfin.class_modules.champion_specialist import ChampionSpecialist
+        out = (
+            "---XYZ-START---\n"
+            "Fe 0.0 0.0 0.0\n"
+            "Cl 2.3 0.0 0.0\n"
+            "---XYZ-END---\n"
+            "---ERR---\n"
+            ""
+        )
+        xyz, err = ChampionSpecialist._parse_driver_output(out)
+        assert xyz is not None
+        assert "Fe" in xyz
+        assert err is None
+
+    def test_parse_driver_output_error_path(self):
+        from delfin.class_modules.champion_specialist import ChampionSpecialist
+        out = (
+            "---XYZ-START---\n"
+            "\n"
+            "---XYZ-END---\n"
+            "---ERR---\n"
+            "RDKit failed: invalid SMILES"
+        )
+        xyz, err = ChampionSpecialist._parse_driver_output(out)
+        assert xyz is None
+        assert err is not None
+        assert "invalid" in err
+
+    def test_archive_readback_finds_existing_xyz(self, tmp_path):
+        from delfin.class_modules.champion_specialist import ChampionSpecialist
+        # Set up fake archive structure
+        archive_base = tmp_path
+        archive_sub = archive_base / "test_archive"
+        archive_sub.mkdir()
+        (archive_sub / "MOL1.xyz").write_text("3\nheader\nFe 0 0 0\nCl 2 0 0\nCl -2 0 0\n")
+
+        spec = ChampionSpecialist(
+            id="test",
+            source_commit="abc1234",
+            archive_subdir="test_archive",
+            archive_base=archive_base,
+        )
+        cached = spec._archive_lookup("MOL1")
+        assert cached is not None
+        assert "Fe" in cached
+
+    def test_archive_readback_returns_none_for_missing(self, tmp_path):
+        from delfin.class_modules.champion_specialist import ChampionSpecialist
+        spec = ChampionSpecialist(
+            id="test",
+            source_commit="abc1234",
+            archive_subdir="missing_archive",
+            archive_base=tmp_path,
+        )
+        assert spec._archive_lookup("NONE") is None
+        assert spec._archive_lookup("") is None
+        assert spec._archive_lookup(None) is None
+
+
+class TestEndToEndRouting:
+    """End-to-end: router + specialist + legacy fallback."""
+
+    def test_default_off_uses_fallback(self, monkeypatch):
+        from delfin.ensemble_router import route_or_fallback
+        from delfin.smiles_converter import smiles_to_xyz
+        monkeypatch.delenv("DELFIN_ENSEMBLE_ROUTER", raising=False)
+        xyz_router, _ = route_or_fallback(
+            "[Fe-2]([Cl])([Cl])([Cl])[Cl]", smiles_to_xyz,
+        )
+        xyz_legacy, _ = smiles_to_xyz("[Fe-2]([Cl])([Cl])([Cl])[Cl]")
+        assert xyz_router == xyz_legacy  # byte-identical when mode=0
+
 
 class TestGoldStandard:
     @pytest.mark.parametrize("smi,exp_coord,exp_block", [

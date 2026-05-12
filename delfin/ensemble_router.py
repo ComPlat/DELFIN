@@ -107,6 +107,13 @@ def route_or_fallback(
     if mode == 0:
         return fallback_fn(smiles, **kwargs)
 
+    # Lazy-register Champion specialists (only when router actually used)
+    try:
+        from delfin.class_modules.registry import register_all_specialists
+        register_all_specialists()
+    except Exception as exc:
+        logger.debug("specialist registry init failed: %s", exc)
+
     specialist = route(smiles)
     if specialist is None:
         if mode >= 2:
