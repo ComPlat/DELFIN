@@ -10,8 +10,10 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import concurrent.futures
+import hashlib
 import math
 import os
+import random
 import re
 import threading
 from pathlib import Path
@@ -917,6 +919,86 @@ def _delfin_env_int(name: str, default: int) -> int:
         return int(os.environ.get(name, str(default)))
     except Exception:
         return default
+
+
+def _apply_uff_jitter(
+    xyz_delfin: str,
+    atom_indices,
+    smiles: Optional[str],
+    magnitude: float = 0.05,
+) -> str:
+    """Apply deterministic hash-seeded micro-jitter to a subset of atoms.
+
+    Iter-8.7 (2026-05-12): the topology-enumerator path places metal +
+    monodentate donors at the ideal symmetric ``_TOPO_GEOMETRY_VECTORS``
+    positions (Td/Oh/TPR/ICOS/CUBO) and then freezes them during OB-UFF.
+    The frozen polyhedron is a stationary point of UFF, so identical
+    template-perfect bond lengths (e.g. Zn-Br = 2.3500 Å exact, Ru-N =
+    2.060/2.400 Å exact) survive the optimization byte-for-byte and the
+    surrounding ligand internals can collapse symmetrically.
+
+    Adding a small position offset (±``magnitude`` Å, default 0.05) to
+    each frozen atom BEFORE UFF breaks the symmetric stationary point
+    while remaining within the M-D distance tolerance window of the
+    downstream ``_verify_metal_connectivity`` check.  Per-coordinate
+    offsets are drawn from a SMILES-hash-seeded RNG so the same SMILES
+    always produces the same jitter (determinism for cache/dedup).
+
+    Args:
+        xyz_delfin: DELFIN-format coordinate block ("symbol x y z" per line,
+            no header).
+        atom_indices: iterable of 0-based atom indices to perturb.  Atoms
+            not in this set keep their original coordinates exactly.
+        smiles: SMILES string used as the hash seed.  ``None`` falls back
+            to a fixed seed (still deterministic).
+        magnitude: half-range of the uniform offset distribution in Å.
+
+    Returns:
+        Modified DELFIN-format XYZ string.  Returns ``xyz_delfin``
+        unchanged on any parse error.
+    """
+    try:
+        seed_src = (smiles or "").encode("utf-8")
+        seed_int = int.from_bytes(
+            hashlib.sha256(seed_src).digest()[:8], "big", signed=False
+        )
+        rng = random.Random(seed_int)
+
+        idx_set = set(int(i) for i in atom_indices)
+        if not idx_set:
+            return xyz_delfin
+
+        out_lines = []
+        for i, raw in enumerate(xyz_delfin.splitlines()):
+            if not raw.strip():
+                out_lines.append(raw)
+                continue
+            parts = raw.split()
+            if len(parts) < 4:
+                out_lines.append(raw)
+                continue
+            sym = parts[0]
+            try:
+                x = float(parts[1])
+                y = float(parts[2])
+                z = float(parts[3])
+            except ValueError:
+                out_lines.append(raw)
+                continue
+            # Draw three offsets in a deterministic order keyed by atom
+            # index so adding/removing atoms doesn't reshuffle the whole
+            # sequence.
+            dx = rng.uniform(-magnitude, magnitude)
+            dy = rng.uniform(-magnitude, magnitude)
+            dz = rng.uniform(-magnitude, magnitude)
+            if i in idx_set:
+                x += dx
+                y += dy
+                z += dz
+            out_lines.append(f"{sym:4s} {x:12.6f} {y:12.6f} {z:12.6f}")
+        return "\n".join(out_lines) + ("\n" if xyz_delfin.endswith("\n") else "")
+    except Exception:
+        return xyz_delfin
 
 
 def _class_conditional_flag(name: str, mol, default: int = 0) -> bool:
@@ -27558,6 +27640,36 @@ def _optimize_xyz_openbabel(
     """
     if not OPENBABEL_AVAILABLE:
         return (xyz_delfin, None) if return_energy else xyz_delfin
+
+    # Iter-8.7 (2026-05-12): hash-seeded micro-jitter on frozen atoms.
+    # The topology builder places M + monodentate donors at the exact
+    # symmetric _TOPO_GEOMETRY_VECTORS positions (Td/Oh/TPR/SAP/ICOS/
+    # CUBO) and OB-UFF then freezes them via constraints["fix_atoms"].
+    # A frozen polyhedron is a stationary point of UFF, so the template-
+    # perfect bond lengths (FUPVOB Zn-Br all 2.3500 Å exact, CESNIZ Ru-N
+    # 2.060/2.400 Å exact) survive UFF byte-identical and the surrounding
+    # ligand frame can collapse symmetrically (ZOQTEE 49/73 atoms at
+    # x ≈ 0).  A small ±0.05 Å offset on the frozen subset breaks the
+    # symmetric stationary point while staying within the M-D tolerance
+    # window of downstream _verify_metal_connectivity.  XYZ-hash-seeded
+    # → deterministic same-input → same-jitter.  Default OFF for byte-
+    # identical behaviour; opt-in via DELFIN_UFF_JITTER=1.
+    if (
+        constraints
+        and constraints.get("fix_atoms")
+        and _delfin_env_int("DELFIN_UFF_JITTER", 0)
+    ):
+        try:
+            _jitter_mag_ppm = _delfin_env_int("DELFIN_UFF_JITTER_PPM", 500)
+            _jitter_mag = max(0.0, _jitter_mag_ppm) / 10000.0
+            xyz_delfin = _apply_uff_jitter(
+                xyz_delfin,
+                constraints["fix_atoms"],
+                xyz_delfin,  # XYZ used as deterministic seed source
+                magnitude=_jitter_mag,
+            )
+        except Exception as exc:
+            logger.debug("UFF jitter failed, continuing unjittered: %s", exc)
 
     try:
         # Parse DELFIN lines (skip blank lines)
