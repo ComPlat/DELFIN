@@ -977,8 +977,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/status", "Show engine status", False),
     ("Session", "/compact", "Summarize context to reduce tokens", False),
     ("Session", "/context", "Show context-window usage + compaction status", False),
-    ("Session", "/agents", "List available subagent presets", False),
-    ("Session", "/skills", "List discovered skills", False),
+    ("Session", "/agents", "List subagent presets (or /agents stats for telemetry)", False),
+    ("Session", "/skills", "List discovered skills (or /skills <name> for body)", False),
     ("Session", "/undo", "Undo last agent turn (drop from context)", False),
     ("Session", "/retry", "Regenerate last response", False),
     ("Session", "/stop", "Stop current generation", False),
@@ -3113,14 +3113,22 @@ def create_tab(ctx):
             for _category, cmd, summary, has_args in items
         ]
         # Append discovered skills, filtered by the same query.
+        # The Skill dataclass exposes `.name`, `.description`, `.body`,
+        # `.source` only — earlier revisions referenced `.title` and
+        # `.slash_command` which never existed; that crashed the palette
+        # the moment any skill was discovered.
         try:
             from delfin.agent.skills import discover_skills
             q = (query or "").strip().lower()
             for skill in discover_skills():
-                hay = f"/skill {skill.name} {skill.title} {skill.description}".lower()
+                first_line = (skill.description
+                              or (skill.body or "").splitlines()[0]
+                              if skill.body else "")
+                hay = f"/skill {skill.name} {first_line}".lower()
                 if not q or q in hay:
-                    label = f"/skill {skill.name:<14}  {skill.title}"
-                    out.append((label, skill.slash_command))
+                    short = (first_line or "")[:60]
+                    label = f"/skill {skill.name:<14}  {short}"
+                    out.append((label, f"/skill {skill.name} "))
         except Exception:
             pass
         if not out:
@@ -3633,6 +3641,8 @@ def create_tab(ctx):
         result: dict = {"approved": False, "new_mode": "default"}
         state["_plan_approval_event"] = ev
         state["_plan_approval_result"] = result
+        # Stash the plan body so the accept-handler can persist it.
+        state["_pending_plan_body"] = plan
         # Surface the plan so the user sees what they're approving.
         _append_system_message(
             "📋 **Plan zur Freigabe** (klicke 'Plan akzeptieren' "
@@ -3655,6 +3665,18 @@ def create_tab(ctx):
         if ev is not None and result is not None:
             result["approved"] = True
             result["new_mode"] = "acceptEdits"
+            # Persist the approved plan so the user can re-open it later
+            # without going through the tool round-trip.
+            plan_body = state.pop("_pending_plan_body", "") or ""
+            if plan_body.strip():
+                try:
+                    from delfin.agent.memory_store import save_plan
+                    fpath = save_plan(plan_body, repo_root=ctx.repo_dir or ".")
+                    short = str(fpath).replace(str(Path.home()), "~")
+                    result["plan_path"] = str(fpath)
+                    _append_system_message(f"📝 Plan saved → {short}")
+                except Exception as exc:
+                    _append_system_message(f"Plan save failed: {exc}")
             ev.set()
 
     plan_accept_btn.on_click(_on_plan_accept_phase5)
@@ -5607,6 +5629,42 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/agents stats":
+            try:
+                from delfin.agent.subagents import (
+                    read_telemetry, summarize_telemetry,
+                )
+                records = read_telemetry()
+                stats = summarize_telemetry(records)
+            except Exception as exc:
+                _append_system_message(f"Could not read telemetry: {exc}")
+                return True
+            if not stats:
+                _append_system_message(
+                    "No subagent runs recorded yet. Invoke a subagent via "
+                    "the `subagent` tool and check back."
+                )
+                return True
+            lines = ["Subagent telemetry (lifetime totals):"]
+            lines.append(
+                f"  {'type':<18} {'n':>4} {'avg s':>7} {'in_tok':>8} "
+                f"{'out_tok':>8} {'err':>4} {'trunc':>6}"
+            )
+            for t in sorted(stats):
+                b = stats[t]
+                avg_s = (b["elapsed_s_total"] / b["count"]) if b["count"] else 0.0
+                lines.append(
+                    f"  {t:<18} {b['count']:>4} {avg_s:>7.1f} "
+                    f"{b['input_tokens_total']:>8} {b['output_tokens_total']:>8} "
+                    f"{b['errors']:>4} {b['truncated']:>6}"
+                )
+            lines.append(
+                f"\nLog: ~/.delfin/subagent_telemetry.jsonl "
+                f"({len(records)} records)"
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/agents":
             try:
                 from delfin.agent.subagents import list_subagents
@@ -5622,16 +5680,43 @@ def create_tab(ctx):
                 name = p.get("subagent_type") or p.get("name") or "?"
                 desc = p.get("description") or ""
                 lines.append(f"  {name:<18} {desc}")
+            lines.append(
+                "\nType `/agents stats` for lifetime cost/duration aggregates."
+            )
             _append_system_message("\n".join(lines))
             return True
 
-        if cmd == "/skills":
+        if cmd == "/skills" or cmd.startswith("/skills "):
             try:
-                from delfin.agent.skills import discover_skills
+                from delfin.agent.skills import discover_skills, get_skill
                 skills = discover_skills(ctx.repo_dir or None)
             except Exception as exc:
                 _append_system_message(f"Could not list skills: {exc}")
                 return True
+            arg = cmd[len("/skills "):].strip() if cmd.startswith("/skills ") else ""
+            # Detail view: /skills <name> prints the full body so the user
+            # can read what the skill does without loading it into the input.
+            if arg:
+                sk = get_skill(arg, ctx.repo_dir or None)
+                if sk is None:
+                    _append_system_message(
+                        f"Unknown skill '{arg}'. "
+                        "Type /skills (no arg) for the full list."
+                    )
+                    return True
+                src = str(getattr(sk, "source", "")).replace(
+                    str(Path.home()), "~"
+                )
+                _append_system_message(
+                    f"## /skill {sk.name}\n"
+                    f"_{(sk.description or '').strip()}_\n\n"
+                    f"---\n\n{sk.body.strip()}\n\n---\n"
+                    f"Source: `{src}`\n"
+                    f"Usage: `/skill {sk.name}` loads the body into your "
+                    "input so you can edit it before sending."
+                )
+                return True
+            # No arg → list mode
             if not skills:
                 _append_system_message(
                     "No skills installed. Drop a SKILL.md under "
@@ -5639,9 +5724,9 @@ def create_tab(ctx):
                     "delfin/agent/pack/skills/."
                 )
                 return True
-            lines = ["Discovered skills:"]
+            lines = ["Discovered skills (use `/skills <name>` to view body):"]
             for sk in skills:
-                slash = getattr(sk, "slash_command", "") or f"/skill {sk.name}"
+                slash = f"/skill {sk.name}"
                 desc = (sk.description or "").strip().splitlines()[0][:80] if sk.description else ""
                 lines.append(f"  {slash:<28} {desc}")
             _append_system_message("\n".join(lines))

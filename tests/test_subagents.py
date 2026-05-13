@@ -144,10 +144,11 @@ def test_subagent_tool_dispatch_calls_runner():
     """The 'subagent' tool dispatches to perms.subagent_runner."""
     captured = {}
 
-    def runner(*, subagent_type, description, prompt):
+    def runner(*, subagent_type, description, prompt, isolation=""):
         captured["type"] = subagent_type
         captured["desc"] = description
         captured["prompt"] = prompt
+        captured["isolation"] = isolation
         return {"result": "delegated", "subagent_type": subagent_type}
 
     with tempfile.TemporaryDirectory() as d:

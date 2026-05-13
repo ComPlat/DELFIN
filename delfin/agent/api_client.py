@@ -2154,6 +2154,18 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "answer."
                         ),
                     },
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["", "worktree"],
+                        "description": (
+                            "Optional isolation mode. 'worktree' "
+                            "creates a fresh git worktree under "
+                            "$TMPDIR and runs the sub-agent there, "
+                            "so any edits stay off the user's "
+                            "working tree until reviewed. Empty "
+                            "string (default) = inherit parent CWD."
+                        ),
+                    },
                 },
                 "required": ["subagent_type", "description", "prompt"],
             },
@@ -4526,6 +4538,7 @@ class _DocToolExecutor:
         sa_type = (arguments.get("subagent_type") or "").strip()
         description = (arguments.get("description") or "").strip()
         prompt = arguments.get("prompt") or ""
+        isolation = (arguments.get("isolation") or "").strip()
         if not sa_type:
             return json.dumps({"error": "subagent_type is required"})
         if sa_type not in _sa.SUBAGENT_PRESETS:
@@ -4552,6 +4565,7 @@ class _DocToolExecutor:
                 subagent_type=sa_type,
                 description=description,
                 prompt=prompt,
+                isolation=isolation,
             )
         except Exception as exc:
             return json.dumps({"error": f"subagent runner raised: {exc}"})
@@ -4912,13 +4926,17 @@ class OpenAIClient(_BaseClient):
             return
         from . import subagents as _sa
 
-        def _runner(*, subagent_type: str, description: str, prompt: str) -> dict:
+        def _runner(
+            *, subagent_type: str, description: str, prompt: str,
+            isolation: str = "",
+        ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
                 description=description,
                 prompt=prompt,
                 parent_client=self,
                 parent_perms=self._permissions,
+                isolation=isolation,
             )
             return res.to_payload()
 

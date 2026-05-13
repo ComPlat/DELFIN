@@ -54,6 +54,79 @@ _MAX_TOOL_CALLS = 30
 _MAX_WALL_S = 60.0
 _MAX_OUTPUT_TOKENS = 8000
 
+_TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
+_TELEMETRY_MAX_LINES = 5000
+
+
+def _write_telemetry(record: dict) -> None:
+    """Append a one-line JSON record to ``~/.delfin/subagent_telemetry.jsonl``.
+
+    Best-effort: silently skip if the home dir isn't writable. Trims to
+    the most recent ``_TELEMETRY_MAX_LINES`` entries to keep the file
+    cheap to read for ``/agents stats``.
+    """
+    try:
+        path = _TELEMETRY_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        # Best-effort trim — only every 50 writes to avoid I/O thrash
+        try:
+            stat = path.stat()
+            if stat.st_size > 1_000_000:  # ~5k records of 200 bytes
+                lines = path.read_text(encoding="utf-8").splitlines()
+                if len(lines) > _TELEMETRY_MAX_LINES:
+                    tail = lines[-_TELEMETRY_MAX_LINES:]
+                    path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def read_telemetry(path: Path | None = None, *, last_n: int | None = None) -> list[dict]:
+    """Load telemetry records as a list of dicts. Newest last."""
+    p = path or _TELEMETRY_PATH
+    if not p.exists():
+        return []
+    out: list[dict] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    if last_n is not None and last_n > 0:
+        return out[-last_n:]
+    return out
+
+
+def summarize_telemetry(records: list[dict]) -> dict:
+    """Group telemetry records by subagent_type and return per-type
+    aggregates (count, total elapsed_s, total in/out tokens, error rate)."""
+    by_type: dict[str, dict] = {}
+    for r in records:
+        t = r.get("subagent_type") or "?"
+        b = by_type.setdefault(t, {
+            "count": 0, "elapsed_s_total": 0.0,
+            "input_tokens_total": 0, "output_tokens_total": 0,
+            "errors": 0, "truncated": 0,
+        })
+        b["count"] += 1
+        b["elapsed_s_total"] += float(r.get("elapsed_s") or 0)
+        b["input_tokens_total"] += int(r.get("input_tokens") or 0)
+        b["output_tokens_total"] += int(r.get("output_tokens") or 0)
+        if r.get("error"):
+            b["errors"] += 1
+        if r.get("truncated"):
+            b["truncated"] += 1
+    return by_type
+
 
 @dataclass(frozen=True)
 class SubagentPreset:
@@ -266,6 +339,7 @@ class SubagentResult:
     output_tokens: int = 0
     truncated: bool = False
     error: str = ""
+    worktree: dict = field(default_factory=dict)
 
     def to_payload(self) -> dict:
         return {
@@ -281,14 +355,21 @@ class SubagentResult:
             "output_tokens": self.output_tokens,
             "truncated": self.truncated,
             "error": self.error,
+            "worktree": self.worktree or {},
         }
 
 
-def _derive_perms(parent_perms, mode: str):
-    """Clone parent_perms with the sub-agent's mode."""
+def _derive_perms(parent_perms, mode: str, workspace=None):
+    """Clone parent_perms with the sub-agent's mode + optional workspace.
+
+    Both fields are optional — the caller passes ``workspace=None`` when
+    no isolation is requested and the parent's workspace inherits.
+    """
     if parent_perms is None:
         return None
     try:
+        if workspace is not None:
+            return dataclasses.replace(parent_perms, mode=mode, workspace=workspace)
         return dataclasses.replace(parent_perms, mode=mode)
     except Exception:
         return parent_perms
@@ -304,13 +385,22 @@ def run_subagent(
     max_tool_calls: int = _MAX_TOOL_CALLS,
     max_wall_s: float = _MAX_WALL_S,
     max_output_tokens: int = _MAX_OUTPUT_TOKENS,
+    isolation: str = "",
 ) -> SubagentResult:
     """Run a sub-agent loop and return its final assistant message.
 
     The sub-agent shares the parent's underlying OpenAI client (so the
     same KIT-Toolbox endpoint and API key) but with an isolated
-    message list and (usually) tighter permissions. Returns a
-    SubagentResult; never raises.
+    message list and (usually) tighter permissions.
+
+    ``isolation="worktree"`` creates a fresh git worktree under
+    ``$TMPDIR/delfin-wt-<hex>`` and points the sub-agent's workspace
+    there, so any edits stay off the user's working tree until
+    explicitly reviewed/merged. Falls back gracefully if the parent
+    workspace isn't a git repo (just runs without isolation +
+    reports a warning on the result).
+
+    Returns a SubagentResult; never raises.
     """
     preset = SUBAGENT_PRESETS.get(subagent_type)
     if preset is None:
@@ -321,7 +411,26 @@ def run_subagent(
             error=f"unknown subagent_type: {subagent_type!r}. Pick one of {list(SUBAGENT_PRESETS)}.",
         )
 
-    sub_perms = _derive_perms(parent_perms, preset.mode)
+    # Optionally spin up an isolated git worktree before deriving the
+    # sub-agent's permissions. Defer the tear-down to the finally block.
+    isolation = (isolation or "").strip().lower()
+    worktree_info = None
+    isolation_warning = ""
+    if isolation == "worktree" and parent_perms is not None:
+        try:
+            from .worktree import enter_worktree as _enter_wt
+            parent_ws = getattr(parent_perms, "workspace", None)
+            if parent_ws is not None:
+                worktree_info = _enter_wt(parent_ws)
+        except Exception as exc:
+            isolation_warning = (
+                f"worktree isolation requested but failed ({exc}); "
+                "subagent ran in the parent workspace."
+            )
+            worktree_info = None
+
+    sub_workspace = worktree_info.path if worktree_info else None
+    sub_perms = _derive_perms(parent_perms, preset.mode, workspace=sub_workspace)
 
     # Use the parent client's underlying OpenAI client + model, but
     # swap permissions for the duration of this call.
@@ -383,19 +492,55 @@ def run_subagent(
             except Exception:
                 pass
 
+    # If an isolated worktree was created, tear it down — keep the dir
+    # when there are local changes so the user can review/merge.
+    worktree_summary: dict = {}
+    if worktree_info is not None:
+        try:
+            from .worktree import exit_worktree as _exit_wt
+            info = _exit_wt(worktree_info, keep_if_changed=True)
+            worktree_summary = {
+                "branch": info.branch,
+                "had_changes": bool(info.had_changes),
+                "final_path": str(info.final_path) if info.final_path else "",
+                "cleaned_up": bool(info.cleaned_up),
+            }
+        except Exception as exc:
+            worktree_summary = {"error": f"worktree teardown failed: {exc}"}
+
+    if isolation_warning and not error:
+        # Surface as a soft warning when nothing else went wrong.
+        worktree_summary["warning"] = isolation_warning
+
     final_text = "".join(final_text_parts).strip()
     if not final_text and not error:
         error = "sub-agent returned no text"
+    elapsed_s = time.monotonic() - t0
+    # Persist a telemetry record so the dashboard /agents stats command
+    # and the subagent-pane can show real costs/durations across runs.
+    _write_telemetry({
+        "ts": time.time(),
+        "subagent_type": subagent_type,
+        "description": description,
+        "isolation": isolation,
+        "elapsed_s": round(elapsed_s, 3),
+        "input_tokens": in_tokens,
+        "output_tokens": out_tokens,
+        "tool_calls_count": len(tool_calls_seen),
+        "truncated": truncated,
+        "error": error,
+    })
     return SubagentResult(
         subagent_type=subagent_type,
         description=description,
         final_text=final_text,
         tool_calls=tool_calls_seen,
-        elapsed_s=time.monotonic() - t0,
+        elapsed_s=elapsed_s,
         input_tokens=in_tokens,
         output_tokens=out_tokens,
         truncated=truncated,
         error=error,
+        worktree=worktree_summary,
     )
 
 
