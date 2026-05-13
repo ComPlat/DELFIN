@@ -133,6 +133,75 @@ slash-command, hook, and MCP surfaces are all live.
   "Subagents", "Parallel tool calls", "Context management", "Memory",
   "Skills", "Sandbox security boundary" sections.
 
+### Added — Agent (multi-day session hardening)
+
+Follow-up to the parity sprint focused specifically on long-running
+multi-day usage: making each turn cheaper, keeping context useful as
+it grows, refusing to forget user goals at compaction, and learning
+from repeated failures.
+
+**Prompt processing**
+- *Progressive disclosure stripper*. Heavy lazy sections of the solo
+  role prompt (chemistry decision tree, web research, notebook
+  handling, KIT sandbox, project-dev workflow, background jobs) are
+  marked with `<!-- module:NAME -->` comments. The prompt loader's
+  new `_strip_lazy_modules` runs a task-keyword heuristic and removes
+  inactive modules before injection. **Measured: 10 894 → 7 558
+  tokens (−31 %)** on a typical no-keyword turn; chemistry / web /
+  notebook tasks get their module back. Pipeline roles (quick /
+  reviewed / cluster / full) keep the full prompt — they're more
+  sensitive to subtle context changes. Opt-out via user setting
+  `agent.slim_prompt: false`.
+- *Cache-aware section order*. The per-turn-variable session-
+  environment block (cwd, git status, recent commits) moved from
+  position 3 in the solo prompt to the bottom (just before live
+  state + anchor), so the stable role-prompt + project-context
+  prefix can stay in the provider prompt cache between turns.
+
+**Context management**
+- *Sliding-window proactive compaction*. New
+  `AgentEngine._should_slide` / `_slide_window_trim` fire at 70 % of
+  the window (configurable via `_SLIDING_WINDOW_PCT`). User messages
+  survive verbatim; assistant payloads >2 kB get head + tail
+  truncation with a middle marker. The cliff-edge full compaction
+  at 95 % becomes much rarer because the sliding window keeps
+  trimming proactively.
+- *Selective full compaction*. When full compaction does fire,
+  user-role messages now contribute up to 400 chars to the summary
+  (not just the first line); tool-role messages are dropped except
+  for JSON-error markers; assistant text continues to be extractive-
+  summarised. Goal: the post-compaction agent remembers WHY it was
+  doing what it was doing.
+
+**Task workflow**
+- *Task dependency graph*. `TaskStore.create` gains `blocked_by`;
+  `TaskStore.update` gains `add_blocked_by` / `remove_blocked_by`
+  with automatic reverse-index maintenance on `blocks`.
+  Transitioning to `in_progress` is refused while any blocker is
+  unfinished. The `task_create` tool schema accepts the new field.
+- *Stalled-task detector*. After every worker turn, the dashboard
+  checks `TaskStore.find_stalled(max_age_s=600)` against the current
+  session; if any in-progress task has been untouched for >10 min the
+  user gets a one-shot suggestion to switch into `/mode plan` or
+  `/forget` the task.
+
+**Learning loops**
+- *Retrospective failure log* (`delfin/agent/failure_log.py`). Every
+  tool error gets written to `~/.delfin/failure_log.jsonl` (best-
+  effort, append-only, trimmed at 2 000 entries). Helpers
+  `read_failures`, `top_recurring` (≥N occurrences in 7 days), and
+  `detect_repeat_for_current_task` for retry-loop short-circuits.
+  `api_client._dispatch` writes the log automatically when a tool
+  returns `{"error": …}`. New `/failures` slash command (default
+  `top`; also `recent`, `clear`).
+- *BM25-style memory rerank*. `memory_store.format_memory_context`
+  now scores every fact against the query via the standard BM25
+  saturation curve (k1=1.2, b=0.75) with recency as a tiebreaker.
+  Replaces the previous token-set Jaccard score, which surfaced
+  unrelated facts whenever they happened to share stopword-like
+  tokens. Materially more relevant memories reach the prompt on
+  long sessions where facts have accumulated.
+
 ### Added
 - **Unified Calculator Factory** (`delfin/calculators.py`): 34 computational backends (8 MLP, 20 QM, 3 semi-empirical, 3 MD) accessible through a single `create_calculator()` interface returning standard ASE Calculator objects.
 - **ML Potential backends**: CHGNet, M3GNet/MatGL, SchNetPack, NequIP/Allegro, and ALIGNN added alongside existing ANI-2x, AIMNet2, and MACE-OFF, with CUDA device validation and automatic CPU fallback.
