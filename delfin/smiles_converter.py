@@ -27365,6 +27365,16 @@ def _build_coordination_constraints_from_xyz(
     if base is None:
         base = {"fix_atoms": [], "distances": [], "angles": [], "torsions": []}
 
+    # Baustein-5+6 Phase 3: collect metadata for opt-in soft-donor UFF mode.
+    # Populated only when DELFIN_UFF_SOFT_DONORS=1 consumer reads this meta.
+    # Format kept minimal so legacy callers that ignore the key are unaffected.
+    _soft_meta: Dict[str, Any] = {
+        "metal_indices": [],
+        "donor_indices": [],     # monodentate (non-chelate) donors only
+        "pairs": [],             # (m_idx, d_idx) tuples
+        "class_label": "no_metal",
+    }
+
     if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
         return base if any(base.values()) else None
 
@@ -27385,11 +27395,17 @@ def _build_coordination_constraints_from_xyz(
             seen_angle.add((a, b, c))
             seen_angle.add((c, b, a))
 
+        try:
+            _soft_meta["class_label"] = _classify_complex_class(mol_template)
+        except Exception:
+            _soft_meta["class_label"] = "no_metal"
+
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() not in _METAL_SET:
                 continue
             m_idx = atom.GetIdx()
             m_sym = atom.GetSymbol()
+            _soft_meta["metal_indices"].append(m_idx)
 
             donor_indices: List[int] = []
             for nbr in atom.GetNeighbors():
@@ -27461,6 +27477,10 @@ def _build_coordination_constraints_from_xyz(
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
                     continue
+                # Baustein-5+6 Phase 3: record monodentate M-D pair (used by
+                # opt-in soft-donor UFF mode downstream).
+                _soft_meta["donor_indices"].append(d_idx)
+                _soft_meta["pairs"].append((m_idx, d_idx))
                 if _uff_relax_donors:
                     # Skip freezing; rely on M-D distance constraint to
                     # preserve bond length while UFF relaxes the angle.
@@ -27725,6 +27745,13 @@ def _build_coordination_constraints_from_xyz(
     except Exception as exc:
         logger.debug("_build_coordination_constraints_from_xyz failed: %s", exc)
 
+    # Attach soft-donor meta only when at least one metal is present.
+    # Consumer (_optimize_xyz_openbabel) ignores this key unless
+    # DELFIN_UFF_SOFT_DONORS=1.  Legacy callers that don't read it are
+    # bit-exact unaffected.
+    if _soft_meta["metal_indices"]:
+        base["_soft_donor_meta"] = _soft_meta
+
     return base if any(base.values()) else None
 
 
@@ -27929,8 +27956,79 @@ def _optimize_xyz_openbabel(
         if constraints:
             try:
                 ob_constraints = pybel.ob.OBFFConstraints()
-                # Fix atom positions (1-based indices for OB)
+
+                # Baustein-5+6 Phase 3: opt-in soft-donor mode.
+                # When DELFIN_UFF_SOFT_DONORS=1 AND constraints carry the
+                # soft-donor meta block AND the complex class allows soft
+                # donors (sigma / multi_sigma), the monodentate-donor
+                # FixAtom entries are *replaced* by M-D distance pins so
+                # the donor can REORIENT during UFF (substituents find a
+                # tetrahedral configuration) while the M-D bond length
+                # stays at the lookup-table ideal.  Metal remains FixAtom.
+                # Hapto / multi_hapto / no_metal classes always fall back
+                # to legacy FixAtom behaviour (helper enforces this).
+                _soft_skip_donors: set = set()
+                _soft_meta = constraints.get("_soft_donor_meta") if isinstance(constraints, dict) else None
+                _soft_enabled = bool(_delfin_env_int("DELFIN_UFF_SOFT_DONORS", 0))
+                if _soft_enabled and _soft_meta:
+                    try:
+                        from delfin._uff_soft_donor import should_use_soft_donor  # lazy
+                        _cls = _soft_meta.get("class_label", "no_metal")
+                        if should_use_soft_donor(_cls):
+                            _donor_set = set(int(d) for d in _soft_meta.get("donor_indices", []))
+                            _pair_keys = {
+                                tuple(sorted((int(m), int(d))))
+                                for (m, d) in _soft_meta.get("pairs", [])
+                            }
+                            # Force-constant for the M-D distance pin
+                            # (used only when OB version accepts the 4-arg
+                            # AddDistanceConstraint signature; the 3-arg
+                            # OBFFConstraints API has no force-constant).
+                            _force_const = 10000.0
+                            # Replace donor FixAtom with M-D distance pin
+                            _soft_skip_donors = _donor_set
+                            for (m_idx, d_idx) in _soft_meta.get("pairs", []):
+                                try:
+                                    # Look up element symbols via OB atomic
+                                    # number to avoid UFF-typed strings.
+                                    _m_atom = ob_mol.OBMol.GetAtom(int(m_idx) + 1)
+                                    _d_atom = ob_mol.OBMol.GetAtom(int(d_idx) + 1)
+                                    m_sym = pybel.ob.GetSymbol(_m_atom.GetAtomicNum())
+                                    d_sym = pybel.ob.GetSymbol(_d_atom.GetAtomicNum())
+                                    d_ideal = float(_get_ml_bond_length(m_sym, d_sym))
+                                    ob_constraints.AddDistanceConstraint(
+                                        int(m_idx) + 1, int(d_idx) + 1, d_ideal
+                                    )
+                                except Exception as _exc:
+                                    # On any per-pair failure, fall back to
+                                    # FixAtom for that donor.
+                                    try:
+                                        ob_constraints.AddAtomConstraint(int(d_idx) + 1)
+                                    except Exception:
+                                        pass
+                                    _soft_skip_donors.discard(int(d_idx))
+                                    logger.debug(
+                                        "Soft-donor pin failed for M=%s D=%s: %s; "
+                                        "falling back to FixAtom",
+                                        m_idx, d_idx, _exc,
+                                    )
+                            # Quiet self-test/import sanity log.
+                            logger.debug(
+                                "DELFIN_UFF_SOFT_DONORS active: class=%s, "
+                                "n_donor_pins=%d", _cls, len(_soft_skip_donors)
+                            )
+                    except Exception as _exc:
+                        logger.debug(
+                            "Soft-donor setup failed (%s); using legacy "
+                            "FixAtom on donors", _exc,
+                        )
+                        _soft_skip_donors = set()
+
+                # Fix atom positions (1-based indices for OB).
+                # Skip donors that received an M-D distance pin above.
                 for idx in constraints.get('fix_atoms', []):
+                    if int(idx) in _soft_skip_donors:
+                        continue
                     ob_constraints.AddAtomConstraint(idx + 1)
                 # Distance constraints
                 for idx_a, idx_b, target in constraints.get('distances', []):
