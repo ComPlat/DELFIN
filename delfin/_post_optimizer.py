@@ -393,11 +393,16 @@ def _md_pairs(mol, metals: Sequence[int]) -> List[Tuple[int, int, float]]:
 def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
                      md_pairs: Sequence[Tuple[int, int, float]],
                      nb_pairs: Sequence[Tuple[int, int]]) -> bool:
-    """Hard topology gate — see module docstring."""
-    # M-D distance window.
+    """Hard topology gate — see module docstring.
+
+    v2 (post wave8-b5 forensik): tightened M-D window from [0.85, 1.10] →
+    [0.93, 1.07] after observed Ir-N compression to 1.71Å (0.83×ideal) on
+    02-Ir(ppy)2(acac). 15% compression chemically catastrophic.
+    """
+    # M-D distance window — tighter to prevent compression cascade.
     for (m, d, d_ideal) in md_pairs:
         d_cur = float(np.linalg.norm(coords[m] - coords[d]))
-        if d_cur < 0.85 * d_ideal or d_cur > 1.10 * d_ideal:
+        if d_cur < 0.93 * d_ideal or d_cur > 1.07 * d_ideal:
             return False
     # Non-bonded heavy-heavy collapse → new spurious bond.
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
@@ -896,13 +901,14 @@ def post_optimize_geometry(
     xyz: str,
     mol,
     class_label: str = "sigma",
-    max_iter: int = 20,
-    step_size: float = 0.3,
-    bond_tol: float = 0.10,
-    angle_tol: float = 5.0,
+    max_iter: int = 10,
+    step_size: float = 0.1,
+    bond_tol: float = 0.15,
+    angle_tol: float = 10.0,
     clash_factor: float = 0.85,
-    enable_symmetry: bool = True,
+    enable_symmetry: bool = False,
     enable_angles: bool = True,
+    md_drift_max: float = 0.05,
 ) -> Tuple[str, Dict]:
     """Apply PBD post-optimization to ``xyz`` using bonding info from ``mol``.
 
@@ -1052,6 +1058,25 @@ def post_optimize_geometry(
             _, coords, _ = _parse_xyz(xyz)
             topology_ok = True
             converged = False
+
+        # ---- v2 quality preservation gate (post wave8-b5 forensik) ---------
+        # Reject result if ANY M-D bond drifted more than md_drift_max from
+        # input, UNLESS the input itself was broken (Phase A catastrophic
+        # repair is supposed to drift large to fix breaks). Triggers only
+        # when input was already topology-OK and we drifted bonds anyway.
+        if topology_ok and md_pairs and initial_topology_ok:
+            _, coords_input, _ = _parse_xyz(xyz)
+            drift_max = 0.0
+            for (m_idx, d_idx, _d_ideal) in md_pairs:
+                d_before = float(np.linalg.norm(coords_input[m_idx] - coords_input[d_idx]))
+                d_after = float(np.linalg.norm(coords[m_idx] - coords[d_idx]))
+                drift_max = max(drift_max, abs(d_after - d_before))
+            if drift_max > md_drift_max:
+                # Optimization caused excessive M-D drift on already-good
+                # input — fall back to input (Bundle-1-equivalent behavior).
+                coords = coords_input
+                converged = False
+                report["fallback_md_drift"] = drift_max
 
         report["iterations"] = last_iter
         report["repairs"] = total_repairs
