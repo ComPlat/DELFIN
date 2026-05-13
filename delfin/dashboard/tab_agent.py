@@ -1008,6 +1008,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
     ("Commands", "/commands", "List user-defined slash commands from ~/.delfin/commands/", False),
     ("Project", "/init", "Scan repo + write AGENTS.md / .delfin/settings.json scaffold", False),
+    ("Bash", "/bash", "List/watch/kill bash_background jobs", False),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
     ("Workspace", "/workspace read", "Read a workspace file", True),
@@ -3564,7 +3565,13 @@ def create_tab(ctx):
     state["_ask_user_result"] = None
 
     def _show_ask_user_modal(args: dict) -> dict:
-        """Build buttons for each option and block until the user clicks."""
+        """Build buttons for each option and block until the user clicks.
+
+        When at least one option carries a ``preview`` field AND the
+        question is single-select, the layout switches to a side-by-side
+        comparison: option cards on the left, the currently-focused
+        option's markdown preview on the right.
+        """
         import threading as _th
         question = args.get("question", "")
         header = args.get("header", "")
@@ -3586,7 +3593,39 @@ def create_tab(ctx):
         chosen: set[str] = set()
         button_widgets: list = []
 
-        def _make_handler(label: str, btn):
+        has_previews = (
+            not multi
+            and any((opt.get("preview") or "").strip() for opt in options)
+        )
+
+        # Preview pane state: shared HTML widget; click on an option
+        # updates it. The first option's preview is shown on open.
+        preview_html = None
+        if has_previews:
+            preview_html = widgets.HTML(value="")
+
+            def _render_preview(opt: dict) -> str:
+                body = (opt.get("preview") or "").strip()
+                label = opt.get("label") or ""
+                title = (opt.get("description") or "").strip()
+                title_block = (
+                    f"<div style='color:#888;font-size:11px;margin-bottom:6px;'>"
+                    f"{_esc(title)}</div>" if title else ""
+                )
+                return (
+                    f"<div style='border:1px solid #444;border-radius:6px;"
+                    f"padding:8px;background:#111;font-family:monospace;"
+                    f"font-size:12px;color:#ddd;white-space:pre;"
+                    f"overflow-x:auto;max-height:380px;'>"
+                    f"<div style='color:#60a5fa;font-weight:600;"
+                    f"margin-bottom:4px;'>Preview: {_esc(label)}</div>"
+                    f"{title_block}{_esc(body)}</div>"
+                )
+
+            if options:
+                preview_html.value = _render_preview(options[0])
+
+        def _make_handler(label: str, btn, opt: dict):
             def _on_click(_b):
                 if multi:
                     if label in chosen:
@@ -3595,6 +3634,24 @@ def create_tab(ctx):
                     else:
                         chosen.add(label)
                         btn.button_style = "primary"
+                elif has_previews:
+                    # Two-stage: first click shows preview + arms confirm.
+                    # Already-armed click commits.
+                    if chosen == {label}:
+                        result["answers"] = [label]
+                        ev.set()
+                    else:
+                        chosen.clear()
+                        chosen.add(label)
+                        for w in button_widgets:
+                            if getattr(w, "_aubu_label", "") == label:
+                                w.button_style = "primary"
+                                w.description = f"✓ {label[:58]}"
+                            elif hasattr(w, "_aubu_label"):
+                                w.button_style = ""
+                                w.description = w._aubu_label[:60]
+                        if preview_html is not None:
+                            preview_html.value = _render_preview(opt)
                 else:
                     chosen.clear()
                     chosen.add(label)
@@ -3608,9 +3665,12 @@ def create_tab(ctx):
             btn = widgets.Button(
                 description=label[:60],
                 tooltip=desc[:200],
-                layout=widgets.Layout(width="auto"),
+                layout=widgets.Layout(
+                    width=("100%" if has_previews else "auto"),
+                ),
             )
-            btn.on_click(_make_handler(label, btn))
+            btn._aubu_label = label  # tag for re-styling on selection
+            btn.on_click(_make_handler(label, btn, opt))
             button_widgets.append(btn)
         if multi:
             confirm_btn = widgets.Button(
@@ -3622,7 +3682,34 @@ def create_tab(ctx):
                 ev.set()
             confirm_btn.on_click(_on_confirm)
             button_widgets.append(confirm_btn)
-        ask_user_buttons.children = tuple(button_widgets)
+
+        if has_previews:
+            # Vertical option list on the left, preview pane on the right.
+            options_col = widgets.VBox(
+                button_widgets,
+                layout=widgets.Layout(
+                    width="40%",
+                    gap="4px",
+                ),
+            )
+            hint = widgets.HTML(
+                value=(
+                    "<div style='color:#888;font-size:11px;margin-top:6px;'>"
+                    "Click an option to preview it; click again to confirm."
+                    "</div>"
+                ),
+            )
+            preview_col = widgets.VBox(
+                [preview_html, hint],
+                layout=widgets.Layout(width="60%"),
+            )
+            ask_user_buttons.layout.flex_flow = "row"
+            ask_user_buttons.layout.gap = "12px"
+            ask_user_buttons.children = (options_col, preview_col)
+        else:
+            ask_user_buttons.layout.flex_flow = "row wrap"
+            ask_user_buttons.layout.gap = "6px"
+            ask_user_buttons.children = tuple(button_widgets)
         ask_user_box.layout.display = ""
         # Block up to 5 minutes
         ev.wait(timeout=300)
@@ -5717,6 +5804,137 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/bash" or cmd.startswith("/bash "):
+            from delfin.agent import bash_jobs as _bj
+            arg = cmd[len("/bash "):].strip() if cmd.startswith("/bash ") else ""
+            reg = _bj.get_registry()
+            watchers = state.setdefault("_bg_watchers", {})
+            # /bash jobs  — list active + recently-finished jobs
+            if arg in ("", "jobs", "ls"):
+                jobs = list(reg._jobs.values())
+                if not jobs:
+                    _append_system_message("No background bash jobs.")
+                    return True
+                jobs.sort(key=lambda j: j.started_at, reverse=True)
+                lines = ["Background bash jobs:"]
+                for j in jobs[:20]:
+                    st = j.status_dict()
+                    flag = "▶" if st["running"] else "■"
+                    watched = " (watching)" if j.job_id in watchers else ""
+                    lines.append(
+                        f"  {flag} {j.job_id}  exit={st['exit_code']}  "
+                        f"{st['elapsed_s']:>6.1f}s  {st['command'][:60]}"
+                        f"{watched}"
+                    )
+                lines.append(
+                    "\n/bash watch <id> — stream new output to chat\n"
+                    "/bash unwatch <id> — stop streaming\n"
+                    "/bash kill <id> — SIGTERM then SIGKILL"
+                )
+                _append_system_message("\n".join(lines))
+                return True
+            # /bash watch <id>  — stream new lines as system messages
+            if arg.startswith("watch "):
+                jid = arg[len("watch "):].strip()
+                job = reg._jobs.get(jid)
+                if job is None:
+                    _append_system_message(f"No bash job '{jid}'.")
+                    return True
+                if jid in watchers:
+                    _append_system_message(
+                        f"Already watching {jid}. /bash unwatch {jid} to stop."
+                    )
+                    return True
+                import threading as _th
+                stop_ev = _th.Event()
+                last_size = {"stdout": 0, "stderr": 0}
+
+                def _stream():
+                    """Poll the job's stdout/stderr files every second and
+                    emit any new bytes as a system message. Auto-stops
+                    when the job exits or stop_ev is set."""
+                    try:
+                        while not stop_ev.is_set():
+                            try:
+                                for stream_name, path in (
+                                    ("stdout", job.stdout_path),
+                                    ("stderr", job.stderr_path),
+                                ):
+                                    if not path.is_file():
+                                        continue
+                                    sz = path.stat().st_size
+                                    if sz > last_size[stream_name]:
+                                        with path.open("r", encoding="utf-8", errors="replace") as f:
+                                            f.seek(last_size[stream_name])
+                                            chunk = f.read()
+                                        last_size[stream_name] = sz
+                                        if chunk.strip():
+                                            tag = "stderr" if stream_name == "stderr" else "stdout"
+                                            _append_system_message(
+                                                f"[{jid} · {tag}]\n{chunk.rstrip()}"
+                                            )
+                            except Exception:
+                                pass
+                            # Stop if the job finished
+                            if job.poll() is not None:
+                                stop_ev.set()
+                                break
+                            stop_ev.wait(timeout=1.0)
+                    finally:
+                        watchers.pop(jid, None)
+                        _append_system_message(
+                            f"[{jid}] watcher stopped "
+                            f"(exit={job.status_dict()['exit_code']})."
+                        )
+
+                t = _th.Thread(target=_stream, daemon=True)
+                t.start()
+                watchers[jid] = (t, stop_ev)
+                _append_system_message(
+                    f"▶ Watching {jid} — new output will stream to chat. "
+                    f"Stop with /bash unwatch {jid}."
+                )
+                return True
+            # /bash unwatch <id>  — stop a watcher
+            if arg.startswith("unwatch "):
+                jid = arg[len("unwatch "):].strip()
+                entry = watchers.pop(jid, None)
+                if entry is None:
+                    _append_system_message(f"Not watching '{jid}'.")
+                else:
+                    _, stop_ev = entry
+                    stop_ev.set()
+                    _append_system_message(f"Stopped watching {jid}.")
+                return True
+            # /bash kill <id>  — SIGTERM then SIGKILL the underlying process
+            if arg.startswith("kill "):
+                jid = arg[len("kill "):].strip()
+                job = reg._jobs.get(jid)
+                if job is None:
+                    _append_system_message(f"No bash job '{jid}'.")
+                    return True
+                try:
+                    job.proc.terminate()
+                    try:
+                        job.proc.wait(timeout=3)
+                    except Exception:
+                        job.proc.kill()
+                except Exception as exc:
+                    _append_system_message(f"Kill failed: {exc}")
+                    return True
+                _append_system_message(
+                    f"🛑 {jid} killed (exit={job.proc.returncode})."
+                )
+                return True
+            _append_system_message(
+                "Usage:\n"
+                "  /bash jobs               — list active background jobs\n"
+                "  /bash watch <id>         — stream new output to chat\n"
+                "  /bash unwatch <id>       — stop streaming\n"
+                "  /bash kill <id>          — kill a job"
+            )
+            return True
+
         if cmd == "/init" or cmd.startswith("/init "):
             arg = cmd[len("/init "):].strip() if cmd.startswith("/init ") else ""
             force = arg in ("force", "--force", "-f", "overwrite")
@@ -5801,6 +6019,27 @@ def create_tab(ctx):
         if cmd == "/mcp" or cmd.startswith("/mcp "):
             from delfin.agent import mcp_editor as _me
             arg = cmd[len("/mcp "):].strip() if cmd.startswith("/mcp ") else ""
+
+            def _hot_reload_mcp(reason: str = "") -> None:
+                """Tear down + re-load the process-wide MCP registry so
+                new server entries take effect without a dashboard restart."""
+                try:
+                    from delfin.agent import mcp_client as _mcp
+                    _mcp.reset_registry()
+                    new_reg = _mcp.get_registry(ctx.repo_dir or None)
+                    n_servers = len(getattr(new_reg, "servers", []) or [])
+                    n_tools = len(getattr(new_reg, "tools", {}) or {})
+                    _append_system_message(
+                        f"♻️ MCP registry reloaded{(' — ' + reason) if reason else ''}: "
+                        f"{n_servers} server(s), {n_tools} tool(s) live."
+                    )
+                except Exception as exc:
+                    _append_system_message(f"MCP reload failed: {exc}")
+
+            # /mcp reload  — force a process-wide reload now
+            if arg in ("reload", "refresh"):
+                _hot_reload_mcp("manual reload")
+                return True
             # /mcp add <name> <command> [arg ...]
             if arg.startswith("add "):
                 rest = arg[4:].strip()
@@ -5827,9 +6066,9 @@ def create_tab(ctx):
                     return True
                 _append_system_message(
                     f"✅ MCP server '{rec['name']}' added: "
-                    f"{rec['command']} {' '.join(rec['args'])}\n"
-                    "Restart the dashboard for the new tools to register."
+                    f"{rec['command']} {' '.join(rec['args'])}"
                 )
+                _hot_reload_mcp(f"added '{rec['name']}'")
                 return True
             # /mcp remove <name>
             if arg.startswith("remove ") or arg.startswith("rm "):
@@ -5846,6 +6085,7 @@ def create_tab(ctx):
                     _append_system_message(f"No MCP server named '{name}'.")
                 else:
                     _append_system_message(f"🗑 MCP server '{name}' removed.")
+                    _hot_reload_mcp(f"removed '{name}'")
                 return True
             # /mcp enable <name>  /  /mcp disable <name>
             for verb, flag in (("enable ", True), ("disable ", False)):
@@ -5861,8 +6101,9 @@ def create_tab(ctx):
                     else:
                         _append_system_message(
                             f"{'✅' if flag else '⏸'} MCP server "
-                            f"'{name}' → enabled={flag}. Restart to apply."
+                            f"'{name}' → enabled={flag}."
                         )
+                        _hot_reload_mcp(f"{'enabled' if flag else 'disabled'} '{name}'")
                     return True
             # /mcp  → list
             try:
@@ -5883,9 +6124,9 @@ def create_tab(ctx):
                 argv = " ".join([r["command"]] + list(r["args"]))[:80]
                 lines.append(f"  [{badge}] {r['name']:<14}  {argv}")
             lines.append(
-                "\nCommands: /mcp add | remove | enable | disable\n"
-                "Note: project-scoped servers (<workspace>/.delfin/mcp_servers.json) "
-                "are hand-edited only."
+                "\nCommands: /mcp add | remove | enable | disable | reload\n"
+                "Note: add/remove/toggle auto-reload the registry; "
+                "use /mcp reload to pick up hand-edits to mcp_servers.json."
             )
             _append_system_message("\n".join(lines))
             return True
@@ -9804,7 +10045,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/hooks", "/session",
-            "/mcp", "/commands", "/init",
+            "/mcp", "/commands", "/init", "/bash",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
@@ -12242,6 +12483,37 @@ def create_tab(ctx):
         ctx.agent_state = state
     except Exception:
         pass
+
+    # --resume <sid> boot flag: when ctx.initial_session_id is set or the
+    # DELFIN_RESUME_SESSION env var points at a saved id (or "latest"),
+    # auto-load that session immediately after the widgets render. The
+    # user lands directly inside the previous conversation instead of an
+    # empty tab.
+    try:
+        import os as _os
+        boot_sid = getattr(ctx, "initial_session_id", "") or _os.environ.get(
+            "DELFIN_RESUME_SESSION", ""
+        )
+        boot_sid = (boot_sid or "").strip()
+        if boot_sid:
+            if boot_sid == "latest":
+                try:
+                    from delfin.agent.session_store import resume_latest
+                    _data = resume_latest()
+                    if _data:
+                        boot_sid = str(_data.get("session_id") or "")
+                    else:
+                        boot_sid = ""
+                except Exception:
+                    boot_sid = ""
+            if boot_sid:
+                try:
+                    _load_saved_session(boot_sid)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     return tab_widget, {"init_js": _enter_key_init_js}
 
 

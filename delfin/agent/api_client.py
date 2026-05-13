@@ -2304,13 +2304,25 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "properties": {
                                 "label": {"type": "string"},
                                 "description": {"type": "string"},
+                                "preview": {
+                                    "type": "string",
+                                    "description": (
+                                        "Optional markdown shown next to the "
+                                        "option button. Use for code snippets, "
+                                        "ASCII mockups, diff previews, or "
+                                        "configuration examples the user can "
+                                        "compare side-by-side before clicking."
+                                    ),
+                                },
                             },
                             "required": ["label"],
                         },
                         "description": (
                             "Mutually-exclusive choices. Each option "
-                            "has a short label and an optional "
-                            "description that explains the trade-off. "
+                            "has a short label, an optional description "
+                            "(one-line trade-off), and an optional "
+                            "markdown ``preview`` for visual comparison "
+                            "(ASCII mockups, code snippets, diffs). "
                             "Always 2-6 options."
                         ),
                     },
@@ -2318,7 +2330,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "boolean",
                         "description": (
                             "Allow selecting multiple options "
-                            "(default false)."
+                            "(default false). Previews are only "
+                            "supported for single-select questions."
                         ),
                     },
                 },

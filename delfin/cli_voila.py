@@ -296,7 +296,21 @@ def main(argv=None):
         action="store_true",
         help="Disable token authentication (NOT recommended for network access)",
     )
+    parser.add_argument(
+        "--resume",
+        default="",
+        metavar="SID",
+        help=(
+            "Auto-load a saved agent session on dashboard boot. Pass a "
+            "specific session ID or 'latest' to resume the most recent. "
+            "Equivalent to setting the DELFIN_RESUME_SESSION env var."
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.resume:
+        # Propagate to the spawned voila subprocess via env; the agent-tab
+        # reads DELFIN_RESUME_SESSION at create_tab() time.
+        os.environ["DELFIN_RESUME_SESSION"] = args.resume
 
     # Check that voila is installed in the current Python environment.
     if not _voila_is_available():
