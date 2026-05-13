@@ -566,6 +566,40 @@ class AgentEngine:
             "session_id": self.session_id,
         }
 
+    def _build_context_status_block(self) -> str:
+        """Compact self-monitoring block injected into the solo prompt.
+
+        Tells the agent how close it is to the auto-compaction trigger so it
+        can proactively delegate to subagents (and conserve its own window)
+        before compaction fires. Empty string when usage can't be estimated.
+        """
+        try:
+            n_msgs = len(self.messages or [])
+            window = int(self.context_window_tokens or 0) or 100_000
+            compact_pct = float(self.auto_compact_pct or 0.0)
+            tokens = int(self._estimate_context_tokens())
+        except Exception:
+            return ""
+        if window <= 0:
+            return ""
+        pct = tokens / window * 100.0
+        last = getattr(self, "last_compaction_info", None) or None
+        if last:
+            last_line = (
+                f"- Last compaction: compacted {last.get('messages_compacted', '?')} "
+                f"msgs, saved ~{last.get('tokens_saved', 0)} tokens"
+            )
+        else:
+            last_line = "- Last compaction: (none this session)"
+        warn = " — WARNING: nearing auto-compaction" if pct >= 80.0 else ""
+        return (
+            "# Context status (auto-injected each turn)\n"
+            f"- Compaction trigger: 12 msgs OR {compact_pct*100:.0f}% of window\n"
+            f"- Current usage: {n_msgs} msgs, ~{tokens:,} tokens "
+            f"({pct:.1f}% of {window:,}){warn}\n"
+            f"{last_line}"
+        )
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -581,6 +615,18 @@ class AgentEngine:
         if error_ctx:
             memory_context = f"{memory_context}\n\n{error_ctx}" if memory_context else error_ctx
 
+        # Solo only: prepend a live context-status snapshot so the agent
+        # self-monitors window-usage and can delegate to subagents before
+        # compaction fires (no value for other roles — they run in
+        # pipeline mode with their own context budgets).
+        live_state = self._live_state
+        if role == "solo_agent":
+            ctx_status = self._build_context_status_block()
+            if ctx_status:
+                live_state = (
+                    f"{ctx_status}\n\n{live_state}" if live_state else ctx_status
+                )
+
         return self.loader.build_system_prompt(
             role_id=role,
             mode_id=self.mode,
@@ -591,7 +637,7 @@ class AgentEngine:
             memory_context=memory_context,
             task_text=task_text,
             session_key=f"engine-session-{self._prompt_session_serial}",
-            live_state=self._live_state,
+            live_state=live_state,
         )
 
     def stream_response(
