@@ -1006,6 +1006,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "List sessions / browse pre-compaction archives", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
+    ("Commands", "/commands", "List user-defined slash commands from ~/.delfin/commands/", False),
+    ("Project", "/init", "Scan repo + write AGENTS.md / .delfin/settings.json scaffold", False),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
     ("Workspace", "/workspace read", "Read a workspace file", True),
@@ -5715,6 +5717,87 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/init" or cmd.startswith("/init "):
+            arg = cmd[len("/init "):].strip() if cmd.startswith("/init ") else ""
+            force = arg in ("force", "--force", "-f", "overwrite")
+            try:
+                from delfin.agent.project_init import init_project
+                result = init_project(ctx.repo_dir or ".", overwrite=force)
+            except Exception as exc:
+                _append_system_message(f"/init failed: {exc}")
+                return True
+            p = result["profile"]
+            lines = [
+                f"🚀 /init complete — detected **{p.language}** project "
+                f"'{p.name}'."
+            ]
+            if p.test_command:
+                lines.append(f"  test: `{p.test_command}`")
+            if p.build_command:
+                lines.append(f"  build: `{p.build_command}`")
+            if p.lint_command:
+                lines.append(f"  lint: `{p.lint_command}`")
+            lines.append("")
+            if result["files"]:
+                lines.append("Created:")
+                for f in result["files"]:
+                    short = f.replace(str(Path.home()), "~")
+                    lines.append(f"  + {short}")
+            if result["skipped"]:
+                lines.append("Skipped (already exists, use `/init force`):")
+                for f in result["skipped"]:
+                    short = f.replace(str(Path.home()), "~")
+                    lines.append(f"  · {short}")
+            lines.append(
+                "\nThe new AGENTS.md is auto-loaded into the prompt on the "
+                "next turn — edit it to refine the project description."
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/commands" or cmd.startswith("/commands "):
+            from delfin.agent import slash_commands as _scm
+            arg = cmd[len("/commands "):].strip() if cmd.startswith("/commands ") else ""
+            cmds = _scm.discover_commands(ctx.repo_dir or None)
+            if arg:
+                # Detail view
+                tpl = _scm.get_command(arg, ctx.repo_dir or None)
+                if tpl is None:
+                    _append_system_message(
+                        f"No command '{arg}'. Try /commands for the full list."
+                    )
+                    return True
+                src = str(tpl.source).replace(str(Path.home()), "~")
+                hint = f"  arg-hint: {tpl.argument_hint}\n" if tpl.argument_hint else ""
+                _append_system_message(
+                    f"## /{tpl.name}\n"
+                    f"_{tpl.description}_\n{hint}\n"
+                    f"---\n\n{tpl.body}\n\n---\n"
+                    f"Source: `{src}`\n"
+                    f"Invoke: `/{tpl.name} <args>` — $ARGUMENTS / $1 / $2 substituted."
+                )
+                return True
+            if not cmds:
+                _append_system_message(
+                    "No custom commands installed.\n"
+                    "Drop a markdown file in ~/.delfin/commands/<name>.md or "
+                    "in <workspace>/.delfin/commands/<name>.md.\n"
+                    "The file body becomes the prompt; $ARGUMENTS expands to "
+                    "the text the user types after the command."
+                )
+                return True
+            lines = ["User-defined slash commands:"]
+            for tpl in cmds:
+                hint = f" {tpl.argument_hint}" if tpl.argument_hint else ""
+                lines.append(
+                    f"  /{tpl.name}{hint:<18}  {tpl.description[:60]}"
+                )
+            lines.append(
+                "\nDetail view: /commands <name>"
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/mcp" or cmd.startswith("/mcp "):
             from delfin.agent import mcp_editor as _me
             arg = cmd[len("/mcp "):].strip() if cmd.startswith("/mcp ") else ""
@@ -9721,34 +9804,46 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/hooks", "/session",
-            "/mcp",
+            "/mcp", "/commands", "/init",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
         }
-        # Skill expansion: a /<name> that isn't a built-in slash command
-        # but matches a discovered skill gets replaced by the skill's
-        # body before the message hits the agent. Args after the name
-        # are forwarded into the skill block.
+        # User-defined slash commands and skill expansion: when /<name>
+        # doesn't match a built-in slash command, first look in the
+        # commands/ markdown templates (lightweight $ARGUMENTS-style
+        # substitution), then fall back to skills/ markdown (richer
+        # Skill object). Either way the user's chat input gets rewritten
+        # to the expanded body before reaching the agent.
         if (user_text.startswith("/")
                 and _first_token not in _SLASH_PREFIXES
                 and "/" not in _first_token[1:]
                 and len(_first_token) > 1
                 and not _first_token.startswith("/.")):
+            _engine = state.get("engine")
+            _ws = None
+            if _engine and getattr(_engine, "kit_permissions", None):
+                _ws = _engine.kit_permissions.workspace
+            _name = _first_token[1:]
+            _rest = user_text[len(_first_token):].strip()
+            # 1) custom command template (commands/<name>.md)
             try:
-                from delfin.agent import skills as _skills_mod
-                _engine = state.get("engine")
-                _ws = None
-                if _engine and getattr(_engine, "kit_permissions", None):
-                    _ws = _engine.kit_permissions.workspace
-                _skill_name = _first_token[1:]
-                _sk = _skills_mod.get_skill(_skill_name, _ws)
+                from delfin.agent import slash_commands as _scm
+                _tpl = _scm.get_command(_name, _ws)
             except Exception:
-                _sk = None
-            if _sk is not None:
-                rest = user_text[len(_first_token):].strip()
-                expanded = _skills_mod.render_skill_invocation(_sk, rest)
-                user_text = expanded + ("\n\n" + rest if rest else "")
+                _tpl = None
+            if _tpl is not None:
+                user_text = _scm.expand_template(_tpl.body, _rest)
+            else:
+                # 2) fall back to full Skill (skills/<name>/SKILL.md)
+                try:
+                    from delfin.agent import skills as _skills_mod
+                    _sk = _skills_mod.get_skill(_name, _ws)
+                except Exception:
+                    _sk = None
+                if _sk is not None:
+                    expanded = _skills_mod.render_skill_invocation(_sk, _rest)
+                    user_text = expanded + ("\n\n" + _rest if _rest else "")
         elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
             _append_chat_message("user", user_text)
