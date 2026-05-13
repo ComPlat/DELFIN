@@ -50,6 +50,7 @@ next step.
 
 If the user explicitly asks you to *save* the plan to disk (rather
 than just submit via ExitPlanMode), write it to
-``~/.claude/plans/<short-kebab-slug>.md``. That mirrors Claude Code's
-plan-file convention and lets the user re-open the plan in a future
+``~/.claude/plans/<short-kebab-slug>.md`` (per-project plan store; the
+``~/.claude/`` path is the .delfin on-disk slug convention, not an
+external dependency). That lets the user re-open the plan in a future
 session without going through the tool round-trip.

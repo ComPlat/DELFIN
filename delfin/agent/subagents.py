@@ -1,4 +1,4 @@
-"""Sub-agent delegation (Claude-Code-compatible Agent tool).
+"""Sub-agent delegation (.delfin Agent tool surface).
 
 A sub-agent runs an isolated tool-calling loop: separate message
 history, separate token budget, separate (usually narrower) tool

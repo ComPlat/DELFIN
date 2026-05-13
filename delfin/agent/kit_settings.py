@@ -1,6 +1,6 @@
 """Persistent settings for the KIT-Toolbox coding agent.
 
-Mirrors Claude Code's two-tier settings model:
+Implements two-tier settings model:
 
 - **User settings** at ``~/.delfin/settings.json`` — global per user.
 - **Repo settings** at ``<repo>/.delfin/settings.json`` — project overrides.

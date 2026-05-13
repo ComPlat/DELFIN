@@ -124,13 +124,16 @@ def format_memory_context(
 
 
 # ---------------------------------------------------------------------------
-# Typed Claude-Code-style memory writer
+# Typed project-memory writer (.delfin memory layout)
 # ---------------------------------------------------------------------------
 #
 # In addition to the flat ``~/.delfin/agent_memory.json`` store we mirror
 # memories into the per-project layout that the prompt loader already reads
 # back at startup (``~/.claude/projects/<slug>/memory/MEMORY.md`` plus
-# typed sidecar files). This gives the user a richer, browseable, version-
+# typed sidecar files — the path uses ``~/.claude/`` because the prompt
+# loader was wired to the same on-disk slug convention from the start;
+# the directory is purely a per-project memory store, no Anthropic CLI
+# dependency). This gives the user a richer, browseable, version-
 # controllable memory while keeping the legacy JSON for backwards-compat.
 
 _TYPE_LABELS = {
@@ -220,7 +223,7 @@ def save_typed_memory(
     memory_type: str | None = None,
     title: str | None = None,
 ) -> tuple[Path, str, str]:
-    """Persist a typed memory in the Claude-Code project memory layout.
+    """Persist a typed memory in the .delfin project-memory layout.
 
     Writes:
     - ``~/.claude/projects/<slug>/memory/<type>_<kebab-slug>.md`` with

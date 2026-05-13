@@ -916,10 +916,10 @@ class AgentEngine:
         conversation into a high-fidelity recap. Falls back to ``""`` on
         any failure so the caller can drop back to extractive mode.
 
-        The summarisation prompt mirrors Claude Code's compaction style:
-        preserve user goals, key decisions, files touched, and pending
-        items; drop chit-chat. The cost is ~1k tokens of input + a few
-        hundred output; for an Opus session that's <$0.01.
+        The summarisation prompt asks for: user goals, key decisions,
+        files touched, and pending items; drops chit-chat. The cost is
+        ~1k tokens of input + a few hundred output; for an Opus session
+        that's <$0.01.
         """
         if not old_msgs or not getattr(self, "client", None):
             return ""

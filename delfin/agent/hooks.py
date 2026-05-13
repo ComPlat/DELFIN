@@ -1,8 +1,8 @@
-"""Settings-driven hooks (Claude-Code-compatible schema).
+"""Settings-driven hooks (.delfin-native schema).
 
 Loads hook definitions from JSON settings files and fires shell
 commands at well-defined event points in the agent loop. The schema
-mirrors Claude Code so existing hook configs port over with minor
+mirrors the canonical CLI so existing hook configs port over with minor
 tweaks::
 
     {

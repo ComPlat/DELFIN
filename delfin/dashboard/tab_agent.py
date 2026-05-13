@@ -2253,8 +2253,7 @@ def create_tab(ctx):
                 "fastest for simple tasks.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
-                "ExitPlanMode before any file edits or bash run. Same surface as "
-                "Claude Code's plan mode.",
+                "ExitPlanMode before any file edits or bash run.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
                     "state-of-the-art methods. Web search enabled, read-only, no code changes.",
         "quick": "Session Manager → Builder → Test — lightweight pipeline for bugfixes, "
@@ -2881,7 +2880,7 @@ def create_tab(ctx):
             + "&rarr; agent persists it after one confirm click.</i></small>"
         )
 
-    # KIT permission-mode picker (Claude-Code-style chip + cycle button).
+    # KIT permission-mode picker (chip + cycle button).
     # Top-of-chat chip = current mode + verbose label.
     # Quick button next to Send = compact cycle button.
     _KIT_MODE_ORDER = ("plan", "default", "acceptEdits", "bypassPermissions")
@@ -5648,6 +5647,117 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/tools" or cmd.startswith("/tools "):
+            arg = cmd[7:].strip() if len(cmd) > 7 else ""
+            # Categorise the native function-calling tools the agent has
+            # access to. MCP tools live in their own namespace and are
+            # huge in number, so we just report the count + how to
+            # enumerate them per category via list_tools().
+            _CATS = {
+                "Filesystem": [
+                    ("read_file", "Read a file"),
+                    ("write_file", "Create / overwrite a file"),
+                    ("edit_file", "Replace text in an existing file"),
+                    ("multi_edit", "Multiple edits to one file in a single call"),
+                    ("apply_patch", "Apply a unified diff"),
+                    ("list_files", "List files matching a glob"),
+                    ("grep_file", "Regex search inside files"),
+                ],
+                "Bash & jobs": [
+                    ("bash", "Run a shell command (foreground, ≤120 s default)"),
+                    ("bash_background", "Start a long-running command, returns job_id"),
+                    ("bash_status", "Poll background job"),
+                    ("bash_output", "Live head/tail of a background job's stdout/stderr"),
+                    ("bash_kill", "SIGTERM then SIGKILL a background job"),
+                    ("run_tests", "Run pytest on a target module/path"),
+                ],
+                "Web research": [
+                    ("web_search", "DuckDuckGo search, returns top hits"),
+                    ("web_fetch", "Fetch a single URL as plain text"),
+                ],
+                "Notebooks": [
+                    ("notebook_read", "Read .ipynb cells (text+output summaries)"),
+                    ("notebook_edit", "Insert / replace / delete cells safely"),
+                ],
+                "Sub-agent & planning": [
+                    ("subagent", "Delegate to explore / plan / code-reviewer / general-purpose (+ md-defined)"),
+                    ("exit_plan_mode", "Submit a plan for user approval (plan-mode only)"),
+                    ("enter_worktree", "Create an isolated git worktree"),
+                    ("exit_worktree", "Tear down a worktree"),
+                ],
+                "Task / Skill": [
+                    ("task_create", "Add a todo (subject, description, active_form)"),
+                    ("task_update", "Change a todo status (pending / in_progress / completed)"),
+                    ("task_list", "List todos grouped by status"),
+                    ("skill", "Invoke a discovered skill by name"),
+                ],
+                "User interaction": [
+                    ("ask_user_question", "Render multi-choice question + collect reply"),
+                    ("push_notification", "Send a desktop notification"),
+                ],
+                "Scheduling": [
+                    ("schedule_wakeup", "Re-invoke this agent after N seconds"),
+                    ("cron_create", "Persistent cron-style schedule"),
+                    ("cron_list", "List active cron entries"),
+                    ("cron_delete", "Remove a cron entry"),
+                    ("remote_trigger", "Generic webhook-style trigger"),
+                ],
+                "Code navigation (DELFIN)": [
+                    ("find_definition", "Jump to a symbol's definition"),
+                    ("find_references", "Find all callers/usages of a symbol"),
+                    ("project_introspect", "High-level repo layout dump"),
+                ],
+                "Docs & calcs (DELFIN)": [
+                    ("search_docs", "Search indexed PDFs (ORCA manual, xTB, papers)"),
+                    ("list_docs", "List available docs"),
+                    ("list_sections", "List sections in a doc"),
+                    ("read_section", "Read a specific section"),
+                    ("search_calcs", "Find calculations in calc/ + archive/"),
+                    ("calc_summary", "High-level overview of all calculations"),
+                    ("get_calc_info", "Detailed info for one calculation"),
+                ],
+                "Permissions": [
+                    ("remember_permission", "Persist a single allow/deny pattern"),
+                    ("remember_permission_bundle", "Persist a profile (e.g. project_dev)"),
+                ],
+            }
+            # Filter by category if arg passed
+            if arg:
+                filt = arg.lower()
+                shown = {
+                    cat: tools for cat, tools in _CATS.items()
+                    if filt in cat.lower()
+                    or any(filt in name for name, _ in tools)
+                }
+                if not shown:
+                    _append_system_message(
+                        f"No tools match {arg!r}. Try `/tools` for the full list."
+                    )
+                    return True
+            else:
+                shown = _CATS
+            # Count subagent presets + MCP tools for the footer
+            try:
+                from delfin.agent.subagents import subagent_type_names
+                sa_count = len(subagent_type_names())
+            except Exception:
+                sa_count = 0
+            lines = ["Native tools (function-calling surface):"]
+            total = 0
+            for cat, tools in shown.items():
+                lines.append(f"\n{cat}:")
+                for name, desc in tools:
+                    lines.append(f"  {name:<28} — {desc}")
+                    total += 1
+            lines.append(
+                f"\n{total} native tools shown. "
+                f"+ {sa_count} subagent presets (`/agents`). "
+                "+ ~74 DELFIN ops MCP tools and ~10 doc-search MCP tools "
+                "(`mcp__delfin-ops__list_tools(category='parsing')` etc.)."
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/context":
             engine = state["engine"]
             if not engine:
@@ -5939,7 +6049,7 @@ def create_tab(ctx):
                 mem_type, body = parse_memory_type(text_to_save)
                 # Always keep a flat JSON record for legacy retrieval.
                 idx = save_memory(body or text_to_save, source=mem_type)
-                # Mirror into the Claude-Code typed-memory layout so the
+                # Mirror into the .delfin typed-memory layout so the
                 # next session picks it up via the prompt loader.
                 try:
                     fpath, slug, _t = save_typed_memory(

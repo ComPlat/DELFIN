@@ -1,4 +1,4 @@
-"""User-invocable skills (Claude-Code-compatible).
+"""User-invocable skills (.delfin-native).
 
 Skills are short, parameterised playbooks the user can invoke from
 the chat input via ``/<skill-name>`` or that the agent can invoke via
@@ -141,7 +141,7 @@ def discover_skills(workspace: Path | str | None = None) -> list[Skill]:
     """Return all skills found in user + project directories.
 
     On name collisions the later (project-scoped) skill wins, mirroring
-    Claude Code's "project overrides user" semantics.
+    the canonical "project overrides user" semantics.
     """
     by_name: dict[str, Skill] = {}
     for d in _skill_dirs(Path(workspace) if workspace else None):
