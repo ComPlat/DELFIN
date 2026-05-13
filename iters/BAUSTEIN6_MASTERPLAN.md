@@ -601,6 +601,139 @@ Performance:
 
 ---
 
+## 10.5 Phase 2 Extension — Donor-Pivot Rotation Sweep (DPRS)
+
+**Motivation:** sp3-C donor linear-collapse pattern (WUXQAK class, Memory
+`feedback_sp3_c_donor_linear.md`). HEAD 10.6% vs e6761e4 5.2% (2× worse).
+M-CH₂-R: instead of tetrahedral (109.5° M-C-H, M-C-R), collapses to linear
+(180°) with H, H, R all on one side. Baustein 6 U_angle gradient SHOULD pull
+substituents to tetrahedral but can get stuck in linear local minimum.
+
+**Algorithm (post-L-BFGS-B discrete sweep):**
+
+```python
+def _donor_pivot_rotation_sweep(coords, mol, donor_idx, metal_idx, params):
+    """Try discrete rotations of substituent-group around M-D axis.
+    Pick rotation that minimizes U_total."""
+    
+    # 1. Identify substituents of donor (not M)
+    subs = [n.idx for n in donor.neighbors if n.idx != metal_idx]
+    
+    # 2. Identify BFS fragment beyond donor (the substituent + tail)
+    rotation_group = union(bfs_fragment(mol, s, blocked={donor, metal}) for s in subs)
+    
+    # 3. Sweep discrete angles around M-D axis
+    axis = (coords[donor] - coords[metal]) / norm
+    pivot = coords[donor]
+    
+    best_U = current U_total
+    best_coords = coords
+    for angle in [-120°, -60°, -30°, +30°, +60°, +120°, +180°]:
+        tentative = rotate(coords, rotation_group, axis, pivot, angle)
+        if topology_OK(tentative):
+            U_new = U_total(tentative, ...)
+            if U_new < best_U - 0.1:
+                best_U, best_coords = U_new, tentative
+    
+    return best_coords
+
+
+def variational_refine_with_dprs(xyz, mol, class_label):
+    """B6 + Phase 2 DPRS."""
+    xyz_b6, report = variational_refine(xyz, mol, class_label)
+    if not report["converged"]: return xyz_b6, report
+    
+    coords = parse_xyz(xyz_b6)
+    for metal in metals:
+        for donor in metal.neighbors_not_metal:
+            if donor.hybridization == SP3:
+                coords = _donor_pivot_rotation_sweep(coords, mol, donor, metal, params)
+    
+    # Short re-relaxation after discrete rotation
+    return variational_refine(xyz_from_coords, mol, class_label, max_iter=50)
+```
+
+**Coverage:**
+- Sweep 1 (around M-D axis): ~7 discrete angles, 1 DOF per donor. Handles most
+  WUXQAK-class sp3-C cases.
+- Sweep 2 (perpendicular to M-D axis, per substituent): 3 DOF per donor. For
+  edge cases where M-D-axis rotation insufficient. Deferred to Phase 2.B.
+
+**Acceptance gate:**
+- WUXQAK pattern files ≤ 6% (current 10.6%, target e6761e4 5.2%)
+- No regression on sp2 / aromatic donors
+- Topology preserved (rotation around M-D axis keeps M-D distance + direction exact)
+- +10% wallclock at most
+
+**Risk:** rotation may push H atoms into nearby ligand → use topology + clash
+check before commit. Strategy: if no rotation improves U, skip donor.
+
+**LOC estimate:** +120 LOC in `_variational_refiner.py` or new
+`_donor_rotation.py` module.
+
+**Trigger criterion:** add Phase 2 DPRS if Phase 1 (variational_refine alone)
+voll-pool shows WUXQAK / sp3-linear pattern not adequately resolved.
+
+### Phase 3 — UFF Constraint Modification (early-pipeline fix, complement to DPRS)
+
+**Motivation:** address sp3-C linear collapse at the SOURCE — during UFF
+refinement — not only post-UFF (Baustein 6 + DPRS).
+
+Currently in `smiles_converter.py:_optimize_xyz_openbabel`:
+```python
+# constraints['fix_atoms'] lists atoms to FREEZE (immovable during UFF)
+# Typically includes M + sometimes donor atoms
+```
+
+**Proposed change:** replace donor `FixAtom` with M-D `AddDistanceConstraint`.
+
+```python
+# Old: hard freeze
+ff.FixAtom(donor_atom_idx + 1)  # immovable
+
+# New: soft distance constraint (donor can move, M-D stays at ideal)
+ff.AddDistanceConstraint(
+    metal_atom_idx + 1, donor_atom_idx + 1,
+    d_MD_ideal, force_const=high
+)
+```
+
+**Effect:** during UFF refinement, donor C can REORIENT (its substituent
+angles get tetrahedral pull from UFF's bond-angle terms) while M-C distance
+stays at ideal. Substituent atoms have full UFF freedom — UFF can find
+tetrahedral sp3 geometry.
+
+**Why this is complementary to Baustein 6:**
+- Phase 3 fixes sp3 problem EARLY in pipeline (before B5/B6 even runs)
+- Phase 2 DPRS catches residual cases that survived UFF (defensive)
+- Phase 1 B6 variational handles general geometry polish
+
+If Phase 3 effective: B5 + B6 + DPRS together produce minimal residual sp3
+issues. If Phase 3 alone insufficient: DPRS fills the gap.
+
+**Risk:** soft donor constraint MAY allow donor to detach (M-D ≫ ideal) if
+UFF gradient too strong. Mitigation:
+- `force_const` very high (10× standard) → donor stays at ideal distance
+- Post-UFF M-D verify rollback (existing) catches any drift
+- Per-class enable: only sigma + multi-sigma classes (where sp3 donors common)
+
+**Implementation site:** `delfin/smiles_converter.py:_build_coordination_uff_constraints`
+(or wherever fix_atoms list is built). Add env-flag `DELFIN_UFF_SOFT_DONORS`.
+Per-class default: ON for sigma+multi_sigma, OFF for hapto (rings don't have
+sp3 substituent problem).
+
+**LOC estimate:** ~50 LOC in smiles_converter.py.
+
+**Trigger criterion:** add Phase 3 if Phase 1 + Phase 2 voll-pool shows WUXQAK
+pattern persists OR new sp3-classes emerge.
+
+**Expected combined effect (Phase 1 + 2 + 3):**
+- WUXQAK pattern files: 10.6% → ≤ 4% (BELOW e6761e4 champion 5.2%)
+- F19 H-Td viol: 60% → ≤ 40%
+- F25 sp3N pyr viol: 43% → ≤ 35%
+
+---
+
 ## 11. Cross-references
 
 - `iters/BAUSTEIN5_SPEC.md` (the foundational PBD spec, ALREADY committed e1fe742)
