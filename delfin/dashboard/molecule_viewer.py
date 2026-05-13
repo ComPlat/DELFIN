@@ -1936,10 +1936,9 @@ def build_fukui_viewer_html(
     # installs (orca-builder, calc-browser, remote-archive) so the mouse
     # behaviour stays uniform across the dashboard.
     mouse_patch_js = patch_viewer_mouse_controls_js('viewer', 'el')
-    # Pin to a square viewer area matching the host Output box created
-    # by ``render_fukui_panel``. Sized to mirror calc-browser/orca-builder
-    # so Fukui sits 1:1 next to the standard viewers.
-    height_px = int(eff_height) if eff_height else 600
+    # Slightly larger than CALC_MOL_SIZE (450 px) — user-tuned for the
+    # Fukui panel which packs labels at every atom plus optional cubes.
+    height_px = int(eff_height) if eff_height else 560
     return f"""
 <div id="{viewer_id}"
      style="width:100%;height:{height_px}px;position:relative;"></div>
@@ -2193,21 +2192,28 @@ def render_fukui_panel(workdir, output_widget=None):
     # (square-ish region, fixed pixel dimensions). flex 0 0 auto pins
     # it on the left of the HBox so the controls sidebar can sit to
     # its right without re-flowing.
+    # Same nominal dimensions as the standard calc-browser 3D viewer
+    # (CALC_MOL_SIZE = 450 px content height + 2 px border on each side).
+    # Width fixed so the table sidebar to the right always fits without
+    # overflow; ``flex: 0 0 auto`` pins the viewer at its set width.
     # Own class (NOT ``calc-mol-viewer`` — that would inherit the calc
-    # browser's scoping CSS and confuse its JS resize routines) but the
-    # same blue 2 px frame so the look matches the standard viewer.
+    # browser's scoping CSS and confuse its JS resize routines).
+    # Viewer pinned at fixed width so the sidebar (controls + table)
+    # always sits next to it without being pushed off-screen. Inside
+    # this fixed box the 3Dmol canvas itself is fluid: the fitToHost
+    # JS resizes it whenever the surrounding column changes size, so
+    # the viewer-to-canvas relationship is still dynamic.
     viewer_box = widgets.Output(
         layout=widgets.Layout(
-            width='100%',
-            min_width='400px',
-            max_width='720px',
-            height='620px',
-            min_height='420px',
+            width='560px',
+            height='564px',
+            min_width='560px',
+            min_height='564px',
             margin='0',
             padding='0',
             overflow='hidden',
             border='2px solid #1976d2',
-            flex='1 1 auto',
+            flex='0 0 auto',
         ),
     )
     viewer_box.add_class('fukui-viewer-box')
@@ -2266,16 +2272,19 @@ def render_fukui_panel(workdir, output_widget=None):
     controls_block = widgets.VBox(
         [label_select, cube_select, iso_slider, decimals_slider],
         layout=widgets.Layout(
-            gap='6px',
+            gap='14px',
             align_items='flex-start',
-            margin='0 0 8px 0',
+            margin='0 0 12px 0',
             width='auto',
         ),
     )
     sidebar = widgets.VBox(
         [
             controls_block,
-            widgets.HTML(table_html, layout=widgets.Layout(width='auto')),
+            widgets.HTML(
+                table_html,
+                layout=widgets.Layout(width='auto', overflow_x='auto'),
+            ),
         ],
         layout=widgets.Layout(
             gap='4px',
@@ -2284,6 +2293,7 @@ def render_fukui_panel(workdir, output_widget=None):
             flex='1 1 auto',
             min_width='0',
             width='auto',
+            overflow_x='auto',
         ),
     )
 
