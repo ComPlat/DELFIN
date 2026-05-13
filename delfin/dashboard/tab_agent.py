@@ -10241,7 +10241,27 @@ def create_tab(ctx):
                     _is_current = state.get("_generation_id") == _my_gen_id
                     if _is_current:
                         state["streaming"] = False
+                # Disarm the stale watcher — the worker is done one way or
+                # another, no need to flag stale-ness on a closed turn.
+                try:
+                    _t = state.get("_stale_timer")
+                    if _t is not None:
+                        _t.cancel()
+                    state["_stale_timer"] = None
+                    state["_stale_seen"] = False
+                except Exception:
+                    pass
                 if _is_current:
+                    # Silent-exit detection: if the worker finished without
+                    # producing any tokens AND no exception fired, surface a
+                    # system note so the user isn't left wondering why the
+                    # spinner just disappeared. This is the "agent stops
+                    # mid-task" failure mode reported in production.
+                    if not chunks and not thinking_chunks:
+                        _append_system_message(
+                            "Agent returned no output. The CLI ended the turn "
+                            "without producing text — try /retry or /status."
+                        )
                     _set_working(False)
                     _update_status()
                     _update_button_states()
