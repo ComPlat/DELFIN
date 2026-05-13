@@ -174,7 +174,7 @@ class PromptLoader:
         max_chars: int = 6000,
         memory_root: Path | None = None,
     ) -> str:
-        """Load the user's Claude Code memory for the current repo.
+        """Load the user's per-project memory for the current repo.
 
         Looks at ``~/.claude/projects/<slug>/memory/MEMORY.md`` and the
         ``[Title](file.md)`` references inside it.  Returns a flat
@@ -182,7 +182,8 @@ class PromptLoader:
         ``max_chars`` so it can never blow up the context.
 
         The repo is mapped to a slug by replacing ``/`` with ``-`` —
-        Claude Code's own convention.  Empty string if nothing is found.
+        the ``~/.claude/projects/`` directory is the .delfin on-disk
+        slug convention. Empty string if nothing is found.
 
         Failures (no home dir, missing files, encoding issues) degrade
         silently to an empty string — this is best-effort context.
@@ -250,7 +251,7 @@ class PromptLoader:
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
 
-        Mirrors what the Claude Code CLI injects at session start:
+        Standard CLI-style orientation injected at session start:
         cwd, git branch, short status, and recent commits.  Keeps the
         block under ~12 lines so it doesn't crowd the prompt.
 

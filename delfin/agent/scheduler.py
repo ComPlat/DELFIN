@@ -3,7 +3,7 @@
 Two kinds of entries:
 
   - ``once`` — fires after ``delay_seconds`` and self-deletes.
-    Equivalent to Claude Code's ScheduleWakeup.
+    Persistent scheduling primitive — ScheduleWakeup.
   - ``interval`` — fires every ``every_seconds`` until removed.
     The minimal cron substitute (full cron expression parsing is
     overkill for the in-dashboard use cases).

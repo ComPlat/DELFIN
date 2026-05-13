@@ -1,6 +1,6 @@
 """HTML / plaintext renderer for the live task ticker.
 
-Mirrors Claude Code's TodoWrite display: a compact panel that
+Implements TodoWrite display: a compact panel that
 shows pending / in-progress / completed tasks with a colour-coded
 glyph each. Designed to be re-rendered on every relevant tool
 result (task_create / task_update) so the dashboard reflects

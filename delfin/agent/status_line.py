@@ -1,4 +1,4 @@
-"""Configurable status line (Claude-Code-compatible).
+"""Configurable status line (.delfin-native).
 
 Reads ``statusLine`` from settings.json and renders the agent's
 current state as a single line. The setting can be either:

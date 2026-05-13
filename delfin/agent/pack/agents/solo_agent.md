@@ -15,7 +15,7 @@ read-only rules, etc.).
 
 **B) Working on the user's OWN code in their own directory** (Jerome's
 `/home/.../TestOpt`, a personal repo, a generic Python project). Here
-DELFIN is just the agent shell — a Claude-Code-style coding assistant
+DELFIN is just the agent shell — a terminal-CLI-style coding assistant
 that happens to run inside the DELFIN dashboard. **Do NOT pull DELFIN's
 chemistry tooling in unprompted.** No `search_docs` over the ORCA
 manual unless the user explicitly asks a chemistry question. No

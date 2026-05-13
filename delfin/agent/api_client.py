@@ -132,7 +132,7 @@ class CLIClient(_BaseClient):
         self.claude_path = claude_path or shutil.which("claude") or "claude"
         if not shutil.which(self.claude_path):
             raise FileNotFoundError(
-                f"Claude Code CLI not found at '{self.claude_path}'. "
+                f"Agent CLI binary not found at '{self.claude_path}'. "
                 "Install it from https://claude.ai/code"
             )
         self._proc: subprocess.Popen | None = None
@@ -438,7 +438,7 @@ class CLIClient(_BaseClient):
                 stderr = proc.stderr.read() if proc.stderr else ""
                 if "Not logged in" in stderr:
                     raise RuntimeError(
-                        "Claude Code CLI is not logged in. "
+                        "Agent CLI is not logged in. "
                         "Run 'claude' in a terminal and complete login first."
                     )
                 if stderr.strip():
@@ -669,7 +669,7 @@ class APIClient(_BaseClient):
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# KIT-Toolbox coding-agent permissions (Claude-Code-style safety layer)
+# KIT-Toolbox coding-agent permissions (.delfin-style safety layer)
 # ---------------------------------------------------------------------------
 
 # Bash patterns that are ALWAYS rejected (case-insensitive substring/regex
@@ -1376,7 +1376,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Persist a KIT-Toolbox permission rule to ~/.delfin/settings.json "
                 "(or <repo>/.delfin/settings.json with scope='repo'). Mirrors the "
-                "Claude Code 'always allow X' pattern — once stored, matching "
+                "the 'always allow X' pattern — once stored, matching "
                 "actions in future sessions skip the user-confirm dialog. "
                 "ALWAYS confirm with the user before calling this; the user can "
                 "still revoke afterwards by editing the JSON file. "
@@ -1681,7 +1681,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "task_create",
             "description": (
                 "Add a planning task to this session's task list within "
-                "the current project (mirrors Claude Code's TaskCreate). "
+                "the current project (implements TaskCreate). "
                 "Useful for "
                 "multi-step integrations: 'integrate BoTorch wrapper', "
                 "'add comparison notebook', 'write regression tests'. "
@@ -1965,7 +1965,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "schedule_wakeup",
             "description": (
                 "Schedule a single future agent invocation. Mirrors "
-                "Claude Code's ScheduleWakeup. Use when you need to "
+                "the canonical ScheduleWakeup. Use when you need to "
                 "check back on something later (long-running build, "
                 "external job). The dashboard will fire the prompt "
                 "back at the chosen time. Persists across restarts."
@@ -2045,7 +2045,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "enter_worktree",
             "description": (
                 "Create a temporary git worktree on a fresh branch "
-                "for the current task. Mirrors Claude Code's "
+                "for the current task. Implements "
                 "EnterWorktree. Subsequent edits/bash should run "
                 "inside the returned worktree path; the user's main "
                 "tree is untouched. The branch is auto-cleaned on "
@@ -2104,7 +2104,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "subagent",
             "description": (
                 "Delegate a self-contained task to an isolated "
-                "sub-agent. Mirrors Claude Code's Agent tool. The "
+                "sub-agent. Implements Agent tool. The "
                 "sub-agent runs its own tool-calling loop with a "
                 "narrow tool set (read-only by default) and returns "
                 "a single summary. Use for: parallel research, "
@@ -2199,7 +2199,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "exit_plan_mode",
             "description": (
                 "Submit the finalized plan to the user for approval. "
-                "Mirrors Claude Code's ExitPlanMode. ONLY call this in "
+                "Implements ExitPlanMode. ONLY call this in "
                 "'plan' mode after you've assembled a complete plan; "
                 "while in plan mode, write/edit/bash tools are blocked. "
                 "On approval the agent's mode switches to "
@@ -2232,7 +2232,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "ask_user_question",
             "description": (
                 "Ask the user a structured multi-choice question and "
-                "wait for their answer. Mirrors Claude Code's "
+                "wait for their answer. Implements "
                 "AskUserQuestion. Useful for clarifying ambiguous "
                 "instructions, getting design decisions, choosing "
                 "between approaches. Returns JSON with the user's "
@@ -2513,7 +2513,7 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
-        # Settings-driven PreToolUse hooks (Claude-Code-compatible).
+        # Settings-driven PreToolUse hooks (.delfin-native).
         # A blocking hook short-circuits dispatch and surfaces the
         # reason back to the agent as the tool result so it can react.
         block_reason = ""
@@ -3006,7 +3006,7 @@ class _DocToolExecutor:
         """Extract a path argument tolerating common naming conventions.
 
         Weak models (qwen3.5, gpt-4-mini, etc.) sometimes generate tool
-        calls using the Claude-Code naming convention (``file_path``)
+        calls using the .delfin naming convention (``file_path``)
         when our schema actually declares ``path`` — or invent ``filename`` /
         ``file`` / ``target``. Without this fallback, the tool returns
         ``"path is required"`` and the agent silently retries 4× before
@@ -5662,7 +5662,7 @@ def create_client(
         kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
         kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
 
-        # Pull persisted user/repo settings (Claude-Code-style two-tier
+        # Pull persisted user/repo settings (.delfin-style two-tier
         # ~/.delfin/settings.json + <repo>/.delfin/settings.json). Defaults
         # are empty if neither file exists.
         try:

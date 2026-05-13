@@ -1,6 +1,6 @@
 """Project-memory file loader.
 
-Mirrors Claude Code's ``CLAUDE.md`` auto-loading: walks up from the
+Implements ``CLAUDE.md`` auto-loading: walks up from the
 agent's working directory and concatenates every project-memory file
 it finds. Recognised filenames: ``CLAUDE.md``, ``AGENTS.md``,
 ``DELFIN.md``. Walking is deepest-first (closest to cwd wins on

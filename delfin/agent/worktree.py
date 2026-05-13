@@ -1,4 +1,4 @@
-"""Git worktree isolation (Claude-Code-compatible enter/exit).
+"""Git worktree isolation (.delfin-native enter/exit).
 
 Spawning a sub-task inside a temporary ``git worktree`` lets the
 agent edit, build, and test against a side-branch without
