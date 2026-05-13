@@ -22,10 +22,23 @@ DEFAULT_3DMOL_STYLE_JS = (
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
 
+_VIEWER_FIXED_WIDTH = 560
+_VIEWER_FIXED_HEIGHT = 420
+_VIEWER_FIXED_ZOOM = 0.90
+
 VIEWER_QUALITY_PROFILES = {
-    'low':    {'width': 360, 'height': 280, 'zoom': 0.80, 'show_labels': False},
-    'medium': {'width': 480, 'height': 360, 'zoom': 0.85, 'show_labels': True},
-    'high':   {'width': 560, 'height': 420, 'zoom': 0.90, 'show_labels': True},
+    'low': {
+        'style': {'line': {'colorscheme': 'Jmol'}},
+        'style_js': '{line:{colorscheme:"Jmol"}}',
+    },
+    'medium': {
+        'style': {'stick': {'colorscheme': 'Jmol', 'radius': 0.10}},
+        'style_js': '{stick:{colorscheme:"Jmol",radius:0.10}}',
+    },
+    'high': {
+        'style': DEFAULT_3DMOL_STYLE,
+        'style_js': DEFAULT_3DMOL_STYLE_JS,
+    },
 }
 _VIEWER_DISABLED_PLACEHOLDER_HTML = (
     "<div style=\"width:100%;max-width:560px;padding:18px 24px;"
@@ -37,10 +50,12 @@ _VIEWER_DISABLED_PLACEHOLDER_HTML = (
 
 
 def get_viewer_profile():
-    """Return the active viewer profile {enabled, quality, width, height, zoom, show_labels}.
+    """Return the active viewer profile {enabled, quality, width, height, zoom, style, style_js}.
 
-    Falls back to the high-quality preset if the user-settings module cannot be
-    loaded (e.g. tests that import this module without the full DELFIN env).
+    Window size and zoom are constant across quality levels; the lever is the
+    representation style: HIGH = stick+sphere (default), MEDIUM = stick only,
+    LOW = line representation. Falls back to high if user-settings cannot be
+    loaded (e.g. tests without the full DELFIN env).
     """
     try:
         from delfin.user_settings import load_viewer_settings
@@ -52,7 +67,11 @@ def get_viewer_profile():
     return {
         'enabled': bool(viewer.get('enabled', True)),
         'quality': quality,
-        **preset,
+        'width': _VIEWER_FIXED_WIDTH,
+        'height': _VIEWER_FIXED_HEIGHT,
+        'zoom': _VIEWER_FIXED_ZOOM,
+        'style': preset['style'],
+        'style_js': preset['style_js'],
     }
 
 
@@ -1637,8 +1656,13 @@ def submit_manip_bootstrap_js():
     return SUBMIT_MANIP_BOOTSTRAP_JS
 
 
-def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
-    """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer."""
+def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
+    """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer.
+
+    ``style`` overrides the default stick+sphere representation. Callers that
+    honor the global viewer-quality setting pass ``get_viewer_profile()['style']``;
+    callers that want the historic look leave it as ``None``.
+    """
     if hasattr(view, 'startjs'):
         marker = (
             'window.__delfinEnableRightDragTranslate('
@@ -1672,7 +1696,7 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
                 )
                 + '\n'
             )
-    view.setStyle({}, DEFAULT_3DMOL_STYLE)
+    view.setStyle({}, style if style is not None else DEFAULT_3DMOL_STYLE)
     view.setBackgroundColor(DEFAULT_3DMOL_BACKGROUND)
     view.zoomTo()
     view.center()
@@ -1686,8 +1710,9 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
     """Render an XYZ string inside an ipywidgets Output widget.
 
     Honors the global viewer settings (``ui.viewer.enabled`` and
-    ``ui.viewer.quality``). When ``width``/``height`` are passed explicitly
-    they override the quality preset.
+    ``ui.viewer.quality``). Window size + zoom are constant across quality
+    levels; the quality knob controls the representation style (line vs
+    stick vs stick+sphere). Explicit ``width``/``height`` arguments still win.
     """
     profile = get_viewer_profile()
     with output_widget:
@@ -1702,7 +1727,7 @@ def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
         eff_height = height if height is not None else profile['height']
         view = py3Dmol.view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
-        apply_molecule_view_style(view, zoom=profile['zoom'])
+        apply_molecule_view_style(view, zoom=profile['zoom'], style=profile['style'])
         view.show()
 
 
