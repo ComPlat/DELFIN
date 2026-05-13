@@ -1009,6 +1009,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Commands", "/commands", "List user-defined slash commands from ~/.delfin/commands/", False),
     ("Project", "/init", "Scan repo + write AGENTS.md / .delfin/settings.json scaffold", False),
     ("Bash", "/bash", "List/watch/kill bash_background jobs", False),
+    ("Learning", "/failures", "Recurring tool-error patterns from the failure log", False),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
     ("Workspace", "/workspace read", "Read a workspace file", True),
@@ -5804,6 +5805,69 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/failures" or cmd.startswith("/failures "):
+            from delfin.agent import failure_log as _fl
+            arg = cmd[len("/failures "):].strip() if cmd.startswith("/failures ") else ""
+            if arg in ("", "top"):
+                top = _fl.top_recurring(min_count=2)
+                if not top:
+                    _append_system_message(
+                        "No recurring failures recorded yet. "
+                        "Failures are auto-logged when tools return errors; "
+                        "patterns surface here once they hit 2+ occurrences."
+                    )
+                    return True
+                lines = [
+                    "Recurring tool failures (≥2 in the last 7 days):"
+                ]
+                import time as _t
+                for r in top[:10]:
+                    when = _t.strftime("%Y-%m-%d %H:%M",
+                                       _t.localtime(r["last_seen"] or 0))
+                    lines.append(
+                        f"  {r['count']:>3}×  {r['tool']:<22}  "
+                        f"last {when}\n      err: {r['last_error'][:90]}"
+                    )
+                lines.append(
+                    "\n/failures clear — empty the log\n"
+                    "/failures recent — last 20 failures verbatim"
+                )
+                _append_system_message("\n".join(lines))
+                return True
+            if arg == "recent":
+                recs = _fl.read_failures(last_n=20)
+                if not recs:
+                    _append_system_message("No failures logged.")
+                    return True
+                import time as _t
+                lines = ["Last 20 failures:"]
+                for r in recs:
+                    when = _t.strftime("%H:%M:%S",
+                                       _t.localtime(r.get("ts") or 0))
+                    lines.append(
+                        f"  {when}  {r.get('tool',''):<22}  "
+                        f"{r.get('error','')[:90]}"
+                    )
+                _append_system_message("\n".join(lines))
+                return True
+            if arg == "clear":
+                from pathlib import Path as _P
+                p = _P.home() / ".delfin" / "failure_log.jsonl"
+                try:
+                    if p.exists():
+                        p.unlink()
+                    _append_system_message("Failure log cleared.")
+                except Exception as exc:
+                    _append_system_message(f"Could not clear log: {exc}")
+                return True
+            _append_system_message(
+                "Usage:\n"
+                "  /failures              — top recurring failure shapes\n"
+                "  /failures recent       — last 20 failures verbatim\n"
+                "  /failures clear        — empty the log"
+            )
+            return True
+
         if cmd == "/bash" or cmd.startswith("/bash "):
             from delfin.agent import bash_jobs as _bj
             arg = cmd[len("/bash "):].strip() if cmd.startswith("/bash ") else ""
@@ -10045,7 +10109,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/hooks", "/session",
-            "/mcp", "/commands", "/init", "/bash",
+            "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
@@ -11633,6 +11697,33 @@ def create_tab(ctx):
                     _update_button_states()
                     _auto_save_session()
                     _check_auto_compact()
+                    # Stalled-task detector — once per turn check
+                    # whether any in-progress task has gone untouched
+                    # for too long and suggest /mode plan.  Best-effort,
+                    # never raises.
+                    try:
+                        kp = getattr(engine, "kit_permissions", None)
+                        ws = (kp.workspace if kp is not None
+                              else (ctx.repo_dir or Path.cwd()))
+                        from delfin.agent.agent_tasks import get_store
+                        store = get_store(Path(ws))
+                        stalled = store.find_stalled(
+                            max_age_s=600.0,
+                            session_id=getattr(engine, "session_id", "") or None,
+                        )
+                        if stalled and not state.get("_stalled_warning_shown"):
+                            top = stalled[0]
+                            _append_system_message(
+                                f"⚠️ Task #{top['id']} '{top.get('subject','')[:60]}' "
+                                f"has been in_progress for {top['age_s']//60} min "
+                                "without an update. Consider /mode plan to "
+                                "re-think the approach, or /forget it."
+                            )
+                            state["_stalled_warning_shown"] = True
+                        elif not stalled:
+                            state["_stalled_warning_shown"] = False
+                    except Exception:
+                        pass
                     # Live per-turn cost footer: post a one-line system
                     # message summarising the delta in tokens/cost/
                     # duration for the turn we just finished. Best-effort,

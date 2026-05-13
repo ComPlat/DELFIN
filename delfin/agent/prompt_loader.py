@@ -531,6 +531,135 @@ class PromptLoader:
         """Load agents/{role_id}.md."""
         return self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")
 
+    # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
+
+    # Each tuple lists case-insensitive substrings that, when present in the
+    # current task text, activate the corresponding module. Modules that
+    # don't activate get stripped from the role prompt before injection,
+    # saving 4-6k tokens on the typical solo-mode turn.
+    _MODULE_TRIGGERS: dict[str, tuple[str, ...]] = {
+        "chemistry": (
+            "orca", "dft", "xtb", "calc/", "archive/", ".out",
+            "frequencies", "orbital", "imag", "homo", "lumo",
+            "tddft", "uv/vis", "dipole", "scf", "mulliken", "loewdin",
+            "extract_", "search_calcs", "search_docs",
+            "explain_delfin_feature", "thermochem", "vibrational",
+            "molecule", "complex", "ligand", "ml potential",
+        ),
+        "web": (
+            "http://", "https://", "web_search", "web_fetch",
+            "url", "duckduckgo", "google", "stackoverflow",
+            "documentation online", "look up online",
+        ),
+        "notebook": (
+            ".ipynb", "notebook_read", "notebook_edit", "jupyter",
+            "notebook cell",
+        ),
+        "project_dev": (
+            "pyproject.toml", "package.json", "cargo.toml", "go.mod",
+            "venv", "pip install", "npm ", "pnpm", "yarn",
+            " cargo ", "requirements.txt", "build script",
+        ),
+        "kit": (
+            "kit-toolbox", "kit_coding", "mcp__kit-coding__",
+            "remember_permission", "extra_dir", "kit mode",
+        ),
+        "bash_bg": (
+            "bash_background", "long running", "long-running",
+            "in the background", "background job", "watch progress",
+        ),
+    }
+
+    _MODULE_MARKER_RE = __import__("re").compile(
+        r"^<!--\s*module:([a-zA-Z0-9_-]+)\s*-->\s*$",
+        __import__("re").MULTILINE,
+    )
+
+    def _detect_active_modules(
+        self, task_text: str, mode_id: str = "",
+    ) -> set[str]:
+        """Pick which lazy modules survive stripping for this task.
+
+        Solo + plan mode honour the trigger heuristic; other modes get
+        everything (they're pipeline roles that usually need the full
+        context anyway and are sensitive to subtle prompt changes).
+        """
+        if mode_id not in ("solo", "plan"):
+            return set(self._MODULE_TRIGGERS)
+        s = (task_text or "").lower()
+        active: set[str] = set()
+        for name, triggers in self._MODULE_TRIGGERS.items():
+            if any(t in s for t in triggers):
+                active.add(name)
+        return active
+
+    def _strip_lazy_modules(
+        self, text: str, *, task_text: str, mode_id: str,
+    ) -> str:
+        """Drop ``<!-- module:X -->``-marked sections whose triggers
+        didn't match the current task text.
+
+        Each marker starts the module; the module extends until the next
+        ``<!-- module:Y -->`` marker OR the next ``## `` H2 header (so
+        non-module headers between modules are NOT swallowed). The
+        marker line itself is always removed; surviving sections come
+        through unchanged.
+        """
+        if not text or "<!-- module:" not in text:
+            return text
+        try:
+            from delfin.user_settings import load_settings as _load_settings
+            _agent_cfg = (_load_settings() or {}).get("agent", {}) or {}
+            _enabled = bool(_agent_cfg.get("slim_prompt", True))
+        except Exception:
+            _enabled = True
+        if not _enabled:
+            # Just strip the marker comments but keep all content
+            return self._MODULE_MARKER_RE.sub("", text)
+
+        active = self._detect_active_modules(task_text, mode_id)
+        lines = text.splitlines(keepends=True)
+        out: list[str] = []
+        i = 0
+        n = len(lines)
+        while i < n:
+            line = lines[i]
+            m = self._MODULE_MARKER_RE.match(line)
+            if not m:
+                out.append(line)
+                i += 1
+                continue
+            mod = m.group(1)
+            i += 1  # always swallow the marker line itself
+            if mod in active:
+                # Active module: pass through content unchanged.
+                continue
+            # Inactive module — skip the immediately-following section
+            # header (## or ### that lives right after the marker) plus
+            # the body until the NEXT ## H2 header or the next module
+            # marker, whichever comes first.
+            saw_header = False
+            while i < n:
+                nxt = lines[i]
+                if self._MODULE_MARKER_RE.match(nxt):
+                    # Next module marker — let the outer loop re-handle
+                    break
+                stripped = nxt.lstrip()
+                if not saw_header:
+                    # The first non-empty line after the marker is the
+                    # section header we want to also drop. Skip blank
+                    # lines until we find it.
+                    if stripped.startswith("### ") or stripped.startswith("## "):
+                        saw_header = True
+                    i += 1
+                    continue
+                # We've already consumed the header — stop at the next
+                # H2 header (boundary into a different section).
+                if stripped.startswith("## "):
+                    break
+                i += 1
+        return "".join(out)
+
     def load_input_template(self) -> str:
         """Load universal_input_template.md."""
         return self._cached_read(
@@ -647,10 +776,23 @@ class PromptLoader:
             # Layer 0: Role identity (always)
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
+                # Progressive disclosure: strip lazy-module sections (chemistry
+                # decision tree, web-research, notebook handling, KIT sandbox,
+                # etc.) when the task text doesn't signal that they're needed.
+                # Saves 4-6k tokens on the typical turn. Falls back to the
+                # full prompt for any task signal the regex can't classify.
+                try:
+                    role_prompt = self._strip_lazy_modules(
+                        role_prompt, task_text=task_text, mode_id=mode_id,
+                    )
+                except Exception:
+                    pass
                 sections.append(role_prompt)
 
             # Plan mode addendum: when the dashboard locked us into "plan"
             # the agent must investigate first and finalise via ExitPlanMode.
+            # Mode-stable so it stays high in the prompt where the prefix
+            # cache benefits most.
             if mode_id == "plan":
                 plan_addendum = self._cached_read(
                     self.agent_dir / "shared" / "plan_mode_addendum.md"
@@ -659,11 +801,11 @@ class PromptLoader:
                     sections.append(plan_addendum)
                     injected.append("plan_mode_addendum")
 
-            # CLI-style environment block: cwd, branch, status, recent commits
-            env_block = self._build_session_env_block()
-            if env_block:
-                sections.append(f"--- Session Environment ---\n{env_block}")
-
+            # Project context (delfin_context.md) is static — keep near the
+            # top so it caches with the role prompt. Env block + live state
+            # move to the END of this branch (just before the anchor) so
+            # their per-turn variability doesn't invalidate the cached
+            # prefix every send.
             ctx_text = self._cached_read(
                 self.agent_dir / "shared" / "delfin_context.md"
             )
@@ -716,10 +858,22 @@ class PromptLoader:
                 sections.append(f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
-            # Live state (Dashboard widgets, calc folder, jobs) — placed
-            # just before the attention anchor so the agent always reads
-            # the freshest UI state but doesn't get distracted from the
-            # role anchor.
+            # ----- Variable tail (changes per turn — kept at the bottom
+            # so the cached prefix above doesn't get invalidated when
+            # git status / live state / context_status drift) -----
+
+            # CLI-style environment block: cwd, branch, status, recent
+            # commits. Moved from the top of the prompt to the bottom
+            # because the git status line changes after every commit /
+            # uncommitted edit, which would otherwise break the prefix
+            # cache for everything that came after it.
+            env_block = self._build_session_env_block()
+            if env_block:
+                sections.append(f"--- Session Environment ---\n{env_block}")
+
+            # Live state (dashboard widgets, calc folder, jobs, the
+            # context-status block) — highest per-turn churn, must be
+            # last before the anchor.
             if live_state:
                 sections.append(f"--- Live state ---\n{live_state}")
                 injected.append("live_state")

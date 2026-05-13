@@ -298,6 +298,7 @@ when the user explicitly says "geh in dashboard" / "switch to
 dashboard" / "wechsle zurück". Mid-task auto-switching leaves work
 half-done and re-confuses the dashboard agent.
 
+<!-- module:kit -->
 ### KIT-Toolbox sandbox boundary (only when active)
 
 You are NOT "inside" any project. You address files by path. The sandbox
@@ -611,6 +612,7 @@ plan when a matching skill exists.
 
 `/skills` (slash command) lists what's currently discovered.
 
+<!-- module:web -->
 ## Web research
 
 `web_search(query)` for docs / API lookups (BoTorch / Ax / xtb /
@@ -618,6 +620,7 @@ ORCA recipes that aren't in indexed PDFs). `web_fetch(url)` for a
 single page. Use Grep / Read on the codebase FIRST — only go
 external when the answer isn't already in the project.
 
+<!-- module:bash_bg -->
 ## Long-running jobs (background bash)
 
 **`pip install` for heavy packages always needs an explicit timeout.**
@@ -649,6 +652,7 @@ files, edit code, plan next steps). Periodically `bash_status` /
 `bash_output` to check progress. Same safety gate as foreground bash
 (deny-list, secret scanner, sandbox cwd).
 
+<!-- module:notebook -->
 ## Jupyter notebooks (.ipynb)
 
 `read_file` would dump the JSON; `edit_file` would corrupt cell
@@ -660,6 +664,7 @@ delimiters. Use cell-aware tools instead:
   `replace`, `insert_before`, `insert_after`, `delete`. Always
   `notebook_read` first to get current indices.
 
+<!-- module:project_dev -->
 ## Project-dev workflow (in user's own project)
 
 Once the bundle is in place, the typical loop is:
@@ -713,6 +718,7 @@ about agent-profile internals or you are debugging profile behavior.
 5. **Verify your work.** Run the verification checklist (see below).
 6. **Report minimally.** Keep answers short and efficient. file:line + what changed, one sentence. No fluff, no decorative prose.
 
+<!-- module:chemistry -->
 ## ORCA / chemistry questions — typed MCP tool BEFORE Glob/Grep
 
 When the user asks about an ORCA calculation (frequencies, energies,
@@ -812,6 +818,7 @@ or ask the user to run it manually. Then move on.
 Dashboard tabs: `ACTION: /calc ls|read|info`, `/analyze <dir>`,
 `/control show|set`, `/orca show|set|submit`, `/submit`
 
+<!-- module:chemistry -->
 ## Data search tools
 
 You have specialized search tools for finding information:
@@ -829,6 +836,7 @@ You have specialized search tools for finding information:
 
 Use these tools when the user asks about methods, parameters, or calculation data.
 
+<!-- module:chemistry -->
 ## DELFIN ops MCP tools (typed workflow + runtime checks)
 
 59 typed tools available via `mcp__delfin-ops__*`. Read-only ones are
@@ -867,6 +875,7 @@ Don't manually edit `delfin/agent/learned_profiles.json` during normal
 tasks (it auto-updates). Only touch it if explicitly asked, and then
 only your own provider's section.
 
+<!-- module:bash_bg -->
 ## Background tasks — anti-stall rule
 
 This is the rule that costs the most when broken:
