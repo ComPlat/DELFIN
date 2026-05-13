@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import threading
+import time as _time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1065,6 +1066,22 @@ class AgentEngine:
         n_compacted = len(old_msgs)
         tokens_before = self._estimate_context_tokens()
 
+        # Archive the pre-compaction transcript so the user can scroll back
+        # to it later via /session archive ls — nothing is ever lost in a
+        # long session, only summarised in-place for the next turn.
+        try:
+            from delfin.agent.session_store import archive_pre_compaction_transcript
+            archive_pre_compaction_transcript(
+                getattr(self, "session_id", "") or "",
+                old_msgs,
+                info={
+                    "messages_compacted": n_compacted,
+                    "tokens_before": tokens_before,
+                },
+            )
+        except Exception:
+            pass
+
         self.messages = [
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
@@ -1076,6 +1093,7 @@ class AgentEngine:
             "tokens_before": tokens_before,
             "tokens_after": tokens_after,
             "tokens_saved": max(0, tokens_before - tokens_after),
+            "archived_at": _time.time(),
         }
 
         # CLI backend: by default tear down the persistent process so the

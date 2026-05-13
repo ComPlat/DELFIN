@@ -1004,6 +1004,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
+    ("Session", "/session", "List sessions / browse pre-compaction archives", False),
+    ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
     ("Workspace", "/workspace read", "Read a workspace file", True),
@@ -5631,6 +5633,178 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/mcp" or cmd.startswith("/mcp "):
+            from delfin.agent import mcp_editor as _me
+            arg = cmd[len("/mcp "):].strip() if cmd.startswith("/mcp ") else ""
+            # /mcp add <name> <command> [arg ...]
+            if arg.startswith("add "):
+                rest = arg[4:].strip()
+                parts = rest.split(None, 1)
+                if len(parts) < 2:
+                    _append_system_message(
+                        "Usage: /mcp add <name> <command> [arg ...]"
+                    )
+                    return True
+                name = parts[0]
+                # Tokenize the rest via shlex so quoted args survive
+                import shlex
+                try:
+                    tokens = shlex.split(parts[1])
+                except ValueError as exc:
+                    _append_system_message(f"Bad quoting: {exc}")
+                    return True
+                command = tokens[0] if tokens else ""
+                args_list = tokens[1:]
+                try:
+                    rec = _me.add_mcp_server(name, command, args_list)
+                except Exception as exc:
+                    _append_system_message(f"Add failed: {exc}")
+                    return True
+                _append_system_message(
+                    f"✅ MCP server '{rec['name']}' added: "
+                    f"{rec['command']} {' '.join(rec['args'])}\n"
+                    "Restart the dashboard for the new tools to register."
+                )
+                return True
+            # /mcp remove <name>
+            if arg.startswith("remove ") or arg.startswith("rm "):
+                name = arg.split(None, 1)[1].strip() if " " in arg else ""
+                if not name:
+                    _append_system_message("Usage: /mcp remove <name>")
+                    return True
+                try:
+                    removed = _me.remove_mcp_server(name)
+                except Exception as exc:
+                    _append_system_message(f"Remove failed: {exc}")
+                    return True
+                if removed is None:
+                    _append_system_message(f"No MCP server named '{name}'.")
+                else:
+                    _append_system_message(f"🗑 MCP server '{name}' removed.")
+                return True
+            # /mcp enable <name>  /  /mcp disable <name>
+            for verb, flag in (("enable ", True), ("disable ", False)):
+                if arg.startswith(verb):
+                    name = arg[len(verb):].strip()
+                    try:
+                        rec = _me.toggle_mcp_server(name, enabled=flag)
+                    except Exception as exc:
+                        _append_system_message(f"Toggle failed: {exc}")
+                        return True
+                    if rec is None:
+                        _append_system_message(f"No MCP server named '{name}'.")
+                    else:
+                        _append_system_message(
+                            f"{'✅' if flag else '⏸'} MCP server "
+                            f"'{name}' → enabled={flag}. Restart to apply."
+                        )
+                    return True
+            # /mcp  → list
+            try:
+                rows = _me.list_mcp_servers()
+            except Exception as exc:
+                _append_system_message(f"Could not list MCP servers: {exc}")
+                return True
+            if not rows:
+                _append_system_message(
+                    "No user-global MCP servers configured.\n"
+                    "Add one with: /mcp add <name> <command> [args ...]\n"
+                    "Example: /mcp add fs npx -y @modelcontextprotocol/server-filesystem /tmp"
+                )
+                return True
+            lines = ["User-global MCP servers (~/.delfin/mcp_servers.json):"]
+            for r in rows:
+                badge = "✓" if r["enabled"] else "✗"
+                argv = " ".join([r["command"]] + list(r["args"]))[:80]
+                lines.append(f"  [{badge}] {r['name']:<14}  {argv}")
+            lines.append(
+                "\nCommands: /mcp add | remove | enable | disable\n"
+                "Note: project-scoped servers (<workspace>/.delfin/mcp_servers.json) "
+                "are hand-edited only."
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/session" or cmd.startswith("/session "):
+            from delfin.agent import session_store as _ss
+            arg = cmd[len("/session "):].strip() if cmd.startswith("/session ") else ""
+            # /session archive ls
+            if arg in ("archive", "archive ls"):
+                rows = _ss.list_transcript_archives()
+                if not rows:
+                    _append_system_message(
+                        "No archived transcripts yet. Archives are written "
+                        "automatically when the engine compacts the message "
+                        "history — long sessions never truly lose context."
+                    )
+                    return True
+                import time as _t
+                lines = ["Archived transcripts (pre-compaction snapshots):"]
+                for r in rows[:20]:
+                    when = _t.strftime("%Y-%m-%d %H:%M",
+                                       _t.localtime(r["mtime"]))
+                    kb = r["bytes"] / 1024
+                    lines.append(
+                        f"  {when}  {r['session_id'][:16]:<18}  "
+                        f"{r['compactions']:>2} compactions, {kb:>6.1f} kB"
+                    )
+                lines.append(
+                    "\nLoad a transcript: /session archive <session_id>"
+                )
+                _append_system_message("\n".join(lines))
+                return True
+            # /session archive <session_id>
+            if arg.startswith("archive "):
+                sid = arg[len("archive "):].strip()
+                if not sid:
+                    _append_system_message("Usage: /session archive <session_id>")
+                    return True
+                records = _ss.load_transcript_archive(sid)
+                if not records:
+                    _append_system_message(f"No archive for session '{sid}'.")
+                    return True
+                import time as _t
+                lines = [f"Transcript archive for {sid} ({len(records)} compactions):"]
+                for i, rec in enumerate(records):
+                    when = _t.strftime("%Y-%m-%d %H:%M",
+                                       _t.localtime(rec.get("compacted_at", 0)))
+                    info = rec.get("info") or {}
+                    n_msgs = rec.get("n_messages", 0)
+                    saved = info.get("tokens_before", 0)
+                    lines.append(
+                        f"  [{i}] {when}  {n_msgs:>3} msgs  "
+                        f"~{saved:>6} tokens"
+                    )
+                lines.append(
+                    "\nThe full snapshots live at ~/.delfin/transcript_archive/."
+                )
+                _append_system_message("\n".join(lines))
+                return True
+            # /session ls
+            if arg == "ls" or arg == "list":
+                rows = _ss.list_sessions(limit=20)
+                if not rows:
+                    _append_system_message("No saved sessions.")
+                    return True
+                import time as _t
+                lines = ["Recent sessions (newest first):"]
+                for r in rows:
+                    when = _t.strftime("%Y-%m-%d %H:%M",
+                                       _t.localtime(r.get("updated_at", 0)))
+                    lines.append(
+                        f"  {when}  {r.get('session_id', '')[:16]:<18}  "
+                        f"{(r.get('title') or '')[:50]}"
+                    )
+                _append_system_message("\n".join(lines))
+                return True
+            _append_system_message(
+                "Usage:\n"
+                "  /session ls            — recent sessions\n"
+                "  /session archive       — archived pre-compaction transcripts\n"
+                "  /session archive <id>  — view archive for a session\n"
+            )
+            return True
+
         if cmd == "/hooks" or cmd.startswith("/hooks "):
             from delfin.agent import hooks_editor as _he
             arg = cmd[len("/hooks "):].strip() if cmd.startswith("/hooks ") else ""
@@ -9313,7 +9487,8 @@ def create_tab(ctx):
             "/help", "/clear", "/cost", "/compact", "/stop", "/status",
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-            "/memories", "/remember", "/forget", "/plans", "/hooks",
+            "/memories", "/remember", "/forget", "/plans", "/hooks", "/session",
+            "/mcp",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
@@ -9507,9 +9682,10 @@ def create_tab(ctx):
         input_textarea.value = ""
         _append_chat_message("user", user_text)
 
-        # Fire UserPromptSubmit hooks (best-effort, never blocks the send).
-        # Hooks that return decision=="block" can refuse the message —
-        # surface as a system note and return early.
+        # Fire UserPromptSubmit hooks. Block reasons surface as a system
+        # message and abort the send; non-blocking hook output (stderr,
+        # non-zero exits without "block" decision) also surfaces as an
+        # info note so the user actually sees their hooks running.
         try:
             from delfin.agent import hooks as _hooks_mod
             _cfg = _hooks_mod.load_hooks(ctx.repo_dir or None)
@@ -9526,6 +9702,19 @@ def create_tab(ctx):
                         f"  reason: {(_blk.reason or _blk.stderr or '').strip()[:200]}"
                     )
                     return
+                # Non-blocking, but report if any hook produced visible output
+                _noisy = [r for r in _ups
+                          if r.matched and (r.stderr.strip() or r.exit_code)]
+                if _noisy:
+                    _lines = ["🎣 UserPromptSubmit hooks fired:"]
+                    for r in _noisy:
+                        _lines.append(
+                            f"  {r.command[:60]}  exit={r.exit_code}  "
+                            f"{r.duration_s:.1f}s"
+                        )
+                        if r.stderr.strip():
+                            _lines.append(f"    stderr: {r.stderr.strip()[:120]}")
+                    _append_system_message("\n".join(_lines))
         except Exception:
             pass
 
@@ -9542,6 +9731,19 @@ def create_tab(ctx):
         state["_last_stream_activity"] = time.monotonic()
         state["_stale_seen"] = False
         _arm_stale_watcher()
+        # Snapshot the engine's pre-turn cost/tokens so the worker can
+        # emit a per-turn delta footer once the turn finishes.
+        try:
+            _pre = engine.get_status()
+            state["_turn_pre_cost"] = float(_pre.get("cost_usd") or 0.0)
+            state["_turn_pre_in"] = int(_pre.get("input_tokens") or 0)
+            state["_turn_pre_out"] = int(_pre.get("output_tokens") or 0)
+            state["_turn_started_monotonic"] = time.monotonic()
+        except Exception:
+            state["_turn_pre_cost"] = 0.0
+            state["_turn_pre_in"] = 0
+            state["_turn_pre_out"] = 0
+            state["_turn_started_monotonic"] = time.monotonic()
         _set_working(True, "Thinking...")
 
         role_label = _format_role_label(engine.current_role)
@@ -10862,17 +11064,50 @@ def create_tab(ctx):
                     _update_button_states()
                     _auto_save_session()
                     _check_auto_compact()
+                    # Live per-turn cost footer: post a one-line system
+                    # message summarising the delta in tokens/cost/
+                    # duration for the turn we just finished. Best-effort,
+                    # silently skips if get_status() raises.
+                    try:
+                        _post = engine.get_status()
+                        d_in = int(_post.get("input_tokens") or 0) - int(state.get("_turn_pre_in") or 0)
+                        d_out = int(_post.get("output_tokens") or 0) - int(state.get("_turn_pre_out") or 0)
+                        d_cost = float(_post.get("cost_usd") or 0.0) - float(state.get("_turn_pre_cost") or 0.0)
+                        dur = time.monotonic() - float(state.get("_turn_started_monotonic") or time.monotonic())
+                        if d_in or d_out or d_cost > 0.0001 or tool_count[0]:
+                            cost_s = f"${d_cost:.4f}" if d_cost > 0.0001 else "<$0.0001"
+                            _append_system_message(
+                                f"⏱ turn  {dur:.1f}s  ·  "
+                                f"{d_in:,}↓ / {d_out:,}↑ tokens  ·  "
+                                f"{tool_count[0]} tool call{'s' if tool_count[0] != 1 else ''}  ·  "
+                                f"{cost_s}"
+                            )
+                    except Exception:
+                        pass
                     # Fire Stop hooks at end-of-turn so user-defined linters
-                    # / test runs / notifications can react. Best-effort —
-                    # any failure logs to stderr and never disturbs the UI.
+                    # / test runs / notifications can react. Surface noisy
+                    # output (non-zero exit or stderr) as a system note so
+                    # the user sees hook activity instead of it being silent.
                     try:
                         from delfin.agent import hooks as _hooks_mod
                         _cfg = _hooks_mod.load_hooks(ctx.repo_dir or None)
                         if not _cfg.is_empty():
-                            _hooks_mod.run_hooks(
+                            _stops = _hooks_mod.run_hooks(
                                 "Stop", _cfg,
                                 workspace=ctx.repo_dir or None,
                             )
+                            _noisy = [r for r in _stops
+                                      if r.matched and (r.stderr.strip() or r.exit_code)]
+                            if _noisy:
+                                _lines = ["🎣 Stop hooks fired:"]
+                                for r in _noisy:
+                                    _lines.append(
+                                        f"  {r.command[:60]}  exit={r.exit_code}  "
+                                        f"{r.duration_s:.1f}s"
+                                    )
+                                    if r.stderr.strip():
+                                        _lines.append(f"    stderr: {r.stderr.strip()[:120]}")
+                                _append_system_message("\n".join(_lines))
                     except Exception:
                         pass
                     # Process next queued message if any
