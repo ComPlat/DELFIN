@@ -920,8 +920,20 @@ class AgentEngine:
         files touched, and pending items; drops chit-chat. The cost is
         ~1k tokens of input + a few hundred output; for an Opus session
         that's <$0.01.
+
+        Backend handling: API-style clients (APIClient, OpenAIClient)
+        are stateless per stream_message call — safe to invoke for an
+        out-of-band summary. CLI-style clients (CLIClient, CodexCLIClient)
+        use a *persistent* subprocess with the user's session_id; sending
+        the summarisation prompt there would pollute the live transcript.
+        For CLI backends we therefore decline LLM-mode and the caller
+        falls back to extractive summarisation.
         """
         if not old_msgs or not getattr(self, "client", None):
+            return ""
+        if getattr(self, "backend", "") == "cli":
+            # Persistent subprocess — running the summariser would append
+            # the side-conversation to the user's live session. Skip.
             return ""
 
         rendered: list[str] = []

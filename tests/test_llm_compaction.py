@@ -67,6 +67,30 @@ def test_llm_summarize_with_no_client_returns_empty():
     assert eng._llm_summarize_old_messages([{"role": "user", "content": "x"}]) == ""
 
 
+def test_llm_summarize_skipped_on_cli_backend():
+    """The CLI client uses a persistent subprocess scoped to the user's
+    session id; pushing the summariser through it would graft the side-
+    conversation onto the live transcript. The compactor must therefore
+    decline LLM mode for cli backends and let the caller fall back to
+    extractive summarisation."""
+    eng = _bare_engine_with_client(["should-not-be-reached"])
+    eng.backend = "cli"
+    out = eng._llm_summarize_old_messages([
+        {"role": "user", "content": "anything"},
+        {"role": "assistant", "content": "ack"},
+    ])
+    assert out == ""
+
+
+def test_llm_summarize_runs_on_api_backend():
+    eng = _bare_engine_with_client(["API-summary"])
+    eng.backend = "api"
+    out = eng._llm_summarize_old_messages([
+        {"role": "user", "content": "go"},
+    ])
+    assert out == "API-summary"
+
+
 def test_llm_summarize_caps_giant_messages_individually():
     """A single 200kB tool_result must not flood the summariser's input;
     the per-message cap (4000 chars) keeps it tractable."""
