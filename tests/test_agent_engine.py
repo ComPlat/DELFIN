@@ -220,7 +220,7 @@ def test_cli_client_not_found():
     from delfin.agent.api_client import CLIClient
 
     with patch("shutil.which", return_value=None):
-        with pytest.raises(FileNotFoundError, match="Claude Code CLI not found"):
+        with pytest.raises(FileNotFoundError, match="Agent CLI binary not found"):
             CLIClient()
 
 

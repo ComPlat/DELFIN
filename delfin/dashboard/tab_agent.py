@@ -1002,6 +1002,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memories", "List all memories", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
+    ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
+    ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
     ("Workspace", "/workspace read", "Read a workspace file", True),
@@ -5629,6 +5631,182 @@ def create_tab(ctx):
                 )
             return True
 
+        if cmd == "/hooks" or cmd.startswith("/hooks "):
+            from delfin.agent import hooks_editor as _he
+            arg = cmd[len("/hooks "):].strip() if cmd.startswith("/hooks ") else ""
+            repo = ctx.repo_dir or None
+            # /hooks dry-run <event> [tool]
+            if arg.startswith("dry-run") or arg.startswith("dry "):
+                parts = arg.split(None, 2)
+                event = parts[1] if len(parts) > 1 else ""
+                tool = parts[2] if len(parts) > 2 else ""
+                if event not in _he._VALID_EVENTS:
+                    _append_system_message(
+                        f"Usage: /hooks dry-run <event> [tool]\n"
+                        f"  events: {', '.join(_he._VALID_EVENTS)}"
+                    )
+                    return True
+                try:
+                    rows = _he.dry_run_hook(
+                        event,
+                        tool_name=tool,
+                        tool_input={"file_path": "test.py"} if tool else {},
+                        workspace=repo,
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Dry-run failed: {exc}")
+                    return True
+                if not rows:
+                    _append_system_message(
+                        f"No hooks fired for {event}"
+                        + (f" / {tool}" if tool else "")
+                        + ". Add one with `/hooks add`."
+                    )
+                    return True
+                lines = [f"Dry-run {event}" + (f" / {tool}" if tool else "") + ":"]
+                for r in rows:
+                    flag = "MATCH" if r["matched"] else "skip "
+                    lines.append(
+                        f"  [{flag}] exit={r['exit_code']:<3} "
+                        f"{r['duration_s']:>5.2f}s  {r['command'][:80]}"
+                    )
+                    if r["decision"]:
+                        lines.append(f"    → decision={r['decision']} ({r['reason'][:60]})")
+                    if r["stderr_tail"].strip():
+                        lines.append(f"    stderr: {r['stderr_tail'][:120]}")
+                _append_system_message("\n".join(lines))
+                return True
+            # /hooks add <event> <matcher> <command...>
+            if arg.startswith("add "):
+                rest = arg[4:].strip()
+                parts = rest.split(None, 2)
+                if len(parts) < 3:
+                    _append_system_message(
+                        "Usage: /hooks add <event> <matcher> <command>\n"
+                        "  Use \"\" for an empty matcher."
+                    )
+                    return True
+                event, matcher, command = parts
+                matcher = matcher.strip('"').strip("'")
+                try:
+                    rec = _he.add_hook(event, matcher, command)
+                except Exception as exc:
+                    _append_system_message(f"Add failed: {exc}")
+                    return True
+                _append_system_message(
+                    f"✅ Hook added → {event}: matcher={rec['matcher']!r}, "
+                    f"command={command!r}\nSettings: {rec['settings_path']}"
+                )
+                return True
+            # /hooks remove <event> <index>
+            if arg.startswith("remove ") or arg.startswith("rm "):
+                rest = arg.split(None, 1)[1] if " " in arg else ""
+                parts = rest.split()
+                if len(parts) < 2 or not parts[1].isdigit():
+                    _append_system_message("Usage: /hooks remove <event> <index>")
+                    return True
+                event, idx_s = parts[0], parts[1]
+                try:
+                    removed = _he.remove_hook(event, int(idx_s))
+                except Exception as exc:
+                    _append_system_message(f"Remove failed: {exc}")
+                    return True
+                if removed is None:
+                    _append_system_message(
+                        f"No hook at {event}[{idx_s}] — check /hooks first."
+                    )
+                else:
+                    _append_system_message(
+                        f"🗑 Removed {event}[{idx_s}]: {removed}"
+                    )
+                return True
+            # /hooks  → list
+            try:
+                rows = _he.list_hooks(repo)
+            except Exception as exc:
+                _append_system_message(f"Could not load hooks: {exc}")
+                return True
+            if not rows:
+                _append_system_message(
+                    "No hooks registered.\n\n"
+                    "Add one with: /hooks add <event> <matcher> <command>\n"
+                    "  events: PreToolUse, PostToolUse, UserPromptSubmit, Stop\n"
+                    "  example: /hooks add PreToolUse Edit|Write 'ruff check ${file}'\n"
+                )
+                return True
+            lines = ["Registered hooks (from settings.json layers):"]
+            cur_event = ""
+            for r in rows:
+                if r["event"] != cur_event:
+                    lines.append(f"\n{r['event']}:")
+                    cur_event = r["event"]
+                lines.append(
+                    f"  [{r['index']}] matcher={r['matcher']!r:<24}  "
+                    f"{r['command'][:80]}"
+                )
+            lines.append(
+                "\nDry-run a hook: /hooks dry-run <event> [tool_name]"
+                "\nRemove: /hooks remove <event> <index>"
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/plans" or cmd.startswith("/plans "):
+            from delfin.agent.memory_store import (
+                list_plans, get_plan, delete_plan,
+            )
+            arg = cmd[len("/plans "):].strip() if cmd.startswith("/plans ") else ""
+            repo = ctx.repo_dir or "."
+            # /plans delete <name>
+            if arg.startswith("delete "):
+                target = arg[len("delete "):].strip()
+                removed = delete_plan(repo, target)
+                if removed is None:
+                    _append_system_message(
+                        f"No plan matching '{target}'. /plans for the list."
+                    )
+                else:
+                    short = str(removed).replace(str(Path.home()), "~")
+                    _append_system_message(f"🗑 Plan deleted → {short}")
+                return True
+            # /plans <name>: view body
+            if arg:
+                rec = get_plan(repo, arg)
+                if rec is None:
+                    _append_system_message(
+                        f"No plan matching '{arg}'. /plans for the list."
+                    )
+                    return True
+                short = str(rec["path"]).replace(str(Path.home()), "~")
+                _append_system_message(
+                    f"## Plan: {rec['name']}\n"
+                    f"_{rec['description']}_\n\n"
+                    f"---\n\n{rec['body']}\n\n---\n"
+                    f"Source: `{short}`"
+                )
+                return True
+            # /plans: list mode
+            plans = list_plans(repo)
+            if not plans:
+                _append_system_message(
+                    "No saved plans yet. Plans are written here when you "
+                    "approve a Plan-Mode plan via ExitPlanMode."
+                )
+                return True
+            import time as _time
+            lines = ["Saved plans (newest first):"]
+            for p in plans[:25]:
+                ts = _time.strftime("%Y-%m-%d %H:%M",
+                                    _time.localtime(p["created_at"]))
+                desc = (p["description"] or "")[:60]
+                lines.append(f"  {ts}  {p['name']:<32}  {desc}")
+            lines.append(
+                "\nUse `/plans <name>` to view a plan body, "
+                "`/plans delete <name>` to remove one."
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/agents stats":
             try:
                 from delfin.agent.subagents import (
@@ -8545,11 +8723,92 @@ def create_tab(ctx):
         # Needs confirmation
         _request_confirmation(action_id, description, callback)
 
+    def _compute_approval_diff(detail: str) -> str:
+        """Render a unified-diff preview when the pending tool is Edit /
+        Write / multi_edit. Returns "" when the tool isn't file-mutating
+        or the diff can't be computed (binary file, missing path, etc.).
+
+        Reads the actual file from disk; pure-stdlib (difflib), capped to
+        ~120 lines so the chat doesn't drown in a huge rewrite preview.
+        """
+        import ast as _ast
+        import difflib as _difflib
+        try:
+            d = _ast.literal_eval(detail) if detail and detail.lstrip().startswith("{") else {}
+        except Exception:
+            return ""
+        tool = (d.get("tool_name") or "").strip()
+        inp = d.get("tool_input") or {}
+        if not isinstance(inp, dict):
+            return ""
+        file_path = (inp.get("file_path") or inp.get("path") or "").strip()
+        if not file_path or tool not in ("Edit", "Write", "multi_edit"):
+            return ""
+        try:
+            target = Path(file_path).expanduser()
+            current = target.read_text(encoding="utf-8") if target.is_file() else ""
+        except OSError:
+            return ""
+
+        if tool == "Write":
+            proposed = inp.get("content", "")
+        elif tool == "Edit":
+            old = inp.get("old_string", "")
+            new = inp.get("new_string", "")
+            if not old:
+                return ""
+            replace_all = bool(inp.get("replace_all", False))
+            if old not in current:
+                return f"(diff preview unavailable — old_string not found in {target.name})"
+            proposed = (current.replace(old, new) if replace_all
+                        else current.replace(old, new, 1))
+        elif tool == "multi_edit":
+            edits = inp.get("edits") or []
+            proposed = current
+            for e in edits:
+                old = e.get("old_string", "")
+                new = e.get("new_string", "")
+                if old and old in proposed:
+                    if e.get("replace_all"):
+                        proposed = proposed.replace(old, new)
+                    else:
+                        proposed = proposed.replace(old, new, 1)
+        else:
+            return ""
+
+        if proposed == current:
+            return f"(no change to {target.name})"
+        diff_lines = list(_difflib.unified_diff(
+            current.splitlines(keepends=False),
+            proposed.splitlines(keepends=False),
+            fromfile=str(target),
+            tofile=f"{target} (proposed)",
+            lineterm="",
+            n=3,
+        ))
+        if not diff_lines:
+            return ""
+        if len(diff_lines) > 120:
+            diff_lines = diff_lines[:60] + [
+                f"... ({len(diff_lines) - 120} lines truncated) ...",
+            ] + diff_lines[-60:]
+        return "```diff\n" + "\n".join(diff_lines) + "\n```"
+
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
         state["_pending_approval"] = {"tool": tool_name, "detail": detail}
         readable = _format_tool_description(detail)
         _set_active_gate("approval", "", "Tool approval required", readable)
+        # Compute + surface a diff preview for file-mutating tools so the
+        # user can see the actual change instead of just the tool name.
+        try:
+            diff_block = _compute_approval_diff(detail)
+        except Exception:
+            diff_block = ""
+        if diff_block:
+            _append_chat_message(
+                "system", f"**Proposed change:**\n\n{diff_block}"
+            )
         # Show in chat as a special approval message
         _append_chat_message(
             "approval",
@@ -9054,7 +9313,8 @@ def create_tab(ctx):
             "/help", "/clear", "/cost", "/compact", "/stop", "/status",
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-            "/memories", "/remember", "/forget", "/workspace", "/tab", "/ui",
+            "/memories", "/remember", "/forget", "/plans", "/hooks",
+            "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
         }
@@ -9246,6 +9506,28 @@ def create_tab(ctx):
 
         input_textarea.value = ""
         _append_chat_message("user", user_text)
+
+        # Fire UserPromptSubmit hooks (best-effort, never blocks the send).
+        # Hooks that return decision=="block" can refuse the message —
+        # surface as a system note and return early.
+        try:
+            from delfin.agent import hooks as _hooks_mod
+            _cfg = _hooks_mod.load_hooks(ctx.repo_dir or None)
+            if not _cfg.is_empty():
+                _ups = _hooks_mod.run_hooks(
+                    "UserPromptSubmit", _cfg,
+                    user_prompt=user_text,
+                    workspace=ctx.repo_dir or None,
+                )
+                _blk = _hooks_mod.first_block(_ups)
+                if _blk is not None:
+                    _append_system_message(
+                        "⛔ UserPromptSubmit hook blocked the message:\n"
+                        f"  reason: {(_blk.reason or _blk.stderr or '').strip()[:200]}"
+                    )
+                    return
+        except Exception:
+            pass
 
         with state["_state_lock"]:
             state["streaming"] = True
@@ -10580,6 +10862,19 @@ def create_tab(ctx):
                     _update_button_states()
                     _auto_save_session()
                     _check_auto_compact()
+                    # Fire Stop hooks at end-of-turn so user-defined linters
+                    # / test runs / notifications can react. Best-effort —
+                    # any failure logs to stderr and never disturbs the UI.
+                    try:
+                        from delfin.agent import hooks as _hooks_mod
+                        _cfg = _hooks_mod.load_hooks(ctx.repo_dir or None)
+                        if not _cfg.is_empty():
+                            _hooks_mod.run_hooks(
+                                "Stop", _cfg,
+                                workspace=ctx.repo_dir or None,
+                            )
+                    except Exception:
+                        pass
                     # Process next queued message if any
                     _process_queue()
                 else:

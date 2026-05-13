@@ -224,6 +224,73 @@ def _claude_plans_dir(repo_root: Path) -> Path:
     return Path.home() / ".claude" / "projects" / slug / "plans"
 
 
+def list_plans(repo_root: Path | str) -> list[dict]:
+    """Return one record per saved plan-file under the project's plans
+    dir. Newest first (by created_at frontmatter; falls back to mtime)."""
+    plans_dir = _claude_plans_dir(Path(repo_root))
+    if not plans_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in plans_dir.glob("*.md"):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        meta: dict[str, str] = {}
+        body = text
+        if text.startswith("---\n"):
+            try:
+                _, fm, body = text.split("---\n", 2)
+                for line in fm.splitlines():
+                    if ":" in line:
+                        k, _, v = line.partition(":")
+                        meta[k.strip()] = v.strip()
+            except ValueError:
+                body = text
+        try:
+            created_at = int(meta.get("created_at") or int(p.stat().st_mtime))
+        except (TypeError, ValueError):
+            created_at = int(p.stat().st_mtime)
+        out.append({
+            "file": p.name,
+            "path": str(p),
+            "name": meta.get("name") or p.stem,
+            "description": meta.get("description") or "",
+            "created_at": created_at,
+            "body": body.strip(),
+        })
+    out.sort(key=lambda r: r["created_at"], reverse=True)
+    return out
+
+
+def get_plan(repo_root: Path | str, name_or_file: str) -> dict | None:
+    """Return one plan by name or filename. None if not found."""
+    target = (name_or_file or "").strip().lower()
+    if not target:
+        return None
+    for rec in list_plans(repo_root):
+        if (rec["file"].lower() == target
+                or rec["file"].lower() == target + ".md"
+                or rec["name"].lower() == target
+                or rec["name"].lower() == target.removesuffix(".md")):
+            return rec
+    return None
+
+
+def delete_plan(repo_root: Path | str, name_or_file: str) -> Path | None:
+    """Delete a saved plan by name/filename. Returns the path that was
+    removed, or None if not found."""
+    rec = get_plan(repo_root, name_or_file)
+    if rec is None:
+        return None
+    p = Path(rec["path"])
+    try:
+        p.unlink()
+    except OSError:
+        return None
+    return p
+
+
 def save_plan(
     plan_body: str,
     *,
