@@ -1166,6 +1166,100 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
+    """Baustein 5 dispatch helper — PBD post-UFF geometry corrector.
+
+    Per-frame: catastrophic M-D break repair (rigid fragment translation),
+    Hungarian symmetry projection (donors → ideal polyhedron slots), then
+    iterative Gauss-Seidel constraint resolution (bonds + angles + clashes)
+    with hard topology gate.
+
+    Bit-exact when ``DELFIN_BAUSTEIN5=0`` (default).  Operates on (xyz, mol)
+    per frame.  Per-frame topology check: if optimizer breaks topology or
+    reports failure, falls back to original xyz for that frame.
+
+    Class-conditional dispatch via `_classify_complex_class(mol)`.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_BAUSTEIN5", 0):
+        return results
+    try:
+        from delfin._post_optimizer import post_optimize_geometry
+        cls = "sigma"
+        try:
+            cls = _classify_complex_class(mol)
+        except Exception:
+            pass
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = post_optimize_geometry(
+                    xyz, mol, class_label=cls,
+                    max_iter=20, step_size=0.3,
+                )
+                if report.get("topology_preserved", False):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _b5_exc:
+        try:
+            logger.debug("Baustein 5 PBD optimization skipped: %s", _b5_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
+    """Baustein 6 dispatch helper — Variational L-BFGS-B with 4-tier symmetry.
+
+    Per-frame: minimizes 8-term U_total (bond + angle + clash + topology
+    + 4 symmetry terms) via L-BFGS-B.  Should run AFTER Baustein 5 (which
+    handles catastrophic M-D breaks).
+
+    Bit-exact when ``DELFIN_BAUSTEIN6=0`` (default).  Per-frame topology
+    check; falls back to input frame on failure.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_BAUSTEIN6", 0):
+        return results
+    try:
+        from delfin._variational_refiner import variational_refine
+        cls = "sigma"
+        try:
+            cls = _classify_complex_class(mol)
+        except Exception:
+            pass
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = variational_refine(
+                    xyz, mol, class_label=cls,
+                    max_iter=200,
+                )
+                if report.get("topology_preserved", False) and not report.get("fallback_used", True):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _b6_exc:
+        try:
+            logger.debug("Baustein 6 variational refine skipped: %s", _b6_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _delfin_env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -25392,6 +25486,18 @@ def smiles_to_xyz_isomers(
     # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
     # is a generic converter pathology independent of metal presence.
     results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Baustein 5: PBD post-UFF geometry corrector ──────────────────────────
+    # Per-frame: catastrophic M-D break repair (rigid fragment translation),
+    # Hungarian symmetry projection, iterative Gauss-Seidel constraint solver.
+    # Hard topology gate ensures no break. Bit-exact when DELFIN_BAUSTEIN5=0.
+    results = _apply_baustein5_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Baustein 6: Variational L-BFGS-B with 4-tier symmetry ────────────────
+    # Per-frame: minimize 8-term U_total (bond/angle/clash/topology +
+    # coord-sphere/equivalence/fragment/global PG symmetry). Runs after B5.
+    # Bit-exact when DELFIN_BAUSTEIN6=0.
+    results = _apply_baustein6_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
