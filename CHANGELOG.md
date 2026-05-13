@@ -7,6 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Agent (long-session continuity + production parity)
+
+A multi-sprint pass on the dashboard agent. Solo mode is now suitable for
+multi-day sessions: nothing the agent learns or does is silently lost,
+the user can fork / branch / search across history, and the canonical
+slash-command, hook, and MCP surfaces are all live.
+
+**Context management**
+- Live context-window bar above the chat input (blue → orange → red
+  ramp at 60 % / 80 %; thin marker at the 95 % auto-compact trigger).
+- LLM-quality compaction (API backends) with structured Goal / Decisions
+  / Open-items summarisation; falls back to extractive on the CLI
+  backend to keep the persistent session untouched.
+- Tool-result auto-truncation via `_smart_truncate(cap=5000)` so 200 kB
+  MCP outputs no longer detonate the next request's input budget; head
+  + tail kept so Python tracebacks always survive.
+- Live per-turn footer reports duration / token Δ / tool calls / cost Δ
+  after every turn.
+- Pre-compaction transcript archive (append-only JSONL under
+  `~/.delfin/transcript_archive/<sid>.jsonl`). Long sessions never truly
+  lose history — only summarise it in-place.
+- New `/context`, `/cost`, `/usage` slash commands; status block injected
+  into the solo system prompt every turn (msgs / tokens / % of window /
+  last compaction).
+
+**Session**
+- Full state save+restore: chat, perm profile, provider, model, effort,
+  active gate, last-compaction info, subagent panel, pending plan body,
+  todo payload (10 fields total — legacy sessions still load).
+- `/session ls | restore <id> | search <query> | fork [<id>] | tree
+  [<id>] | archive | archive <id>` slash commands.
+- `delfin-voila --resume <sid>` (or `--resume latest`) auto-loads a
+  saved session at dashboard boot; also honours
+  `DELFIN_RESUME_SESSION` env var for wrapper scripts.
+- Headless CLI: `python -m delfin.agent.cli run/init/session ls/session
+  search`, suitable for CI hooks, nightly summaries, scripted refactors.
+
+**Memory (typed, Claude-Code-compatible layout)**
+- Four memory types — `user` / `feedback` / `project` / `reference` —
+  with auto-classifier when `/remember` is called without an explicit
+  prefix (e.g. *"don't mock the DB"* → feedback).
+- `/remember [type:] <text>` writes both the legacy
+  `~/.delfin/agent_memory.json` and a typed sidecar file under
+  `~/.claude/projects/<slug>/memory/<type>_<slug>.md` with frontmatter,
+  plus an indexed line in `MEMORY.md`.
+- `[[name]]` wiki-style cross-link resolution at prompt-build time:
+  resolved targets become inline markdown links, dangling targets get a
+  ``(not yet written)`` annotation.
+- `/memories verify` greps every memory file for path-shaped references
+  that no longer exist on disk — flags rotten recommendations.
+
+**Plan Mode**
+- New `plan` mode in the dropdown locks the permission profile to
+  read-only and injects `plan_mode_addendum.md` into the system prompt.
+- `ExitPlanMode` tool round-trip persists the approved plan to
+  `~/.claude/projects/<slug>/plans/<slug>.md` with frontmatter.
+- `/plans` slash command (list / view / delete saved plans).
+
+**Subagents**
+- Built-in presets `explore` / `plan` / `code-reviewer` /
+  `general-purpose` extended by markdown files in
+  `delfin/agent/pack/agents/*_subagent.md` (cannot override built-ins)
+  and `~/.delfin/subagents/*_subagent.md` (can override). First
+  user-facing custom preset shipped: `chemistry-reviewer`.
+- Optional `isolation="worktree"` parameter creates a fresh git
+  worktree before deriving sub-perms, so subagent edits never touch
+  the user's working tree until reviewed.
+- Per-run telemetry JSONL log + `/agents stats` for lifetime
+  aggregates (count, mean duration, tokens, errors, truncations).
+
+**Skills + custom slash commands**
+- `/skills` lists discovered skills; `/skills <name>` prints the body
+  + source path + usage hint. Palette autocomplete bug fixed
+  (referenced non-existent fields, crashed on first skill).
+- User-defined slash commands as markdown templates: drop
+  `~/.delfin/commands/<name>.md` or
+  `<workspace>/.delfin/commands/<name>.md` with optional frontmatter
+  (`description`, `argument-hint`). `$ARGUMENTS` / `$@` / `$1` / `$2`
+  / `${ARGUMENTS}` are substituted; unknown placeholders preserved.
+
+**Project bootstrap**
+- `/init` (and `delfin-agent init`) scans the repo for Python /
+  Node / Rust / Go indicators + Makefile targets, writes a populated
+  `AGENTS.md` with detected build/test/lint commands, and scaffolds
+  `.delfin/settings.json`. `AGENTS.md` is auto-loaded by the prompt
+  loader on the next turn.
+
+**Hooks** (PreToolUse / PostToolUse / UserPromptSubmit / Stop)
+- All four events now fire end-to-end. `UserPromptSubmit` can block
+  the send via `decision: block`; non-blocking hook output (exit code,
+  stderr, duration) surfaces in chat so the user sees activity.
+- `/hooks list / add / remove / dry-run` slash commands edit
+  `~/.delfin/settings.json` without hand-editing JSON.
+
+**MCP servers**
+- `/mcp list / add / remove / enable / disable / reload` slash
+  commands manage `~/.delfin/mcp_servers.json`. Add / remove / toggle
+  auto-reload the process-wide registry; new MCP tool surfaces
+  register without a dashboard restart.
+
+**Tooling**
+- 45 native function-calling tools (`/tools` for the categorised
+  browser): filesystem, bash, web, notebook, subagent, planning,
+  task, skill, user interaction, scheduling, code navigation, docs,
+  permissions. Plus `task_get` for runtime task lookup.
+- Diff preview for `Edit` / `Write` / `multi_edit` rendered in the
+  approval row (`difflib.unified_diff`, head + tail capped at 120
+  lines).
+
+**UX / observability**
+- Spinner with four modes — streaming (blue) / gated (orange,
+  paused on approval) / queued (grey) / stale (red, no output for 10
+  min). Header chip mirrors the activity-tab spinner exactly.
+- Silent-exit detection: when the worker finishes with no output
+  and no exception, surfaces an informative system message so the
+  user isn't left wondering why the spinner just disappeared.
+- AskUserQuestion options accept an optional `preview` markdown
+  field; single-select questions with previews render side-by-side
+  (40 % option list / 60 % preview pane) for visual comparison.
+- `/bash watch <id>` streams `bash_background` job output to chat in
+  real time; auto-stops on job exit. `/bash jobs` / `/bash unwatch` /
+  `/bash kill` for fleet management.
+- `solo_agent.md` extended with "Strategies for approaching tasks",
+  "Subagents", "Parallel tool calls", "Context management", "Memory",
+  "Skills", "Sandbox security boundary" sections.
+
 ### Added
 - **Unified Calculator Factory** (`delfin/calculators.py`): 34 computational backends (8 MLP, 20 QM, 3 semi-empirical, 3 MD) accessible through a single `create_calculator()` interface returning standard ASE Calculator objects.
 - **ML Potential backends**: CHGNet, M3GNet/MatGL, SchNetPack, NequIP/Allegro, and ALIGNN added alongside existing ANI-2x, AIMNet2, and MACE-OFF, with CUDA device validation and automatic CPU fallback.
