@@ -56,12 +56,15 @@ from .helpers import disable_spellcheck
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
     DEFAULT_3DMOL_ZOOM,
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
     coord_to_xyz,
     get_viewer_profile,
     measurement_bootstrap_js,
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
+    viewer_disabled_html,
 )
 
 REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
@@ -72,8 +75,8 @@ REMOTE_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024
 REMOTE_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024
 REMOTE_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024
 REMOTE_TEXT_RENDER_MAX_CHARS = 400_000
-REMOTE_MOL_SIZE = 450
-REMOTE_MOL_DYNAMIC_SCALE = 0.9725
+REMOTE_MOL_SIZE = VIEWER_CONTAINER_HEIGHT_PX
+REMOTE_MOL_DYNAMIC_SCALE = VIEWER_CONTAINER_DYNAMIC_SCALE
 REMOTE_LEFT_DEFAULT = 375
 REMOTE_LEFT_MIN = 375
 REMOTE_LEFT_MAX = 520
@@ -1414,13 +1417,19 @@ def create_tab(ctx):
         )
 
     def _render_3dmol(data, fmt="xyz", volumetric=False):
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with viewer_output:
+                clear_output()
+                display(HTML(viewer_disabled_html()))
+            return
         mol3d_counter[0] += 1
         viewer_id = f"remote_mol3d_{mol3d_counter[0]}"
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
         data_json = json.dumps(str(data or ""))
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
-        style_js = get_viewer_profile()['style_js']
+        style_js = profile['style_js']
         volumetric_js = ""
         if volumetric:
             volumetric_js = (
@@ -1566,6 +1575,12 @@ def create_tab(ctx):
         frames = state.get("current_xyz_frames") or []
         if not frames:
             return
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with viewer_output:
+                clear_output()
+                display(HTML(viewer_disabled_html()))
+            return
         idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
         state["current_xyz_index"] = idx
         if len(frames) > REMOTE_XYZ_LARGE_TRAJ_FRAMES:
@@ -1595,7 +1610,7 @@ def create_tab(ctx):
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
-        style_js = get_viewer_profile()['style_js']
+        style_js = profile['style_js']
         with viewer_output:
             clear_output()
             display(

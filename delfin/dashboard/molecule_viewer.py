@@ -26,6 +26,12 @@ _VIEWER_FIXED_WIDTH = 560
 _VIEWER_FIXED_HEIGHT = 420
 _VIEWER_FIXED_ZOOM = 0.90
 
+# Container size used by tabs that embed the 3D viewer inside an
+# ipywidgets/HTML wrapper (calc-browser, remote-archive, submit, fukui).
+# Single source of truth so the dashboard stays visually consistent.
+VIEWER_CONTAINER_HEIGHT_PX = 450
+VIEWER_CONTAINER_DYNAMIC_SCALE = 0.9725
+
 VIEWER_QUALITY_PROFILES = {
     'low': {
         'style': {'line': {'colorscheme': 'Jmol'}},
@@ -1962,7 +1968,7 @@ def build_fukui_viewer_html(
     xyz_json = _json.dumps(xyz_text or '')
     label_js = fukui_atom_labels_js(xyz_text, labels) if labels else ''
     cube_js = fukui_cube_isosurface_js(cube_text, isoval=isoval, signed=cube_signed) if cube_text else ''
-    style_js = DEFAULT_3DMOL_STYLE_JS
+    style_js = profile['style_js']
     # Reuse the same right-drag-translate patch every other DELFIN viewer
     # installs (orca-builder, calc-browser, remote-archive) so the mouse
     # behaviour stays uniform across the dashboard.
