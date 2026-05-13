@@ -35,7 +35,7 @@ from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_traje
 from .molecule_viewer import (
     coord_to_xyz,
     parse_xyz_frames,
-    DEFAULT_3DMOL_STYLE_JS,
+    get_viewer_profile,
     measurement_bootstrap_js,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
@@ -3113,6 +3113,7 @@ def create_tab(ctx):
             _mol3d_counter[0] += 1
             viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
             mol_json = json.dumps(mol_block)
+            style_js = get_viewer_profile()['style_js']
             display(HTML(f"""
                 <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                 <script>
@@ -3142,7 +3143,7 @@ def create_tab(ctx):
                         {VIEWER_MOUSE_PATCH_JS}
                         var molData = {mol_json};
                         viewer.addModel(molData, "mol");
-                        viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                        viewer.setStyle({{}}, {style_js});
                         viewer.zoomTo();
                         viewer.center();
                         viewer.zoom(0.90);
@@ -3518,7 +3519,7 @@ def create_tab(ctx):
             _calc_stop_xyz_playback(update_button=True)
 
     def _calc_apply_traj_style():
-        style_js = DEFAULT_3DMOL_STYLE_JS
+        style_js = get_viewer_profile()['style_js']
         scope_key_json = json.dumps(calc_scope_id)
         _run_js(
             f"""
@@ -3816,6 +3817,7 @@ def create_tab(ctx):
         data_json = json.dumps(data)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
+        style_js = get_viewer_profile()['style_js']
 
         volumetric_js = ""
         if fmt == 'cube':
@@ -3921,7 +3923,7 @@ def create_tab(ctx):
                 {VIEWER_MOUSE_PATCH_JS}
                 var molData = {data_json};
                 viewer.addModel(molData, "{fmt}");
-                viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                viewer.setStyle({{}}, {style_js});
                 {volumetric_js}
                 if (savedView && typeof viewer.setView === 'function') {{
                     try {{
@@ -7091,7 +7093,7 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
-                traj_style_js = DEFAULT_3DMOL_STYLE_JS
+                traj_style_js = get_viewer_profile()['style_js']
                 view_scope_json = json.dumps(
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )

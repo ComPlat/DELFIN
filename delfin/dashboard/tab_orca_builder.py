@@ -20,7 +20,8 @@ from delfin.common.control_validator import (
 
 from .molecule_viewer import (
     strip_xyz_header,
-    DEFAULT_3DMOL_STYLE_JS, DEFAULT_3DMOL_ZOOM,
+    DEFAULT_3DMOL_ZOOM,
+    get_viewer_profile, viewer_disabled_html,
     patch_viewer_mouse_controls_js,
 )
 from .input_processing import (
@@ -677,6 +678,9 @@ def create_tab(ctx):
         while switching between multiple blocks of the same system.
         """
         div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            return viewer_disabled_html()
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
         zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
         reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
@@ -687,7 +691,7 @@ def create_tab(ctx):
             .replace('__RESETFLAG__', 'true' if reset_view else 'false')
             .replace('__MOUSE__', mouse_js)
             .replace('__XYZ__', json.dumps(xyz_data))
-            .replace('__STYLE__', DEFAULT_3DMOL_STYLE_JS)
+            .replace('__STYLE__', profile['style_js'])
             .replace('__LABELS__', label_js)
             .replace('__ZOOM__', zoom)
         )

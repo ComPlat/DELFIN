@@ -1659,10 +1659,16 @@ def submit_manip_bootstrap_js():
 def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
     """Apply a shared ChemDarwin/MSILES-like style to a py3Dmol viewer.
 
-    ``style`` overrides the default stick+sphere representation. Callers that
-    honor the global viewer-quality setting pass ``get_viewer_profile()['style']``;
-    callers that want the historic look leave it as ``None``.
+    When ``style`` is None the function pulls the active style from the
+    global viewer-quality setting (LOW/MEDIUM/HIGH). Passing an explicit
+    ``style`` dict overrides the global setting. Window zoom always
+    honors the caller's ``zoom`` argument (defaults to DEFAULT_3DMOL_ZOOM).
     """
+    if style is None:
+        try:
+            style = get_viewer_profile()['style']
+        except Exception:
+            style = DEFAULT_3DMOL_STYLE
     if hasattr(view, 'startjs'):
         marker = (
             'window.__delfinEnableRightDragTranslate('
@@ -1696,7 +1702,7 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM, style=None):
                 )
                 + '\n'
             )
-    view.setStyle({}, style if style is not None else DEFAULT_3DMOL_STYLE)
+    view.setStyle({}, style)
     view.setBackgroundColor(DEFAULT_3DMOL_BACKGROUND)
     view.zoomTo()
     view.center()

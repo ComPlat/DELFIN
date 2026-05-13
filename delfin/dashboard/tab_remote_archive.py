@@ -55,9 +55,9 @@ except ImportError:
 from .helpers import disable_spellcheck
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
-    DEFAULT_3DMOL_STYLE_JS,
     DEFAULT_3DMOL_ZOOM,
     coord_to_xyz,
+    get_viewer_profile,
     measurement_bootstrap_js,
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
@@ -1420,6 +1420,7 @@ def create_tab(ctx):
         data_json = json.dumps(str(data or ""))
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
+        style_js = get_viewer_profile()['style_js']
         volumetric_js = ""
         if volumetric:
             volumetric_js = (
@@ -1521,7 +1522,7 @@ def create_tab(ctx):
                             {viewer_mouse_patch_js}
                             var molData = {data_json};
                             viewer.addModel(molData, "{fmt}");
-                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                            viewer.setStyle({{}}, {style_js});
                             {volumetric_js}
                             if (savedView && typeof viewer.setView === 'function') {{
                                 try {{
@@ -1594,6 +1595,7 @@ def create_tab(ctx):
         wrapper_id = f"remote_mol_wrap_{mol3d_counter[0]}"
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
+        style_js = get_viewer_profile()['style_js']
         with viewer_output:
             clear_output()
             display(
@@ -1688,7 +1690,7 @@ def create_tab(ctx):
                             var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
-                            viewer.setStyle({{}}, {DEFAULT_3DMOL_STYLE_JS});
+                            viewer.setStyle({{}}, {style_js});
                             if (savedView && typeof viewer.setView === 'function') {{
                                 try {{
                                     viewer.setView(savedView);
