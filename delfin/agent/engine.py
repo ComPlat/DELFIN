@@ -912,6 +912,60 @@ class AgentEngine:
         budget = int(self.context_window_tokens * float(self.auto_compact_pct))
         return self._estimate_context_tokens() > budget
 
+    # Sliding-window threshold (proactive trim long before the auto-compact
+    # cliff at auto_compact_pct=0.95). Default 0.70 of the window — every
+    # message past that triggers a gentle in-place trim of the oldest
+    # tool_result first. The full auto-compact still fires at 0.95.
+    _SLIDING_WINDOW_PCT = 0.70
+
+    def _should_slide(self) -> bool:
+        """Trigger the gentler sliding-window trim BEFORE auto_compact."""
+        if not self.context_window_tokens:
+            return False
+        budget = int(self.context_window_tokens * self._SLIDING_WINDOW_PCT)
+        return self._estimate_context_tokens() > budget
+
+    def _slide_window_trim(self) -> int:
+        """In-place trim: progressively truncate the OLDEST tool_result-
+        style assistant messages until we're back under the sliding-window
+        threshold. Keeps user goals + recent assistant text verbatim.
+
+        Returns the number of messages that were trimmed (not removed —
+        just shortened with an ``... [trimmed by sliding window] ...``
+        middle marker so the agent still sees the head + tail).
+        """
+        budget = int(self.context_window_tokens * self._SLIDING_WINDOW_PCT)
+        trimmed = 0
+        # Don't touch the last KEEP_RECENT messages — they're conversation
+        # state the agent is actively reasoning over.
+        protected_from = max(0, len(self.messages) - self._KEEP_RECENT)
+        for idx, msg in enumerate(self.messages[:protected_from]):
+            if self._estimate_context_tokens() <= budget:
+                break
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            # Only trim large messages — small ones (user goals,
+            # short acknowledgements) survive untouched.
+            if len(content) < 2000:
+                continue
+            # Preserve user messages verbatim (those are the GOALS).
+            if role == "user":
+                continue
+            # Trim the oldest large assistant/tool message head+tail.
+            head_len = 600
+            tail_len = 400
+            new_content = (
+                content[:head_len]
+                + f"\n... [trimmed by sliding window, "
+                + f"{len(content) - head_len - tail_len} chars dropped] ...\n"
+                + content[-tail_len:]
+            )
+            msg["content"] = new_content
+            trimmed += 1
+        return trimmed
+
     def _llm_summarize_old_messages(self, old_msgs: list[dict]) -> str:
         """Call a cheap model to summarise the older half of the
         conversation into a high-fidelity recap. Falls back to ``""`` on
@@ -1011,15 +1065,35 @@ class AgentEngine:
     def _compact_history(self) -> None:
         """Summarize older messages, keeping recent ones intact.
 
-        Triggers under EITHER condition:
-        - the message count exceeds the legacy threshold (solo/dashboard)
-        - the estimated context tokens exceed ``auto_compact_pct`` of
-          ``context_window_tokens``  (any role, any backend)
-
-        Tries LLM-quality summarisation first; falls back to extractive
-        if the LLM call fails. Opt out with user setting
-        ``agent.llm_compaction: false``.
+        Three-stage strategy for multi-day session resilience:
+        1. ``_slide_window_trim`` — gentle in-place trim of oldest large
+           tool_result content when usage crosses 70% of the window.
+           User messages survive verbatim; assistant payloads get head
+           + tail with a middle marker.
+        2. Full ``_compact_history`` summarisation when usage crosses
+           ``auto_compact_pct`` (default 95%) OR the legacy message-count
+           threshold is hit.
+        3. LLM-quality summary preferred (API backends), extractive
+           fallback (CLI backend, summary failure, opt-out via
+           ``agent.llm_compaction: false``).
         """
+        # Stage 1: sliding-window in-place trim. Fires every turn at 70%
+        # so the cliff at 95% is much rarer. Cheap — no LLM call.
+        try:
+            if self._should_slide():
+                _trimmed = self._slide_window_trim()
+                if _trimmed:
+                    # Record the trim event into last_compaction_info so
+                    # /context shows what happened.
+                    self.last_compaction_info = {
+                        "kind": "sliding_window",
+                        "messages_trimmed": _trimmed,
+                        "tokens_after": self._estimate_context_tokens(),
+                        "archived_at": _time.time(),
+                    }
+        except Exception:
+            pass
+
         msg_threshold_hit = (
             self.current_role in ("solo_agent", "dashboard_agent")
             and len(self.messages) >= self._COMPACTION_THRESHOLD
@@ -1047,18 +1121,35 @@ class AgentEngine:
         # 2) Fall back to extractive summarisation if LLM unavailable
         if not summary:
             summary_parts: list[str] = []
+            # Selective extractive: user messages (= GOALS) survive in
+            # near-full form because they're cheap and load-bearing.
+            # Assistant text gets summarised. Tool-result-shaped content
+            # gets aggressively dropped — the answers it produced are
+            # usually already mentioned in the assistant text we keep.
             for msg in old_msgs:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role == "user":
-                    # Keep first line of user messages (the request)
-                    first_line = (content if isinstance(content, str) else "").split("\n")[0][:200]
-                    summary_parts.append(f"User: {first_line}")
+                    text = content if isinstance(content, str) else ""
+                    # Goals deserve more than one line — keep up to
+                    # 400 chars of the first sentence/paragraph so the
+                    # post-compact agent can read the original intent.
+                    keep = text.strip()[:400]
+                    if keep:
+                        summary_parts.append(f"User: {keep}")
                 elif role == "assistant":
-                    # Extract structured content from assistant messages
                     extracted = self._summarize_output_for_handoff(content, limit=300)
                     if extracted:
                         summary_parts.append(f"Assistant: {extracted}")
+                elif role == "tool":
+                    # Skip raw tool results — their important findings
+                    # are reflected in the assistant text we keep. Only
+                    # surface a short marker for diagnostic value.
+                    text = content if isinstance(content, str) else ""
+                    if text.strip().startswith('{"error"'):
+                        summary_parts.append(
+                            f"Tool (error): {text[:120]}"
+                        )
             summary = "\n".join(summary_parts)
         if not summary:
             return

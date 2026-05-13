@@ -80,7 +80,8 @@ class TaskStore:
     # -- public API --------------------------------------------------------
 
     def create(self, subject: str, description: str = "",
-               active_form: str = "", session_id: str = "") -> dict:
+               active_form: str = "", session_id: str = "",
+               blocked_by: list[int] | None = None) -> dict:
         if not subject.strip():
             raise ValueError("subject must be non-empty")
         with self._lock:
@@ -97,8 +98,23 @@ class TaskStore:
                 "status": "pending",
                 "created_at": now,
                 "updated_at": now,
+                # DAG dependency edges. ``blocked_by`` = predecessors that
+                # must reach ``completed`` before this task can leave
+                # ``pending``. ``blocks`` = downstream task IDs we keep
+                # in sync as a reverse-index for cheap traversal.
+                "blocked_by": list(blocked_by or []),
+                "blocks": [],
             }
             data.setdefault("tasks", []).append(task)
+            # Maintain the reverse index: each blocker's ``blocks`` list
+            # gets the new task ID appended.
+            for parent_id in (blocked_by or []):
+                for t in data["tasks"]:
+                    if int(t.get("id", 0)) == int(parent_id):
+                        t.setdefault("blocks", []).append(tid)
+                        if tid not in t["blocks"]:
+                            t["blocks"] = list(dict.fromkeys(t["blocks"]))
+                        break
             self._save(data)
             return task
 
@@ -110,15 +126,66 @@ class TaskStore:
                 f"status must be one of {sorted(_VALID_STATUSES)}, "
                 f"got {fields['status']!r}"
             )
-        allowed = {"status", "subject", "description", "active_form"}
+        allowed = {
+            "status", "subject", "description", "active_form",
+            "add_blocked_by", "remove_blocked_by",
+        }
         unknown = set(fields) - allowed
         if unknown:
             raise ValueError(f"unknown field(s): {sorted(unknown)}")
+        add_blockers = fields.pop("add_blocked_by", None) or []
+        rem_blockers = fields.pop("remove_blocked_by", None) or []
         with self._lock:
             data = self._load()
             for t in data.get("tasks", []):
                 if int(t["id"]) == int(task_id):
+                    # Guard: blocked tasks cannot transition to
+                    # in_progress until every predecessor is completed
+                    # or deleted. Tasks already in progress can be
+                    # marked completed regardless.
+                    if fields.get("status") == "in_progress":
+                        blockers = list(t.get("blocked_by") or [])
+                        unmet = [
+                            b for b in blockers
+                            if any(
+                                int(o.get("id", 0)) == int(b)
+                                and o.get("status") not in ("completed", "deleted")
+                                for o in data["tasks"]
+                            )
+                        ]
+                        if unmet:
+                            raise ValueError(
+                                f"task #{task_id} is blocked by unfinished "
+                                f"task(s): {unmet}"
+                            )
                     t.update({k: v for k, v in fields.items() if v is not None})
+                    # Apply dependency edits + keep reverse index in sync
+                    if add_blockers or rem_blockers:
+                        existing = list(t.get("blocked_by") or [])
+                        for b in rem_blockers:
+                            try:
+                                existing.remove(int(b))
+                            except ValueError:
+                                pass
+                            for parent in data["tasks"]:
+                                if int(parent.get("id", 0)) == int(b):
+                                    blk = list(parent.get("blocks") or [])
+                                    if task_id in blk:
+                                        blk.remove(task_id)
+                                        parent["blocks"] = blk
+                                    break
+                        for b in add_blockers:
+                            if int(b) in existing or int(b) == task_id:
+                                continue
+                            existing.append(int(b))
+                            for parent in data["tasks"]:
+                                if int(parent.get("id", 0)) == int(b):
+                                    blk = list(parent.get("blocks") or [])
+                                    if task_id not in blk:
+                                        blk.append(task_id)
+                                    parent["blocks"] = blk
+                                    break
+                        t["blocked_by"] = existing
                     t["updated_at"] = _now_iso()
                     self._save(data)
                     return t
@@ -131,6 +198,37 @@ class TaskStore:
                 if int(t["id"]) == int(task_id):
                     return t
         return None
+
+    def find_stalled(
+        self,
+        *,
+        max_age_s: float = 600.0,
+        session_id: str | None = None,
+    ) -> list[dict]:
+        """Return tasks that are ``in_progress`` but haven't been updated
+        for ``max_age_s`` seconds.  Used by the dashboard's
+        ``_record_turn_outcome`` to surface a one-shot suggestion to
+        switch into plan mode when a step seems stuck.
+
+        Returned tasks have an extra ``age_s`` field so the caller can
+        log the worst offender without recomputing.
+        """
+        import datetime as _dt
+        now = _dt.datetime.utcnow()
+        out: list[dict] = []
+        for t in self.list(session_id=session_id):
+            if t.get("status") != "in_progress":
+                continue
+            ts = t.get("updated_at") or t.get("created_at") or ""
+            try:
+                parsed = _dt.datetime.fromisoformat(ts.rstrip("Z"))
+            except Exception:
+                continue
+            age = (now - parsed).total_seconds()
+            if age >= max_age_s:
+                out.append({**t, "age_s": int(age)})
+        out.sort(key=lambda r: r.get("age_s", 0), reverse=True)
+        return out
 
     def list(
         self, *, include_deleted: bool = False, session_id: str | None = None

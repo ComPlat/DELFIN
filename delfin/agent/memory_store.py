@@ -93,25 +93,56 @@ def format_memory_context(
     task_text: str = "",
     max_entries: int = 4,
 ) -> str:
-    """Format relevant memories into a compact string for the system prompt."""
+    """Format the most-relevant memories into a compact prompt block.
+
+    Ranking is BM25-flavoured: per-fact score is the sum over the task's
+    query tokens of  ``log((N - df + 0.5) / (df + 0.5))``  multiplied by
+    a length-normalised term-frequency factor (k1=1.2, b=0.75 in the
+    standard BM25 saturation curve). Bag-of-words is computed with the
+    existing tokenizer so feedback-typed facts still slot in cleanly.
+
+    Falls back to recency (last_n) when the task has no tokens after
+    stopword removal, matching the previous behaviour.
+    """
     facts = load_memories(path)
     if not facts:
         return ""
 
-    selected: list[tuple[int, dict[str, Any]]] = []
     task_tokens = _tokenize(task_text)
-    if task_tokens:
-        for i, fact in enumerate(facts):
-            text = str(fact.get("text", ""))
-            score = len(task_tokens & _tokenize(text))
-            if score > 0:
-                selected.append((score * 100 + i, fact))
-        selected = sorted(selected, key=lambda item: item[0], reverse=True)[:max_entries]
-    else:
-        selected = [
-            (i, fact)
+    if not task_tokens:
+        selected: list[tuple[float, dict[str, Any]]] = [
+            (float(i), fact)
             for i, fact in enumerate(facts[-max_entries:])
         ]
+    else:
+        import math as _math
+        N = len(facts)
+        # Pre-tokenize each fact + compute doc length / avg-doc length.
+        docs = [_tokenize(str(f.get("text", ""))) for f in facts]
+        doc_lens = [max(1, len(d)) for d in docs]
+        avgdl = sum(doc_lens) / max(1, len(doc_lens))
+        # Document frequency for each query token.
+        df: dict[str, int] = {}
+        for tok in task_tokens:
+            df[tok] = sum(1 for d in docs if tok in d)
+        k1, b = 1.2, 0.75
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for i, (fact, doc, dlen) in enumerate(zip(facts, docs, doc_lens)):
+            score = 0.0
+            for tok in task_tokens:
+                df_t = df.get(tok, 0)
+                if df_t == 0 or tok not in doc:
+                    continue
+                idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
+                # Token frequency is binary here (we don't track tf in a
+                # set), so the saturation curve simplifies to:
+                norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
+                score += idf * norm
+            if score > 0:
+                # Tiebreak on recency: later facts win on equal score.
+                scored.append((score + 1e-6 * i, fact))
+        scored.sort(key=lambda kv: kv[0], reverse=True)
+        selected = scored[:max_entries]
 
     if not selected:
         return ""

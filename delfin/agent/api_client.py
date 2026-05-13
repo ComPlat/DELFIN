@@ -2634,6 +2634,26 @@ class _DocToolExecutor:
         except Exception:
             pass
 
+        # Record failure for retrospective learning — agents that hit the
+        # same (tool, command-shape, error-shape) >=3 times in 1 h get a
+        # heads-up via the failure log so they can change approach.
+        try:
+            if (result or "").lstrip().startswith('{"error"'):
+                from . import failure_log as _fl
+                cmd_repr = (
+                    arguments.get("command")
+                    or arguments.get("file_path")
+                    or arguments.get("path")
+                    or ""
+                )
+                _fl.record_failure(
+                    tool=name, command=str(cmd_repr)[:300],
+                    error=str(result)[:300],
+                    session_id=getattr(permissions, "task_session_id", "") or "",
+                )
+        except Exception:
+            pass
+
         return result
 
     _AUDITED_TOOLS = frozenset({
@@ -4786,12 +4806,21 @@ class _DocToolExecutor:
         subject = (arguments.get("subject", "") or "").strip()
         description = arguments.get("description", "") or ""
         active_form = arguments.get("active_form", "") or ""
+        blocked_by_raw = arguments.get("blocked_by") or []
+        blocked_by: list[int] = []
+        if isinstance(blocked_by_raw, (list, tuple)):
+            for b in blocked_by_raw:
+                try:
+                    blocked_by.append(int(b))
+                except (TypeError, ValueError):
+                    return json.dumps({"error": f"blocked_by must be int IDs; got {b!r}"})
         if not subject:
             return json.dumps({"error": "subject must be non-empty"})
         try:
             task = self._task_store(perms).create(
                 subject, description, active_form,
                 session_id=getattr(perms, "task_session_id", "") or "",
+                blocked_by=blocked_by,
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
