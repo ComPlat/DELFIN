@@ -206,6 +206,14 @@ class PromptLoader:
         except OSError:
             return ""
 
+        # Resolve [[name]] wiki-style cross-links to inline markdown links
+        # so the agent sees concrete targets instead of opaque braces.
+        try:
+            from .memory_store import resolve_wikilinks as _resolve_wl
+            index_text = _resolve_wl(index_text, base)
+        except Exception:
+            pass
+
         chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
         # Pull in every "[Title](file.md)" target referenced from MEMORY.md
         import re as _re
@@ -224,6 +232,14 @@ class PromptLoader:
                 body = target.read_text(encoding="utf-8", errors="replace").strip()
             except (OSError, ValueError):
                 continue
+            # Also resolve wiki-links *inside* the body so the recursive
+            # references the user wrote in memory_X.md don't stay as raw
+            # "[[Y]]" tokens in the agent's prompt.
+            try:
+                from .memory_store import resolve_wikilinks as _resolve_wl
+                body = _resolve_wl(body, base)
+            except Exception:
+                pass
             chunks.append(f"# {title} ({rel})\n{body}")
 
         joined = "\n\n".join(chunks).strip()
