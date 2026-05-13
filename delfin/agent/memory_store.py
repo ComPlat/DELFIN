@@ -216,6 +216,63 @@ def _claude_memory_dir(repo_root: Path) -> Path:
     return Path.home() / ".claude" / "projects" / slug / "memory"
 
 
+def _claude_plans_dir(repo_root: Path) -> Path:
+    """Sibling of the memory dir — plan files written by Plan Mode after
+    user approval land here so the user can re-open them in a later
+    session without going through the tool round-trip."""
+    slug = "-" + str(repo_root.resolve()).replace("/", "-").lstrip("-")
+    return Path.home() / ".claude" / "projects" / slug / "plans"
+
+
+def save_plan(
+    plan_body: str,
+    *,
+    repo_root: Path | str,
+    title: str | None = None,
+) -> Path:
+    """Persist an approved plan-mode plan to ``<plans-dir>/<slug>.md``.
+
+    Frontmatter records the slug, a one-line description (derived from
+    the first heading or first line of the body) and the creation
+    timestamp. Returns the file path that was written.
+    """
+    body = (plan_body or "").strip()
+    if not body:
+        raise ValueError("plan body is empty")
+
+    # Derive a title for the slug + description.
+    first_meaningful = ""
+    for line in body.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            first_meaningful = stripped
+            break
+    display_title = (title or first_meaningful or "plan")[:80].strip() or "plan"
+    slug = _slugify(display_title)
+
+    plans_dir = _claude_plans_dir(Path(repo_root))
+    plans_dir.mkdir(parents=True, exist_ok=True)
+
+    fname = f"{slug}.md"
+    fpath = plans_dir / fname
+    if fpath.exists():
+        # Don't clobber — keep prior plans for diff / history.
+        fname = f"{slug}_{int(time.time())}.md"
+        fpath = plans_dir / fname
+
+    description = first_meaningful[:160] or display_title
+    front = (
+        "---\n"
+        f"name: {slug}\n"
+        f"description: {description}\n"
+        f"created_at: {int(time.time())}\n"
+        "---\n\n"
+        f"{body}\n"
+    )
+    fpath.write_text(front, encoding="utf-8")
+    return fpath
+
+
 def save_typed_memory(
     text: str,
     *,
