@@ -70,3 +70,6 @@ censo.log
 # Iter-specific scripts (move to quality_framework/iter_history/<iter>/scripts/ instead)
 /scripts/iter*_*.py
 /scripts/iter*_*.sh
+
+# Design docs / forensik reports — keep LOCAL in agent_workspace, NEVER in DELFIN repo
+iters/
