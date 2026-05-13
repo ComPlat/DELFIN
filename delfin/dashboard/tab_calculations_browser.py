@@ -33,12 +33,15 @@ from .input_processing import (
 )
 from .helpers import disable_spellcheck, save_neb_trajectory_csv, save_neb_trajectory_plot_png
 from .molecule_viewer import (
+    VIEWER_CONTAINER_DYNAMIC_SCALE,
+    VIEWER_CONTAINER_HEIGHT_PX,
     coord_to_xyz,
     parse_xyz_frames,
     get_viewer_profile,
     measurement_bootstrap_js,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
+    viewer_disabled_html,
 )
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
@@ -107,8 +110,8 @@ def create_tab(ctx):
     """
     # -- layout constants ---------------------------------------------------
     CALC_CONTENT_HEIGHT = 760
-    CALC_MOL_SIZE = 450
-    CALC_MOL_DYNAMIC_SCALE = 0.9725
+    CALC_MOL_SIZE = VIEWER_CONTAINER_HEIGHT_PX
+    CALC_MOL_DYNAMIC_SCALE = VIEWER_CONTAINER_DYNAMIC_SCALE
     CALC_MOL_ZOOM = 0.9
     CALC_LEFT_DEFAULT = 375
     CALC_LEFT_MIN = 375
@@ -3109,11 +3112,15 @@ def create_tab(ctx):
             if mol_block is None:
                 display(HTML('<i>3D conversion failed</i>'))
                 return
+            profile = get_viewer_profile()
+            if not profile['enabled']:
+                display(HTML(viewer_disabled_html()))
+                return
 
             _mol3d_counter[0] += 1
             viewer_id = f"calc_preselect_3dmol_{_mol3d_counter[0]}"
             mol_json = json.dumps(mol_block)
-            style_js = get_viewer_profile()['style_js']
+            style_js = profile['style_js']
             display(HTML(f"""
                 <div id="{viewer_id}" style="width:100%;height:100%;position:relative;"></div>
                 <script>
@@ -3519,7 +3526,10 @@ def create_tab(ctx):
             _calc_stop_xyz_playback(update_button=True)
 
     def _calc_apply_traj_style():
-        style_js = get_viewer_profile()['style_js']
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            return
+        style_js = profile['style_js']
         scope_key_json = json.dumps(calc_scope_id)
         _run_js(
             f"""
@@ -3811,13 +3821,19 @@ def create_tab(ctx):
     def _render_3dmol(data, fmt='xyz', extra_fn=None):
         """Render a 3D molecule via JS with correct initial sizing."""
         import json
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with calc_mol_viewer:
+                clear_output(wait=True)
+                display(HTML(viewer_disabled_html()))
+            return
         _mol3d_counter[0] += 1
         viewer_id = f"mol3d_{_mol3d_counter[0]}"
         wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
         data_json = json.dumps(data)
         view_scope_json = json.dumps(f"{calc_scope_id}:{state.get('current_path') or '/'}")
         scope_id_json = json.dumps(calc_scope_id)
-        style_js = get_viewer_profile()['style_js']
+        style_js = profile['style_js']
 
         volumetric_js = ""
         if fmt == 'cube':
@@ -7085,6 +7101,12 @@ def create_tab(ctx):
         # For large trajectories, fall back to single-frame mode to avoid
         # embedding tens of MB in a JS template literal over the comm channel.
         large_traj = len(frames) > CALC_XYZ_LARGE_TRAJ_FRAMES
+        profile = get_viewer_profile()
+        if not profile['enabled']:
+            with calc_mol_viewer:
+                clear_output(wait=True)
+                display(HTML(viewer_disabled_html()))
+            return
         if len(frames) > 1 and not large_traj:
             if initial_load or not state['traj_viewer_ready']:
                 full_xyz = ""
@@ -7093,7 +7115,7 @@ def create_tab(ctx):
                 _mol3d_counter[0] += 1
                 viewer_id = f"calc_trj_viewer_{_mol3d_counter[0]}"
                 wrapper_id = f"calc_mol_wrap_{_mol3d_counter[0]}"
-                traj_style_js = get_viewer_profile()['style_js']
+                traj_style_js = profile['style_js']
                 view_scope_json = json.dumps(
                     f"{calc_scope_id}:{state.get('current_path') or '/'}"
                 )
