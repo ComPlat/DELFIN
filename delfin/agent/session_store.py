@@ -364,6 +364,57 @@ def fork_session(
     return new_id
 
 
+def session_lineage(session_id: str) -> list[dict[str, Any]]:
+    """Walk the ``forked_from`` chain back to the root and return one
+    summary record per ancestor, newest (the given session) first.
+
+    Used by ``/session tree`` to show the branch lineage so the user can
+    see where a fork came from. Stops at the first session without a
+    ``forked_from`` field or when a parent is missing on disk.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    current = session_id
+    while current and current not in seen:
+        seen.add(current)
+        data = load_session(current)
+        if not data:
+            break
+        out.append({
+            "session_id": current,
+            "title": data.get("title", "Untitled"),
+            "forked_from": data.get("forked_from", ""),
+            "updated_at": data.get("updated_at", 0),
+            "message_count": len(data.get("chat_messages") or []),
+            "cost_usd": data.get("cost_usd", 0.0),
+        })
+        parent = data.get("forked_from") or ""
+        current = parent
+    return out
+
+
+def session_children(session_id: str) -> list[dict[str, Any]]:
+    """Return immediate child sessions (i.e. sessions whose
+    ``forked_from`` points at ``session_id``). Newest first."""
+    out: list[dict[str, Any]] = []
+    for summary in list_sessions(limit=200):
+        sid = summary.get("session_id", "")
+        if not sid:
+            continue
+        data = load_session(sid)
+        if not data:
+            continue
+        if data.get("forked_from") == session_id:
+            out.append({
+                "session_id": sid,
+                "title": data.get("title", "Untitled"),
+                "updated_at": data.get("updated_at", 0),
+                "message_count": len(data.get("chat_messages") or []),
+            })
+    out.sort(key=lambda r: r.get("updated_at", 0), reverse=True)
+    return out
+
+
 def resume_latest(*, max_age_s: int | None = None) -> dict[str, Any] | None:
     """Return the most recently updated session, or None.
 

@@ -5810,6 +5810,79 @@ def create_tab(ctx):
         if cmd == "/session" or cmd.startswith("/session "):
             from delfin.agent import session_store as _ss
             arg = cmd[len("/session "):].strip() if cmd.startswith("/session ") else ""
+            # /session fork [<id>]  — branch a session (default: current)
+            if arg == "fork" or arg.startswith("fork "):
+                target = arg[len("fork "):].strip() if arg.startswith("fork ") else ""
+                if not target:
+                    target = state.get("active_session_id", "") or ""
+                if not target:
+                    _append_system_message(
+                        "No active session yet. /session fork <id> or send "
+                        "a message first to mint a session ID."
+                    )
+                    return True
+                try:
+                    new_sid = _ss.fork_session(target)
+                except Exception as exc:
+                    _append_system_message(f"Fork failed: {exc}")
+                    return True
+                if not new_sid:
+                    _append_system_message(f"Could not fork session '{target}'.")
+                    return True
+                _refresh_session_dropdown()
+                # Load the fork into the current tab so the user is now
+                # editing the branch — the parent stays untouched on disk.
+                try:
+                    _load_saved_session(new_sid)
+                except Exception:
+                    pass
+                _append_system_message(
+                    f"🌿 Forked `{target[:12]}…` → `{new_sid}`. "
+                    "You are now editing the fork; parent unchanged."
+                )
+                return True
+            # /session tree [<id>]  — ancestry + immediate children
+            if arg == "tree" or arg.startswith("tree "):
+                target = arg[len("tree "):].strip() if arg.startswith("tree ") else ""
+                if not target:
+                    target = state.get("active_session_id", "") or ""
+                if not target:
+                    _append_system_message("Usage: /session tree <session_id>")
+                    return True
+                ancestry = _ss.session_lineage(target)
+                children = _ss.session_children(target)
+                if not ancestry:
+                    _append_system_message(f"No session found for '{target}'.")
+                    return True
+                import time as _t
+                lines = [f"Session lineage for {target[:12]}…:"]
+                # Ancestry chain, oldest first for readability
+                for i, rec in enumerate(reversed(ancestry)):
+                    indent = "  " * i
+                    when = _t.strftime("%Y-%m-%d %H:%M",
+                                       _t.localtime(rec.get("updated_at", 0)))
+                    arrow = "→" if i > 0 else "•"
+                    title = (rec.get("title") or "")[:50]
+                    n = rec.get("message_count", 0)
+                    sid_short = rec["session_id"][:12]
+                    lines.append(
+                        f"{indent}{arrow} {sid_short:<14}  {when}  "
+                        f"{n:>3} msgs  {title}"
+                    )
+                # Immediate children (siblings of leaf)
+                if children:
+                    lines.append("\nForks from this session:")
+                    for child in children:
+                        when = _t.strftime("%Y-%m-%d %H:%M",
+                                           _t.localtime(child.get("updated_at", 0)))
+                        title = (child.get("title") or "")[:50]
+                        n = child.get("message_count", 0)
+                        lines.append(
+                            f"  ⤷ {child['session_id'][:14]:<14}  {when}  "
+                            f"{n:>3} msgs  {title}"
+                        )
+                _append_system_message("\n".join(lines))
+                return True
             # /session restore <id>  — load a saved session into this tab
             if arg.startswith("restore "):
                 sid = arg[len("restore "):].strip()
@@ -5955,11 +6028,13 @@ def create_tab(ctx):
                 return True
             _append_system_message(
                 "Usage:\n"
-                "  /session ls               — recent sessions\n"
-                "  /session restore <id>     — load a saved session into this tab\n"
-                "  /session search <query>   — grep across saved sessions + archives\n"
-                "  /session archive          — archived pre-compaction transcripts\n"
-                "  /session archive <id>     — view archive for a session\n"
+                "  /session ls                  — recent sessions\n"
+                "  /session restore <id>        — load a saved session into this tab\n"
+                "  /session search <query>      — grep across saved sessions + archives\n"
+                "  /session fork [<id>]         — branch a session (default: current)\n"
+                "  /session tree [<id>]         — show ancestry + immediate children\n"
+                "  /session archive             — archived pre-compaction transcripts\n"
+                "  /session archive <id>        — view archive for a session\n"
             )
             return True
 
