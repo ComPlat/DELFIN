@@ -63,7 +63,7 @@ class SubagentPreset:
     mode: str = "default"          # "plan" / "default" / "acceptEdits" / "bypassPermissions"
 
 
-SUBAGENT_PRESETS: dict[str, SubagentPreset] = {
+_BUILTIN_PRESETS: dict[str, SubagentPreset] = {
     "explore": SubagentPreset(
         name="explore",
         description=(
@@ -128,9 +128,129 @@ SUBAGENT_PRESETS: dict[str, SubagentPreset] = {
 }
 
 
+def _md_preset_search_dirs() -> list[Path]:
+    """Directories scanned for ``*_subagent.md`` user-extensible presets."""
+    return [
+        Path(__file__).resolve().parent / "pack" / "agents",
+        Path.home() / ".delfin" / "subagents",
+    ]
+
+
+def _load_md_presets() -> dict[str, SubagentPreset]:
+    """Discover ``*_subagent.md`` presets with YAML frontmatter.
+
+    Frontmatter fields accepted: ``name`` (required, kebab-case),
+    ``description``, ``mode``. The body of the markdown file becomes
+    the sub-agent's system_prompt. Built-in presets keep precedence —
+    user-supplied files can extend but not silently override unless the
+    user explicitly drops a file under ``~/.delfin/subagents/``.
+
+    The frontmatter parser is reused from ``delfin.agent.skills``.
+    """
+    try:
+        from .skills import _parse_frontmatter
+    except Exception:
+        return {}
+    discovered: dict[str, SubagentPreset] = {}
+    for d in _md_preset_search_dirs():
+        if not d.is_dir():
+            continue
+        try:
+            paths = sorted(d.glob("*_subagent.md"))
+        except OSError:
+            continue
+        for p in paths:
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            meta, body = _parse_frontmatter(text)
+            name = (meta.get("name") or p.stem.replace("_subagent", "")).strip()
+            if not name:
+                continue
+            description = (meta.get("description") or "").strip()
+            mode = (meta.get("mode") or "default").strip() or "default"
+            system_prompt = body.strip() or description or name
+            discovered[name] = SubagentPreset(
+                name=name,
+                description=description or f"Custom subagent '{name}'",
+                system_prompt=system_prompt,
+                mode=mode,
+            )
+    return discovered
+
+
+def _build_preset_registry() -> dict[str, SubagentPreset]:
+    """Compose the live preset registry: built-ins first, then md overrides.
+
+    MD files in ``~/.delfin/subagents/`` may override built-ins; MD files
+    in the packaged ``delfin/agent/pack/agents/`` directory cannot —
+    they only contribute new types. This keeps user-local extensions
+    powerful while preventing accidental pack-shipped overrides.
+    """
+    registry = dict(_BUILTIN_PRESETS)
+    pack_dir = Path(__file__).resolve().parent / "pack" / "agents"
+    user_dir = Path.home() / ".delfin" / "subagents"
+    for d, allow_override in ((pack_dir, False), (user_dir, True)):
+        if not d.is_dir():
+            continue
+        try:
+            paths = sorted(d.glob("*_subagent.md"))
+        except OSError:
+            continue
+        try:
+            from .skills import _parse_frontmatter
+        except Exception:
+            return registry
+        for p in paths:
+            try:
+                text = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            meta, body = _parse_frontmatter(text)
+            name = (meta.get("name") or p.stem.replace("_subagent", "")).strip()
+            if not name:
+                continue
+            if name in _BUILTIN_PRESETS and not allow_override:
+                continue
+            description = (meta.get("description") or "").strip()
+            mode = (meta.get("mode") or "default").strip() or "default"
+            system_prompt = body.strip() or description or name
+            registry[name] = SubagentPreset(
+                name=name,
+                description=description or f"Custom subagent '{name}'",
+                system_prompt=system_prompt,
+                mode=mode,
+            )
+    return registry
+
+
+# Composed at import time: built-ins + any user/pack md files.
+SUBAGENT_PRESETS: dict[str, SubagentPreset] = _build_preset_registry()
+
+
+def reload_subagent_presets() -> dict[str, SubagentPreset]:
+    """Re-scan markdown preset directories. Useful in tests + after the
+    user drops a new file into ``~/.delfin/subagents/``."""
+    SUBAGENT_PRESETS.clear()
+    SUBAGENT_PRESETS.update(_build_preset_registry())
+    return SUBAGENT_PRESETS
+
+
+def subagent_type_names() -> list[str]:
+    """Return current preset names — used by api_client to build the
+    runtime tool-schema enum."""
+    return list(SUBAGENT_PRESETS.keys())
+
+
 def list_subagents() -> list[dict]:
     return [
-        {"name": p.name, "description": p.description, "mode": p.mode}
+        {
+            "name": p.name,
+            "subagent_type": p.name,
+            "description": p.description,
+            "mode": p.mode,
+        }
         for p in SUBAGENT_PRESETS.values()
     ]
 
@@ -283,6 +403,8 @@ __all__ = [
     "SubagentPreset",
     "SUBAGENT_PRESETS",
     "list_subagents",
+    "subagent_type_names",
+    "reload_subagent_presets",
     "SubagentResult",
     "run_subagent",
 ]

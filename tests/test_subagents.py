@@ -46,10 +46,17 @@ def _fake_client(text: str, tool_calls: int = 0):
     return client
 
 
-def test_list_subagents_returns_all_presets():
+def test_list_subagents_returns_all_presets(monkeypatch, tmp_path):
+    # Pin Path.home to a fresh tmp dir + force a reload so leaked user
+    # fixtures from sibling test files don't poison this assertion.
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+    SA.reload_subagent_presets()
     out = SA.list_subagents()
     names = {p["name"] for p in out}
-    assert names == {"explore", "plan", "code-reviewer", "general-purpose"}
+    # The four built-ins are always present; pack-shipped md files (e.g.
+    # chemistry-reviewer) may register additional names, so use subset.
+    assert {"explore", "plan", "code-reviewer", "general-purpose"} <= names
 
 
 def test_run_subagent_unknown_type():
