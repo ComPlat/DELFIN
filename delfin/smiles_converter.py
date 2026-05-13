@@ -1166,6 +1166,52 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
+    """Baustein 5 dispatch helper — PBD post-UFF geometry corrector (v2).
+
+    Only-fix-what-is-broken philosophy:
+    - Topology hard-gate [0.93, 1.07] × M-D ideal (tightened from v1)
+    - M-D drift gate 0.05Å — if optimization drifts good M-D bonds → fallback
+    - Conservative defaults (max_iter=10, step=0.1)
+    - Phase A.5 Hungarian symmetry projection DISABLED (caused wave8-b5 damage)
+    - Per-frame fallback to input on any failure
+
+    Bit-exact when DELFIN_BAUSTEIN5=0 (default).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_BAUSTEIN5", 0):
+        return results
+    try:
+        from delfin._post_optimizer import post_optimize_geometry
+        cls = "sigma"
+        try:
+            cls = _classify_complex_class(mol)
+        except Exception:
+            pass
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = post_optimize_geometry(
+                    xyz, mol, class_label=cls,
+                )
+                if report.get("topology_preserved", False):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _b5_exc:
+        try:
+            logger.debug("Baustein 5 PBD post-optimizer skipped: %s", _b5_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _delfin_env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -25392,6 +25438,13 @@ def smiles_to_xyz_isomers(
     # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
     # is a generic converter pathology independent of metal presence.
     results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Baustein 5 v2: PBD post-UFF geometry corrector ───────────────────────
+    # Per-frame: catastrophic M-D break repair, Stage 1 bond corrections,
+    # Stage 2 angle corrections, Stage 3 clash resolution. Hard topology +
+    # M-D drift gates prevent damage to good frames (only-fix-what-is-broken).
+    # Bit-exact when DELFIN_BAUSTEIN5=0 (default).
+    results = _apply_baustein5_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
