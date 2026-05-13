@@ -11232,10 +11232,10 @@ def _correct_hapto_geometry(
     # set per metal INCLUDING same-metal σ-bonds, exclude both σ-donors and
     # their immediate neighbors from BFS fragment growth.
     same_metal_sigma_exclude: set = set()
-    if hapto_groups and _class_conditional_flag(
-        "DELFIN_HAPTO_FRAG_STRICT", mol, default=0,
-        default_classes=("hapto", "multi_hapto"),
-    ):
+    # Wave-7 P: default-OFF revert. Bundle-1 default-ON over-trimmed BFS
+    # fragments for σ+η mixed complexes, contributing to hapto stagnation.
+    # Set DELFIN_HAPTO_FRAG_STRICT=1 to re-enable for testing.
+    if hapto_groups and _delfin_env_int("DELFIN_HAPTO_FRAG_STRICT", 0):
         try:
             for atom in mol.GetAtoms():
                 if atom.GetIdx() not in metals:
@@ -23953,10 +23953,24 @@ def smiles_to_xyz_isomers(
                 if _hapto_123a_port:
                     _no_ob_active = False  # 123a130: OB-WRS for all hapto
                 else:
+                    # Wave-7 P: class-conditional. Empirical on MUMVAR
+                    # (Co σ+η²): flag=1 → 1 isomer/0% topo; flag=0 →
+                    # 10 isomers/90% topo (5687b3d champion: 54/96%).
+                    # For hapto/multi_hapto classes, OB-WRS is the
+                    # primary isomer-diversity source — never skip.
+                    # Set DELFIN_HAPTO_NO_OB_WHEN_SIGMA=1 universal
+                    # to revert to legacy behaviour.
                     _no_ob_env = os.environ.get(
                         "DELFIN_HAPTO_NO_OB_WHEN_SIGMA", "1"
                     ).strip().lower()
                     _no_ob_active = _no_ob_env not in {"0", "false", "no", "off", ""}
+                    if _no_ob_active and _mol_hapto_gate is not None:
+                        try:
+                            _cls_hapto = _classify_complex_class(_mol_hapto_gate)
+                            if _cls_hapto in ("hapto", "multi_hapto"):
+                                _no_ob_active = False
+                        except Exception:
+                            pass
                 if _no_ob_active and _mol_hapto_gate is not None:
                     _n_sigma_total = 0
                     _hapto_atoms_set: set = set()
@@ -24361,7 +24375,13 @@ def smiles_to_xyz_isomers(
     # d8 / d10 chelate cohorts that lose the correct bite-angle
     # conformer under HEAD's tight caps.  ``global`` already declared at
     # function entry where the override is reset to None on every call.
-    if _class_conditional_flag("DELFIN_SIGMA_PORT_123A130_ITER8", mol):
+    # Wave-7 U: default-ON for sigma class. Agent U: 123a130 leads HEAD by
+    # -11.35pp overall topo; chelate-cap port code exists but was OFF.
+    # default_classes=("sigma",) → auto-active for sigma SMILES.
+    if _class_conditional_flag(
+        "DELFIN_SIGMA_PORT_123A130_ITER8", mol, default=0,
+        default_classes=("sigma",),
+    ):
         try:
             if _classify_complex_class(mol) == "sigma":
                 _ITER84_SIGMA_CAPS_OVERRIDE = _SIGMA_CHELATE_CAPS_123A
