@@ -50,6 +50,7 @@ Entry point
 from __future__ import annotations
 
 import math
+import os
 import re
 import traceback
 from collections import deque
@@ -232,6 +233,30 @@ def _mol_neighbors(mol) -> List[List[int]]:
         nbrs[i].append(j)
         nbrs[j].append(i)
     return nbrs
+
+
+def _compute_h_neighbors(mol) -> List[List[int]]:
+    """Per-atom list of bonded H atom indices.
+
+    Used as a rigid-H tracking aid for single-atom moves in
+    :func:`_stage_bonds` (M, D shifts) and :func:`_stage_clashes` Strategy 2
+    (clash pair push). Dragging bonded H atoms with their heavy parent
+    by the same delta preserves C-H / N-H / O-H bond lengths that the
+    heavy-atom-only topology gate does not check.
+
+    Returns a list of length ``mol.GetNumAtoms()``; entries indexed by an H
+    atom are always empty so the helper is safe to use on any atom index.
+    """
+    n = mol.GetNumAtoms()
+    out: List[List[int]] = [[] for _ in range(n)]
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() == "H":
+            continue
+        idx = atom.GetIdx()
+        for nb in atom.GetNeighbors():
+            if nb.GetSymbol() == "H":
+                out[idx].append(nb.GetIdx())
+    return out
 
 
 def _metal_indices(mol) -> List[int]:
@@ -688,10 +713,16 @@ def _project_donors_to_polyhedron(
 def _stage_bonds(coords: np.ndarray, mol,
                  md_pairs: Sequence[Tuple[int, int, float]],
                  metals: Sequence[int], nb_pairs: Sequence[Tuple[int, int]],
-                 step_size: float, bond_tol: float) -> Tuple[np.ndarray, bool, int]:
+                 step_size: float, bond_tol: float,
+                 h_nbrs: Optional[List[List[int]]] = None,
+                 ) -> Tuple[np.ndarray, bool, int]:
     """Mass-weighted bond-distance projection over all M-D pairs (and any
     further covalent bonds that are far from ideal).  Returns (coords, moved,
-    n_repairs)."""
+    n_repairs).
+
+    If ``h_nbrs`` is provided, bonded H atoms of M and D are dragged with the
+    same delta as their heavy parent (rigid-H tracking, Patch P-H-TRACK).
+    """
     out = coords.copy()
     moved = False
     repairs = 0
@@ -715,8 +746,15 @@ def _stage_bonds(coords: np.ndarray, mol,
         unit = (out[d] - out[m]) / d_cur
         shift = err * step_size
         new = out.copy()
-        new[m] = out[m] + unit * shift * a_j
-        new[d] = out[d] - unit * shift * a_i
+        delta_m = unit * shift * a_j
+        delta_d = -unit * shift * a_i
+        new[m] = out[m] + delta_m
+        new[d] = out[d] + delta_d
+        if h_nbrs is not None:
+            for h_idx in h_nbrs[m]:
+                new[h_idx] = out[h_idx] + delta_m
+            for h_idx in h_nbrs[d]:
+                new[h_idx] = out[h_idx] + delta_d
         if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
             out = new
             moved = True
@@ -786,7 +824,8 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
                    metals: Sequence[int],
                    md_pairs: Sequence[Tuple[int, int, float]],
                    nb_pairs: Sequence[Tuple[int, int]],
-                   step_size: float, clash_factor: float
+                   step_size: float, clash_factor: float,
+                   h_nbrs: Optional[List[List[int]]] = None,
                    ) -> Tuple[np.ndarray, bool, int]:
     """Resolve non-bonded clashes using a 3-strategy ladder.
 
@@ -794,6 +833,11 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
     axis (good for inter-ligand clash between two donor-side fragments).
     Strategy 2: mass-weighted pair-push along the pair direction.
     Strategy 3: small perpendicular fragment translation.
+
+    If ``h_nbrs`` is provided, Strategy 2 drags bonded H atoms of the
+    pushed-apart pair (i, j) with the same delta as their heavy parent
+    (rigid-H tracking, Patch P-H-TRACK). Strategies 1 & 3 already operate
+    on BFS fragments which include H descendants and need no change.
     """
     out = coords.copy()
     moved = False
@@ -864,8 +908,15 @@ def _stage_clashes(coords: np.ndarray, mol, nbrs: List[List[int]],
         a_j = w_j / (w_i + w_j)
         push = overlap * step_size
         new = out.copy()
-        new[i] = out[i] - unit * push * a_j
-        new[j] = out[j] + unit * push * a_i
+        delta_i = -unit * push * a_j
+        delta_j = unit * push * a_i
+        new[i] = out[i] + delta_i
+        new[j] = out[j] + delta_j
+        if h_nbrs is not None:
+            for h_idx in h_nbrs[i]:
+                new[h_idx] = out[h_idx] + delta_i
+            for h_idx in h_nbrs[j]:
+                new[h_idx] = out[h_idx] + delta_j
         if _passes_topology(new, mol, metals, md_pairs, nb_pairs):
             out = new
             moved = True
@@ -909,6 +960,7 @@ def post_optimize_geometry(
     enable_symmetry: bool = False,
     enable_angles: bool = True,
     md_drift_max: float = 0.05,
+    rigid_h: bool = False,
 ) -> Tuple[str, Dict]:
     """Apply PBD post-optimization to ``xyz`` using bonding info from ``mol``.
 
@@ -936,6 +988,12 @@ def post_optimize_geometry(
         Run Phase A.5 polyhedron projection.
     enable_angles : bool
         Run Stage 2 angle corrections inside the iterative loop.
+    rigid_h : bool
+        If True, bonded H atoms are dragged with their heavy parent in
+        single-atom moves (Stage 1 bond shift on M/D, Stage 3 Strategy 2
+        clash push on i/j). Preserves C-H / N-H / O-H bond lengths that the
+        heavy-atom-only topology gate does not check. Default False for
+        bit-exact pre-patch behaviour.
 
     Returns
     -------
@@ -964,6 +1022,9 @@ def post_optimize_geometry(
         nbrs = _mol_neighbors(mol)
         md_pairs = _md_pairs(mol, metals)
         nb_pairs = _non_bonded_heavy_pairs(mol)
+        h_nbrs: Optional[List[List[int]]] = (
+            _compute_h_neighbors(mol) if rigid_h else None
+        )
 
         # If no metals, no constraints to enforce — return unchanged.
         if not metals:
@@ -1014,7 +1075,7 @@ def post_optimize_geometry(
 
             new, m1, r1 = _stage_bonds(
                 coords, mol, md_pairs, metals, nb_pairs,
-                cur_step, bond_tol)
+                cur_step, bond_tol, h_nbrs=h_nbrs)
             coords = new
             moved_any = moved_any or m1
             total_repairs += r1
@@ -1029,7 +1090,7 @@ def post_optimize_geometry(
 
             new, m3, r3 = _stage_clashes(
                 coords, mol, nbrs, metals, md_pairs, nb_pairs,
-                cur_step, clash_factor)
+                cur_step, clash_factor, h_nbrs=h_nbrs)
             coords = new
             moved_any = moved_any or m3
             total_repairs += r3

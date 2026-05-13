@@ -1191,11 +1191,17 @@ def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
             cls = _classify_complex_class(mol)
         except Exception:
             pass
+        # Patch P-H-TRACK: rigid-H tracking in B5 v2 stages 1/3 (default OFF).
+        # When DELFIN_B5_RIGID_H=1, bonded H atoms are dragged with their heavy
+        # parent during single-atom moves so C-H / N-H / O-H bonds are not
+        # stretched by the heavy-atom-only topology gate.
+        b5_rigid_h = bool(_delfin_env_int("DELFIN_B5_RIGID_H", 0))
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
             try:
                 new_xyz, report = post_optimize_geometry(
                     xyz, mol, class_label=cls,
+                    rigid_h=b5_rigid_h,
                 )
                 if report.get("topology_preserved", False):
                     new_results.append((new_xyz, label))
