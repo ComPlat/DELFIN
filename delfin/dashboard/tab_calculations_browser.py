@@ -38,6 +38,7 @@ from .molecule_viewer import (
     DEFAULT_3DMOL_STYLE_JS,
     measurement_bootstrap_js,
     patch_viewer_mouse_controls_js,
+    render_fukui_panel,
 )
 from delfin.ensemble_nmr import CENSO_NMR_SOLVENT_CHOICES
 from delfin.reporting.delfin_docx_report import _orca_plot_binary
@@ -1487,11 +1488,16 @@ def create_tab(ctx):
     calc_mol_view_row.add_class('calc-mol-view-row')
     calc_mol_view_wrap.add_class('calc-mol-view-wrap')
     calc_xyz_tray_controls.add_class('calc-xyz-tray-controls')
+    calc_fukui_panel_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', margin='8px 0 0 0', width='100%'),
+    )
     calc_mol_container = widgets.VBox(
         [
             calc_mol_header,
             calc_rmsd_controls,
             calc_mol_view_row,
+            calc_fukui_panel_container,
         ],
         layout=widgets.Layout(display='none', margin='0 0 10px 0', width='100%', align_items='stretch'),
     )
@@ -10686,6 +10692,14 @@ def create_tab(ctx):
             next_name_lower == 'coord' or next_suffix in ['.xyz', '.cube', '.cub']
         )
 
+        # Always hide the Fukui panel on any new file selection; the
+        # fukui-result.json handler re-shows + populates it on demand.
+        calc_fukui_panel_container.children = []
+        calc_fukui_panel_container.layout.display = 'none'
+        # Restore the standard 3D viewer row in case the previous render
+        # was a Fukui panel (which hides this row to claim the full frame).
+        calc_mol_view_row.layout.display = ''
+
         # Reset display (avoid flashing text area before viewer is ready)
         if not keep_previous_viewer_during_load:
             _calc_clear_main_viewer_state(reset_view_state=False)
@@ -10970,6 +10984,28 @@ def create_tab(ctx):
                 calc_update_view()
             except Exception as e:
                 calc_set_message(f'Error: {e}')
+            return
+
+        # --- Fukui results panel (fukui_result.json) ---
+        if name_lower == 'fukui_result.json':
+            _set_view_toggle(True, False)
+            calc_mol_container.layout.display = 'block'
+            calc_content_area.layout.display = 'none'
+            # The Fukui panel owns its own 3D viewer (inside the returned
+            # widget) so we hide the shared 3D viewer row entirely — that
+            # also prevents stale cube/xyz canvases from peeking through.
+            calc_mol_view_row.layout.display = 'none'
+            calc_file_info.value = (
+                f'<b><span style="word-break:break-all;">{_html.escape(name)}</span></b>'
+                f' ({size_str}, Fukui results)'
+            )
+            try:
+                panel = render_fukui_panel(full_path.parent)
+                calc_fukui_panel_container.children = [panel]
+                calc_fukui_panel_container.layout.display = 'block'
+                calc_update_view()
+            except Exception as exc:
+                calc_set_message(f'Failed to render Fukui panel: {exc}')
             return
 
         # --- Cube/Cub volumetric data ---

@@ -5,7 +5,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import threading
+from pathlib import Path
 
 import ipywidgets as widgets
 import py3Dmol
@@ -516,8 +518,8 @@ def create_tab(ctx):
         layout=widgets.Layout(width='170px'),
     )
     only_goat_time = widgets.Text(
-        value='24:00:00', description='Time:', style=COMMON_STYLE,
-        layout=widgets.Layout(width='200px'),
+        value='24:00:00', description='Time Limit:', style=COMMON_STYLE,
+        layout=widgets.Layout(width='220px'),
     )
     only_goat_submit_button = widgets.Button(
         description='SUBMIT ONLY GOAT', button_style='success',
@@ -545,14 +547,42 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='150px'),
     )
     guppy_timeout = widgets.Text(
-        value='02:00:00', description='Timeout:',
-        style=COMMON_STYLE, layout=widgets.Layout(width='200px'),
+        value='02:00:00', description='Time Limit:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     guppy_submit_button = widgets.Button(
         description='SUBMIT GUPPY', button_style='warning',
         layout=widgets.Layout(width='170px'),
     )
     guppy_output = widgets.Output()
+
+    # ── Fukui submit block ────────────────────────────────────────────
+    # Input (SMILES or XYZ) reuses the shared coords_widget from above.
+    # Method / basis / dispersion / solvation are read from the shared
+    # CONTROL.txt textarea (control_widget) — same plumbing as initial.inp.
+    # Pre-OPT is auto-derived from the input type (SMILES → yes, XYZ → no),
+    # so the user doesn't need a separate toggle.
+    fukui_skip_cubes = widgets.Checkbox(
+        value=False, description='Skip cube generation',
+        style=COMMON_STYLE, layout=widgets.Layout(width='240px'),
+    )
+    fukui_pal = widgets.IntText(
+        value=4, description='PAL:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='140px'),
+    )
+    fukui_maxcore = widgets.IntText(
+        value=3000, description='MaxCore:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='170px'),
+    )
+    fukui_time_limit = widgets.Text(
+        value='04:00:00', description='Time Limit:',
+        style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
+    )
+    fukui_submit_button = widgets.Button(
+        description='SUBMIT FUKUI', button_style='primary',
+        layout=widgets.Layout(width='170px'),
+    )
+    fukui_output = widgets.Output()
 
     # -- state ----------------------------------------------------------
     state = {
@@ -1151,6 +1181,158 @@ def create_tab(ctx):
             _show_isomer_at_index(0)
         except Exception as exc:
             _replace_mol_output_text(f'Architector error: {exc}')
+
+    def handle_fukui_submit(button):
+        """Submit a Fukui-indices job (3 ORCA SPs) via local or SLURM backend.
+
+        Reads:
+          - Input geometry from ``coords_widget`` (SMILES or XYZ, same field
+            the rest of the submit tab uses).
+          - ORCA method / basis / dispersion / solvation / metal-basis from
+            ``control_widget`` (the dashboard's CONTROL.txt textarea).
+        """
+        with fukui_output:
+            clear_output()
+            job_name = job_name_widget.value.strip()
+            raw_input_value = str(coords_widget.value or '').strip()
+            control_text = str(control_widget.value or '').strip()
+            time_limit_value = str(fukui_time_limit.value or '').strip() or '04:00:00'
+            pal_value = int(fukui_pal.value or 0)
+            maxcore_value = int(fukui_maxcore.value or 0)
+            skip_cubes_value = bool(fukui_skip_cubes.value)
+
+            if not job_name:
+                print('Error: Job name is required!')
+                return
+            if not raw_input_value:
+                print('Error: Paste a SMILES or XYZ block in the Input field (top of the tab).')
+                return
+            if pal_value <= 0:
+                print('Error: Fukui PAL must be > 0.')
+                return
+            if maxcore_value <= 0:
+                print('Error: Fukui MaxCore must be > 0.')
+                return
+            try:
+                parse_time_to_seconds(time_limit_value)
+            except Exception:
+                print('Error: Fukui Time Limit must use HH:MM:SS, e.g. 04:00:00.')
+                return
+
+            # CONTROL.txt is the canonical source for charge / multiplicity /
+            # functional / basis / dispersion / solvation / metal_basisset
+            # — run the standard DELFIN validator before submitting so
+            # the user sees the missing-key list in the dashboard instead
+            # of a cryptic ORCA "INPUT ERROR" later.
+            if not control_text:
+                print(
+                    'Error: CONTROL.txt is empty. Paste a CONTROL.txt block in '
+                    'the field below the SMILES/XYZ input — Fukui needs charge, '
+                    'functional, basis, dispersion, solvation etc. set there.'
+                )
+                return
+            control_errors = validate_control_text(control_text)
+            if control_errors:
+                print('Error: CONTROL.txt is missing or invalid for Fukui submission:')
+                for err in control_errors:
+                    print(f'  • {err}')
+                print(
+                    '\nFix the values above (e.g. replace [SOLVENT] / [METAL] '
+                    'placeholders with real values) and submit again.'
+                )
+                return
+
+            safe_job_name = ''.join(c for c in job_name if c.isalnum() or c in ('_', '-'))
+            if not safe_job_name:
+                print('Error: Job name contains only invalid characters!')
+                return
+
+            cleaned_data, input_type = clean_input_data(raw_input_value)
+
+            job_dir = ctx.calc_dir / safe_job_name
+            try:
+                job_dir.mkdir(parents=True, exist_ok=True)
+
+                # DELFIN convention: start structure ALWAYS lives in
+                # ``input.txt`` (SMILES line or XYZ block). The CLI then
+                # calls ``normalize_input_file`` to produce start.txt and
+                # invokes the canonical bang-line builder, exactly like
+                # the classic pipeline does.
+                if input_type == 'smiles':
+                    (job_dir / 'input.txt').write_text(cleaned_data + '\n', encoding='utf-8')
+                elif input_type == 'xyz':
+                    (job_dir / 'input.txt').write_text(cleaned_data + '\n', encoding='utf-8')
+                else:
+                    print(f'Error: Could not classify input as SMILES or XYZ: {input_type}')
+                    return
+
+                # Pre-OPT auto-decided: SMILES inputs need optimisation,
+                # XYZ inputs are assumed to be already optimised (either
+                # by the user or via the QUICK CONVERT SMILES button which
+                # left an XYZ in the field).
+                pre_opt_value = (input_type == 'smiles')
+
+                # CONTROL.txt drives functional / basis / dispersion /
+                # solvation / metal_basisset / RI / relativity through
+                # the canonical _build_bang_line path. Persisting it in
+                # job_dir matches how every other DELFIN workflow runs.
+                if control_text:
+                    (job_dir / 'CONTROL.txt').write_text(control_text + '\n', encoding='utf-8')
+
+                (job_dir / 'fukui_settings.json').write_text(
+                    json.dumps(
+                        {
+                            'mode': 'fukui',
+                            'input_type': input_type,
+                            'pre_opt': pre_opt_value,
+                            'skip_cubes': skip_cubes_value,
+                            'pal': pal_value,
+                            'maxcore': maxcore_value,
+                            'time_limit': time_limit_value,
+                        },
+                        indent=2,
+                    ),
+                    encoding='utf-8',
+                )
+
+                # The CLI auto-detects input.txt + CONTROL.txt in the
+                # job_dir, so no explicit --input is needed here.
+                fukui_env = {
+                    'DELFIN_FUKUI_PRE_OPT': '1' if pre_opt_value else '0',
+                    'DELFIN_FUKUI_SKIP_CUBES': '1' if skip_cubes_value else '0',
+                }
+
+                result = ctx.backend.submit_delfin(
+                    job_dir=job_dir,
+                    job_name=safe_job_name,
+                    mode='fukui',
+                    time_limit=time_limit_value,
+                    pal=pal_value,
+                    maxcore=maxcore_value,
+                    extra_env=fukui_env,
+                )
+            except Exception as exc:
+                print(f'Failed to submit Fukui job: {exc}')
+                return
+
+            if result.returncode == 0:
+                stdout = (result.stdout or '').strip()
+                job_id = stdout.split()[-1] if stdout else '(unknown)'
+                print(f'Submitted Fukui job {safe_job_name} (ID: {job_id})')
+                print(f'  Input type: {input_type}')
+                print(f'  Pre-OPT:    {"yes" if pre_opt_value else "no"}')
+                print(f'  PAL:        {pal_value}')
+                print(f'  MaxCore:    {maxcore_value}')
+                print(f'  Time Limit: {time_limit_value}')
+                print('')
+                print('Check status in Job Status tab.')
+                # Clear input fields so the next submit starts fresh.
+                # CONTROL.txt and resource sliders (PAL / MaxCore / Time
+                # Limit / Pre-OPT / Skip-Cubes) stay as user preferences.
+                job_name_widget.value = ''
+                coords_widget.value = ''
+            else:
+                print(f'Submit failed: {result.stderr or result.stdout}')
 
     def handle_guppy_submit(button):
         """Submit GUPPY either for batch entries or a single SMILES input."""
@@ -2570,6 +2752,7 @@ def create_tab(ctx):
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
     guppy_submit_button.on_click(handle_guppy_submit)
+    fukui_submit_button.on_click(handle_fukui_submit)
     smiles_prev_button.on_click(handle_smiles_prev)
     smiles_next_button.on_click(handle_smiles_next)
 
@@ -2666,6 +2849,19 @@ def create_tab(ctx):
             layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
         ),
         guppy_output,
+        spacer_large,
+        widgets.HTML('<b>Fukui Indices (atomic):</b>'),
+        widgets.VBox([
+            widgets.HBox(
+                [fukui_skip_cubes],
+                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+            ),
+            widgets.HBox(
+                [fukui_pal, fukui_maxcore, fukui_time_limit, fukui_submit_button],
+                layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'),
+            ),
+        ], layout=widgets.Layout(gap='8px')),
+        fukui_output,
     ], layout=widgets.Layout(
         flex='1 1 0', min_width='0', padding='10px',
         box_sizing='border-box', overflow_x='hidden',

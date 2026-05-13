@@ -1789,3 +1789,522 @@ def strip_xyz_header(text):
         return '\n'.join(lines[2:]).strip()
     except ValueError:
         return text
+
+
+# ---------------------------------------------------------------------------
+# Fukui visualization helpers
+# ---------------------------------------------------------------------------
+
+_FUKUI_CUBE_OPTIONS = [
+    ('none', None, False),
+    ('ρ(N) — density(neutral)',  'density_neutral.cube', False),
+    ('ρ(N+1) — density(anion)',  'density_anion.cube',   False),
+    ('ρ(N−1) — density(cation)', 'density_cation.cube',  False),
+    ('f⁺ — Fukui plus',          'fukui_plus.cube',      True),
+    ('f⁻ — Fukui minus',         'fukui_minus.cube',     True),
+    ('f⁰ — Fukui zero',          'fukui_zero.cube',      True),
+]
+
+_FUKUI_LABEL_OPTIONS = [
+    ('none',          'none'),
+    ('atom index',    'index'),
+    ('q(N)',          'q_neutral'),
+    ('q(N+1)',        'q_anion'),
+    ('q(N−1)',        'q_cation'),
+    ('f⁺',            'f_plus'),
+    ('f⁻',            'f_minus'),
+    ('f⁰',            'f_zero'),
+]
+
+
+def _fukui_atom_positions_from_xyz(xyz_text):
+    """Return ``[(symbol, x, y, z)]`` from a (possibly headered) XYZ string."""
+    text = strip_xyz_header(xyz_text or '')
+    positions = []
+    for raw in text.splitlines():
+        parts = raw.split()
+        if len(parts) < 4:
+            continue
+        try:
+            x = float(parts[1]); y = float(parts[2]); z = float(parts[3])
+        except ValueError:
+            continue
+        positions.append((parts[0], x, y, z))
+    return positions
+
+
+def fukui_atom_labels_js(xyz_text, values, *, decimals=3, color='black'):
+    """Build a JS snippet that adds floating per-atom labels to a 3Dmol viewer.
+
+    Args:
+        xyz_text: XYZ block (with or without header) used to place labels.
+        values: Iterable of values matching the atom order in ``xyz_text``.
+            Strings are emitted verbatim; numbers get ``decimals`` precision.
+        decimals: Float precision for numeric values.
+        color: Foreground color of the label text.
+
+    Returns:
+        JavaScript string. Callers paste it between ``addModel`` and ``zoomTo``.
+    """
+    if not values:
+        return ''
+    positions = _fukui_atom_positions_from_xyz(xyz_text)
+    pieces = []
+    for (sym, x, y, z), value in zip(positions, values):
+        if isinstance(value, (int, float)):
+            text = f"{value:+.{decimals}f}"
+        else:
+            text = str(value)
+        text = text.replace("'", "\\'")
+        pieces.append(
+            "viewer.addLabel('" + text + "', {"
+            "position:{x:" + f"{x:.4f}" + ",y:" + f"{y:.4f}" + ",z:" + f"{z:.4f}" + "},"
+            "backgroundColor:'white',backgroundOpacity:0.7,"
+            "fontColor:'" + color + "',fontSize:13,"
+            "borderThickness:0.5,borderColor:'#666',"
+            "showBackground:true,inFront:true});"
+        )
+    return "\n".join(pieces)
+
+
+def fukui_cube_isosurface_js(cube_text, *, isoval=0.02, signed=False):
+    """Build a JS snippet that paints a cube as an isosurface in a 3Dmol viewer.
+
+    Args:
+        cube_text: Raw Gaussian/ORCA cube file contents.
+        isoval: Iso-value (positive). For signed cubes, ``+isoval`` (blue) and
+            ``-isoval`` (red) are drawn together; for unsigned, only the
+            positive lobe is drawn.
+        signed: True for difference cubes (Fukui f⁺/f⁻/f⁰), False for raw
+            densities.
+    """
+    if not cube_text:
+        return ''
+    import json as _json
+    cube_json = _json.dumps(cube_text)
+    iso = float(isoval)
+    if signed:
+        return (
+            "viewer.addVolumetricData(" + cube_json + ",'cube',"
+            "{isoval:" + f"{iso}" + ",color:'#0026ff',opacity:0.80});\n"
+            "viewer.addVolumetricData(" + cube_json + ",'cube',"
+            "{isoval:" + f"{-iso}" + ",color:'#b00010',opacity:0.80});"
+        )
+    return (
+        "viewer.addVolumetricData(" + cube_json + ",'cube',"
+        "{isoval:" + f"{iso}" + ",color:'#0026ff',opacity:0.65});"
+    )
+
+
+def build_fukui_viewer_html(
+    xyz_text,
+    *,
+    labels=None,
+    cube_text=None,
+    isoval=0.02,
+    cube_signed=False,
+    width=None,
+    height=None,
+    viewer_id=None,
+):
+    """Return a self-contained HTML fragment with a 3Dmol viewer showing a Fukui scene.
+
+    The HTML loads 3Dmol from CDN if not already present, adds the XYZ model,
+    applies the standard DELFIN style, optionally adds per-atom labels, and
+    optionally adds an isosurface from a cube.
+
+    Honors the global viewer settings; returns a placeholder when the viewer
+    is disabled and uses quality-preset dimensions/zoom unless overridden.
+    """
+    import json as _json
+    import random as _random
+
+    profile = get_viewer_profile()
+    if not profile['enabled']:
+        return viewer_disabled_html()
+    eff_width = width if width is not None else profile['width']
+    eff_height = height if height is not None else profile['height']
+    eff_zoom = profile['zoom']
+
+    if viewer_id is None:
+        viewer_id = f"fukui_view_{_random.randint(0, 10**9)}"
+    xyz_json = _json.dumps(xyz_text or '')
+    label_js = fukui_atom_labels_js(xyz_text, labels) if labels else ''
+    cube_js = fukui_cube_isosurface_js(cube_text, isoval=isoval, signed=cube_signed) if cube_text else ''
+    style_js = DEFAULT_3DMOL_STYLE_JS
+    # Reuse the same right-drag-translate patch every other DELFIN viewer
+    # installs (orca-builder, calc-browser, remote-archive) so the mouse
+    # behaviour stays uniform across the dashboard.
+    mouse_patch_js = patch_viewer_mouse_controls_js('viewer', 'el')
+    # Pin to a square viewer area matching the host Output box created
+    # by ``render_fukui_panel``. Sized to mirror calc-browser/orca-builder
+    # so Fukui sits 1:1 next to the standard viewers.
+    height_px = int(eff_height) if eff_height else 600
+    return f"""
+<div id="{viewer_id}"
+     style="width:100%;height:{height_px}px;position:relative;"></div>
+<script>
+(function() {{
+    var CURRENT_ID = '{viewer_id}';
+    // Tear down any previous Fukui viewer in this document so the new
+    // render is the ONLY one painting into the host Output area. We
+    // (1) drop the WebGL context, (2) remove the container DOM.
+    try {{
+        document.querySelectorAll('[id^="fukui_view_"]').forEach(function(node) {{
+            if (node.id === CURRENT_ID) return;
+            try {{
+                var canvas = node.querySelector('canvas');
+                if (canvas) {{
+                    var gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                    if (gl && gl.getExtension('WEBGL_lose_context')) {{
+                        gl.getExtension('WEBGL_lose_context').loseContext();
+                    }}
+                }}
+            }} catch(_e) {{}}
+            try {{
+                if (node.parentNode) node.parentNode.removeChild(node);
+            }} catch(_e) {{}}
+        }});
+    }} catch(e) {{}}
+
+    function ensureLoaded(cb) {{
+        if (typeof $3Dmol !== 'undefined') {{ cb(); return; }}
+        var s = document.createElement('script');
+        s.src = 'https://3Dmol.org/build/3Dmol-min.js';
+        s.onload = cb;
+        document.head.appendChild(s);
+    }}
+    ensureLoaded(function() {{
+        var el = document.getElementById('{viewer_id}');
+        if (!el) return;
+        var viewer = $3Dmol.createViewer(el, {{ backgroundColor: 'white' }});
+        viewer.addModel({xyz_json}, 'xyz');
+        viewer.setStyle({{}}, {style_js});
+        {label_js}
+        // Centre + zoom on the ATOM model BEFORE adding volumetric data —
+        // cube bounding boxes are usually much larger than the molecule
+        // and would otherwise dominate the auto-fit.
+        viewer.zoomTo({{model: 0}});
+        viewer.center({{model: 0}});
+        viewer.zoom({eff_zoom});
+        {cube_js}
+        viewer.render();
+        {mouse_patch_js}
+        // Dynamic fit-to-host: the .fukui-viewer-box ancestor knows the
+        // current available width/height (set by the parent panel
+        // layout); resize the inner div + 3Dmol canvas to match so the
+        // viewer fills the frame as the page is resized.
+        function fitToHost() {{
+            try {{
+                var host = el.closest('.fukui-viewer-box') || el.parentElement;
+                if (host) {{
+                    var w = host.clientWidth || 0;
+                    var h = host.clientHeight || 0;
+                    if (w >= 200) el.style.width = w + 'px';
+                    if (h >= 200) el.style.height = h + 'px';
+                }}
+                viewer.resize();
+                viewer.zoomTo({{model: 0}});
+                viewer.center({{model: 0}});
+                viewer.zoom({eff_zoom});
+                viewer.render();
+            }} catch(e) {{}}
+        }}
+        setTimeout(fitToHost, 40);
+        setTimeout(fitToHost, 250);
+        if (typeof ResizeObserver !== 'undefined') {{
+            try {{
+                var ro = new ResizeObserver(fitToHost);
+                ro.observe(el);
+                var host = el.closest('.fukui-viewer-box');
+                if (host) ro.observe(host);
+            }} catch(e) {{}}
+        }}
+        window.addEventListener('resize', fitToHost);
+    }});
+}})();
+</script>
+"""
+
+
+def _build_fukui_table_html(result):
+    """Return an HTML table summarizing per-atom Fukui data from ``fukui_result.json``."""
+    import html as _html
+    atoms = result.get('atoms') or []
+    q_neutral = result.get('q_neutral') or []
+    q_anion = result.get('q_anion') or []
+    q_cation = result.get('q_cation') or []
+    f_plus = result.get('f_plus') or []
+    f_minus = result.get('f_minus') or []
+    f_zero = result.get('f_zero') or []
+    n = len(atoms)
+
+    def _cell(value):
+        try:
+            return f"{float(value):+.3f}"
+        except (TypeError, ValueError):
+            return _html.escape(str(value))
+
+    rows = []
+    for i in range(n):
+        rows.append(
+            "<tr>"
+            f"<td style='text-align:right;padding:2px 8px'>{i + 1}</td>"
+            f"<td style='padding:2px 8px'>{_html.escape(str(atoms[i]))}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace'>{_cell(q_neutral[i]) if i < len(q_neutral) else ''}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace'>{_cell(q_anion[i])   if i < len(q_anion)   else ''}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace'>{_cell(q_cation[i])  if i < len(q_cation)  else ''}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace;background:#e8f4ff'>{_cell(f_plus[i])    if i < len(f_plus)    else ''}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace;background:#ffe8e8'>{_cell(f_minus[i])   if i < len(f_minus)   else ''}</td>"
+            f"<td style='text-align:right;padding:2px 8px;font-family:monospace;background:#f0e8ff'>{_cell(f_zero[i])    if i < len(f_zero)    else ''}</td>"
+            "</tr>"
+        )
+
+    scheme = _html.escape(str(result.get('scheme') or ''))
+    settings = result.get('orca_settings') or {}
+    settings_line = " · ".join(
+        f"{_html.escape(str(k))}={_html.escape(str(v))}"
+        for k, v in settings.items() if v not in (None, '')
+    )
+    geom_origin = _html.escape(str(result.get('geometry_origin') or ''))
+
+    return f"""
+<div style="font-family:Arial,sans-serif">
+  <div style="margin-bottom:6px">
+    <b>Fukui indices</b> · scheme: <code>{scheme}</code> · geometry: <code>{geom_origin}</code>
+    <div style="color:#555;font-size:12px">{settings_line}</div>
+  </div>
+  <table style="border-collapse:collapse;font-size:12px">
+    <thead>
+      <tr style="background:#f0f0f0">
+        <th style="padding:4px 8px">#</th>
+        <th style="padding:4px 8px;text-align:left">atom</th>
+        <th style="padding:4px 8px">q(N)</th>
+        <th style="padding:4px 8px">q(N+1)</th>
+        <th style="padding:4px 8px">q(N−1)</th>
+        <th style="padding:4px 8px;background:#cfe6ff">f⁺</th>
+        <th style="padding:4px 8px;background:#ffcccc">f⁻</th>
+        <th style="padding:4px 8px;background:#dccaff">f⁰</th>
+      </tr>
+    </thead>
+    <tbody>
+      {"".join(rows)}
+    </tbody>
+  </table>
+</div>
+"""
+
+
+def render_fukui_panel(workdir, output_widget=None):
+    """Build a Fukui-results panel as an ``ipywidgets.VBox``.
+
+    The panel owns its own 3D viewer (an ``HTML`` widget whose value is
+    swapped on every dropdown change). Decoupling the viewer from the
+    surrounding tab's shared ``Output`` widget kills the cross-render
+    bleed-through where switching cubes or revisiting ``fukui_result.json``
+    left an earlier 3Dmol canvas underneath the new one.
+
+    Args:
+        workdir: Path to a Fukui job directory (must contain
+            ``fukui_result.json``, ``fukui_geom.xyz``, and the cube files
+            produced by ``delfin-fukui``).
+        output_widget: Deprecated, ignored. Kept for callers that still
+            pass it positionally.
+
+    Returns:
+        ``widgets.VBox`` with the controls, the 3D-viewer HTML widget,
+        and the per-atom result table. The caller displays it.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    import ipywidgets as widgets
+
+    workdir = _Path(workdir)
+    try:
+        result = _json.loads((workdir / 'fukui_result.json').read_text(encoding='utf-8'))
+    except Exception as exc:
+        return widgets.HTML(f"<b style='color:#a00'>Failed to load fukui_result.json:</b> {exc}")
+
+    geom_path = workdir / 'fukui_geom.xyz'
+    xyz_text = geom_path.read_text(encoding='utf-8') if geom_path.exists() else ''
+
+    cube_cache = {}
+
+    def _load_cube(name):
+        if name is None:
+            return None, False
+        if name in cube_cache:
+            return cube_cache[name]
+        for label, fname, signed in _FUKUI_CUBE_OPTIONS:
+            if fname == name:
+                path = workdir / fname
+                if path.exists():
+                    try:
+                        cube_cache[name] = (path.read_text(encoding='utf-8'), signed)
+                        return cube_cache[name]
+                    except Exception:
+                        pass
+        cube_cache[name] = (None, False)
+        return cube_cache[name]
+
+    label_select = widgets.Dropdown(
+        options=_FUKUI_LABEL_OPTIONS,
+        value='f_plus',
+        description='Labels:',
+        style={'description_width': '60px'},
+        layout={'width': '200px'},
+    )
+    cube_options = [(label, fname) for label, fname, _signed in _FUKUI_CUBE_OPTIONS]
+    cube_select = widgets.Dropdown(
+        options=cube_options,
+        value=None,
+        description='Isosurface:',
+        style={'description_width': '80px'},
+        layout={'width': '320px'},
+    )
+    iso_slider = widgets.BoundedFloatText(
+        value=0.02, min=0.001, max=0.5, step=0.001,
+        description='Iso (au):',
+        style={'description_width': '70px'},
+        layout={'width': '180px'},
+    )
+    decimals_slider = widgets.BoundedIntText(
+        value=3, min=1, max=5, step=1,
+        description='Decimals:',
+        style={'description_width': '70px'},
+        layout={'width': '160px'},
+    )
+
+    def _values_for(label_kind):
+        if label_kind == 'none' or not label_kind:
+            return None
+        if label_kind == 'index':
+            return [str(i + 1) for i in range(len(result.get('atoms') or []))]
+        return result.get(label_kind) or None
+
+    # The viewer is an Output widget OWNED by this panel — it must be
+    # an Output (not an HTML widget) because ``widgets.HTML.value``
+    # sanitises content and strips ``<script>`` tags, so 3Dmol would
+    # never bootstrap. ``with output: display(HTML(...))`` keeps the
+    # script tag intact while still scoping the canvas inside the panel,
+    # so the canvas is removed together with the panel.
+    # Viewer box sized 1:1 like the standard calc-browser 3D viewer
+    # (square-ish region, fixed pixel dimensions). flex 0 0 auto pins
+    # it on the left of the HBox so the controls sidebar can sit to
+    # its right without re-flowing.
+    # Own class (NOT ``calc-mol-viewer`` — that would inherit the calc
+    # browser's scoping CSS and confuse its JS resize routines) but the
+    # same blue 2 px frame so the look matches the standard viewer.
+    viewer_box = widgets.Output(
+        layout=widgets.Layout(
+            width='100%',
+            min_width='400px',
+            max_width='720px',
+            height='620px',
+            min_height='420px',
+            margin='0',
+            padding='0',
+            overflow='hidden',
+            border='2px solid #1976d2',
+            flex='1 1 auto',
+        ),
+    )
+    viewer_box.add_class('fukui-viewer-box')
+
+    def _redraw(*_):
+        from IPython.display import HTML as _HTML, clear_output as _clear, display as _display
+
+        label_kind = label_select.value
+        cube_name = cube_select.value
+        cube_text, signed = _load_cube(cube_name)
+        # Either-or: when a cube is selected, suppress labels and grey
+        # out the label dropdown so only the isosurface is shown.
+        # Switching the cube dropdown back to "none" re-enables labels.
+        label_select.disabled = bool(cube_text)
+        decimals_slider.disabled = bool(cube_text)
+        iso_slider.disabled = not bool(cube_text)
+        if cube_text:
+            values = None
+            decimals = 0
+        else:
+            values = _values_for(label_kind)
+            decimals = decimals_slider.value if (values and label_kind != 'index') else 0
+        iso = iso_slider.value
+        html = build_fukui_viewer_html(
+            xyz_text,
+            labels=values,
+            cube_text=cube_text,
+            isoval=iso,
+            cube_signed=signed,
+        )
+        if values and label_kind != 'index' and decimals != 3:
+            label_js = fukui_atom_labels_js(xyz_text, values, decimals=decimals)
+            html = html.replace(
+                fukui_atom_labels_js(xyz_text, values, decimals=3),
+                label_js,
+            )
+        with viewer_box:
+            _clear(wait=False)
+            _display(_HTML(html))
+
+    for control in (label_select, cube_select, iso_slider, decimals_slider):
+        control.observe(_redraw, names='value')
+
+    _redraw()
+
+    table_html = _build_fukui_table_html(result)
+
+    # Tighter dropdowns / fields for the side-bar layout (right of viewer).
+    for w in (label_select, cube_select):
+        w.layout = widgets.Layout(width='240px')
+        w.style = {'description_width': '70px'}
+    for w in (iso_slider, decimals_slider):
+        w.layout = widgets.Layout(width='180px')
+        w.style = {'description_width': '70px'}
+
+    controls_block = widgets.VBox(
+        [label_select, cube_select, iso_slider, decimals_slider],
+        layout=widgets.Layout(
+            gap='6px',
+            align_items='flex-start',
+            margin='0 0 8px 0',
+            width='auto',
+        ),
+    )
+    sidebar = widgets.VBox(
+        [
+            controls_block,
+            widgets.HTML(table_html, layout=widgets.Layout(width='auto')),
+        ],
+        layout=widgets.Layout(
+            gap='4px',
+            align_items='flex-start',
+            margin='0 0 0 12px',
+            flex='1 1 auto',
+            min_width='0',
+            width='auto',
+        ),
+    )
+
+    viewer_row = widgets.HBox(
+        [viewer_box, sidebar],
+        layout=widgets.Layout(
+            gap='12px',
+            align_items='flex-start',
+            justify_content='flex-start',
+            flex_flow='row nowrap',
+            width='100%',
+        ),
+    )
+
+    return widgets.VBox(
+        [viewer_row],
+        layout=widgets.Layout(
+            width='100%',
+            align_items='flex-start',
+            margin='0',
+            gap='6px',
+            overflow_x='auto',
+        ),
+    )

@@ -601,6 +601,55 @@ def _run_mode(mode: str) -> int:
             if censo_resume in {'1', 'true', 'yes', 'on'}:
                 cmd.append('--resume')
         return _run_and_tee(cmd, Path.cwd() / output_name)
+    if resolved_mode == 'fukui':
+        from delfin import cli_fukui
+
+        # Dashboard convention: input.txt + CONTROL.txt are pre-seeded in
+        # the workdir. DELFIN_FUKUI_INPUT is only needed for shell users
+        # who didn't pre-create input.txt.
+        fukui_input = str(os.environ.get('DELFIN_FUKUI_INPUT') or '').strip()
+        cwd = Path.cwd()
+        has_input_txt = (cwd / 'input.txt').exists()
+        if not fukui_input and not has_input_txt:
+            print('ERROR: fukui mode needs either input.txt in workdir or DELFIN_FUKUI_INPUT env var')
+            return 1
+        scheme = str(os.environ.get('DELFIN_FUKUI_SCHEME') or 'mulliken').strip().lower()
+        pre_opt_env = str(os.environ.get('DELFIN_FUKUI_PRE_OPT') or '').strip().lower()
+        skip_cubes_env = str(os.environ.get('DELFIN_FUKUI_SKIP_CUBES') or '').strip().lower()
+        functional = str(os.environ.get('DELFIN_FUKUI_FUNCTIONAL') or '').strip()
+        basis = str(os.environ.get('DELFIN_FUKUI_BASIS') or '').strip()
+        dispersion = str(os.environ.get('DELFIN_FUKUI_DISPERSION') or '').strip()
+        solvation = str(os.environ.get('DELFIN_FUKUI_SOLVATION') or '').strip()
+        solvent = str(os.environ.get('DELFIN_FUKUI_SOLVENT') or '').strip()
+
+        args = [
+            '--workdir', str(cwd),
+            '--scheme', scheme,
+            '--pal', delfin_pal,
+            '--maxcore', delfin_maxcore,
+        ]
+        if fukui_input:
+            args.extend(['--input', fukui_input])
+        if pre_opt_env in {'1', 'true', 'yes', 'on'}:
+            args.append('--pre-opt')
+        elif pre_opt_env in {'0', 'false', 'no', 'off'}:
+            args.append('--no-pre-opt')
+        if skip_cubes_env in {'1', 'true', 'yes', 'on'}:
+            args.append('--skip-cubes')
+        if functional:
+            args.extend(['--functional', functional])
+        if basis:
+            args.extend(['--basis', basis])
+        if dispersion:
+            args.extend(['--dispersion', dispersion])
+        if solvation:
+            args.extend(['--solvation', solvation])
+        if solvent:
+            args.extend(['--solvent', solvent])
+
+        source = fukui_input or 'input.txt (workdir-seeded)'
+        print(f'Starting Fukui analysis ({scheme}) for input: {source}')
+        return int(cli_fukui.main(args))
     if resolved_mode == 'delfin-co2-chain':
         species_delta = str(os.environ.get('DELFIN_CO2_SPECIES_DELTA') or '0')
         print('Starting DELFIN + CO2 Coordinator chain...')
