@@ -3919,6 +3919,10 @@ def create_tab(ctx):
         try:
             from delfin.agent.session_store import save_session
             estate = engine.export_state()
+            # Capture the full live state so resume restores not just chat
+            # history but also UI mode, permissions, the in-flight plan
+            # body, the subagent panel snapshot — everything a long session
+            # depends on to feel continuous after Ctrl-C / reopen.
             save_session(
                 session_id=engine.session_id,
                 mode=estate["mode"],
@@ -3930,6 +3934,15 @@ def create_tab(ctx):
                 engine_messages=estate["engine_messages"],
                 token_usage=estate["token_usage"],
                 cost_usd=estate["cost_usd"],
+                perm_profile=state.get("_perm_profile", ""),
+                provider=provider_dropdown.value,
+                model=model_dropdown.value,
+                effort=effort_dropdown.value,
+                active_gate=state.get("_active_gate"),
+                last_compaction_info=getattr(engine, "last_compaction_info", None),
+                subagent_calls=state.get("subagent_calls") or [],
+                pending_plan_body=state.get("_pending_plan_body", ""),
+                todo_payload=state.get("current_todos") or [],
             )
             state["active_session_id"] = engine.session_id
             try:
@@ -3986,7 +3999,76 @@ def create_tab(ctx):
                 kp.task_session_id = session_id
         except Exception:
             pass
-        _set_active_gate()
+
+        # Long-session state restore. Each block is wrapped in try/except
+        # so a missing dropdown option or a legacy field never breaks the
+        # restore — we always end up with a usable engine + chat.
+        saved_perm = data.get("perm_profile") or ""
+        if saved_perm:
+            try:
+                state["_perm_profile"] = saved_perm
+                if perm_dropdown.value != saved_perm:
+                    perm_dropdown.value = saved_perm
+            except Exception:
+                pass
+        saved_provider = data.get("provider") or ""
+        if saved_provider:
+            try:
+                if provider_dropdown.value != saved_provider:
+                    provider_dropdown.value = saved_provider
+            except Exception:
+                pass
+        saved_model = data.get("model") or ""
+        if saved_model:
+            try:
+                valid_models = {v for _, v in (model_dropdown.options or [])}
+                if saved_model in valid_models and model_dropdown.value != saved_model:
+                    model_dropdown.value = saved_model
+            except Exception:
+                pass
+        saved_effort = data.get("effort") or ""
+        if saved_effort:
+            try:
+                if effort_dropdown.value != saved_effort:
+                    effort_dropdown.value = saved_effort
+            except Exception:
+                pass
+        # Subagent panel + todo display
+        sa_calls = data.get("subagent_calls") or []
+        if sa_calls:
+            state["subagent_calls"] = sa_calls
+        todo_payload = data.get("todo_payload") or []
+        if todo_payload:
+            state["current_todos"] = todo_payload
+        # last_compaction_info goes back on the engine so /context shows
+        # accurate "last compaction" info after resume.
+        lci = data.get("last_compaction_info")
+        if lci and hasattr(engine, "last_compaction_info"):
+            engine.last_compaction_info = lci
+        # Pending plan body — if the previous session was awaiting plan
+        # approval, surface a note so the user knows what's in flight.
+        pending_plan = data.get("pending_plan_body") or ""
+        if pending_plan:
+            state["_pending_plan_body"] = pending_plan
+            _append_system_message(
+                "📋 A pending plan was restored from the saved session. "
+                "Switch to /mode plan to review + approve it."
+            )
+        # Active gate — restoring lets a paused approval keep its banner.
+        saved_gate = data.get("active_gate")
+        if isinstance(saved_gate, dict) and saved_gate.get("type"):
+            try:
+                _set_active_gate(
+                    saved_gate.get("type", ""),
+                    saved_gate.get("role", ""),
+                    saved_gate.get("title", ""),
+                    saved_gate.get("detail", ""),
+                )
+            except Exception:
+                _set_active_gate()
+        else:
+            _set_active_gate()
+
         _refresh_chat_html()
         _refresh_task_ticker()
         _update_status()
@@ -5728,6 +5810,80 @@ def create_tab(ctx):
         if cmd == "/session" or cmd.startswith("/session "):
             from delfin.agent import session_store as _ss
             arg = cmd[len("/session "):].strip() if cmd.startswith("/session ") else ""
+            # /session restore <id>  — load a saved session into this tab
+            if arg.startswith("restore "):
+                sid = arg[len("restore "):].strip()
+                if not sid:
+                    _append_system_message("Usage: /session restore <session_id>")
+                    return True
+                try:
+                    _load_saved_session(sid)
+                except Exception as exc:
+                    _append_system_message(f"Restore failed: {exc}")
+                return True
+            # /session search <query>  — grep across saved sessions + archives
+            if arg.startswith("search "):
+                query = arg[len("search "):].strip()
+                if not query:
+                    _append_system_message("Usage: /session search <query>")
+                    return True
+                q = query.lower()
+                hits: list[str] = []
+                # Chat-history of saved sessions (newest first, capped)
+                try:
+                    for r in _ss.list_sessions(limit=50):
+                        sid = r.get("session_id", "")
+                        try:
+                            data = _ss.load_session(sid) or {}
+                        except Exception:
+                            continue
+                        msgs = data.get("chat_messages") or []
+                        for i, m in enumerate(msgs):
+                            content = str(m.get("content", ""))
+                            if q in content.lower():
+                                snippet = content.replace("\n", " ")[:120]
+                                hits.append(
+                                    f"  session[{sid[:12]}] msg#{i} "
+                                    f"({m.get('role','?')}): {snippet}"
+                                )
+                                if len(hits) >= 30:
+                                    break
+                        if len(hits) >= 30:
+                            break
+                except Exception:
+                    pass
+                # Pre-compaction archives
+                try:
+                    for archive in _ss.list_transcript_archives()[:50]:
+                        sid = archive["session_id"]
+                        for rec in _ss.load_transcript_archive(sid):
+                            for i, m in enumerate(rec.get("messages") or []):
+                                content = str(m.get("content", ""))
+                                if q in content.lower():
+                                    snippet = content.replace("\n", " ")[:120]
+                                    hits.append(
+                                        f"  archive[{sid[:12]}] msg#{i} "
+                                        f"({m.get('role','?')}): {snippet}"
+                                    )
+                                    if len(hits) >= 60:
+                                        break
+                            if len(hits) >= 60:
+                                break
+                        if len(hits) >= 60:
+                            break
+                except Exception:
+                    pass
+                if not hits:
+                    _append_system_message(
+                        f"No matches for {query!r} in saved sessions or archives."
+                    )
+                else:
+                    _append_system_message(
+                        f"Found {len(hits)} match{'es' if len(hits)!=1 else ''} for "
+                        f"{query!r}:\n" + "\n".join(hits[:30])
+                        + ("\n  ..." if len(hits) > 30 else "")
+                    )
+                return True
             # /session archive ls
             if arg in ("archive", "archive ls"):
                 rows = _ss.list_transcript_archives()
@@ -5799,9 +5955,11 @@ def create_tab(ctx):
                 return True
             _append_system_message(
                 "Usage:\n"
-                "  /session ls            — recent sessions\n"
-                "  /session archive       — archived pre-compaction transcripts\n"
-                "  /session archive <id>  — view archive for a session\n"
+                "  /session ls               — recent sessions\n"
+                "  /session restore <id>     — load a saved session into this tab\n"
+                "  /session search <query>   — grep across saved sessions + archives\n"
+                "  /session archive          — archived pre-compaction transcripts\n"
+                "  /session archive <id>     — view archive for a session\n"
             )
             return True
 
