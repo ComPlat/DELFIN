@@ -490,13 +490,44 @@ Only after all six steps pass is the iter committed.
 
 Roadmap beyond the initial B5 release:
 
+- **Phase 2 — Torsional sub-fragment rotation (Strategy 1.5 in clash chain):**
+  rotate sub-fragment distal to an internal bond `(a, b)` around axis a→b
+  to relieve clashes that full-fragment-rotation around M-D cannot resolve.
+  Filter: bond must be `not InRing() and BondType == SINGLE` (no aromatic /
+  ring-internal / double-bond / triple-bond rotations). Use case: long
+  flexible ligands (tridentate Phosphine with CH₂-CH₂ spacers) where part
+  of the ligand clashes with neighbor — torsion via the CH₂-CH₂ link fixes
+  it without disturbing M-D or other parts. ~80 LOC addition to
+  `_post_optimizer.py`. Inserted between current Strategy 1 (full-fragment
+  rotation around M-D) and Strategy 2 (pair push).
+
+- **Phase 2 — Coord-angle fragment rotation (Stage 2b):**
+  extend Stage 2 angle correction: when the middle atom of an angle triple
+  `(i, j, k)` is a metal AND `k` is a donor, rotate the entire BFS fragment
+  of k around the metal axis instead of only single atom k. Currently the
+  Hungarian projection (Phase A.5) handles all donors globally; Stage 2b
+  serves as fine-tuning per-pair after A.5 with a `±2°` deviation gate.
+  ~30 LOC addition. Acts as nachjustierung pro D-M-D triple when Phase A.5
+  only partial-converged.
+
 - **Phase 2 — hapto-ring rigid centroid repair:** treat each hapto-ring as a
   rigid 5/6-ring template; correct ring-centroid-to-metal distance and ring
   orientation while preserving internal ring geometry. Targets the `hapto`
   and `multi_hapto` class gaps left by Phase A.5 skip.
+
 - **Phase 2 — M-M σ-bond enforcement:** universal (not class-gated) detector
   + corrector for metal-metal bonds in dinuclear complexes. Currently
   unaddressed; small but recurring failure mode in dimer SMILES.
+
+- **Phase 3 — Hybrid PBD + occasional UFF re-call:** combine PBD constraint
+  enforcement with periodic UFF energy minimization. Algorithm: PBD ensures
+  topology + constraint satisfaction, then every N iterations run UFF with
+  step-limit 50-100 to bring atoms toward energy-min, then PBD again to
+  re-enforce constraints. Pro: combines geometric correctness + energy
+  realism. Con: risks catastrophic UFF failure mode (the very problem B5
+  was designed to bypass per `feedback_uff_asymmetric_justification`).
+  Expected +50% wall-time; conditional opt-in based on Phase 1 voll-pool
+  results.
 - **Phase 3 — L-BFGS-B variational replacement:** replace heuristic step-size
   PBD with constrained variational optimiser using bond-length / angle /
   clash / symmetry as soft penalties and M-D + topology as hard constraints.
