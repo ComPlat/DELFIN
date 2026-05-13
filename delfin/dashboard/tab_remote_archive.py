@@ -61,6 +61,7 @@ from .molecule_viewer import (
     measurement_bootstrap_js,
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
+    render_fukui_panel,
 )
 
 REMOTE_FULL_FETCH_MAX_BYTES = 128 * 1024 * 1024
@@ -1943,6 +1944,56 @@ def create_tab(ctx):
         _reset_search_state()
         _reset_visualization_state()
 
+        # Always clear the Fukui panel on a fresh selection; the fukui_result
+        # handler re-shows it on demand.
+        state["fukui_panel_active"] = False
+        remote_fukui_panel_container.children = []
+        remote_fukui_panel_container.layout.display = "none"
+
+        if lower_name == "fukui_result.json":
+            config = state.get("config")
+            if config:
+                remote_rel_parent = str(Path(
+                    entry.get("relative_path", "")
+                ).parent).replace("\\", "/")
+                if remote_rel_parent in (".", ""):
+                    remote_rel_parent = ""
+                fukui_siblings = (
+                    "fukui_geom.xyz",
+                    "density_neutral.cube", "density_anion.cube", "density_cation.cube",
+                    "fukui_plus.cube", "fukui_minus.cube", "fukui_zero.cube",
+                )
+                for sibling in fukui_siblings:
+                    sib_rel = (
+                        f"{remote_rel_parent}/{sibling}"
+                        if remote_rel_parent else sibling
+                    )
+                    try:
+                        fetch_remote_file(
+                            config["host"], config["user"],
+                            config["remote_path"], config["port"],
+                            sib_rel,
+                        )
+                    except Exception:
+                        # Missing sibling = fewer panel options; keep going.
+                        pass
+            _show_file_info(entry, "Fukui results")
+            try:
+                panel = render_fukui_panel(path.parent, viewer_output)
+                remote_fukui_panel_container.children = [panel]
+                remote_fukui_panel_container.layout.display = "block"
+                state["fukui_panel_active"] = True
+                _set_view_toggle(True, disabled=False)
+                _update_view()
+            except Exception as exc:
+                preview_html.value = (
+                    "<div style='color:#a00;border:1px solid #fdd;border-radius:6px;"
+                    "padding:12px;background:#fff8f8;'>"
+                    f"Failed to render Fukui panel: {html.escape(str(exc))}"
+                    "</div>"
+                )
+            return
+
         if lower_name == "coord":
             content = path.read_text(errors="ignore")
             xyz_text = coord_to_xyz(content)
@@ -2604,6 +2655,13 @@ def create_tab(ctx):
             preview_html.layout.display = "none"
             content_toolbar.layout.display = "none"
             _set_viewer_visible(False)
+            return
+        # When the Fukui panel owns the viewer, leave its content untouched.
+        if state.get("fukui_panel_active", False):
+            content_label.layout.display = "none"
+            preview_html.layout.display = "none"
+            content_toolbar.layout.display = "none"
+            _set_viewer_visible(True)
             return
         show_visualize = bool(view_toggle.value and state.get("visualize_enabled"))
         has_content = bool(state.get("file_content"))
@@ -4747,8 +4805,12 @@ def create_tab(ctx):
         ),
     )
     viewer_row.add_class("remote-mol-view-row")
+    remote_fukui_panel_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display="none", margin="8px 0 0 0", width="100%"),
+    )
     viewer_container = widgets.VBox(
-        [viewer_header, viewer_row],
+        [viewer_header, viewer_row, remote_fukui_panel_container],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
     top_toolbar = widgets.HBox(
