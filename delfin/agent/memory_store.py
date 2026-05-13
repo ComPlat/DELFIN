@@ -145,15 +145,61 @@ _TYPE_PREFIX_RE = re.compile(
 )
 
 
+# Heuristic keyword sets for auto-classification when no explicit prefix
+# is supplied. The first matching type wins. Order matters: feedback is
+# checked first (most user-corrective utterances start with a prohibition),
+# then project (time/deadline cues), then reference (external pointers),
+# then user as the fallback. Patterns are intentionally conservative so a
+# misclassification stays an editable text file the user can re-tag.
+_FEEDBACK_HINTS = (
+    "don't ", "do not ", "never ", "stop ", "always ",
+    "nicht ", "keine ", "kein ", "immer ", "stets ",
+    "use ... instead", "use x instead of",
+    "prefer ", "should not ", "must not ", "muss nicht ",
+    "muss immer", "darf nicht", "anti-pattern", "anti pattern",
+)
+_PROJECT_HINTS = (
+    "deadline", "due ", "due:", "by friday", "by monday", "by tuesday",
+    "by wednesday", "by thursday", "next week", "this week", "sprint",
+    "milestone", "freeze", "release branch", "release on",
+    "frist", "abgabe", "release", "cutoff",
+    "is working on", "is doing", "ist dran", "arbeitet an",
+)
+_REFERENCE_HINTS = (
+    "https://", "http://", "linear ", "jira ", "asana ",
+    "grafana", "kibana", "datadog", "slack channel", "slack #",
+    "github.com/", "gitlab.com/", "see issue ", "see pr ",
+    "look at ", "siehe ", "documented at ", "dashboard at ",
+)
+
+
+def _classify_by_heuristic(text: str) -> str:
+    """Pick a memory type when the user didn't supply a prefix.
+
+    Returns one of ``"feedback" | "project" | "reference" | "user"``.
+    """
+    lowered = (text or "").lower()
+    if any(h in lowered for h in _FEEDBACK_HINTS):
+        return "feedback"
+    if any(h in lowered for h in _PROJECT_HINTS):
+        return "project"
+    if any(h in lowered for h in _REFERENCE_HINTS):
+        return "reference"
+    return "user"
+
+
 def parse_memory_type(text: str) -> tuple[str, str]:
     """Strip a leading ``<type>:`` prefix and return ``(memory_type, body)``.
 
-    Defaults to ``"user"`` when no prefix is present.
+    When no prefix is present we run a keyword heuristic across feedback /
+    project / reference patterns and fall back to ``"user"``. The body is
+    always the original text minus any consumed prefix.
     """
     m = _TYPE_PREFIX_RE.match(text or "")
     if m:
         return m.group(1).lower(), (text[m.end():]).strip()
-    return "user", (text or "").strip()
+    body = (text or "").strip()
+    return _classify_by_heuristic(body), body
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
@@ -258,3 +304,120 @@ def _update_memory_index(
         content = content.rstrip() + f"\n\n{section_header}\n{line}\n"
 
     index.write_text(content, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Memory enrichment: cross-links, stale-ref verification, recall helpers
+# ---------------------------------------------------------------------------
+
+_WIKILINK_RE = re.compile(r"\[\[([a-zA-Z0-9][a-zA-Z0-9_\-]*)\]\]")
+# Detect "path[:line]" style references inside memory text so the agent can
+# verify they still exist before quoting them. Avoid grabbing trivial words
+# by requiring at least one slash OR a dotted file-like suffix.
+_PATH_REF_RE = re.compile(
+    r"(?:(?<=\s)|(?<=^)|(?<=`))"           # left boundary
+    r"((?:[\w./\-]+/[\w./\-]+|[\w./\-]+\.[a-zA-Z]{1,5}))"
+    r"(?::(\d+))?"                          # optional :line
+    r"(?=[\s)\.,;'\"`]|$)"                   # right boundary
+)
+
+
+def _find_memory_file_by_name(memory_dir: Path, name: str) -> Path | None:
+    """Locate ``<any-type>_<name>.md`` under the memory dir; first hit wins.
+
+    We don't know the type prefix at link-resolution time, so we glob the
+    four legal prefixes in deterministic priority order. Missing dir → None.
+    """
+    if not memory_dir.is_dir():
+        return None
+    for kind in ("feedback", "project", "reference", "user"):
+        cand = memory_dir / f"{kind}_{name}.md"
+        if cand.is_file():
+            return cand
+    # Fallback: bare ``<name>.md`` so externally-curated MEMORY.md entries
+    # without a type prefix still resolve.
+    flat = memory_dir / f"{name}.md"
+    return flat if flat.is_file() else None
+
+
+def resolve_wikilinks(text: str, memory_dir: Path) -> str:
+    """Expand each ``[[name]]`` in ``text`` to a resolved markdown link.
+
+    - ``[[X]]`` with an existing memory file → ``[X](file.md) — description``
+    - ``[[X]]`` without a target → ``[[X]] (not yet written)``
+
+    Idempotent for resolved links (we only touch the ``[[…]]`` syntax).
+    """
+    if not text or "[[" not in text:
+        return text
+
+    def _replace(m: re.Match) -> str:
+        name = m.group(1)
+        target = _find_memory_file_by_name(memory_dir, name)
+        if target is None:
+            return f"[[{name}]] (not yet written)"
+        # Pull the description line from frontmatter for the inline hook.
+        try:
+            head = target.read_text(encoding="utf-8")[:400]
+        except OSError:
+            return f"[[{name}]] (unreadable)"
+        desc = ""
+        for line in head.splitlines():
+            if line.lower().startswith("description:"):
+                desc = line.split(":", 1)[1].strip().strip("\"'")
+                break
+        if desc:
+            return f"[{name}]({target.name}) — {desc}"
+        return f"[{name}]({target.name})"
+
+    return _WIKILINK_RE.sub(_replace, text)
+
+
+def find_stale_references(text: str, repo_root: Path | str) -> list[str]:
+    """Return a list of ``path[:line]`` references mentioned in the memory
+    text that no longer exist on disk.
+
+    Used by ``/memories verify`` to flag rotted recommendations. The check
+    is conservative: only entries that *look* like paths (slash- or
+    dot-shaped) are tested, so plain prose like "delete" or "method" is
+    skipped.
+    """
+    root = Path(repo_root)
+    stale: list[str] = []
+    for match in _PATH_REF_RE.finditer(text or ""):
+        ref = match.group(0)
+        path_part = match.group(1)
+        # Skip URL-like, version-y, or trivial fragments
+        if "://" in path_part or path_part.startswith(("v", "V")) and path_part[1:2].isdigit():
+            continue
+        if "." not in path_part and "/" not in path_part:
+            continue
+        candidate = root / path_part if not Path(path_part).is_absolute() else Path(path_part)
+        try:
+            if not candidate.exists():
+                stale.append(ref)
+        except OSError:
+            stale.append(ref)
+    return stale
+
+
+def verify_typed_memories(repo_root: Path | str) -> list[dict]:
+    """Walk every memory file under the project's memory dir and return a
+    list of ``{file, stale_refs}`` records for any file containing one or
+    more dead references. Empty list = everything still resolves.
+    """
+    memory_dir = _claude_memory_dir(Path(repo_root))
+    if not memory_dir.is_dir():
+        return []
+    results: list[dict] = []
+    for p in sorted(memory_dir.glob("*.md")):
+        if p.name == "MEMORY.md":
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        stale = find_stale_references(text, repo_root)
+        if stale:
+            results.append({"file": p.name, "stale_refs": stale})
+    return results

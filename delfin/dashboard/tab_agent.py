@@ -1000,6 +1000,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     # Memory
     ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
     ("Memory", "/memories", "List all memories", False),
+    ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     # Workspace (agent_workspace/)
     ("Workspace", "/workspace ls", "List files in agent workspace", False),
@@ -5424,6 +5425,7 @@ def create_tab(ctx):
                 "Memory:\n"
                 "  /remember <text> — Save a persistent memory\n"
                 "  /memories        — List all memories\n"
+                "  /memories verify — Check memory file-refs against the repo\n"
                 "  /forget <index>  — Delete a memory by index\n"
                 "\n"
                 "Workspace:\n"
@@ -5889,6 +5891,30 @@ def create_tab(ctx):
             return True
 
         # -- Memory commands ---------------------------------------------------
+
+        if cmd == "/memories verify" or cmd == "/memories check":
+            try:
+                from delfin.agent.memory_store import verify_typed_memories
+                stale = verify_typed_memories(ctx.repo_dir or ".")
+            except Exception as exc:
+                _append_system_message(f"Memory verify failed: {exc}")
+                return True
+            if not stale:
+                _append_system_message(
+                    "All memory references resolve — no stale paths found."
+                )
+            else:
+                lines = ["Stale references found in memory:"]
+                for entry in stale:
+                    lines.append(f"  {entry['file']}:")
+                    for ref in entry["stale_refs"][:8]:
+                        lines.append(f"    - {ref}")
+                lines.append(
+                    "Consider /forget <idx> for outdated entries, or edit "
+                    "the .md files in ~/.claude/projects/<slug>/memory/."
+                )
+                _append_system_message("\n".join(lines))
+            return True
 
         if cmd == "/memories":
             from delfin.agent.memory_store import load_memories
