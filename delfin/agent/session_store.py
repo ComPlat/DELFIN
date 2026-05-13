@@ -41,6 +41,101 @@ def _ensure_dir() -> Path:
     return _SESSIONS_DIR
 
 
+def _transcript_archive_dir() -> Path:
+    """Directory where full pre-compaction transcripts are archived so
+    long sessions never truly lose information — the user can scroll
+    back even after the in-memory ``messages`` list was compacted."""
+    p = Path.home() / ".delfin" / "transcript_archive"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def archive_pre_compaction_transcript(
+    session_id: str,
+    messages: list[dict[str, Any]],
+    *,
+    info: dict[str, Any] | None = None,
+) -> Path:
+    """Persist the full pre-compaction conversation to JSONL so the user
+    can browse it later (e.g. via /session archive ls). Returns the
+    archive file path.
+
+    The file is append-only: every compaction in a session adds a new
+    record block at the end with ``info`` (msg count, tokens saved,
+    timestamp). Cheap to read tail-first; safe to leave for months.
+    """
+    if not session_id:
+        return Path(os.devnull)
+    d = _transcript_archive_dir()
+    p = d / f"{session_id}.jsonl"
+    rec = {
+        "compacted_at": time.time(),
+        "n_messages": len(messages),
+        "info": info or {},
+        "messages": [
+            {
+                "role": m.get("role", ""),
+                "content": (m.get("content", "") if isinstance(m.get("content"), str)
+                            else json.dumps(m.get("content"), ensure_ascii=False)),
+            }
+            for m in messages
+        ],
+    }
+    try:
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _chmod_user_only(p)
+    except OSError:
+        return Path(os.devnull)
+    return p
+
+
+def list_transcript_archives() -> list[dict[str, Any]]:
+    """Return one record per archived session: session_id, size, mtime,
+    n_compaction_records (one line per compaction event)."""
+    d = _transcript_archive_dir()
+    out: list[dict[str, Any]] = []
+    for p in d.glob("*.jsonl"):
+        try:
+            stat = p.stat()
+            n_lines = sum(1 for _ in p.open("r", encoding="utf-8"))
+        except OSError:
+            continue
+        out.append({
+            "session_id": p.stem,
+            "path": str(p),
+            "bytes": stat.st_size,
+            "mtime": stat.st_mtime,
+            "compactions": n_lines,
+        })
+    out.sort(key=lambda r: r["mtime"], reverse=True)
+    return out
+
+
+def load_transcript_archive(session_id: str) -> list[dict[str, Any]]:
+    """Return every compaction record in order (oldest → newest) for the
+    given session. Each record contains the messages snapshot at that
+    compaction. Empty list when no archive exists."""
+    if not session_id:
+        return []
+    p = _transcript_archive_dir() / f"{session_id}.jsonl"
+    if not p.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    except OSError:
+        return []
+    return out
+
+
 def save_session(
     session_id: str,
     *,
@@ -54,6 +149,17 @@ def save_session(
     token_usage: dict[str, int] | None = None,
     cost_usd: float = 0.0,
     title: str = "",
+    # Long-session extras (all optional, ignored if backend doesn't pass)
+    perm_profile: str = "",
+    provider: str = "",
+    model: str = "",
+    effort: str = "",
+    active_gate: dict[str, Any] | None = None,
+    last_compaction_info: dict[str, Any] | None = None,
+    subagent_calls: list[dict[str, Any]] | None = None,
+    pending_plan_body: str = "",
+    todo_payload: list[dict[str, Any]] | None = None,
+    transcript_archive_path: str = "",
 ) -> Path:
     """Save a session to disk.
 
@@ -115,6 +221,17 @@ def save_session(
         "cost_usd": cost_usd,
         "title": title,
         "updated_at": time.time(),
+        # Long-session state (only persisted when callers pass it)
+        "perm_profile": perm_profile or "",
+        "provider": provider or "",
+        "model": model or "",
+        "effort": effort or "",
+        "active_gate": active_gate or None,
+        "last_compaction_info": last_compaction_info or None,
+        "subagent_calls": subagent_calls or [],
+        "pending_plan_body": pending_plan_body or "",
+        "todo_payload": todo_payload or [],
+        "transcript_archive_path": transcript_archive_path or "",
     }
 
     # Set created_at only on first save

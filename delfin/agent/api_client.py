@@ -788,7 +788,7 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "web_search", "web_fetch",
     # Structured UX & planning.
     "ask_user_question",
-    "task_create", "task_update", "task_list",
+    "task_create", "task_update", "task_list", "task_get",
 })
 
 
@@ -1767,6 +1767,29 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         ),
                     },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_get",
+            "description": (
+                "Fetch a single task record by ID. Returns the full "
+                "task dict (subject, description, status, active_form, "
+                "created_at, updated_at) or an error if the task does "
+                "not exist. Cheaper than task_list when you already "
+                "know the ID — typical use after task_create."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "Task ID returned by task_create.",
+                    },
+                },
+                "required": ["task_id"],
             },
         },
     },
@@ -2764,6 +2787,8 @@ class _DocToolExecutor:
                 return self._execute_task_update(arguments, permissions)
             if name == "task_list":
                 return self._execute_task_list(arguments, permissions)
+            if name == "task_get":
+                return self._execute_task_get(arguments, permissions)
 
         # Web tools — outbound HTTP, no filesystem side-effects. The
         # web_tools module enforces its own URL deny-list (localhost /
@@ -4822,6 +4847,23 @@ class _DocToolExecutor:
             "tasks": tasks,
         }, ensure_ascii=False)
 
+    def _execute_task_get(
+        self, arguments: dict, perms: "KitToolPermissions"
+    ) -> str:
+        try:
+            task_id = int(arguments.get("task_id"))
+        except (TypeError, ValueError):
+            return json.dumps({
+                "error": f"task_id must be int, got {arguments.get('task_id')!r}"
+            })
+        try:
+            task = self._task_store(perms).get(task_id)
+        except Exception as exc:
+            return json.dumps({"error": f"task_get failed: {exc}"})
+        if task is None:
+            return json.dumps({"error": f"task #{task_id} not found"})
+        return json.dumps({"task": task}, ensure_ascii=False)
+
     # ------- Web tools (search + fetch) -----------------------------------
 
     def _execute_web_search(self, arguments: dict) -> str:
@@ -5012,7 +5054,7 @@ class OpenAIClient(_BaseClient):
                               "bash_background", "bash_status",
                               "bash_output", "bash_kill",
                               "notebook_read", "notebook_edit",
-                              "task_create", "task_update", "task_list",
+                              "task_create", "task_update", "task_list", "task_get",
                               "web_search", "web_fetch",
                               "ask_user_question",
                               "exit_plan_mode",
