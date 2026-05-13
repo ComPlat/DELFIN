@@ -998,7 +998,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Git", "/git log", "Show recent commits", False),
     ("Git", "/git branch", "Show branches", False),
     # Memory
-    ("Memory", "/remember", "Save a persistent memory", True),
+    ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
     ("Memory", "/memories", "List all memories", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     # Workspace (agent_workspace/)
@@ -2250,6 +2250,10 @@ def create_tab(ctx):
         "solo": "Single agent, direct conversation — ask questions about the codebase, "
                 "make small edits, explore code, debug issues. No review pipeline, "
                 "fastest for simple tasks.",
+        "plan": "Read-only research first — the agent explores the codebase, drafts a "
+                "step-by-step plan in markdown, and waits for your approval via "
+                "ExitPlanMode before any file edits or bash run. Same surface as "
+                "Claude Code's plan mode.",
         "research": "Research agent — literature search, DFT benchmarks, best practices, "
                     "state-of-the-art methods. Web search enabled, read-only, no code changes.",
         "quick": "Session Manager → Builder → Test — lightweight pipeline for bugfixes, "
@@ -2269,10 +2273,12 @@ def create_tab(ctx):
                 "broad architectural changes. Most expensive, highest confidence.",
     }
     mode_dropdown = widgets.Dropdown(
-        # Only solo + dashboard are production-ready; the pipeline modes
-        # (research/quick/reviewed/tdd/cluster/full) are gated until they
-        # graduate from experimental status.
-        options=["dashboard", "solo"],
+        # Only solo + dashboard + plan are production-ready; the pipeline
+        # modes (research/quick/reviewed/tdd/cluster/full) are gated until
+        # they graduate from experimental status. Plan mode is a
+        # read-only-first variant that produces a markdown plan and waits
+        # for explicit approval before any edits land.
+        options=["dashboard", "solo", "plan"],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -3189,6 +3195,12 @@ def create_tab(ctx):
     # Queue indicator (shown when messages are queued during streaming)
     queue_html = widgets.HTML(value="")
 
+    # Live context-window usage bar — refreshed by _refresh_context_bar()
+    # on a periodic timer + after every send/stop/compact. Hidden until the
+    # engine has at least one message so the bar doesn't flash at zero on
+    # first paint.
+    context_bar_html = widgets.HTML(value="")
+
     # Keyboard shortcuts: dedicated Output widget (never cleared by scroll)
     _enter_js_output = widgets.Output()
     with _enter_js_output:
@@ -3799,7 +3811,7 @@ def create_tab(ctx):
          todo_pane_html, subagent_pane_html,
          chat_html,
          plan_accept_btn, ask_user_box,
-         working_html, queue_html,
+         working_html, queue_html, context_bar_html,
          approval_row, action_confirm_row, question_row,
          palette_row, palette_select,
          widgets.HBox(
@@ -5037,6 +5049,13 @@ def create_tab(ctx):
 
     def _update_status():
         """Update the status bar from engine state."""
+        # Live context-window usage bar (cheap, idempotent — fine to call
+        # every time the status line refreshes; that already happens after
+        # every send/stop/handoff/compact).
+        try:
+            _refresh_context_bar()
+        except Exception:
+            pass
         engine = state["engine"]
         active_gate = state.get("_active_gate") or {}
         if engine:
@@ -5209,6 +5228,57 @@ def create_tab(ctx):
             )
         else:
             queue_html.value = ""
+
+    def _refresh_context_bar() -> None:
+        """Repaint the context-window usage bar from the live engine state.
+
+        Reads ``engine._estimate_context_tokens()`` + ``engine.context_window_tokens``
+        and draws a 12-px horizontal bar with proportional fill. Colour ramps
+        from blue → orange → red as the percentage crosses 60 %/80 %.
+        Hidden when the engine is missing or holds zero messages.
+        """
+        eng = state.get("engine")
+        if not eng or not getattr(eng, "messages", None):
+            context_bar_html.value = ""
+            return
+        try:
+            tokens = int(eng._estimate_context_tokens())
+        except Exception:
+            context_bar_html.value = ""
+            return
+        window = int(getattr(eng, "context_window_tokens", 100_000) or 100_000)
+        if window <= 0:
+            context_bar_html.value = ""
+            return
+        pct = min(100.0, tokens / window * 100.0)
+        if pct >= 80.0:
+            fill = "#ef4444"
+        elif pct >= 60.0:
+            fill = "#f59e0b"
+        else:
+            fill = "#60a5fa"
+        n_msgs = len(eng.messages)
+        compact_pct = float(getattr(eng, "auto_compact_pct", 0.95) or 0.95) * 100.0
+        context_bar_html.value = (
+            f'<div style="display:flex; align-items:center; gap:8px; '
+            f'margin:2px 0 6px 0; font-family:monospace; font-size:11px; '
+            f'color:#94a3b8;">'
+            f'<span>ctx</span>'
+            f'<div style="position:relative; flex:1; height:8px; '
+            f'background:#1e293b; border-radius:4px; overflow:hidden; '
+            f'box-shadow:inset 0 1px 2px rgba(0,0,0,0.4);">'
+            f'<div style="position:absolute; left:0; top:0; bottom:0; '
+            f'width:{pct:.2f}%; background:{fill}; '
+            f'transition:width 0.4s ease, background 0.4s ease;"></div>'
+            f'<div style="position:absolute; left:{compact_pct:.2f}%; top:-2px; '
+            f'bottom:-2px; width:1px; background:#475569;" '
+            f'title="auto-compact trigger"></div>'
+            f'</div>'
+            f'<span style="color:{fill};">{tokens:,}</span>'
+            f'<span>/ {window:,} ({pct:.1f}%)</span>'
+            f'<span style="color:#64748b;">· {n_msgs} msgs</span>'
+            f'</div>'
+        )
 
     def _update_button_states():
         engine = state["engine"]
@@ -5835,11 +5905,33 @@ def create_tab(ctx):
         if cmd.startswith("/remember "):
             text_to_save = text[len("/remember "):].strip()
             if text_to_save:
-                from delfin.agent.memory_store import save_memory
-                idx = save_memory(text_to_save, source="user")
-                _append_system_message(f"Memory [{idx}] saved: {text_to_save}")
+                from delfin.agent.memory_store import (
+                    save_memory,
+                    save_typed_memory,
+                    parse_memory_type,
+                )
+                mem_type, body = parse_memory_type(text_to_save)
+                # Always keep a flat JSON record for legacy retrieval.
+                idx = save_memory(body or text_to_save, source=mem_type)
+                # Mirror into the Claude-Code typed-memory layout so the
+                # next session picks it up via the prompt loader.
+                try:
+                    fpath, slug, _t = save_typed_memory(
+                        text_to_save,
+                        repo_root=ctx.repo_dir or ".",
+                    )
+                    short = str(fpath).replace(str(Path.home()), "~")
+                    _append_system_message(
+                        f"Memory [{idx}] saved as {mem_type} → {short}"
+                    )
+                except Exception as exc:
+                    _append_system_message(
+                        f"Memory [{idx}] saved (flat); typed-mirror failed: {exc}"
+                    )
             else:
-                _append_system_message("Usage: /remember <text>")
+                _append_system_message(
+                    "Usage: /remember [user|feedback|project|reference:] <text>"
+                )
             return True
 
         if cmd.startswith("/forget"):
@@ -10425,11 +10517,26 @@ def create_tab(ctx):
             state["_model_before_dashboard"] = model_dropdown.value
             _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
             model_dropdown.value = _cheap
+        elif new_mode == "plan":
+            # Plan mode locks the permission profile to "plan" (read-only)
+            # so no Edit/Write/Bash can fire until the user clicks "Plan
+            # akzeptieren" (which flips back to the saved profile).
+            state["_perm_before_plan"] = perm_dropdown.value
+            perm_dropdown.value = "plan"
+            perm_dropdown.disabled = True
+            _append_system_message(
+                "🧭 Plan mode active — read-only. The agent will draft a "
+                "plan and call ExitPlanMode for your approval before any "
+                "edits or bash runs."
+            )
         else:
             perm_dropdown.disabled = state.get("streaming", False)
             saved = state.pop("_perm_before_dashboard", None)
             if saved and perm_dropdown.value == "ask_all":
                 perm_dropdown.value = saved
+            saved_plan = state.pop("_perm_before_plan", None)
+            if saved_plan and perm_dropdown.value == "plan":
+                perm_dropdown.value = saved_plan
             saved_model = state.pop("_model_before_dashboard", None)
             _cheap = _PROVIDER_CHEAP.get(provider_dropdown.value, "haiku")
             if saved_model and model_dropdown.value == _cheap:
@@ -10438,7 +10545,7 @@ def create_tab(ctx):
         _update_cycle_inspector()
 
         # Solo-minimal UI: hide pipeline overhead for solo/dashboard
-        _is_minimal = new_mode in ("solo", "dashboard")
+        _is_minimal = new_mode in ("solo", "dashboard", "plan")
         # Hide mode description (saves vertical space)
         mode_desc_html.layout.display = "none" if _is_minimal else "block"
         # Hide pipeline-only buttons (but keep commit/push visible)

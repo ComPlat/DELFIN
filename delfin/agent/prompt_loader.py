@@ -632,6 +632,16 @@ class PromptLoader:
             if role_prompt:
                 sections.append(role_prompt)
 
+            # Plan mode addendum: when the dashboard locked us into "plan"
+            # the agent must investigate first and finalise via ExitPlanMode.
+            if mode_id == "plan":
+                plan_addendum = self._cached_read(
+                    self.agent_dir / "shared" / "plan_mode_addendum.md"
+                )
+                if plan_addendum:
+                    sections.append(plan_addendum)
+                    injected.append("plan_mode_addendum")
+
             # CLI-style environment block: cwd, branch, status, recent commits
             env_block = self._build_session_env_block()
             if env_block:

@@ -2119,12 +2119,22 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "properties": {
                     "subagent_type": {
                         "type": "string",
-                        "enum": [
-                            "explore",
-                            "plan",
-                            "code-reviewer",
-                            "general-purpose",
-                        ],
+                        # Resolved at module import — covers built-in
+                        # presets plus any pack/agents/*_subagent.md and
+                        # ~/.delfin/subagents/*_subagent.md user-extended
+                        # types. Kept defensive in case the loader fails.
+                        "enum": (
+                            __import__(
+                                "delfin.agent.subagents",
+                                fromlist=["subagent_type_names"],
+                            ).subagent_type_names()
+                            or [
+                                "explore",
+                                "plan",
+                                "code-reviewer",
+                                "general-purpose",
+                            ]
+                        ),
                     },
                     "description": {
                         "type": "string",
@@ -5284,10 +5294,19 @@ class OpenAIClient(_BaseClient):
                         tool_output=result[:2000],
                     )
 
+                    # Truncate the *context-bound* copy so a 200 kB MCP
+                    # result doesn't blow the next request's input-token
+                    # budget. The UI already got the truncated 2000-char
+                    # preview above; the model now gets head+tail with a
+                    # marker so tracebacks survive. JSON-error blobs and
+                    # short results pass through untouched.
+                    context_result = _smart_truncate(
+                        result, cap=5000, label="tool_result"
+                    )
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": result,
+                        "content": context_result,
                     })
                     _round_results.append(result)
 

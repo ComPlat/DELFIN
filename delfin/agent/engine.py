@@ -911,6 +911,90 @@ class AgentEngine:
         budget = int(self.context_window_tokens * float(self.auto_compact_pct))
         return self._estimate_context_tokens() > budget
 
+    def _llm_summarize_old_messages(self, old_msgs: list[dict]) -> str:
+        """Call a cheap model to summarise the older half of the
+        conversation into a high-fidelity recap. Falls back to ``""`` on
+        any failure so the caller can drop back to extractive mode.
+
+        The summarisation prompt mirrors Claude Code's compaction style:
+        preserve user goals, key decisions, files touched, and pending
+        items; drop chit-chat. The cost is ~1k tokens of input + a few
+        hundred output; for an Opus session that's <$0.01.
+        """
+        if not old_msgs or not getattr(self, "client", None):
+            return ""
+
+        rendered: list[str] = []
+        for msg in old_msgs:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                # Flatten tool/structured content for the summariser
+                try:
+                    content = " ".join(
+                        str(part.get("text", part))
+                        for part in content
+                        if isinstance(part, (dict, str))
+                    )
+                except Exception:
+                    content = str(content)
+            if not content:
+                continue
+            # Cap each message individually so a single huge tool_result
+            # can't dominate the summariser's input.
+            if len(content) > 4000:
+                content = content[:2000] + "\n... [truncated for summary] ...\n" + content[-1500:]
+            rendered.append(f"[{role}]\n{content}")
+        if not rendered:
+            return ""
+
+        system_prompt = (
+            "You are a conversation-summarisation assistant. Produce a "
+            "compact but faithful recap of the dialog below that the next "
+            "turn can use as drop-in context. Required structure:\n"
+            "\n"
+            "## Goal\n"
+            "One sentence — what the user was working toward.\n\n"
+            "## Key facts & decisions\n"
+            "- 3-7 bullets covering decisions made, files changed, "
+            "constraints discovered, errors hit + fixes, current state.\n"
+            "- Cite file paths + line numbers when they appeared.\n\n"
+            "## Open items / next step\n"
+            "- 1-3 bullets — what is still TODO or unresolved.\n\n"
+            "Be terse. Skip pleasantries, repeated greetings, and dead-end "
+            "explorations the user already moved past. Preserve specific "
+            "numbers, identifiers, error messages, and exact filenames."
+        )
+        joined = "\n\n".join(rendered)
+        if len(joined) > 60_000:
+            joined = joined[:30_000] + "\n... [middle truncated] ...\n" + joined[-25_000:]
+        user_msg = (
+            "Summarise the conversation below according to the structure "
+            "in the system prompt.\n\n=== CONVERSATION START ===\n"
+            f"{joined}\n=== CONVERSATION END ==="
+        )
+
+        try:
+            text_parts: list[str] = []
+            stream = self.client.stream_message(
+                messages=[{"role": "user", "content": user_msg}],
+                system=system_prompt,
+                max_tokens=1500,
+            )
+            for event in stream:
+                if getattr(event, "type", "") == "text_delta":
+                    chunk = getattr(event, "text", "") or ""
+                    if chunk:
+                        text_parts.append(chunk)
+                # Stop once we have a reasonable summary length so a
+                # runaway model can't waste tokens.
+                if sum(len(p) for p in text_parts) > 5000:
+                    break
+        except Exception:
+            return ""
+        summary = "".join(text_parts).strip()
+        return summary
+
     def _compact_history(self) -> None:
         """Summarize older messages, keeping recent ones intact.
 
@@ -919,7 +1003,9 @@ class AgentEngine:
         - the estimated context tokens exceed ``auto_compact_pct`` of
           ``context_window_tokens``  (any role, any backend)
 
-        Uses extractive summarization (no extra API call).
+        Tries LLM-quality summarisation first; falls back to extractive
+        if the LLM call fails. Opt out with user setting
+        ``agent.llm_compaction: false``.
         """
         msg_threshold_hit = (
             self.current_role in ("solo_agent", "dashboard_agent")
@@ -934,21 +1020,33 @@ class AgentEngine:
         old_msgs = self.messages[:-self._KEEP_RECENT]
         recent = self.messages[-self._KEEP_RECENT:]
 
-        summary_parts: list[str] = []
-        for msg in old_msgs:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if role == "user":
-                # Keep first line of user messages (the request)
-                first_line = content.split("\n")[0][:200]
-                summary_parts.append(f"User: {first_line}")
-            elif role == "assistant":
-                # Extract structured content from assistant messages
-                extracted = self._summarize_output_for_handoff(content, limit=300)
-                if extracted:
-                    summary_parts.append(f"Assistant: {extracted}")
+        # 1) Try LLM summarisation
+        summary = ""
+        try:
+            from delfin.user_settings import load_settings as _load_settings
+            _agent_cfg = (_load_settings() or {}).get("agent", {}) or {}
+            use_llm = bool(_agent_cfg.get("llm_compaction", True))
+        except Exception:
+            use_llm = True
+        if use_llm:
+            summary = self._llm_summarize_old_messages(old_msgs)
 
-        summary = "\n".join(summary_parts)
+        # 2) Fall back to extractive summarisation if LLM unavailable
+        if not summary:
+            summary_parts: list[str] = []
+            for msg in old_msgs:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    # Keep first line of user messages (the request)
+                    first_line = (content if isinstance(content, str) else "").split("\n")[0][:200]
+                    summary_parts.append(f"User: {first_line}")
+                elif role == "assistant":
+                    # Extract structured content from assistant messages
+                    extracted = self._summarize_output_for_handoff(content, limit=300)
+                    if extracted:
+                        summary_parts.append(f"Assistant: {extracted}")
+            summary = "\n".join(summary_parts)
         if not summary:
             return
 
