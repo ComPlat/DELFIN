@@ -241,6 +241,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         indent=False,
         layout=widgets.Layout(width='110px', height='28px'),
     )
+    viewer_enabled_toggle = widgets.Checkbox(
+        value=True,
+        description='3D-Viewer aktivieren',
+        indent=False,
+        layout=widgets.Layout(width='220px', height='28px'),
+    )
+    viewer_quality_dropdown = widgets.Dropdown(
+        options=[('Niedrig (für langsame PCs)', 'low'),
+                 ('Mittel', 'medium'),
+                 ('Hoch (Standard)', 'high')],
+        value='high',
+        description='Qualität:',
+        style={'description_width': '70px'},
+        layout=widgets.Layout(width='320px', height='28px'),
+    )
     slurm_mem_headroom_input = widgets.FloatSlider(
         value=0.90,
         min=0.50,
@@ -1057,6 +1072,23 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         remote_archive_toggle.value = enabled
         state['remote_archive_enabled'] = enabled
 
+    def _set_viewer_widgets(settings_payload):
+        ui_payload = ((settings_payload or {}).get('ui') or {})
+        viewer = (ui_payload.get('viewer') or {})
+        enabled = bool(viewer.get('enabled', True))
+        quality = str(viewer.get('quality', 'high'))
+        if quality not in {'low', 'medium', 'high'}:
+            quality = 'high'
+        viewer_enabled_toggle.value = enabled
+        viewer_quality_dropdown.value = quality
+        viewer_quality_dropdown.disabled = not enabled
+
+    def _on_viewer_enabled_change(change):
+        if change.get('name') == 'value':
+            viewer_quality_dropdown.disabled = not bool(change.get('new'))
+
+    viewer_enabled_toggle.observe(_on_viewer_enabled_change, names='value')
+
     def _set_scheduling_widgets(settings_payload):
         scheduling = ((settings_payload or {}).get('scheduling') or {})
         try:
@@ -1299,6 +1331,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             _set_remote_archive_widget({})
             _set_scheduling_widgets({})
             _set_tab_preferences({})
+            _set_viewer_widgets({})
             _set_status(
                 (
                     f'Could not load <code>{html.escape(str(settings_path))}</code>: '
@@ -1315,6 +1348,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_remote_archive_widget(settings_payload)
         _set_scheduling_widgets(settings_payload)
         _set_tab_preferences(settings_payload)
+        _set_viewer_widgets(settings_payload)
         runtime_payload = settings_payload.get('runtime', {}) or {}
         effective_backend, effective_orca_base, _submit_templates_dir = _render_runtime_summary(
             runtime_payload,
@@ -2722,6 +2756,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             settings_payload.setdefault('ui', {})
             settings_payload['ui']['tabs'] = _normalized_tab_prefs()
+            settings_payload['ui']['viewer'] = {
+                'enabled': bool(viewer_enabled_toggle.value),
+                'quality': str(viewer_quality_dropdown.value),
+            }
             settings_payload = save_settings(settings_payload, settings_path)
             _apply_workspace_paths(effective_calc_dir, effective_archive_dir)
             backend_switch_required, effective_backend, effective_orca_base = _apply_runtime_settings(
@@ -2743,6 +2781,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         _set_runtime_widgets(settings_payload)
         _set_remote_archive_widget(settings_payload)
         _set_tab_preferences(settings_payload)
+        _set_viewer_widgets(settings_payload)
         _render_runtime_summary(
             settings_payload.get('runtime', {}) or {},
             reload_required=backend_switch_required,
@@ -2796,6 +2835,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         host_hidden, host_visible, user_hidden, user_visible,
         path_hidden, path_visible, port_input,
         remote_archive_toggle,
+        viewer_enabled_toggle, viewer_quality_dropdown,
     ]
     for _w in _settings_widgets_to_watch:
         _w.observe(_mark_dirty, names='value')
@@ -2912,6 +2952,20 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             tabs_status_html,
             tabs_rows_box,
+        ],
+        layout=_section_layout,
+    )
+
+    viewer_section = widgets.VBox(
+        [
+            widgets.HTML(
+                '<div style="color:#455a64;">'
+                'Globale Einstellungen für den 3D-Molekülviewer (py3Dmol). '
+                'Auf langsamen PCs Qualität reduzieren oder Viewer ganz deaktivieren. '
+                'Wirkt auf alle Tabs mit 3D-Vorschau.'
+                '</div>'
+            ),
+            widgets.HBox([viewer_enabled_toggle, viewer_quality_dropdown], layout=_row_layout),
         ],
         layout=_section_layout,
     )
@@ -3668,6 +3722,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         children=[
             workspace_section,
             tabs_section,
+            viewer_section,
             runtime_section,
             tools_section,
             scheduling_section,
@@ -3678,12 +3733,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     )
     main_accordion.set_title(0, 'Workspace Paths')
     main_accordion.set_title(1, 'Dashboard Tabs')
-    main_accordion.set_title(2, 'Runtime Backend')
-    main_accordion.set_title(3, 'Tool Installation')
-    main_accordion.set_title(4, 'Scheduling (SLURM memory headroom)')
-    main_accordion.set_title(5, 'DELFIN Agent')
-    main_accordion.set_title(6, 'Developer')
-    main_accordion.set_title(7, 'SSH Transfer & Remote Archive')
+    main_accordion.set_title(2, '3D Viewer')
+    main_accordion.set_title(3, 'Runtime Backend')
+    main_accordion.set_title(4, 'Tool Installation')
+    main_accordion.set_title(5, 'Scheduling (SLURM memory headroom)')
+    main_accordion.set_title(6, 'DELFIN Agent')
+    main_accordion.set_title(7, 'Developer')
+    main_accordion.set_title(8, 'SSH Transfer & Remote Archive')
     main_accordion.selected_index = 0  # Workspace open by default
 
     tab = widgets.VBox(

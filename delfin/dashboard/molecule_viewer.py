@@ -1,7 +1,7 @@
 """3D molecule visualisation helpers using py3Dmol."""
 
 import py3Dmol
-from IPython.display import clear_output
+from IPython.display import HTML, clear_output, display
 
 DEFAULT_3DMOL_STYLE = {
     'stick': {
@@ -21,6 +21,44 @@ DEFAULT_3DMOL_STYLE_JS = (
 )
 DEFAULT_3DMOL_BACKGROUND = 'white'
 DEFAULT_3DMOL_ZOOM = 0.90
+
+VIEWER_QUALITY_PROFILES = {
+    'low':    {'width': 360, 'height': 280, 'zoom': 0.80, 'show_labels': False},
+    'medium': {'width': 480, 'height': 360, 'zoom': 0.85, 'show_labels': True},
+    'high':   {'width': 560, 'height': 420, 'zoom': 0.90, 'show_labels': True},
+}
+_VIEWER_DISABLED_PLACEHOLDER_HTML = (
+    "<div style=\"width:100%;max-width:560px;padding:18px 24px;"
+    "border:1px dashed #b0b6bf;background:#f6f7f9;color:#4a525c;"
+    "font-family:Arial,sans-serif;font-size:13px;border-radius:6px;\">"
+    "3D-Viewer ist in den Einstellungen deaktiviert."
+    "</div>"
+)
+
+
+def get_viewer_profile():
+    """Return the active viewer profile {enabled, quality, width, height, zoom, show_labels}.
+
+    Falls back to the high-quality preset if the user-settings module cannot be
+    loaded (e.g. tests that import this module without the full DELFIN env).
+    """
+    try:
+        from delfin.user_settings import load_viewer_settings
+        viewer = load_viewer_settings()
+    except Exception:
+        viewer = {'enabled': True, 'quality': 'high'}
+    quality = viewer.get('quality', 'high')
+    preset = VIEWER_QUALITY_PROFILES.get(quality, VIEWER_QUALITY_PROFILES['high'])
+    return {
+        'enabled': bool(viewer.get('enabled', True)),
+        'quality': quality,
+        **preset,
+    }
+
+
+def viewer_disabled_html(width=None, height=None):
+    """Return the placeholder HTML shown when the viewer is disabled."""
+    return _VIEWER_DISABLED_PLACEHOLDER_HTML
 RIGHT_MOUSE_TRANSLATE_PATCH_JS = (
     '(function(){\n'
     'if(window.__delfinRightDragTranslateSetup) return;\n'
@@ -1644,16 +1682,27 @@ def apply_molecule_view_style(view, zoom=DEFAULT_3DMOL_ZOOM):
     return view
 
 
-def render_xyz_in_output(output_widget, xyz_text, width=560, height=420):
-    """Render an XYZ string inside an ipywidgets Output widget."""
+def render_xyz_in_output(output_widget, xyz_text, width=None, height=None):
+    """Render an XYZ string inside an ipywidgets Output widget.
+
+    Honors the global viewer settings (``ui.viewer.enabled`` and
+    ``ui.viewer.quality``). When ``width``/``height`` are passed explicitly
+    they override the quality preset.
+    """
+    profile = get_viewer_profile()
     with output_widget:
         clear_output()
+        if not profile['enabled']:
+            display(HTML(viewer_disabled_html()))
+            return
         if not xyz_text or not xyz_text.strip():
             print('No coordinates to display.')
             return
-        view = py3Dmol.view(width=width, height=height)
+        eff_width = width if width is not None else profile['width']
+        eff_height = height if height is not None else profile['height']
+        view = py3Dmol.view(width=eff_width, height=eff_height)
         view.addModel(xyz_text, 'xyz')
-        apply_molecule_view_style(view)
+        apply_molecule_view_style(view, zoom=profile['zoom'])
         view.show()
 
 

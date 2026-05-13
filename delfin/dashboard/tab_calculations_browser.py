@@ -49,9 +49,12 @@ from delfin.ssh_transfer_jobs import (
 )
 from delfin.user_settings import (
     get_settings_path,
+    is_calc_unread,
     load_remote_archive_enabled,
     load_transfer_settings,
+    mark_calc_as_read,
     normalize_ssh_transfer_settings,
+    update_calc_running_transitions,
 )
 from rdkit import Chem, RDLogger
 from rdkit.Chem import rdDepictor, AllChem
@@ -7664,6 +7667,16 @@ def create_tab(ctx):
                     and (state.get('current_path') or '') == ''
                 )
             local_status_dirs = calc_collect_local_job_status_dirs()
+            unread_set = set()
+            if is_top_level_calc_view:
+                try:
+                    current_running = set()
+                    for resolved_dir, status in local_status_dirs.items():
+                        if _calc_job_status_is_running(status):
+                            current_running.add(str(resolved_dir))
+                    unread_set = update_calc_running_transitions(current_running)
+                except Exception:
+                    unread_set = set()
             for entry in entries:
                 if entry.is_dir():
                     if is_top_level_calc_view:
@@ -7686,6 +7699,8 @@ def create_tab(ctx):
                             folder_icon = '🔵'
                         elif is_pending:
                             folder_icon = '🟠'
+                        elif str(entry_resolved) in unread_set:
+                            folder_icon = f'🆕 {folder_icon}'
                     else:
                         folder_icon = '📂'
                     items.append(f'{folder_icon} {entry.name}')
@@ -11319,6 +11334,10 @@ def create_tab(ctx):
         name = _calc_label_to_name(chosen_label)
         if full_path.is_dir():
             _calc_hide_rename_prompt()
+            try:
+                mark_calc_as_read(str(full_path.resolve()))
+            except Exception:
+                pass
             state['current_path'] = (
                 f'{state["current_path"]}/{name}' if state['current_path'] else name
             )

@@ -77,6 +77,10 @@ DEFAULT_SETTINGS = {
             "order": [],
             "hidden": [],
         },
+        "viewer": {
+            "enabled": True,
+            "quality": "high",
+        },
     },
     "docs": {
         "enabled": False,
@@ -470,6 +474,24 @@ def _normalized_settings_dict(payload):
             "Hidden tabs",
         ),
     }
+    viewer = ui.get("viewer", {})
+    if viewer is None:
+        viewer = {}
+    if not isinstance(viewer, dict):
+        raise ValueError("Settings key 'ui.viewer' must be a JSON object.")
+    default_viewer = default_ui.get("viewer", {}) or {}
+    normalized_ui["viewer"] = {
+        "enabled": normalize_bool_setting(
+            viewer.get("enabled", default_viewer.get("enabled", True)),
+            default_viewer.get("enabled", True),
+        ),
+        "quality": normalize_choice_setting(
+            viewer.get("quality", default_viewer.get("quality", "high")),
+            "3D viewer quality",
+            {"low", "medium", "high"},
+            default_viewer.get("quality", "high"),
+        ),
+    }
     normalized["ui"] = normalized_ui
     return normalized
 
@@ -595,3 +617,135 @@ def save_remote_archive_enabled(enabled, settings_path=None):
     settings["features"] = features
     save_settings(settings, path)
     return bool(features["remote_archive_enabled"])
+
+
+def load_viewer_settings(settings_path=None):
+    """Return the ``ui.viewer`` dict ({enabled: bool, quality: str})."""
+    default_viewer = DEFAULT_SETTINGS["ui"]["viewer"]
+    try:
+        settings = load_settings(settings_path)
+    except Exception:
+        return dict(default_viewer)
+    viewer = (settings.get("ui", {}) or {}).get("viewer", {}) or {}
+    return {
+        "enabled": bool(viewer.get("enabled", default_viewer["enabled"])),
+        "quality": str(viewer.get("quality", default_viewer["quality"])),
+    }
+
+
+def save_viewer_settings(enabled, quality, settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    ui = settings.get("ui", {}) or {}
+    viewer = ui.get("viewer", {}) or {}
+    viewer["enabled"] = normalize_bool_setting(enabled, True)
+    viewer["quality"] = normalize_choice_setting(
+        quality, "3D viewer quality", {"low", "medium", "high"}, "high"
+    )
+    ui["viewer"] = viewer
+    settings["ui"] = ui
+    save_settings(settings, path)
+    return {"enabled": viewer["enabled"], "quality": viewer["quality"]}
+
+
+READ_MARKERS_DIR_NAME = ".delfin_meta"
+READ_MARKERS_FILE_NAME = "read_markers.json"
+
+
+def _read_markers_path(base_path=None):
+    if base_path is not None:
+        return Path(base_path).expanduser()
+    return Path.home() / READ_MARKERS_DIR_NAME / READ_MARKERS_FILE_NAME
+
+
+def load_read_markers(markers_path=None):
+    """Return the per-folder read-marker dict, preserving sentinel keys.
+
+    Ordinary entries are ``{folder_path: completion_ts_iso}``. Sentinel keys
+    (e.g. ``__seeded_dirs__``) start and end with ``__`` and may carry list
+    values — they are kept intact and ignored by the unread comparison.
+    """
+    path = _read_markers_path(markers_path)
+    if not path.exists():
+        return {}
+    try:
+        payload = _read_json(path)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    out = {}
+    for k, v in payload.items():
+        if not k:
+            continue
+        key = str(k)
+        if key.startswith("__") and key.endswith("__"):
+            out[key] = v
+        else:
+            out[key] = str(v)
+    return out
+
+
+def save_read_markers(markers, markers_path=None):
+    path = _read_markers_path(markers_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(path, dict(markers or {}))
+    return dict(markers or {})
+
+
+_LAST_RUNNING_KEY = "__last_running__"
+_PENDING_UNREAD_KEY = "__pending_unread__"
+
+
+def _load_str_set(markers, key):
+    raw = markers.get(key)
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if item}
+
+
+def update_calc_running_transitions(current_running, markers_path=None):
+    """Update transition state and return the new set of unread folder paths.
+
+    ``current_running`` is the set of folder-path strings currently observed as
+    RUNNING. Any folder that was in the previously-observed running set but is
+    no longer running becomes "unread" (regardless of whether it shows a green
+    checkmark). The unread set is preserved until ``mark_calc_as_read`` is
+    called for each folder.
+    """
+    current = {str(p) for p in (current_running or []) if p}
+    markers = load_read_markers(markers_path)
+    last_running = _load_str_set(markers, _LAST_RUNNING_KEY)
+    pending = _load_str_set(markers, _PENDING_UNREAD_KEY)
+
+    new_transitions = last_running - current
+    pending |= new_transitions
+
+    markers[_LAST_RUNNING_KEY] = sorted(current)
+    markers[_PENDING_UNREAD_KEY] = sorted(pending)
+    save_read_markers(markers, markers_path)
+    return pending
+
+
+def is_calc_unread(folder_path, markers_path=None):
+    """Return True iff ``folder_path`` is in the pending-unread set."""
+    folder_key = str(folder_path or "").strip()
+    if not folder_key:
+        return False
+    markers = load_read_markers(markers_path)
+    return folder_key in _load_str_set(markers, _PENDING_UNREAD_KEY)
+
+
+def mark_calc_as_read(folder_path, markers_path=None):
+    """Remove ``folder_path`` from the pending-unread set."""
+    folder_key = str(folder_path or "").strip()
+    if not folder_key:
+        return
+    markers = load_read_markers(markers_path)
+    pending = _load_str_set(markers, _PENDING_UNREAD_KEY)
+    if folder_key in pending:
+        pending.discard(folder_key)
+        markers[_PENDING_UNREAD_KEY] = sorted(pending)
+        save_read_markers(markers, markers_path)
+
+
