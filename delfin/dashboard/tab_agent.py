@@ -589,7 +589,23 @@ _AGENT_CSS = """\
     text-overflow: ellipsis;
     white-space: nowrap;
     box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    border-left: 3px solid #60a5fa;
 }
+.delfin-agent-working--gated {
+    background: linear-gradient(90deg, #3b2a14, #4a3a1e);
+    border-left-color: #f59e0b;
+}
+.delfin-agent-working--gated .delfin-spinner-dot { background: #f59e0b; }
+.delfin-agent-working--queued {
+    background: linear-gradient(90deg, #1f2937, #374151);
+    border-left-color: #94a3b8;
+}
+.delfin-agent-working--queued .delfin-spinner-dot { background: #94a3b8; }
+.delfin-agent-working--stale {
+    background: linear-gradient(90deg, #3b1414, #4a1e1e);
+    border-left-color: #ef4444;
+}
+.delfin-agent-working--stale .delfin-spinner-dot { background: #ef4444; }
 .delfin-spinner {
     display: inline-flex;
     gap: 3px;
@@ -960,6 +976,9 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/usage", "Detailed token usage & session stats", False),
     ("Session", "/status", "Show engine status", False),
     ("Session", "/compact", "Summarize context to reduce tokens", False),
+    ("Session", "/context", "Show context-window usage + compaction status", False),
+    ("Session", "/agents", "List available subagent presets", False),
+    ("Session", "/skills", "List discovered skills", False),
     ("Session", "/undo", "Undo last agent turn (drop from context)", False),
     ("Session", "/retry", "Regenerate last response", False),
     ("Session", "/stop", "Stop current generation", False),
@@ -2209,6 +2228,10 @@ def create_tab(ctx):
         "_perm_profile": "ask_all",  # permission profile: plan/ask_all/repo_free/all_free
         "_kit_confirm_broker": None,  # KitConfirmBroker (lazy-built when KIT is active)
         "_active_gate": None,        # {type, role, title, detail}
+        "_last_stream_activity": 0.0,  # monotonic ts of last stream event (token/thinking/tool)
+        "_stale_threshold_s": 600.0,   # >threshold without activity → spinner mode='stale'
+        "_stale_timer": None,           # active threading.Timer for stale watch
+        "_stale_seen": False,           # already showed stale state this stream
         "_cycle_history": [],        # recent gate / handoff / retry events
         "_inspector_detail_key": "", # selected cycle inspector detail entry
         "_mode_manual_override": False,
@@ -4343,8 +4366,18 @@ def create_tab(ctx):
                 "title": title,
                 "detail": detail,
             }
+            # Spinner reflects the wait — orange paused-state so the user
+            # always knows the agent is blocked on them, not stuck silently.
+            if not state.get("streaming"):
+                label = title or _gate_label(gate_type)
+                try:
+                    _set_working(True, f"Waiting: {label}", mode="gated")
+                except Exception:
+                    pass
         else:
             state["_active_gate"] = None
+            # Don't clear the spinner here — the caller decides; otherwise
+            # we'd clobber a streaming spinner when a gate gets dismissed.
 
     def _gate_label(gate_type: str) -> str:
         labels = {
@@ -5040,30 +5073,46 @@ def create_tab(ctx):
         _update_inspector_actions()
         _update_inspector_detail()
 
-    def _set_working(active, label=""):
-        """Show or hide the CLI-like activity spinner."""
+    def _set_working(active, label="", mode="streaming"):
+        """Show or hide the CLI-like activity spinner.
+
+        ``mode`` selects the visual variant:
+        - ``streaming`` (default, blue) \u2014 agent is actively streaming
+        - ``gated`` (orange) \u2014 paused on user approval / question
+        - ``queued`` (grey)  \u2014 idle but messages queued behind a Stop
+        - ``stale`` (red)    \u2014 stream silent past the heartbeat threshold
+        """
         if active:
             text = label or "Working..."
             _esc = _html.escape
 
-            # Classify activity for icon + label
-            _tl = text.lower()
-            if _tl.startswith("thinking"):
-                icon, cat = "\U0001f4ad", "think"
-            elif "reading" in _tl:
-                icon, cat = "\U0001f4c4", "read"
-            elif "editing" in _tl:
-                icon, cat = "\u270f\ufe0f", "edit"
-            elif "writing" in _tl:
-                icon, cat = "\u270f\ufe0f", "write"
-            elif "searching" in _tl or "finding" in _tl:
-                icon, cat = "\U0001f50d", "grep"
-            elif _tl.startswith("$") or _tl.startswith("\u25b8"):
-                icon, cat = "\u25b8", "bash"
-            elif "sub-agent" in _tl:
-                icon, cat = "\U0001f916", "agent"
+            mode_overrides = {
+                "gated":  ("\u23f8\ufe0f", "gated",  "delfin-agent-working--gated"),
+                "queued": ("\u23f3",       "queued", "delfin-agent-working--queued"),
+                "stale":  ("\u26a0\ufe0f", "stale",  "delfin-agent-working--stale"),
+            }
+            if mode in mode_overrides:
+                icon, cat, mode_cls = mode_overrides[mode]
             else:
-                icon, cat = "\u26a1", "work"
+                mode_cls = ""
+                # Classify streaming activity for icon + label
+                _tl = text.lower()
+                if _tl.startswith("thinking"):
+                    icon, cat = "\U0001f4ad", "think"
+                elif "reading" in _tl:
+                    icon, cat = "\U0001f4c4", "read"
+                elif "editing" in _tl:
+                    icon, cat = "\u270f\ufe0f", "edit"
+                elif "writing" in _tl:
+                    icon, cat = "\u270f\ufe0f", "write"
+                elif "searching" in _tl or "finding" in _tl:
+                    icon, cat = "\U0001f50d", "grep"
+                elif _tl.startswith("$") or _tl.startswith("\u25b8"):
+                    icon, cat = "\u25b8", "bash"
+                elif "sub-agent" in _tl:
+                    icon, cat = "\U0001f916", "agent"
+                else:
+                    icon, cat = "\u26a1", "work"
 
             _spinner = (
                 '<span class="delfin-spinner">'
@@ -5073,18 +5122,24 @@ def create_tab(ctx):
                 '</span>'
             )
 
+            classes = "delfin-agent-working" + (f" {mode_cls}" if mode_cls else "")
             working_html.value = (
-                f'<div class="delfin-agent-working">'
+                f'<div class="{classes}">'
                 f'{_spinner}'
                 f'<span class="delfin-activity-icon">{icon}</span>'
                 f'<span class="delfin-activity-label">{_esc(cat)}</span>'
                 f'<span class="delfin-activity-text">{_esc(text)}</span>'
                 f'</div>'
             )
+            # Header colour adapts to mode so the global status chip mirrors
+            # the activity-tab spinner exactly.
+            header_color = {
+                "gated": "#f59e0b", "queued": "#94a3b8", "stale": "#ef4444",
+            }.get(mode, "#60a5fa")
             # Global header spinner — visible from all tabs
             short = text[:40] + ("\u2026" if len(text) > 40 else "")
             ctx.agent_status_html.value = (
-                f'<span style="font-family:monospace; color:#60a5fa; '
+                f'<span style="font-family:monospace; color:{header_color}; '
                 f'padding:2px 6px; background:#1e293b; '
                 f'border-radius:4px; font-size:11px;">'
                 f'{icon} {_esc(short)}</span>'
@@ -5099,6 +5154,50 @@ def create_tab(ctx):
                 '" style="display:none">'
             )
             ctx.agent_status_html.value = ""
+
+    def _arm_stale_watcher():
+        """Schedule a one-shot watcher that flips the spinner to mode='stale'
+        when the streaming worker hasn't produced thinking/tokens/tool-calls
+        for ``state['_stale_threshold_s']`` seconds.
+
+        Re-armed at every send and reset on every activity event. Cooperative
+        cancellation via ``state['_stale_timer']``.
+        """
+        import threading as _threading
+
+        # Cancel any previously armed timer
+        prev = state.get("_stale_timer")
+        if prev is not None:
+            try:
+                prev.cancel()
+            except Exception:
+                pass
+
+        threshold = float(state.get("_stale_threshold_s") or 600.0)
+
+        def _check_stale():
+            try:
+                if not state.get("streaming"):
+                    return
+                last = float(state.get("_last_stream_activity") or 0.0)
+                if last <= 0.0:
+                    return
+                elapsed = time.monotonic() - last
+                if elapsed >= threshold and not state.get("_stale_seen"):
+                    state["_stale_seen"] = True
+                    mins = int(elapsed // 60)
+                    _set_working(
+                        True,
+                        f"Stream stalled ({mins} min, no output)",
+                        mode="stale",
+                    )
+            except Exception:
+                pass
+
+        timer = _threading.Timer(threshold + 1.0, _check_stale)
+        timer.daemon = True
+        timer.start()
+        state["_stale_timer"] = timer
 
     def _update_queue_display():
         """Update the queue indicator."""
@@ -5184,6 +5283,9 @@ def create_tab(ctx):
                 "  /clear           — Clear chat history\n"
                 "  /cost            — Show token usage & cost\n"
                 "  /compact         — Summarize context (reduce tokens)\n"
+                "  /context         — Show context-window usage + compaction state\n"
+                "  /agents          — List subagent presets (explore/plan/...)\n"
+                "  /skills          — List discovered skills\n"
                 "  /undo            — Undo last agent turn (remove from context)\n"
                 "  /retry           — Retry last message (undo + re-send)\n"
                 "  /stop            — Stop current generation\n"
@@ -5432,6 +5534,80 @@ def create_tab(ctx):
                 _append_system_message(
                     f"Only {n_before} messages — too few to compact."
                 )
+            return True
+
+        if cmd == "/agents":
+            try:
+                from delfin.agent.subagents import list_subagents
+                presets = list_subagents()
+            except Exception as exc:
+                _append_system_message(f"Could not list subagents: {exc}")
+                return True
+            if not presets:
+                _append_system_message("No subagent presets registered.")
+                return True
+            lines = ["Subagent presets (use via the `subagent` tool):"]
+            for p in presets:
+                name = p.get("subagent_type") or p.get("name") or "?"
+                desc = p.get("description") or ""
+                lines.append(f"  {name:<18} {desc}")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/skills":
+            try:
+                from delfin.agent.skills import discover_skills
+                skills = discover_skills(ctx.repo_dir or None)
+            except Exception as exc:
+                _append_system_message(f"Could not list skills: {exc}")
+                return True
+            if not skills:
+                _append_system_message(
+                    "No skills installed. Drop a SKILL.md under "
+                    "~/.delfin/skills/<name>/ or use the built-ins in "
+                    "delfin/agent/pack/skills/."
+                )
+                return True
+            lines = ["Discovered skills:"]
+            for sk in skills:
+                slash = getattr(sk, "slash_command", "") or f"/skill {sk.name}"
+                desc = (sk.description or "").strip().splitlines()[0][:80] if sk.description else ""
+                lines.append(f"  {slash:<28} {desc}")
+            _append_system_message("\n".join(lines))
+            return True
+
+        if cmd == "/context":
+            engine = state["engine"]
+            if not engine:
+                _append_system_message("No active engine. Send a message first.")
+                return True
+            n_msgs = len(getattr(engine, "messages", []) or [])
+            try:
+                tokens = int(engine._estimate_context_tokens())
+            except Exception:
+                tokens = 0
+            window = int(getattr(engine, "context_window_tokens", 100_000) or 100_000)
+            pct = (tokens / window * 100.0) if window else 0.0
+            compact_pct = float(getattr(engine, "auto_compact_pct", 0.95) or 0.95)
+            last_compact = getattr(engine, "last_compaction_info", None)
+            if last_compact:
+                lc = (
+                    f"  Last compaction: {last_compact.get('messages_compacted', '?')} msgs, "
+                    f"saved ~{last_compact.get('tokens_saved', 0)} tokens"
+                )
+            else:
+                lc = "  Last compaction: (none this session)"
+            _append_system_message(
+                "Context status:\n"
+                f"  Messages:    {n_msgs}\n"
+                f"  Est. tokens: {tokens:,} ({pct:.1f}% of {window:,} window)\n"
+                f"  Auto-compact trigger: ≥12 msgs OR ≥{compact_pct*100:.0f}% of window\n"
+                f"{lc}\n"
+                f"  Mode:        {engine.mode}\n"
+                f"  Model:       {model_dropdown.value}\n"
+                f"  Provider:    {provider_dropdown.value}\n"
+                f"  Profile:     {state.get('_perm_profile', 'ask_all')}"
+            )
             return True
 
         if cmd == "/undo":
@@ -8567,7 +8743,7 @@ def create_tab(ctx):
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
-            "/recalc", "/cancel",
+            "/recalc", "/cancel", "/context", "/agents", "/skills",
         }
         # Skill expansion: a /<name> that isn't a built-in slash command
         # but matches a discovered skill gets replaced by the skill's
@@ -8767,6 +8943,10 @@ def create_tab(ctx):
             state["session_start_time"] = time.monotonic()
         _ensure_task_session_id(engine, create=True)
         _update_button_states()
+        # Mark turn start + arm the stale-stream watcher.
+        state["_last_stream_activity"] = time.monotonic()
+        state["_stale_seen"] = False
+        _arm_stale_watcher()
         _set_working(True, "Thinking...")
 
         role_label = _format_role_label(engine.current_role)
@@ -8781,6 +8961,10 @@ def create_tab(ctx):
 
                 def _on_thinking(text):
                     nonlocal last_update
+                    state["_last_stream_activity"] = time.monotonic()
+                    if state.get("_stale_seen"):
+                        # Recovered from stale — clear the warning state
+                        state["_stale_seen"] = False
                     thinking_chunks.append(text)
                     now = time.monotonic()
                     if now - last_update > 0.15:
@@ -8794,6 +8978,9 @@ def create_tab(ctx):
 
                 def _on_token(text):
                     nonlocal last_update
+                    state["_last_stream_activity"] = time.monotonic()
+                    if state.get("_stale_seen"):
+                        state["_stale_seen"] = False
                     # When first text arrives, flush thinking as collapsed block
                     if thinking_chunks and not chunks:
                         full_thinking = "".join(thinking_chunks)
@@ -8818,6 +9005,9 @@ def create_tab(ctx):
                         last_update = now
 
                 def _on_tool_use(tool_name, tool_input):
+                    state["_last_stream_activity"] = time.monotonic()
+                    if state.get("_stale_seen"):
+                        state["_stale_seen"] = False
                     # Flush thinking if no text came before tool use
                     if thinking_chunks:
                         full_thinking = "".join(thinking_chunks)
@@ -10093,10 +10283,15 @@ def create_tab(ctx):
             msgs[-1]["_streaming"] = False
             _refresh_chat_html()
         _set_active_gate()
-        _set_working(False)
+        # If the user stopped while messages are queued, show a queued
+        # spinner so they know the agent is idle-but-pending, not dead.
+        queued = len(state.get("message_queue") or [])
+        if queued:
+            _set_working(True, f"Idle - {queued} queued", mode="queued")
+        else:
+            _set_working(False)
         _update_button_states()
         _record_cycle_event("pause", "Generation stopped by user")
-        queued = len(state.get("message_queue") or [])
         if queued:
             _append_system_message(
                 f"Stop. {queued} queued message(s) preserved — Send to continue."
