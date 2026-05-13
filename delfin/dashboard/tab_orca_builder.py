@@ -664,7 +664,7 @@ def create_tab(ctx):
             except ValueError:
                 continue
             calls.append(
-                f'{var}.addLabel("{i + 1}",'
+                f'{var}.addLabel("{i}",'
                 f'{{position:{{x:{x:.6f},y:{y:.6f},z:{z:.6f}}},'
                 f'fontSize:15,fontColor:"black",showBackground:false,inFront:true}});'
             )
