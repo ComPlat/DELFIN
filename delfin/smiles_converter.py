@@ -2453,14 +2453,61 @@ def _resolve_quality_profile(name: Optional[str]) -> Dict[str, int]:
     return dict(_DELFIN_PROFILES[key])
 
 
+# Default seed used by every embed call that does not receive a SMILES-derived
+# seed.  RDKit's own default (``randomSeed = -1``) is wall-clock based and makes
+# the embed non-deterministic; this fixed value restores reproducibility.
+_DEFAULT_EMBED_SEED: int = 42
+
+
+def _deterministic_embed_seed(smiles: Optional[str] = None) -> int:
+    """Return a fixed, reproducible RDKit ``randomSeed`` for an embed call.
+
+    DELFIN must be deterministic: the same SMILES + same code + same env has to
+    produce bit-identical XYZ output.  RDKit's default ``randomSeed = -1`` seeds
+    the embedder from the wall clock, so any embed call that forgets an explicit
+    seed (notably the exception-fallback paths for KekulizeException /
+    AtomValenceException) becomes non-reproducible.
+
+    When *smiles* is given, the seed is derived from a BLAKE2b hash of the
+    string so different molecules still get diverse-but-fixed seeds.  The
+    derivation is purely a function of the input string, so it is universal
+    (no per-SMILES special-casing) and stable across runs, machines and Python
+    process restarts (unlike the salted built-in ``hash()``).  When *smiles* is
+    ``None`` or empty the module-level :data:`_DEFAULT_EMBED_SEED` is returned.
+
+    Args:
+        smiles: Canonical (or raw) SMILES string, or ``None``.
+
+    Returns:
+        A non-negative ``int`` suitable for ``EmbedParameters.randomSeed`` /
+        the ``randomSeed=`` keyword of ``AllChem.EmbedMolecule``.
+    """
+    if not smiles:
+        return _DEFAULT_EMBED_SEED
+    digest = hashlib.blake2b(smiles.encode("utf-8"), digest_size=4).digest()
+    # Keep it inside the positive 31-bit range RDKit expects for a seed.
+    return int.from_bytes(digest, "big") & 0x7FFFFFFF
+
+
 def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
     """Run AllChem.EmbedMolecule with a timeout guard.
 
     Returns the embed result (0 on success, -1 on failure/timeout).
     The *mol* is modified in-place on success (same as EmbedMolecule).
+
+    When *params* is ``None`` a fixed-seed :class:`EmbedParameters` is
+    substituted so the embed stays deterministic; a bare
+    ``AllChem.EmbedMolecule(mol)`` would otherwise use RDKit's wall-clock
+    default seed (``randomSeed = -1``).
     """
     if timeout is None:
         timeout = _EMBED_TIMEOUT
+
+    # Determinism guard: never let a caller fall through to RDKit's
+    # wall-clock-seeded default embed.
+    if params is None:
+        params = AllChem.EmbedParameters()
+        params.randomSeed = _DEFAULT_EMBED_SEED
 
     # Fast path: skip timeout machinery for very small molecules
     # BUT always use timeout for highly connected molecules (many ring bonds)
@@ -2596,7 +2643,11 @@ def _make_random_embed_params(seed: int = 42):
     return params
 
 
-def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
+def _try_multiple_strategies(
+    smiles: str,
+    output_path: Optional[str] = None,
+    deterministic: bool = True,
+) -> Tuple[Optional[str], Optional[str]]:
     """Try multiple parsing strategies for metal complexes.
 
     IMPORTANT: Does NOT convert bonds to dative - both neutral and charged
@@ -2608,6 +2659,16 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
     3. RDKit with normalized (charged) SMILES
     4. RDKit with denormalized (neutral) SMILES
     5. RDKit unsanitized fallback (no H addition)
+    6. Open Babel 3D generation (only when ``deterministic`` is ``False``)
+
+    Args:
+        smiles: SMILES string to convert.
+        output_path: Optional path to write the resulting XYZ file.
+        deterministic: When ``True`` (default) the Open Babel strategy is
+            skipped because Open Babel's ``make3D`` builder is seeded from
+            the wall clock with no Python-side seed hook and would make the
+            output non-reproducible.  A deterministic error is preferred over
+            a non-reproducible geometry.
 
     Returns:
         Tuple of (xyz_content, error_message)
@@ -2719,8 +2780,14 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
             errors.append(f"no-valence({smi[:30]}...): {err}")
 
     # Strategy 5: Open Babel / Avogadro-like 3D generation.
-    if OPENBABEL_AVAILABLE:
-        xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(smiles, num_confs=1)
+    # Open Babel's make3D builder is wall-clock seeded with no Python seed
+    # hook, so this strategy is non-reproducible.  Skip it in deterministic
+    # mode — a deterministic error beats a geometry that changes every run
+    # and poisons every downstream metric.
+    if OPENBABEL_AVAILABLE and not deterministic:
+        xyz_blocks, ob_err = _openbabel_generate_conformer_xyz(
+            smiles, num_confs=1, deterministic=False
+        )
         if xyz_blocks:
             xyz_content = xyz_blocks[0]
             if output_path:
@@ -2729,6 +2796,8 @@ def _try_multiple_strategies(smiles: str, output_path: Optional[str] = None) -> 
             return xyz_content, None
         if ob_err:
             errors.append(f"openbabel({smiles[:30]}...): {ob_err}")
+    elif OPENBABEL_AVAILABLE:
+        errors.append("openbabel: skipped (deterministic mode)")
 
     return None, f"All strategies failed: {'; '.join(errors)}"
 
@@ -24984,6 +25053,7 @@ def smiles_to_xyz_isomers(
                 smiles,
                 apply_uff=apply_uff,
                 hapto_approx=True,
+                deterministic=deterministic,
             )
             if err:
                 return [], err
@@ -25326,7 +25396,12 @@ def smiles_to_xyz_isomers(
     # geometries.  Seed pool from _PIPELINE_SEEDS so results are
     # reproducible; de-duplicate by heavy-atom RMSD.
     if not has_metal:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            hapto_approx=hapto_mode,
+            deterministic=deterministic,
+        )
         if err:
             return [], err
         _max_pool = max(1, min(int(max_isomers), 8))
@@ -25351,7 +25426,12 @@ def smiles_to_xyz_isomers(
         mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
     if mol is None:
         # Fall back to single-conformer conversion
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+        xyz, err = smiles_to_xyz(
+            smiles,
+            apply_uff=apply_uff,
+            hapto_approx=hapto_mode,
+            deterministic=deterministic,
+        )
         if err:
             return [], err
         # Iter-13: apply Baustein 3 to fallback single-conformer path (env-gated).
@@ -27276,6 +27356,13 @@ def smiles_to_xyz(
         smiles: SMILES string to convert
         output_path: Optional path to write XYZ file
         apply_uff: If True, apply UFF refinement (RDKit/Open Babel) where available.
+        deterministic: If True (default), the metal conformer pool skips the
+            Open Babel ``make3D``/rotor injection.  Open Babel's coordinate
+            builder is seeded from the wall clock with no Python-side seed
+            hook, so including it makes the output non-reproducible run to
+            run.  Set to ``False`` only when extra geometric diversity is
+            wanted and reproducibility is not required (mirrors the
+            ``deterministic`` flag of :func:`smiles_to_xyz_isomers`).
 
     Returns:
         Tuple of (xyz_content, error_message)
@@ -27310,7 +27397,9 @@ def smiles_to_xyz(
             # For single-hapto systems, try legacy path as backup.
             # For multi-hapto (>=2 groups), skip the slow legacy path.
             if len(hapto_groups) <= 1:
-                legacy_xyz, legacy_err = _try_multiple_strategies(smiles)
+                legacy_xyz, legacy_err = _try_multiple_strategies(
+                    smiles, deterministic=deterministic
+                )
                 if legacy_err is None and legacy_xyz:
                     legacy_hapto_xyz = legacy_xyz
                     logger.info(
@@ -27345,7 +27434,9 @@ def smiles_to_xyz(
         # use the multi-strategy approach that tries multiple parsing methods
         if _is_metal_nitrogen_complex(smiles) and not hapto_groups:
             logger.info("Detected metal-nitrogen complex, using multi-strategy approach")
-            return _try_multiple_strategies(smiles, output_path)
+            return _try_multiple_strategies(
+                smiles, output_path, deterministic=deterministic
+            )
 
         # Parse SMILES - try stk first for metal complexes, then RDKit.
         # IMPORTANT: Prefer the original SMILES before charge-normalized
@@ -27444,7 +27535,9 @@ def smiles_to_xyz(
                         logger.error(error)
                         return None, error
                     logger.info("Trying multi-strategy fallback for unparseable metal SMILES")
-                    return _try_multiple_strategies(smiles, output_path)
+                    return _try_multiple_strategies(
+                        smiles, output_path, deterministic=deterministic
+                    )
                 error = f"Failed to parse SMILES string: {rdkit_note}"
                 logger.error(error)
                 return None, error
@@ -27819,7 +27912,7 @@ def smiles_to_xyz(
                     ob_err: Optional[str] = None
                     for _ri in range(_n_ob_r):
                         _bl, _er = _openbabel_generate_conformer_xyz(
-                            smiles, num_confs=_per_ob_r
+                            smiles, num_confs=_per_ob_r, deterministic=False
                         )
                         if _bl:
                             for _b in _bl:
@@ -27936,9 +28029,14 @@ def smiles_to_xyz(
                 result = _embed_with_timeout(mol, params)
 
                 if result != 0:
-                    # Try with random coordinates if ETKDG fails
+                    # Try with random coordinates if ETKDG fails.
+                    # Use an explicit fixed seed: a bare AllChem.ETKDG() keeps
+                    # RDKit's wall-clock default (randomSeed = -1) and would
+                    # make this fallback path non-deterministic.
                     logger.warning("ETKDG embedding failed, trying random coordinates")
-                    result = _embed_with_timeout(mol, AllChem.ETKDG())
+                    _etkdg_rand = AllChem.ETKDG()
+                    _etkdg_rand.randomSeed = _deterministic_embed_seed(smiles)
+                    result = _embed_with_timeout(mol, _etkdg_rand)
 
                 if result != 0:
                     # Last resort: permissive embed without ETKDG knowledge
@@ -27957,7 +28055,9 @@ def smiles_to_xyz(
             # Try multi-strategy approach before giving up
             if has_metal:
                 logger.info("Trying multi-strategy fallback after embedding failure")
-                multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
+                multi_xyz, multi_err = _try_multiple_strategies(
+                    smiles, output_path, deterministic=deterministic
+                )
                 if multi_xyz:
                     return multi_xyz, None
                 # Last resort: manual coordinate construction for metal complexes
@@ -28053,7 +28153,9 @@ def smiles_to_xyz(
         # Last resort: multi-strategy fallback for metal complexes
         if has_metal:
             logger.info("Trying multi-strategy fallback after exception: %s", e)
-            multi_xyz, multi_err = _try_multiple_strategies(smiles, output_path)
+            multi_xyz, multi_err = _try_multiple_strategies(
+                smiles, output_path, deterministic=deterministic
+            )
             if multi_xyz:
                 return _topology_hard_gate_check(multi_xyz, smiles)
         error = f"Error converting SMILES to XYZ: {e}"
@@ -28237,10 +28339,19 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                 for atom in mol.GetAtoms():
                     atom.SetNoImplicit(True)
                     atom.SetNumExplicitHs(0)
+                # Determinism: keep an explicit fixed seed on every branch.
+                # The TypeError fallback must NOT drop randomSeed, otherwise
+                # this explicit-valence-error path embeds non-reproducibly.
+                _uns_seed = _deterministic_embed_seed(smiles)
                 try:
-                    result = AllChem.EmbedMolecule(mol, useRandomCoords=True, randomSeed=42)
+                    result = AllChem.EmbedMolecule(
+                        mol, useRandomCoords=True, randomSeed=_uns_seed
+                    )
                 except TypeError:
-                    result = AllChem.EmbedMolecule(mol, useRandomCoords=True)
+                    _uns_params = AllChem.EmbedParameters()
+                    _uns_params.randomSeed = _uns_seed
+                    _uns_params.useRandomCoords = True
+                    result = AllChem.EmbedMolecule(mol, _uns_params)
                 if result == 0:
                     xyz_content = _mol_to_xyz(mol)
                     return xyz_content, None
