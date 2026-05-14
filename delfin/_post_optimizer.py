@@ -259,6 +259,66 @@ def _compute_h_neighbors(mol) -> List[List[int]]:
     return out
 
 
+def _has_bridging_bh_hydride(mol) -> bool:
+    """Detect a μ²-B-H-M bridging hydride (Patch P-BH-NOGO precheck).
+
+    Returns True iff the molecule contains at least one hydrogen atom that is
+    simultaneously bonded to a boron atom (atomic number 5) AND to a metal
+    centre (symbol in :data:`_METAL_SET`). This is the topological signature
+    of bridging-hydride borohydrides (e.g. Zr[(μ-H)₂BR₂]₄, scorpionate
+    tris(pyrazolyl)borate-Au, Re-cyclooctyl-borate) where rigid-H tracking
+    breaks the bridge: the H sits between B and M, and dragging it with one
+    parent during a clash push catastrophically detaches it from the other.
+
+    The check is purely graph-based — no SMILES strings, no element-list
+    shortcuts beyond the universal ``_METAL_SET`` and the boron atomic-number
+    comparison. Returns False for:
+
+    * Molecules without boron.
+    * Borohydrides isolated from a metal (B-H bonds present, but the H is not
+      simultaneously bonded to any metal).
+    * Boron compounds where every B-H neighbour is not also M-bonded.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+        Molecule whose bond topology will be inspected. Must include explicit
+        H atoms with the relevant B-H and M-H bonds present.
+
+    Returns
+    -------
+    bool
+        True if a μ²-B-H-M bridge is present; False otherwise.
+    """
+    if mol is None:
+        return False
+    try:
+        # Pre-collect metal indices once.
+        metal_idxs: Set[int] = {
+            a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+        }
+        if not metal_idxs:
+            return False
+        for atom in mol.GetAtoms():
+            # Atomic number 5 == Boron. Use atomic number (not symbol) so
+            # detection is robust to symbol-case quirks in input files.
+            if atom.GetAtomicNum() != 5:
+                continue
+            for nb in atom.GetNeighbors():
+                if nb.GetSymbol() != "H":
+                    continue
+                # H is bonded to this B. Check if it is also bonded to any
+                # metal — that is the μ²-bridge signature.
+                for nb2 in nb.GetNeighbors():
+                    if nb2.GetIdx() in metal_idxs:
+                        return True
+    except Exception:
+        # Any RDKit oddity must not crash the optimizer; fall back to "no
+        # bridge detected" so default behaviour is unchanged.
+        return False
+    return False
+
+
 def _metal_indices(mol) -> List[int]:
     return [a.GetIdx() for a in mol.GetAtoms()
             if a.GetSymbol() in _METAL_SET]
@@ -291,6 +351,69 @@ def _bfs_fragment(nbrs: List[List[int]], start: int,
             visited.add(nb)
             queue.append(nb)
     return visited
+
+
+def _ring_aware_subtree(
+    mol,
+    nbrs: List[List[int]],
+    x: int,
+    blocked: Set[int],
+) -> Set[int]:
+    """BFS subtree from ``x`` expanded to ring-consistent membership.
+
+    Behaviour:
+
+    - Compute the standard :func:`_bfs_fragment` subtree from ``x`` with
+      ``blocked``.
+    - If ``x`` belongs to one or more SSSR rings (RDKit ``GetRingInfo``),
+      union the subtree with **every atom of every such ring** plus each
+      ring atom's bonded H children.  Atoms already in ``blocked`` are
+      excluded from the union so a ring closing through the donor ``d``
+      does not pull ``d`` into the rotated set.
+
+    Rationale (Patch P-RING-AWARE):  the legacy size-6 BFS subtree gate in
+    :func:`_stage_angles` rotates only a fraction of an aromatic/aliphatic
+    ring when the ring is small enough to fit under the cap, leaving the
+    remaining ring atoms and their bonded H's stationary.  The partial
+    rotation stretches the ring's heavy backbone *and* the C-H bonds on
+    the unrotated ring atoms; in hapto-CN7 systems with η⁵-Cp or η⁶-arene
+    substituent rings the result is one or more ORPHAN_H (nearest-heavy
+    > 1.40 Å).  Including the full ring + ring-bonded H's keeps the ring
+    rigid under the rotation so C-H bonds and ring-internal heavy bonds
+    are preserved.
+
+    Pure RDKit graph-based — no SMILES patterns, no refcode shortcuts.
+    Safe on molecules without rings (returns the plain BFS subtree) and
+    on RDKit oddities (any exception falls back to the plain subtree).
+    """
+    base = _bfs_fragment(nbrs, x, blocked)
+    if not base or mol is None:
+        return base
+    try:
+        ring_info = mol.GetRingInfo()
+        atom_rings = ring_info.AtomRings() if ring_info is not None else ()
+    except Exception:
+        return base
+    if not atom_rings:
+        return base
+    expanded: Set[int] = set(base)
+    for ring in atom_rings:
+        if x not in ring:
+            continue
+        for ridx in ring:
+            if ridx in blocked:
+                continue
+            expanded.add(ridx)
+            # H children of the ring atom (bonded H only, via nbrs).
+            for nb in nbrs[ridx]:
+                if nb in blocked:
+                    continue
+                try:
+                    if mol.GetAtomWithIdx(nb).GetSymbol() == "H":
+                        expanded.add(nb)
+                except Exception:
+                    continue
+    return expanded
 
 
 def _decompose_into_fragments(mol, metals: Sequence[int]) -> List[Dict]:
@@ -604,6 +727,331 @@ _CN_TO_GEOMS: Dict[int, List[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Smart Phase A.5 — Jahn-Teller / multiple-bond / cyclometal aware
+# ---------------------------------------------------------------------------
+
+# Common Jahn-Teller (E_g term ground-state) d^n configurations that exhibit
+# strong tetragonal distortion in octahedral coordination. Cu(II) d^9 is the
+# canonical "always-distorted" case; Mn(III) d^4 high-spin and Cr(II) d^4
+# high-spin also show pronounced JT elongation. Conservative list — we only
+# protect cases where the distortion is essentially guaranteed.
+#
+# Format: (element symbol, formal charge) → label
+_JAHN_TELLER_CASES: Dict[Tuple[str, int], str] = {
+    ("Cu", 2): "jahn_teller_cu2",   # d^9, the textbook JT system
+    ("Mn", 3): "jahn_teller_mn3",   # d^4 HS, eg^1 → axial elongation
+    ("Cr", 2): "jahn_teller_cr2",   # d^4 HS
+    ("Ag", 2): "jahn_teller_ag2",   # d^9 (rare but unambiguous)
+    ("Ni", 3): "jahn_teller_ni3",   # d^7 LS, t2g^6 eg^1
+}
+
+# Metal-oxo / metal-imido bond-length threshold (Å). Bonds shorter than this
+# between a metal and a terminal O / N donor strongly imply M=X multiple bond
+# character (typical M=O is 1.6-1.8 Å for early transition metals; M-O single
+# bond is 1.9-2.2 Å). 1.85 Å is a conservative discriminator.
+_METAL_OXO_BOND_MAX: float = 1.85
+
+# Cyclometalation ring-size that we protect. Aryl C-H activation forms an
+# essentially-rigid 5-membered M-C-C-C-X ring (X = donor heteroatom). We do
+# NOT try to regularise such rings to standard polyhedra — they are part of
+# the rigid backbone, not a free coordination sphere.
+_CYCLOMETAL_RING_SIZE: int = 5
+
+
+def _classify_distortion_mandatory(
+    mol,
+    coords: np.ndarray,
+    metal_idx: int,
+    donor_idxs: Sequence[int],
+) -> Optional[str]:
+    """Detect whether a metal centre carries a chemically-mandatory distortion.
+
+    Returns one of the canonical distortion labels — or ``None`` when the
+    metal coordination is "free" to be projected to a standard polyhedron.
+    Pure graph + geometry detection: no SMILES strings, no refcode shortcuts.
+
+    Detected patterns:
+
+    * ``"jahn_teller_cu2"`` etc. — metal+formal-charge combination drawn from
+      :data:`_JAHN_TELLER_CASES`. Octahedral-or-higher CN required (CN >= 5
+      to cover 4+1, 4+2 and full Oh). The label is suffixed by the metal so
+      callers can act per-element if needed.
+    * ``"metal_oxo"`` — at least one terminal O or N donor lies within
+      :data:`_METAL_OXO_BOND_MAX` of the metal (signature of M=O / M=NR
+      multiple bond, e.g. vanadyl V=O, oxo-tungsten W=O, dioxo-osmium
+      cis-OsO2). Terminal = the donor has no further heavy-atom neighbours
+      except the metal (or it is bonded by a formally double bond).
+    * ``"cyclometal_5ring"`` — at least one donor participates in a
+      5-membered ring containing the metal AND an sp2/aromatic carbon
+      bonded to the metal (the classic cyclometalation signature, e.g.
+      Ir(ppy)3 phenyl-pyridyl ring closure).
+    * ``"mer_tridentate"`` — three of the donors are pair-wise nearly-linear
+      (one pair at ~180°, two pairs at ~90°) which is the meridional
+      signature of a planar-tridentate ligand (e.g. terpyridine,
+      pincer-NCN). Conservative cosine threshold (-0.90) so genuine
+      planar-tridentates are caught but bent fac-arrangements are not.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+        Molecule with bond topology consistent with ``coords``.
+    coords : np.ndarray
+        ``(n, 3)`` Cartesian coordinates indexed by atom idx.
+    metal_idx : int
+        Atom index of the central metal.
+    donor_idxs : Sequence[int]
+        Atom indices of donor atoms directly bonded to ``metal_idx``.
+
+    Returns
+    -------
+    Optional[str]
+        Distortion label if any pattern matches; ``None`` otherwise. On any
+        RDKit exception, returns ``None`` (fail-safe → standard projection).
+    """
+    if mol is None or len(donor_idxs) == 0:
+        return None
+    try:
+        m_atom = mol.GetAtomWithIdx(int(metal_idx))
+    except Exception:
+        return None
+    m_sym = m_atom.GetSymbol()
+    try:
+        m_charge = int(m_atom.GetFormalCharge())
+    except Exception:
+        m_charge = 0
+    cn = len(donor_idxs)
+
+    # ----- Pattern 1: Jahn-Teller-distorted d^n configuration -----
+    # Trigger when (metal, formal_charge) is in the JT list AND CN >= 5
+    # (the 4+1/4+2 elongated octahedron is the most chemically frequent JT
+    # case; CN < 5 cannot show axial elongation by construction). JT is the
+    # most specific test (metal+charge match) and is therefore checked first.
+    jt_label = _JAHN_TELLER_CASES.get((m_sym, m_charge))
+    if jt_label is not None and cn >= 5:
+        return jt_label
+
+    # ----- Pattern 2: Cyclometalation 5-ring (M-C-...-X-M closure) -----
+    # Checked before metal_oxo because a cyclometal chelate often forces the
+    # heteroatom donor close to the metal (~1.95-2.05 Å) and the M-C may
+    # also be short (~2.0 Å). Connectivity (ring closure) is the load-
+    # bearing chemical signal; we look for a 5-membered ring containing the
+    # metal where M is bonded to BOTH an aromatic / sp2 carbon AND another
+    # heteroatom donor in the same ring.
+    try:
+        ring_info = mol.GetRingInfo()
+        rings = ring_info.AtomRings()
+        if not rings:
+            # RingInfo not initialised yet (common for RWMol built from
+            # scratch without sanitisation). FastFindRings is the safe
+            # non-sanitising option that populates the ring perception.
+            try:
+                from rdkit.Chem import FastFindRings  # type: ignore
+                FastFindRings(mol)
+                rings = mol.GetRingInfo().AtomRings()
+            except Exception:
+                rings = ()
+    except Exception:
+        rings = ()
+    metal_int = int(metal_idx)
+    donor_set = set(int(x) for x in donor_idxs)
+    for ring in rings:
+        if metal_int not in ring:
+            continue
+        if len(ring) != _CYCLOMETAL_RING_SIZE:
+            continue
+        donors_in_ring = donor_set.intersection(ring)
+        if len(donors_in_ring) < 2:
+            continue
+        has_aryl_c = False
+        has_hetero = False
+        for d in donors_in_ring:
+            try:
+                d_atom = mol.GetAtomWithIdx(int(d))
+            except Exception:
+                continue
+            d_sym = d_atom.GetSymbol()
+            if d_sym == "C":
+                try:
+                    if d_atom.GetIsAromatic() or "SP2" in str(
+                        d_atom.GetHybridization()
+                    ):
+                        has_aryl_c = True
+                except Exception:
+                    has_aryl_c = True   # be permissive on RDKit hiccups
+            elif d_sym in ("N", "O", "P", "S"):
+                has_hetero = True
+        if has_aryl_c and has_hetero:
+            return "cyclometal_5ring"
+
+    # ----- Pattern 3: Metal-oxo / metal-imido multiple bond -----
+    # Any donor with element O or N at distance < 1.85 Å from the metal that
+    # is also "terminal" (only the metal as heavy neighbour) or formally
+    # double-bonded to the metal. Bond order check is RDKit-tolerant — many
+    # M=O bonds are parsed as SINGLE due to dative-bond conventions, so we
+    # fall back to a geometric criterion. We additionally require the donor
+    # to be terminal in the heavy-atom subgraph (only the metal as heavy
+    # neighbour) OR the bond is formally double-bonded — this excludes
+    # short chelated donors from cyclometalation rings (already caught by
+    # Pattern 2 above when applicable, otherwise harmless to skip metal_oxo).
+    for d_idx in donor_idxs:
+        try:
+            d_atom = mol.GetAtomWithIdx(int(d_idx))
+        except Exception:
+            continue
+        d_sym = d_atom.GetSymbol()
+        if d_sym not in ("O", "N"):
+            continue
+        d_cur = float(np.linalg.norm(coords[int(metal_idx)] - coords[int(d_idx)]))
+        # Heavy-atom neighbour count (excluding the metal). Terminal donors
+        # have zero such neighbours; chelated ones have one or more.
+        try:
+            heavy_nbr_n = sum(
+                1 for nb in d_atom.GetNeighbors()
+                if nb.GetIdx() != metal_int and nb.GetAtomicNum() > 1
+            )
+        except Exception:
+            heavy_nbr_n = -1
+        # Bond-order criterion (catches explicit DOUBLE bonds).
+        bond_is_double = False
+        try:
+            bond = mol.GetBondBetweenAtoms(int(metal_idx), int(d_idx))
+            if bond is not None and float(bond.GetBondTypeAsDouble()) >= 1.5:
+                bond_is_double = True
+        except Exception:
+            bond_is_double = False
+        if bond_is_double:
+            return "metal_oxo"
+        # Geometric short-bond criterion: only fire when donor is terminal
+        # (no other heavy neighbours) to avoid false-positives on chelated
+        # heteroatoms that are pulled close by ring strain.
+        if d_cur < _METAL_OXO_BOND_MAX and heavy_nbr_n == 0:
+            return "metal_oxo"
+
+    # ----- Pattern 4: Meridional planar tridentate -----
+    # Three donors that are roughly co-linear-and-perpendicular: pairwise
+    # cosines should be (-1, 0, 0) in the ideal mer-tridentate arrangement.
+    # Restricted to CN == 3 (an isolated planar-tridentate ligand without
+    # spectators) because in higher CN the pattern can be matched by any
+    # three orthogonal donors of an octahedron — which we DO want projected.
+    if cn == 3:
+        units: List[np.ndarray] = []
+        for d_idx in donor_idxs:
+            v = coords[int(d_idx)] - coords[int(metal_idx)]
+            n = float(np.linalg.norm(v))
+            if n < 1e-9:
+                continue
+            units.append(v / n)
+        n_units = len(units)
+        for ii in range(n_units):
+            for jj in range(ii + 1, n_units):
+                cij = float(np.dot(units[ii], units[jj]))
+                if cij > -0.90:        # need near-trans pair
+                    continue
+                for kk in range(n_units):
+                    if kk in (ii, jj):
+                        continue
+                    cik = float(np.dot(units[ii], units[kk]))
+                    cjk = float(np.dot(units[jj], units[kk]))
+                    # k should be near-perpendicular to BOTH i and j
+                    if abs(cik) < 0.30 and abs(cjk) < 0.30:
+                        return "mer_tridentate"
+    # CN >= 4: ALSO detect mer when the three near-collinear donors are
+    # graph-connected via a single contiguous chelate chain (i.e., share a
+    # ligand path that does not pass through the metal). This catches
+    # tridentate-N3 + 3 spectator donors at CN=6 without false-positives
+    # on free monodentate octahedral sets.
+    if cn >= 4:
+        mer_label = _try_detect_chelate_mer_tridentate(
+            mol, coords, metal_int, list(donor_idxs)
+        )
+        if mer_label is not None:
+            return mer_label
+
+    return None
+
+
+def _try_detect_chelate_mer_tridentate(
+    mol,
+    coords: np.ndarray,
+    metal_idx: int,
+    donor_idxs: List[int],
+) -> Optional[str]:
+    """Detect mer-tridentate at CN >= 4 using graph + geometry.
+
+    A planar-tridentate ligand has three donors that are all reachable
+    from each other through bonds in the same ligand fragment (without
+    crossing the metal). Combined with the geometric mer-cosine pattern
+    (i-M-j ~180°, k ~90° to both), this is the universal signature of
+    pincer / terpy / mer-N3 chelates.
+
+    Returns ``"mer_tridentate"`` if the pattern is found, else ``None``.
+    """
+    try:
+        nbrs = _mol_neighbors(mol)
+    except Exception:
+        return None
+    # BFS each donor through the ligand (blocking the metal). Group donors
+    # by their reachable atom-set hash to find donors that share a chelate.
+    blocked = {int(metal_idx)}
+    reach_by_donor: Dict[int, frozenset] = {}
+    for d in donor_idxs:
+        try:
+            reach = frozenset(_bfs_fragment(nbrs, int(d), blocked))
+        except Exception:
+            continue
+        reach_by_donor[int(d)] = reach
+    # Find triples that are all in the same connected (ligand) fragment.
+    units: Dict[int, np.ndarray] = {}
+    for d in donor_idxs:
+        v = coords[int(d)] - coords[int(metal_idx)]
+        n = float(np.linalg.norm(v))
+        if n < 1e-9:
+            continue
+        units[int(d)] = v / n
+    donor_list = [d for d in donor_idxs if d in units and d in reach_by_donor]
+    nd = len(donor_list)
+    for i in range(nd):
+        di = donor_list[i]
+        ri = reach_by_donor[di]
+        for j in range(i + 1, nd):
+            dj = donor_list[j]
+            # Same fragment iff dj is reachable from di through ligand bonds.
+            if dj not in ri:
+                continue
+            cij = float(np.dot(units[di], units[dj]))
+            if cij > -0.90:        # need near-trans pair
+                continue
+            for k in range(nd):
+                if k in (i, j):
+                    continue
+                dk = donor_list[k]
+                # k must also belong to the same chelate fragment.
+                if dk not in ri:
+                    continue
+                cik = float(np.dot(units[di], units[dk]))
+                cjk = float(np.dot(units[dj], units[dk]))
+                if abs(cik) < 0.30 and abs(cjk) < 0.30:
+                    return "mer_tridentate"
+    return None
+
+
+def _smart_phase_a5_should_skip(label: Optional[str]) -> bool:
+    """Whether a distortion label means Phase A.5 must be SKIPPED entirely.
+
+    Skip when the chemically-correct geometry is non-symmetric (JT,
+    cyclometal 5-ring) — the standard polyhedron would actively damage it.
+    For ``"metal_oxo"`` we also skip because the short multiple bond changes
+    the M-D radius and we do not yet have an asymmetric-distance projection.
+    ``"mer_tridentate"`` is preserved by skipping too (we'd need an
+    isomer-aware target which is not yet generated automatically).
+
+    Returns False for None (no distortion → run standard projection) and
+    True for any non-None label.
+    """
+    return label is not None
+
+
 def _best_polyhedron_for_metal(
     coords: np.ndarray, m_idx: int, donor_idxs: Sequence[int]
 ) -> Optional[Tuple[str, List[Tuple[float, float, float]]]]:
@@ -653,22 +1101,48 @@ def _project_donors_to_polyhedron(
     nb_pairs: Sequence[Tuple[int, int]],
     step_size: float,
     clash_factor: float,
+    smart_mode: bool = False,
+    report: Optional[Dict] = None,
 ) -> Tuple[np.ndarray, int]:
     """For each metal, pick the matching ideal polyhedron, then translate each
     donor's BFS fragment toward its ideal position by ``step_size`` of the
     delta.  Rolls each fragment-move back if it breaks topology.
 
-    Returns (new_coords, n_projections_committed).
+    Parameters
+    ----------
+    smart_mode : bool
+        When True, each metal is first classified via
+        :func:`_classify_distortion_mandatory`; if a distortion-mandatory
+        pattern is detected (Jahn-Teller, M=O, cyclometal 5-ring,
+        mer-tridentate), the standard symmetric projection is skipped for
+        that metal so the chemically-correct distortion is preserved. The
+        skip decision is recorded in ``report["smart_a5_skipped_metals"]``
+        as a list of ``(metal_idx, label)`` tuples.
+    report : Optional[Dict]
+        Mutable report dictionary; populated with per-metal skip metadata
+        when ``smart_mode`` is True. Passing None disables reporting.
+
+    Returns
+    -------
+    (new_coords, n_projections_committed)
     """
     if not _SCIPY_OK:
         return coords, 0
     out = coords.copy()
     n_done = 0
     blocked = set(metals)
+    skipped: List[Tuple[int, str]] = []
     for m in metals:
         donor_idxs = _donor_indices(mol, m)
         if len(donor_idxs) < 2:
             continue
+        if smart_mode:
+            distortion_label = _classify_distortion_mandatory(
+                mol, out, m, donor_idxs
+            )
+            if _smart_phase_a5_should_skip(distortion_label):
+                skipped.append((int(m), str(distortion_label)))
+                continue
         pick = _best_polyhedron_for_metal(out, m, donor_idxs)
         if pick is None:
             continue
@@ -703,6 +1177,8 @@ def _project_donors_to_polyhedron(
             if _passes_topology(tried, mol, metals, md_pairs, nb_pairs):
                 out = tried
                 n_done += 1
+    if smart_mode and report is not None and skipped:
+        report["smart_a5_skipped_metals"] = skipped
     return out, n_done
 
 
@@ -771,10 +1247,36 @@ def _stage_angles(coords: np.ndarray, mol, nbrs: List[List[int]],
     """Rotate non-metal donor X around (M→D) axis through D to bring M-D-X
     closer to a hybridization-dependent ideal.  Conservative: only acts on
     light X atoms (single neighbour, e.g. H) or terminal heavy atoms to avoid
-    fighting the angle-corrector module."""
+    fighting the angle-corrector module.
+
+    Patch P-RING-AWARE (env-flag ``DELFIN_B5_STAGE2_RING_AWARE``, default 0):
+    when set to ``1``, and ``x`` lies on an SSSR ring, the rotated subtree is
+    expanded to cover **every atom of every ring containing ``x``** plus the
+    bonded H children of those ring atoms (see :func:`_ring_aware_subtree`).
+    The terminal-ish size cap is bumped from 6 to 12 to accommodate a typical
+    aromatic ring + ortho-H bundle (6 ring C + 5 H = 11).  When the env-flag
+    is unset / 0, the function is bit-exact to its pre-patch behaviour.
+
+    Rationale: the legacy size-6 BFS subtree rotates only a fraction of a
+    small ring, leaving the remainder stationary; the partial rotation
+    stretches ring-internal C-C bonds and C-H bonds on the unrotated ring
+    atoms, producing ORPHAN_H (nearest heavy > 1.40 Å) cascades in
+    hapto-CN7 η-arene / η⁵-Cp complexes (per Agent 8 forensik, +249
+    ORPHAN_H over 28 files in rigid-H pool).  Ring-aware expansion keeps
+    the ring rigid under the rotation.
+    """
     out = coords.copy()
     moved = False
     repairs = 0
+    # Read the env-flag once per call; failure → default OFF.
+    try:
+        _ring_env_on = int(os.environ.get(
+            "DELFIN_B5_STAGE2_RING_AWARE", "0")) != 0
+    except Exception:
+        _ring_env_on = False
+    # Size cap: classic 6 for the BFS-only path, 12 for the ring-aware
+    # expansion (covers benzene + ortho-H = 11).
+    _size_cap = 12 if _ring_env_on else 6
     for (m, d, _) in md_pairs:
         d_atom = mol.GetAtomWithIdx(d)
         d_nbrs = [n for n in nbrs[d] if n != m]
@@ -803,8 +1305,20 @@ def _stage_angles(coords: np.ndarray, mol, nbrs: List[List[int]],
             # Only act if x's subtree is small (terminal-ish) — keeps the
             # operation safe and complementary to B3.
             blocked = set(metals) | {d}
-            subtree = _bfs_fragment(nbrs, x, blocked)
-            if len(subtree) > 6:
+            # Ring-aware subtree expansion only when env-flag is set AND
+            # x is a ring atom; otherwise classic BFS preserves bit-exact
+            # pre-patch behaviour.
+            x_in_ring = False
+            if _ring_env_on:
+                try:
+                    x_in_ring = bool(mol.GetAtomWithIdx(x).IsInRing())
+                except Exception:
+                    x_in_ring = False
+            if _ring_env_on and x_in_ring:
+                subtree = _ring_aware_subtree(mol, nbrs, x, blocked)
+            else:
+                subtree = _bfs_fragment(nbrs, x, blocked)
+            if len(subtree) > _size_cap:
                 continue
             v_md = out[m] - out[d]
             v_dx = out[x] - out[d]
@@ -995,6 +1509,40 @@ def post_optimize_geometry(
         heavy-atom-only topology gate does not check. Default False for
         bit-exact pre-patch behaviour.
 
+        Patch P-BH-NOGO (2026-05-13): if the molecule contains a bridging
+        μ²-B-H-M hydride (RDKit graph: H bonded to both a B atom and a
+        metal in ``_METAL_SET``), rigid_h is forced to False for that frame
+        regardless of the caller's request. Dragging a bridging H with its
+        boron parent during a clash push breaks the B-H-M bridge geometry
+        (CANFAY Zr-CN11 borohydride: 4/9 B-H bonds catastrophically broken,
+        1.16 → 0.95 Å). The override is universal (graph-based, no SMILES /
+        refcode patterns) and only triggers when boron + metal coexist in
+        the same molecule.
+
+    Notes
+    -----
+    Phase A.5 polyhedron projection (``enable_symmetry``) is governed by an
+    additional global env-flag ``DELFIN_B5_PHASE_A5_ENABLE`` (default 0).
+    When the env-flag is unset/0 the parameter is ignored and Phase A.5 is
+    forced OFF, regardless of caller, protecting downstream code from future
+    regressions if the default is flipped. Set ``DELFIN_B5_PHASE_A5_ENABLE=1``
+    to honour the ``enable_symmetry`` argument. Forensik 2026-05-13 showed
+    Phase A.5 over-idealises Cu(II) Jahn-Teller distortions, M=O multiple
+    bonds and cyclometallation 5-rings (~5 % of σ-class structures).
+
+    A second env-flag ``DELFIN_B5_PHASE_A5_SMART`` (default 0) enables the
+    distortion-aware "smart" mode added 2026-05-13. When set to 1, Phase A.5
+    is unconditionally enabled but each metal is first classified via
+    :func:`_classify_distortion_mandatory`. Metals carrying a chemically-
+    mandatory distortion (Jahn-Teller Cu(II)/Mn(III)/Cr(II)/Ag(II)/Ni(III);
+    metal-oxo M=O / M=NR multiple bond; cyclometal 5-ring closure;
+    meridional planar tridentate) are SKIPPED so their geometry is
+    preserved. Standard metals continue to receive standard polyhedron
+    projection. The ``report`` dict gains ``smart_a5_skipped_metals`` —
+    a list of ``(metal_idx, label)`` tuples — when any metal is skipped.
+    Setting ``DELFIN_B5_PHASE_A5_SMART=0`` (default) preserves the legacy
+    P-A5-ENV behaviour bit-exact.
+
     Returns
     -------
     (new_xyz, report)
@@ -1022,9 +1570,56 @@ def post_optimize_geometry(
         nbrs = _mol_neighbors(mol)
         md_pairs = _md_pairs(mol, metals)
         nb_pairs = _non_bonded_heavy_pairs(mol)
+
+        # ---- Patch P-BH-NOGO: bridging μ²-B-H-M hydride precheck -----------
+        # If the molecule has a B-H-M bridge, rigid-H dragging detaches the
+        # bridging hydrogen and breaks the bond geometry (see CANFAY Zr-CN11
+        # borohydride: 4/9 B-H bonds collapsed to ~0.95 Å). Force rigid_h
+        # OFF for the entire post-optimize call when such a bridge exists.
+        rigid_h_effective: bool = bool(rigid_h)
+        if rigid_h_effective and _has_bridging_bh_hydride(mol):
+            rigid_h_effective = False
+            report["bh_bridge_nogo"] = True
         h_nbrs: Optional[List[List[int]]] = (
-            _compute_h_neighbors(mol) if rigid_h else None
+            _compute_h_neighbors(mol) if rigid_h_effective else None
         )
+
+        # ---- Patch P-A5-ENV: Phase A.5 polyhedron-projection env-gate ------
+        # Phase A.5 over-idealises Cu(II) Jahn-Teller, M=O double bonds and
+        # cyclometallation 5-rings (forensik 2026-05-13). Default-OFF env
+        # override prevents accidental re-enable from upstream defaults.
+        # Set DELFIN_B5_PHASE_A5_ENABLE=1 to honour the caller's parameter.
+        try:
+            _a5_env_raw = os.environ.get("DELFIN_B5_PHASE_A5_ENABLE", "0")
+            _a5_env_on = int(_a5_env_raw) != 0
+        except Exception:
+            _a5_env_on = False
+        enable_symmetry_effective: bool = (
+            bool(enable_symmetry) if _a5_env_on else False
+        )
+
+        # ---- Patch P-A5-SMART: Jahn-Teller / multiple-bond / cyclometal-aware
+        # smart-projection mode. When DELFIN_B5_PHASE_A5_SMART=1, Phase A.5
+        # is unconditionally enabled (regardless of P-A5-ENV) AND each metal
+        # is classified by :func:`_classify_distortion_mandatory` before
+        # projection. Metals carrying a chemically-mandatory distortion are
+        # SKIPPED so their geometry is preserved (Cu(II) 4+2 elongation,
+        # M=O short bond, cyclometalation 5-ring, mer-tridentate plane).
+        # Standard metals continue to receive standard polyhedron projection.
+        #
+        # When the env-flag is unset / 0, behaviour is identical to the
+        # legacy P-A5-ENV gate (Phase A.5 disabled unless P-A5-ENV=1).
+        try:
+            _a5_smart_raw = os.environ.get("DELFIN_B5_PHASE_A5_SMART", "0")
+            _a5_smart_on = int(_a5_smart_raw) != 0
+        except Exception:
+            _a5_smart_on = False
+        if _a5_smart_on:
+            # Smart mode overrides the legacy enable gate — Phase A.5 is
+            # always considered for the chemistry-class allowlist below,
+            # but the smart projector itself skips distortion-mandatory
+            # metals so the override is safe.
+            enable_symmetry_effective = True
 
         # If no metals, no constraints to enforce — return unchanged.
         if not metals:
@@ -1054,11 +1649,15 @@ def post_optimize_geometry(
                 total_repairs += 1
 
         # ---- Phase A.5: symmetry projection --------------------------------
-        if enable_symmetry and class_label not in ("hapto", "multi_hapto",
-                                                    "no_metal"):
+        # Gated by ``enable_symmetry_effective`` (the env-aware override).
+        # ``_a5_smart_on`` activates Jahn-Teller / M=O / cyclometal /
+        # mer-tridentate aware skipping inside the projector.
+        if enable_symmetry_effective and class_label not in (
+                "hapto", "multi_hapto", "no_metal"):
             coords, n_sym = _project_donors_to_polyhedron(
                 coords, mol, nbrs, metals, md_pairs, nb_pairs,
-                step_size=step_size, clash_factor=clash_factor)
+                step_size=step_size, clash_factor=clash_factor,
+                smart_mode=_a5_smart_on, report=report)
             total_repairs += n_sym
 
         # ---- Phase B: Gauss-Seidel sweeps ----------------------------------

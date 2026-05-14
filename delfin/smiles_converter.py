@@ -16,6 +16,7 @@ import os
 import random
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
@@ -771,6 +772,262 @@ _PREFERRED_CN5_GEOMETRY: Dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
+# CN=5 chemistry-aware classifier (universal: element + formal charge ->
+# d-count + ligand-field signals).  Used when DELFIN_CN5_GEOM_AWARE=1.
+# Default OFF for bit-exact HEAD behaviour.
+# ---------------------------------------------------------------------------
+
+# Periodic-table group number per transition-metal centre.  d_count = group -
+# oxidation_state, clamped to [0, 10].  Non-d-block returns None.
+_METAL_GROUP_NUMBER: Dict[str, int] = {
+    'Sc': 3, 'Y': 3, 'La': 3, 'Ac': 3,
+    'Ti': 4, 'Zr': 4, 'Hf': 4,
+    'V': 5,  'Nb': 5, 'Ta': 5,
+    'Cr': 6, 'Mo': 6, 'W': 6,
+    'Mn': 7, 'Tc': 7, 'Re': 7,
+    'Fe': 8, 'Ru': 8, 'Os': 8,
+    'Co': 9, 'Rh': 9, 'Ir': 9,
+    'Ni': 10, 'Pd': 10, 'Pt': 10,
+    'Cu': 11, 'Ag': 11, 'Au': 11,
+    'Zn': 12, 'Cd': 12, 'Hg': 12,
+}
+
+# pi-acceptor donor elements (phosphines/arsines/stibines).  Carbonyl C and
+# NHC C are detected graph-based in the rich helper, not via label.
+_PI_ACCEPTOR_DONOR_ELEMS: Tuple[str, ...] = ('P', 'As', 'Sb')
+
+
+def _cn5_d_electron_count(
+    metal_symbol: str,
+    formal_charge: int,
+) -> Optional[int]:
+    """Return d-electron count for ``metal_symbol`` at ox-state ``formal_charge``.
+
+    Returns ``None`` for non-d-block (main-group, lanthanide/actinide, unknown).
+    Uses ``d = group - oxidation_state`` clamped to ``[0, 10]``.
+    """
+    grp = _METAL_GROUP_NUMBER.get(metal_symbol)
+    if grp is None:
+        return None
+    try:
+        ox = int(formal_charge)
+    except Exception:
+        return None
+    d = grp - ox
+    if d < 0:
+        return 0
+    if d > 10:
+        return 10
+    return d
+
+
+def _cn5_count_pi_acceptor_donors(donor_labels: List[str]) -> int:
+    """Count pi-acceptor donors among ``donor_labels`` (P/As/Sb only)."""
+    n = 0
+    for lbl in donor_labels:
+        sym = "".join(ch for ch in lbl if ch.isalpha())
+        if sym in _PI_ACCEPTOR_DONOR_ELEMS:
+            n += 1
+    return n
+
+
+def _cn5_has_tridentate_chelate(
+    chelate_pairs: List[FrozenSet],
+    n_coord: int,
+) -> bool:
+    """Detect chelating ligand with denticity >= 3 via union-find on
+    ``chelate_pairs`` (donor-list-index pairs).  Tridentate-+ chelates
+    force three donors into one plane -> SP preference."""
+    if n_coord != 5 or not chelate_pairs:
+        return False
+    parent = list(range(n_coord))
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for cp in chelate_pairs:
+        items = list(cp)
+        if len(items) != 2:
+            continue
+        a, b = int(items[0]), int(items[1])
+        if 0 <= a < n_coord and 0 <= b < n_coord:
+            _union(a, b)
+
+    from collections import Counter
+    sizes = Counter(_find(i) for i in range(n_coord))
+    return any(s >= 3 for s in sizes.values())
+
+
+def _classify_cn5_geometry_from_labels(
+    metal_symbol: str,
+    formal_charge: int,
+    donor_labels: List[str],
+    chelate_pairs: Optional[List[FrozenSet]] = None,
+) -> str:
+    """Universal CN=5 polyhedron classifier (label-only facade).
+
+    Returns ``'SP'`` (C4v square-pyramidal) or ``'TBP'`` (D3h
+    trigonal-bipyramidal).  Decision tree:
+
+    1. d-electron count = group - formal_charge:
+       - d8  -> SP   (Ni(II), Pd(II), Pt(II), Co(I), Rh(I), Ir(I), Au(III))
+       - d4/d6 LS -> SP   (Cr(II), Mn(III), Fe(II) LS, Co(III), Ru(II),
+                          Rh(III), Ir(III))
+       - d0/d1/d2/d10 -> TBP
+       - d3/d5/d7/d9  -> TBP (default; weak preference)
+    2. Override #1 - >= 2 pi-acceptor donors (P/As/Sb) -> SP.
+    3. Override #2 - tridentate (or larger) chelate present -> SP.
+    4. Safe fallback for non-d-block / unknown elements: ``'TBP'``.
+
+    Pure-scalar API; no RDKit needed.  Rich graph-based variant:
+    :func:`_classify_cn5_geometry`.
+    """
+    d = _cn5_d_electron_count(metal_symbol, formal_charge)
+    if d is None:
+        pref = 'TBP'
+    elif d == 8:
+        pref = 'SP'
+    elif d in (4, 6):
+        pref = 'SP'
+    elif d in (0, 1, 2, 10):
+        pref = 'TBP'
+    else:
+        pref = 'TBP'
+
+    if _cn5_count_pi_acceptor_donors(donor_labels) >= 2 and pref == 'TBP':
+        pref = 'SP'
+
+    chelate_list = list(chelate_pairs) if chelate_pairs else []
+    if _cn5_has_tridentate_chelate(chelate_list, len(donor_labels)) and pref == 'TBP':
+        pref = 'SP'
+
+    return pref
+
+
+def _classify_cn5_geometry(
+    mol,
+    metal_idx: int,
+    donor_idxs: List[int],
+) -> str:
+    """Universal CN=5 polyhedron classifier (rich graph-based version).
+
+    Same return contract as :func:`_classify_cn5_geometry_from_labels`
+    (``'SP'`` or ``'TBP'``) but uses the RDKit molecule directly so it
+    can also detect:
+
+      * Carbonyl donors (C double-bonded to terminal O) -> pi-acceptor.
+      * NHC donors (sp2 aromatic C with >= 2 N neighbours) -> pi-acceptor.
+      * Sterically bulky donors (>= 3 heavy non-metal neighbours).
+
+    Args:
+        mol: RDKit ``Mol`` containing the metal centre and its donors.
+        metal_idx: 0-based atom index of the metal centre.
+        donor_idxs: list of 0-based atom indices for the five donor atoms.
+
+    Returns:
+        ``'SP'`` or ``'TBP'``.  ``'TBP'`` on any parse error (safe fallback).
+    """
+    try:
+        if mol is None or metal_idx is None or donor_idxs is None:
+            return 'TBP'
+        if len(donor_idxs) != 5:
+            return 'TBP'
+
+        metal_atom = mol.GetAtomWithIdx(int(metal_idx))
+        metal_symbol = metal_atom.GetSymbol()
+        formal_charge = int(metal_atom.GetFormalCharge() or 0)
+
+        donor_labels: List[str] = []
+        n_pi_rich = 0
+        n_bulky = 0
+        for li, di in enumerate(donor_idxs):
+            try:
+                datom = mol.GetAtomWithIdx(int(di))
+            except Exception:
+                donor_labels.append(f"X{li}")
+                continue
+            sym = datom.GetSymbol()
+            donor_labels.append(f"{sym}{li}")
+            if sym == 'C':
+                is_carbonyl = False
+                for nb in datom.GetNeighbors():
+                    if nb.GetIdx() == int(metal_idx):
+                        continue
+                    if nb.GetSymbol() != 'O':
+                        continue
+                    bnd = mol.GetBondBetweenAtoms(datom.GetIdx(), nb.GetIdx())
+                    if bnd is not None and bnd.GetBondTypeAsDouble() >= 1.5:
+                        heavy_nbs = [
+                            x for x in nb.GetNeighbors()
+                            if x.GetSymbol() != 'H'
+                        ]
+                        if len(heavy_nbs) == 1:
+                            is_carbonyl = True
+                            break
+                if is_carbonyl:
+                    n_pi_rich += 1
+                else:
+                    n_nbs = [
+                        x for x in datom.GetNeighbors()
+                        if x.GetSymbol() == 'N' and x.GetIdx() != int(metal_idx)
+                    ]
+                    if len(n_nbs) >= 2 and datom.GetIsAromatic():
+                        n_pi_rich += 1
+            elif sym in _PI_ACCEPTOR_DONOR_ELEMS:
+                n_pi_rich += 1
+            heavy_nbs_d = [
+                x for x in datom.GetNeighbors()
+                if x.GetSymbol() != 'H' and x.GetIdx() != int(metal_idx)
+            ]
+            if len(heavy_nbs_d) >= 3:
+                n_bulky += 1
+
+        chelate_pairs: List[FrozenSet] = []
+        try:
+            ring_info = mol.GetRingInfo()
+            for i in range(len(donor_idxs)):
+                for j in range(i + 1, len(donor_idxs)):
+                    ai = int(donor_idxs[i])
+                    aj = int(donor_idxs[j])
+                    for ring in ring_info.AtomRings():
+                        if (
+                            ai in ring
+                            and aj in ring
+                            and int(metal_idx) in ring
+                            and len(ring) <= 7
+                        ):
+                            chelate_pairs.append(frozenset([i, j]))
+                            break
+        except Exception:
+            pass
+
+        pref = _classify_cn5_geometry_from_labels(
+            metal_symbol=metal_symbol,
+            formal_charge=formal_charge,
+            donor_labels=donor_labels,
+            chelate_pairs=chelate_pairs,
+        )
+
+        if n_pi_rich >= 2 and pref == 'TBP':
+            pref = 'SP'
+
+        if n_bulky >= 4 and pref == 'TBP':
+            pref = 'SP'
+
+        return pref
+    except Exception:
+        return 'TBP'
+
+
+# ---------------------------------------------------------------------------
 # Preferred CN=6 geometry per metal
 # ---------------------------------------------------------------------------
 _PREFERRED_CN6_GEOMETRY: Dict[str, str] = {
@@ -1195,7 +1452,13 @@ def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
         # When DELFIN_B5_RIGID_H=1, bonded H atoms are dragged with their heavy
         # parent during single-atom moves so C-H / N-H / O-H bonds are not
         # stretched by the heavy-atom-only topology gate.
-        b5_rigid_h = bool(_delfin_env_int("DELFIN_B5_RIGID_H", 0))
+        #
+        # Phase 3B per-class override (analogue of DELFIN_SIGMA_*_CLASSES):
+        #   export DELFIN_B5_RIGID_H_CLASSES="sigma,multi_sigma"
+        #     → enable rigid-H only for those classes (e.g. when pool-verdict
+        #     shows rigid-H schadet hapto/multi_hapto coordination).
+        # Empty _CLASSES env (default) → fall back to scalar DELFIN_B5_RIGID_H.
+        b5_rigid_h = _class_conditional_flag("DELFIN_B5_RIGID_H", mol)
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
             try:
@@ -1213,6 +1476,271 @@ def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
     except Exception as _b5_exc:
         try:
             logger.debug("Baustein 5 PBD post-optimizer skipped: %s", _b5_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
+    """F19 sp3-H tetrahedrality fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect sp3 heavy atoms whose attached H
+    atoms participate in (X-A-H) or (H-A-H) angles deviating from the ideal
+    tetrahedral 109.5° by more than ``DELFIN_FIX_F19_TOL_DEG`` (default 10°),
+    then repair by in-place rotation of ONLY the offending H atoms (never
+    heavy atoms, never metals).  A-H bond lengths are preserved by
+    construction; topology is unchanged.
+
+    Env-flags:
+        DELFIN_FIX_F19=0           (default OFF — bit-exact when disabled)
+        DELFIN_FIX_F19_TOL_DEG=10  (tolerance in degrees)
+        DELFIN_FIX_F19_CLASSES=    (optional class allow-list, Phase 3B pattern)
+
+    Insertion order: AFTER B5 PBD post-optimizer.  B5 may slightly shift
+    heavy atoms via Stage 1/2; F19 then re-aligns H atoms to the post-B5
+    heavy frame.  Per-frame fallback to input on any failure.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FIX_F19", mol, default=0):
+        return results
+    if mol is None:
+        return results
+    try:
+        from delfin._fix_sp3_h_tetrahedrality import fix_sp3_h_tetrahedrality
+        tol = _delfin_env_float("DELFIN_FIX_F19_TOL_DEG", 10.0)
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = fix_sp3_h_tetrahedrality(
+                    xyz, mol, tolerance_deg=tol,
+                )
+                # Topology guaranteed True by construction; defensive check
+                # falls back to input on any unexpected failure.
+                if report.get("topology_preserved", True):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _f19_exc:
+        try:
+            logger.debug("Fixer F19 (sp3-H tetrahedrality) skipped: %s",
+                         _f19_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_fixer_f25_if_enabled(mol, results, dual_parse_done: bool):
+    """F25 sp3-N pyramidality fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect sp3 N atoms whose 3-neighbour-angle
+    sum exceeds ``DELFIN_FIX_F25_THRESHOLD_DEG`` (default 348°, i.e. less
+    than 12° pyramidalization), then bend H substituents out of the local
+    trigonal plane to recover a target pyramidal apex
+    (``DELFIN_FIX_F25_TARGET_DEG``, default 328°).  Only H atoms move;
+    heavy chain stays rigid.  Skips metal-bonded N and amide-N.
+
+    Env-flags:
+        DELFIN_FIX_F25=0                (default OFF — bit-exact when disabled)
+        DELFIN_FIX_F25_THRESHOLD_DEG=348
+        DELFIN_FIX_F25_TARGET_DEG=328
+        DELFIN_FIX_F25_CLASSES=         (optional class allow-list)
+
+    Insertion order: AFTER F19.  F19 aligns local H angles; F25 corrects
+    larger-scale planar-sp3-N flatness.  Per-frame fallback to input on
+    any failure.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FIX_F25", mol, default=0):
+        return results
+    if mol is None:
+        return results
+    try:
+        from delfin._fix_sp3_n_pyramidality import fix_sp3_n_pyramidality
+        thresh = _delfin_env_float("DELFIN_FIX_F25_THRESHOLD_DEG", 348.0)
+        target = _delfin_env_float("DELFIN_FIX_F25_TARGET_DEG", 328.0)
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, _report = fix_sp3_n_pyramidality(
+                    xyz, mol,
+                    planarity_threshold_deg=thresh,
+                    target_sum_deg=target,
+                )
+                new_results.append((new_xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _f25_exc:
+        try:
+            logger.debug("Fixer F25 (sp3-N pyramidality) skipped: %s",
+                         _f25_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_fixer_wuxqak_if_enabled(mol, results, dual_parse_done: bool):
+    """WUXQAK sp3-C linear-collapse fixer dispatch helper.
+
+    Per-frame surgical post-pass for M-CH2-X / M-CHR-R' patterns where an
+    sp3 C bonded to a metal collapses to a near-linear M-C-X angle
+    (>``DELFIN_FIX_WUXQAK_ANGLE_DEG``, default 150°).  Rotates only the
+    rigid BFS sub-fragment of X around C (M and C fixed) to recover
+    ``DELFIN_FIX_WUXQAK_TARGET_DEG`` (default 109.5°).  Per-violation
+    rollback if new clash or any intact M-D bond drifts > 0.05 Å.
+
+    Env-flags:
+        DELFIN_FIX_WUXQAK=0              (default OFF — bit-exact when disabled)
+        DELFIN_FIX_WUXQAK_ANGLE_DEG=150
+        DELFIN_FIX_WUXQAK_TARGET_DEG=109.5
+        DELFIN_FIX_WUXQAK_CLASSES=        (optional class allow-list)
+
+    Skips frames without a metal atom (fast pre-check).  Per-frame fallback
+    to input on any failure or on topology-broken result.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FIX_WUXQAK", mol, default=0):
+        return results
+    if mol is None:
+        return results
+    # Cheap pre-check: skip entirely if no result XYZ contains a metal.
+    try:
+        any_metal = False
+        for entry in results:
+            xyz_text = entry[0] if entry else ""
+            if not isinstance(xyz_text, str):
+                continue
+            for ln in xyz_text.splitlines():
+                tok = ln.strip().split(" ", 1)[0] if ln.strip() else ""
+                if tok and tok[0].isalpha() and len(tok) <= 2:
+                    if tok not in ("H", "C", "N", "O", "F", "P", "S",
+                                   "Cl", "Br", "I", "B", "Si"):
+                        any_metal = True
+                        break
+            if any_metal:
+                break
+        if not any_metal:
+            return results
+    except Exception:
+        pass
+    try:
+        from delfin._fix_wuxqak_sp3_c_linear import fix_wuxqak_sp3_c_linear
+        angle_thr = _delfin_env_float("DELFIN_FIX_WUXQAK_ANGLE_DEG", 150.0)
+        target = _delfin_env_float("DELFIN_FIX_WUXQAK_TARGET_DEG", 109.5)
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = fix_wuxqak_sp3_c_linear(
+                    xyz, mol,
+                    angle_threshold_deg=angle_thr,
+                    target_angle_deg=target,
+                )
+                if report.get("topology_preserved", True):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _wux_exc:
+        try:
+            logger.debug("Fixer WUXQAK (sp3-C linear) skipped: %s", _wux_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_fixer_bridging_anion_if_enabled(mol, results, dual_parse_done: bool):
+    """μ-X bridging-anion M-X-M angle fixer dispatch helper.
+
+    Per-frame surgical post-pass for bimetallic complexes with bridging
+    anionic donors X (Cl, Br, OH, OR, NR2, SR, CR3 — universal, graph-
+    driven detection).  Detects μ-X atoms via the mol bond graph (any
+    non-metal atom bonded to ≥2 metals).  For each, infers the chemistry-
+    realistic M-X-M angle window from the local topology:
+
+      * 4-ring motif ([M2(μ-X)2] dimer)             → target 92°  (window 80-105°)
+      * sp2/oxo motif (no non-metal substituents)    → target 145° (window 125-175°)
+      * sp3 single-bridge (μ-OH/μ-OR/μ-NR2/μ-CR3)    → target 110° (window 95-130°)
+
+    When the current M-X-M angle falls outside its window, the bridging
+    X (together with its non-metal substituent BFS fragment) is
+    translated onto the perpendicular bisector of the M-M segment by an
+    amount that places the new M-X-M angle on the target.  Both metals
+    stay fixed; |M-X| is preserved by construction.  Per-violation
+    rollback if a new heavy-atom clash appears or any intact M-D bond
+    drifts > 0.05 Å.
+
+    Env-flags:
+        DELFIN_FIX_BRIDGING_ANION=0       (default OFF — bit-exact when disabled)
+        DELFIN_FIX_BRIDGING_ANION_CLASSES=    (optional class allow-list, see
+                                             ``_class_conditional_flag``)
+
+    Insertion order: AFTER F19/F25/WUXQAK so that all upstream single-
+    metal donor / sp3-N / sp3-C fixers have settled first.  Per-frame
+    fallback to input on any failure or on topology-broken result.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FIX_BRIDGING_ANION", mol, default=0):
+        return results
+    if mol is None:
+        return results
+    # Cheap pre-check: skip frames without a metal symbol.  Bridging
+    # anions are bimetallic-only, so an additional cheap test would be
+    # "≥2 metal atoms in the frame", but the per-frame fixer already
+    # no-ops if no μ-X bridge is detected, so the simple metal-presence
+    # gate keeps the fast-path identical to F25/WUXQAK.
+    try:
+        any_metal = False
+        for entry in results:
+            xyz_text = entry[0] if entry else ""
+            if not isinstance(xyz_text, str):
+                continue
+            for ln in xyz_text.splitlines():
+                tok = ln.strip().split(" ", 1)[0] if ln.strip() else ""
+                if tok and tok[0].isalpha() and len(tok) <= 2:
+                    if tok not in ("H", "C", "N", "O", "F", "P", "S",
+                                   "Cl", "Br", "I", "B", "Si"):
+                        any_metal = True
+                        break
+            if any_metal:
+                break
+        if not any_metal:
+            return results
+    except Exception:
+        pass
+    try:
+        from delfin._fix_bridging_anion import fix_bridging_anion_angles
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = fix_bridging_anion_angles(xyz, mol)
+                if report.get("topology_preserved", True):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _bri_exc:
+        try:
+            logger.debug("Fixer bridging-anion (μ-X M-X-M) skipped: %s",
+                         _bri_exc)
         except Exception:
             pass
         return results
@@ -1256,6 +1784,189 @@ otherwise emits.  Set ``DELFIN_TOP_LEVEL_SEED_COUNT=40`` or
 ``quality_mode='max'`` to widen the pool for extremely difficult
 large ligand systems where more variety outweighs the template-bias
 effect."""
+
+
+# --- Class-aware ETKDG seed-count (opt-in, env-gated, default OFF) ---------
+# Different coordination classes have different conformational dimensionality:
+#
+#   * sigma         : flexible monodentate donors -> ~20 seeds (default)
+#   * hapto         : eta-ring constraints fix donor face -> fewer seeds
+#   * multi_sigma   : bimetallic sigma -> bridge geometry adds DOF -> more
+#   * multi_hapto   : bimetallic eta -> ring constraints + bridge DOF -> mid
+#   * no_metal      : organic ligand alone -> same as sigma default
+#
+# Counts below are chemistry-motivated; pool-evaluator gates them.  Operator
+# can override per class via ``DELFIN_CLASS_AWARE_SEEDS_<CLASS>=N`` (e.g.
+# ``DELFIN_CLASS_AWARE_SEEDS_HAPTO=8`` to try an even tighter slice for the
+# hapto class without touching the others).  ``DELFIN_CLASS_AWARE_SEEDS=0``
+# (default) keeps the bit-exact pre-patch pipeline behaviour using the
+# scalar ``DELFIN_TOP_LEVEL_SEED_COUNT``.
+DELFIN_CLASS_AWARE_SEEDS: int = _delfin_env_int(
+    "DELFIN_CLASS_AWARE_SEEDS", 0
+)
+"""Env-flag toggling class-aware ETKDG seed counts.  Default 0 (= disabled,
+bit-exact pre-patch behaviour).  Set to 1 to enable per-class seed counts
+from ``_class_aware_seed_count`` at every top-level ETKDG embedding site."""
+
+# Chemistry-motivated per-class defaults (see module-level comment above).
+# These values are deliberately documented in code so the operator can
+# audit them without grepping; per-class env overrides go through
+# ``DELFIN_CLASS_AWARE_SEEDS_<CLASS>``.
+_CLASS_AWARE_SEED_DEFAULTS: Dict[str, int] = {
+    "sigma":       20,
+    "hapto":       12,
+    "multi_sigma": 30,
+    "multi_hapto": 15,
+    "no_metal":    20,
+}
+
+
+def _class_aware_seed_count(class_label: Optional[str]) -> int:
+    """Return the per-class ETKDG seed count.
+
+    Resolution precedence:
+      1. ``DELFIN_CLASS_AWARE_SEEDS_<CLASS>`` env-var (per-class override).
+      2. ``_CLASS_AWARE_SEED_DEFAULTS[class_label]`` (chemistry defaults).
+      3. ``DELFIN_TOP_LEVEL_SEED_COUNT`` (global scalar fallback) for any
+         unknown / ``None`` class label.
+
+    The minimum returned value is ``1``; callers may rely on
+    ``_PIPELINE_SEEDS[:n]`` returning at least one seed.
+
+    Side-effect-free: reads only ``os.environ`` and module constants.
+    """
+    fallback = max(1, int(DELFIN_TOP_LEVEL_SEED_COUNT))
+    if not class_label or not isinstance(class_label, str):
+        return fallback
+    key = class_label.strip().lower()
+    default = _CLASS_AWARE_SEED_DEFAULTS.get(key)
+    if default is None:
+        return fallback
+    env_name = "DELFIN_CLASS_AWARE_SEEDS_" + key.upper()
+    return max(1, int(_delfin_env_int(env_name, int(default))))
+
+
+def _resolve_top_level_seed_count(mol) -> int:
+    """Return the ETKDG seed count to use for ``mol`` at top-level sites.
+
+    Honours ``DELFIN_CLASS_AWARE_SEEDS``: when 0 (default) returns the
+    global ``DELFIN_TOP_LEVEL_SEED_COUNT``; when 1 classifies ``mol`` via
+    ``_classify_complex_class`` and routes through
+    ``_class_aware_seed_count``.
+
+    Fail-safe: any classification exception falls back to the scalar so
+    the patch can never regress conformer-pool depth for SMILES that
+    happen to trip the classifier.
+    """
+    fallback = max(1, int(DELFIN_TOP_LEVEL_SEED_COUNT))
+    if not _delfin_env_int("DELFIN_CLASS_AWARE_SEEDS", 0):
+        return fallback
+    try:
+        cls = _classify_complex_class(mol) if mol is not None else None
+    except Exception:
+        return fallback
+    return _class_aware_seed_count(cls)
+
+
+# --- Multi-sigma path V2 (Iter-multi_sigma audit, env-gated, default OFF) ---
+# Forensik 2026-05-13: multi_sigma class shows 30.3%/36.4% (A/B) coverage,
+# the lowest of any class (n=33).  Root cause is wall-clock budget exhaustion:
+# 23/33 SMILES (70%) hit the external 600 s timeout while the embedding
+# pipeline keeps churning through 20+ ETKDG seeds × 25 s _MULTIEMBED_TIMEOUT
+# on 50-125-atom bimetallic systems.  Per-seed embedding alone consumes
+# 10-12 s for a 100-atom Os-Sn complex (measured), so 20 top-level seeds +
+# 20 multi-metal augmentation seeds × per-call timeout easily exceeds the
+# pool-evaluator budget.  This V2 path tightens seed counts and adds a
+# wall-clock budget for the augmentation block, without touching small
+# multi-sigma molecules (which already work in ≤60 s).
+#
+# Default OFF (bit-exact pre-patch behaviour).  Operator enables via
+# ``DELFIN_MULTI_SIGMA_PATH_V2=1`` (all multi-metal sigma SMILES) or
+# ``DELFIN_MULTI_SIGMA_PATH_V2_CLASSES="multi_sigma"`` (class-conditional
+# whitelist, identical to the default-on classes below).
+DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES: Tuple[str, ...] = ("multi_sigma",)
+
+
+def _multi_sigma_v2_active(mol) -> bool:
+    """Return True iff the multi_sigma V2 path is enabled for *mol*.
+
+    Resolution precedence (mirrors ``_class_conditional_flag`` semantics):
+      1. ``DELFIN_MULTI_SIGMA_PATH_V2_CLASSES`` env-var (comma-separated
+         class whitelist).
+      2. Else if ``DELFIN_MULTI_SIGMA_PATH_V2`` is unset or ``0``:
+         return False (default OFF; bit-exact pre-patch).
+      3. Else: True iff ``_classify_complex_class(mol)`` is in
+         ``DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES`` (i.e. multi_sigma).
+
+    Fail-safe: classification exceptions return False so the V2 path can
+    never regress for SMILES that happen to trip the classifier.
+    """
+    if mol is None:
+        return False
+    classes_env = os.environ.get("DELFIN_MULTI_SIGMA_PATH_V2_CLASSES", "") or ""
+    classes = {x.strip() for x in classes_env.split(",") if x.strip()}
+    if classes:
+        try:
+            return _classify_complex_class(mol) in classes
+        except Exception:
+            return False
+    if not _delfin_env_int("DELFIN_MULTI_SIGMA_PATH_V2", 0):
+        return False
+    try:
+        return _classify_complex_class(mol) in set(
+            DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES
+        )
+    except Exception:
+        return False
+
+
+def _multi_sigma_v2_budget(n_heavy: int) -> Dict[str, float]:
+    """Return the seed/timeout budget for the multi_sigma V2 path.
+
+    Scales with heavy-atom count.  Targets a per-SMILES wall-clock
+    ≲ 200 s for the embedding pipeline (leaves room for topology
+    enumeration, OB UFF and the final geometry gate).
+
+    Returns a dict with:
+      * ``seeds_top``: top-level ETKDG seed count cap.
+      * ``seeds_mm_aug``: multi-metal augmentation seed count cap.
+      * ``embed_timeout``: per-seed ``EmbedMultipleConfs`` timeout (s).
+      * ``mm_walltime``: wall-clock budget for the augmentation block (s).
+
+    Small multi-sigma SMILES (≤ 40 atoms) keep the pre-patch seed
+    schedule — they already converge in ≤ 60 s.
+    """
+    n = max(1, int(n_heavy))
+    if n <= 40:
+        # Small bimetallic systems: no regression risk, keep defaults.
+        return {
+            "seeds_top": 20,
+            "seeds_mm_aug": 10,
+            "embed_timeout": 25.0,
+            "mm_walltime": 120.0,
+        }
+    if n <= 60:
+        return {
+            "seeds_top": 8,
+            "seeds_mm_aug": 6,
+            "embed_timeout": 15.0,
+            "mm_walltime": 90.0,
+        }
+    if n <= 90:
+        return {
+            "seeds_top": 5,
+            "seeds_mm_aug": 4,
+            "embed_timeout": 12.0,
+            "mm_walltime": 60.0,
+        }
+    # Very large multi-metal (Fe4-tetranuclear, Pt-cyclam-OTf3, …).
+    return {
+        "seeds_top": 3,
+        "seeds_mm_aug": 3,
+        "embed_timeout": 10.0,
+        "mm_walltime": 45.0,
+    }
+
 
 DELFIN_CHELATE_RANK_VARIANTS: int = _delfin_env_int(
     "DELFIN_CHELATE_RANK_VARIANTS", 3
@@ -1405,6 +2116,155 @@ DELFIN_CHELATE_CAP_90: int = _delfin_env_int("DELFIN_CHELATE_CAP_90", 8)
 for regressions where the correct chelate pose never makes it into
 the cap-8 subset."""
 
+# --- Chelate-rank class-aware donor priority -------------------------------
+# Default-OFF env-flag that augments the chelate-conformer ranking inside
+# ``_chelate_conformer_candidates`` with a class-specific secondary score.
+# Currently the candidates are ordered purely by donor-donor distance fit
+# (``delta``), which on flexible polydentate ligands produces N nearly
+# identical top conformers (same backbone pucker, same donor orientation).
+# When the operator opts in, the secondary score breaks those near-ties in
+# favour of conformers whose donor-element ordering matches the complex
+# class — broadening the chelate-rank survivor pool and the downstream
+# named-isomer coverage (see ``feedback_named_isomer_coverage`` memory).
+#
+# Score model (all values in Å-equivalent so the composite key is
+# ``delta + alpha * class_penalty``, alpha chosen so class re-ranking only
+# ever flips conformers whose ``delta`` differs by < ~0.05 Å; the strict
+# fit gate is preserved):
+#   class_penalty = sum(W[class][donor_element] for donor in fragment) /
+#                   max(1, n_donors)
+#   composite     = delta + DELFIN_CHELATE_RANK_CLASS_ALPHA * class_penalty
+#
+# Per-element weights encode chemistry heuristics validated against
+# domain references (Lever AOM σ/π donor scales, Persson HSAB
+# affinity table) without any SMILES-specific shortcuts:
+#   * sigma         — favour N/O/S strong-σ chelating donors, mildly
+#                     deprioritise halides (Cl/Br/I) and bulky P which
+#                     historically over-rank by ETKDG distance fit alone.
+#   * hapto         — neutral on σ donors, lift carbon donors (cyclometal,
+#                     η-anchor) since the hapto class encodes
+#                     mixed-η/σ topology.
+#   * multi_sigma   — bridging-friendly donors (μ-OR, μ-Cl) up-weighted to
+#                     keep bridge poses in the pool for the second metal.
+#   * multi_hapto   — same as hapto, plus carbon-donor bonus to feed
+#                     mixed-η bridging arrangements.
+#   * no_metal      — never re-ranks (no_metal SMILES have no chelates).
+#
+# Negative weight = lower penalty = better (composite score smaller).
+# Set ``DELFIN_CHELATE_RANK_CLASS_AWARE=1`` to enable.
+# Operator override via ``DELFIN_CHELATE_RANK_CLASS_AWARE_CLASSES=cls1,cls2``
+# limits the re-rank to the listed classes (e.g. "sigma" only).
+DELFIN_CHELATE_RANK_CLASS_AWARE: int = _delfin_env_int(
+    "DELFIN_CHELATE_RANK_CLASS_AWARE", 0
+)
+"""1 = enable class-aware chelate-conformer re-ranking; 0 = HEAD baseline
+(pure donor-distance fit).  Default 0 keeps bit-exact behaviour."""
+
+DELFIN_CHELATE_RANK_CLASS_ALPHA: float = _delfin_env_float(
+    "DELFIN_CHELATE_RANK_CLASS_ALPHA", 0.04
+)
+"""Mixing coefficient for the class-aware penalty term.  Default 0.04 Å so
+two conformers tying on ``delta`` to within ~0.04 Å can be re-ordered by
+the class score, but a conformer with markedly better distance fit
+(>0.05 Å advantage) always wins regardless of class preference."""
+
+# Per-element class-aware weights: lower is better.  Conservative range
+# [-0.5, +0.5] keeps the per-donor contribution well below ``alpha`` after
+# averaging, so the composite never overwhelms the primary distance fit.
+_CHELATE_CLASS_DONOR_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "sigma": {
+        "N":  -0.40,  # strong-σ amine/imine/pyridine — preferred
+        "O":  -0.30,  # carboxylate / phenolate / alkoxide
+        "S":  -0.20,  # thiolate / thioether
+        "P":   0.10,  # phosphine — over-ranked by distance alone
+        "C":   0.00,  # NHC carbene / cyclometal — neutral
+        "Cl":  0.30,  # halide — usually monodentate, deprioritise
+        "Br":  0.30,
+        "I":   0.30,
+        "F":   0.20,
+    },
+    "hapto": {
+        "N":  -0.20,
+        "O":  -0.20,
+        "S":  -0.10,
+        "P":   0.00,
+        "C":  -0.30,  # η-anchor / cyclometal carbon — preferred
+        "Cl":  0.20,
+        "Br":  0.20,
+        "I":   0.20,
+        "F":   0.10,
+    },
+    "multi_sigma": {
+        "N":  -0.30,
+        "O":  -0.40,  # bridging μ-OR / μ-O common in dimers — strong bonus
+        "S":  -0.30,  # μ-S bridges
+        "P":   0.05,
+        "C":   0.00,
+        "Cl": -0.20,  # μ-Cl bridges — common, lift them
+        "Br": -0.10,
+        "I":   0.00,
+        "F":   0.10,
+    },
+    "multi_hapto": {
+        "N":  -0.20,
+        "O":  -0.30,
+        "S":  -0.20,
+        "P":   0.00,
+        "C":  -0.30,
+        "Cl": -0.10,
+        "Br":  0.00,
+        "I":   0.10,
+        "F":   0.10,
+    },
+    "no_metal": {},   # no re-rank applied
+}
+
+
+def _chelate_class_donor_penalty(
+    mol_or_frag,
+    donor_atom_indices,
+    class_label: str,
+) -> float:
+    """Compute the average class-aware donor-priority penalty for one
+    chelate conformer.
+
+    Returns the **mean** of per-donor weights from
+    ``_CHELATE_CLASS_DONOR_WEIGHTS[class_label]``.  Unknown elements
+    contribute 0.0 (neutral), so the helper is robust to exotic donors
+    (Se, Te, Si, B) that the table does not enumerate.
+
+    Returns 0.0 unconditionally for ``no_metal`` and unknown classes so
+    the function is bit-exact when the env-flag is off, when the class
+    table is empty, or when the fragment has no donors.
+    """
+    weights = _CHELATE_CLASS_DONOR_WEIGHTS.get(class_label or "", {})
+    if not weights or not donor_atom_indices:
+        return 0.0
+    if mol_or_frag is None:
+        return 0.0
+    total = 0.0
+    counted = 0
+    for idx in donor_atom_indices:
+        try:
+            atom = mol_or_frag.GetAtomWithIdx(int(idx))
+        except Exception:
+            continue
+        try:
+            sym = atom.GetSymbol()
+        except Exception:
+            continue
+        if sym in weights:
+            total += float(weights[sym])
+            counted += 1
+        else:
+            # Unknown donor element → neutral contribution (no penalty,
+            # no bonus).  Counted so the average stays meaningful.
+            counted += 1
+    if counted == 0:
+        return 0.0
+    return total / counted
+
+
 # --- Final-result geometry gate (smiles_to_xyz_isomers) -------------------
 DELFIN_SEVERE_DIST_MAX_ABS: float = _delfin_env_float(
     "DELFIN_SEVERE_DIST_MAX_ABS", 2.4
@@ -1488,6 +2348,12 @@ _CHELATE_EMBED_TIMEOUT: float = _delfin_env_float(
     "DELFIN_CHELATE_EMBED_TIMEOUT", 6.0
 )
 """Per-seed timeout for the chelate conformer search."""
+
+# Thread-local override for ``_MULTIEMBED_TIMEOUT``.  Used by the multi-sigma
+# V2 path (and any future class-conditional patch) to push a tighter per-seed
+# timeout into ``_embed_multiple_confs_with_timeout`` without changing the
+# global default or thread-stamping every callsite.  Inactive when None.
+_MULTIEMBED_TIMEOUT_OVERRIDE = threading.local()
 
 # --- Deterministic seed schedule (shared across all stages) ---------------
 def _generate_pipeline_seeds(n: int) -> Tuple[int, ...]:
@@ -1662,7 +2528,14 @@ def _embed_multiple_confs_with_timeout(
     but the caller is unblocked immediately.
     """
     if timeout is None:
-        timeout = _MULTIEMBED_TIMEOUT
+        # Honour the multi-sigma V2 thread-local override (default OFF).
+        # Operator-set ``DELFIN_MULTIEMBED_TIMEOUT`` still applies via the
+        # module-level constant when no override is active.
+        try:
+            _ovr = getattr(_MULTIEMBED_TIMEOUT_OVERRIDE, "value", None)
+        except Exception:
+            _ovr = None
+        timeout = float(_ovr) if _ovr is not None else _MULTIEMBED_TIMEOUT
 
     # Scale timeout + num_confs with mol size.  For huge fused-ring
     # ligands (>80 atoms) the default 25 s default cannot finish even
@@ -17461,6 +18334,118 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
                 any_moved = True
         if not any_moved:
             break
+
+    # ---- Wave-5 MULTIHAPTO_MM_ENFORCE (BEGIN) ----------------------------
+    # The "push non-bonded apart" loop above protects topology by repelling
+    # spurious near-contacts; it does NOT pull declared M-M sigma bonds back
+    # to their ideal length when ETKDG/UFF stretched them.  Agent-3 Wave-5
+    # forensik on the 22-SMILES multi-hapto class showed 17/22 SMILES carry
+    # an Sn-Ir / Sn-Rh / Sn-Co main-group-TM sigma bond that ends up at
+    # 3.4 A in the output -- above the topology-detector cutoff
+    # (r_Sn + r_Ir + 0.45 = 3.25 A) so the M-M bond is dropped from the
+    # parsed XYZ graph, causing topology_intact = False.
+    #
+    # MM_ENFORCE pulls each SMILES-declared (M, M) neighbour pair toward
+    # the ideal distance from ``_METAL_METAL_BOND_LENGTHS`` (or covalent-
+    # radii sum + 0.4 A fallback for unlisted hetero-pairs).  Symmetric
+    # 50/50 move so neither metal drags its ligand frame disproportionally.
+    # Universal: only fires on actual M-M edges (mono-hapto / sigma /
+    # no_metal classes have none -- no-op).
+    #
+    # Production gating: default OFF (per
+    # ``feedback_production_ready_only``).  Operator opt-in via
+    #   DELFIN_MULTIHAPTO_MM_ENFORCE=1
+    if _delfin_env_int("DELFIN_MULTIHAPTO_MM_ENFORCE", 0):
+        try:
+            _enforce_smiles_mm_distances(mol, conf, metal_indices, _gp, _sp, np)
+        except Exception as _mm_exc:
+            logger.debug("MULTIHAPTO_MM_ENFORCE skipped: %s", _mm_exc)
+    # ---- Wave-5 MULTIHAPTO_MM_ENFORCE (END) ------------------------------
+
+
+def _enforce_smiles_mm_distances(
+    mol,
+    conf,
+    metal_indices: List[int],
+    _gp,
+    _sp,
+    np,
+    tolerance: float = 0.20,
+) -> int:
+    """Pull SMILES-declared M-M sigma-bonded pairs toward ideal distance.
+
+    For every graph-neighbour pair ``(m_i, m_j)`` where both atoms are in
+    ``_METAL_SET``, look up the ideal bond length in
+    ``_METAL_METAL_BOND_LENGTHS`` (keyed by ``frozenset({sym_i, sym_j})``);
+    fall back to ``r_cov(sym_i) + r_cov(sym_j) + 0.4`` if the pair is not
+    in the dict.  When the current Euclidean distance deviates from the
+    ideal by more than ``tolerance`` (default 0.20 A), shift both metals
+    symmetrically along the connecting axis so the new distance equals
+    the ideal.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+        Molecule whose conformer is being adjusted in place.
+    conf : rdkit.Chem.Conformer
+        Conformer whose atom positions are updated (mutated via ``_sp``).
+    metal_indices : list[int]
+        Indices of metal atoms in ``mol`` (matches ``_METAL_SET`` lookup).
+    _gp, _sp : Callable[[int], np.ndarray] / Callable[[int, np.ndarray], None]
+        Position get / set helpers closed over ``conf`` (provided by the
+        caller, ``_enforce_metal_topology``).
+    np : module
+        ``numpy`` handle (passed in so this helper does not re-import).
+    tolerance : float, optional
+        Distance deviation (A) below which no adjustment is made.
+
+    Returns
+    -------
+    int
+        Number of M-M pairs actually moved.
+    """
+    moved = 0
+    seen: set = set()
+    for mi in metal_indices:
+        sym_i = mol.GetAtomWithIdx(mi).GetSymbol()
+        for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni == mi:
+                continue
+            sym_j = nbr.GetSymbol()
+            if sym_j not in _METAL_SET:
+                continue
+            pair = (min(mi, ni), max(mi, ni))
+            if pair in seen:
+                continue
+            seen.add(pair)
+
+            target = _METAL_METAL_BOND_LENGTHS.get(frozenset({sym_i, sym_j}))
+            if target is None:
+                r_i = _COVALENT_RADII.get(sym_i)
+                r_j = _COVALENT_RADII.get(sym_j)
+                if r_i is None or r_j is None:
+                    continue
+                target = r_i + r_j + 0.4
+
+            pos_i = _gp(mi)
+            pos_j = _gp(ni)
+            vec = pos_j - pos_i
+            cur = float(np.linalg.norm(vec))
+            if cur < 1e-6:
+                continue
+            if abs(cur - target) <= tolerance:
+                continue
+            unit = vec / cur
+            shift = (target - cur) * 0.5
+            # Symmetric 50/50: m_i moves -shift along unit, m_j moves
+            # +shift along unit, so the new separation equals target.
+            _sp(mi, pos_i - unit * shift)
+            _sp(ni, pos_j + unit * shift)
+            moved += 1
+    return moved
+
+
 def _segment_distance_sq(p1, p2, p3, p4) -> float:
     """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
 
@@ -18760,6 +19745,10 @@ def _enumerate_topological_isomers(
     n_coord: int,
     chelate_pairs: List[FrozenSet],
     metal_symbol: str = '',
+    metal_formal_charge: int = 0,
+    mol=None,
+    metal_idx: Optional[int] = None,
+    donor_indices: Optional[List[int]] = None,
 ) -> List[Tuple[tuple, List[int]]]:
     """Return all unique (canonical_form, permutation) pairs.
 
@@ -18771,7 +19760,20 @@ def _enumerate_topological_isomers(
             donor_indices list passed by the caller).
         n_coord: Coordination number (2–8).
         chelate_pairs: frozensets of donor-list indices that must stay cis.
-        metal_symbol: Metal element symbol (used for CN=4 geometry preference).
+        metal_symbol: Metal element symbol (used for CN=4/5 geometry
+            preference).
+        metal_formal_charge: Formal charge on the metal centre.  Optional,
+            consumed only when ``DELFIN_CN5_GEOM_AWARE=1`` to compute the
+            d-electron count for CN=5 polyhedron selection.  Defaults to 0
+            (matches legacy uncharged-metal assumption).
+        mol: Optional RDKit ``Mol`` for the rich CN=5 classifier.  When
+            provided together with ``metal_idx`` + ``donor_indices`` and
+            ``DELFIN_CN5_GEOM_AWARE=1``, the graph-based
+            :func:`_classify_cn5_geometry` is consulted; otherwise the
+            label-only facade is used.
+        metal_idx: 0-based atom index of the metal centre in ``mol``.
+        donor_indices: 0-based atom indices of the donor atoms in ``mol``
+            in the same order as ``donor_labels``.
 
     Returns:
         List of (canonical_form_tuple, perm_list) for every unique isomer.
@@ -18796,7 +19798,27 @@ def _enumerate_topological_isomers(
         other = 'TH' if pref == 'SQ' else 'SQ'
         geometries = _all_polyhedra_codes(4, metal_symbol, [pref, other, 'SS'])
     elif n_coord == 5:
-        pref5 = _PREFERRED_CN5_GEOMETRY.get(metal_symbol, 'TBP')
+        # CN=5 polyhedron preference: chemistry-aware (DELFIN_CN5_GEOM_AWARE=1)
+        # or legacy element-only map (default OFF -> bit-exact HEAD).
+        if _delfin_env_int("DELFIN_CN5_GEOM_AWARE", 0):
+            if (
+                mol is not None
+                and metal_idx is not None
+                and donor_indices is not None
+                and len(donor_indices) == 5
+            ):
+                pref5 = _classify_cn5_geometry(
+                    mol, int(metal_idx), list(donor_indices)
+                )
+            else:
+                pref5 = _classify_cn5_geometry_from_labels(
+                    metal_symbol=metal_symbol,
+                    formal_charge=int(metal_formal_charge or 0),
+                    donor_labels=donor_labels,
+                    chelate_pairs=chelate_pairs,
+                )
+        else:
+            pref5 = _PREFERRED_CN5_GEOMETRY.get(metal_symbol, 'TBP')
         other5 = 'SP' if pref5 == 'TBP' else 'TBP'
         geometries = _all_polyhedra_codes(5, metal_symbol, [pref5, other5])
     elif n_coord == 6:
@@ -19001,6 +20023,47 @@ def _chelate_conformer_candidates(
     if len(donor_new) < 2:
         return []
 
+    # --- Class-aware chelate-rank gating ----------------------------------
+    # Default OFF — bit-exact when ``DELFIN_CHELATE_RANK_CLASS_AWARE`` is
+    # unset.  When enabled the per-conformer composite score becomes
+    #   composite = delta + alpha * (element_weight + spread_factor * pucker)
+    # where ``element_weight`` is constant for a given fragment (donor
+    # set fixed) and ``pucker`` is the per-conformer donor-plane RMS
+    # out-of-plane deviation (Å).  Sigma class rewards puckered backbones
+    # (chair / boat tridentates), hapto class is neutral on pucker.
+    # Implementation note: the element weight alone cannot reorder
+    # conformers from the same call (constant); the per-conformer pucker
+    # is what makes the secondary score actually re-rank.
+    _class_aware_enabled = False
+    _class_penalty_const = 0.0
+    _class_spread_factor = 0.0
+    try:
+        if _class_conditional_flag(
+            "DELFIN_CHELATE_RANK_CLASS_AWARE", mol
+        ):
+            _class_aware_enabled = True
+            _cls = _classify_complex_class(mol)
+            _class_penalty_const = _chelate_class_donor_penalty(
+                mol, donor_atom_indices, _cls,
+            )
+            # Per-class pucker-diversity reward.  Negative value =
+            # reward (lowers the composite when the conformer is more
+            # out-of-plane).  Sigma class strongly rewards pucker variety
+            # because mer/fac tridentate isomers differ exactly in the
+            # backbone-plane deviation.  Hapto and multi_* classes get a
+            # milder reward; no_metal disables entirely.
+            _class_spread_factor = {
+                "sigma":       -0.50,
+                "hapto":       -0.10,
+                "multi_sigma": -0.30,
+                "multi_hapto": -0.10,
+                "no_metal":     0.00,
+            }.get(_cls, 0.0)
+    except Exception:
+        _class_aware_enabled = False
+        _class_penalty_const = 0.0
+        _class_spread_factor = 0.0
+
     is_pairwise_matrix = not isinstance(target_bite, (int, float))
     if is_pairwise_matrix:
         try:
@@ -19168,13 +20231,33 @@ def _chelate_conformer_candidates(
             )
             for old, new in old_to_new.items()
         }
-        accepted.append((delta, coords_map))
+
+        # Per-conformer pucker score for class-aware re-rank.  Computed
+        # only when the class-aware flag is on; otherwise the secondary
+        # term is 0 and the sort is bit-exact with HEAD.  Pucker = RMS
+        # out-of-plane distance of donor atoms from their best-fit
+        # plane (n_donors >= 3) or 0 for bidentate (no plane to fit).
+        _pucker = 0.0
+        if _class_aware_enabled and len(donor_new) >= 3:
+            try:
+                _cen = donor_pts.mean(axis=0)
+                _X = donor_pts - _cen
+                # SVD of centered donor matrix; smallest singular vector
+                # = plane normal.  Plane RMS = smallest singular value /
+                # sqrt(n).
+                _U, _S, _Vt = _np.linalg.svd(_X, full_matrices=False)
+                if _S.size >= 1:
+                    _pucker = float(_S[-1] / max(1.0, len(donor_new) ** 0.5))
+            except Exception:
+                _pucker = 0.0
+
+        accepted.append((delta, coords_map, _pucker))
         # Early-exit once we have ``max_candidates`` "good" fits
         # (delta < accept_delta).  Every extra seed after this point
         # can only replace an already-good candidate with a slightly
         # better one — not worth the 6 s per-seed wall-time on the
         # heaviest ligands where every seed costs real time.
-        good = sum(1 for d, _c in accepted if d < accept_delta)
+        good = sum(1 for d, _c, _p in accepted if d < accept_delta)
         if good >= max_candidates:
             break
 
@@ -19182,8 +20265,20 @@ def _chelate_conformer_candidates(
         return []
 
     # Sort by fit quality (best first), cap at max_candidates.
-    accepted.sort(key=lambda item: item[0])
-    return [c for _d, c in accepted[:max_candidates]]
+    if _class_aware_enabled:
+        _alpha = DELFIN_CHELATE_RANK_CLASS_ALPHA
+        accepted.sort(
+            key=lambda item: (
+                item[0]
+                + _alpha * (
+                    _class_penalty_const
+                    + _class_spread_factor * item[2]
+                )
+            )
+        )
+    else:
+        accepted.sort(key=lambda item: item[0])
+    return [c for _d, c, _p in accepted[:max_candidates]]
 
 
 def _best_chelate_conformer_coords(
@@ -21439,6 +22534,10 @@ def _generate_topological_isomers(
         isomers = _enumerate_topological_isomers(
             donor_labels, n_coord, chelate_list_pairs,
             metal_symbol=atom.GetSymbol(),
+            metal_formal_charge=int(atom.GetFormalCharge() or 0),
+            mol=mol,
+            metal_idx=metal_idx,
+            donor_indices=donor_indices,
         )
 
         # Chelate-distance feasibility is a useful guard, but can over-prune
@@ -22710,7 +23809,31 @@ def _generate_alternative_binding_modes(
                 _cls = _classify_complex_class(mol)
             except Exception:
                 _cls = "sigma"
-            _alt_budget_s = 0.0 if _cls in ("multi_sigma", "multi_hapto") else 60.0
+            # Multi-sigma V2: opt out of the historical "unlimited" budget
+            # for multi-metal sigma — that branch was the second biggest
+            # contributor to the 600 s pool-evaluator timeouts (forensik
+            # 2026-05-13).  Cap to the heavy-atom-scaled wall-clock so
+            # alt-binding-mode exploration cannot starve the rest of the
+            # pipeline.  Other classes keep their pre-patch budget.
+            _v2_alt_cap: Optional[float] = None
+            try:
+                if _cls == "multi_sigma" and _multi_sigma_v2_active(mol):
+                    _heavy_n_alt = sum(
+                        1 for _a in mol.GetAtoms() if _a.GetAtomicNum() > 1
+                    )
+                    # Re-use the multi-metal augmentation budget — these
+                    # two stages have similar per-call cost characteristics.
+                    _v2_alt_cap = float(
+                        _multi_sigma_v2_budget(_heavy_n_alt)["mm_walltime"]
+                    )
+            except Exception:
+                _v2_alt_cap = None
+            if _v2_alt_cap is not None:
+                _alt_budget_s = _v2_alt_cap
+            else:
+                _alt_budget_s = (
+                    0.0 if _cls in ("multi_sigma", "multi_hapto") else 60.0
+                )
     except Exception:
         _alt_budget_s = 60.0
     _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
@@ -22786,6 +23909,21 @@ def _generate_alternative_binding_modes(
 
                     accepted = False
                     for cid in candidate_cids:
+                        # Multi-sigma V2: per-template budget check.  The
+                        # outer donor-loop check (above) can still overshoot
+                        # by 30-60 s on multi-metal complexes where each
+                        # template alignment + UFF + topology gate runs
+                        # serially.  This inner check bounds the overshoot.
+                        if (
+                            _alt_t0 is not None
+                            and (_time_mod.monotonic() - _alt_t0) > _alt_budget_s
+                        ):
+                            logger.debug(
+                                "alt-binding budget %.1fs exceeded — "
+                                "stopping at template loop",
+                                _alt_budget_s,
+                            )
+                            return results
                         # Build WITHOUT UFF first, check topology, THEN UFF.
                         xyz = _build_topology_xyz(
                             alt_mol, metal_idx, donor_indices, perm,
@@ -24230,6 +25368,58 @@ def smiles_to_xyz_isomers(
         )
         return _fallback_results, None
 
+    # ---- Multi-sigma V2 path (env-gated, default OFF) ----
+    # Class-conditional seed cap: for large bimetallic σ-only systems the
+    # 20 top-level seeds × 25 s _MULTIEMBED_TIMEOUT routinely exceeds the
+    # caller's wall-clock budget without adding distinct coordination
+    # isomers (the multi-metal augmentation block contributes most of the
+    # diversity anyway).  Cap both knobs based on heavy-atom count.
+    # See ``_multi_sigma_v2_active`` / ``_multi_sigma_v2_budget`` above.
+    _ms_v2_budget: Optional[Dict[str, float]] = None
+    _ms_v2_prev_override = getattr(_MULTIEMBED_TIMEOUT_OVERRIDE, "value", None)
+    try:
+        if _multi_sigma_v2_active(mol):
+            _heavy_n_ms = sum(
+                1 for _a in mol.GetAtoms() if _a.GetAtomicNum() > 1
+            )
+            _ms_v2_budget = _multi_sigma_v2_budget(_heavy_n_ms)
+            _orig_seeds = int(_qprof.get("seeds", 20))
+            _capped_seeds = min(_orig_seeds, int(_ms_v2_budget["seeds_top"]))
+            if _capped_seeds < _orig_seeds:
+                _qprof["seeds"] = _capped_seeds
+                logger.debug(
+                    "multi_sigma V2: heavy=%d → top-level seeds %d→%d, "
+                    "embed_timeout=%.1fs, mm_walltime=%.1fs",
+                    _heavy_n_ms, _orig_seeds, _capped_seeds,
+                    _ms_v2_budget["embed_timeout"],
+                    _ms_v2_budget["mm_walltime"],
+                )
+            # Cap ``alt_tries`` proportionally to the augmentation seed
+            # cap so that alt-binding / linkage isomer exploration cannot
+            # run 8 templates × 12 alt donors × 2 metals (the worst-case
+            # 192-template traversal) on a 100-atom system.  We keep at
+            # least 2 tries so the inner ranker can still pick between
+            # a primary + backup template per rewire.  ``seeds_mm_aug``
+            # is the natural pairing — both knobs gate the same
+            # "per-candidate template iteration" workload.
+            _orig_alt = int(_qprof.get("alt_tries", 8))
+            _capped_alt = max(
+                2, min(_orig_alt, int(_ms_v2_budget["seeds_mm_aug"]))
+            )
+            if _capped_alt < _orig_alt:
+                _qprof["alt_tries"] = _capped_alt
+            # Push tighter per-seed embedding timeout into
+            # ``_embed_multiple_confs_with_timeout`` for the duration of
+            # this call.  Restored in the finally block below.
+            _MULTIEMBED_TIMEOUT_OVERRIDE.value = float(
+                _ms_v2_budget["embed_timeout"]
+            )
+    except Exception as _ms_v2_exc:
+        # Fail-safe: any failure in the V2 path leaves the pipeline at
+        # pre-patch defaults so we never regress the small-molecule case.
+        logger.debug("multi_sigma V2 cap skipped: %s", _ms_v2_exc)
+        _ms_v2_budget = None
+
     # For metal complexes: prepend OB conformers to the pool so that
     # Avogadro-quality geometries are always considered during isomer search.
     conf_ids: List[int] = []
@@ -24272,8 +25462,24 @@ def smiles_to_xyz_isomers(
 
     # Embed multiple conformers with deterministic seed schedule.
     # Seeds are independent → parallelize with ThreadPoolExecutor.
+    #
+    # Class-aware override: when ``DELFIN_CLASS_AWARE_SEEDS=1`` AND the
+    # caller is using the default quality profile (i.e. ``_qprof`` was
+    # built from module defaults — its ``seeds`` slot equals
+    # ``DELFIN_TOP_LEVEL_SEED_COUNT``) we replace the seed count with
+    # the per-class value from ``_resolve_top_level_seed_count``.
+    # Explicit named profiles (``fast``/``max``/``extreme``) always win,
+    # so operator-supplied ``quality_mode='max'`` cannot be silently
+    # narrowed by the class heuristic.
     try:
-        seeds = list(_PIPELINE_SEEDS[:max(1, int(_qprof.get("seeds", len(_TOP_LEVEL_SEEDS))))])
+        _qprof_seeds = int(_qprof.get("seeds", len(_TOP_LEVEL_SEEDS)))
+        _resolved = _resolve_top_level_seed_count(mol)
+        if (
+            _qprof_seeds == int(DELFIN_TOP_LEVEL_SEED_COUNT)
+            and _resolved != _qprof_seeds
+        ):
+            _qprof_seeds = _resolved
+        seeds = list(_PIPELINE_SEEDS[:max(1, _qprof_seeds)])
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
         # Parallel ETKDG embedding with deterministic output order.
@@ -24748,7 +25954,20 @@ def smiles_to_xyz_isomers(
             # profile.  Sharing the deterministic _PIPELINE_SEEDS pool
             # keeps results reproducible across runs.
             _extra_seed_count = int(_qprof.get("seeds", 10))
-            _extra_seeds = list(_PIPELINE_SEEDS[:max(10, _extra_seed_count)])
+            _mm_walltime: Optional[float] = None
+            # Multi-sigma V2: shrink the augmentation seed pool AND add a
+            # wall-clock budget so 50-125-atom bimetallic complexes can't
+            # consume the entire caller timeout on this single block.
+            # Bit-exact pre-patch when _ms_v2_budget is None.
+            if _ms_v2_budget is not None:
+                _extra_seed_count = min(
+                    _extra_seed_count, int(_ms_v2_budget["seeds_mm_aug"])
+                )
+                _mm_walltime = float(_ms_v2_budget["mm_walltime"])
+            _extra_seeds = list(
+                _PIPELINE_SEEDS[:max(1 if _ms_v2_budget is not None else 10,
+                                     _extra_seed_count)]
+            )
             _extra_ids: List[int] = []
             _n_extra = min(len(_extra_seeds), os.cpu_count() or 4, 64)
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_extra) as _xp:
@@ -24757,12 +25976,36 @@ def smiles_to_xyz_isomers(
                     for s in _extra_seeds
                 ]
                 # Submission-order traversal preserves determinism (see
-                # top-level embedding loop for rationale).
-                for _xf in _xfuts:
-                    try:
-                        _extra_ids.extend(_xf.result())
-                    except Exception:
-                        pass
+                # top-level embedding loop for rationale).  When a
+                # wall-clock budget is active, switch to per-future
+                # timeouts so a single hung embedding cannot starve the
+                # remaining seeds.
+                if _mm_walltime is not None:
+                    _mm_deadline = time.time() + _mm_walltime
+                    for _xf in _xfuts:
+                        _remaining = max(0.0, _mm_deadline - time.time())
+                        if _remaining <= 0.0:
+                            # Budget exhausted — cancel the rest.
+                            try:
+                                _xf.cancel()
+                            except Exception:
+                                pass
+                            continue
+                        try:
+                            _extra_ids.extend(_xf.result(timeout=_remaining))
+                        except concurrent.futures.TimeoutError:
+                            try:
+                                _xf.cancel()
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                else:
+                    for _xf in _xfuts:
+                        try:
+                            _extra_ids.extend(_xf.result())
+                        except Exception:
+                            pass
             logger.debug("Multi-metal augmentation: %d extra conformers", len(_extra_ids))
 
             # Classify + dedup with existing results
@@ -25452,6 +26695,21 @@ def smiles_to_xyz_isomers(
     # Bit-exact when DELFIN_BAUSTEIN5=0 (default).
     results = _apply_baustein5_if_enabled(mol, results, _dual_parse_done)
 
+    # ── Targeted post-B5 fixers (F19 / F25 / WUXQAK / μ-X bridging) ──────────
+    # Surgical per-frame correctors that run AFTER B5 so they re-align
+    # hydrogens / pyramidal N / linear sp3-C donors / bridging anions to
+    # the post-optimization heavy-atom frame.  Each is opt-in via its own
+    # env flag and is bit-exact when its flag is 0 (default OFF).
+    # Insertion order: F19 (sp3-H tetrahedrality) → F25 (sp3-N pyramidality)
+    # → WUXQAK (sp3-C linear collapse) → bridging-anion (μ-X M-X-M angle
+    # for bimetallic complexes).  See ``_apply_fixer_*`` docstrings.
+    results = _apply_fixer_f19_if_enabled(mol, results, _dual_parse_done)
+    results = _apply_fixer_f25_if_enabled(mol, results, _dual_parse_done)
+    results = _apply_fixer_wuxqak_if_enabled(mol, results, _dual_parse_done)
+    results = _apply_fixer_bridging_anion_if_enabled(
+        mol, results, _dual_parse_done,
+    )
+
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
     # that produced 16-26 frames per crowded high-CN / multi-metal SMILES at
@@ -25847,6 +27105,18 @@ def smiles_to_xyz_isomers(
             logger.debug("Iter-8.1 filter probe failed: %s", _iter81_exc)
         except Exception:
             pass
+
+    # Multi-sigma V2: restore the per-seed embedding timeout override on
+    # the calling thread so this function call has no effect on any
+    # later, unrelated call from the same thread.
+    try:
+        if _ms_v2_prev_override is None:
+            if hasattr(_MULTIEMBED_TIMEOUT_OVERRIDE, "value"):
+                delattr(_MULTIEMBED_TIMEOUT_OVERRIDE, "value")
+        else:
+            _MULTIEMBED_TIMEOUT_OVERRIDE.value = _ms_v2_prev_override
+    except Exception:
+        pass
 
     return results, None
 
@@ -26269,7 +27539,44 @@ def smiles_to_xyz(
             # aligned ligand fragments. This avoids global ETKDG on the full
             # metal graph where multi-hapto systems are most brittle.
             try:
-                hybrid_variant_plans = _secondary_metal_variant_plans(mol, hapto_groups)
+                # ---- Wave-5 MULTIHAPTO_SIMPLE_PATH (BEGIN) -----------------
+                # Wave-4/Agent-3 root-cause: ``_build_multimetal_hapto_sequential``
+                # (called via ``_build_hybrid_hapto_complex``) produces hapto
+                # geometry with spurious extra-bonds on the secondary metal's
+                # coordination sphere -- Step 3 (``donor_indices``) skips all
+                # metals so SMILES-declared M-M sigma bonds (e.g. Sn-Ir) are
+                # never enforced.  Downstream ``_select_best_hapto_candidate``
+                # picks those broken seq-builder candidates over ETKDG-seed
+                # and sphere-scaffold candidates because they have correct
+                # eta-distance, masking the M-M topology breakage.
+                #
+                # SIMPLE_PATH bypasses the variant-plan loop +
+                # ``_build_hybrid_hapto_complex`` entirely for the
+                # ``multi_hapto`` class.  ETKDG-seed embedding (below) and
+                # sphere-scaffold fallback still run and feed
+                # ``hapto_candidate_mols``; ``_select_best_hapto_candidate``
+                # then picks the best from those.
+                #
+                # Production gating: default OFF (per
+                # ``feedback_production_ready_only``).  Operator opt-in via
+                #   DELFIN_MULTIHAPTO_SIMPLE_PATH=1            (all classes)
+                #   DELFIN_MULTIHAPTO_SIMPLE_PATH_CLASSES="multi_hapto"
+                # The class-conditional helper guarantees bit-identical
+                # behaviour on every class when the env-flag is unset.
+                _simple_path_active = _class_conditional_flag(
+                    "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0,
+                )
+                if _simple_path_active:
+                    logger.info(
+                        "multi-hapto SIMPLE_PATH active: skipping "
+                        "_secondary_metal_variant_plans + "
+                        "_build_hybrid_hapto_complex (ETKDG-seeds + "
+                        "scaffold-fallback still run)"
+                    )
+                    hybrid_variant_plans: List[Tuple[str, Dict[int, int]]] = []
+                else:
+                    hybrid_variant_plans = _secondary_metal_variant_plans(mol, hapto_groups)
+                # ---- Wave-5 MULTIHAPTO_SIMPLE_PATH (END) -------------------
                 seen_hybrid_xyz: set = set()
                 for plan_idx, (hybrid_label, variant_plan) in enumerate(hybrid_variant_plans):
                     hybrid_mol = _build_hybrid_hapto_complex(
@@ -26545,7 +27852,16 @@ def smiles_to_xyz(
             # --- RDKit ETKDG with 12 diverse fixed seeds (~17 confs/seed) ---
             # Use a thread-pool with a global timeout to prevent hangs on
             # complex metal ring systems where ETKDG can stall.
-            seeds = list(_TOP_LEVEL_SEEDS)
+            #
+            # When ``DELFIN_CLASS_AWARE_SEEDS=1`` the seed count is replaced
+            # by the per-class value (``_resolve_top_level_seed_count``);
+            # default OFF preserves bit-exact pre-patch behaviour by falling
+            # through to ``_TOP_LEVEL_SEEDS``.
+            _seed_count = _resolve_top_level_seed_count(mol)
+            if _seed_count != len(_TOP_LEVEL_SEEDS):
+                seeds = list(_PIPELINE_SEEDS[:max(1, _seed_count)])
+            else:
+                seeds = list(_TOP_LEVEL_SEEDS)
             per_seed = max(1, 200 // len(seeds))
             _etkdg_deadline = _EMBED_TIMEOUT * 3  # total budget for all seeds
             _etkdg_start = __import__('time').monotonic()
@@ -27975,7 +29291,17 @@ def _optimize_xyz_openbabel(
                 # to legacy FixAtom behaviour (helper enforces this).
                 _soft_skip_donors: set = set()
                 _soft_meta = constraints.get("_soft_donor_meta") if isinstance(constraints, dict) else None
-                _soft_enabled = bool(_delfin_env_int("DELFIN_UFF_SOFT_DONORS", 0))
+                # Phase 3B per-class override (analogue of DELFIN_SIGMA_*_CLASSES):
+                #   export DELFIN_UFF_SOFT_DONORS_CLASSES="sigma"
+                #     → enable only for sigma (drop multi_sigma) when pool-verdict
+                #     shows UFF-soft only helps sigma.
+                # Empty _CLASSES env (default) → fall back to scalar
+                # DELFIN_UFF_SOFT_DONORS.  ``mol`` may be ``None`` here (caller
+                # passes None for some legacy entry-points); _class_conditional_flag
+                # is fail-safe in that case (falls back to scalar flag).  An
+                # explicit per-call class guard is still applied below via
+                # _soft_meta["class_label"] + should_use_soft_donor.
+                _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", mol)
                 if _soft_enabled and _soft_meta:
                     try:
                         from delfin._uff_soft_donor import should_use_soft_donor  # lazy
@@ -27991,8 +29317,28 @@ def _optimize_xyz_openbabel(
                             # AddDistanceConstraint signature; the 3-arg
                             # OBFFConstraints API has no force-constant).
                             _force_const = 10000.0
+                            # Phase 3C per-donor-element gate
+                            # (ITER-uffsoft 2026-05-13): M-C donors lose
+                            # orientation under UFF because UFF has no
+                            # transition-metal-bonded parameters; SOFT
+                            # mode then dissociates 76% of M-C bonds in
+                            # the smoke pool.  N/O/P/S/halide donors
+                            # retain SOFT mode.  Carbon falls back to
+                            # legacy FixAtom unless
+                            # DELFIN_UFF_SOFT_DONORS_CARBON=1.
+                            from delfin._uff_soft_donor import (
+                                should_soften_donor,  # lazy import
+                            )
+                            _allow_carbon_soft = bool(
+                                _delfin_env_int(
+                                    "DELFIN_UFF_SOFT_DONORS_CARBON", 0
+                                )
+                            )
                             # Replace donor FixAtom with M-D distance pin
-                            _soft_skip_donors = _donor_set
+                            # only for donor elements that pass the gate;
+                            # everything else stays HARD (handled below
+                            # by the regular fix_atoms loop).
+                            _soft_skip_donors = set()
                             for (m_idx, d_idx) in _soft_meta.get("pairs", []):
                                 try:
                                     # Look up element symbols via OB atomic
@@ -28001,10 +29347,23 @@ def _optimize_xyz_openbabel(
                                     _d_atom = ob_mol.OBMol.GetAtom(int(d_idx) + 1)
                                     m_sym = pybel.ob.GetSymbol(_m_atom.GetAtomicNum())
                                     d_sym = pybel.ob.GetSymbol(_d_atom.GetAtomicNum())
+                                    if not should_soften_donor(
+                                        d_sym,
+                                        allow_carbon=_allow_carbon_soft,
+                                    ):
+                                        # HARD branch: leave donor for
+                                        # legacy FixAtom loop below.
+                                        logger.debug(
+                                            "Soft-donor gate: donor %s "
+                                            "(idx=%s) treated as HARD",
+                                            d_sym, d_idx,
+                                        )
+                                        continue
                                     d_ideal = float(_get_ml_bond_length(m_sym, d_sym))
                                     ob_constraints.AddDistanceConstraint(
                                         int(m_idx) + 1, int(d_idx) + 1, d_ideal
                                     )
+                                    _soft_skip_donors.add(int(d_idx))
                                 except Exception as _exc:
                                     # On any per-pair failure, fall back to
                                     # FixAtom for that donor.
@@ -28021,7 +29380,9 @@ def _optimize_xyz_openbabel(
                             # Quiet self-test/import sanity log.
                             logger.debug(
                                 "DELFIN_UFF_SOFT_DONORS active: class=%s, "
-                                "n_donor_pins=%d", _cls, len(_soft_skip_donors)
+                                "n_donor_pins=%d (carbon_soft=%s)",
+                                _cls, len(_soft_skip_donors),
+                                _allow_carbon_soft,
                             )
                     except Exception as _exc:
                         logger.debug(

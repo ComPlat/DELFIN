@@ -33,11 +33,24 @@ Entry point
 """
 from __future__ import annotations
 
+import os
 import re
 import traceback
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+
+# ---------------------------------------------------------------------------
+# Patch P-H-TRACK (B6 port) — environment flag helper.
+# ---------------------------------------------------------------------------
+
+def _delfin_env_int(name: str, default: int) -> int:
+    """Read ``int`` value from environment variable ``name`` with safe fallback."""
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +233,173 @@ def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
             if d_cur < 0.85 * d_ideal or d_cur > 1.10 * d_ideal:
                 return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Patch P-H-TRACK (B6 port) — rigid-H DoF reduction helpers.
+#
+# Mirrors :func:`delfin._post_optimizer._compute_h_neighbors` and adds the
+# extra plumbing required for L-BFGS-B coordinate substitution.
+#
+# Approach
+# --------
+# B5 corrects in discrete per-atom moves where dragging bonded H is trivial
+# (apply the same delta to every H child).  B6 minimises a smooth U_total via
+# L-BFGS-B with 3N independent DoFs — H atoms with their own DoFs lag behind
+# their heavy parent under angle/clash/topology pressure, stretching C-H /
+# N-H / O-H bonds beyond the heavy-atom-only topology gate's notice.
+#
+# The fix is a coordinate substitution: treat eligible H as rigid offsets
+# from their unique heavy parent.  L-BFGS-B sees a reduced coord array
+# (heavy atoms + non-rigid H only).  At every evaluation:
+#
+#   1.  Expand reduced -> full coords by placing each rigid H at
+#       ``parent_pos + cached_offset[h]``.
+#   2.  Call the full U_total to get (E, grad_full).
+#   3.  Fold each rigid-H gradient row into its parent's row
+#       (chain rule: H = parent + const => dE/dparent gains dE/dH).
+#   4.  Strip the rigid-H rows and return the reduced gradient.
+#
+# An H atom is eligible iff it has exactly one heavy neighbour (the typical
+# terminal C-H / N-H / O-H pattern).  Bridging H, lone H, and any H whose
+# only neighbour is itself H are kept as free DoFs.
+# ---------------------------------------------------------------------------
+
+
+def _compute_h_neighbors(mol) -> List[List[int]]:
+    """Per-atom list of bonded H atom indices.
+
+    Mirrors :func:`delfin._post_optimizer._compute_h_neighbors`.  Returns a
+    list of length ``mol.GetNumAtoms()``; entries indexed by an H atom are
+    always empty so the helper is safe to use on any atom index.
+    """
+    n = mol.GetNumAtoms()
+    out: List[List[int]] = [[] for _ in range(n)]
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() == "H":
+            continue
+        idx = atom.GetIdx()
+        for nb in atom.GetNeighbors():
+            if nb.GetSymbol() == "H":
+                out[idx].append(nb.GetIdx())
+    return out
+
+
+def _compute_rigid_h_map(mol) -> Tuple[List[int], List[int]]:
+    """Identify H atoms eligible to be rigidly tied to a unique heavy parent.
+
+    Returns
+    -------
+    rigid_h_indices : list[int]
+        Sorted indices of H atoms tracked rigidly.
+    h_parent : list[int]
+        Per-atom parent index (length ``mol.GetNumAtoms()``).  Non-rigid H
+        entries (and every non-H atom) hold ``-1``.
+
+    An H is eligible iff:
+      * Symbol is ``"H"``.
+      * Exactly one neighbour and that neighbour is not H.
+    """
+    n = mol.GetNumAtoms()
+    rigid: List[int] = []
+    parent: List[int] = [-1] * n
+    for atom in mol.GetAtoms():
+        if atom.GetSymbol() != "H":
+            continue
+        nbrs = list(atom.GetNeighbors())
+        if len(nbrs) != 1:
+            continue
+        nb = nbrs[0]
+        if nb.GetSymbol() == "H":
+            continue
+        h_idx = int(atom.GetIdx())
+        parent[h_idx] = int(nb.GetIdx())
+        rigid.append(h_idx)
+    rigid.sort()
+    return rigid, parent
+
+
+def _build_reduce_expand(
+    coords: np.ndarray,
+    rigid_h_indices: List[int],
+    h_parent: List[int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Pre-compute coordinate-substitution book-keeping for L-BFGS-B.
+
+    Parameters
+    ----------
+    coords : (N, 3)
+        Initial full Cartesian coordinates (Å).
+    rigid_h_indices : list[int]
+        H atoms tracked rigidly (output of :func:`_compute_rigid_h_map`).
+    h_parent : list[int]
+        Per-atom parent index (output of :func:`_compute_rigid_h_map`).
+
+    Returns
+    -------
+    free_indices : (M,) int array
+        Atom indices remaining as free L-BFGS-B DoFs (heavy + non-rigid H).
+    free_pos_of_atom : (N,) int array
+        Reverse map: ``free_pos_of_atom[atom_idx]`` = row in the reduced
+        array for that atom, or ``-1`` for rigid H.
+    h_offsets : (H, 3) float array
+        Cached parent->H offset vectors (same order as ``rigid_h_indices``).
+    rigid_h_arr : (H,) int array
+        ``np.asarray(rigid_h_indices)`` for fast indexing.
+    """
+    n = coords.shape[0]
+    rigid_set = set(rigid_h_indices)
+    free = [i for i in range(n) if i not in rigid_set]
+    free_indices = np.asarray(free, dtype=np.int64)
+    free_pos = np.full(n, -1, dtype=np.int64)
+    for pos, i in enumerate(free):
+        free_pos[i] = pos
+    rigid_h_arr = np.asarray(rigid_h_indices, dtype=np.int64)
+    if rigid_h_arr.size:
+        parents = np.asarray([h_parent[h] for h in rigid_h_indices], dtype=np.int64)
+        h_offsets = coords[rigid_h_arr] - coords[parents]
+    else:
+        h_offsets = np.zeros((0, 3), dtype=np.float64)
+    return free_indices, free_pos, h_offsets, rigid_h_arr
+
+
+def _expand_full(
+    reduced: np.ndarray,
+    free_indices: np.ndarray,
+    rigid_h_arr: np.ndarray,
+    h_offsets: np.ndarray,
+    h_parent: List[int],
+    n_atoms: int,
+) -> np.ndarray:
+    """Reconstruct full ``(N, 3)`` coords from the reduced DoF array.
+
+    Rigid-H rows are filled as ``coords[parent] + cached_offset``.
+    """
+    full = np.empty((n_atoms, 3), dtype=np.float64)
+    full[free_indices] = reduced
+    if rigid_h_arr.size:
+        parents = np.asarray([h_parent[h] for h in rigid_h_arr.tolist()],
+                             dtype=np.int64)
+        full[rigid_h_arr] = full[parents] + h_offsets
+    return full
+
+
+def _reduce_grad(
+    grad_full: np.ndarray,
+    free_indices: np.ndarray,
+    free_pos: np.ndarray,
+    rigid_h_arr: np.ndarray,
+    h_parent: List[int],
+) -> np.ndarray:
+    """Fold rigid-H gradient rows into the parent rows (chain rule), then
+    slice down to the reduced ``(M, 3)`` shape used by L-BFGS-B.
+    """
+    grad_red = grad_full[free_indices].copy()
+    if rigid_h_arr.size:
+        for h_idx in rigid_h_arr.tolist():
+            p = h_parent[h_idx]
+            grad_red[free_pos[p]] += grad_full[h_idx]
+    return grad_red
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +596,7 @@ def variational_refine(
     max_iter: int = 200,
     ftol: float = 1e-6,
     enable_global_pg: bool = True,
+    rigid_h: Optional[bool] = None,
 ) -> Tuple[str, Dict[str, Any]]:
     """L-BFGS-B variational post-refinement with 4-tier symmetry awareness.
 
@@ -435,6 +616,16 @@ def variational_refine(
     enable_global_pg : bool, default True
         If ``False``, Tier D (global molecular point group) is skipped
         regardless of the class default.
+    rigid_h : bool or None, default None
+        Patch P-H-TRACK (B6 port).  When ``True``, terminal H atoms are
+        tied rigidly to their unique heavy parent via coordinate
+        substitution so X-H bond lengths cannot drift under angle /
+        clash / topology pressure.  When ``False``, every atom keeps its
+        own 3 DoFs (bit-exact pre-patch behaviour).  When ``None``
+        (default), the value is read from the environment variable
+        ``DELFIN_B6_RIGID_H`` (``0`` ⇒ False, anything else ⇒ True),
+        falling back to ``False`` when unset.  Default OFF mirrors the
+        B5 :func:`delfin._post_optimizer.post_optimize_geometry` patch.
 
     Returns
     -------
@@ -445,8 +636,14 @@ def variational_refine(
         Diagnostic record.  Always contains the keys ``iterations``,
         ``converged``, ``energy_initial``, ``energy_final``,
         ``topology_preserved``, ``fallback_used``, ``global_pg``,
-        ``fragments_detected``, ``equiv_classes``, and (on failure) ``error``.
+        ``fragments_detected``, ``equiv_classes``, ``rigid_h``,
+        ``rigid_h_count``, and (on failure) ``error``.
     """
+    # Resolve the rigid_h flag: explicit arg wins, else env, else False.
+    if rigid_h is None:
+        rigid_h_flag = bool(_delfin_env_int("DELFIN_B6_RIGID_H", 0))
+    else:
+        rigid_h_flag = bool(rigid_h)
     # Skeleton report (mandatory keys present even on early return).
     report: Dict[str, Any] = {
         "iterations": 0,
@@ -458,6 +655,8 @@ def variational_refine(
         "global_pg": "C1",
         "fragments_detected": 0,
         "equiv_classes": 0,
+        "rigid_h": rigid_h_flag,
+        "rigid_h_count": 0,
     }
 
     # ----- Step 1: parse XYZ -----
@@ -527,12 +726,48 @@ def variational_refine(
                 return _fallback_U_total(coords_2d, mol, sym_info, params)
         return _fallback_U_total(coords_2d, mol, sym_info, params)
 
+    # ----- Step 5.5: build rigid-H DoF reduction map -----
+    rigid_h_arr: np.ndarray = np.zeros((0,), dtype=np.int64)
+    h_offsets: np.ndarray = np.zeros((0, 3), dtype=np.float64)
+    free_indices: np.ndarray = np.arange(n_atoms, dtype=np.int64)
+    free_pos: np.ndarray = np.arange(n_atoms, dtype=np.int64)
+    h_parent: List[int] = [-1] * n_atoms
+    if rigid_h_flag:
+        try:
+            rigid_h_indices, h_parent = _compute_rigid_h_map(mol)
+            free_indices, free_pos, h_offsets, rigid_h_arr = _build_reduce_expand(
+                coords, rigid_h_indices, h_parent
+            )
+            report["rigid_h_count"] = int(rigid_h_arr.size)
+        except Exception as exc:
+            # If anything in the substitution prep fails, fall back to plain
+            # full-DoF minimisation (still bit-exact when flag is False at
+            # the caller's request).
+            report["rigid_h"] = False
+            rigid_h_flag = False
+            rigid_h_arr = np.zeros((0,), dtype=np.int64)
+            h_offsets = np.zeros((0, 3), dtype=np.float64)
+            free_indices = np.arange(n_atoms, dtype=np.int64)
+            free_pos = np.arange(n_atoms, dtype=np.int64)
+            h_parent = [-1] * n_atoms
+            report.setdefault("rigid_h_error", str(exc))
+
+    n_free = int(free_indices.size)
+
     def objective(x_flat: np.ndarray) -> Tuple[float, np.ndarray]:
+        if rigid_h_flag and rigid_h_arr.size > 0:
+            reduced = x_flat.reshape(n_free, 3)
+            full = _expand_full(reduced, free_indices, rigid_h_arr,
+                                h_offsets, h_parent, n_atoms)
+            U, grad_full = _eval(full)
+            grad_red = _reduce_grad(grad_full, free_indices, free_pos,
+                                    rigid_h_arr, h_parent)
+            return float(U), np.asarray(grad_red, dtype=float).reshape(-1)
         coords_2d = x_flat.reshape(n_atoms, 3)
         U, grad = _eval(coords_2d)
-        return U, np.asarray(grad, dtype=float).reshape(-1)
+        return float(U), np.asarray(grad, dtype=float).reshape(-1)
 
-    # ----- Step 6: initial energy -----
+    # ----- Step 6: initial energy (use FULL coords for the diagnostic) -----
     try:
         U_initial, _ = _eval(coords)
         report["energy_initial"] = float(U_initial)
@@ -547,16 +782,25 @@ def variational_refine(
         return xyz, report
 
     # ----- Step 7: L-BFGS-B run -----
+    if rigid_h_flag and rigid_h_arr.size > 0:
+        x0 = coords[free_indices].flatten()
+    else:
+        x0 = coords.flatten()
     try:
         result = minimize(
             fun=objective,
-            x0=coords.flatten(),
+            x0=x0,
             jac=True,
             method="L-BFGS-B",
             options={"maxiter": int(max_iter), "ftol": float(ftol),
                      "gtol": 1e-5},
         )
-        new_coords = np.asarray(result.x, dtype=float).reshape(n_atoms, 3)
+        if rigid_h_flag and rigid_h_arr.size > 0:
+            reduced_x = np.asarray(result.x, dtype=float).reshape(n_free, 3)
+            new_coords = _expand_full(reduced_x, free_indices, rigid_h_arr,
+                                      h_offsets, h_parent, n_atoms)
+        else:
+            new_coords = np.asarray(result.x, dtype=float).reshape(n_atoms, 3)
         U_final = float(result.fun)
         converged = bool(result.success)
         iterations = int(getattr(result, "nit", 0))

@@ -9,18 +9,91 @@ DELFIN_UFF_SOFT_DONORS=1 AND class_label in {"sigma", "multi_sigma"}.
 
 Default OFF -- legacy behavior (FixAtom on metals + donors) preserved when
 enable_soft_donor=False or class doesn't allow soft mode.
+
+Phase 3C per-donor-element gate (2026-05-13, ITER-uffsoft forensik):
+Even within sigma/multi_sigma classes, carbon donors are excluded from
+SOFT mode because UFF lacks transition-metal-bonded parameters; the
+AddDistanceConstraint spring alone cannot anchor a sigma-C donor against
+opposing substituent gradients (76.1% of M-D breaks in pool B were M-C).
+N/O/P/S/halide donors retain SOFT mode (line-of-sight lone pair + UFF
+sp3-angle terms keep them in place under the distance pin).
 """
 
 from __future__ import annotations
+import os
 from typing import List, Tuple, Dict, Optional, Any
 
 
 _SOFT_DONOR_CLASSES = frozenset({"sigma", "multi_sigma"})
 
+# Donor elements where SOFT mode (M-D distance pin without FixAtom) is
+# empirically safe.  Carbon, Silicon, Boron, Selenium are excluded
+# because UFF cannot anchor a sigma donor of these elements to a transition
+# metal without metal-bonded parameters; they default to legacy FixAtom.
+# (Verified: forensik 2026-05-13 on 7871-file common subset showed
+# C-donor contributes 76.1% of B-only M-D break regression vs. <10% each
+# for N/O/P/S/F/Cl/Br/I/Si/B.)
+_SOFT_DONOR_ELEMENTS: frozenset = frozenset({
+    "N", "O", "P", "S", "F", "Cl", "Br", "I",
+})
+
+# Opt-in escape hatch: when DELFIN_UFF_SOFT_DONORS_CARBON=1 is exported,
+# carbon donors ALSO get SOFT mode (restore pre-3C behavior).  Default 0
+# (carbon HARD).  Reading the env-var lazily inside should_soften_donor
+# keeps the helper testable without process restart.
+_CARBON_SOFT_ENV: str = "DELFIN_UFF_SOFT_DONORS_CARBON"
+
 
 def should_use_soft_donor(class_label: str) -> bool:
     """Class-conditional rule: soft donor only for sigma/multi_sigma."""
     return class_label in _SOFT_DONOR_CLASSES
+
+
+def _env_flag_on(name: str, default: int = 0) -> bool:
+    """Return True iff env-var ``name`` parses to a non-zero int.
+
+    Lazy lookup so unit-tests can monkey-patch ``os.environ`` without
+    re-importing the module.  Any malformed value falls back to ``default``.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return bool(default)
+    try:
+        return int(raw) != 0
+    except (TypeError, ValueError):
+        return bool(default)
+
+
+def should_soften_donor(donor_sym: Optional[str],
+                        allow_carbon: Optional[bool] = None) -> bool:
+    """Return True iff this donor element gets SOFT (distance-pin) mode.
+
+    Per-donor-element gate added 2026-05-13 to address the M-C donor
+    break regression documented in ITER-uffsoft_md_break_rootcause.md.
+
+    Args:
+        donor_sym: element symbol of the donor atom (case-sensitive,
+            e.g. "N", "O", "Cl").  ``None`` / empty / unknown → False
+            (safe fallback to legacy FixAtom).
+        allow_carbon: explicit override for the carbon-escape rule.
+            ``None`` (default) → read ``DELFIN_UFF_SOFT_DONORS_CARBON``
+            from environment; ``True`` → soft for C as well; ``False``
+            → C is HARD regardless of env-var.
+
+    Returns:
+        ``True`` if the donor should receive the distance-pin (SOFT);
+        ``False`` if it should fall back to FixAtom (HARD).
+    """
+    if not isinstance(donor_sym, str) or not donor_sym:
+        return False
+    if donor_sym in _SOFT_DONOR_ELEMENTS:
+        return True
+    if donor_sym == "C":
+        if allow_carbon is None:
+            allow_carbon = _env_flag_on(_CARBON_SOFT_ENV, 0)
+        return bool(allow_carbon)
+    # Si, B, Se and all other elements: conservative HARD default.
+    return False
 
 
 def setup_uff_constraints_with_soft_donors(
@@ -171,4 +244,16 @@ if __name__ == "__main__":
         if result != expected:
             all_ok = False
         print(f"  [{ok}] {cls}: {result} (expected {expected})")
+    print("should_soften_donor tests (default env):")
+    for sym, expected in [
+        ("N", True), ("O", True), ("P", True), ("S", True),
+        ("F", True), ("Cl", True), ("Br", True), ("I", True),
+        ("C", False), ("Si", False), ("B", False), ("Se", False),
+        ("", False), (None, False),
+    ]:
+        result = should_soften_donor(sym, allow_carbon=False)
+        ok = "OK" if result == expected else "FAIL"
+        if result != expected:
+            all_ok = False
+        print(f"  [{ok}] {sym!r}: {result} (expected {expected})")
     print("ALL PASS" if all_ok else "SOME FAILED")

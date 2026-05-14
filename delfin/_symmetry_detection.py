@@ -203,6 +203,7 @@ def hungarian_assign_donors_to_slots(
     try:
         from delfin._polyhedron_targets import (
             classify_geometry_from_cn_donors,
+            classify_geometry_from_cn_donors_with_metal,
             get_ideal_donor_vectors,
         )
     except ImportError:
@@ -238,11 +239,26 @@ def hungarian_assign_donors_to_slots(
     donor_types = [mol.GetAtomWithIdx(d).GetSymbol() for d in donor_indices]
     cn = len(donor_indices)
 
+    # Metal-aware CN=2 routing: d10 ions (Au(I), Ag(I), Cu(I), Hg(II), Tl(I))
+    # always linear (180°); non-d10 CN=2 can opt into bent (~104°) via
+    # DELFIN_LINEAR_CN2=1.  Default OFF → bit-exact identical to the
+    # legacy ``classify_geometry_from_cn_donors`` dispatch.
+    metal_symbol_str: Optional[str] = m_atom.GetSymbol()
+    try:
+        metal_formal_q: Optional[int] = int(m_atom.GetFormalCharge())
+    except Exception:
+        metal_formal_q = None
+
     # Classify polyhedron geometry from CN + donor element types.
     try:
-        geom_result = classify_geometry_from_cn_donors(cn, donor_types)
+        geom_result = classify_geometry_from_cn_donors_with_metal(
+            cn, donor_types, metal_symbol_str, metal_formal_q,
+        )
     except Exception:
-        return {}
+        try:
+            geom_result = classify_geometry_from_cn_donors(cn, donor_types)
+        except Exception:
+            return {}
     if isinstance(geom_result, tuple):
         geometry = geom_result[0]
     else:

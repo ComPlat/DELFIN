@@ -15,23 +15,45 @@ rows of shape ``(cn, 3)``.
 
 Geometry codes (Schoenflies point group in parens):
 
-* CN=2 ``linear_2``           — D∞h
-* CN=3 ``trigonal_planar``    — D3h
-* CN=4 ``Td``                 — Td
-* CN=4 ``sqp_4``              — D4h
-* CN=4 ``see_saw``            — C2v
-* CN=5 ``tbp``                — D3h
-* CN=5 ``sqp_5``              — C4v
-* CN=6 ``Oh``                 — Oh
-* CN=6 ``trig_prism``         — D3h
-* CN=7 ``pbp``                — D5h
-* CN=7 ``capped_oct``         — C3v
-* CN=8 ``sq_antiprism``       — D4d
-* CN=8 ``cube``               — Oh
-* CN=8 ``dodecahedron``       — D2d
-* CN=9 ``tricapped_tp``       — D3h
-* CN=10 ``bicapped_sap``      — D4d
-* CN=12 ``icosahedron``       — Ih
+* CN=2  ``linear_2``                — D∞h
+* CN=3  ``trigonal_planar``         — D3h
+* CN=4  ``Td``                      — Td
+* CN=4  ``sqp_4``                   — D4h
+* CN=4  ``see_saw``                 — C2v
+* CN=5  ``tbp``                     — D3h
+* CN=5  ``sqp_5``                   — C4v
+* CN=6  ``Oh``                      — Oh
+* CN=6  ``trig_prism``              — D3h
+* CN=7  ``pbp``                     — D5h
+* CN=7  ``capped_oct``              — C3v
+* CN=8  ``sq_antiprism``            — D4d
+* CN=8  ``cube``                    — Oh
+* CN=8  ``dodecahedron``            — D2d
+* CN=8  ``bicapped_trig_antiprism`` — D3d   (lanthanide / actinide preferred)
+* CN=9  ``tricapped_tp``            — D3h
+* CN=9  ``capped_sap``              — C4v   (lanthanide aquo / nitrato)
+* CN=10 ``bicapped_sap``            — D4d
+* CN=10 ``pentag_antiprism``        — D5d   (alternative lanthanide CN10)
+* CN=10 ``sphenocorona``            — C2v   (Johnson solid J87, irregular CN10)
+* CN=11 ``mono_capped_pentag_aprism``— C5v  (irregular CN11, lanthanide nitrato-aquo)
+* CN=12 ``icosahedron``             — Ih
+* CN=12 ``cuboctahedron``           — Oh    (lanthanide hexanitrato CN12)
+
+Lanthanide / high-CN handling
+-----------------------------
+
+The CN=8-12 catalog is selectively expanded for f-block elements (La-Lu, U-Pu)
+which prefer high coordination numbers with ionic (non-directional) bonding.
+The metal-aware classifier :func:`classify_geometry_from_cn_donors_with_metal`
+routes lanthanides and high-CN actinides to the polyhedra that ionic-radius
+chemistry favours (e.g. CN=9 capped square antiprism for [La(H2O)9]3+, CN=8
+bicapped trigonal antiprism for La(NTA), CN=10 bicapped SAP for La(NO3)5 type).
+
+The new vector tables, point groups, and alias rows are emitted unconditionally
+(they are static reference data, no runtime cost).  The metal-aware *selection*
+logic is gated by the environment variable ``DELFIN_HIGH_CN_POLYHEDRA`` (read
+by :mod:`delfin._symmetry_detection`).  Default OFF — bit-exact identical to
+the pre-patch CN>=8 dispatch.
 """
 from __future__ import annotations
 
@@ -74,6 +96,18 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     d["linear_2"] = _stack([
         _u(1, 0, 0),
         _u(-1, 0, 0),
+    ])
+    # Bent / water-like CN=2 (C2v, ~104.5°).  Mainly relevant for non-d10
+    # CN=2 centres (e.g. Cu(II)/Ti where the d-shell is not full and a bent
+    # ligand-field stabilisation is preferred).  d10 metals (Au(I), Ag(I),
+    # Cu(I), Hg(II), Tl(I)) almost always sit at 180° linear and are routed
+    # to ``linear_2`` by the metal-aware classifier below.
+    _BENT_HALF_DEG: float = 104.5 / 2.0   # = 52.25°
+    _bent_x = np.sin(np.deg2rad(_BENT_HALF_DEG))
+    _bent_y = np.cos(np.deg2rad(_BENT_HALF_DEG))
+    d["bent_2"] = _stack([
+        _u(_bent_x,  _bent_y, 0.0),
+        _u(-_bent_x, _bent_y, 0.0),
     ])
 
     # ------------- CN = 3 -------------
@@ -214,6 +248,41 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
         ttp_rows.append(_u(np.cos(ang), np.sin(ang), 0.0))
     d["tricapped_tp"] = _stack(ttp_rows)
 
+    # ------------- CN = 8 (extra, lanthanide / actinide) -------------
+    # Bicapped trigonal antiprism (D3d) — common for 8-coordinate lanthanides
+    # with small donors (e.g. La in NTA chelates, U in fluorides).
+    # Geometry: trigonal antiprism (top triangle z=+z8, bottom rotated 60°,
+    # z=-z8) + 2 axial caps on ±z.  Pick z8 so prism vertices sit on unit
+    # sphere; caps are unit by construction.
+    z8 = 1.0 / np.sqrt(3.0)
+    r8 = np.sqrt(1.0 - z8 * z8)
+    bcta_rows: List[np.ndarray] = []
+    for k in range(3):
+        ang_top = 2.0 * np.pi * k / 3.0
+        ang_bot = 2.0 * np.pi * k / 3.0 + np.pi / 3.0  # rotated 60°
+        bcta_rows.append(_u(r8 * np.cos(ang_top), r8 * np.sin(ang_top),  z8))
+        bcta_rows.append(_u(r8 * np.cos(ang_bot), r8 * np.sin(ang_bot), -z8))
+    bcta_rows.append(_u(0, 0,  1))
+    bcta_rows.append(_u(0, 0, -1))
+    d["bicapped_trig_antiprism"] = _stack(bcta_rows)
+
+    # ------------- CN = 9 (extra, lanthanide aquo / nitrato) -------------
+    # Capped square antiprism (C4v) — apex cap on +z plus SAP body offset
+    # downward so all nine vectors are unit and roughly evenly spaced.
+    # Body z = -tilt9, xy-radius r_body; top/bottom squares both below the
+    # apex cap and rotated 45° relative to each other.
+    tilt9_top = np.deg2rad(20.0)  # top square 20° below apex
+    tilt9_bot = np.deg2rad(70.0)  # bottom square 70° below apex
+    rt = np.sin(tilt9_top); zt = np.cos(tilt9_top)
+    rb = np.sin(tilt9_bot); zb = np.cos(tilt9_bot)
+    csap_rows: List[np.ndarray] = [_u(0, 0, 1)]  # apex
+    for k in range(4):
+        ang_t = (np.pi / 2.0) * k + np.pi / 4.0  # rotated 45°
+        ang_b = (np.pi / 2.0) * k
+        csap_rows.append(_u(rt * np.cos(ang_t), rt * np.sin(ang_t),  zt))
+        csap_rows.append(_u(rb * np.cos(ang_b), rb * np.sin(ang_b), -zb))
+    d["capped_sap"] = _stack(csap_rows)
+
     # ------------- CN = 10 -------------
     # Bicapped square antiprism (D4d): SAP + 2 axial caps along ±z.
     # Scale SAP equator so caps + equator are all unit; place equator at z=±h10
@@ -230,6 +299,51 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     bcsap_rows.append(_u(0, 0, -1))
     d["bicapped_sap"] = _stack(bcsap_rows)
 
+    # Pentagonal antiprism (D5d): two parallel pentagons at z=±zp10, the top
+    # one rotated by 36° (π/5) relative to the bottom one.
+    zp10 = 1.0 / np.sqrt(3.0)
+    rp10 = np.sqrt(1.0 - zp10 * zp10)
+    pap_rows: List[np.ndarray] = []
+    for k in range(5):
+        ang_t = 2.0 * np.pi * k / 5.0 + np.pi / 5.0
+        ang_b = 2.0 * np.pi * k / 5.0
+        pap_rows.append(_u(rp10 * np.cos(ang_t), rp10 * np.sin(ang_t),  zp10))
+        pap_rows.append(_u(rp10 * np.cos(ang_b), rp10 * np.sin(ang_b), -zp10))
+    d["pentag_antiprism"] = _stack(pap_rows)
+
+    # Sphenocorona (J87, C2v) — irregular Johnson solid with 10 vertices.
+    # Approximate idealised arrangement: 4 vertices forming a square belt at
+    # z=0, 4 wedge vertices above (z=+zs1) tilted toward ±x, 2 apex vertices
+    # at z=+zs2 along ±y.  All normalised to unit vectors.  This is a
+    # pragmatic target rather than the exact Johnson-solid geometry, sized so
+    # all directions are reasonably distinct.
+    zs1 = 0.6
+    zs2 = 0.85
+    sphen_rows: List[np.ndarray] = [
+        _u( 1.0,  0.0, 0.0), _u(-1.0,  0.0, 0.0),  # equator x
+        _u( 0.0,  1.0, 0.0), _u( 0.0, -1.0, 0.0),  # equator y
+        _u( 0.85,  0.0,  zs1), _u(-0.85,  0.0,  zs1),
+        _u( 0.0,   0.85, zs1), _u( 0.0,  -0.85, zs1),
+        _u( 0.0,   0.55, zs2),
+        _u( 0.0,  -0.55, -zs2),  # one lobe descends to retain volume
+    ]
+    d["sphenocorona"] = _stack(sphen_rows)
+
+    # ------------- CN = 11 (irregular, lanthanide nitrato-aquo) -------------
+    # Monocapped pentagonal antiprism (C5v): apex cap on +z, then 2 pentagons
+    # below in antiprism arrangement.
+    z11_a = np.deg2rad(40.0)
+    z11_b = np.deg2rad(75.0)
+    ra11 = np.sin(z11_a); za11 = np.cos(z11_a)
+    rb11 = np.sin(z11_b); zb11 = np.cos(z11_b)
+    cn11_rows: List[np.ndarray] = [_u(0, 0, 1)]
+    for k in range(5):
+        ang_t = 2.0 * np.pi * k / 5.0
+        ang_b = 2.0 * np.pi * k / 5.0 + np.pi / 5.0
+        cn11_rows.append(_u(ra11 * np.cos(ang_t), ra11 * np.sin(ang_t),  za11))
+        cn11_rows.append(_u(rb11 * np.cos(ang_b), rb11 * np.sin(ang_b), -zb11))
+    d["mono_capped_pentag_aprism"] = _stack(cn11_rows)
+
     # ------------- CN = 12 -------------
     # Icosahedron (Ih): 12 unit vertices using golden ratio φ.
     phi = _GOLDEN
@@ -240,6 +354,15 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     ]
     d["icosahedron"] = _stack([_u(*xyz) for xyz in raw])
 
+    # Cuboctahedron (Oh): 12 vertices at all permutations of (±1, ±1, 0).
+    # Common ideal for [Ln(NO3)6]3- type CN=12 with bidentate nitrates.
+    cubocta_raw = [
+        ( 1,  1, 0), ( 1, -1, 0), (-1,  1, 0), (-1, -1, 0),
+        ( 1, 0,  1), ( 1, 0, -1), (-1, 0,  1), (-1, 0, -1),
+        ( 0,  1,  1), ( 0,  1, -1), ( 0, -1,  1), ( 0, -1, -1),
+    ]
+    d["cuboctahedron"] = _stack([_u(*xyz) for xyz in cubocta_raw])
+
     return d
 
 
@@ -249,7 +372,11 @@ _IDEAL_VECTORS: Dict[str, np.ndarray] = _build_ideal_vectors()
 # Convenient alias map: (cn, geometry) → key in _IDEAL_VECTORS
 _CN_GEOM_KEY: Dict[Tuple[int, str], str] = {
     (2, "linear"):           "linear_2",
-    (2, "linear_2"):         "linear_2",
+    (2, "linear_2"):          "linear_2",
+    (2, "LIN"):               "linear_2",
+    (2, "bent"):              "bent_2",
+    (2, "bent_2"):            "bent_2",
+    (2, "BENT"):              "bent_2",
     (3, "trigonal_planar"):  "trigonal_planar",
     (3, "TP"):               "trigonal_planar",
     (4, "Td"):               "Td",
@@ -277,18 +404,31 @@ _CN_GEOM_KEY: Dict[Tuple[int, str], str] = {
     (8, "cube"):             "cube",
     (8, "dodecahedron"):     "dodecahedron",
     (8, "DD"):               "dodecahedron",
+    (8, "bicapped_trig_antiprism"): "bicapped_trig_antiprism",
+    (8, "BCTA"):             "bicapped_trig_antiprism",
     (9, "tricapped_tp"):     "tricapped_tp",
     (9, "TTP"):              "tricapped_tp",
+    (9, "capped_sap"):       "capped_sap",
+    (9, "CSAP"):             "capped_sap",
     (10, "bicapped_sap"):    "bicapped_sap",
     (10, "BCSAP"):           "bicapped_sap",
+    (10, "pentag_antiprism"): "pentag_antiprism",
+    (10, "PAP"):             "pentag_antiprism",
+    (10, "sphenocorona"):    "sphenocorona",
+    (10, "J87"):             "sphenocorona",
+    (11, "mono_capped_pentag_aprism"): "mono_capped_pentag_aprism",
+    (11, "MCPAP"):           "mono_capped_pentag_aprism",
     (12, "icosahedron"):     "icosahedron",
     (12, "ICOS"):            "icosahedron",
+    (12, "cuboctahedron"):   "cuboctahedron",
+    (12, "COCT"):            "cuboctahedron",
 }
 
 
 # Point-group classification
 _POINT_GROUPS: Dict[Tuple[int, str], str] = {
     (2, "linear_2"):         "D_inf_h",
+    (2, "bent_2"):           "C2v",
     (3, "trigonal_planar"):  "D3h",
     (4, "Td"):               "Td",
     (4, "sqp_4"):            "D4h",
@@ -302,9 +442,15 @@ _POINT_GROUPS: Dict[Tuple[int, str], str] = {
     (8, "sq_antiprism"):     "D4d",
     (8, "cube"):             "Oh",
     (8, "dodecahedron"):     "D2d",
+    (8, "bicapped_trig_antiprism"): "D3d",
     (9, "tricapped_tp"):     "D3h",
+    (9, "capped_sap"):       "C4v",
     (10, "bicapped_sap"):    "D4d",
+    (10, "pentag_antiprism"): "D5d",
+    (10, "sphenocorona"):    "C2v",
+    (11, "mono_capped_pentag_aprism"): "C5v",
     (12, "icosahedron"):     "Ih",
+    (12, "cuboctahedron"):   "Oh",
 }
 
 
@@ -370,6 +516,137 @@ def get_target_point_group(
     return pg
 
 
+# ---------------------------------------------------------------------------
+# d10 linear CN=2 special-case (Au(I), Ag(I), Cu(I), Hg(II), Tl(I))
+# ---------------------------------------------------------------------------
+
+# d10 closed-shell metals that *always* prefer linear (180°) geometry at CN=2.
+# These ions have completely filled d-shells and no LF stabilisation from a
+# bent arrangement; the σ + π back-bonding pattern strongly favours D∞h.
+#
+# Group 11 (Cu, Ag, Au) at +1 → d10
+# Group 12 (Zn, Cd, Hg) at +2 → d10  — but only Hg routinely shows CN=2
+# Group 13 (Tl) at +1         → s2 (post-transition) — Tl(I) is linear too
+#
+# Cu and Tl require an explicit oxidation-state check because Cu(II)/Tl(III)
+# are not d10 and may show bent or other CN=2 patterns (rare but seen).
+# Ag/Au/Hg are accepted in their nominal oxidation states (Ag+1, Au+1, Hg+2)
+# without an additional charge gate because:
+#   * Ag(II)/Au(III) almost never form CN=2 complexes (Ag(II) is rare; Au(III)
+#     prefers square-planar CN=4)
+#   * Hg(I) forms Hg-Hg dimers (one Hg-Hg + one external donor) and the
+#     external linear geometry pattern is preserved anyway.
+_D10_LINEAR_CN2_METALS_ALWAYS: frozenset = frozenset({"Ag", "Au", "Hg"})
+_D10_LINEAR_CN2_METALS_CHARGED: Dict[str, int] = {
+    "Cu": +1,
+    "Tl": +1,
+}
+
+
+def _is_d10_linear_cn2(
+    metal_symbol: Optional[str],
+    cn: int,
+    metal_formal_charge: Optional[int] = None,
+) -> bool:
+    """Return True iff this is a d¹⁰ CN=2 centre that prefers linear (180°).
+
+    The d¹⁰ closed-shell electron configuration removes any ligand-field
+    driving force for bending; consequently Au(I), Ag(I), Cu(I), Hg(II) and
+    Tl(I) almost universally exhibit linear (D∞h) CN=2 coordination
+    ([Au(CN)2]⁻, [Ag(NH3)2]⁺, [Cu(MeCN)2]⁺, [Hg(CN)2], [Tl(OR)2]⁻).
+
+    The classifier deliberately avoids SMILES patterns and ligand-class
+    keywords: only the metal element symbol + formal charge of the metal
+    atom + coordination number are consulted.
+
+    Args:
+        metal_symbol: element symbol of the metal atom (e.g. ``'Au'``).
+        cn: coordination number (donor count) at this metal.
+        metal_formal_charge: optional integer formal charge on the metal
+            atom (e.g. +1 for Cu(I)).  Required for Cu/Tl; ignored for
+            Ag/Au/Hg.  ``None`` → conservatively only Ag/Au/Hg are treated
+            as d¹⁰ linear.
+
+    Returns:
+        ``True`` if the metal is d¹⁰ and CN=2 (linear target should be
+        forced).  ``False`` otherwise.
+    """
+    if cn != 2:
+        return False
+    if not metal_symbol:
+        return False
+    if metal_symbol in _D10_LINEAR_CN2_METALS_ALWAYS:
+        return True
+    required_q = _D10_LINEAR_CN2_METALS_CHARGED.get(metal_symbol)
+    if required_q is None:
+        return False
+    if metal_formal_charge is None:
+        # Charge unknown → cannot prove d¹⁰; default to "not d¹⁰".
+        return False
+    return int(metal_formal_charge) == required_q
+
+
+def classify_geometry_from_cn_donors_with_metal(
+    cn: int,
+    donor_types: List[str],
+    metal_symbol: Optional[str] = None,
+    metal_formal_charge: Optional[int] = None,
+) -> Tuple[str, Optional[str]]:
+    """Metal-aware variant of :func:`classify_geometry_from_cn_donors`.
+
+    Adds three universal special-cases (no SMILES patterns):
+
+    * **CN=2 d¹⁰ linear** — Au(I), Ag(I), Cu(I), Hg(II), Tl(I) are routed to
+      ``"linear_2"`` (180°, D∞h).  Already the default for CN=2 — explicit
+      here so that the env-gated bent-CN=2 path below cannot accidentally
+      flip them.
+
+    * **CN=2 non-d¹⁰ bent** — env-gated by ``DELFIN_LINEAR_CN2`` (default 0).
+      When enabled and the metal is *not* in the d¹⁰ linear-CN=2 set, CN=2
+      centres are classified as ``"bent_2"`` (~104.5°, C2v).  This lets
+      Cu(II)/Ti/early-TM CN=2 species relax to a bent target instead of
+      being forced to 180°.
+
+      With the default (env=0) this routine is bit-exact identical to
+      :func:`classify_geometry_from_cn_donors` for every (cn, donor_types)
+      pair — d¹⁰ metals and non-d¹⁰ metals both keep returning
+      ``("linear_2", None)`` at CN=2.
+
+    * **CN=8-12 high-CN ionic metals** — env-gated by
+      ``DELFIN_HIGH_CN_POLYHEDRA`` (default 0).  When enabled and the metal
+      is in the lanthanide / high-CN-actinide / large-ionic set
+      (:data:`_LANTHANIDES`, :data:`_HIGH_CN_ACTINIDES`,
+      :data:`_HIGH_CN_IONIC_OTHER`), CN=8-12 are routed to the
+      lanthanide-preferred polyhedra (BCTA / CSAP / PAP-or-BCSAP / MCPAP /
+      cuboctahedron) via :func:`_high_cn_lanthanide_geometry`.
+
+      With the default (env=0) the CN=8-12 dispatch is bit-exact identical
+      to :func:`classify_geometry_from_cn_donors`.
+
+    Higher CN (3-12) delegates to the existing metal-agnostic classifier
+    when none of the special-cases above apply.
+    """
+    import os
+
+    if cn == 2:
+        # Default OFF → bit-exact identical to legacy classifier.
+        if os.environ.get("DELFIN_LINEAR_CN2", "0") not in ("1", "true", "True"):
+            return ("linear_2", None)
+        if _is_d10_linear_cn2(metal_symbol, cn, metal_formal_charge):
+            return ("linear_2", None)
+        return ("bent_2", None)
+
+    # High-CN lanthanide / actinide / large-ionic override (env-gated).
+    if cn >= 8:
+        if os.environ.get("DELFIN_HIGH_CN_POLYHEDRA", "0") in ("1", "true", "True"):
+            if _is_high_cn_ionic_metal(metal_symbol):
+                override = _high_cn_lanthanide_geometry(cn, donor_types)
+                if override is not None:
+                    return override
+
+    return classify_geometry_from_cn_donors(cn, donor_types)
+
+
 def classify_geometry_from_cn_donors(
     cn: int,
     donor_types: List[str],
@@ -405,9 +682,94 @@ def classify_geometry_from_cn_donors(
         return ("tricapped_tp", None)
     if cn == 10:
         return ("bicapped_sap", None)
+    if cn == 11:
+        return ("mono_capped_pentag_aprism", None)
     if cn == 12:
         return ("icosahedron", None)
     return (f"undefined_cn{cn}", None)
+
+
+# ---------------------------------------------------------------------------
+# Metal-group taxonomy for high-CN polyhedron preference (lanthanides etc.)
+# ---------------------------------------------------------------------------
+
+
+# Lanthanides La-Lu (atomic numbers 57-71).  Ionic, prefer high CN, no strong
+# directional d-electron preference.
+_LANTHANIDES: frozenset = frozenset({
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd",
+    "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
+})
+
+# Actinides up to Cm — those routinely seen in CCDC at high CN, ionic-like.
+_HIGH_CN_ACTINIDES: frozenset = frozenset({
+    "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm",
+})
+
+# Heavy / large alkaline-earth + Y/Sc/Pb/Bi that tolerate high CN with
+# predominantly ionic bonding.
+_HIGH_CN_IONIC_OTHER: frozenset = frozenset({
+    "Y", "Sc", "Sr", "Ba", "Ca", "Pb", "Bi",
+})
+
+
+def _is_high_cn_ionic_metal(metal_sym: Optional[str]) -> bool:
+    """Return True if metal prefers ionic / high-CN polyhedra.
+
+    Used by :func:`classify_geometry_from_cn_donors_with_metal` to route
+    CN=8-12 selections to lanthanide-style polyhedra, gated by the env
+    variable ``DELFIN_HIGH_CN_POLYHEDRA``.
+    """
+    if not metal_sym:
+        return False
+    sym = metal_sym.strip()
+    return (
+        sym in _LANTHANIDES
+        or sym in _HIGH_CN_ACTINIDES
+        or sym in _HIGH_CN_IONIC_OTHER
+    )
+
+
+def _high_cn_lanthanide_geometry(
+    cn: int, donor_types: List[str]
+) -> Optional[Tuple[str, Optional[str]]]:
+    """Return the lanthanide-preferred ``(geometry, isomer)`` for CN=8-12.
+
+    Returns ``None`` if no override applies (CN outside 8-12, or no entry
+    defined).  Otherwise the caller substitutes the returned tuple for the
+    metal-agnostic default.
+
+    Preferences (universal — driven by CN + donor-element composition only,
+    never by SMILES or ligand-class strings):
+
+    * CN=8  → ``bicapped_trig_antiprism`` (D3d) — closer to experimental
+      Ln-NTA / U-fluoride / Th-fluoride 8-coord geometries than the
+      late-d default ``sq_antiprism``.
+    * CN=9  → ``capped_sap`` (C4v) — the canonical [Ln(H2O)9]3+ aquo
+      geometry; also fits many Ln(NO3)3(L)x complexes better than D3h-TTP.
+    * CN=10 → ``pentag_antiprism`` (D5d) for predominantly small (C/F/H)
+      donor sets; otherwise ``bicapped_sap`` (D4d) is retained.
+    * CN=11 → ``mono_capped_pentag_aprism`` (C5v) — common geometry for
+      [Ln(NO3)4(H2O)3]- type species.
+    * CN=12 → ``cuboctahedron`` (Oh) — preferred for hexa-bidentate
+      species such as [Ln(NO3)6]3- where chelate bite forces 12 short
+      M-O contacts in a near-Oh shell.
+    """
+    if cn == 8:
+        return ("bicapped_trig_antiprism", None)
+    if cn == 9:
+        return ("capped_sap", None)
+    if cn == 10:
+        if donor_types:
+            small = sum(1 for d in donor_types if d in ("F", "C", "H"))
+            if small >= max(1, len(donor_types) // 2):
+                return ("pentag_antiprism", None)
+        return ("bicapped_sap", None)
+    if cn == 11:
+        return ("mono_capped_pentag_aprism", None)
+    if cn == 12:
+        return ("cuboctahedron", None)
+    return None
 
 
 # ---------------------------------------------------------------------------
