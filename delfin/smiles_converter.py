@@ -25562,20 +25562,43 @@ def smiles_to_xyz_isomers(
         seeds = list(_PIPELINE_SEEDS[:max(1, _qprof_seeds)])
         n_rounds = len(seeds)
         per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        # Parallel ETKDG embedding with deterministic output order.
-        # ``ThreadPoolExecutor.map()`` preserves the submission order
-        # of its results, so the final ``conf_ids`` list is identical
-        # between runs even though the individual embeddings complete
-        # in thread-scheduling order.  For small/mid-size σ complexes
-        # (ETKDG well under the internal 25 s timeout) this yields the
-        # same conformer pool every time and gives the 2-4× speedup
-        # the Voila dashboard benefits from.  For pathological
-        # macrocycles where the timeout actually fires, two runs may
-        # differ by one or two conformers — acceptable since those
-        # SMILES are already flagged by the timeout path as unreliable.
+        # Parallel ETKDG embedding with deterministic output.
+        #
+        # DETERMINISM CONTRACT: ``AllChem.EmbedMultipleConfs`` (and the
+        # ``_rescale_metal_donor_distances`` post-step it triggers) mutate
+        # the molecule they are handed — they add conformers, touch the
+        # property cache and ring info, and rewrite conformer coordinates.
+        # Running ``_embed_one`` for several seeds *concurrently against
+        # the same shared ``mol``* is therefore a data race: RDKit's
+        # conformer embedding is not thread-safe on a shared molecule, so
+        # two runs of the same SMILES produced divergent conformer pools
+        # (and hence divergent isomer counts / geometries) depending on
+        # thread interleaving.  ``ThreadPoolExecutor.map`` only stabilises
+        # *result ordering*, not the *content* of each per-seed embedding.
+        #
+        # Fix: every worker embeds into its OWN private ``Chem.Mol`` copy
+        # (no shared mutable state), then the main thread copies the
+        # resulting conformers back into the shared ``mol`` strictly in
+        # seed order.  Parallelism and the deterministic seed schedule are
+        # both preserved, and the conformer pool is now bit-identical
+        # across runs.  For pathological macrocycles where the internal
+        # embed timeout fires, two runs may still differ by a conformer or
+        # two — acceptable since those SMILES are already flagged by the
+        # timeout path as unreliable.
         def _embed_one(_s):
+            """Embed ``per_round`` conformers for seed ``_s`` into a private
+            mol copy.  Returns the list of per-copy conformer objects (deep
+            copies, safe to re-add to the shared mol on the main thread)."""
             try:
-                return _embed_multiple_confs_robust(mol, per_round, _s)
+                _mol_copy = Chem.Mol(mol)
+                _mol_copy.RemoveAllConformers()
+                _ids = _embed_multiple_confs_robust(_mol_copy, per_round, _s)
+                # Materialise standalone Conformer copies so they survive
+                # past the worker's mol copy going out of scope.
+                return [
+                    Chem.Conformer(_mol_copy.GetConformer(_cid))
+                    for _cid in _ids
+                ]
             except Exception:
                 return []
         _n_workers = min(
@@ -25585,11 +25608,17 @@ def smiles_to_xyz_isomers(
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=_n_workers
             ) as _pool:
-                for _res in _pool.map(_embed_one, seeds):
-                    conf_ids.extend(_res)
+                _per_seed_confs = list(_pool.map(_embed_one, seeds))
         else:
-            for _s in seeds:
-                conf_ids.extend(_embed_one(_s))
+            _per_seed_confs = [_embed_one(_s) for _s in seeds]
+        # Deterministic merge: re-add every worker's conformers to the
+        # shared ``mol`` in seed order, assigning fresh sequential IDs.
+        for _seed_confs in _per_seed_confs:
+            for _conf in _seed_confs:
+                try:
+                    conf_ids.append(mol.AddConformer(_conf, assignId=True))
+                except Exception:
+                    pass
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         # Do not abort here: keep already injected OB conformers if available.
@@ -29379,8 +29408,32 @@ def _optimize_xyz_openbabel(
         # Read into Open Babel
         ob_mol = pybel.readstring("xyz", std_xyz)
 
-        # Run UFF conjugate-gradient optimization
-        ff = pybel._forcefields["uff"]
+        # Run UFF conjugate-gradient optimization.
+        #
+        # DETERMINISM CONTRACT: ``pybel._forcefields["uff"]`` is a single
+        # process-global force-field object.  Open Babel's force field
+        # retains the constraint set from the previous ``SetConstraints``
+        # call — there is no public "clear constraints" entry point — so
+        # reusing the shared object means a constrained metal-complex
+        # optimisation leaves its M-D distance pins / fixed atoms behind,
+        # and the *next* call (even an unrelated non-metal molecule)
+        # silently inherits them.  That makes a SMILES' output depend on
+        # whatever was optimised before it in the same process.
+        #
+        # Fix: obtain a FRESH force-field instance per call via
+        # ``OBForceField.FindForceField`` (which constructs a new object
+        # rather than handing back the cached singleton).  Each
+        # optimisation starts from a clean, constraint-free force-field
+        # state, so the result depends only on this call's own input.
+        # Falls back to the shared singleton only if the fresh-instance
+        # lookup is somehow unavailable.
+        ff = None
+        try:
+            ff = pybel.ob.OBForceField.FindForceField("uff")
+        except Exception:
+            ff = None
+        if ff is None:
+            ff = pybel._forcefields["uff"]
         if not ff.Setup(ob_mol.OBMol):
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
             return (xyz_delfin, None) if return_energy else xyz_delfin
@@ -29407,12 +29460,26 @@ def _optimize_xyz_openbabel(
                 #     → enable only for sigma (drop multi_sigma) when pool-verdict
                 #     shows UFF-soft only helps sigma.
                 # Empty _CLASSES env (default) → fall back to scalar
-                # DELFIN_UFF_SOFT_DONORS.  ``mol`` may be ``None`` here (caller
-                # passes None for some legacy entry-points); _class_conditional_flag
-                # is fail-safe in that case (falls back to scalar flag).  An
-                # explicit per-call class guard is still applied below via
-                # _soft_meta["class_label"] + should_use_soft_donor.
-                _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", mol)
+                # DELFIN_UFF_SOFT_DONORS.
+                #
+                # DETERMINISM FIX: this call previously passed a bare
+                # ``mol`` — but ``_optimize_xyz_openbabel`` has no ``mol``
+                # parameter and no module-level ``mol`` exists, so every
+                # invocation raised ``NameError: name 'mol' is not
+                # defined``.  That exception was swallowed by the broad
+                # ``except`` around the whole constraint block, which
+                # meant ``ff.SetConstraints`` was NEVER reached: every
+                # constrained UFF call silently ran UNCONSTRAINED.  An
+                # unconstrained UFF relax on a metal complex (metals OB
+                # cannot fully parameterise) wanders to a different
+                # geometry on every call, so the topology-enumerator
+                # output drifted run-to-run.  ``_class_conditional_flag``
+                # is fail-safe with ``mol=None`` (the ``_classify_complex_class``
+                # call is wrapped in try/except, and with no ``_CLASSES``
+                # env set it never touches ``mol`` at all).  The per-call
+                # class guard below still applies via
+                # ``_soft_meta["class_label"]`` + ``should_use_soft_donor``.
+                _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", None)
                 if _soft_enabled and _soft_meta:
                     try:
                         from delfin._uff_soft_donor import should_use_soft_donor  # lazy
@@ -29526,6 +29593,20 @@ def _optimize_xyz_openbabel(
                 ff.SetConstraints(ob_constraints)
             except Exception as e:
                 logger.debug("OB UFF constraint setup failed, running unconstrained: %s", e)
+        else:
+            # DETERMINISM: explicitly install an EMPTY constraint set on
+            # the (possibly fallback-shared) force field for unconstrained
+            # calls.  Open Babel keeps the last ``SetConstraints`` block
+            # alive at the force-field level; without this reset an
+            # unconstrained optimisation that follows a constrained one in
+            # the same process would silently inherit the previous call's
+            # fixed atoms / distance pins, making the result depend on
+            # call order.  An empty ``OBFFConstraints`` is a no-op for the
+            # geometry but guarantees a clean, order-independent state.
+            try:
+                ff.SetConstraints(pybel.ob.OBFFConstraints())
+            except Exception as e:
+                logger.debug("OB UFF empty-constraint reset failed: %s", e)
 
         ff.ConjugateGradients(steps)
         ff.GetCoordinates(ob_mol.OBMol)
