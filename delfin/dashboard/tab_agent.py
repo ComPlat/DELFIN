@@ -1004,7 +1004,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
-    ("Session", "/session", "List sessions / browse pre-compaction archives", False),
+    ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
     ("Commands", "/commands", "List user-defined slash commands from ~/.delfin/commands/", False),
     ("Project", "/init", "Scan repo + write AGENTS.md / .delfin/settings.json scaffold", False),
@@ -6282,6 +6282,126 @@ def create_tab(ctx):
                 except Exception as exc:
                     _append_system_message(f"Restore failed: {exc}")
                 return True
+            # /session handoff [new] [<id>]  — produce a fresh-agent brief
+            if arg == "handoff" or arg.startswith("handoff "):
+                rest = arg[len("handoff"):].strip()
+                start_fresh = rest.startswith("new")
+                if start_fresh:
+                    rest = rest[len("new"):].strip()
+                target = rest or state.get("active_session_id", "") or ""
+                # Build the brief from the saved session, or — if we're
+                # handing off the LIVE session and it hasn't been saved
+                # yet — from the in-memory state.
+                data = None
+                if target:
+                    try:
+                        data = _ss.load_session(target)
+                    except Exception:
+                        data = None
+                if data is None:
+                    # Live session: assemble a minimal data dict from state
+                    eng = state.get("engine")
+                    estate = eng.export_state() if eng else {}
+                    data = {
+                        "session_id": target or state.get("active_session_id", "live"),
+                        "title": "",
+                        "chat_messages": state.get("chat_messages", []),
+                        "engine_messages": estate.get("engine_messages", []),
+                        "token_usage": estate.get("token_usage", {}),
+                        "cost_usd": estate.get("cost_usd", 0.0),
+                        "todo_payload": state.get("current_todos", []),
+                        "active_gate": state.get("_active_gate"),
+                        "pending_plan_body": state.get("_pending_plan_body", ""),
+                    }
+                try:
+                    brief = _ss.build_handoff_brief(data)
+                    saved = _ss.save_handoff_brief(
+                        data.get("session_id", "session"), brief,
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Handoff generation failed: {exc}")
+                    return True
+                short = str(saved).replace(str(Path.home()), "~")
+                if start_fresh:
+                    # Mint a fresh session: new engine, new session_id,
+                    # zero history — seeded with the handoff brief as the
+                    # opening context. This is the "pass to a new agent".
+                    try:
+                        _on_new_cycle(None)  # reset engine + chat
+                    except Exception:
+                        pass
+                    _append_chat_message("system", (
+                        "🤝 **New agent session** — seeded with a handoff "
+                        f"brief from `{data.get('session_id','?')[:16]}`. "
+                        "The agent below has no prior conversation history; "
+                        "everything it needs is in the brief."
+                    ))
+                    _append_chat_message("user", brief)
+                    # Pre-fill the input so the user can just hit Send to
+                    # kick the fresh agent off with the brief as context.
+                    input_textarea.value = (
+                        "Continue from the handoff brief above. "
+                        "Start with the recommended next step."
+                    )
+                    _append_system_message(
+                        f"📝 Handoff brief saved → {short}\n"
+                        "Fresh session ready — press Send to start the new "
+                        "agent, or edit the prompt first."
+                    )
+                else:
+                    _append_system_message(
+                        f"📝 Handoff brief for `{data.get('session_id','?')[:16]}`"
+                        f" saved → {short}\n\n{brief}"
+                    )
+                return True
+            # /session bundle <id>  — export a portable .delfin-session zip
+            if arg.startswith("bundle"):
+                sid = arg[len("bundle"):].strip() or state.get("active_session_id", "")
+                if not sid:
+                    _append_system_message(
+                        "Usage: /session bundle <session_id>  (current "
+                        "session has no id yet — send a message first)"
+                    )
+                    return True
+                try:
+                    bundle = _ss.export_bundle(sid)
+                except Exception as exc:
+                    _append_system_message(f"Bundle export failed: {exc}")
+                    return True
+                if bundle is None:
+                    _append_system_message(f"No session '{sid}' to bundle.")
+                    return True
+                short = str(bundle).replace(str(Path.home()), "~")
+                _append_system_message(
+                    f"📦 Session bundled → {short}\n"
+                    "Contains session.json + transcript archive + handoff "
+                    "brief. Hand this file to another machine / agent and "
+                    "import it with `/session import <path>`."
+                )
+                return True
+            # /session import <path>  — ingest a .delfin-session bundle
+            if arg.startswith("import "):
+                path = arg[len("import "):].strip().strip('"').strip("'")
+                if not path:
+                    _append_system_message("Usage: /session import <bundle-path>")
+                    return True
+                try:
+                    new_sid = _ss.import_bundle(Path(path).expanduser())
+                except Exception as exc:
+                    _append_system_message(f"Import failed: {exc}")
+                    return True
+                if new_sid is None:
+                    _append_system_message(
+                        f"Could not import '{path}' — not a valid "
+                        ".delfin-session bundle."
+                    )
+                    return True
+                _refresh_session_dropdown()
+                _append_system_message(
+                    f"📥 Bundle imported as session `{new_sid}`. "
+                    f"Load it with `/session restore {new_sid}`."
+                )
+                return True
             # /session search <query>  — grep across saved sessions + archives
             if arg.startswith("search "):
                 query = arg[len("search "):].strip()
@@ -6421,6 +6541,10 @@ def create_tab(ctx):
                 "  /session search <query>      — grep across saved sessions + archives\n"
                 "  /session fork [<id>]         — branch a session (default: current)\n"
                 "  /session tree [<id>]         — show ancestry + immediate children\n"
+                "  /session handoff [<id>]      — generate a fresh-agent handoff brief\n"
+                "  /session handoff new [<id>]  — brief + start a fresh seeded session\n"
+                "  /session bundle [<id>]       — export a portable .delfin-session zip\n"
+                "  /session import <path>       — ingest a .delfin-session bundle\n"
                 "  /session archive             — archived pre-compaction transcripts\n"
                 "  /session archive <id>        — view archive for a session\n"
             )

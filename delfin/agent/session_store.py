@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +415,261 @@ def session_children(session_id: str) -> list[dict[str, Any]]:
             })
     out.sort(key=lambda r: r.get("updated_at", 0), reverse=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Session handoff — pass a session to a fresh agent
+# ---------------------------------------------------------------------------
+#
+# The handoff brief is the .delfin equivalent of the compaction summary
+# a long-running agent produces before continuing in a fresh context: a
+# structured, self-contained recap that lets a NEW agent (new engine,
+# new session id, zero conversation history) pick up exactly where the
+# old one left off.
+
+_FILE_PATH_RE = re.compile(
+    r"(?:(?<=\s)|(?<=^)|(?<=`))"
+    r"((?:[\w./\-]+/[\w./\-]+|[\w./\-]+\.[a-zA-Z]{1,5}))"
+    r"(?::\d+)?"
+)
+
+
+def _extract_files_touched(engine_messages: list[dict]) -> list[str]:
+    """Best-effort scan of engine messages for file paths the agent
+    read / wrote / edited. Deduplicated, capped at 20."""
+    seen: list[str] = []
+    for msg in engine_messages or []:
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            continue
+        # Only assistant / tool messages mention files in a useful way
+        for m in _FILE_PATH_RE.finditer(content):
+            path = m.group(1)
+            if "://" in path or path.count("/") == 0 and "." not in path:
+                continue
+            if len(path) < 4 or len(path) > 120:
+                continue
+            if path not in seen:
+                seen.append(path)
+            if len(seen) >= 20:
+                return seen
+    return seen
+
+
+def build_handoff_brief(data: dict[str, Any]) -> str:
+    """Produce a structured, self-contained markdown recap of a session
+    suitable for briefing a fresh agent.
+
+    Sections: Goal / Key decisions & state / Files touched / Open items /
+    Recommended next step. Pure-extractive (no LLM call) so it's cheap
+    and deterministic — the format mirrors what a long-running agent
+    emits at compaction time.
+    """
+    chat = data.get("chat_messages") or []
+    engine_msgs = data.get("engine_messages") or []
+    title = data.get("title") or data.get("session_id", "untitled")[:40]
+
+    # Goal: first user message
+    goal = ""
+    for m in chat:
+        if m.get("role") == "user":
+            goal = str(m.get("content", "")).strip()
+            break
+    goal = goal[:500] or "(no explicit goal found in this session)"
+
+    # Key decisions & state: last 3 assistant messages, trimmed
+    assistant_msgs = [
+        str(m.get("content", "")).strip()
+        for m in chat if m.get("role") == "assistant" and m.get("content")
+    ]
+    decisions: list[str] = []
+    for a in assistant_msgs[-3:]:
+        first_para = a.split("\n\n")[0].replace("\n", " ").strip()
+        if first_para:
+            decisions.append(first_para[:280])
+
+    # Files touched
+    files = _extract_files_touched(engine_msgs)
+
+    # Open items: pending / in_progress tasks from the persisted payload
+    open_items: list[str] = []
+    for t in data.get("todo_payload") or []:
+        status = t.get("status", "")
+        if status in ("pending", "in_progress"):
+            mark = "▶" if status == "in_progress" else "○"
+            open_items.append(f"{mark} #{t.get('id','?')} {t.get('subject','')}")
+    # Active gate is also an open item
+    gate = data.get("active_gate")
+    if isinstance(gate, dict) and gate.get("type"):
+        open_items.append(
+            f"⏸ paused on {gate.get('type')} gate: {gate.get('title','')}"
+        )
+    # Pending plan
+    if (data.get("pending_plan_body") or "").strip():
+        open_items.append("📋 a plan-mode plan is awaiting approval")
+
+    # Recommended next step: gist of the last assistant message
+    next_step = ""
+    if assistant_msgs:
+        last = assistant_msgs[-1]
+        next_step = last.split("\n\n")[-1].replace("\n", " ").strip()[:300]
+    if not next_step:
+        next_step = "(continue from the open items above)"
+
+    cost = data.get("cost_usd", 0.0)
+    tok = data.get("token_usage", {}) or {}
+    n_msgs = len(chat)
+    sid = data.get("session_id", "")
+
+    lines = [
+        f"# Session Handoff — {title}",
+        "",
+        "_Self-contained recap for a fresh agent. You have NO prior "
+        "conversation history — everything you need to continue is below._",
+        "",
+        "## Goal",
+        "",
+        goal,
+        "",
+        "## Key decisions & current state",
+        "",
+    ]
+    if decisions:
+        for d in decisions:
+            lines.append(f"- {d}")
+    else:
+        lines.append("- (no assistant turns recorded yet)")
+    lines += ["", "## Files touched", ""]
+    if files:
+        for f in files:
+            lines.append(f"- `{f}`")
+    else:
+        lines.append("- (none detected)")
+    lines += ["", "## Open items", ""]
+    if open_items:
+        for o in open_items:
+            lines.append(f"- {o}")
+    else:
+        lines.append("- (nothing explicitly pending)")
+    lines += [
+        "",
+        "## Recommended next step",
+        "",
+        next_step,
+        "",
+        "---",
+        f"_Generated {time.strftime('%Y-%m-%d %H:%M')} from session "
+        f"`{sid}` — {n_msgs} messages, "
+        f"{tok.get('input', 0):,} in / {tok.get('output', 0):,} out tokens, "
+        f"${cost:.4f}._",
+    ]
+    return "\n".join(lines)
+
+
+def _handoffs_dir() -> Path:
+    p = Path.home() / ".delfin" / "handoffs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def save_handoff_brief(session_id: str, brief: str) -> Path:
+    """Persist a handoff brief to ``~/.delfin/handoffs/<sid>_<ts>.md``."""
+    d = _handoffs_dir()
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    safe_sid = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or "session")[:40]
+    p = d / f"{safe_sid}_{ts}.md"
+    p.write_text(brief, encoding="utf-8")
+    _chmod_user_only(p)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Portable session bundles — hand a session to another machine / agent
+# ---------------------------------------------------------------------------
+
+
+def _bundles_dir() -> Path:
+    p = Path.home() / ".delfin" / "bundles"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def export_bundle(session_id: str) -> Path | None:
+    """Pack a session into a single portable ``.delfin-session`` zip.
+
+    Contents:
+      - ``session.json``        — the full saved-session state
+      - ``transcript.jsonl``    — the pre-compaction transcript archive
+                                  (if one exists)
+      - ``handoff.md``          — a freshly-generated handoff brief
+
+    Returns the bundle path, or ``None`` if the session doesn't exist.
+    """
+    data = load_session(session_id)
+    if not data:
+        return None
+    bundle_path = _bundles_dir() / f"{session_id}.delfin-session"
+    brief = build_handoff_brief(data)
+    archive = _transcript_archive_dir() / f"{session_id}.jsonl"
+    with zipfile.ZipFile(bundle_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("session.json", json.dumps(data, ensure_ascii=False, indent=1))
+        z.writestr("handoff.md", brief)
+        if archive.is_file():
+            try:
+                z.writestr("transcript.jsonl", archive.read_text(encoding="utf-8"))
+            except OSError:
+                pass
+        # A tiny manifest so importers can sanity-check the bundle.
+        z.writestr("manifest.json", json.dumps({
+            "kind": "delfin-session-bundle",
+            "version": 1,
+            "session_id": session_id,
+            "exported_at": time.time(),
+        }))
+    _chmod_user_only(bundle_path)
+    return bundle_path
+
+
+def import_bundle(bundle_path: Path | str, *, new_id: str | None = None) -> str | None:
+    """Ingest a ``.delfin-session`` bundle exported by ``export_bundle``.
+
+    The session lands under a FRESH id (so it never clobbers an existing
+    local session) and the transcript archive is restored alongside it.
+    Returns the new session id, or ``None`` on failure.
+    """
+    p = Path(bundle_path)
+    if not p.is_file():
+        return None
+    try:
+        with zipfile.ZipFile(p, "r") as z:
+            names = set(z.namelist())
+            if "session.json" not in names:
+                return None
+            data = json.loads(z.read("session.json").decode("utf-8"))
+            transcript = (
+                z.read("transcript.jsonl").decode("utf-8")
+                if "transcript.jsonl" in names else ""
+            )
+    except (zipfile.BadZipFile, json.JSONDecodeError, OSError, KeyError):
+        return None
+
+    sid = new_id or f"import-{int(time.time())}-{(data.get('session_id') or 'x')[-6:]}"
+    data["session_id"] = sid
+    data["imported_at"] = time.time()
+    src_title = str(data.get("title") or "Untitled")
+    if "(imported)" not in src_title:
+        data["title"] = f"{src_title} (imported)"
+
+    d = _ensure_dir()
+    (d / f"{sid}.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    _chmod_user_only(d / f"{sid}.json")
+    if transcript.strip():
+        arch = _transcript_archive_dir() / f"{sid}.jsonl"
+        arch.write_text(transcript, encoding="utf-8")
+        _chmod_user_only(arch)
+    return sid
 
 
 def resume_latest(*, max_age_s: int | None = None) -> dict[str, Any] | None:
