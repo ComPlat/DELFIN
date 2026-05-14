@@ -51,6 +51,27 @@ git checkout HEAD -- delfin/smiles_converter.py
 | `9c40b70-wave6-fixA-vollpool` | 13 May AM | `9c40b70` + Fix A working-tree patch | `wave6_fixA_9c40b70.patch` | net ZERO per-class, 300s budget insufficient |
 | `9c40b70-wave7b3-vollpool` | 13 May AM | `6c368de` (Wave-7 Bundle 3 — committed BEFORE pool finished) | — | RUNNING |
 
+## Session 2026-05-13/14 — env-flag-configured pools
+
+These pools share commits but differ by **env-flags** (the label encodes the
+config). Recovery = `git checkout <commit>` + set the env-flags listed.
+
+| Voll-pool archive | Commit | Env-flag config | JSONL | Verdict |
+|---|---|---|---|---|
+| `3943c2b-b5v2-vollpool` | `3943c2b` | `DELFIN_BAUSTEIN5=1` | `20260513_122130` | A: topo 47.64% (equal-n baseline) |
+| `3943c2b-uffsoft-vollpool` | `3943c2b` | `DELFIN_UFF_SOFT_DONORS=1` | `20260513_122134` | B: topo 48.30% (+0.66pp, within ±1pp noise); bondlen real win |
+| `fb4802f-b5v2-rigidH-vollpool` | `fb4802f` | `DELFIN_BAUSTEIN5=1 DELFIN_B5_RIGID_H=1` | `20260513_145341` | C: topo 46.55% (−1.09pp — rigid-H regresses) |
+| `fb4802f-combined-vollpool` | `fb4802f` | `DELFIN_BAUSTEIN5=1 DELFIN_B5_RIGID_H=1 DELFIN_UFF_SOFT_DONORS=1` | `20260513_190750` | D: topo 46.21% (−1.44pp — "+6pp" headline was 300-file noise) |
+| `fb4802f-b5v2regress-vollpool` | `fb4802f` | `DELFIN_BAUSTEIN5=1` (rigid-H default OFF) | `20260513_193052` | E: topo 45.97%; P-H-TRACK verified bit-exact default-OFF |
+| `19821fb-champion-vollpool` | `19821fb` | `DELFIN_BAUSTEIN5=1 DELFIN_B5_RIGID_H=1 DELFIN_UFF_SOFT_DONORS=1 DELFIN_B5_PHASE_A5_SMART=1` (hard-C donor gate automatic) | `20260514_063038` | F: RUNNING — mitigated combined config |
+| `19821fb-maxall-vollpool` | `19821fb` | all 16 Wave-1-7 flags ON (B5/rigidH/UFF-soft/PhaseA5-smart/multihapto-P1+P2/bridging-anion/CN5/CN3-CN4/high-CN/linear-CN2/mixed-metal/adaptive-timeout/multi-sigma-v2/class-aware-seeds) | `20260514_063039` | G: RUNNING — max-config |
+
+**Key session finding:** the original C/D/E batteries scored only 300-file CLI
+subsamples (±6pp noise). Re-scored with `--cli-sample 50000 --skip-xtb` →
+`reports/all_metrics_<label>_FULL.json`. Equal-n verdict (63955 common frames):
+raw patches do NOT improve topology; rigid-H + combined regress it. Only
+UFF-soft is marginal-positive (within noise). F+G (mitigated configs) pending.
+
 ## Commit-graph (latest)
 
 ```
