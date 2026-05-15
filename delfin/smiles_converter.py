@@ -29564,7 +29564,7 @@ def _optimize_xyz_openbabel(
                 # env set it never touches ``mol`` at all).  The per-call
                 # class guard below still applies via
                 # ``_soft_meta["class_label"]`` + ``should_use_soft_donor``.
-                _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", None)
+                _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", None, default=1)
                 # Determinism gate: when OB UFF could not parameterise
                 # the metal (see ``_uff_param_unsafe`` probe above), the
                 # distance-pin path is non-deterministic.  Bypass the
