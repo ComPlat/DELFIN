@@ -2209,6 +2209,38 @@ def create_tab(ctx):
         _available_providers.append(("OpenAI", "openai"))
     if os.environ.get("KIT_TOOLBOX_API_KEY", ""):
         _available_providers.append(("KIT Toolbox", "kit"))
+    # Detect a local OpenAI-compatible server (Ollama / vLLM / LM Studio /
+    # llama.cpp). We probe the host's /api/tags (Ollama-native) and fall
+    # back to /v1/models (everyone else). A 200 means at least one model
+    # is loaded — that's enough to surface the provider in the dropdown.
+    _ollama_host = (
+        os.environ.get("OLLAMA_HOST")
+        or os.environ.get("OLLAMA_BASE_URL")
+        or "http://localhost:11434"
+    )
+    try:
+        import urllib.request as _urlreq
+        _probe = _urlreq.Request(
+            _ollama_host.rstrip("/") + "/api/tags",
+            headers={"Accept": "application/json"},
+        )
+        with _urlreq.urlopen(_probe, timeout=0.6) as _r:
+            if _r.status == 200:
+                _available_providers.append(("Ollama (local)", "ollama"))
+    except Exception:
+        # Try the OpenAI-compatible /v1/models endpoint as a fallback
+        # so non-Ollama local servers (vLLM, LM Studio) also appear.
+        try:
+            import urllib.request as _urlreq
+            _probe = _urlreq.Request(
+                _ollama_host.rstrip("/") + "/v1/models",
+                headers={"Accept": "application/json"},
+            )
+            with _urlreq.urlopen(_probe, timeout=0.6) as _r:
+                if _r.status == 200:
+                    _available_providers.append(("Ollama (local)", "ollama"))
+        except Exception:
+            pass
     # Fallback: always show at least Claude (will error with helpful message)
     if not _available_providers:
         _available_providers.append(("Claude", "claude"))
@@ -2338,11 +2370,28 @@ def create_tab(ctx):
             ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
             ("KIT qwen3.5 397B-A17b", "kit.qwen3.5-397b-A17b"),
         ],
+        # Common tool-calling-capable Ollama / vLLM / LM Studio models
+        # as of 2026-05. The live /api/tags fetch overwrites this so
+        # the user only sees models they actually have pulled.
+        "ollama": [
+            ("Qwen 3 — Coder 32B", "qwen3-coder:32b"),
+            ("Qwen 2.5 — Coder 32B", "qwen2.5-coder:32b"),
+            ("Qwen 2.5 — Coder 14B", "qwen2.5-coder:14b"),
+            ("Qwen 2.5 — Coder 7B", "qwen2.5-coder:7b"),
+            ("Llama 3.3 70B", "llama3.3:70b"),
+            ("Llama 3.2 — 8B", "llama3.2:8b"),
+            ("DeepSeek Coder V2 16B", "deepseek-coder-v2:16b"),
+            ("DeepSeek Coder V2 — Lite", "deepseek-coder-v2:lite"),
+            ("Mistral Nemo 12B", "mistral-nemo:12b"),
+            ("Mistral Small 3 24B", "mistral-small:24b"),
+        ],
     }
     _PROVIDER_DEFAULTS = {"claude": "sonnet", "openai": "gpt-5.4",
-                          "kit": "azure.gpt-5.1"}
+                          "kit": "azure.gpt-5.1",
+                          "ollama": "qwen3-coder:32b"}
     _PROVIDER_CHEAP = {"claude": "haiku", "openai": "gpt-5.4-mini",
-                       "kit": "azure.gpt-5-nano"}
+                       "kit": "azure.gpt-5-nano",
+                       "ollama": "qwen2.5-coder:7b"}
 
     # Skip patterns: models that should not appear in the dropdown.
     # Embedding models can't generate chat completions — they'd error
@@ -2376,6 +2425,49 @@ def create_tab(ctx):
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = _json.loads(resp.read())
+            elif provider == "ollama":
+                # Ollama serves a non-OpenAI ``/api/tags`` payload that
+                # is friendlier (size, modified_at). Fall back to the
+                # OpenAI-compatible ``/v1/models`` for vLLM / LM Studio.
+                host = (
+                    os.environ.get("OLLAMA_HOST")
+                    or os.environ.get("OLLAMA_BASE_URL")
+                    or "http://localhost:11434"
+                ).rstrip("/")
+                import urllib.request
+                try:
+                    with urllib.request.urlopen(
+                        host + "/api/tags", timeout=4,
+                    ) as resp:
+                        raw = _json.loads(resp.read())
+                    models = raw.get("models", [])
+                    result = []
+                    for m in models:
+                        mid = m.get("name") or m.get("model", "")
+                        if not mid:
+                            continue
+                        size_gb = (m.get("size") or 0) / 1_000_000_000
+                        label = f"{mid}" + (
+                            f"  ({size_gb:.1f} GB)" if size_gb > 0 else ""
+                        )
+                        result.append((label, mid))
+                    if result:
+                        result.sort(key=lambda x: x[1])
+                        return result
+                except Exception:
+                    pass
+                # OpenAI-compatible fallback (vLLM / LM Studio / llama.cpp)
+                try:
+                    with urllib.request.urlopen(
+                        host + "/v1/models", timeout=4,
+                    ) as resp:
+                        raw = _json.loads(resp.read())
+                    models = raw.get("data", [])
+                    result = [(m.get("id", ""), m.get("id", ""))
+                              for m in models if m.get("id")]
+                    return result or None
+                except Exception:
+                    return None
             else:
                 return None
 
@@ -5703,7 +5795,13 @@ def create_tab(ctx):
                 "o4-mini": {"input": 1.10, "output": 4.40},
                 "o3": {"input": 2.0, "output": 8.0},
             }
-            pricing = _PRICING.get(model, _PRICING.get("sonnet", {"input": 3.0, "output": 15.0}))
+            # Ollama / vLLM / LM Studio are local — no per-token cost.
+            if (provider_dropdown.value == "ollama"
+                    or model.startswith(("qwen", "llama", "mistral",
+                                          "deepseek", "phi", "gemma"))):
+                pricing = {"input": 0.0, "output": 0.0}
+            else:
+                pricing = _PRICING.get(model, _PRICING.get("sonnet", {"input": 3.0, "output": 15.0}))
             est_in = inp_t * pricing["input"] / 1_000_000
             est_out = out_t * pricing["output"] / 1_000_000
             # Message counts
