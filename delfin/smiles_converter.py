@@ -1868,7 +1868,7 @@ def _resolve_top_level_seed_count(mol) -> int:
     return _class_aware_seed_count(cls)
 
 
-# --- Multi-sigma path V2 (Iter-multi_sigma audit, env-gated, default OFF) ---
+# --- Multi-sigma path V2 (Iter-multi_sigma audit, class-conditional default-ON) ---
 # Forensik 2026-05-13: multi_sigma class shows 30.3%/36.4% (A/B) coverage,
 # the lowest of any class (n=33).  Root cause is wall-clock budget exhaustion:
 # 23/33 SMILES (70%) hit the external 600 s timeout while the embedding
@@ -1880,10 +1880,20 @@ def _resolve_top_level_seed_count(mol) -> int:
 # wall-clock budget for the augmentation block, without touching small
 # multi-sigma molecules (which already work in ≤60 s).
 #
-# Default OFF (bit-exact pre-patch behaviour).  Operator enables via
-# ``DELFIN_MULTI_SIGMA_PATH_V2=1`` (all multi-metal sigma SMILES) or
-# ``DELFIN_MULTI_SIGMA_PATH_V2_CLASSES="multi_sigma"`` (class-conditional
-# whitelist, identical to the default-on classes below).
+# Wire-in 2026-05-15 — Phase 1.5: class-conditional default-ON.
+# The patch is now active by default for SMILES classified as ``multi_sigma``;
+# every other class is bit-exact pre-patch.  This recovers the 70% multi_sigma
+# timeout-driven coverage loss documented above without affecting sigma/hapto
+# pools that already converge well below the pool budget.
+#
+# Resolution semantics (mirrors ``_class_conditional_flag``):
+#   * ``DELFIN_MULTI_SIGMA_PATH_V2`` unset    → active iff class is in
+#     ``DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES`` (multi_sigma).
+#   * ``DELFIN_MULTI_SIGMA_PATH_V2=0``        → globally OFF (escape hatch).
+#   * ``DELFIN_MULTI_SIGMA_PATH_V2=1``        → active iff class is in
+#     the default class list (same as unset; kept for explicitness).
+#   * ``DELFIN_MULTI_SIGMA_PATH_V2_CLASSES="…"`` → operator-supplied class
+#     whitelist takes precedence over both of the above.
 DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES: Tuple[str, ...] = ("multi_sigma",)
 
 
@@ -1892,10 +1902,11 @@ def _multi_sigma_v2_active(mol) -> bool:
 
     Resolution precedence (mirrors ``_class_conditional_flag`` semantics):
       1. ``DELFIN_MULTI_SIGMA_PATH_V2_CLASSES`` env-var (comma-separated
-         class whitelist).
-      2. Else if ``DELFIN_MULTI_SIGMA_PATH_V2`` is unset or ``0``:
-         return False (default OFF; bit-exact pre-patch).
-      3. Else: True iff ``_classify_complex_class(mol)`` is in
+         class whitelist) — operator override, wins over the scalar gate.
+      2. Else if ``DELFIN_MULTI_SIGMA_PATH_V2=0`` is explicitly set:
+         return False (operator escape hatch — global opt-out).
+      3. Else (scalar unset or ``=1``): True iff
+         ``_classify_complex_class(mol)`` is in
          ``DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES`` (i.e. multi_sigma).
 
     Fail-safe: classification exceptions return False so the V2 path can
@@ -1910,7 +1921,9 @@ def _multi_sigma_v2_active(mol) -> bool:
             return _classify_complex_class(mol) in classes
         except Exception:
             return False
-    if not _delfin_env_int("DELFIN_MULTI_SIGMA_PATH_V2", 0):
+    # Class-conditional default-ON: env unset or =1 → activate for the
+    # default class set.  Explicit =0 is the global opt-out.
+    if _delfin_env_int("DELFIN_MULTI_SIGMA_PATH_V2", 1) == 0:
         return False
     try:
         return _classify_complex_class(mol) in set(
@@ -18421,10 +18434,25 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
     # Universal: only fires on actual M-M edges (mono-hapto / sigma /
     # no_metal classes have none -- no-op).
     #
-    # Production gating: default OFF (per
-    # ``feedback_production_ready_only``).  Operator opt-in via
-    #   DELFIN_MULTIHAPTO_MM_ENFORCE=1
-    if _delfin_env_int("DELFIN_MULTIHAPTO_MM_ENFORCE", 0):
+    # Phase-1.5 wire-in (2026-05-15): class-conditional default-ON
+    # for ``multi_hapto`` only.  Patch is geometrically universal (no-op when
+    # SMILES has no M-M edge) but the class-conditional gate keeps mono-hapto,
+    # sigma, multi-sigma, and no-metal classes bit-identical to the
+    # pre-wire-in baseline.
+    #
+    # Resolution precedence (see ``_class_conditional_flag``):
+    #   1. DELFIN_MULTIHAPTO_MM_ENFORCE_CLASSES set → use that list.
+    #   2. DELFIN_MULTIHAPTO_MM_ENFORCE=0 → fully disabled
+    #      (per-class rollback), restores pre-wire-in behaviour.
+    #   3. DELFIN_MULTIHAPTO_MM_ENFORCE=1 → enabled on every class
+    #      (operator escape hatch for cross-class experiments, e.g.
+    #      Pt-Pt / Re-Re multi-sigma dimers).
+    #   4. env unset → enabled iff class is in ``default_classes``,
+    #      i.e. only for ``multi_hapto``.
+    if _class_conditional_flag(
+        "DELFIN_MULTIHAPTO_MM_ENFORCE", mol, default=0,
+        default_classes=("multi_hapto",),
+    ):
         try:
             _enforce_smiles_mm_distances(mol, conf, metal_indices, _gp, _sp, np)
         except Exception as _mm_exc:
@@ -27679,14 +27707,23 @@ def smiles_to_xyz(
                 # ``hapto_candidate_mols``; ``_select_best_hapto_candidate``
                 # then picks the best from those.
                 #
-                # Production gating: default OFF (per
-                # ``feedback_production_ready_only``).  Operator opt-in via
-                #   DELFIN_MULTIHAPTO_SIMPLE_PATH=1            (all classes)
-                #   DELFIN_MULTIHAPTO_SIMPLE_PATH_CLASSES="multi_hapto"
-                # The class-conditional helper guarantees bit-identical
-                # behaviour on every class when the env-flag is unset.
+                # Phase-1.5 wire-in (2026-05-15): class-conditional default-ON
+                # for ``multi_hapto`` only.  The class is 0/22 broken on the
+                # v2-final deterministic baseline; SIMPLE_PATH is the
+                # single-flag rescue and its scope is class-gated so
+                # mono-hapto (729 SMILES, 95.6% pass) stays bit-identical.
+                #
+                # Resolution precedence (see ``_class_conditional_flag``):
+                #   1. DELFIN_MULTIHAPTO_SIMPLE_PATH_CLASSES set → use that list.
+                #   2. DELFIN_MULTIHAPTO_SIMPLE_PATH=0 → fully disabled
+                #      (per-class rollback), restores pre-wire-in behaviour.
+                #   3. DELFIN_MULTIHAPTO_SIMPLE_PATH=1 → enabled on every class
+                #      (operator escape hatch for cross-class experiments).
+                #   4. env unset → enabled iff class is in ``default_classes``,
+                #      i.e. only for ``multi_hapto``.
                 _simple_path_active = _class_conditional_flag(
                     "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0,
+                    default_classes=("multi_hapto",),
                 )
                 if _simple_path_active:
                     logger.info(
@@ -29438,6 +29475,54 @@ def _optimize_xyz_openbabel(
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
             return (xyz_delfin, None) if return_energy else xyz_delfin
 
+        # DETERMINISM GATE: probe whether OB UFF actually parameterised
+        # every atom type in this molecule.  When OB's UFFTYPER cannot
+        # match a perceived atom type (typical for transition metals with
+        # explicit formal charges — ``Pt+2``, ``Fe+2``, ``Pd+2``, ``Ru+3``
+        # etc.), OB silently falls back to a default/uninitialised
+        # parameter slot.  The energy stays at a marker value
+        # (~5.9e11 kcal/mol — a recognisable uninitialised-memory
+        # pattern) BUT the per-atom gradient on the affected atoms is
+        # read from uninitialised heap memory and differs across process
+        # invocations.  Calls that downstream FREEZE every donor +
+        # metal via ``AddAtomConstraint`` are unaffected because the bad
+        # gradients can't move fixed atoms.  Calls that swap a donor's
+        # ``AddAtomConstraint`` for an ``AddDistanceConstraint`` (the
+        # soft-donor mode added by Wave-1-7) leave the donor free, the
+        # uninitialised gradient drags it across the workspace, and the
+        # output geometry depends on whatever the freshly-allocated
+        # heap page happened to contain.  The same input then produces
+        # a different output every run — the bug that blocked v2-final-
+        # prime even after Determinism Fix #1 + #2.
+        #
+        # Detection is purely runtime: an unconstrained ``ff.Energy()``
+        # immediately after Setup returns the parameterisation marker.
+        # Anything above 1e9 kcal/mol is the uninitialised pattern (a
+        # physically-meaningful 5-atom complex has E < 1e5).  No metal
+        # allowlist, no SMILES patterns.  When this flag is set, the
+        # soft-donor block below skips the distance-pin path and falls
+        # back to ``AddAtomConstraint`` on every donor — the legacy
+        # behaviour that is empirically deterministic even with
+        # unparameterised metals.
+        _uff_param_unsafe = False
+        try:
+            _e_marker = float(ff.Energy())
+            if not math.isfinite(_e_marker) or abs(_e_marker) > 1.0e9:
+                _uff_param_unsafe = True
+                logger.debug(
+                    "UFF parameterisation marker = %.3e — soft-donor "
+                    "distance pins disabled to keep this call "
+                    "bit-deterministic",
+                    _e_marker,
+                )
+        except Exception as _e_exc:
+            # Energy probe failed → assume unsafe (conservative).
+            _uff_param_unsafe = True
+            logger.debug(
+                "UFF parameterisation probe raised (%s); soft-donor "
+                "distance pins disabled for safety", _e_exc,
+            )
+
         # Apply constraints (if provided) to preserve coordination geometry
         if constraints:
             try:
@@ -29480,7 +29565,72 @@ def _optimize_xyz_openbabel(
                 # class guard below still applies via
                 # ``_soft_meta["class_label"]`` + ``should_use_soft_donor``.
                 _soft_enabled = _class_conditional_flag("DELFIN_UFF_SOFT_DONORS", None)
-                if _soft_enabled and _soft_meta:
+                # Determinism gate: when OB UFF could not parameterise
+                # the metal (see ``_uff_param_unsafe`` probe above), the
+                # distance-pin path is non-deterministic.  Bypass the
+                # soft-donor block AND explicitly promote every donor
+                # from the soft-meta into ``AddAtomConstraint`` (HARD
+                # FixAtom).  Upstream ``_build_coordination_constraints_from_xyz``
+                # may have dropped the donors from ``fix_atoms`` in
+                # anticipation of soft-mode adding distance pins; if we
+                # do not re-promote here, the donors stay FREE and the
+                # uninitialised-gradient bug drags them across the
+                # workspace just as if soft-mode had run.
+                # Track explicit promotions so we never add the same
+                # atom twice to the OB constraint set (idempotent).
+                _gated_hard_added: set = set()
+                if _soft_enabled and _soft_meta and _uff_param_unsafe:
+                    try:
+                        from delfin._uff_soft_donor import (
+                            should_use_soft_donor as _sus,
+                        )
+                        _gated_cls = _soft_meta.get("class_label", "no_metal")
+                        if _sus(_gated_cls):
+                            # Promote every donor + metal recorded in
+                            # the soft-meta block to HARD FixAtom.
+                            # Upstream ``_build_coordination_constraints_from_xyz``
+                            # already lists the metal in ``fix_atoms`` and
+                            # — when ``DELFIN_UFF_RELAX_DONORS`` is the
+                            # default 0 — the donors as well; we do NOT
+                            # touch ``_soft_skip_donors`` here so those
+                            # entries get added through the regular
+                            # ``fix_atoms`` loop below.  This block
+                            # covers the (rare) case where a caller
+                            # built ``constraints`` manually and did not
+                            # list the donors / metal: the resulting
+                            # OB constraint set still pins every donor.
+                            for _d in _soft_meta.get("donor_indices", []):
+                                _di = int(_d)
+                                if _di in _gated_hard_added:
+                                    continue
+                                try:
+                                    ob_constraints.AddAtomConstraint(_di + 1)
+                                    _gated_hard_added.add(_di)
+                                except Exception:
+                                    pass
+                            for _m in _soft_meta.get("metal_indices", []):
+                                _mi = int(_m)
+                                if _mi in _gated_hard_added:
+                                    continue
+                                try:
+                                    ob_constraints.AddAtomConstraint(_mi + 1)
+                                    _gated_hard_added.add(_mi)
+                                except Exception:
+                                    pass
+                    except Exception as _gex:
+                        logger.debug(
+                            "Soft-donor HARD-fallback promotion raised "
+                            "(%s); relying on upstream fix_atoms list",
+                            _gex,
+                        )
+                    logger.debug(
+                        "DELFIN_UFF_SOFT_DONORS gated OFF for class=%s: "
+                        "OB UFF cannot fully parameterise this metal "
+                        "(soft-mode would be non-deterministic).  "
+                        "Falling back to FixAtom on every donor.",
+                        _soft_meta.get("class_label", "?"),
+                    )
+                if _soft_enabled and _soft_meta and not _uff_param_unsafe:
                     try:
                         from delfin._uff_soft_donor import should_use_soft_donor  # lazy
                         _cls = _soft_meta.get("class_label", "no_metal")
@@ -29570,9 +29720,13 @@ def _optimize_xyz_openbabel(
                         _soft_skip_donors = set()
 
                 # Fix atom positions (1-based indices for OB).
-                # Skip donors that received an M-D distance pin above.
+                # Skip donors that received an M-D distance pin above
+                # (soft-mode active) or that were already promoted to
+                # FixAtom by the determinism gate's HARD fallback above.
                 for idx in constraints.get('fix_atoms', []):
                     if int(idx) in _soft_skip_donors:
+                        continue
+                    if int(idx) in _gated_hard_added:
                         continue
                     ob_constraints.AddAtomConstraint(idx + 1)
                 # Distance constraints

@@ -167,32 +167,95 @@ def _sn_ir_distance(xyz: str):
 
 
 # ---------------------------------------------------------------------------
-# 1. Default OFF: env unset -> bit-identical to pre-patch
+# 1. Wire-in defaults (Phase-1.5 2026-05-15)
 # ---------------------------------------------------------------------------
+#
+# Wire-in semantics:
+#   * Env unset                         -> ON for multi_hapto, OFF elsewhere.
+#   * DELFIN_MULTIHAPTO_<PATCH>=0       -> hard rollback to pre-wire-in
+#                                          (OFF for every class).
+#   * DELFIN_MULTIHAPTO_<PATCH>=1       -> ON for every class
+#                                          (operator escape hatch).
+#   * DELFIN_MULTIHAPTO_<PATCH>_CLASSES -> ON for the listed classes only.
+#
+# Both patches use ``_class_conditional_flag(..., default_classes=("multi_hapto",))``
+# at their wire-in sites in ``smiles_converter.py``.
 
-class TestDefaultOff:
-    """Acceptance criterion: env unset -> behaviour bit-identical to HEAD pre-patch."""
+class TestWireInDefaults:
+    """Class-conditional default-ON for the ``multi_hapto`` class only."""
 
-    def test_default_off_simple_path_inactive_for_all_classes(self):
-        """``DELFIN_MULTIHAPTO_SIMPLE_PATH`` unset -> flag False on every class."""
+    def test_env_unset_simple_path_active_only_for_multi_hapto(self):
+        """Env unset -> SIMPLE_PATH flag True for multi_hapto, False elsewhere."""
         for label, smi in _CLASS_SMILES.items():
             mol = _mol(smi)
-            assert _class_conditional_flag(
-                "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0
-            ) is False, f"unexpected True on class={label} with env unset"
+            flag = _class_conditional_flag(
+                "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0,
+                default_classes=("multi_hapto",),
+            )
+            if label == "multi_hapto":
+                assert flag is True, (
+                    f"wire-in: flag must default-ON for multi_hapto, got {flag}"
+                )
+            else:
+                assert flag is False, (
+                    f"wire-in: flag must default-OFF for class={label}, got {flag}"
+                )
 
-    def test_default_off_mm_enforce_distance_unchanged(self):
-        """Baseline Sn-Ir = 3.4 A is preserved when MM_ENFORCE is unset."""
+    def test_env_unset_mm_enforce_active_only_for_multi_hapto(self):
+        """Env unset -> MM_ENFORCE flag True for multi_hapto, False elsewhere."""
+        for label, smi in _CLASS_SMILES.items():
+            mol = _mol(smi)
+            flag = _class_conditional_flag(
+                "DELFIN_MULTIHAPTO_MM_ENFORCE", mol, default=0,
+                default_classes=("multi_hapto",),
+            )
+            if label == "multi_hapto":
+                assert flag is True, (
+                    f"wire-in: flag must default-ON for multi_hapto, got {flag}"
+                )
+            else:
+                assert flag is False, (
+                    f"wire-in: flag must default-OFF for class={label}, got {flag}"
+                )
+
+    def test_explicit_zero_simple_path_rolls_back_for_multi_hapto(self):
+        """``DELFIN_MULTIHAPTO_SIMPLE_PATH=0`` overrides the wire-in default."""
+        os.environ["DELFIN_MULTIHAPTO_SIMPLE_PATH"] = "0"
+        mol = _mol(_COIRSN_SMI)
+        assert _class_conditional_flag(
+            "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0,
+            default_classes=("multi_hapto",),
+        ) is False
+
+    def test_explicit_zero_mm_enforce_rolls_back_distance_to_baseline(self):
+        """``DELFIN_MULTIHAPTO_MM_ENFORCE=0`` restores pre-wire-in Sn-Ir = 3.4 A."""
+        # Also disable SIMPLE_PATH so this is a pure end-to-end "all patches off"
+        # baseline (matches HEAD-pre-wire-in behaviour exactly).
+        os.environ["DELFIN_MULTIHAPTO_SIMPLE_PATH"] = "0"
+        os.environ["DELFIN_MULTIHAPTO_MM_ENFORCE"] = "0"
         xyz, err = smiles_to_xyz(_COIRSN_SMI, hapto_approx=True)
         assert err is None, f"converter failed: {err}"
         d = _sn_ir_distance(xyz)
         assert d is not None, "Sn or Ir missing from baseline XYZ"
-        # The baseline Sn-Ir distance is the regression we want to fix.
-        # It MUST be >3.25 A (above detector cutoff) when patches are off,
-        # otherwise this test would not be testing anything.
+        # Pre-wire-in baseline must remain >3.25 A so the regression is
+        # observable; otherwise this test no longer guards the rollback.
         assert d > 3.25, (
             f"baseline Sn-Ir distance {d:.3f} A unexpectedly already inside "
-            f"detector cutoff -- has the regression been fixed elsewhere?"
+            f"detector cutoff with both patches explicitly disabled -- has "
+            f"the regression been fixed elsewhere?"
+        )
+
+    def test_env_unset_pulls_sn_ir_below_detector_cutoff(self):
+        """Wire-in default: D-COIRSN env-unset -> Sn-Ir <=3.25 A."""
+        # Explicit "no opt-out" environment: scrub clears env-vars in fixture.
+        xyz, err = smiles_to_xyz(_COIRSN_SMI, hapto_approx=True)
+        assert err is None, f"converter failed: {err}"
+        d = _sn_ir_distance(xyz)
+        assert d is not None, "Sn or Ir missing from wire-in XYZ"
+        # Target from covalent-radii fallback: 1.39 + 1.41 + 0.4 = 3.20 A.
+        assert d <= 3.25, (
+            f"Sn-Ir = {d:.3f} A still above detector cutoff 3.25 A "
+            f"with default wire-in (env unset)"
         )
 
 

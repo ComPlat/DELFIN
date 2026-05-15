@@ -133,34 +133,66 @@ def test_budget_monotone_in_size() -> None:
 
 
 # ----------------------------------------------------------------------
-# Test 2: default-OFF behaviour is bit-exact pre-patch.
+# Test 2: class-conditional default-ON contract (Phase 1.5 wire-in).
 # ----------------------------------------------------------------------
-def test_v2_default_off_for_all_classes() -> None:
-    """With no env-var set, ``_multi_sigma_v2_active`` returns False
-    for every class.  This guards the bit-exact pre-patch contract."""
+def test_v2_default_on_for_multi_sigma_only() -> None:
+    """With no env-var set, ``_multi_sigma_v2_active`` returns True for
+    SMILES classified as ``multi_sigma`` and False for every other class.
+
+    This is the Phase 1.5 wire-in contract: the patch is auto-active by
+    default for the multi_sigma class (to recover the 70% timeout-driven
+    coverage loss documented in ITER-multi_sigma_audit.md), but every
+    other class remains bit-exact pre-patch so sigma/hapto pools cannot
+    silently regress.
+    """
     for class_label, smi in _FIXTURES.items():
         mol = _mol(smi)
         assert _classify_complex_class(mol) in {class_label, "no_metal"}, (
             f"fixture mismatch for {class_label!r}: classifier says "
             f"{_classify_complex_class(mol)!r}"
         )
-        assert _multi_sigma_v2_active(mol) is False, (
-            f"V2 path must be OFF by default (class={class_label!r})"
-        )
+        observed = _multi_sigma_v2_active(mol)
+        if class_label in DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES:
+            assert observed is True, (
+                f"V2 must be ON-by-default for class={class_label!r} "
+                "(Phase 1.5 wire-in contract)"
+            )
+        else:
+            assert observed is False, (
+                f"V2 must stay OFF-by-default for class={class_label!r} "
+                "(only multi_sigma is auto-activated)"
+            )
 
     # mol=None must never crash, must return False.
     assert _multi_sigma_v2_active(None) is False
 
 
 # ----------------------------------------------------------------------
-# Test 3: scalar flag enables V2 only for ``multi_sigma`` class.
+# Test 3: explicit OFF is the global escape hatch.
 # ----------------------------------------------------------------------
-def test_v2_scalar_flag_targets_multi_sigma_only() -> None:
-    """``DELFIN_MULTI_SIGMA_PATH_V2=1`` activates V2 for the default
-    class list (``DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES``) only.
+def test_v2_explicit_off_disables_for_all_classes() -> None:
+    """``DELFIN_MULTI_SIGMA_PATH_V2=0`` is the operator escape hatch —
+    must disable V2 for every class including multi_sigma, restoring the
+    pre-wire-in pipeline bit-exact.
+    """
+    os.environ["DELFIN_MULTI_SIGMA_PATH_V2"] = "0"
+
+    for class_label, smi in _FIXTURES.items():
+        mol = _mol(smi)
+        assert _multi_sigma_v2_active(mol) is False, (
+            f"V2 must be OFF when scalar=0 for class={class_label!r}"
+        )
+
+
+# ----------------------------------------------------------------------
+# Test 4: explicit ON is equivalent to the default for multi_sigma.
+# ----------------------------------------------------------------------
+def test_v2_scalar_flag_one_keeps_class_conditional_behaviour() -> None:
+    """``DELFIN_MULTI_SIGMA_PATH_V2=1`` keeps the class-conditional
+    semantics (same as unset): activates only for the default class set.
 
     sigma / no_metal must stay OFF — the patch is class-conditional,
-    not a global toggle.
+    not a global toggle, regardless of the scalar value.
     """
     os.environ["DELFIN_MULTI_SIGMA_PATH_V2"] = "1"
     assert "multi_sigma" in set(DELFIN_MULTI_SIGMA_PATH_V2_DEFAULT_CLASSES), (
@@ -260,23 +292,36 @@ def test_thread_local_override_cleanup() -> None:
 # ----------------------------------------------------------------------
 def test_v2_malformed_env_safe() -> None:
     """Whitespace, trailing commas, unknown class labels and empty
-    strings must all be tolerated without raising — the V2 path is
-    optional, so it must never break the converter on a bad env."""
+    strings must all be tolerated without raising — the V2 path must
+    never break the converter on a bad env.
+
+    Under the Phase 1.5 wire-in:
+      * empty CLASSES → falls through to the scalar / default-on path
+        (multi_sigma class gets V2, every other class does not).
+      * non-empty CLASSES with unknown labels → no class matches, so V2
+        cannot activate.
+    """
     multi_mol = _mol(_FIXTURES["multi_sigma"])
     sigma_mol = _mol(_FIXTURES["sigma"])
 
     # Empty string (caught explicitly so the helper doesn't take the
-    # whitelist branch with an empty set).
+    # whitelist branch with an empty set — falls through to the
+    # default-on resolver).
     os.environ["DELFIN_MULTI_SIGMA_PATH_V2_CLASSES"] = ""
-    assert _multi_sigma_v2_active(multi_mol) is False
-    assert _multi_sigma_v2_active(sigma_mol) is False
+    assert _multi_sigma_v2_active(multi_mol) is True, (
+        "empty CLASSES must fall through to default-on (multi_sigma class)"
+    )
+    assert _multi_sigma_v2_active(sigma_mol) is False, (
+        "empty CLASSES → sigma still OFF-by-default"
+    )
 
     # Trailing comma + whitespace.
     os.environ["DELFIN_MULTI_SIGMA_PATH_V2_CLASSES"] = "  multi_sigma , ,  "
     assert _multi_sigma_v2_active(multi_mol) is True
     assert _multi_sigma_v2_active(sigma_mol) is False
 
-    # Unknown label only — V2 cannot activate for any real class.
+    # Unknown label only — whitelist branch is taken (set is non-empty),
+    # but no class matches → V2 stays OFF for every class.
     os.environ["DELFIN_MULTI_SIGMA_PATH_V2_CLASSES"] = "not_a_real_class"
     assert _multi_sigma_v2_active(multi_mol) is False
     assert _multi_sigma_v2_active(sigma_mol) is False
