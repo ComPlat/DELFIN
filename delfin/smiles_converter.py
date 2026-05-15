@@ -21505,6 +21505,212 @@ def _align_and_orient_ligands(
         return coords
 
 
+# ---------------------------------------------------------------------------
+# Pre-UFF M-D snap and topology gate (universal, env-flag gated, default OFF).
+#
+# Failure pattern these helpers address (universal, no SMILES-specific paths):
+#
+#   When the metal is an unparametrized transition metal in Open Babel UFF
+#   (Ni(II), Pd(II), Pt(II), Cu(II), Fe(II/III), Co(II/III), Ru(II/III),
+#    Rh(III), Ir(III), Mn(II/III), etc. with explicit formal charge), OB UFF
+#   triggers a HARD-fallback that freezes atom positions instead of relaxing
+#   them. Whatever metal-donor distances the pre-UFF geometry already has are
+#   the distances the final XYZ will have. ETKDG by itself produces M-D
+#   distances in the 1.4-1.6 A range (organic-bond-like) or sometimes in the
+#   2.8-3.5 A range (anti-attractive). Both extremes are catastrophic.
+#
+# The fix is purely geometric: snap each M-D pair to the element-pair ideal
+# distance _get_ml_bond_length(M, D) before UFF runs, by translating the
+# bonded-fragment attached to D along the (D - M) direction. Universal
+# because it only consults element symbols and the bond graph.
+# ---------------------------------------------------------------------------
+
+def _pre_uff_md_snap_enabled() -> bool:
+    """Return True iff DELFIN_PRE_UFF_MD_SNAP is set to a truthy value."""
+    raw = os.environ.get("DELFIN_PRE_UFF_MD_SNAP", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _pre_uff_topology_gate_enabled() -> bool:
+    """Return True iff DELFIN_PRE_UFF_TOPOLOGY_GATE is set to a truthy value."""
+    raw = os.environ.get("DELFIN_PRE_UFF_TOPOLOGY_GATE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _cn5_enum_complete_enabled() -> bool:
+    """Return True iff DELFIN_CN5_ENUM_COMPLETE is set to a truthy value."""
+    raw = os.environ.get("DELFIN_CN5_ENUM_COMPLETE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _bfs_ligand_fragment(
+    mol,
+    donor_idx: int,
+    metal_indices: set,
+) -> set:
+    """Return the set of atom indices reachable from *donor_idx* without
+    crossing any metal in *metal_indices*. Pure graph traversal.
+
+    Used by _snap_md_distances_to_ideal to translate the donor's ligand
+    fragment as a rigid body when correcting the M-D distance.
+    """
+    visited = {donor_idx}
+    stack = [donor_idx]
+    while stack:
+        cur = stack.pop()
+        for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+            ni = nbr.GetIdx()
+            if ni in visited or ni in metal_indices:
+                continue
+            visited.add(ni)
+            stack.append(ni)
+    return visited
+
+
+def _snap_md_distances_to_ideal(
+    mol,
+    conf_id: int,
+    snap_tolerance: float = 0.10,
+) -> int:
+    """Snap every M-D bonded distance to the ideal length from
+    ``_get_ml_bond_length(M_sym, D_sym)`` by rigidly translating the donor's
+    BFS fragment along the (D - M) direction.
+
+    Only operates on bonded M-D pairs (from the graph). Skips H donors.
+    Skips pairs already within ``snap_tolerance * ideal`` of the target.
+    Skips chelate donors processed once per chelate: each donor is moved
+    independently, which may distort the bite, but downstream UFF/cleanup
+    fixes that — the goal here is solely to escape the unparam-TM
+    HARD-fallback freeze trap.
+
+    Args:
+        mol: RDKit Mol with conformer ``conf_id``.
+        conf_id: Conformer index to modify in place.
+        snap_tolerance: Skip pairs whose relative deviation is below this
+            fraction (default 10%).
+
+    Returns the number of M-D pairs snapped.
+    """
+    if not RDKIT_AVAILABLE:
+        return 0
+    try:
+        import numpy as np
+    except Exception:
+        return 0
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return 0
+
+    metal_indices = {
+        a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+    }
+    if not metal_indices:
+        return 0
+
+    n_snapped = 0
+    # Iterate over a sorted list so behavior is deterministic.
+    for m_idx in sorted(metal_indices):
+        m_atom = mol.GetAtomWithIdx(m_idx)
+        m_sym = m_atom.GetSymbol()
+        mp = conf.GetAtomPosition(m_idx)
+        m_pos = np.array([mp.x, mp.y, mp.z], dtype=float)
+        for nbr in m_atom.GetNeighbors():
+            d_idx = nbr.GetIdx()
+            if d_idx in metal_indices:
+                continue  # M-M bonds
+            if nbr.GetAtomicNum() <= 1:
+                continue  # H donors not snapped
+            d_sym = nbr.GetSymbol()
+            dp = conf.GetAtomPosition(d_idx)
+            d_pos = np.array([dp.x, dp.y, dp.z], dtype=float)
+            cur_d = float(np.linalg.norm(d_pos - m_pos))
+            if cur_d < 1e-8:
+                continue
+            try:
+                target_d = float(_get_ml_bond_length(m_sym, d_sym))
+            except Exception:
+                continue
+            if target_d <= 0:
+                continue
+            rel = abs(cur_d - target_d) / target_d
+            if rel < snap_tolerance:
+                continue
+
+            # BFS fragment downstream of this donor, never crossing metals.
+            frag = _bfs_ligand_fragment(mol, d_idx, metal_indices)
+
+            # Translation vector: shift fragment along (D - M) so the new
+            # distance is target_d.
+            unit = (d_pos - m_pos) / cur_d
+            new_d_pos = m_pos + unit * target_d
+            delta = new_d_pos - d_pos
+
+            for fi in frag:
+                fp = conf.GetAtomPosition(fi)
+                fv = np.array([fp.x, fp.y, fp.z], dtype=float)
+                new_fv = fv + delta
+                conf.SetAtomPosition(
+                    fi,
+                    Point3D(float(new_fv[0]), float(new_fv[1]), float(new_fv[2])),
+                )
+            n_snapped += 1
+
+    return n_snapped
+
+
+def _md_distance_in_tolerance(
+    mol,
+    conf_id: int,
+    rel_low: float = 0.80,
+    rel_high: float = 1.20,
+) -> bool:
+    """Return True iff every bonded M-D pair is within [rel_low, rel_high]
+    times its ideal length ``_get_ml_bond_length(M, D)``.
+
+    Heavy-atom donors only (skips H). Pure-graph: uses bonds present in the
+    molecular graph. Universal — only element symbols + bond list.
+    """
+    if not RDKIT_AVAILABLE:
+        return True
+    try:
+        conf = mol.GetConformer(conf_id)
+    except Exception:
+        return True
+
+    metal_indices = {
+        a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+    }
+    if not metal_indices:
+        return True
+
+    for m_idx in metal_indices:
+        m_atom = mol.GetAtomWithIdx(m_idx)
+        m_sym = m_atom.GetSymbol()
+        mp = conf.GetAtomPosition(m_idx)
+        for nbr in m_atom.GetNeighbors():
+            d_idx = nbr.GetIdx()
+            if d_idx in metal_indices:
+                continue
+            if nbr.GetAtomicNum() <= 1:
+                continue
+            d_sym = nbr.GetSymbol()
+            dp = conf.GetAtomPosition(d_idx)
+            d = math.sqrt(
+                (mp.x - dp.x) ** 2 + (mp.y - dp.y) ** 2 + (mp.z - dp.z) ** 2
+            )
+            try:
+                target_d = float(_get_ml_bond_length(m_sym, d_sym))
+            except Exception:
+                continue
+            if target_d <= 0:
+                continue
+            rel = d / target_d
+            if rel < rel_low or rel > rel_high:
+                return False
+    return True
+
+
 def _build_topology_xyz_from_scratch(
     mol,
     metal_idx: int,
@@ -22641,20 +22847,36 @@ def _generate_topological_isomers(
         # higher-coordination systems (notably CN=7) when idealized vectors and
         # template distances differ systematically. If it rejects everything,
         # fall back to the unfiltered topological set.
+        #
+        # Fix C (Welle 2 / X10-FIPWAE): for CN=5 with multiple distinct donor
+        # types ("hetero CN5"), Pólya enumeration generates 4-8 orbits but the
+        # chelate-feasibility pruner tends to keep only 1-2 because TBP and SP
+        # have very different donor-donor target distances and the template
+        # conformer reflects neither cleanly. When DELFIN_CN5_ENUM_COMPLETE=1,
+        # skip the pruner entirely for CN=5 hetero so downstream geometry
+        # filters (which already exist) handle quality control. Default OFF.
+        _cn5_complete = (
+            n_coord == 5
+            and _cn5_enum_complete_enabled()
+            and len(set(donor_labels)) >= 2
+        )
         feasible_isomers: List[Tuple[tuple, List[int]]] = []
-        for canonical_form, perm in isomers:
-            geom_name = canonical_form[0]
-            if _passes_chelate_distance_feasibility(
-                mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
-            ):
-                feasible_isomers.append((canonical_form, perm))
-        if not feasible_isomers and isomers:
-            logger.debug(
-                "Chelate-distance feasibility rejected all %d topo isomer(s) "
-                "for CN=%d; using unfiltered set.",
-                len(isomers), n_coord,
-            )
-            feasible_isomers = isomers
+        if _cn5_complete:
+            feasible_isomers = list(isomers)
+        else:
+            for canonical_form, perm in isomers:
+                geom_name = canonical_form[0]
+                if _passes_chelate_distance_feasibility(
+                    mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
+                ):
+                    feasible_isomers.append((canonical_form, perm))
+            if not feasible_isomers and isomers:
+                logger.debug(
+                    "Chelate-distance feasibility rejected all %d topo isomer(s) "
+                    "for CN=%d; using unfiltered set.",
+                    len(isomers), n_coord,
+                )
+                feasible_isomers = isomers
 
         # Pre-compute ranked template conformers once per metal centre so each
         # permutation can retry against several templates when the default
@@ -25647,6 +25869,23 @@ def smiles_to_xyz_isomers(
                     conf_ids.append(mol.AddConformer(_conf, assignId=True))
                 except Exception:
                     pass
+
+        # Fix A (Welle 2 / X10-FIPWAE): rescale every M-D bonded distance
+        # to its ideal element-pair length before any downstream filtering
+        # or UFF. ETKDG treats M-D bonds like organic bonds (~1.5 A) which
+        # collapses heterodonor CN >= 5 metal complexes; when OB UFF then
+        # triggers its unparam-TM HARD-fallback the broken distance is
+        # frozen into the final XYZ. Pre-snap escapes the trap.
+        # Default OFF; opt-in via DELFIN_PRE_UFF_MD_SNAP=1.
+        if has_metal and _pre_uff_md_snap_enabled() and conf_ids:
+            for _cid in conf_ids:
+                try:
+                    _snap_md_distances_to_ideal(mol, _cid)
+                except Exception as _snap_exc:
+                    logger.debug(
+                        "Pre-UFF M-D snap failed for cid=%s: %s",
+                        _cid, _snap_exc,
+                    )
     except Exception as e:
         logger.warning("Multi-conformer embedding failed: %s", e)
         # Do not abort here: keep already injected OB conformers if available.
@@ -25670,8 +25909,22 @@ def smiles_to_xyz_isomers(
     # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
     dtype_map = _donor_type_map(mol)
 
+    # Fix B (Welle 2 / X10-FIPWAE): pre-UFF M-D topology gate.
+    # When env-flag DELFIN_PRE_UFF_TOPOLOGY_GATE=1 is set, discard any
+    # conformer whose bonded M-D distance is outside [0.80, 1.20] times the
+    # element-pair ideal. This is universal (graph + element symbols only)
+    # and triggers BEFORE the existing geometry filters so the unparam-TM
+    # frozen-broken frames cannot leak through. Default OFF.
+    _pre_uff_md_gate = has_metal and _pre_uff_topology_gate_enabled()
+
     def _classify_one_conf(_cid, _relax):
         try:
+            if _pre_uff_md_gate:
+                try:
+                    if not _md_distance_in_tolerance(mol, _cid):
+                        return None
+                except Exception:
+                    pass
             if _has_atom_clash(mol, _cid, min_dist=0.3):
                 return None
             try:
@@ -26063,6 +26316,32 @@ def smiles_to_xyz_isomers(
                         display,
                     )
                     continue
+                # Fix B (Welle 2 / X10-FIPWAE): pre-UFF M-D topology gate on
+                # the topology-builder path. Some scaffold-builder paths can
+                # produce stretched M-D when ligand fragments do not Procrustes-
+                # fit cleanly. Default OFF.
+                if _pre_uff_topology_gate_enabled():
+                    try:
+                        _topo_check = Chem.RWMol(topo_mol)
+                        _topo_check.RemoveAllConformers()
+                        _topo_conf = _xyz_to_rdkit_conformer(
+                            _topo_check.GetMol(), topo_xyz
+                        )
+                        if _topo_conf is not None:
+                            _topo_cid = _topo_check.AddConformer(
+                                _topo_conf, assignId=True
+                            )
+                            if not _md_distance_in_tolerance(
+                                _topo_check.GetMol(), _topo_cid
+                            ):
+                                logger.debug(
+                                    "Skipping topo isomer %s: M-D distance "
+                                    "out of tolerance",
+                                    display,
+                                )
+                                continue
+                    except Exception:
+                        pass
                 topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
                 if topo_key in existing_xyz_keys:
                     logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
@@ -26203,6 +26482,32 @@ def smiles_to_xyz_isomers(
                     logger.debug("Skipping linkage isomer %s: unphysical M-D distance", _llabel)
                     continue
                 if _fragment_topology_ok(_lxyz, smiles):
+                    # Fix B (Welle 2 / X10-FIPWAE): linkage isomer path can
+                    # also produce off-target M-D bonded distances when the
+                    # alternate donor sits at a chemically different idealised
+                    # distance. Apply the same pre-UFF M-D topology gate.
+                    if _pre_uff_topology_gate_enabled():
+                        try:
+                            _link_mol = Chem.RWMol(mol)
+                            _link_mol.RemoveAllConformers()
+                            _link_conf = _xyz_to_rdkit_conformer(
+                                _link_mol.GetMol(), _lxyz
+                            )
+                            if _link_conf is not None:
+                                _link_cid = _link_mol.AddConformer(
+                                    _link_conf, assignId=True
+                                )
+                                if not _md_distance_in_tolerance(
+                                    _link_mol.GetMol(), _link_cid
+                                ):
+                                    logger.debug(
+                                        "Skipping linkage isomer %s: M-D "
+                                        "distance out of tolerance",
+                                        _llabel,
+                                    )
+                                    continue
+                        except Exception:
+                            pass
                     if DELFIN_FINAL_GATE_ENABLED and not _xyz_passes_final_geometry_checks(
                         _lxyz, mol, skip_angle_check=True
                     ):
@@ -26235,6 +26540,34 @@ def smiles_to_xyz_isomers(
                     if not _fragment_topology_ok(alt_xyz, smiles):
                         logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
                         continue
+                    # Fix B (Welle 2 / X10-FIPWAE): alternative-binding-mode
+                    # path can produce catastrophically collapsed M-D
+                    # geometries (e.g. Ni-N at 1.31 A) that pass fragment
+                    # topology but are physically meaningless. When the
+                    # pre-UFF topology gate is on, reject them based on
+                    # bonded M-D distance. Default OFF.
+                    if _pre_uff_topology_gate_enabled():
+                        try:
+                            _alt_mol = Chem.RWMol(mol)
+                            _alt_mol.RemoveAllConformers()
+                            _alt_conf = _xyz_to_rdkit_conformer(
+                                _alt_mol.GetMol(), alt_xyz
+                            )
+                            if _alt_conf is not None:
+                                _alt_cid = _alt_mol.AddConformer(
+                                    _alt_conf, assignId=True
+                                )
+                                if not _md_distance_in_tolerance(
+                                    _alt_mol.GetMol(), _alt_cid
+                                ):
+                                    logger.debug(
+                                        "Skipping alt-binding isomer %s: "
+                                        "M-D distance out of tolerance",
+                                        alt_label,
+                                    )
+                                    continue
+                        except Exception:
+                            pass
                     if DELFIN_FINAL_GATE_ENABLED and not _xyz_passes_final_geometry_checks(
                         alt_xyz, mol, skip_angle_check=True
                     ):
