@@ -5833,6 +5833,69 @@ def create_client(
                                   permission_mode=permission_mode)
         openai_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         return OpenAIClient(api_key=openai_key, model=model)
+    if provider == "ollama":
+        # Ollama, vLLM, LM Studio, llama.cpp-server etc. expose an
+        # OpenAI-compatible /v1 surface. They reuse the same agentic
+        # while-loop + KIT-style sandbox / hooks / failure-log machinery
+        # as the KIT-Toolbox provider — only the base_url and (no) api
+        # key differ. Endpoint resolution order:
+        #   1. caller-supplied api_key  (treated as "host" if it starts with http)
+        #   2. OLLAMA_HOST env var      (canonical Ollama convention)
+        #   3. OLLAMA_BASE_URL env var  (LM-Studio convention)
+        #   4. default http://localhost:11434
+        ollama_host = (
+            api_key if api_key and api_key.startswith("http")
+            else (
+                os.environ.get("OLLAMA_HOST")
+                or os.environ.get("OLLAMA_BASE_URL")
+                or "http://localhost:11434"
+            )
+        )
+        if not ollama_host.rstrip("/").endswith("/v1"):
+            ollama_host = ollama_host.rstrip("/") + "/v1"
+        # Reuse the KIT permissions stack so local-model runs get the
+        # same sandbox + allow-list as the cloud-providers do.
+        local_ws = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
+        try:
+            from . import kit_settings as _kit_settings
+            persisted = _kit_settings.load(repo_dir=local_ws)
+        except Exception:
+            persisted = None
+        local_extra: tuple[Path, ...] = ()
+        if persisted is not None:
+            seen: list[Path] = []
+            for d in persisted.extra_workspace_dirs:
+                try:
+                    p = Path(d).expanduser().resolve()
+                except Exception:
+                    continue
+                if p == local_ws or p in seen or not p.is_dir():
+                    continue
+                seen.append(p)
+            local_extra = tuple(seen)
+        local_mode = (
+            _map_kit_permission_mode(permission_mode) if permission_mode
+            else (persisted.default_mode if persisted is not None
+                  and persisted.default_mode in {
+                      "plan", "default", "acceptEdits", "bypassPermissions"
+                  } else "default")
+        )
+        local_perms = KitToolPermissions(
+            workspace=local_ws, mode=local_mode,
+            confirm_callback=kit_confirm_callback,
+            extra_workspace_dirs=local_extra,
+            bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
+            bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
+        )
+        # Ollama's OpenAI surface requires no auth — pass a placeholder so
+        # the openai-python client doesn't blow up on missing-key.
+        return OpenAIClient(
+            api_key="ollama-local",
+            model=model,
+            base_url=ollama_host,
+            key_env_var="OLLAMA_HOST",
+            permissions=local_perms,
+        )
     if backend == "api":
         return APIClient(api_key=api_key, model=model)
     return CLIClient(model=model, claude_path=claude_path,
