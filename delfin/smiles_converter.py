@@ -18434,24 +18434,22 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
     # Universal: only fires on actual M-M edges (mono-hapto / sigma /
     # no_metal classes have none -- no-op).
     #
-    # Phase-1.5 wire-in (2026-05-15): class-conditional default-ON
-    # for ``multi_hapto`` only.  Patch is geometrically universal (no-op when
-    # SMILES has no M-M edge) but the class-conditional gate keeps mono-hapto,
-    # sigma, multi-sigma, and no-metal classes bit-identical to the
-    # pre-wire-in baseline.
+    # Phase-1.5 wire-in DISABLED (Welle-3 T7.2 revert, 2026-05-16): the
+    # 50/50 metal shift translates each metal by ~half the M-M correction
+    # but leaves the surrounding sigma-coord atoms (Cl/Me/Cp-ring) in
+    # place, collapsing M-D distances to <1.0 A (verified D-COIRSN,
+    # D-DIVPIJ, D-TENMIL: Sn-Cl 2.30->0.59 A).  On the 22-SMILES
+    # multi_hapto set the wire-in produced 0/22 passes and -32% isomer
+    # yield versus pre-wire-in.  Surgical fix: revert to opt-in only;
+    # rigid-drag rewrite of ``_enforce_smiles_mm_distances`` is the
+    # follow-up patch.
     #
-    # Resolution precedence (see ``_class_conditional_flag``):
-    #   1. DELFIN_MULTIHAPTO_MM_ENFORCE_CLASSES set → use that list.
-    #   2. DELFIN_MULTIHAPTO_MM_ENFORCE=0 → fully disabled
-    #      (per-class rollback), restores pre-wire-in behaviour.
-    #   3. DELFIN_MULTIHAPTO_MM_ENFORCE=1 → enabled on every class
-    #      (operator escape hatch for cross-class experiments, e.g.
-    #      Pt-Pt / Re-Re multi-sigma dimers).
-    #   4. env unset → enabled iff class is in ``default_classes``,
-    #      i.e. only for ``multi_hapto``.
+    # Resolution precedence (post-revert):
+    #   1. DELFIN_MULTIHAPTO_MM_ENFORCE_CLASSES set -> use that list.
+    #   2. DELFIN_MULTIHAPTO_MM_ENFORCE=1 -> enabled on every class.
+    #   3. env unset -> disabled everywhere (matches pre-Phase-1.5).
     if _class_conditional_flag(
         "DELFIN_MULTIHAPTO_MM_ENFORCE", mol, default=0,
-        default_classes=("multi_hapto",),
     ):
         try:
             _enforce_smiles_mm_distances(mol, conf, metal_indices, _gp, _sp, np)
