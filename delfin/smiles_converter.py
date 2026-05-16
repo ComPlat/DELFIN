@@ -484,7 +484,118 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Pa', 'N'): 2.50, ('Pa', 'O'): 2.30, ('Pa', 'Cl'): 2.65,
     ('Np', 'N'): 2.50, ('Np', 'O'): 2.25, ('Np', 'Cl'): 2.60,
     ('Pu', 'N'): 2.50, ('Pu', 'O'): 2.25, ('Pu', 'Cl'): 2.60,
+    # -------------------------------------------------------------------
+    # Welle-3 T3.3 (2026-05-15): close 78 gaps observed on master_v3 pool.
+    # Pure covalent-radius fallback overshoots M-As/Sb/Te/Se by 0.5-0.8 A
+    # and M-B by 0.3-0.5 A vs CSD averages, leaving these legitimate
+    # donors above the topology bonding range.  Sources: Cordero 2008,
+    # Pyykko 2009, CSD averages for sigma-stibine/arsine/telluride/boryl
+    # donors. M-La extras added (Br/C/S/Se missing in 2.3 release).
+    # -------------------------------------------------------------------
+    # M-As donors (arsine, CSD 2.30-2.65 A)
+    ('Sc','As'): 2.65, ('Ti','As'): 2.55, ('V','As'): 2.50,
+    ('Cr','As'): 2.45, ('Mn','As'): 2.45, ('Fe','As'): 2.40,
+    ('Co','As'): 2.35, ('Ni','As'): 2.30, ('Cu','As'): 2.35,
+    ('Zn','As'): 2.45, ('Y','As'): 2.85, ('Zr','As'): 2.75,
+    ('Nb','As'): 2.65, ('Mo','As'): 2.55, ('Tc','As'): 2.50,
+    ('Ru','As'): 2.45, ('Rh','As'): 2.40, ('Pd','As'): 2.40,
+    ('Ag','As'): 2.55, ('Cd','As'): 2.60, ('Hf','As'): 2.70,
+    ('Ta','As'): 2.60, ('W','As'): 2.55, ('Re','As'): 2.50,
+    ('Os','As'): 2.45, ('Ir','As'): 2.42, ('Pt','As'): 2.40,
+    ('Au','As'): 2.45,
+    # M-Sb donors (stibine, CSD 2.50-2.70 A)
+    ('Cr','Sb'): 2.65, ('Mn','Sb'): 2.65, ('Co','Sb'): 2.55,
+    ('Ni','Sb'): 2.50, ('Cu','Sb'): 2.55, ('Mo','Sb'): 2.65,
+    ('Ru','Sb'): 2.60, ('Rh','Sb'): 2.55, ('Pd','Sb'): 2.55,
+    ('Ag','Sb'): 2.65, ('W','Sb'): 2.65, ('Re','Sb'): 2.60,
+    ('Os','Sb'): 2.55, ('Pt','Sb'): 2.55, ('Au','Sb'): 2.55,
+    # M-Te donors (CSD 2.50-2.85 A)
+    ('Sc','Te'): 2.85, ('V','Te'): 2.65, ('Cr','Te'): 2.70,
+    ('Mn','Te'): 2.65, ('Co','Te'): 2.55, ('Ni','Te'): 2.50,
+    ('Cu','Te'): 2.55, ('Zn','Te'): 2.65, ('Nb','Te'): 2.70,
+    ('Mo','Te'): 2.65, ('Tc','Te'): 2.60, ('Ru','Te'): 2.60,
+    ('Rh','Te'): 2.60, ('Pd','Te'): 2.65, ('Ag','Te'): 2.75,
+    ('Cd','Te'): 2.75, ('W','Te'): 2.65, ('Re','Te'): 2.60,
+    ('Ir','Te'): 2.55, ('Pt','Te'): 2.55, ('Au','Te'): 2.55,
+    ('Hg','Te'): 2.70,
+    # M-B donors (boryl, M-BR2/3; pi-backbond shortens vs covalent sum)
+    ('Sc','B'): 2.40, ('Fe','B'): 2.00, ('Co','B'): 1.95,
+    ('Ni','B'): 1.95, ('Cu','B'): 2.00, ('Ru','B'): 2.05,
+    ('Rh','B'): 2.00, ('Pd','B'): 2.05, ('Cd','B'): 2.30,
+    ('Os','B'): 2.05, ('Ir','B'): 2.00, ('Pt','B'): 2.05,
+    ('Au','B'): 2.05,
+    # M-Se/M-La extras
+    ('Ag','Se'): 2.60, ('Tc','Se'): 2.50,
+    ('La','Br'): 2.95, ('La','C'): 2.65, ('La','S'): 2.85, ('La','Se'): 2.95,
+    # -------------------------------------------------------------------
+    # Welle-3 T3.1 (2026-05-15) — M-H (terminal hydride) entries.
+    # Pure covalent-radius fallback gives 2.0-3.3 A which is >0.3-1.5 A
+    # too long for crystallographically known terminal M-H (typically
+    # 1.5-1.85 A).  Without these entries the topology check rejects
+    # legitimate M-H sigma donors as "outside the bonding range" and the
+    # downstream `_snap_md_distances_to_ideal` translates the H far from
+    # the metal.  Universal — only element symbols.  Gated by env-flag
+    # ``DELFIN_MH_TABLE_FALLBACK`` (default 0 → bit-exact HEAD).
+    # Activation moved to module-tail (see ``_apply_mh_table_fallback``)
+    # so the env-flag is read after init, not on import.
+    # Values: 3d TM ~1.55-1.70, 4d TM ~1.60-1.75, 5d TM ~1.60-1.80
+    # (relativistic contraction), main-group ~1.45-1.85, lanthanide
+    # ~2.05-2.20.  Sources: CSD averages, Cordero 2008.
 }
+
+_METAL_HYDRIDE_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
+    # 3d TMs
+    ('Sc','H'): 1.85, ('Ti','H'): 1.75, ('V','H'): 1.70,
+    ('Cr','H'): 1.65, ('Mn','H'): 1.62, ('Fe','H'): 1.55,
+    ('Co','H'): 1.53, ('Ni','H'): 1.50, ('Cu','H'): 1.55,
+    ('Zn','H'): 1.60,
+    # 4d TMs
+    ('Y','H'): 1.95, ('Zr','H'): 1.85, ('Nb','H'): 1.75,
+    ('Mo','H'): 1.70, ('Tc','H'): 1.68, ('Ru','H'): 1.60,
+    ('Rh','H'): 1.58, ('Pd','H'): 1.55, ('Ag','H'): 1.65,
+    ('Cd','H'): 1.70,
+    # 5d TMs
+    ('La','H'): 2.05, ('Hf','H'): 1.85, ('Ta','H'): 1.75,
+    ('W','H'): 1.70, ('Re','H'): 1.68, ('Os','H'): 1.62,
+    ('Ir','H'): 1.58, ('Pt','H'): 1.55, ('Au','H'): 1.62,
+    ('Hg','H'): 1.70,
+    # Lanthanides
+    ('Ce','H'): 2.05, ('Pr','H'): 2.05, ('Nd','H'): 2.05,
+    ('Pm','H'): 2.00, ('Sm','H'): 2.00, ('Eu','H'): 2.00,
+    ('Gd','H'): 1.98, ('Tb','H'): 1.95, ('Dy','H'): 1.95,
+    ('Ho','H'): 1.92, ('Er','H'): 1.92, ('Tm','H'): 1.90,
+    ('Yb','H'): 1.90, ('Lu','H'): 1.88,
+    # Actinides
+    ('Ac','H'): 2.10, ('Th','H'): 2.00, ('Pa','H'): 1.95,
+    ('U','H'): 1.95, ('Np','H'): 1.92, ('Pu','H'): 1.90,
+    # Main-group metals
+    ('Li','H'): 1.60, ('Na','H'): 1.85, ('K','H'): 2.20,
+    ('Rb','H'): 2.30, ('Cs','H'): 2.45,
+    ('Be','H'): 1.35, ('Mg','H'): 1.70, ('Ca','H'): 2.00,
+    ('Sr','H'): 2.15, ('Ba','H'): 2.30,
+    ('Al','H'): 1.55, ('Ga','H'): 1.55, ('In','H'): 1.70,
+    ('Tl','H'): 1.85, ('Sn','H'): 1.70, ('Pb','H'): 1.80,
+    ('Bi','H'): 1.85,
+}
+
+
+def _apply_mh_table_fallback() -> None:
+    """Merge M-H entries into the master table.
+
+    Default OFF for Welle-3 T3.1 (env-flag-gated).  Set
+    ``DELFIN_MH_TABLE_FALLBACK=1`` to enable; default ``0`` keeps the
+    legacy covalent-radius fallback (bit-exact pre-patch behaviour).
+    Skips pairs already populated so explicit table entries always win.
+    """
+    import os as _os
+    if int(_os.environ.get("DELFIN_MH_TABLE_FALLBACK", "0") or "0") <= 0:
+        return
+    for key, val in _METAL_HYDRIDE_BOND_LENGTHS.items():
+        if key not in _METAL_LIGAND_BOND_LENGTHS:
+            _METAL_LIGAND_BOND_LENGTHS[key] = val
+
+
+_apply_mh_table_fallback()
 
 # ---------------------------------------------------------------------------
 # Metal-Metal bond lengths (Å) from CSD averages.
@@ -1476,6 +1587,61 @@ def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
     except Exception as _b5_exc:
         try:
             logger.debug("Baustein 5 PBD post-optimizer skipped: %s", _b5_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
+    """Baustein 6 dispatch helper — variational L-BFGS-B refiner + 4-tier symmetry.
+
+    Per-frame: minimises 8-term U_total (bond + angle + clash + topology log-
+    barrier + Hungarian coord-sphere + Morgan equivalence + fragment archetype
+    + global PG) via SciPy L-BFGS-B with analytic gradient. Topology hard-gate
+    inside the refiner enforces no M-D break; on failure the input frame is
+    returned unchanged. Runs AFTER B5 in the converter (B5 fixes catastrophic
+    moves first, B6 smoothly balances the residual forces).
+
+    Env-flags (Phase 3B per-class override pattern):
+      DELFIN_B6_WIRED=0             (default OFF — bit-exact when disabled)
+      DELFIN_BAUSTEIN6=0            (alias for DELFIN_B6_WIRED, checked second)
+      DELFIN_BAUSTEIN6_CLASSES=     (optional class allow-list, e.g. "sigma,no_metal")
+
+    Determinism: L-BFGS-B + Hungarian + analytic gradients are all
+    deterministic; no random seeds are consumed.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if (not _delfin_env_int("DELFIN_B6_WIRED", 0)
+            and not _class_conditional_flag("DELFIN_BAUSTEIN6", mol, default=0)):
+        return results
+    try:
+        from delfin._variational_refiner import variational_refine
+        cls = "sigma"
+        try:
+            cls = _classify_complex_class(mol)
+        except Exception:
+            pass
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = variational_refine(
+                    xyz, mol, class_label=cls,
+                    max_iter=200,
+                )
+                if (report.get("topology_preserved", False)
+                        and not report.get("fallback_used", True)):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _b6_exc:
+        try:
+            logger.debug("Baustein 6 variational refine skipped: %s", _b6_exc)
         except Exception:
             pass
         return results
@@ -4161,8 +4327,21 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     # non-canonical metal charge with the charge from ``metal_charges``
     # when that table has an entry for the element; this keeps enumerator
     # inputs invariant across SMILES variants of the same complex.
+    #
+    # Welle-3 T1.1 (2026-05-15): default-OFF env-flag to preserve user-
+    # explicit POSITIVE charges ([Pt+4], [Fe+3], [Cu+1], [Ni+3], etc.).
+    # Negative metal charges are always treated as CCDC-style bookkeeping
+    # (true negative oxidation states are extremely rare in TM coord chem
+    # and would not appear in the smiles_master pool).  Enable preservation
+    # via DELFIN_PRESERVE_METAL_CHARGE=1; default 0 keeps legacy behavior.
+    _preserve_pos = _delfin_env_int("DELFIN_PRESERVE_METAL_CHARGE", 0) == 1
     for metal, charge in metal_charges.items():
-        pattern = rf'\[{metal}[+-]\d*\]'
+        if _preserve_pos:
+            # Only canonicalise negative bookkeeping charges ([Fe-2], [Fe-5]);
+            # positive charges ([Fe+3], [Pt+4]) are user chemistry and kept.
+            pattern = rf'\[{metal}-\d*\]'
+        else:
+            pattern = rf'\[{metal}[+-]\d*\]'
         if re.search(pattern, normalized):
             normalized = re.sub(pattern, f'[{metal}{charge}]', normalized)
 
@@ -13983,6 +14162,27 @@ def _build_hapto_scaffold(
             placed.add(donor_idx)
 
     # ---- Place substituents on hapto ring atoms ----
+    # Welle-3 T7.1 (2026-05-15): multi-substituent tilt direction fix.
+    # Legacy formula (len(subs)>=2): tilt=(s_k-(len-1)/2)*1.2 rad splays
+    # alternating substituents ABOVE and BELOW the ring plane.  For sp3
+    # endpoints of η4-dienes this is geometrically correct (axial/equa-
+    # torial H), but for ring-fused sp2 carbons (indenyl/naphthyl-type
+    # η-ligands, η3-arene-derived allyls) the s_k=0 substituent gets
+    # tilted -34° TOWARD the metal, dragging the pendant ring into the
+    # coordination sphere.  Audit on 100 hapto SMILES (Welle-3 T7.1):
+    # η3: 100%, η4: 64%, η5: 17%, η6: 12% high-OOP (>30°) groups, with
+    # 20/44 cases driven by this multi-sub formula pulling the second
+    # sub into the M-cone.  User pattern: "scheitert meist an den
+    # substituenten an den hapto-richten und den hapto-ring-verbindungen".
+    #
+    # Fix (DELFIN_HAPTO_SUB_FIX=1, default 0):
+    #   * Replace signed tilt by ABS tilt (cos(|t|), sin(|t|)) so both
+    #     subs lift AWAY from metal (no negative-z lobe).
+    #   * Add azimuthal spread via tangent vector (perpendicular to
+    #     outward and normal) so the subs are not coplanar in the
+    #     M-outward plane (would clash).
+    #   * Single-sub case unchanged (legacy +0.3*normal is fine).
+    _sub_fix = _delfin_env_int("DELFIN_HAPTO_SUB_FIX", 0) == 1
     for metal_idx, grp in hapto_groups:
         ring_set = set(grp)
         m_pos = coords[metal_idx]
@@ -14006,6 +14206,11 @@ def _build_hapto_scaffold(
                     continue
                 subs.append(nbr)
 
+            # Tangent: perp to outward + normal (in ring plane, perp to outward)
+            _tangent = np.cross(normal, outward_unit)
+            _tl = float(np.linalg.norm(_tangent))
+            _tangent = (_tangent / _tl if _tl > 1e-8
+                        else np.array([0.0, 1.0, 0.0]))
             for s_k, nbr in enumerate(subs):
                 ni = nbr.GetIdx()
                 bl = _bond_len(
@@ -14013,6 +14218,14 @@ def _build_hapto_scaffold(
                 )
                 if len(subs) == 1:
                     direction = outward_unit + 0.3 * normal
+                elif _sub_fix:
+                    # T7.1: all subs lift AWAY from metal (abs tilt),
+                    # spread tangentially in ring plane to avoid clash.
+                    tilt = 0.55  # ~31.5° away-from-M for all subs
+                    azi = (s_k - (len(subs) - 1) / 2.0) * np.radians(25.0)
+                    direction = (outward_unit * np.cos(tilt) * np.cos(azi)
+                                 + _tangent * np.cos(tilt) * np.sin(azi)
+                                 + normal * np.sin(tilt))
                 else:
                     tilt = (s_k - (len(subs) - 1) / 2.0) * 1.2
                     direction = outward_unit * np.cos(tilt) + normal * np.sin(tilt)
@@ -21535,6 +21748,31 @@ def _pre_uff_topology_gate_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _pre_uff_topology_gate_v2_enabled() -> bool:
+    """Return True iff DELFIN_PRE_UFF_TOPOLOGY_GATE_V2 is set to a truthy value.
+
+    V2 = empirically calibrated per-(M,D)-pair tolerance band. When the
+    base gate is also enabled, V2 takes precedence. Default OFF.
+    """
+    raw = os.environ.get("DELFIN_PRE_UFF_TOPOLOGY_GATE_V2", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+# Per-donor-element relaxed-upper-bound table (empirical, Welle-3 T5.2).
+# Heavier donors with systematic ML-table under-estimate need a wider upper
+# limit so legitimate CSD-realistic distances are not falsely rejected.
+# Numbers from per-(M,D) p95 on smoke_500 master data + 1.5-sigma safety.
+_GATE_V2_DONOR_HIGH: Dict[str, float] = {
+    "As": 1.30, "Sb": 1.30, "Bi": 1.30, "Sn": 1.40,
+    "Te": 1.25, "Pb": 1.30, "Si": 1.20, "Ge": 1.25,
+}
+# Per-donor-element relaxed-lower-bound table. Multibond M=O/M=N/M=S
+# (carbene, oxo, nitrido) routinely sit at 0.7-0.8 of single-bond ideal.
+_GATE_V2_DONOR_LOW_MULTIBOND: Dict[str, float] = {
+    "O": 0.70, "N": 0.72, "S": 0.72, "C": 0.70, "Se": 0.72,
+}
+
+
 def _cn5_enum_complete_enabled() -> bool:
     """Return True iff DELFIN_CN5_ENUM_COMPLETE is set to a truthy value."""
     raw = os.environ.get("DELFIN_CN5_ENUM_COMPLETE", "").strip().lower()
@@ -21619,6 +21857,16 @@ def _snap_md_distances_to_ideal(
                 continue  # M-M bonds
             if nbr.GetAtomicNum() <= 1:
                 continue  # H donors not snapped
+            # Welle-3 T3.3: skip bridging donors (donor bonded to >=2 metals).
+            # Single-translation cannot satisfy two M-D ideals simultaneously;
+            # without a skip, the second metal's pass undoes the first's
+            # snap, leaving Cu-O 1.03 A in a Cu-O-Cu test (see report).
+            # Leave bridging M-D for UFF distance pins to balance.
+            n_metal_nbrs = sum(
+                1 for nb in nbr.GetNeighbors() if nb.GetIdx() in metal_indices
+            )
+            if n_metal_nbrs >= 2:
+                continue
             d_sym = nbr.GetSymbol()
             dp = conf.GetAtomPosition(d_idx)
             d_pos = np.array([dp.x, dp.y, dp.z], dtype=float)
@@ -21668,6 +21916,15 @@ def _md_distance_in_tolerance(
 
     Heavy-atom donors only (skips H). Pure-graph: uses bonds present in the
     molecular graph. Universal — only element symbols + bond list.
+
+    When ``DELFIN_PRE_UFF_TOPOLOGY_GATE_V2`` is enabled, the tolerance band
+    is refined per-(M,D)-pair using empirical CSD-realistic ranges:
+      - heavier donors (As/Sb/Sn/Te/Si/Ge/Pb/Bi) get a relaxed upper limit
+        because the ML table is systematically biased low for these pairs;
+      - donors involved in a multibond (double/triple, sum bond-order ≥ 1.5)
+        to the metal get a relaxed lower limit because M=O / M=N / M≡N
+        typically sit at 0.70-0.80 × single-bond ideal.
+    The base [0.80, 1.20] band is bit-exact when V2 is OFF.
     """
     if not RDKIT_AVAILABLE:
         return True
@@ -21682,11 +21939,13 @@ def _md_distance_in_tolerance(
     if not metal_indices:
         return True
 
+    _v2 = _pre_uff_topology_gate_v2_enabled()
     for m_idx in metal_indices:
         m_atom = mol.GetAtomWithIdx(m_idx)
         m_sym = m_atom.GetSymbol()
         mp = conf.GetAtomPosition(m_idx)
-        for nbr in m_atom.GetNeighbors():
+        for bond in m_atom.GetBonds():
+            nbr = bond.GetOtherAtom(m_atom)
             d_idx = nbr.GetIdx()
             if d_idx in metal_indices:
                 continue
@@ -21703,8 +21962,16 @@ def _md_distance_in_tolerance(
                 continue
             if target_d <= 0:
                 continue
+            lo, hi = rel_low, rel_high
+            if _v2:
+                try:
+                    if bond.GetBondTypeAsDouble() >= 1.5:
+                        lo = min(lo, _GATE_V2_DONOR_LOW_MULTIBOND.get(d_sym, lo))
+                    hi = max(hi, _GATE_V2_DONOR_HIGH.get(d_sym, hi))
+                except Exception:
+                    pass
             rel = d / target_d
-            if rel < rel_low or rel > rel_high:
+            if rel < lo or rel > hi:
                 return False
     return True
 
@@ -26384,19 +26651,40 @@ def smiles_to_xyz_isomers(
             )
             _extra_ids: List[int] = []
             _n_extra = min(len(_extra_seeds), os.cpu_count() or 4, 64)
+            # DETERMINISM CONTRACT (Welle-3 T6.1 — twin of fix #2 / 7cf73e3):
+            # The previous implementation submitted
+            # ``_embed_multiple_confs_robust(mol, 3, s)`` concurrently against
+            # the SAME shared ``mol``.  RDKit's conformer embedding mutates
+            # the molecule (conformers + property cache + ring info), so the
+            # multi-metal augmentation reproduced the same data race that
+            # fix #2 patched in the primary embed loop at line ~25871.  Each
+            # worker now embeds into its own private ``Chem.Mol`` copy, and
+            # the main thread re-adds the resulting conformers to the shared
+            # ``mol`` in seed-submission order so the conformer-ID schedule
+            # is reproducible across runs and worker counts.
+            def _aug_embed_one(_s: int) -> List:
+                try:
+                    _mol_copy = Chem.Mol(mol)
+                    _mol_copy.RemoveAllConformers()
+                    _ids = _embed_multiple_confs_robust(_mol_copy, 3, _s)
+                    return [
+                        Chem.Conformer(_mol_copy.GetConformer(_cid))
+                        for _cid in _ids
+                    ]
+                except Exception:
+                    return []
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_extra) as _xp:
-                _xfuts = [
-                    _xp.submit(_embed_multiple_confs_robust, mol, 3, s)
-                    for s in _extra_seeds
-                ]
+                _xfuts = [_xp.submit(_aug_embed_one, s) for s in _extra_seeds]
                 # Submission-order traversal preserves determinism (see
                 # top-level embedding loop for rationale).  When a
                 # wall-clock budget is active, switch to per-future
                 # timeouts so a single hung embedding cannot starve the
                 # remaining seeds.
+                _per_seed_confs: List[List] = [[] for _ in _xfuts]
                 if _mm_walltime is not None:
                     _mm_deadline = time.time() + _mm_walltime
-                    for _xf in _xfuts:
+                    for _i, _xf in enumerate(_xfuts):
                         _remaining = max(0.0, _mm_deadline - time.time())
                         if _remaining <= 0.0:
                             # Budget exhausted — cancel the rest.
@@ -26406,7 +26694,7 @@ def smiles_to_xyz_isomers(
                                 pass
                             continue
                         try:
-                            _extra_ids.extend(_xf.result(timeout=_remaining))
+                            _per_seed_confs[_i] = _xf.result(timeout=_remaining)
                         except concurrent.futures.TimeoutError:
                             try:
                                 _xf.cancel()
@@ -26415,11 +26703,20 @@ def smiles_to_xyz_isomers(
                         except Exception:
                             pass
                 else:
-                    for _xf in _xfuts:
+                    for _i, _xf in enumerate(_xfuts):
                         try:
-                            _extra_ids.extend(_xf.result())
+                            _per_seed_confs[_i] = _xf.result()
                         except Exception:
                             pass
+            # Deterministic merge: re-add every worker's conformers to the
+            # shared ``mol`` in seed-submission order with fresh sequential
+            # IDs.
+            for _seed_confs in _per_seed_confs:
+                for _conf in _seed_confs:
+                    try:
+                        _extra_ids.append(mol.AddConformer(_conf, assignId=True))
+                    except Exception:
+                        pass
             logger.debug("Multi-metal augmentation: %d extra conformers", len(_extra_ids))
 
             # Classify + dedup with existing results
@@ -27162,6 +27459,14 @@ def smiles_to_xyz_isomers(
     # M-D drift gates prevent damage to good frames (only-fix-what-is-broken).
     # Bit-exact when DELFIN_BAUSTEIN5=0 (default).
     results = _apply_baustein5_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Baustein 6: variational L-BFGS-B refiner + 4-tier symmetry ──────────
+    # Per-frame analytic-gradient minimisation of an 8-term U_total. Runs
+    # AFTER B5 (which handles catastrophic moves) and AFTER the targeted
+    # post-B5 fixers below would have run — placed here so B5+B6 form a
+    # single "geometry refinement" stack. Hard topology gate + fallback on
+    # failure. Bit-exact when DELFIN_B6_WIRED=0 (default).
+    results = _apply_baustein6_if_enabled(mol, results, _dual_parse_done)
 
     # ── Targeted post-B5 fixers (F19 / F25 / WUXQAK / μ-X bridging) ──────────
     # Surgical per-frame correctors that run AFTER B5 so they re-align
@@ -29910,13 +30215,28 @@ def _optimize_xyz_openbabel(
                 # Track explicit promotions so we never add the same
                 # atom twice to the OB constraint set (idempotent).
                 _gated_hard_added: set = set()
+                # T4.1 audit 2026-05-15: class-agnostic HARD-promotion gate.
+                # Default OFF — the legacy ``_sus()``-only guard remains
+                # active so behaviour is byte-identical when the new env
+                # is unset.  When ``DELFIN_UFF_PROBE_HARD_ALL_CLASSES=1``,
+                # any soft-meta block (including hapto / multi_hapto)
+                # gets HARD-promoted on _uff_param_unsafe, closing the
+                # determinism gap exposed when a caller manually built
+                # ``constraints`` with a hapto-class label and an empty
+                # ``fix_atoms`` list (5/5 unique digests in audit Case D).
+                _hard_all_classes = bool(
+                    _delfin_env_int("DELFIN_UFF_PROBE_HARD_ALL_CLASSES", 0)
+                )
+                if _soft_meta and _uff_param_unsafe and not _soft_enabled:
+                    # Soft path disabled outright; nothing to gate.
+                    pass
                 if _soft_enabled and _soft_meta and _uff_param_unsafe:
                     try:
                         from delfin._uff_soft_donor import (
                             should_use_soft_donor as _sus,
                         )
                         _gated_cls = _soft_meta.get("class_label", "no_metal")
-                        if _sus(_gated_cls):
+                        if _sus(_gated_cls) or _hard_all_classes:
                             # Promote every donor + metal recorded in
                             # the soft-meta block to HARD FixAtom.
                             # Upstream ``_build_coordination_constraints_from_xyz``

@@ -333,3 +333,55 @@ def test_optimize_xyz_openbabel_soft_path_param_metal_deterministic(monkeypatch)
         "Parameterised-metal soft-donor path drifted across consecutive "
         f"calls: {sigs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 9.  Welle-3 T6.1: the multi-metal-augmentation ETKDG block (formerly at
+#     ``smiles_converter.py:26457``) submitted ``_embed_multiple_confs_robust``
+#     concurrently against the SHARED mol — exactly the same RDKit thread-
+#     safety race that fix #2 (7cf73e3) patched in the primary embed loop.
+#     This test runs a small bimetallic SMILES that takes the multi-metal
+#     augmentation path and asserts every run is bit-identical.
+# ---------------------------------------------------------------------------
+
+_BIMETALLIC_SMILES = (
+    # Pool idx-15 family adapted for a synthetic bimetallic dummy: two
+    # independent Pt centres glued via a covalent C-C linker so the
+    # converter has to take the >= 2-metals augmentation branch. Constructed
+    # WITHOUT referring to any specific refcode/dataset so the test stays
+    # universal (cf. memory rule "no SMILES-specific shortcuts").
+    "[Pt](Cl)(Cl)(N)NC(N)N[Pt](Cl)(Cl)N"
+)
+
+
+def test_multimetal_augmentation_three_runs_bit_identical(monkeypatch):
+    """Bimetallic SMILES is bit-identical across 3 runs.
+
+    Targets the previously-unpatched multi-metal augmentation ThreadPoolExecutor
+    block. A regression here means the data-race fix (private mol copy + seed-
+    order merge) has been reverted or mis-replicated.
+    """
+    # Make the high-fanout case maximally likely to expose any race.
+    monkeypatch.setenv("DELFIN_MAX_THREAD_WORKERS", "32")
+    # Default flag state — Welle-2 + UFF-soft as currently shipped.
+    runs = [_isomer_signature(_BIMETALLIC_SMILES) for _ in range(3)]
+    assert runs[0] == runs[1] == runs[2], (
+        "multi-metal augmentation path is non-deterministic across 3 runs; "
+        f"counts={[len(r) for r in runs]} digests={[_digest(r) for r in runs]}"
+    )
+
+
+def test_multimetal_augmentation_worker_count_invariant(monkeypatch):
+    """Bimetallic output is bit-identical at WORKER=1 and WORKER=32.
+
+    The race in the old code was *only* exposed under concurrency; this test
+    locks in that the output no longer depends on the worker count.
+    """
+    monkeypatch.setenv("DELFIN_MAX_THREAD_WORKERS", "1")
+    seq_sig = _isomer_signature(_BIMETALLIC_SMILES)
+    monkeypatch.setenv("DELFIN_MAX_THREAD_WORKERS", "32")
+    par_sig = _isomer_signature(_BIMETALLIC_SMILES)
+    assert seq_sig == par_sig, (
+        "multi-metal augmentation output depends on DELFIN_MAX_THREAD_WORKERS — "
+        f"seq_digest={_digest(seq_sig)} par_digest={_digest(par_sig)}"
+    )

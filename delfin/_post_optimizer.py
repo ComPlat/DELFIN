@@ -827,8 +827,20 @@ def _classify_distortion_mandatory(
     # (the 4+1/4+2 elongated octahedron is the most chemically frequent JT
     # case; CN < 5 cannot show axial elongation by construction). JT is the
     # most specific test (metal+charge match) and is therefore checked first.
+    #
+    # Welle-3 T2.2 extension (env-gated, default OFF): when
+    # DELFIN_JT_CN4_DISTORTION=1, the gate is relaxed to CN >= 4 so
+    # Cu(II)/Mn(III)/Cr(II)/Ag(II)/Ni(III) at CN=4 are also marked
+    # distortion-mandatory.  Square-planar is the natural d9/d4-HS CN=4
+    # polyhedron and must not be projected to tetrahedral by the
+    # standard polyhedron picker.
+    import os as _os_pp
     jt_label = _JAHN_TELLER_CASES.get((m_sym, m_charge))
-    if jt_label is not None and cn >= 5:
+    _jt_min_cn = 4 if (
+        _os_pp.environ.get("DELFIN_JT_CN4_DISTORTION", "0")
+        in ("1", "true", "True")
+    ) else 5
+    if jt_label is not None and cn >= _jt_min_cn:
         return jt_label
 
     # ----- Pattern 2: Cyclometalation 5-ring (M-C-...-X-M closure) -----
@@ -879,6 +891,29 @@ def _classify_distortion_mandatory(
                         has_aryl_c = True
                 except Exception:
                     has_aryl_c = True   # be permissive on RDKit hiccups
+                # Welle-3 T2.2 extension (env-gated, default OFF):
+                # graph-only fallback when RDKit aromatic/hybridisation
+                # perception was skipped (RWMol dative-bond-first builders).
+                # If the carbon donor has >= 1 carbon ring-neighbour in
+                # the same 5-ring (M-C-C-...-X-M closure), treat it as
+                # cyclometal aryl.
+                if (
+                    not has_aryl_c
+                    and _os_pp.environ.get(
+                        "DELFIN_CYCLOMETAL_GRAPH_FALLBACK", "0"
+                    ) in ("1", "true", "True")
+                ):
+                    try:
+                        ring_set = set(int(x) for x in ring)
+                        c_ring_nbrs = [
+                            nb for nb in d_atom.GetNeighbors()
+                            if int(nb.GetIdx()) in ring_set
+                            and nb.GetSymbol() == "C"
+                        ]
+                        if len(c_ring_nbrs) >= 1:
+                            has_aryl_c = True
+                    except Exception:
+                        pass
             elif d_sym in ("N", "O", "P", "S"):
                 has_hetero = True
         if has_aryl_c and has_hetero:
