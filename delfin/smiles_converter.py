@@ -1484,6 +1484,43 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_5j_a_cp_piano_stool_if_enabled(mol, results, dual_parse_done: bool):
+    """Welle-5j Agent A dispatch helper — Cp piano-stool hapticity refinement.
+
+    Welle-5i Agent C catalogued 34 hapto BROKEN-TO-BROKEN files; 83 % (28 / 34)
+    were η⁵-cyclopentadienyl coordination misclassified as η⁶-arene by the
+    downstream hapticity / coord-geometry detector.  This dispatch helper
+    runs ``delfin._cp_piano_stool.correct_results`` on every metal-bearing
+    structure to snap M-ring-centroid distance + axial orientation to the
+    ideal η⁵ piano-stool geometry, which makes the detector classify the
+    ring as Cp (CN=5 polyhedron) instead of arene.
+
+    Insertion order: AFTER ``_apply_baustein3_if_enabled`` (B3 rotates
+    donor X-side) and BEFORE ``_apply_baustein4_if_enabled`` (B4 then
+    re-projects ring-attached H onto the post-snap ring plane).
+
+    Per-conformer / per-violation rollback inside the helper.  Bit-exact
+    when ``DELFIN_5J_A_CP_PIANO_STOOL=0`` (default).  Skipped on inner
+    dual-parse calls (matches B3 / B4 dispatch contract — heavy-atom
+    signature dedup must see consistent coordinates).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _delfin_env_int("DELFIN_5J_A_CP_PIANO_STOOL", 0):
+        return results
+    try:
+        from delfin._cp_piano_stool import correct_results as _cp_correct
+        return _cp_correct(mol, results)
+    except Exception as _cp_exc:
+        try:
+            logger.debug("5j-A Cp piano-stool refinement skipped: %s", _cp_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-14 Baustein 4 dispatch helper — RigidPiFragment H projection.
 
@@ -27491,6 +27528,20 @@ def smiles_to_xyz_isomers(
     # mono hapto / multi-metal hapto / fallback above).
     if has_metal:
         results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Welle-5j Agent A: Cp piano-stool hapticity refinement ──────────────
+    # Welle-5i Agent C catalogued 28 / 34 (83 %) hapto BROKEN-TO-BROKEN
+    # files as η⁵-Cp mislabeled by the detector as η⁶-arene because the
+    # M-ring-centroid axis was off-ideal post-UFF.  Universal corrector:
+    # detect 5-ring of C/N at near-equidistant M-C distances + planar
+    # ring (SVD), snap metal onto SVD ring-normal axis at the η⁵ target
+    # distance for the metal element.  Per-violation rollback if any
+    # non-ring M-D bond would dissociate (Iter-15 hard invariant).
+    # Opt-in via DELFIN_5J_A_CP_PIANO_STOOL=1.  Bit-exact when disabled.
+    if has_metal:
+        results = _apply_5j_a_cp_piano_stool_if_enabled(
+            mol, results, _dual_parse_done,
+        )
 
     # ── Iter-14 Baustein 4: post-B3 rigid-π H projection ────────────────────
     # π-rigid-body invariant: every transformation that moves a π-frame
