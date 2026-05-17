@@ -4349,13 +4349,19 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     # when that table has an entry for the element; this keeps enumerator
     # inputs invariant across SMILES variants of the same complex.
     #
-    # Welle-3 T1.1 (2026-05-15): default-OFF env-flag to preserve user-
-    # explicit POSITIVE charges ([Pt+4], [Fe+3], [Cu+1], [Ni+3], etc.).
-    # Negative metal charges are always treated as CCDC-style bookkeeping
-    # (true negative oxidation states are extremely rare in TM coord chem
-    # and would not appear in the smiles_master pool).  Enable preservation
-    # via DELFIN_PRESERVE_METAL_CHARGE=1; default 0 keeps legacy behavior.
-    _preserve_pos = _delfin_env_int("DELFIN_PRESERVE_METAL_CHARGE", 0) == 1
+    # Welle-3 T1.1 (2026-05-15): env-flag to preserve user-explicit POSITIVE
+    # charges ([Pt+4], [Fe+3], [Cu+1], [Ni+3], etc.).  Negative metal charges
+    # are always treated as CCDC-style bookkeeping (true negative oxidation
+    # states are extremely rare in TM coord chem and would not appear in the
+    # smiles_master pool).
+    #
+    # Welle-5g Step-0b (2026-05-17) — DEFAULT-FLIP 0 -> 1 per 5f-N +5g-V
+    # default-flip bisect: PRESERVE_METAL_CHARGE is the best-single-flag
+    # measured (+2204 NET on the 5-archive bisect, sigma +1331 / hapto +863).
+    # Verdict re-confirmed by 5g-V DEFAULT-FLIP verification (math reproduced
+    # byte-for-byte from JSON; no per-class negatives at single-flag level).
+    # Disable via DELFIN_PRESERVE_METAL_CHARGE=0 to restore legacy stomping.
+    _preserve_pos = _delfin_env_int("DELFIN_PRESERVE_METAL_CHARGE", 1) == 1
     for metal, charge in metal_charges.items():
         if _preserve_pos:
             # Only canonicalise negative bookkeeping charges ([Fe-2], [Fe-5]);
