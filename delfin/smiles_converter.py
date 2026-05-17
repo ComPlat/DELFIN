@@ -27989,6 +27989,30 @@ def smiles_to_xyz_isomers(
         except Exception:
             pass
 
+    # ── Welle-5f-C: post-UFF M-H atom-overlap rescue ────────────────────────
+    # D-QOPVEZ Fe-H 0.4 A pattern: UFF on unparametrised TM cations leaves
+    # hydride H atoms inside the metal core.  Detect M-H pairs with d < 0.9 *
+    # ideal_M_H and try short axial translations along the local M-H axis to
+    # rescue the bond length to >= 0.9 * ideal.  Frames whose rescue is
+    # geometrically impossible are dropped (atom-overlap propagates worse
+    # downstream artefacts than a missing frame).
+    #
+    # Gated by DELFIN_5F_C_MH_OVERLAP_RESCUE (default 0 = bit-exact OFF).
+    # Runs AFTER 5b-A (H positions finalised) and AFTER B4/B5/B6 (heavy
+    # geometry finalised) so the rescue snaps to current metal positions.
+    try:
+        if (
+            results
+            and _delfin_env_int("DELFIN_5F_C_MH_OVERLAP_RESCUE", 0)
+        ):
+            from delfin._h_vsepr_realism import rescue_results as _mh_rescue
+            results = _mh_rescue(mol, results)
+    except Exception as _mh_exc:
+        try:
+            logger.debug("Welle-5f-C M-H rescue pass failed: %s", _mh_exc)
+        except Exception:
+            pass
+
     # Multi-sigma V2: restore the per-seed embedding timeout override on
     # the calling thread so this function call has no effect on any
     # later, unrelated call from the same thread.
