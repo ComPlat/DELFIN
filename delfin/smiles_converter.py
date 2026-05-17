@@ -4398,16 +4398,59 @@ def _normalize_metal_smiles(smiles: str) -> Optional[str]:
     # Verdict re-confirmed by 5g-V DEFAULT-FLIP verification (math reproduced
     # byte-for-byte from JSON; no per-class negatives at single-flag level).
     # Disable via DELFIN_PRESERVE_METAL_CHARGE=0 to restore legacy stomping.
+    #
+    # Welle-5j Step-B (2026-05-17) — charge-magnitude-conditional protection.
+    # Per Welle-5i Agent E apples-to-apples recal-battery, the Step-0b default
+    # flip introduced real same-detector regressions on F3_angle (+7.01pp),
+    # F3_bond (+2.50pp), vdw clashes (+2.37pp) and lig_pct_realistic (-3.95pp).
+    # Root-cause hypothesis: for SMILES with extreme metal formal charges,
+    # pinning them through to OB-UFF causes the force-field to pick different
+    # local minima for some ligands (OB UFF unparametrized-TM-cation bug —
+    # see memory/feedback_ob_uff_unparametrized_tm.md), tilting internal
+    # organic angles past detector cutoffs even though topology is preserved.
+    #
+    # DELFIN_PRESERVE_CHARGE_MAGNITUDE_THRESHOLD (int, default 0 = no
+    # threshold = current behaviour preserved byte-for-byte) defines a
+    # magnitude cutoff N: when N >= 1, any metal whose preserved positive
+    # formal charge satisfies abs(q) > N falls back to canonicalisation
+    # (replaced with the table-standard charge from ``metal_charges``).  The
+    # check is universal — magnitude-based, no per-element allowlist — and
+    # only affects the OB-UFF / RDKit-parse normalisation step.  Downstream
+    # chemistry, user-facing labels and the original input SMILES (which
+    # callers preserve when ``_normalize_metal_smiles`` returns None /
+    # unchanged) are untouched.
     _preserve_pos = _delfin_env_int("DELFIN_PRESERVE_METAL_CHARGE", 1) == 1
+    _mag_threshold = _delfin_env_int(
+        "DELFIN_PRESERVE_CHARGE_MAGNITUDE_THRESHOLD", 0
+    )
     for metal, charge in metal_charges.items():
         if _preserve_pos:
             # Only canonicalise negative bookkeeping charges ([Fe-2], [Fe-5]);
-            # positive charges ([Fe+3], [Pt+4]) are user chemistry and kept.
+            # positive charges ([Fe+3], [Pt+4]) are user chemistry and kept
+            # — unless DELFIN_PRESERVE_CHARGE_MAGNITUDE_THRESHOLD is set, in
+            # which case positives whose magnitude exceeds the threshold are
+            # also canonicalised (see Welle-5j Step-B comment block above).
             pattern = rf'\[{metal}-\d*\]'
         else:
             pattern = rf'\[{metal}[+-]\d*\]'
         if re.search(pattern, normalized):
             normalized = re.sub(pattern, f'[{metal}{charge}]', normalized)
+        # Magnitude-threshold canonicalisation of preserved positive charges.
+        # Active only when threshold >= 1 AND positive-preservation is on
+        # (threshold without preservation is a no-op because the all-charges
+        # pattern above already canonicalised every positive metal charge).
+        if _preserve_pos and _mag_threshold >= 1:
+            # Match [Metal+N] with N >= 1 and canonicalise when N > threshold.
+            pos_pattern = rf'\[{metal}\+(\d+)\]'
+            def _replace_if_extreme(match: 're.Match[str]') -> str:
+                try:
+                    q = int(match.group(1))
+                except (TypeError, ValueError):
+                    return match.group(0)
+                if q > _mag_threshold:
+                    return f'[{metal}{charge}]'
+                return match.group(0)
+            normalized = re.sub(pos_pattern, _replace_if_extreme, normalized)
 
     return normalized if normalized != smiles else None
 
