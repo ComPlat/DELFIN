@@ -485,49 +485,6 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Np', 'N'): 2.50, ('Np', 'O'): 2.25, ('Np', 'Cl'): 2.60,
     ('Pu', 'N'): 2.50, ('Pu', 'O'): 2.25, ('Pu', 'Cl'): 2.60,
     # -------------------------------------------------------------------
-    # Welle-3 T3.3 (2026-05-15): close 78 gaps observed on master_v3 pool.
-    # Pure covalent-radius fallback overshoots M-As/Sb/Te/Se by 0.5-0.8 A
-    # and M-B by 0.3-0.5 A vs CSD averages, leaving these legitimate
-    # donors above the topology bonding range.  Sources: Cordero 2008,
-    # Pyykko 2009, CSD averages for sigma-stibine/arsine/telluride/boryl
-    # donors. M-La extras added (Br/C/S/Se missing in 2.3 release).
-    # -------------------------------------------------------------------
-    # M-As donors (arsine, CSD 2.30-2.65 A)
-    ('Sc','As'): 2.65, ('Ti','As'): 2.55, ('V','As'): 2.50,
-    ('Cr','As'): 2.45, ('Mn','As'): 2.45, ('Fe','As'): 2.40,
-    ('Co','As'): 2.35, ('Ni','As'): 2.30, ('Cu','As'): 2.35,
-    ('Zn','As'): 2.45, ('Y','As'): 2.85, ('Zr','As'): 2.75,
-    ('Nb','As'): 2.65, ('Mo','As'): 2.55, ('Tc','As'): 2.50,
-    ('Ru','As'): 2.45, ('Rh','As'): 2.40, ('Pd','As'): 2.40,
-    ('Ag','As'): 2.55, ('Cd','As'): 2.60, ('Hf','As'): 2.70,
-    ('Ta','As'): 2.60, ('W','As'): 2.55, ('Re','As'): 2.50,
-    ('Os','As'): 2.45, ('Ir','As'): 2.42, ('Pt','As'): 2.40,
-    ('Au','As'): 2.45,
-    # M-Sb donors (stibine, CSD 2.50-2.70 A)
-    ('Cr','Sb'): 2.65, ('Mn','Sb'): 2.65, ('Co','Sb'): 2.55,
-    ('Ni','Sb'): 2.50, ('Cu','Sb'): 2.55, ('Mo','Sb'): 2.65,
-    ('Ru','Sb'): 2.60, ('Rh','Sb'): 2.55, ('Pd','Sb'): 2.55,
-    ('Ag','Sb'): 2.65, ('W','Sb'): 2.65, ('Re','Sb'): 2.60,
-    ('Os','Sb'): 2.55, ('Pt','Sb'): 2.55, ('Au','Sb'): 2.55,
-    # M-Te donors (CSD 2.50-2.85 A)
-    ('Sc','Te'): 2.85, ('V','Te'): 2.65, ('Cr','Te'): 2.70,
-    ('Mn','Te'): 2.65, ('Co','Te'): 2.55, ('Ni','Te'): 2.50,
-    ('Cu','Te'): 2.55, ('Zn','Te'): 2.65, ('Nb','Te'): 2.70,
-    ('Mo','Te'): 2.65, ('Tc','Te'): 2.60, ('Ru','Te'): 2.60,
-    ('Rh','Te'): 2.60, ('Pd','Te'): 2.65, ('Ag','Te'): 2.75,
-    ('Cd','Te'): 2.75, ('W','Te'): 2.65, ('Re','Te'): 2.60,
-    ('Ir','Te'): 2.55, ('Pt','Te'): 2.55, ('Au','Te'): 2.55,
-    ('Hg','Te'): 2.70,
-    # M-B donors (boryl, M-BR2/3; pi-backbond shortens vs covalent sum)
-    ('Sc','B'): 2.40, ('Fe','B'): 2.00, ('Co','B'): 1.95,
-    ('Ni','B'): 1.95, ('Cu','B'): 2.00, ('Ru','B'): 2.05,
-    ('Rh','B'): 2.00, ('Pd','B'): 2.05, ('Cd','B'): 2.30,
-    ('Os','B'): 2.05, ('Ir','B'): 2.00, ('Pt','B'): 2.05,
-    ('Au','B'): 2.05,
-    # M-Se/M-La extras
-    ('Ag','Se'): 2.60, ('Tc','Se'): 2.50,
-    ('La','Br'): 2.95, ('La','C'): 2.65, ('La','S'): 2.85, ('La','Se'): 2.95,
-    # -------------------------------------------------------------------
     # Welle-3 T3.1 (2026-05-15) — M-H (terminal hydride) entries.
     # Pure covalent-radius fallback gives 2.0-3.3 A which is >0.3-1.5 A
     # too long for crystallographically known terminal M-H (typically
@@ -596,6 +553,70 @@ def _apply_mh_table_fallback() -> None:
 
 
 _apply_mh_table_fallback()
+
+
+# ---------------------------------------------------------------------------
+# Welle-3 T3.3 (2026-05-15) — 84 new M-L pairs (As/Sb/Te/B/Se/La extras).
+# Gated by DELFIN_NEW_ML_PAIRS (default 0).  Welle-5g Step-0 targeted revert
+# per 5f-A bisect: a3edabe always-on inclusion attributed ~70% of -4064 NET
+# (hapto -767 voll-pool).  Default-OFF restores 9b1f541-equivalent behaviour.
+# ---------------------------------------------------------------------------
+_METAL_LIGAND_BOND_LENGTHS_T33: Dict[Tuple[str, str], float] = {
+    # M-As donors (arsine, CSD 2.30-2.65 A)
+    ('Sc','As'): 2.65, ('Ti','As'): 2.55, ('V','As'): 2.50,
+    ('Cr','As'): 2.45, ('Mn','As'): 2.45, ('Fe','As'): 2.40,
+    ('Co','As'): 2.35, ('Ni','As'): 2.30, ('Cu','As'): 2.35,
+    ('Zn','As'): 2.45, ('Y','As'): 2.85, ('Zr','As'): 2.75,
+    ('Nb','As'): 2.65, ('Mo','As'): 2.55, ('Tc','As'): 2.50,
+    ('Ru','As'): 2.45, ('Rh','As'): 2.40, ('Pd','As'): 2.40,
+    ('Ag','As'): 2.55, ('Cd','As'): 2.60, ('Hf','As'): 2.70,
+    ('Ta','As'): 2.60, ('W','As'): 2.55, ('Re','As'): 2.50,
+    ('Os','As'): 2.45, ('Ir','As'): 2.42, ('Pt','As'): 2.40,
+    ('Au','As'): 2.45,
+    # M-Sb donors (stibine, CSD 2.50-2.70 A)
+    ('Cr','Sb'): 2.65, ('Mn','Sb'): 2.65, ('Co','Sb'): 2.55,
+    ('Ni','Sb'): 2.50, ('Cu','Sb'): 2.55, ('Mo','Sb'): 2.65,
+    ('Ru','Sb'): 2.60, ('Rh','Sb'): 2.55, ('Pd','Sb'): 2.55,
+    ('Ag','Sb'): 2.65, ('W','Sb'): 2.65, ('Re','Sb'): 2.60,
+    ('Os','Sb'): 2.55, ('Pt','Sb'): 2.55, ('Au','Sb'): 2.55,
+    # M-Te donors (CSD 2.50-2.85 A)
+    ('Sc','Te'): 2.85, ('V','Te'): 2.65, ('Cr','Te'): 2.70,
+    ('Mn','Te'): 2.65, ('Co','Te'): 2.55, ('Ni','Te'): 2.50,
+    ('Cu','Te'): 2.55, ('Zn','Te'): 2.65, ('Nb','Te'): 2.70,
+    ('Mo','Te'): 2.65, ('Tc','Te'): 2.60, ('Ru','Te'): 2.60,
+    ('Rh','Te'): 2.60, ('Pd','Te'): 2.65, ('Ag','Te'): 2.75,
+    ('Cd','Te'): 2.75, ('W','Te'): 2.65, ('Re','Te'): 2.60,
+    ('Ir','Te'): 2.55, ('Pt','Te'): 2.55, ('Au','Te'): 2.55,
+    ('Hg','Te'): 2.70,
+    # M-B donors (boryl, M-BR2/3; pi-backbond shortens vs covalent sum)
+    ('Sc','B'): 2.40, ('Fe','B'): 2.00, ('Co','B'): 1.95,
+    ('Ni','B'): 1.95, ('Cu','B'): 2.00, ('Ru','B'): 2.05,
+    ('Rh','B'): 2.00, ('Pd','B'): 2.05, ('Cd','B'): 2.30,
+    ('Os','B'): 2.05, ('Ir','B'): 2.00, ('Pt','B'): 2.05,
+    ('Au','B'): 2.05,
+    # M-Se/M-La extras
+    ('Ag','Se'): 2.60, ('Tc','Se'): 2.50,
+    ('La','Br'): 2.95, ('La','C'): 2.65, ('La','S'): 2.85, ('La','Se'): 2.95,
+}
+
+
+def _apply_new_ml_pairs_t33() -> None:
+    """Merge Welle-3 T3.3 84 new M-L pairs into the master table.
+
+    Default OFF (Welle-5g Step-0 targeted revert per 5f-A bisect).  Set
+    ``DELFIN_NEW_ML_PAIRS=1`` to enable; default ``0`` restores the
+    9b1f541-equivalent behaviour (bit-exact pre-a3edabe T3.3).  Skips
+    pairs already populated so explicit table entries always win.
+    """
+    import os as _os
+    if int(_os.environ.get("DELFIN_NEW_ML_PAIRS", "0") or "0") <= 0:
+        return
+    for key, val in _METAL_LIGAND_BOND_LENGTHS_T33.items():
+        if key not in _METAL_LIGAND_BOND_LENGTHS:
+            _METAL_LIGAND_BOND_LENGTHS[key] = val
+
+
+_apply_new_ml_pairs_t33()
 
 # ---------------------------------------------------------------------------
 # Metal-Metal bond lengths (Å) from CSD averages.
@@ -26658,10 +26679,17 @@ def smiles_to_xyz_isomers(
             # the molecule (conformers + property cache + ring info), so the
             # multi-metal augmentation reproduced the same data race that
             # fix #2 patched in the primary embed loop at line ~25871.  Each
-            # worker now embeds into its own private ``Chem.Mol`` copy, and
+            # worker embeds into its own private ``Chem.Mol`` copy, and
             # the main thread re-adds the resulting conformers to the shared
             # ``mol`` in seed-submission order so the conformer-ID schedule
             # is reproducible across runs and worker counts.
+            #
+            # Welle-5g Step-0 targeted revert per 5f-A bisect: a3edabe shipped
+            # this race-fix always-on as part of the Correctness-Bundle and
+            # was attributed ~70% of the -4064 NET voll-pool regression
+            # (hapto -767).  Gated behind DELFIN_5G_T6_1_RACE_FIX (default 0)
+            # to restore the legacy shared-mol submission path at default;
+            # opt-in via env-flag re-enables the per-worker copy.
             def _aug_embed_one(_s: int) -> List:
                 try:
                     _mol_copy = Chem.Mol(mol)
@@ -26674,8 +26702,17 @@ def smiles_to_xyz_isomers(
                 except Exception:
                     return []
 
+            _t61_race_fix_on = _delfin_env_int("DELFIN_5G_T6_1_RACE_FIX", 0) > 0
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_extra) as _xp:
-                _xfuts = [_xp.submit(_aug_embed_one, s) for s in _extra_seeds]
+                if _t61_race_fix_on:
+                    _xfuts = [_xp.submit(_aug_embed_one, s) for s in _extra_seeds]
+                else:
+                    # Legacy pre-T6.1 path: submit shared mol directly.
+                    _xfuts = [
+                        _xp.submit(_embed_multiple_confs_robust, mol, 3, s)
+                        for s in _extra_seeds
+                    ]
                 # Submission-order traversal preserves determinism (see
                 # top-level embedding loop for rationale).  When a
                 # wall-clock budget is active, switch to per-future
@@ -26694,7 +26731,10 @@ def smiles_to_xyz_isomers(
                                 pass
                             continue
                         try:
-                            _per_seed_confs[_i] = _xf.result(timeout=_remaining)
+                            if _t61_race_fix_on:
+                                _per_seed_confs[_i] = _xf.result(timeout=_remaining)
+                            else:
+                                _extra_ids.extend(_xf.result(timeout=_remaining))
                         except concurrent.futures.TimeoutError:
                             try:
                                 _xf.cancel()
@@ -26705,18 +26745,23 @@ def smiles_to_xyz_isomers(
                 else:
                     for _i, _xf in enumerate(_xfuts):
                         try:
-                            _per_seed_confs[_i] = _xf.result()
+                            if _t61_race_fix_on:
+                                _per_seed_confs[_i] = _xf.result()
+                            else:
+                                _extra_ids.extend(_xf.result())
                         except Exception:
                             pass
-            # Deterministic merge: re-add every worker's conformers to the
-            # shared ``mol`` in seed-submission order with fresh sequential
-            # IDs.
-            for _seed_confs in _per_seed_confs:
-                for _conf in _seed_confs:
-                    try:
-                        _extra_ids.append(mol.AddConformer(_conf, assignId=True))
-                    except Exception:
-                        pass
+            # Deterministic merge (race-fix path only): re-add every worker's
+            # conformers to the shared ``mol`` in seed-submission order with
+            # fresh sequential IDs.  Legacy path already populated
+            # ``_extra_ids`` directly via shared-mol embedding.
+            if _t61_race_fix_on:
+                for _seed_confs in _per_seed_confs:
+                    for _conf in _seed_confs:
+                        try:
+                            _extra_ids.append(mol.AddConformer(_conf, assignId=True))
+                        except Exception:
+                            pass
             logger.debug("Multi-metal augmentation: %d extra conformers", len(_extra_ids))
 
             # Classify + dedup with existing results
