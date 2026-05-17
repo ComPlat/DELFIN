@@ -1142,6 +1142,47 @@ def correct_results(mol, results):
     return out
 
 
+def snap_alkyl_rotamers_only(xyz_str: str) -> str:
+    """Welle-5f D — inter-substituent H-H clash relief via rigid rotation.
+
+    Standalone entry that runs ONLY the rotamer search (no VSEPR-H
+    snap).  Used when 5f-D is opted in independently of 5b-A.
+    Bit-exact when no shared-parent substituent group is present.
+    Failsafe: any exception returns the input unchanged.
+    """
+    try:
+        syms, pts, orig_lines = _parse_xyz(xyz_str)
+        if pts.shape[0] == 0:
+            return xyz_str
+        pts = pts.copy()
+        moved = _snap_inter_substituent_rotamers(syms, pts)
+        if moved == 0:
+            return xyz_str
+        return _format_xyz(orig_lines, syms, pts)
+    except Exception:
+        return xyz_str
+
+
+def correct_results_rotamers_only(mol, results):
+    """Apply 5f-D rotamer-only relief to each (xyz, label) entry.
+
+    Failsafe per-entry.  Mirrors ``correct_results`` signature so the
+    smiles_converter dispatch helper can call it with the same args.
+    """
+    out = []
+    for entry in results:
+        try:
+            xyz = entry[0]
+            new_xyz = snap_alkyl_rotamers_only(xyz)
+            out.append(
+                (new_xyz,) + tuple(entry[1:])
+                if len(entry) > 1 else (new_xyz,)
+            )
+        except Exception:
+            out.append(entry)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Welle-5f-E: Aliphatic alkyl-donor → metal axis rescue.
 #

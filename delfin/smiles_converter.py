@@ -27989,6 +27989,31 @@ def smiles_to_xyz_isomers(
         except Exception:
             pass
 
+    # ── Welle-5f-D: inter-substituent H-H clash relief (rotamer-only) ──────
+    # PMe3 / NMe3 / tBu pattern: H-H clashes between sibling alkyl groups
+    # that share a heavy parent (e.g. P-CH3 + P-CH3 + P-CH3 on a phosphine).
+    # Rotates each substituent rigidly around its parent-axis to minimise
+    # inter-substituent H-H clashes.  H-only mover; heavy geometry untouched.
+    #
+    # When 5b-A is enabled, 5f-D auto-runs inside ``correct_xyz`` (sub-flag).
+    # This dispatch handles the 5f-D-only path (5b-A OFF, 5f-D ON).  Both
+    # paths gate on DELFIN_5F_D_ALKYL_ROTAMER (default 0 = bit-exact OFF).
+    try:
+        if (
+            results
+            and _delfin_env_int("DELFIN_5F_D_ALKYL_ROTAMER", 0)
+            and not _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
+        ):
+            from delfin._h_vsepr_realism import (
+                correct_results_rotamers_only as _rot_correct,
+            )
+            results = _rot_correct(mol, results)
+    except Exception as _rot_exc:
+        try:
+            logger.debug("Welle-5f-D alkyl-rotamer pass failed: %s", _rot_exc)
+        except Exception:
+            pass
+
     # ── Welle-5f-C: post-UFF M-H atom-overlap rescue ────────────────────────
     # D-QOPVEZ Fe-H 0.4 A pattern: UFF on unparametrised TM cations leaves
     # hydride H atoms inside the metal core.  Detect M-H pairs with d < 0.9 *
