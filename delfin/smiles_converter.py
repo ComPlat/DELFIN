@@ -27930,6 +27930,28 @@ def smiles_to_xyz_isomers(
         except Exception:
             pass
 
+    # ── Welle-5b A: universal VSEPR-correct H placement (end-of-pipeline) ──
+    # Snap every X-H bond direction to the VSEPR-correct local geometry of
+    # its heavy parent (sp/sp2/sp3 + lone-pair count).  Per-H rollback on
+    # M-D invariant break or new heavy clash.  Aromatic ring H is delegated
+    # to Baustein 4 / Iter-9 H1 to avoid double-projection.
+    #
+    # Master flag DELFIN_5B_VSEPR_H_REALISM (default 0 = bit-exact OFF).
+    # Sub-flag DELFIN_5F_D_ALKYL_ROTAMER (default 0) adds an inter-substituent
+    # rotamer search inside the VSEPR pass to relieve PMe3/NMe3/tBu H-H clash.
+    try:
+        if (
+            results
+            and _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
+        ):
+            from delfin._h_vsepr_realism import correct_results as _vsepr_correct
+            results = _vsepr_correct(mol, results)
+    except Exception as _vsepr_exc:
+        try:
+            logger.debug("Welle-5b-A VSEPR-H pass failed: %s", _vsepr_exc)
+        except Exception:
+            pass
+
     # Multi-sigma V2: restore the per-seed embedding timeout override on
     # the calling thread so this function call has no effect on any
     # later, unrelated call from the same thread.
