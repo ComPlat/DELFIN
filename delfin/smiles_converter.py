@@ -27930,6 +27930,43 @@ def smiles_to_xyz_isomers(
         except Exception:
             pass
 
+    # ── Welle-5b B: donor-orientation realism (heavy-atom only) ─────────────
+    # Three geometry patterns UFF does not enforce natively:
+    #   1. Aromatic-N edge-on:  rotate aromatic-N rings around the M-N axis
+    #      so the ring normal becomes perpendicular to M-N (sigma lone-pair
+    #      points at the metal) — fixes the face-on attack mode.
+    #   2. Terminal-carbonyl linearity:  M-C=O snapped to 180 deg.
+    #   3. NHC carbene plane:  rotate the N-C-N ring so the metal lies in
+    #      the carbene plane.
+    #
+    # Master flag DELFIN_DONOR_ORIENT_REALISM (default 0 = bit-exact OFF).
+    # Sub-flags DELFIN_DONOR_ORIENT_REALISM_{AROMATIC_N,CARBONYL,NHC}
+    # default to 1 when master is 1 (per-pattern force-disable available).
+    # Insertion order: 5b-B FIRST (moves heavy atoms), 5b-A AFTER (re-snaps
+    # H to current heavy geometry).
+    try:
+        if (
+            mol is not None
+            and results
+            and _delfin_env_int("DELFIN_DONOR_ORIENT_REALISM", 0)
+        ):
+            from delfin._donor_orientation_realism import (
+                snap_donor_orientations as _dor_snap,
+            )
+            _new_results: List[Tuple[str, str]] = []
+            for _xyz_i, _lbl_i in results:
+                try:
+                    _xyz_i2 = _dor_snap(_xyz_i, mol, mode="end_of_pipeline")
+                except Exception:
+                    _xyz_i2 = _xyz_i
+                _new_results.append((_xyz_i2, _lbl_i))
+            results = _new_results
+    except Exception as _dor_exc:
+        try:
+            logger.debug("Welle-5b-B donor-orient pass failed: %s", _dor_exc)
+        except Exception:
+            pass
+
     # ── Welle-5b A: universal VSEPR-correct H placement (end-of-pipeline) ──
     # Snap every X-H bond direction to the VSEPR-correct local geometry of
     # its heavy parent (sp/sp2/sp3 + lone-pair count).  Per-H rollback on
