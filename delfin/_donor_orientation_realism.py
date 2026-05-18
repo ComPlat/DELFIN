@@ -372,28 +372,91 @@ def _apply_aromatic_n_edge_on(
         ring_non_n = [j for j in ring if j != n_idx]
         if len(ring_non_n) < 2:
             continue
-        # Atom set to rotate: just the non-N ring atoms plus any
-        # *terminal* (H or single-element) substituents directly
-        # bonded to each ring atom.  We deliberately do NOT BFS
-        # further -- shared-atom rings, fused systems, and bridged
-        # ligand backbones can connect to other donors and break
-        # other M-D bonds.  The ring + immediate H envelope is the
-        # safe minimum that preserves all M-D bonds while still
-        # rotating the donor's aromatic plane.
+        # Atom set to rotate.  Original strategy was "non-N ring atoms +
+        # immediate H substituents only" -- safe but rejects fused-ring
+        # donors (pyridine fused into naphthyridine, salen-N attached to
+        # a fused phenol).  Welle-5l T3-B extends the fragment to the
+        # full closed-aromatic-ring system surrounding the N donor as
+        # long as the closure contains no other donor or metal.
         #
-        # Skip fused rings: if any ring atom (other than N) belongs to
-        # a second ring, the geometric rotation will distort the
-        # shared bond into the fused partner.
+        # Rule:
+        #   1. Start with our ring's non-N atoms.
+        #   2. Iteratively add any other aromatic ring that shares >= 1
+        #      atom with the current fragment AND contains no metal
+        #      AND contains no donor atom other than N.
+        #   3. If at any step a candidate ring contains a donor (other
+        #      than n_idx) or a metal, do NOT add it -- bail out and
+        #      keep the safe minimum (no rotation) for this triple.
+        #   4. Finally, add immediate H neighbours of every fragment
+        #      atom (terminal-H only; no heavier substituents).
+        #
+        # The "spurious metal-containing 5-ring" (e.g. Ru-N-C-N-C in
+        # rdkit's bond-perception ring graph for chelating NHC-N donors)
+        # is excluded by the metal check.  Bridged / spiro fused rings
+        # never widen further than necessary because the BFS stops at
+        # any donor or metal.
         try:
             ri_local = mol.GetRingInfo()
-            ring_sizes_for: List[int] = [
-                ri_local.NumAtomRings(j) for j in ring if j != n_idx
-            ]
-            if any(s > 1 for s in ring_sizes_for):
-                continue  # fused/bicyclic ring -- safer to skip
+            atom_rings_all = ri_local.AtomRings()
         except Exception:
-            pass
+            atom_rings_all = ()
+
+        def _ring_is_safe(rng: Tuple[int, ...]) -> bool:
+            for j in rng:
+                if j == n_idx:
+                    continue
+                if j in all_metals:
+                    return False
+                if j in all_donors:
+                    return False
+            return True
+
         frag: Set[int] = set(ring) - {n_idx}
+        if atom_rings_all:
+            grew = True
+            _seen_rings: Set[Tuple[int, ...]] = {tuple(sorted(ring))}
+            while grew:
+                grew = False
+                for cand in atom_rings_all:
+                    key = tuple(sorted(cand))
+                    if key in _seen_rings:
+                        continue
+                    if not any(j in frag or j == n_idx for j in cand):
+                        continue  # not fused to current fragment
+                    # Reject candidate rings that include a metal or
+                    # any donor other than n_idx.
+                    has_metal = any(j in all_metals for j in cand)
+                    if has_metal:
+                        # Spurious metal-containing ring -- ignore but
+                        # do not bail (it does not affect rotation).
+                        _seen_rings.add(key)
+                        continue
+                    if not _ring_is_safe(cand):
+                        # Another donor sits in the would-be partner
+                        # ring -- rotating the system would break its
+                        # M-D bond.  Stop expansion and skip.
+                        frag.clear()
+                        break
+                    # Optional: only add aromatic partner rings.  Pure
+                    # sp3 partner cycles would deform under rigid
+                    # rotation.
+                    is_arom = all(
+                        mol.GetAtomWithIdx(j).GetIsAromatic() for j in cand
+                    )
+                    if not is_arom:
+                        _seen_rings.add(key)
+                        continue
+                    for j in cand:
+                        if j == n_idx:
+                            continue
+                        if j not in frag:
+                            frag.add(j)
+                            grew = True
+                    _seen_rings.add(key)
+                if not frag:
+                    break
+        if not frag:
+            continue
         for j in list(frag):
             for nb in mol.GetAtomWithIdx(j).GetNeighbors():
                 k = nb.GetIdx()
@@ -563,25 +626,65 @@ def _apply_nhc_plane_alignment(
             continue
         R = _rodrigues(rot_axis, best_sign * tilt_rad)
         # Conservative atom set: NHC ring atoms (minus carbene C) plus
-        # immediate terminal H substituents.  Fused / bridged
-        # downstream atoms stay put -- shared-atom backbones often
-        # connect into other donor paths and rotating them breaks
-        # M-D bonds elsewhere.
+        # immediate terminal H substituents.  Welle-5l T3-B extends the
+        # set to the full fused aromatic system (benzimidazol-2-ylidene,
+        # purine-2-ylidene, ...) as long as no other donor or metal
+        # appears in the partner rings.  Bail on safety violation
+        # (clear frag -- no rotation applied).
         all_donors = _all_donor_indices(mol)
         all_metals = _all_metal_indices(mol)
-        # Skip fused NHC rings: a shared ring atom (other than the
-        # carbene C) means tilting the ring will distort the partner
-        # ring.  Benzimidazol-2-ylidene etc. fall in this branch.
         try:
             ri_local = mol.GetRingInfo()
-            shared = [
-                ri_local.NumAtomRings(j) for j in ring if j != c_idx
-            ]
-            if any(s > 1 for s in shared):
-                continue
+            atom_rings_all = ri_local.AtomRings()
         except Exception:
-            pass
+            atom_rings_all = ()
+
+        def _nhc_ring_is_safe(rng: Tuple[int, ...]) -> bool:
+            for j in rng:
+                if j == c_idx:
+                    continue
+                if j in all_metals:
+                    return False
+                if j in all_donors:
+                    return False
+            return True
+
         frag: Set[int] = set(ring) - {c_idx}
+        if atom_rings_all:
+            grew = True
+            _seen_rings: Set[Tuple[int, ...]] = {tuple(sorted(ring))}
+            while grew:
+                grew = False
+                for cand in atom_rings_all:
+                    key = tuple(sorted(cand))
+                    if key in _seen_rings:
+                        continue
+                    if not any(j in frag or j == c_idx for j in cand):
+                        continue
+                    has_metal = any(j in all_metals for j in cand)
+                    if has_metal:
+                        _seen_rings.add(key)
+                        continue
+                    if not _nhc_ring_is_safe(cand):
+                        frag.clear()
+                        break
+                    is_arom = all(
+                        mol.GetAtomWithIdx(j).GetIsAromatic() for j in cand
+                    )
+                    if not is_arom:
+                        _seen_rings.add(key)
+                        continue
+                    for j in cand:
+                        if j == c_idx:
+                            continue
+                        if j not in frag:
+                            frag.add(j)
+                            grew = True
+                    _seen_rings.add(key)
+                if not frag:
+                    break
+        if not frag:
+            continue
         for j in list(frag):
             for nb in mol.GetAtomWithIdx(j).GetNeighbors():
                 k = nb.GetIdx()
