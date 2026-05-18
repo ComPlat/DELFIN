@@ -20562,8 +20562,22 @@ def _enumerate_topological_isomers(
     # COH / TPR / SS (see ``results/polya_audit.csv``).  When
     # ``DELFIN_BURNSIDE_FULL=1`` is set, an extra Burnside orbit-min key is
     # appended to the dedup tuple: this strictly *adds* enumeration buckets
-    # without ever collapsing legitimate ones.  Default OFF → bit-exact HEAD.
-    _burnside_enabled = bool(_delfin_env_int("DELFIN_BURNSIDE_FULL", 0))
+    # without ever collapsing legitimate ones.
+    #
+    # Welle-5l T1.3 (formerly Welle-5j Agent C) — class-conditional wrap,
+    # per-class default-OFF.  Default OFF → bit-exact HEAD; awaits the
+    # ITER-adaptive_timeout_audit timeout-budget before flipping any
+    # class default-ON.  Operator overrides:
+    #   DELFIN_BURNSIDE_FULL=1               → enable globally
+    #   DELFIN_BURNSIDE_FULL_CLASSES=sigma,hapto  → per-class opt-in
+    # Welle-5i Agent G measured on 339 SMILES (gold7 + 332 class-balanced):
+    # global default-flip FAILS (+28 frames, 7 catastrophic), but per-class:
+    # sigma +203 named (77 imp / 9 reg), hapto +40 (4/0), multi-sigma −11
+    # catastrophic, multi-hapto 0.  Re-arm class defaults via the operator
+    # CLASSES override once timeout budget allows full enumeration.
+    _burnside_enabled = _class_conditional_flag(
+        "DELFIN_BURNSIDE_FULL", mol, default=0,
+    )
     _burnside_canonical_key = None
     if _burnside_enabled:
         try:
