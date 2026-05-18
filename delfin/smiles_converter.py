@@ -8,6 +8,7 @@ GOAT/xTB before running ORCA calculations.
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import ExitStack
 from dataclasses import dataclass
 import concurrent.futures
 import math
@@ -17,6 +18,7 @@ import threading
 from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
+from delfin._treatment_matrix import treatment_scope as _5m_treatment_scope
 from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -16160,476 +16162,490 @@ def smiles_to_xyz_isomers(
     if not RDKIT_AVAILABLE:
         return [], "RDKit is not installed"
 
-    has_metal = contains_metal(smiles)
-    hapto_mode = _hapto_approx_enabled(hapto_approx)
-    hapto_groups: List[Tuple[int, List[int]]] = []
-    if has_metal:
-        hapto_groups = _probe_hapto_groups_from_smiles(smiles)
-        if hapto_groups and not hapto_mode:
-            return [], _hapto_failfast_error(hapto_groups)
-        if hapto_groups and hapto_mode:
+    # Welle-5m-Z Treatment-Matrix Dispatcher.
+    # ExitStack covers every return path uniformly; the per-molecule
+    # ``treatment_scope`` is pushed *after* mol is parsed (below). When
+    # ``DELFIN_5M_TREATMENT_MATRIX`` is unset/0 the scope is a no-op and
+    # behaviour is bit-exact identical.
+    with ExitStack() as _5m_stack:
+        has_metal = contains_metal(smiles)
+        hapto_mode = _hapto_approx_enabled(hapto_approx)
+        hapto_groups: List[Tuple[int, List[int]]] = []
+        if has_metal:
+            hapto_groups = _probe_hapto_groups_from_smiles(smiles)
+            if hapto_groups and not hapto_mode:
+                return [], _hapto_failfast_error(hapto_groups)
+            if hapto_groups and hapto_mode:
+                xyz, err = smiles_to_xyz(
+                    smiles,
+                    apply_uff=apply_uff,
+                    hapto_approx=True,
+                )
+                if err:
+                    return [], err
+                return [(xyz, 'hapto-approx')], None
+
+        # Non-metal molecules: single geometry
+        if not has_metal:
             xyz, err = smiles_to_xyz(
-                smiles,
-                apply_uff=apply_uff,
-                hapto_approx=True,
+                smiles, apply_uff=apply_uff, hapto_approx=hapto_mode
             )
             if err:
                 return [], err
-            return [(xyz, 'hapto-approx')], None
+            return [(xyz, '')], None
 
-    # Non-metal molecules: single geometry
-    if not has_metal:
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
-        if err:
-            return [], err
-        return [(xyz, '')], None
-
-    # Prepare molecule for embedding
-    mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
-    if mol is None:
-        # Fall back to single-conformer conversion
-        xyz, err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
-        if err:
-            return [], err
-        return [(xyz, '')], None
-
-    # For metal complexes: prepend OB conformers to the pool so that
-    # Avogadro-quality geometries are always considered during isomer search.
-    conf_ids: List[int] = []
-    if has_metal and OPENBABEL_AVAILABLE and not deterministic:
-        try:
-            # Non-deterministic enrichment path: augment RDKit pool with OB
-            # conformers to increase diversity.
-            _n_ob_restarts = 3
-            _per_ob = max(10, int(num_confs) // _n_ob_restarts)
-            ob_xyz_blocks: List[str] = []
-            _ob_seen: set = set()
-            ob_error: Optional[str] = None
-            for _restart in range(_n_ob_restarts):
-                _blocks, _err = _openbabel_generate_conformer_xyz(
-                    smiles, num_confs=_per_ob, deterministic=False
-                )
-                if _blocks:
-                    for _b in _blocks:
-                        _key = "\n".join(
-                            l.strip() for l in _b.splitlines() if l.strip()
-                        )
-                        if _key not in _ob_seen:
-                            _ob_seen.add(_key)
-                            ob_xyz_blocks.append(_b)
-                elif _err and not ob_xyz_blocks:
-                    ob_error = _err
-            if ob_xyz_blocks:
-                ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
-                conf_ids.extend(ob_ids)
-                logger.debug(
-                    "OB conformers injected for isomer search: %d",
-                    len(ob_ids),
-                )
-            elif ob_error:
-                logger.debug("OB conformer generation: %s", ob_error)
-        except Exception as ob_exc:
-            logger.debug("OB conformer generation exception: %s", ob_exc)
-            mol.RemoveAllConformers()
-            conf_ids = []
-
-    # Embed multiple conformers with deterministic seed schedule.
-    # This improves reproducibility while still sampling diverse geometries.
-    try:
-        # Fixed seeds keep results reproducible across runs.
-        # Multiple diverse seeds improve sampling of coordination isomers.
-        seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
-        n_rounds = len(seeds)
-        per_round = max(1, int(math.ceil(num_confs / n_rounds)))
-        for seed in seeds:
-            conf_ids.extend(_embed_multiple_confs_robust(mol, per_round, seed))
-    except Exception as e:
-        logger.warning("Multi-conformer embedding failed: %s", e)
-        # Do not abort here: keep already injected OB conformers if available.
-        # If none exist, continue with an empty pool so topo/linkage
-        # enumeration can still add valid isomers.
-        if not conf_ids:
-            try:
-                mol.RemoveAllConformers()
-            except Exception:
-                pass
-            conf_ids = []
-
-    if not conf_ids:
-        logger.debug(
-            "No conformers generated by OB/ETKDG; continuing with fallback + topo/linkage enumeration."
-        )
-
-    # Classify each conformer, skip obvious artifacts, then deduplicate by
-    # full coordination fingerprint. This keeps distinct coordination
-    # arrangements even when they share a coarse textual label.
-    # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
-    dtype_map = _donor_type_map(mol)
-
-    def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
-        pairs: List[Tuple[tuple, str, int, float]] = []
-        for cid in conf_ids:
-            try:
-                # Hard-reject only truly collapsed structures. For difficult
-                # high-CN metal complexes, optionally downgrade selected
-                # chemistry checks to penalties instead of hard rejection.
-                if _has_atom_clash(mol, cid, min_dist=0.3):
-                    continue
-                if _has_pi_ring_nonplanarity(mol, cid):
-                    continue
-                penalty = 0.0
-                if _has_unphysical_metal_nonbonded_contact(mol, cid):
-                    if not relax_hard_chem_filters:
-                        continue
-                    penalty += 350.0
-                if _has_unphysical_oco_geometry(mol, cid):
-                    if not relax_hard_chem_filters:
-                        continue
-                    penalty += 250.0
-                if _has_atom_clash(mol, cid):
-                    penalty += 500.0
-                if _has_bad_geometry(mol, cid):
-                    penalty += 300.0
-                if _has_ligand_intertwining(mol, cid):
-                    penalty += 200.0
-                fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
-                score = _geometry_quality_score(mol, cid) + penalty
-            except Exception:
-                continue
-            label = _classify_isomer_label(fp, mol)
-            pairs.append((fp, label, cid, score))
-        return pairs
-
-    fp_label_pairs: List[Tuple[tuple, str, int, float]] = _collect_fp_label_pairs(
-        relax_hard_chem_filters=False
-    )
-    if not fp_label_pairs and conf_ids and has_metal:
-        logger.debug(
-            "Strict conformer filters rejected all sampled structures; "
-            "retrying with relaxed OCO/nonbonded penalties."
-        )
-        fp_label_pairs = _collect_fp_label_pairs(relax_hard_chem_filters=True)
-
-    # Second pass: deduplicate, keeping the best-scoring conformer per group.
-    # fp -> (label, conf_id, score)
-    seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
-    for fp, label, cid, score in fp_label_pairs:
-        if fp not in seen_fps or score < seen_fps[fp][2]:
-            seen_fps[fp] = (label, cid, score)
-        if len(seen_fps) >= max_isomers:
-            break
-
-    # RMSD-based dedup: remove geometrically identical conformers that
-    # slipped through fingerprint-based dedup (e.g. borderline angle
-    # classifications producing different fingerprints for the same isomer).
-    if len(seen_fps) > 1:
-        def _base_label(lbl: str) -> str:
-            if not lbl:
-                return ''
-            return re.sub(r'-\d+$', '', str(lbl))
-
-        fps_list = list(seen_fps.keys())
-        removed: set = set()
-        for i in range(len(fps_list)):
-            if i in removed:
-                continue
-            _li, cid_i, si = seen_fps[fps_list[i]]
-            base_i = _base_label(_li)
-            for j in range(i + 1, len(fps_list)):
-                if j in removed:
-                    continue
-                _lj, cid_j, sj = seen_fps[fps_list[j]]
-                base_j = _base_label(_lj)
-                # Only collapse near-duplicates within the same label class.
-                # Different labels (e.g. fac vs mer) are kept even at low RMSD.
-                if base_i != base_j:
-                    continue
-                rmsd = _conformer_rmsd(mol, cid_i, cid_j)
-                if rmsd < 2.5:
-                    # Keep the conformer with the better geometry score
-                    if si <= sj:
-                        removed.add(j)
-                    else:
-                        removed.add(i)
-                        break
-        if removed:
-            logger.debug("RMSD dedup removed %d duplicate(s)", len(removed))
-            seen_fps = {fps_list[i]: seen_fps[fps_list[i]]
-                        for i in range(len(fps_list)) if i not in removed}
-
-    # Build results
-    results: List[Tuple[str, str]] = []
-    unknown_counter = 0
-    if not seen_fps:
-        # Sampling failed — get a single fallback geometry and still allow
-        # the topological enumerator / linkage detector to augment it below.
-        _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
-        if _fb_err:
-            return [], _fb_err
-        results = [(_fb_xyz, '')]
-    else:
-        # Number duplicate labels (e.g. multiple "mer" with different fingerprints)
-        label_counts: Dict[str, int] = {}
-        for fp in seen_fps:
-            lbl = seen_fps[fp][0] or ''
-            label_counts[lbl] = label_counts.get(lbl, 0) + 1
-        label_seen: Dict[str, int] = {}
-        relaxed_fragment_results: List[Tuple[str, str]] = []
-        for fp, (label, cid, _score) in seen_fps.items():
-            if not label:
-                unknown_counter += 1
-                display = f'Isomer {unknown_counter}'
-            elif label_counts[label] > 1:
-                label_seen[label] = label_seen.get(label, 0) + 1
-                display = f'{label}-{label_seen[label]}'
-            else:
-                display = label
-            try:
-                xyz = _mol_to_xyz_conformer(mol, cid)
-                if apply_uff:
-                    try:
-                        xyz = _optimize_xyz_openbabel_safe(
-                            xyz,
-                            mol_template=mol,
-                            smiles=smiles,
-                            apply_template_constraints=True,
-                        )
-                    except Exception as uff_exc:
-                        # Preserve the isomer if UFF cannot optimize this geometry.
-                        logger.debug(
-                            "UFF optimization failed for conformer %s (%s), keeping unoptimized XYZ.",
-                            cid, uff_exc,
-                        )
-            except Exception:
-                continue
-            # Topology check: organic ring count from OB XYZ must match original
-            # SMILES (charge-insensitive: [N+]/[Fe-2] == [N]/[Fe] topologically).
-            if not _roundtrip_ring_count_ok(xyz, smiles):
-                logger.debug("Skipping conformer %d: topology mismatch", cid)
-                continue
-            # Bond check: reject conformers where OB perceives spurious bonds
-            # between non-metal atoms (e.g. O-O, N-N) absent in original SMILES.
-            if not _no_spurious_bonds(xyz, smiles):
-                logger.debug("Skipping conformer %d: spurious bonds", cid)
-                continue
-            # Fragment topology check: organic ligand fragments must match the
-            # original SMILES (catches broken/fused ligands while preserving
-            # fac/mer isomers which have identical fragment sets).
-            # For multi-metal complexes, skip strict fragment check — the
-            # complex bridging topology causes frequent false-positive
-            # mismatches in OB bond perception.
-            _n_metals_in_mol = sum(
-                1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
+        # Prepare molecule for embedding
+        mol = _prepare_mol_for_embedding(smiles, hapto_approx=hapto_mode)
+        if mol is None:
+            # Fall back to single-conformer conversion
+            xyz, err = smiles_to_xyz(
+                smiles, apply_uff=apply_uff, hapto_approx=hapto_mode
             )
-            if not _fragment_topology_ok(xyz, smiles):
-                if _n_metals_in_mol >= 2:
-                    # Accept multi-metal conformers with relaxed topology
+            if err:
+                return [], err
+            return [(xyz, '')], None
+
+        # Activate per-system treatment overrides for the remainder of the
+        # conversion. No-op when the master gate is OFF.
+        _5m_stack.enter_context(_5m_treatment_scope(mol))
+
+        # For metal complexes: prepend OB conformers to the pool so that
+        # Avogadro-quality geometries are always considered during isomer search.
+        conf_ids: List[int] = []
+        if has_metal and OPENBABEL_AVAILABLE and not deterministic:
+            try:
+                # Non-deterministic enrichment path: augment RDKit pool with OB
+                # conformers to increase diversity.
+                _n_ob_restarts = 3
+                _per_ob = max(10, int(num_confs) // _n_ob_restarts)
+                ob_xyz_blocks: List[str] = []
+                _ob_seen: set = set()
+                ob_error: Optional[str] = None
+                for _restart in range(_n_ob_restarts):
+                    _blocks, _err = _openbabel_generate_conformer_xyz(
+                        smiles, num_confs=_per_ob, deterministic=False
+                    )
+                    if _blocks:
+                        for _b in _blocks:
+                            _key = "\n".join(
+                                l.strip() for l in _b.splitlines() if l.strip()
+                            )
+                            if _key not in _ob_seen:
+                                _ob_seen.add(_key)
+                                ob_xyz_blocks.append(_b)
+                    elif _err and not ob_xyz_blocks:
+                        ob_error = _err
+                if ob_xyz_blocks:
+                    ob_ids = _inject_openbabel_conformers_into_mol(mol, ob_xyz_blocks)
+                    conf_ids.extend(ob_ids)
                     logger.debug(
-                        "Accepting conformer %d despite fragment mismatch "
-                        "(multi-metal complex)", cid)
-                else:
-                    logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
-                    if (
-                        _fragment_topology_relaxed_fallback_ok(xyz, smiles)
-                        and _xyz_passes_final_geometry_checks(xyz, mol)
-                    ):
-                        relaxed_fragment_results.append((xyz, display))
-                    continue
-            results.append((xyz, display))
+                        "OB conformers injected for isomer search: %d",
+                        len(ob_ids),
+                    )
+                elif ob_error:
+                    logger.debug("OB conformer generation: %s", ob_error)
+            except Exception as ob_exc:
+                logger.debug("OB conformer generation exception: %s", ob_exc)
+                mol.RemoveAllConformers()
+                conf_ids = []
 
-        if not results:
-            if relaxed_fragment_results:
-                logger.debug(
-                    "Using %d conformer(s) despite fragment-topology mismatch "
-                    "after stricter checks.",
-                    len(relaxed_fragment_results),
-                )
-                results = relaxed_fragment_results
-            else:
-                _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
-                if _fb_err:
-                    return [], _fb_err
-                results = [(_fb_xyz, '')]
-
-    # --- Topological enumerator: guarantee completeness ---
-    # Runs after sampling-based dedup; adds any isomers not found by sampling.
-    # Dedup is now fingerprint-based (not label-based) so that distinct
-    # topo-isomers with the same label (e.g. two different "mer" arrangements)
-    # are not incorrectly suppressed.
-    if has_metal:
+        # Embed multiple conformers with deterministic seed schedule.
+        # This improves reproducibility while still sampling diverse geometries.
         try:
-            # Collect fingerprints from sampling results
-            existing_fps: set = set()
-            topo_mol = _build_topology_template_mol(smiles) or mol
-            dtype_map_topo = _donor_type_map(topo_mol)
-            for existing_xyz, _existing_display in results:
+            # Fixed seeds keep results reproducible across runs.
+            # Multiple diverse seeds improve sampling of coordination isomers.
+            seeds = [31, 42, 7, 97, 13, 61, 83, 127, 211, 307, 401, 503]
+            n_rounds = len(seeds)
+            per_round = max(1, int(math.ceil(num_confs / n_rounds)))
+            for seed in seeds:
+                conf_ids.extend(_embed_multiple_confs_robust(mol, per_round, seed))
+        except Exception as e:
+            logger.warning("Multi-conformer embedding failed: %s", e)
+            # Do not abort here: keep already injected OB conformers if available.
+            # If none exist, continue with an empty pool so topo/linkage
+            # enumeration can still add valid isomers.
+            if not conf_ids:
                 try:
-                    mol_tmp = Chem.RWMol(topo_mol)
-                    mol_tmp.RemoveAllConformers()
-                    conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), existing_xyz)
-                    if conf is not None:
-                        cid = mol_tmp.AddConformer(conf, assignId=True)
-                        fp = _compute_coordination_fingerprint(
-                            mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
-                        )
-                        existing_fps.add(fp)
+                    mol.RemoveAllConformers()
                 except Exception:
                     pass
+                conf_ids = []
 
-            existing_displays = {display for _, display in results}
-            existing_xyz_keys = {
-                "\n".join(l.strip() for l in xyz.splitlines() if l.strip())
-                for xyz, _d in results
-            }
-
-            topo_results = _generate_topological_isomers(
-                topo_mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
+        if not conf_ids:
+            logger.debug(
+                "No conformers generated by OB/ETKDG; continuing with fallback + topo/linkage enumeration."
             )
 
-            for topo_xyz, topo_label in topo_results:
-                # Compute fingerprint of topo structure for dedup
-                topo_fp = None
+        # Classify each conformer, skip obvious artifacts, then deduplicate by
+        # full coordination fingerprint. This keeps distinct coordination
+        # arrangements even when they share a coarse textual label.
+        # Pre-compute donor types once (Morgan-based) to avoid repeated calls.
+        dtype_map = _donor_type_map(mol)
+
+        def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
+            pairs: List[Tuple[tuple, str, int, float]] = []
+            for cid in conf_ids:
                 try:
-                    mol_tmp = Chem.RWMol(topo_mol)
-                    mol_tmp.RemoveAllConformers()
-                    conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), topo_xyz)
-                    if conf is not None:
-                        cid = mol_tmp.AddConformer(conf, assignId=True)
-                        topo_fp = _compute_coordination_fingerprint(
-                            mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
-                        )
+                    # Hard-reject only truly collapsed structures. For difficult
+                    # high-CN metal complexes, optionally downgrade selected
+                    # chemistry checks to penalties instead of hard rejection.
+                    if _has_atom_clash(mol, cid, min_dist=0.3):
+                        continue
+                    if _has_pi_ring_nonplanarity(mol, cid):
+                        continue
+                    penalty = 0.0
+                    if _has_unphysical_metal_nonbonded_contact(mol, cid):
+                        if not relax_hard_chem_filters:
+                            continue
+                        penalty += 350.0
+                    if _has_unphysical_oco_geometry(mol, cid):
+                        if not relax_hard_chem_filters:
+                            continue
+                        penalty += 250.0
+                    if _has_atom_clash(mol, cid):
+                        penalty += 500.0
+                    if _has_bad_geometry(mol, cid):
+                        penalty += 300.0
+                    if _has_ligand_intertwining(mol, cid):
+                        penalty += 200.0
+                    fp = _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
+                    score = _geometry_quality_score(mol, cid) + penalty
                 except Exception:
-                    pass
+                    continue
+                label = _classify_isomer_label(fp, mol)
+                pairs.append((fp, label, cid, score))
+            return pairs
 
-                # Skip if this fingerprint was already seen
-                if topo_fp is not None and topo_fp in existing_fps:
-                    _base_existing = {
-                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
-                    }
-                    _norm_try = re.sub(r'-\d+$', '', topo_label) if topo_label else ''
-                    # Keep geometry-diverse labels even if coarse fingerprint
-                    # collides (e.g. homogeneous donor sets where SQ/TH can
-                    # hash similarly). Only skip when label space is already
-                    # covered as well.
-                    if collapse_label_variants and (not _norm_try or _norm_try in _base_existing):
-                        continue
+        fp_label_pairs: List[Tuple[tuple, str, int, float]] = _collect_fp_label_pairs(
+            relax_hard_chem_filters=False
+        )
+        if not fp_label_pairs and conf_ids and has_metal:
+            logger.debug(
+                "Strict conformer filters rejected all sampled structures; "
+                "retrying with relaxed OCO/nonbonded penalties."
+            )
+            fp_label_pairs = _collect_fp_label_pairs(relax_hard_chem_filters=True)
 
-                norm = topo_label or ''
-                # Skip if sampling already produced an isomer with the same
-                # base label (e.g. topo "trans" when sampling found "trans").
-                # Fingerprint comparison alone fails here because OB-distorted
-                # sampling geometries have slightly different angles than the
-                # ideal topo geometry.
-                if collapse_label_variants and norm:
-                    _existing_base_labels = {
-                        re.sub(r'-\d+$', '', d) for d in existing_displays if d
-                    }
-                    if norm in _existing_base_labels:
-                        logger.debug(
-                            "Skipping topo isomer %s: label already covered by sampling",
-                            norm,
-                        )
-                        if topo_fp is not None:
-                            existing_fps.add(topo_fp)
+        # Second pass: deduplicate, keeping the best-scoring conformer per group.
+        # fp -> (label, conf_id, score)
+        seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
+        for fp, label, cid, score in fp_label_pairs:
+            if fp not in seen_fps or score < seen_fps[fp][2]:
+                seen_fps[fp] = (label, cid, score)
+            if len(seen_fps) >= max_isomers:
+                break
+
+        # RMSD-based dedup: remove geometrically identical conformers that
+        # slipped through fingerprint-based dedup (e.g. borderline angle
+        # classifications producing different fingerprints for the same isomer).
+        if len(seen_fps) > 1:
+            def _base_label(lbl: str) -> str:
+                if not lbl:
+                    return ''
+                return re.sub(r'-\d+$', '', str(lbl))
+
+            fps_list = list(seen_fps.keys())
+            removed: set = set()
+            for i in range(len(fps_list)):
+                if i in removed:
+                    continue
+                _li, cid_i, si = seen_fps[fps_list[i]]
+                base_i = _base_label(_li)
+                for j in range(i + 1, len(fps_list)):
+                    if j in removed:
                         continue
-                if not norm:
+                    _lj, cid_j, sj = seen_fps[fps_list[j]]
+                    base_j = _base_label(_lj)
+                    # Only collapse near-duplicates within the same label class.
+                    # Different labels (e.g. fac vs mer) are kept even at low RMSD.
+                    if base_i != base_j:
+                        continue
+                    rmsd = _conformer_rmsd(mol, cid_i, cid_j)
+                    if rmsd < 2.5:
+                        # Keep the conformer with the better geometry score
+                        if si <= sj:
+                            removed.add(j)
+                        else:
+                            removed.add(i)
+                            break
+            if removed:
+                logger.debug("RMSD dedup removed %d duplicate(s)", len(removed))
+                seen_fps = {fps_list[i]: seen_fps[fps_list[i]]
+                            for i in range(len(fps_list)) if i not in removed}
+
+        # Build results
+        results: List[Tuple[str, str]] = []
+        unknown_counter = 0
+        if not seen_fps:
+            # Sampling failed — get a single fallback geometry and still allow
+            # the topological enumerator / linkage detector to augment it below.
+            _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+            if _fb_err:
+                return [], _fb_err
+            results = [(_fb_xyz, '')]
+        else:
+            # Number duplicate labels (e.g. multiple "mer" with different fingerprints)
+            label_counts: Dict[str, int] = {}
+            for fp in seen_fps:
+                lbl = seen_fps[fp][0] or ''
+                label_counts[lbl] = label_counts.get(lbl, 0) + 1
+            label_seen: Dict[str, int] = {}
+            relaxed_fragment_results: List[Tuple[str, str]] = []
+            for fp, (label, cid, _score) in seen_fps.items():
+                if not label:
                     unknown_counter += 1
                     display = f'Isomer {unknown_counter}'
+                elif label_counts[label] > 1:
+                    label_seen[label] = label_seen.get(label, 0) + 1
+                    display = f'{label}-{label_seen[label]}'
                 else:
-                    # Number duplicate labels
-                    if norm in existing_displays:
-                        suffix = 2
-                        while f'{norm}-{suffix}' in existing_displays:
-                            suffix += 1
-                        display = f'{norm}-{suffix}'
-                    else:
-                        display = norm
-                # Keep only topology-consistent, chemically plausible
-                # candidates; broken XYZ roundtrips are excluded here.
-                if not _roundtrip_ring_count_ok(topo_xyz, smiles):
-                    logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
+                    display = label
+                try:
+                    xyz = _mol_to_xyz_conformer(mol, cid)
+                    if apply_uff:
+                        try:
+                            xyz = _optimize_xyz_openbabel_safe(
+                                xyz,
+                                mol_template=mol,
+                                smiles=smiles,
+                                apply_template_constraints=True,
+                            )
+                        except Exception as uff_exc:
+                            # Preserve the isomer if UFF cannot optimize this geometry.
+                            logger.debug(
+                                "UFF optimization failed for conformer %s (%s), keeping unoptimized XYZ.",
+                                cid, uff_exc,
+                            )
+                except Exception:
                     continue
-                if not _no_spurious_bonds(topo_xyz, smiles):
-                    logger.debug("Skipping topo isomer %s: spurious bonds", display)
+                # Topology check: organic ring count from OB XYZ must match original
+                # SMILES (charge-insensitive: [N+]/[Fe-2] == [N]/[Fe] topologically).
+                if not _roundtrip_ring_count_ok(xyz, smiles):
+                    logger.debug("Skipping conformer %d: topology mismatch", cid)
                     continue
-                if not _fragment_topology_ok(topo_xyz, smiles):
-                    if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
-                        logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
-                        continue
-                    if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
-                        logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
-                        continue
-                    logger.debug(
-                        "Keeping topo isomer %s via relaxed fragment fallback",
-                        display,
-                    )
-                topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
-                if topo_key in existing_xyz_keys:
-                    logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
+                # Bond check: reject conformers where OB perceives spurious bonds
+                # between non-metal atoms (e.g. O-O, N-N) absent in original SMILES.
+                if not _no_spurious_bonds(xyz, smiles):
+                    logger.debug("Skipping conformer %d: spurious bonds", cid)
                     continue
-                existing_displays.add(display)
-                existing_xyz_keys.add(topo_key)
-                if topo_fp is not None:
-                    existing_fps.add(topo_fp)
-                results.append((topo_xyz, display))
-        except Exception as _topo_exc:
-            logger.debug("Topological isomer generation failed: %s", _topo_exc)
-
-    # --- Linkage isomers ---
-    if has_metal and include_binding_mode_isomers:
-        try:
-            link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
-            for _lxyz, _llabel in link_results:
-                if _fragment_topology_ok(_lxyz, smiles):
-                    results.append((_lxyz, _llabel))
-                else:
-                    logger.debug("Skipping linkage isomer %s: fragment topology mismatch", _llabel)
-        except Exception as _link_exc:
-            logger.debug("Linkage isomer generation failed: %s", _link_exc)
-
-    # --- Alternative binding-site exploration ---
-    if has_metal and include_binding_mode_isomers:
-        try:
-            existing_displays = {display for _, display in results}
-            existing_base = {re.sub(r'-\d+$', '', d) for d in existing_displays}
-            alt_results = _generate_alternative_binding_modes(
-                mol, smiles, apply_uff=apply_uff
-            )
-            for alt_xyz, alt_label in alt_results:
-                if alt_label not in existing_base:
-                    if not _fragment_topology_ok(alt_xyz, smiles):
-                        logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
-                        continue
-                    results.append((alt_xyz, alt_label))
-                    existing_base.add(alt_label)
-        except Exception as _alt_exc:
-            logger.debug("Alternative binding mode generation failed: %s", _alt_exc)
-
-    # --- Final label dedup (safety net) ---
-    # Collapse entries that share the same base label (e.g. "trans-1" and
-    # "trans-2" that slipped through fingerprint/RMSD dedup).  Keep the first
-    # occurrence (best score from sampling or first topo result) and rename it
-    # to the bare base label so the user sees "trans" not "trans-1".
-    # "Isomer N" labels use spaces not dashes, so they are never collapsed.
-    if collapse_label_variants and results:
-        _seen_base: Dict[str, int] = {}
-        _keep: List[bool] = [True] * len(results)
-        for _idx, (_, _lbl) in enumerate(results):
-            _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
-            if _base in _seen_base:
-                _keep[_idx] = False
-                logger.debug(
-                    "Final dedup: dropping duplicate label %r (base=%r kept at idx %d)",
-                    _lbl, _base, _seen_base[_base],
+                # Fragment topology check: organic ligand fragments must match the
+                # original SMILES (catches broken/fused ligands while preserving
+                # fac/mer isomers which have identical fragment sets).
+                # For multi-metal complexes, skip strict fragment check — the
+                # complex bridging topology causes frequent false-positive
+                # mismatches in OB bond perception.
+                _n_metals_in_mol = sum(
+                    1 for a in mol.GetAtoms() if a.GetSymbol() in _METAL_SET
                 )
-            else:
-                _seen_base[_base] = _idx
-        results = [
-            (xyz, re.sub(r'-\d+$', '', lbl))
-            for (xyz, lbl), keep in zip(results, _keep) if keep
-        ]
+                if not _fragment_topology_ok(xyz, smiles):
+                    if _n_metals_in_mol >= 2:
+                        # Accept multi-metal conformers with relaxed topology
+                        logger.debug(
+                            "Accepting conformer %d despite fragment mismatch "
+                            "(multi-metal complex)", cid)
+                    else:
+                        logger.debug("Skipping conformer %d: fragment topology mismatch", cid)
+                        if (
+                            _fragment_topology_relaxed_fallback_ok(xyz, smiles)
+                            and _xyz_passes_final_geometry_checks(xyz, mol)
+                        ):
+                            relaxed_fragment_results.append((xyz, display))
+                        continue
+                results.append((xyz, display))
 
-    return results, None
+            if not results:
+                if relaxed_fragment_results:
+                    logger.debug(
+                        "Using %d conformer(s) despite fragment-topology mismatch "
+                        "after stricter checks.",
+                        len(relaxed_fragment_results),
+                    )
+                    results = relaxed_fragment_results
+                else:
+                    _fb_xyz, _fb_err = smiles_to_xyz(smiles, apply_uff=apply_uff, hapto_approx=hapto_mode)
+                    if _fb_err:
+                        return [], _fb_err
+                    results = [(_fb_xyz, '')]
+
+        # --- Topological enumerator: guarantee completeness ---
+        # Runs after sampling-based dedup; adds any isomers not found by sampling.
+        # Dedup is now fingerprint-based (not label-based) so that distinct
+        # topo-isomers with the same label (e.g. two different "mer" arrangements)
+        # are not incorrectly suppressed.
+        if has_metal:
+            try:
+                # Collect fingerprints from sampling results
+                existing_fps: set = set()
+                topo_mol = _build_topology_template_mol(smiles) or mol
+                dtype_map_topo = _donor_type_map(topo_mol)
+                for existing_xyz, _existing_display in results:
+                    try:
+                        mol_tmp = Chem.RWMol(topo_mol)
+                        mol_tmp.RemoveAllConformers()
+                        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), existing_xyz)
+                        if conf is not None:
+                            cid = mol_tmp.AddConformer(conf, assignId=True)
+                            fp = _compute_coordination_fingerprint(
+                                mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
+                            )
+                            existing_fps.add(fp)
+                    except Exception:
+                        pass
+
+                existing_displays = {display for _, display in results}
+                existing_xyz_keys = {
+                    "\n".join(l.strip() for l in xyz.splitlines() if l.strip())
+                    for xyz, _d in results
+                }
+
+                topo_results = _generate_topological_isomers(
+                    topo_mol, smiles, apply_uff=apply_uff, max_isomers=max_isomers
+                )
+
+                for topo_xyz, topo_label in topo_results:
+                    # Compute fingerprint of topo structure for dedup
+                    topo_fp = None
+                    try:
+                        mol_tmp = Chem.RWMol(topo_mol)
+                        mol_tmp.RemoveAllConformers()
+                        conf = _xyz_to_rdkit_conformer(mol_tmp.GetMol(), topo_xyz)
+                        if conf is not None:
+                            cid = mol_tmp.AddConformer(conf, assignId=True)
+                            topo_fp = _compute_coordination_fingerprint(
+                                mol_tmp.GetMol(), cid, dtype_map=dtype_map_topo
+                            )
+                    except Exception:
+                        pass
+
+                    # Skip if this fingerprint was already seen
+                    if topo_fp is not None and topo_fp in existing_fps:
+                        _base_existing = {
+                            re.sub(r'-\d+$', '', d) for d in existing_displays if d
+                        }
+                        _norm_try = re.sub(r'-\d+$', '', topo_label) if topo_label else ''
+                        # Keep geometry-diverse labels even if coarse fingerprint
+                        # collides (e.g. homogeneous donor sets where SQ/TH can
+                        # hash similarly). Only skip when label space is already
+                        # covered as well.
+                        if collapse_label_variants and (not _norm_try or _norm_try in _base_existing):
+                            continue
+
+                    norm = topo_label or ''
+                    # Skip if sampling already produced an isomer with the same
+                    # base label (e.g. topo "trans" when sampling found "trans").
+                    # Fingerprint comparison alone fails here because OB-distorted
+                    # sampling geometries have slightly different angles than the
+                    # ideal topo geometry.
+                    if collapse_label_variants and norm:
+                        _existing_base_labels = {
+                            re.sub(r'-\d+$', '', d) for d in existing_displays if d
+                        }
+                        if norm in _existing_base_labels:
+                            logger.debug(
+                                "Skipping topo isomer %s: label already covered by sampling",
+                                norm,
+                            )
+                            if topo_fp is not None:
+                                existing_fps.add(topo_fp)
+                            continue
+                    if not norm:
+                        unknown_counter += 1
+                        display = f'Isomer {unknown_counter}'
+                    else:
+                        # Number duplicate labels
+                        if norm in existing_displays:
+                            suffix = 2
+                            while f'{norm}-{suffix}' in existing_displays:
+                                suffix += 1
+                            display = f'{norm}-{suffix}'
+                        else:
+                            display = norm
+                    # Keep only topology-consistent, chemically plausible
+                    # candidates; broken XYZ roundtrips are excluded here.
+                    if not _roundtrip_ring_count_ok(topo_xyz, smiles):
+                        logger.debug("Skipping topo isomer %s: ring-count mismatch", display)
+                        continue
+                    if not _no_spurious_bonds(topo_xyz, smiles):
+                        logger.debug("Skipping topo isomer %s: spurious bonds", display)
+                        continue
+                    if not _fragment_topology_ok(topo_xyz, smiles):
+                        if not _fragment_topology_relaxed_fallback_ok(topo_xyz, smiles):
+                            logger.debug("Skipping topo isomer %s: fragment topology mismatch", display)
+                            continue
+                        if not _xyz_passes_final_geometry_checks(topo_xyz, topo_mol):
+                            logger.debug("Skipping topo isomer %s: failed final geometry checks", display)
+                            continue
+                        logger.debug(
+                            "Keeping topo isomer %s via relaxed fragment fallback",
+                            display,
+                        )
+                    topo_key = "\n".join(l.strip() for l in topo_xyz.splitlines() if l.strip())
+                    if topo_key in existing_xyz_keys:
+                        logger.debug("Skipping topo isomer %s: duplicate XYZ", display)
+                        continue
+                    existing_displays.add(display)
+                    existing_xyz_keys.add(topo_key)
+                    if topo_fp is not None:
+                        existing_fps.add(topo_fp)
+                    results.append((topo_xyz, display))
+            except Exception as _topo_exc:
+                logger.debug("Topological isomer generation failed: %s", _topo_exc)
+
+        # --- Linkage isomers ---
+        if has_metal and include_binding_mode_isomers:
+            try:
+                link_results = _generate_linkage_isomers(mol, smiles, apply_uff=apply_uff)
+                for _lxyz, _llabel in link_results:
+                    if _fragment_topology_ok(_lxyz, smiles):
+                        results.append((_lxyz, _llabel))
+                    else:
+                        logger.debug("Skipping linkage isomer %s: fragment topology mismatch", _llabel)
+            except Exception as _link_exc:
+                logger.debug("Linkage isomer generation failed: %s", _link_exc)
+
+        # --- Alternative binding-site exploration ---
+        if has_metal and include_binding_mode_isomers:
+            try:
+                existing_displays = {display for _, display in results}
+                existing_base = {re.sub(r'-\d+$', '', d) for d in existing_displays}
+                alt_results = _generate_alternative_binding_modes(
+                    mol, smiles, apply_uff=apply_uff
+                )
+                for alt_xyz, alt_label in alt_results:
+                    if alt_label not in existing_base:
+                        if not _fragment_topology_ok(alt_xyz, smiles):
+                            logger.debug("Skipping alt-binding isomer %s: fragment topology mismatch", alt_label)
+                            continue
+                        results.append((alt_xyz, alt_label))
+                        existing_base.add(alt_label)
+            except Exception as _alt_exc:
+                logger.debug("Alternative binding mode generation failed: %s", _alt_exc)
+
+        # --- Final label dedup (safety net) ---
+        # Collapse entries that share the same base label (e.g. "trans-1" and
+        # "trans-2" that slipped through fingerprint/RMSD dedup).  Keep the first
+        # occurrence (best score from sampling or first topo result) and rename it
+        # to the bare base label so the user sees "trans" not "trans-1".
+        # "Isomer N" labels use spaces not dashes, so they are never collapsed.
+        if collapse_label_variants and results:
+            _seen_base: Dict[str, int] = {}
+            _keep: List[bool] = [True] * len(results)
+            for _idx, (_, _lbl) in enumerate(results):
+                _base = re.sub(r'-\d+$', '', _lbl) if _lbl else ''
+                if _base in _seen_base:
+                    _keep[_idx] = False
+                    logger.debug(
+                        "Final dedup: dropping duplicate label %r (base=%r kept at idx %d)",
+                        _lbl, _base, _seen_base[_base],
+                    )
+                else:
+                    _seen_base[_base] = _idx
+            results = [
+                (xyz, re.sub(r'-\d+$', '', lbl))
+                for (xyz, lbl), keep in zip(results, _keep) if keep
+            ]
+
+        return results, None
 
 
 def smiles_to_xyz_quick_hapto_previews(
