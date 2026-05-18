@@ -14818,6 +14818,28 @@ def _build_hapto_scaffold(
                 continue
             metal_donors_frozen.add(ni)
 
+    # Welle-5l Track-4 (2026-05-18): conditional revert of the d0c345c
+    # σ-donor HARD-freeze.  When the molecule carries an sp3-C donor or
+    # a terminal CH₃ on a σ-donor (universal RDKit graph features), the
+    # champion e6761e4 mechanism applies a *partial* relaxation
+    # ``w = 0.3`` instead of fully freezing — recovering CH₃ umbrella
+    # realism + sp3-C tetrahedral geometry on 29-Ni / WUXQAK / ACPICF
+    # patterns while preserving the topology + M-D win on the rest of
+    # the pool.  Default-OFF: env-flag DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE
+    # must be set to ``1`` for any behavioural change.  See
+    # ``delfin/_e6761e4_soft_donor.py`` for the feature detectors and
+    # ``iters/welle5l_RETRO_3_hidden_wins_2026_05_18.md`` Section 2 for
+    # the master-rank analysis (29/136 metric wins for e6761e4).
+    try:
+        from delfin._e6761e4_soft_donor import (
+            apply_soft_relaxation as _t4_apply_soft,
+            donor_weight_for_atom as _t4_donor_weight,
+        )
+        _t4_soft_active = bool(_t4_apply_soft(mol))
+    except Exception:
+        _t4_soft_active = False
+        _t4_donor_weight = None  # type: ignore[assignment]
+
     # Spring-based relaxation: accumulate all bond forces, then apply
     for _relax_pass in range(120):
         forces = np.zeros_like(coords)
@@ -14840,13 +14862,24 @@ def _build_hapto_scaffold(
                 max_err = err
         if max_err < 0.05:
             break
-        # Apply forces — metals, hapto-ring atoms, and σ-donors are frozen
+        # Apply forces — metals and hapto-ring atoms are frozen.  σ-donors
+        # are frozen by default (post-d0c345c) UNLESS the Welle-5l T4
+        # feature gate is active for this molecule, in which case they
+        # receive a partial weight (default w = 0.3, env-tunable via
+        # DELFIN_5L_T4_SOFT_DONOR_WEIGHT).  Default-OFF behaviour =
+        # bit-exact identical to pre-T4.
         for ai in range(n_atoms):
             if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
                 continue
             if ai in all_hapto_atoms:
                 continue
             if ai in metal_donors_frozen:
+                if not _t4_soft_active or _t4_donor_weight is None:
+                    continue
+                _w_ai = _t4_donor_weight(mol, ai)
+                if _w_ai <= 0.0:
+                    continue
+                coords[ai] = coords[ai] + forces[ai] * _w_ai
                 continue
             coords[ai] = coords[ai] + forces[ai]
 
