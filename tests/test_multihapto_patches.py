@@ -451,6 +451,139 @@ class TestMMEnforceHelperUnit:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Welle-5j Agent G — MM_ENFORCE rigid-drag fix
+# ---------------------------------------------------------------------------
+#
+# Background (welle3 T7.2 forensik, 2026-05-16):
+#   The legacy ``_enforce_smiles_mm_distances`` translates only the two
+#   metal atoms when shifting an M-M pair toward the ideal distance.
+#   On D-COIRSN / D-DIVPIJ / D-TENMIL the Sn shift is large enough
+#   (~0.65 A) that the Sn-Cl bonds break: Sn-Cl collapses from 2.30 A
+#   to 0.59 A (one Cl gets dragged through the metal) and stretches to
+#   2.95 A on the others.
+#
+# Fix: ``rigid_drag=True`` translates the per-metal exclusive sigma
+# ligand frame (everything bonded to the metal that does NOT also bond
+# to another metal) with the metal so the local geometry is preserved.
+
+class TestMMEnforceRigidDrag:
+    """Welle-5j Agent G rigid-drag ligand-frame translation."""
+
+    def _setup_sn_cl3_ir(self):
+        """Sn(Cl)3-Ir minimal mol; Sn-Ir stretched to 4.50 A, Cl's below."""
+        mol = Chem.MolFromSmiles("[Cl][Sn]([Cl])([Cl])[Ir]", sanitize=False)
+        assert mol is not None
+        positions = [None] * mol.GetNumAtoms()
+        sn_idx = ir_idx = None
+        cl_indices = []
+        for i, atom in enumerate(mol.GetAtoms()):
+            sym = atom.GetSymbol()
+            if sym == 'Sn':
+                sn_idx = i
+            elif sym == 'Ir':
+                ir_idx = i
+            elif sym == 'Cl':
+                cl_indices.append(i)
+        # Sn at origin, Ir straight above at 4.50 A, Cls below Sn so a
+        # Sn shift toward Ir visibly stretches Sn-Cl in the legacy path.
+        positions[sn_idx] = (0.0, 0.0, 0.0)
+        positions[ir_idx] = (0.0, 0.0, 4.50)
+        cl_pos = [(0.0, 0.0, -2.30), (1.90, 0.0, -1.30),
+                  (-1.90, 0.0, -1.30)]
+        for ci, pos in zip(cl_indices[:3], cl_pos):
+            positions[ci] = pos
+        # Defensive: anything we forgot to place sits far away.
+        for i in range(len(positions)):
+            if positions[i] is None:
+                positions[i] = (50.0 + 0.1 * i, 50.0, 50.0)
+        _gp, _sp, _ = _make_conf_helpers(mol, positions)
+        return mol, sn_idx, ir_idx, cl_indices, _gp, _sp
+
+    def test_legacy_metal_only_breaks_sn_cl(self):
+        """Default rigid_drag=False reproduces the welle3 T7.2 Sn-Cl drift."""
+        mol, sn_idx, ir_idx, cl_indices, _gp, _sp = self._setup_sn_cl3_ir()
+        metals = [sn_idx, ir_idx]
+        sn_cl_pre = [
+            float(np.linalg.norm(_gp(c) - _gp(sn_idx)))
+            for c in cl_indices[:3]
+        ]
+        moved = _enforce_smiles_mm_distances(
+            mol, None, metals, _gp, _sp, np
+        )
+        assert moved == 1
+        sn_cl_post = [
+            float(np.linalg.norm(_gp(c) - _gp(sn_idx)))
+            for c in cl_indices[:3]
+        ]
+        max_drift = max(abs(a - b) for a, b in zip(sn_cl_pre, sn_cl_post))
+        assert max_drift > 0.10, (
+            f"legacy metal-only shift expected to drift Sn-Cl by >0.10 A, "
+            f"got {max_drift:.3f} A (pre={sn_cl_pre}, post={sn_cl_post})"
+        )
+
+    def test_rigid_drag_preserves_sn_cl(self):
+        """rigid_drag=True translates Cl ligands rigidly with Sn."""
+        mol, sn_idx, ir_idx, cl_indices, _gp, _sp = self._setup_sn_cl3_ir()
+        metals = [sn_idx, ir_idx]
+        sn_cl_pre = [
+            float(np.linalg.norm(_gp(c) - _gp(sn_idx)))
+            for c in cl_indices[:3]
+        ]
+        sn_ir_pre = float(np.linalg.norm(_gp(ir_idx) - _gp(sn_idx)))
+        moved = _enforce_smiles_mm_distances(
+            mol, None, metals, _gp, _sp, np, rigid_drag=True
+        )
+        assert moved == 1
+        sn_cl_post = [
+            float(np.linalg.norm(_gp(c) - _gp(sn_idx)))
+            for c in cl_indices[:3]
+        ]
+        sn_ir_post = float(np.linalg.norm(_gp(ir_idx) - _gp(sn_idx)))
+        # Sn-Ir must reach the covalent-radii fallback target (3.20 A).
+        target = _COVALENT_RADII["Sn"] + _COVALENT_RADII["Ir"] + 0.4
+        assert math.isclose(sn_ir_post, target, abs_tol=1e-3), (
+            f"Sn-Ir post-shift expected {target:.3f} A, got {sn_ir_post:.3f} A"
+        )
+        # Sn-Cl distances must be preserved within 1e-3 A (pure translation).
+        for orig, post in zip(sn_cl_pre, sn_cl_post):
+            assert math.isclose(orig, post, abs_tol=1e-3), (
+                f"rigid_drag should preserve Sn-Cl: {orig:.4f} -> {post:.4f}"
+            )
+
+    def test_rigid_drag_no_op_when_no_mm_edge(self):
+        """rigid_drag=True on a mono-metal mol is a no-op (no MM pair)."""
+        mol = Chem.MolFromSmiles("[Pt](Cl)(Cl)(N)N", sanitize=False)
+        _gp, _sp, _ = _make_conf_helpers(
+            mol, [(0.0, 0.0, 0.0)] * mol.GetNumAtoms()
+        )
+        metals = [a.GetIdx() for a in mol.GetAtoms()
+                  if a.GetSymbol() in _METAL_SET]
+        assert len(metals) == 1
+        moved = _enforce_smiles_mm_distances(
+            mol, None, metals, _gp, _sp, np, rigid_drag=True
+        )
+        assert moved == 0
+
+    def test_rigid_drag_bit_exact_with_legacy_when_no_movement(self):
+        """If pair is in tolerance, rigid_drag=True does not perturb anything."""
+        mol = Chem.MolFromSmiles("[Pt][Pt]", sanitize=False)
+        target = _METAL_METAL_BOND_LENGTHS[frozenset({"Pt"})]
+        # Place 0.10 A inside the tolerance band.
+        positions = [(0.0, 0.0, 0.0), (target - 0.10, 0.0, 0.0)]
+        _gp, _sp, _ = _make_conf_helpers(mol, positions)
+        metals = [0, 1]
+        moved = _enforce_smiles_mm_distances(
+            mol, None, metals, _gp, _sp, np, rigid_drag=True
+        )
+        assert moved == 0
+        # Coordinates unchanged (within float epsilon).
+        for i, (x, y, z) in enumerate(positions):
+            p = _gp(i)
+            assert abs(p[0] - x) < 1e-6 and abs(p[1] - y) < 1e-6 and \
+                abs(p[2] - z) < 1e-6
+
+
+# ---------------------------------------------------------------------------
 # 5. Safe fallbacks
 # ---------------------------------------------------------------------------
 

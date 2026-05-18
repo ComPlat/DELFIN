@@ -18905,11 +18905,111 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
     if _class_conditional_flag(
         "DELFIN_MULTIHAPTO_MM_ENFORCE", mol, default=0,
     ):
+        # Welle-5j Agent G (2026-05-17): ``DELFIN_5J_G_MM_RIGID_DRAG``
+        # opt-in fixes the documented Sn-Cl drag bug (welle3 T7.2
+        # forensik): when MM_ENFORCE shifts an Sn toward Ir to satisfy
+        # the M-M target, the legacy metal-only shift leaves Sn's Cl
+        # ligands at their original position, collapsing Sn-Cl to
+        # 0.59 A.  ``rigid_drag=True`` translates each metal's
+        # exclusive (non-bridging) sigma ligand frame with the metal
+        # so Sn-Cl / Sn-Me bonds stay at their ETKDG / UFF length.
+        # Default OFF (0) → bit-exact metal-only shift, matches the
+        # legacy behaviour for any operator who has already set
+        # ``DELFIN_MULTIHAPTO_MM_ENFORCE=1`` without the new flag.
+        _mm_rigid = bool(_delfin_env_int("DELFIN_5J_G_MM_RIGID_DRAG", 0))
         try:
-            _enforce_smiles_mm_distances(mol, conf, metal_indices, _gp, _sp, np)
+            _enforce_smiles_mm_distances(
+                mol, conf, metal_indices, _gp, _sp, np,
+                rigid_drag=_mm_rigid,
+            )
         except Exception as _mm_exc:
             logger.debug("MULTIHAPTO_MM_ENFORCE skipped: %s", _mm_exc)
     # ---- Wave-5 MULTIHAPTO_MM_ENFORCE (END) ------------------------------
+
+
+def _collect_metal_ligand_frame(mol, metal_idx: int,
+                                metal_set_local) -> set:
+    """Collect indices of atoms in a metal's exclusive sigma ligand frame.
+
+    BFS outward from ``metal_idx`` through non-metal atoms.  An atom is
+    in the frame iff its graph-shortest path back to ``metal_idx`` does
+    NOT pass through any other metal atom (i.e. it "belongs" only to
+    this metal).  Bridging atoms (shared between two metals) are
+    excluded so the caller can choose to leave them in place or apply
+    a 50/50 split independently.
+
+    Stops at hapto-group boundary as a safety: the hapto-group rigid
+    rotation is handled elsewhere (``_enforce_metal_topology`` rigid
+    push uses ``group_atoms``); pulling hapto carbons here would
+    deform the η-ring.  Hydrogens on frame atoms are included.
+
+    Parameters
+    ----------
+    mol : rdkit.Chem.Mol
+    metal_idx : int
+        Index of the metal whose ligand frame to collect.
+    metal_set_local : set
+        Snapshot of metal indices in the molecule (caller-provided so
+        we don't recompute per metal).
+
+    Returns
+    -------
+    set[int]
+        Frame atom indices (excludes ``metal_idx`` itself, excludes
+        any atom that has a different metal in its bonded neighbours).
+    """
+    frame: set = set()
+    visited: set = set([metal_idx])
+    # Direct sigma neighbours that are non-metal heavy atoms seed the BFS.
+    seed_neighbours: list = []
+    for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors():
+        ni = nbr.GetIdx()
+        if ni in metal_set_local:
+            continue
+        # Skip atoms that ALSO bond to a different metal (bridging /
+        # shared ligand); we don't want to drag them with this metal.
+        other_metal = False
+        for nn in nbr.GetNeighbors():
+            nni = nn.GetIdx()
+            if nni != metal_idx and nni in metal_set_local:
+                other_metal = True
+                break
+        if other_metal:
+            continue
+        seed_neighbours.append(ni)
+        frame.add(ni)
+        visited.add(ni)
+    # BFS through bonded non-metal atoms, never crossing another metal
+    # and never crossing back to ``metal_idx`` (loops are skipped by
+    # ``visited`` membership).  Hydrogens come along for free at each
+    # step (they have no further out-edges).
+    queue = list(seed_neighbours)
+    while queue:
+        cur = queue.pop()
+        for nn in mol.GetAtomWithIdx(cur).GetNeighbors():
+            nni = nn.GetIdx()
+            if nni in visited:
+                continue
+            if nni in metal_set_local:
+                # Hit a different metal — stop branching here.
+                continue
+            # Reject atoms that bond to any OTHER metal (shared ligand
+            # bridge); they stay in place / get handled by the other
+            # metal's frame instead.
+            other_metal = False
+            for nnn in nn.GetNeighbors():
+                nnnidx = nnn.GetIdx()
+                if nnnidx == cur:
+                    continue
+                if nnnidx in metal_set_local and nnnidx != metal_idx:
+                    other_metal = True
+                    break
+            if other_metal:
+                continue
+            visited.add(nni)
+            frame.add(nni)
+            queue.append(nni)
+    return frame
 
 
 def _enforce_smiles_mm_distances(
@@ -18920,6 +19020,7 @@ def _enforce_smiles_mm_distances(
     _sp,
     np,
     tolerance: float = 0.20,
+    rigid_drag: bool = False,
 ) -> int:
     """Pull SMILES-declared M-M sigma-bonded pairs toward ideal distance.
 
@@ -18947,6 +19048,14 @@ def _enforce_smiles_mm_distances(
         ``numpy`` handle (passed in so this helper does not re-import).
     tolerance : float, optional
         Distance deviation (A) below which no adjustment is made.
+    rigid_drag : bool, optional
+        When True (Welle-5j Agent G ``DELFIN_5J_G_MM_RIGID_DRAG`` opt-in),
+        each metal's exclusive sigma ligand frame translates with the
+        metal so Sn-Cl / Sn-Me bonds do NOT break.  Per
+        ``ITER-multihapto_wirein`` welle3 T7.2 the legacy metal-only
+        shift collapses Sn-Cl from 2.30 A to 0.59 A on D-COIRSN /
+        D-DIVPIJ / D-TENMIL.  Default False = legacy metal-only shift
+        (bit-exact when caller does not pass ``rigid_drag=True``).
 
     Returns
     -------
@@ -18955,6 +19064,10 @@ def _enforce_smiles_mm_distances(
     """
     moved = 0
     seen: set = set()
+    # Per-metal frame cache: only computed when rigid_drag is requested
+    # AND we actually move that metal.  Empty dict acts as a sentinel.
+    frame_cache: Dict[int, set] = {}
+    metal_set_local: set = set(metal_indices) if rigid_drag else set()
     for mi in metal_indices:
         sym_i = mol.GetAtomWithIdx(mi).GetSymbol()
         for nbr in mol.GetAtomWithIdx(mi).GetNeighbors():
@@ -18989,8 +19102,32 @@ def _enforce_smiles_mm_distances(
             shift = (target - cur) * 0.5
             # Symmetric 50/50: m_i moves -shift along unit, m_j moves
             # +shift along unit, so the new separation equals target.
-            _sp(mi, pos_i - unit * shift)
-            _sp(ni, pos_j + unit * shift)
+            delta_i = -unit * shift
+            delta_j = unit * shift
+            _sp(mi, pos_i + delta_i)
+            _sp(ni, pos_j + delta_j)
+            if rigid_drag:
+                # Translate each metal's exclusive ligand frame by the
+                # same delta so Sn-Cl / Sn-Me / Cp-Sn-Cl tetrahedra
+                # follow rigidly.  Bridging atoms (those bonded to a
+                # different metal) are deliberately excluded — they
+                # would be double-counted between the two frames.
+                if mi not in frame_cache:
+                    frame_cache[mi] = _collect_metal_ligand_frame(
+                        mol, mi, metal_set_local
+                    )
+                if ni not in frame_cache:
+                    frame_cache[ni] = _collect_metal_ligand_frame(
+                        mol, ni, metal_set_local
+                    )
+                for fi in frame_cache[mi]:
+                    if fi == mi or fi == ni:
+                        continue
+                    _sp(fi, _gp(fi) + delta_i)
+                for fj in frame_cache[ni]:
+                    if fj == mi or fj == ni:
+                        continue
+                    _sp(fj, _gp(fj) + delta_j)
             moved += 1
     return moved
 
