@@ -378,9 +378,18 @@ def _layer2_ring_pucker_candidates(
     is_metal = graph["is_metal"]
     bonds = graph.get("bonds", [])
     aromatic_bond_set = set()
+    bonded_h: Dict[int, List[int]] = {}
     for (a, b, _o, arom, _ring) in bonds:
         if arom:
             aromatic_bond_set.add((min(a, b), max(a, b)))
+        # Iter-18 rigid-H drag (per-atom forensik 2026-05-18): without
+        # this, pucker displacement of ring heavy atoms leaves bonded H
+        # behind → CH3 umbrella collapse 54.78% pool-wide (vs 123a130
+        # 21.98% baseline) — 100-500× violations per frame.
+        if symbols[a] == "H" and symbols[b] != "H":
+            bonded_h.setdefault(b, []).append(a)
+        elif symbols[b] == "H" and symbols[a] != "H":
+            bonded_h.setdefault(a, []).append(b)
 
     out: List[Tuple[List[Coord], str]] = []
     for ring in rings:
@@ -426,7 +435,11 @@ def _layer2_ring_pucker_candidates(
             disp_a = _vec_scale(normal, amplitude * sign_a)
             disp_b = _vec_scale(normal, amplitude * sign_b)
             coords[i0] = _vec_add(coords[i0], disp_a)
+            for h_idx in bonded_h.get(i0, ()):
+                coords[h_idx] = _vec_add(coords[h_idx], disp_a)
             coords[i1] = _vec_add(coords[i1], disp_b)
+            for h_idx in bonded_h.get(i1, ()):
+                coords[h_idx] = _vec_add(coords[h_idx], disp_b)
             out.append((coords, f"pucker-r{size}-{tag}"))
     return out
 
