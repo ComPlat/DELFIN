@@ -1970,6 +1970,140 @@ def _apply_fixer_bridging_anion_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_xtb_cascade_if_enabled(mol, results, dual_parse_done: bool):
+    """Welle-5l Track-2 dispatch helper — xTB-cascade post-UFF refinement.
+
+    Per-frame GFN2-xTB optimization with M-D-invariant rollback gate.  This
+    is the OPT-IN cascade-stage that wraps ``delfin._xtb_refiner.refine_with_xtb``.
+    Runs AFTER all UFF-side post-processing (B3 / B4 / B5 / B6 / F19 / F25 /
+    WUXQAK / bridging-anion / 5b-A / 5b-B / 5f-C / 5f-D / 5j-A) so the cascade
+    refines the FINAL pipeline geometry, not an intermediate one.
+
+    Architecture (per ``project_core_swap_decision`` 2026-05-14):
+        scaffold → ETKDG → UFF (+ all bandages) → xTB cascade [optional]
+
+    Env-flags (Phase 3B per-class override pattern, ``_class_conditional_flag``):
+        DELFIN_CASCADE_REFINER=0                (default OFF — bit-exact when 0)
+        DELFIN_CASCADE_REFINER_CLASSES=         (csv class allow-list, e.g.
+                                                 "sigma,multi_sigma")
+
+    Resolution (matches ``_class_conditional_flag`` precedence):
+        1. If ``DELFIN_CASCADE_REFINER_CLASSES`` is set → cascade fires iff
+           ``_classify_complex_class(mol)`` is in the csv list, regardless of
+           the scalar value.  This is the recommended deployment pattern.
+        2. Else fall back to scalar ``DELFIN_CASCADE_REFINER`` (0 / 1).
+
+    Per-frame contract:
+        - Charge: ``Chem.GetFormalCharge(mol)`` (sum of explicit formal charges).
+        - Multiplicity (uhf = n_unpaired_e-): 0 if total electron count is even
+          (closed-shell singlet), 1 if odd (doublet).  No spin-state search
+          (per project_core_swap_decision xtb spin-state policy 2026-05-14).
+        - Subprocess timeout: 30s per frame (matches iter16 config).
+        - Rollback gate: bond > 1.50 × Σr_cov in refined geometry → revert
+          to pre-cascade XYZ (gate lives inside ``refine_with_xtb`` —
+          M-D bonds detected with 1.30× factor in input, break threshold
+          1.50×, both relative to ``Σr_cov``).
+        - Element-count / atom-order mismatch → revert (xtb output corrupt).
+        - Any exception → revert to pre-cascade XYZ (fail-safe).
+
+    Bit-exact when ``DELFIN_CASCADE_REFINER=0`` and ``DELFIN_CASCADE_REFINER_CLASSES``
+    is unset (the default).  Skipped on inner dual-parse calls so the heavy-
+    atom signature dedup sees consistent UFF coordinates.
+
+    Args:
+        mol: the parent RDKit ``Mol`` (used for class classification +
+            total charge + electron count); may be ``None`` (skip).
+        results: list of ``(xyz_str, label)`` tuples produced by the
+            up-pipeline.
+        dual_parse_done: ``True`` on the inner dual-parse call → skip.
+
+    Returns:
+        Same shape as ``results``.  Frames where xTB succeeded are
+        replaced with the refined XYZ; everything else is unchanged.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if mol is None:
+        return results
+    # Class-conditional gate (matches B5 rigid-H / F19 / etc. pattern).
+    if not _class_conditional_flag("DELFIN_CASCADE_REFINER", mol, default=0):
+        return results
+    # Metal-only: no point spending xtb seconds on organic-only ligands
+    # (UFF is parametrised for them).  Cheap pre-check.
+    try:
+        any_metal = any(a.GetSymbol() in _METAL_SET for a in mol.GetAtoms())
+    except Exception:
+        any_metal = True  # fall through on probe error
+    if not any_metal:
+        return results
+    try:
+        from delfin._xtb_refiner import refine_with_xtb as _xtb_refine
+    except Exception as _imp_exc:
+        try:
+            logger.debug("xTB cascade import failed: %s", _imp_exc)
+        except Exception:
+            pass
+        return results
+
+    # Total charge from RDKit formal charges (per spin-state policy).
+    try:
+        total_charge = sum(int(a.GetFormalCharge() or 0) for a in mol.GetAtoms())
+    except Exception:
+        total_charge = 0
+
+    # Minimum multiplicity from electron-count parity (per project_core_swap_decision
+    # xtb spin-state policy 2026-05-14): even → uhf=0 (closed-shell singlet),
+    # odd → uhf=1 (doublet, one unpaired electron).  No spin-state scan.
+    try:
+        n_electrons = (
+            sum(int(a.GetAtomicNum()) for a in mol.GetAtoms())
+            - total_charge
+        )
+        uhf = int(n_electrons & 1)
+    except Exception:
+        uhf = 0
+
+    timeout_s = _delfin_env_float("DELFIN_CASCADE_REFINER_TIMEOUT_S", 30.0)
+    max_iter = _delfin_env_int("DELFIN_CASCADE_REFINER_MAX_ITER", 200)
+    gfn = _delfin_env_int("DELFIN_CASCADE_REFINER_GFN", 2)
+
+    n_refined = 0
+    n_reverted = 0
+    new_results: List[Tuple[str, str]] = []
+    for (xyz, label) in results:
+        try:
+            refined = _xtb_refine(
+                xyz,
+                charge=total_charge,
+                gfn=gfn,
+                max_iter=max_iter,
+                timeout_s=timeout_s,
+                uhf=uhf,
+            )
+        except Exception as _rf_exc:
+            try:
+                logger.debug("xTB cascade frame error (kept input): %s", _rf_exc)
+            except Exception:
+                pass
+            refined = xyz
+        if refined is xyz or refined == xyz:
+            n_reverted += 1
+            new_results.append((xyz, label))
+        else:
+            n_refined += 1
+            new_results.append((refined, label))
+    try:
+        logger.debug(
+            "xTB cascade: %d refined / %d reverted (n_total=%d, charge=%d, uhf=%d)",
+            n_refined, n_reverted, len(results), total_charge, uhf,
+        )
+    except Exception:
+        pass
+    return new_results
+
+
 def _delfin_env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -28067,14 +28201,33 @@ def smiles_to_xyz_isomers(
     # M-D invariant break or new heavy clash.  Aromatic ring H is delegated
     # to Baustein 4 / Iter-9 H1 to avoid double-projection.
     #
-    # Master flag DELFIN_5B_VSEPR_H_REALISM (default 0 = bit-exact OFF).
-    # Sub-flag DELFIN_5F_D_ALKYL_ROTAMER (default 0) adds an inter-substituent
-    # rotamer search inside the VSEPR pass to relieve PMe3/NMe3/tBu H-H clash.
+    # Welle-5l T3-A (29-Ni pincer-tBu-imid CH3 umbrella fix):
+    #   Default-flipped 0 -> class-conditional default-ON for metal classes
+    #   {sigma, multi-sigma, hapto, multi-hapto}.  Validated on 29-Ni gold-test:
+    #   12/12 CH3 umbrella violations -> 0/12, M-D invariant Δ=0.000 Å.
+    #   Bit-exact when explicitly disabled (DELFIN_5B_VSEPR_H_REALISM=0) or
+    #   when the molecule classifies outside the default-class set.
+    #
+    # Master flag DELFIN_5B_VSEPR_H_REALISM (class-conditional default-ON;
+    # set to 0 to force OFF, or DELFIN_5B_VSEPR_H_REALISM_CLASSES to override
+    # the class list).  Sub-flag DELFIN_5F_D_ALKYL_ROTAMER (default 0) adds
+    # an inter-substituent rotamer search inside the VSEPR pass.
+    _vsepr_h_realism_classes = (
+        "sigma", "multi-sigma", "hapto", "multi-hapto",
+    )
+    _vsepr_h_realism_active = False
     try:
-        if (
-            results
-            and _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
-        ):
+        _vsepr_h_realism_active = _class_conditional_flag(
+            "DELFIN_5B_VSEPR_H_REALISM", mol,
+            default=0,
+            default_classes=_vsepr_h_realism_classes,
+        )
+    except Exception:
+        _vsepr_h_realism_active = bool(
+            _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
+        )
+    try:
+        if results and _vsepr_h_realism_active:
             from delfin._h_vsepr_realism import correct_results as _vsepr_correct
             results = _vsepr_correct(mol, results)
     except Exception as _vsepr_exc:
@@ -28092,11 +28245,13 @@ def smiles_to_xyz_isomers(
     # When 5b-A is enabled, 5f-D auto-runs inside ``correct_xyz`` (sub-flag).
     # This dispatch handles the 5f-D-only path (5b-A OFF, 5f-D ON).  Both
     # paths gate on DELFIN_5F_D_ALKYL_ROTAMER (default 0 = bit-exact OFF).
+    # Welle-5l T3-A: use the class-conditional 5b-A active-state (computed
+    # above) so the inhibit-check stays consistent with the new default.
     try:
         if (
             results
             and _delfin_env_int("DELFIN_5F_D_ALKYL_ROTAMER", 0)
-            and not _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
+            and not _vsepr_h_realism_active
         ):
             from delfin._h_vsepr_realism import (
                 correct_results_rotamers_only as _rot_correct,
@@ -28131,6 +28286,21 @@ def smiles_to_xyz_isomers(
             logger.debug("Welle-5f-C M-H rescue pass failed: %s", _mh_exc)
         except Exception:
             pass
+
+    # ── Welle-5l Track-2: xTB-cascade post-UFF refinement ───────────────────
+    # GFN2-xTB optimizer with M-D invariant rollback gate.  Runs as the FINAL
+    # post-UFF stage so the cascade refines the fully-finished pipeline
+    # geometry (post B3/B4/B5/B6/F19/F25/WUXQAK/bridging-anion/5b-A/5b-B/5f-C/
+    # 5f-D/5j-A).  Per ``project_core_swap_decision`` 2026-05-14: UFF is the
+    # cheap pre-conditioner, xTB the TM-aware refinement layer.  See
+    # ``_apply_xtb_cascade_if_enabled`` docstring for env-flags + contract.
+    #
+    # Universal — no SMILES patterns.  Bit-exact when
+    # ``DELFIN_CASCADE_REFINER=0`` (default) and
+    # ``DELFIN_CASCADE_REFINER_CLASSES`` is unset.  Skipped for non-metal
+    # complexes (UFF handles organic ligands correctly).  Per-frame M-D
+    # invariant rollback inside ``refine_with_xtb`` catches topology breaks.
+    results = _apply_xtb_cascade_if_enabled(mol, results, _dual_parse_done)
 
     # Multi-sigma V2: restore the per-seed embedding timeout override on
     # the calling thread so this function call has no effect on any
