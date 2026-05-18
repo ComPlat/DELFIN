@@ -2028,16 +2028,13 @@ def _apply_xtb_cascade_if_enabled(mol, results, dual_parse_done: bool):
     if mol is None:
         return results
     # Class-conditional gate (matches B5 rigid-H / F19 / etc. pattern).
-    # Iter-17a 2026-05-18: default_classes=["multi_sigma"] — smoke500
-    # (Welle-5f-K) verified +30.6pp topology on multi-σ from 0%-baseline,
-    # sigma -2.3pp / +6.2pp lig, fail 82→22.  Per-class allow-list (NOT
-    # blanket flip).  Op override via DELFIN_CASCADE_REFINER_CLASSES=
-    # csv or DELFIN_CASCADE_REFINER=0 disables entirely.
-    # See feedback_cascade_multisigma_breakthrough.
-    if not _class_conditional_flag(
-        "DELFIN_CASCADE_REFINER", mol, default=0,
-        default_classes=["multi_sigma"],
-    ):
+    # Iter-17b 2026-05-18: revert Iter-17a default_classes=["multi_sigma"]
+    # per user-direktive — "die strukturen müssen bestmöglich sein um nach
+    # xtb zu gehen also cascade kommt ganz am ende!"  Pre-xTB pipeline
+    # (scaffold + ETKDG + UFF + bandages) must be optimized first.
+    # Cascade is reserved for FINAL phase after all pre-xTB optimizations
+    # are stable.  Env-flag opt-in preserved for testing.
+    if not _class_conditional_flag("DELFIN_CASCADE_REFINER", mol, default=0):
         return results
     # Metal-only: no point spending xtb seconds on organic-only ligands
     # (UFF is parametrised for them).  Cheap pre-check.
