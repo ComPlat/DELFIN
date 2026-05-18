@@ -28662,6 +28662,41 @@ def smiles_to_xyz_isomers(
     except Exception as _rot_exc:
         logger.debug("Welle-5l Track-6 rotamer expansion failed: %s", _rot_exc)
 
+    # --- Welle-5o: per-isomer conformer-pool (env-flag gated, default OFF) ---
+    # For each emitted isomer, generate K diverse conformers spanning the
+    # relevant conformational space (torsion + ring-pucker + chelate-twist +
+    # macrocycle modes), filtered by M-D invariant + topology preservation,
+    # ranked by UFF energy + clash penalty, greedy-selected for pairwise-
+    # RMSD diversity.  Each extra conformer is labelled "<base>_pool-N-<tag>".
+    # Runs AFTER rotamer expansion so the pool acts on every isomer (including
+    # rotamer-variants) and is the CREST/GOAT-obsolescence enabler — the
+    # downstream xTB/DFT local-opt finds the global minimum from at least one
+    # pool member without a separate global conformer search.
+    # The helper is a no-op when DELFIN_5O_CONFORMER_POOL=0, preserving
+    # byte-identical default behaviour.
+    try:
+        from delfin import _conformer_pool as _conf_pool  # local import
+        if _conf_pool._is_enabled() and results:
+            pool_expanded: List[Tuple[str, str]] = []
+            for _pidx, (_pxyz, _plbl) in enumerate(results):
+                _members = _conf_pool.apply_if_enabled(_pxyz)
+                if not _members:
+                    pool_expanded.append((_pxyz, _plbl))
+                    continue
+                # _members[0] is (base_xyz, "base") — preserve under
+                # original label.  _members[1:] are pool variants.
+                pool_expanded.append((_members[0][0], _plbl))
+                for _k_idx, (_fxyz, _ftag) in enumerate(_members[1:], start=1):
+                    _pool_label = (
+                        f"{_plbl}_pool-{_k_idx}-{_ftag}"
+                        if _plbl
+                        else f"pool-{_k_idx}-{_ftag}"
+                    )
+                    pool_expanded.append((_fxyz, _pool_label))
+            results = pool_expanded
+    except Exception as _pool_exc:
+        logger.debug("Welle-5o conformer-pool expansion failed: %s", _pool_exc)
+
     return results, None
 
 
