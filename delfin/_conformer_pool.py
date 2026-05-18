@@ -367,14 +367,6 @@ def _layer2_ring_pucker_candidates(
     each such ring we displace two opposite ring atoms by ±amplitude
     along the ring normal — this is the chair-vs-twist mode pair used
     in standard cyclohexane conformational analysis.
-
-    Welle-5p-C HOTFIX: when enabled (default ON), additionally exclude
-    rings whose atoms are within ``DELFIN_5P_C_MAX_BONDS`` bonds of a
-    metal (default 5).  Such "metal-adjacent" rings (chelate backbones
-    one bond away, fused-ring chelates) puckering can flip donor-H
-    orientation towards the metal (universal regression on amine/thiol
-    chelates).  Free cyclohexane / non-metal-adjacent macrocycle pucker
-    remains unaffected.
     """
     atomic_nums = graph["atomic_nums"]
     is_metal = graph["is_metal"]
@@ -384,9 +376,6 @@ def _layer2_ring_pucker_candidates(
         if arom:
             aromatic_bond_set.add((min(a, b), max(a, b)))
 
-    hotfix_on = _rot._welle5p_c_hotfix_enabled()
-    max_bonds_to_metal = _env_int("DELFIN_5P_C_MAX_BONDS", 5, lo=0, hi=32)
-
     out: List[Tuple[List[Coord], str]] = []
     for ring in rings:
         size = len(ring)
@@ -394,16 +383,6 @@ def _layer2_ring_pucker_candidates(
             continue
         if any(is_metal[i] for i in ring):
             continue  # chelate rings handled in Layer 3
-        # Welle-5p-C: skip rings adjacent (≤ max_bonds_to_metal bonds)
-        # to any metal — puckering them moves donor neighbours and
-        # flips H-orientation towards the metal.
-        if hotfix_on:
-            if any(
-                _rot._bond_distance_to_any_metal(graph, i, max_bonds_to_metal)
-                <= max_bonds_to_metal
-                for i in ring
-            ):
-                continue
         # Must be saturated (no aromatic bond between any consecutive
         # ring atoms).  We check both ring-edge bonds.
         is_aromatic = False
@@ -474,24 +453,7 @@ def _layer3_chelate_twist_candidates(
     backbone atoms) and a λ-twist (negative rotation).  The rotation
     axis is the line between the two backbone atoms that are *not*
     bonded directly to the metal.
-
-    Welle-5p-C HOTFIX: when enabled (default ON), this layer is
-    GATED OFF entirely.  Empirical voll-pool finding (2026-05-18):
-    a large fraction of frames had amine donor-H within 2.3 Å of the
-    metal because the chelate-twist rotation flipped the donor-H
-    orientation past the metal.  This INTERIM gate suppresses
-    Layer-3 until 5p-B ring-templates land; non-chelate rotamer /
-    macrocycle / non-metal-adjacent pucker conformers (Layers 1/2/4)
-    continue to be generated where safe.
     """
-    if _rot._welle5p_c_hotfix_enabled():
-        # INTERIM scoop-fix: chelate-twist disabled until 5p-B.
-        # Allow opt-out via env DELFIN_5P_C_ALLOW_CHELATE_TWIST=1
-        # (used by tests for back-compat byte-identity).
-        raw = os.environ.get("DELFIN_5P_C_ALLOW_CHELATE_TWIST", "0")
-        if raw.strip().lower() not in ("1", "true", "yes", "on"):
-            return []
-
     atomic_nums = graph["atomic_nums"]
     is_metal = graph["is_metal"]
     bonds = graph.get("bonds", [])
@@ -888,11 +850,42 @@ def generate_conformer_pool(
     except Exception as exc:
         logger.debug("5o Layer-1 (torsion) failed: %s", exc)
     try:
-        raw_candidates.extend(
-            _layer2_ring_pucker_candidates(
-                symbols, base_coords, graph, rings, ring_pucker_ampl
+        # Welle-5p-B: chemistry-template ring-conformer generator
+        # supersedes the naive 2-atom Layer-2 pucker when its env-flag
+        # is set.  Default-OFF byte-identical fall-through.
+        use_5p_b_templates = _env_bool("DELFIN_5P_B_RING_TEMPLATES", False)
+        if use_5p_b_templates:
+            from delfin import _ring_conformer_templates as _ring_tpl
+
+            k_per_ring = _env_int(
+                "DELFIN_5P_B_K_PER_RING", 3, lo=1, hi=20
             )
-        )
+            max_var = _env_int(
+                "DELFIN_5P_B_MAX_RING_VARIANTS", 6, lo=1, hi=64
+            )
+            amp_frac = _env_float(
+                "DELFIN_5P_B_AMPLITUDE_FRACTION",
+                0.50,
+                lo=0.0,
+                hi=2.0,
+            )
+            raw_candidates.extend(
+                _ring_tpl.layer2_ring_template_candidates(
+                    symbols,
+                    base_coords,
+                    graph,
+                    rings,
+                    amp_frac,
+                    k_per_ring,
+                    max_var,
+                )
+            )
+        else:
+            raw_candidates.extend(
+                _layer2_ring_pucker_candidates(
+                    symbols, base_coords, graph, rings, ring_pucker_ampl
+                )
+            )
     except Exception as exc:
         logger.debug("5o Layer-2 (ring pucker) failed: %s", exc)
     try:
