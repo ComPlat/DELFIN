@@ -16561,11 +16561,17 @@ def _verify_topology_from_graph(
                 # topology verifier rejects valid coordination chemistry
                 # (NHC, naphthyridine, salen, pyrazole-bridged etc.) and is
                 # the main cause of D-AQIWAZ 11% isomer coverage.
-                # Env-flag DELFIN_PHANTOM_13_EXEMPT (default 1 -- always-on
-                # bug-fix).  Set to 0 to restore the legacy (over-strict)
-                # behaviour.
+                # Welle-5l-rev1 (2026-05-18): default flipped 1 -> 0 (strict).
+                # Per user-direktive "strikt peniebel genau die topologie
+                # prüfen": the previous always-on exemption let UFF-buckled
+                # geometries pass the verifier, which collapsed distinct
+                # coordination isomers under fingerprint dedup (D2-ADEKUS
+                # 3 -> 2 frames at scale).  Strict default rejects any
+                # close 1,3 contact through a donor; if a real chelate
+                # backbone needs the exemption, set the env-flag to 1
+                # explicitly.
                 _phantom_exempt: Set[int] = set()
-                if _delfin_env_int("DELFIN_PHANTOM_13_EXEMPT", 1):
+                if _delfin_env_int("DELFIN_PHANTOM_13_EXEMPT", 0):
                     for _nbr in atom.GetNeighbors():
                         if _nbr.GetSymbol() in _METAL_SET:
                             continue
