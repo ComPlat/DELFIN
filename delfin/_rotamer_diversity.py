@@ -108,8 +108,12 @@ def _is_enabled() -> bool:
 
 def _topo_hardgate_enabled() -> bool:
     """Welle-5p-A master flag — read here so the wire-in cost is one
-    `os.environ.get` per candidate when the gate is disabled."""
-    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
+    `os.environ.get` per candidate when the gate is disabled.
+
+    Default flipped 0 -> 1 on 2026-05-18 (user-direktive: strict
+    topology check on every system before xyz-archive write).
+    """
+    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
 
 
 _METAL_ATOMIC_NUMBERS = frozenset(

@@ -915,7 +915,9 @@ def generate_conformer_pool(
         return [(xyz, "base")]
 
     # Welle-5p-A: precompute hard-gate parameters (read env vars once)
-    _hardgate_on = _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
+    # Default flipped 0 -> 1 on 2026-05-18 (user-direktive: strict
+    # topology check on every system before xyz-archive write).
+    _hardgate_on = _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
     if _hardgate_on:
         _amine_min_deg = _env_float(
             "DELFIN_5P_A_AMINE_H_MIN_DEG", 60.0, lo=0.0, hi=180.0

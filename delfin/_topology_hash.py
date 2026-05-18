@@ -171,8 +171,15 @@ def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 360.0) ->
 
 
 def is_hardgate_enabled() -> bool:
-    """Return True iff the master Welle-5p-A flag is set."""
-    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
+    """Return True iff the master Welle-5p-A flag is set.
+
+    Default flipped 0 -> 1 on 2026-05-18 per user-direktive
+    'strikt peniebel genau die topologie prüfen' + 'von den
+    systeme wie in xyz archive landen'.  Sentinel-validated:
+    rejects amine-H<2.3Å bug frames (X10-ALEQEO 7->5 clean),
+    no regression on ADEKUS/CDTXZO/11-Fe-salen/D-AQIWAZ.
+    """
+    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
 
 
 # ---------------------------------------------------------------------------
