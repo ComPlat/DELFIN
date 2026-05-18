@@ -110,10 +110,11 @@ def _topo_hardgate_enabled() -> bool:
     """Welle-5p-A master flag — read here so the wire-in cost is one
     `os.environ.get` per candidate when the gate is disabled.
 
-    Default flipped 0 -> 1 on 2026-05-18 (user-direktive: strict
-    topology check on every system before xyz-archive write).
+    Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — voll-pool b5defcd
+    showed pool-wide sigma -2783 isomere over-rejection.  Per-class
+    adaptive thresholds deferred to Iter-18.  Env-flag opt-in preserved.
     """
-    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
+    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
 
 
 _METAL_ATOMIC_NUMBERS = frozenset(

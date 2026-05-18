@@ -373,29 +373,30 @@ class TestBondMultisetConsistency:
 # ---------------------------------------------------------------------------
 
 
-class TestDefaultOn:
+class TestDefaultOff:
     def test_hardgate_flag_default(self, monkeypatch):
-        # Welle-5p-A: default flipped 0 -> 1 on 2026-05-18 per user-direktive
-        # 'strikt peniebel topology prüfen' + 'von den systeme wie in
-        # xyz archive landen'.  Sentinel-validated on D2-ADEKUS/D2-CDTXZO/
-        # 11-Fe-salen/D-AQIWAZ (no regression) + X10-ALEQEO (amine-H bug
-        # frames correctly rejected, 7->5 clean).
+        # Welle-5p-A: default reverted 1 -> 0 on 2026-05-18 (Iter-17)
+        # — voll-pool b5defcd showed pool-wide sigma -2783 isomere
+        # over-rejection beyond sentinel-set + DAXPOI 7->1 cliff + cshm
+        # outlier worse +23.07.  Per-class adaptive thresholds deferred
+        # to Iter-18.  Env-flag opt-in preserved for testing.
         _clear_env(monkeypatch)
-        assert th.is_hardgate_enabled() is True
-
-    def test_hardgate_flag_off(self, monkeypatch):
-        _clear_env(monkeypatch)
-        monkeypatch.setenv("DELFIN_5P_A_TOPOLOGY_HARDGATE", "0")
         assert th.is_hardgate_enabled() is False
 
-    def test_post_emit_default_on_smiles_converter(self, monkeypatch):
-        """Smoke-test: default-ON behaviour at the wire-in point.
+    def test_hardgate_flag_on(self, monkeypatch):
+        _clear_env(monkeypatch)
+        monkeypatch.setenv("DELFIN_5P_A_TOPOLOGY_HARDGATE", "1")
+        assert th.is_hardgate_enabled() is True
 
-        Default flipped 2026-05-18 — gate is now active by default.
-        Test verifies that a chemically-valid amine-H geometry still
-        passes the gate (no false positive).
+    def test_post_emit_opt_in_smiles_converter(self, monkeypatch):
+        """Smoke-test: opt-in (env=1) behaviour at the wire-in point.
+
+        Default reverted 2026-05-18 (Iter-17) — gate is opt-in via env.
+        Test verifies that under opt-in, a chemically-valid amine-H
+        geometry passes the gate (no false positive).
         """
         _clear_env(monkeypatch)
+        monkeypatch.setenv("DELFIN_5P_A_TOPOLOGY_HARDGATE", "1")
         good_xyz = (
             "Fe  0.0  0.0  0.0\n"
             "N   2.05 0.0  0.0\n"
@@ -403,7 +404,7 @@ class TestDefaultOn:
             "H   2.45 -0.445 0.77\n"
             "H   2.45 -0.445 -0.77\n"
         )
-        # When env is unset, default is ON.
+        # When env is set to 1, gate is opt-in ON.
         assert th.is_hardgate_enabled()
         # Valid amine geometry passes the gate:
         result = th.standalone_amine_h_realism_xyz(good_xyz)

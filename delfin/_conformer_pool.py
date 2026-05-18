@@ -915,9 +915,10 @@ def generate_conformer_pool(
         return [(xyz, "base")]
 
     # Welle-5p-A: precompute hard-gate parameters (read env vars once)
-    # Default flipped 0 -> 1 on 2026-05-18 (user-direktive: strict
-    # topology check on every system before xyz-archive write).
-    _hardgate_on = _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
+    # Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — voll-pool b5defcd
+    # showed pool-wide sigma -2783 isomere over-rejection.  Per-class
+    # adaptive thresholds deferred to Iter-18.  Env-flag opt-in preserved.
+    _hardgate_on = _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
     if _hardgate_on:
         _amine_min_deg = _env_float(
             "DELFIN_5P_A_AMINE_H_MIN_DEG", 60.0, lo=0.0, hi=180.0

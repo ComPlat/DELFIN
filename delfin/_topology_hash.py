@@ -173,13 +173,15 @@ def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 360.0) ->
 def is_hardgate_enabled() -> bool:
     """Return True iff the master Welle-5p-A flag is set.
 
-    Default flipped 0 -> 1 on 2026-05-18 per user-direktive
-    'strikt peniebel genau die topologie prüfen' + 'von den
-    systeme wie in xyz archive landen'.  Sentinel-validated:
-    rejects amine-H<2.3Å bug frames (X10-ALEQEO 7->5 clean),
-    no regression on ADEKUS/CDTXZO/11-Fe-salen/D-AQIWAZ.
+    Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — voll-pool b5defcd
+    showed pool-wide sigma -2783 isomere (5p-A over-rejection beyond
+    sentinel-set), DAXPOI 7->1 cliff confirmed in 62-archive scan,
+    cshm_max_max +23.07 vs 95767c6 (outlier polyhedra worse), pi_planar
+    +4.75pp (5p-B chair-attack on aromatic), hapto+multi-hapto remained
+    stuck.  Per-class adaptive thresholds deferred to Iter-18.
+    Infrastructure preserved (forward-only, env-flag opt-in for testing).
     """
-    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", True)
+    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
 
 
 # ---------------------------------------------------------------------------
