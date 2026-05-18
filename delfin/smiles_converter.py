@@ -26638,6 +26638,35 @@ def smiles_to_xyz_isomers(
     # frozen-broken frames cannot leak through. Default OFF.
     _pre_uff_md_gate = has_metal and _pre_uff_topology_gate_enabled()
 
+    # Welle-5m-X: deep enumeration trigger (e6761e4 forward-port).
+    # Universal predicate: when CN >= 5 AND distinct_donor_classes >= 3,
+    # demote ``_metal_donor_distances_realistic`` from REJECT to PENALTY
+    # in the strict pass.  This mirrors e6761e4's permissive strict-pass
+    # behaviour (which lacked the M-D realistic check entirely) and lets
+    # additional sampling conformers reach the fingerprint dedup stage --
+    # the mechanism that yields 4 distinct isomers for X10-YIRQIC instead
+    # of the current 2.  Default OFF (env-flag DELFIN_5M_X_DEEP_ENUM=0)
+    # so this is bit-exact pre-patch.  See ``delfin._deep_enumerator``.
+    _deep_enum_relax_md = False
+    if has_metal:
+        try:
+            from delfin._deep_enumerator import (
+                deep_enum_relax_md_realistic_reject as _deep_enum_relax_md_fn,
+                deep_enum_pi_planarity_softgate as _deep_enum_pi_softgate_fn,
+            )
+            _deep_enum_relax_md = bool(
+                _deep_enum_relax_md_fn(mol, dtype_map=dtype_map)
+            )
+            _deep_enum_relax_pi = bool(
+                _deep_enum_pi_softgate_fn(mol, dtype_map=dtype_map)
+            )
+        except Exception as _de_exc:
+            logger.debug("Deep-enum trigger no-op: %s", _de_exc)
+            _deep_enum_relax_md = False
+            _deep_enum_relax_pi = False
+    else:
+        _deep_enum_relax_pi = False
+
     def _classify_one_conf(_cid, _relax):
         try:
             if _pre_uff_md_gate:
@@ -26808,6 +26837,29 @@ def smiles_to_xyz_isomers(
                 return ''
             return re.sub(r'-\d+$', '',str(lbl))
 
+        # Welle-5m-X: deep-enum unlabeled RMSD relaxation.  When the
+        # trigger fires (CN >= 5 + >= 3 distinct donor classes), the
+        # aggressive 2.5 A same-label merge is dropped to the cross-label
+        # 0.8 A threshold whenever BOTH candidates carry an empty
+        # (unclassified) coordination label.  Empty labels mean the
+        # ``_classify_isomer_label`` heuristics could not name either
+        # geometry, so RMSD is the only available signal -- using the
+        # aggressive 2.5 A merge collapses geometrically distinct hetero
+        # isomers that should survive (X10-YIRQIC: 4 e6761e4 frames
+        # all carry empty labels and would otherwise merge to 1-2).
+        # Default OFF (env-flag DELFIN_5M_X_DEEP_ENUM=0) preserves
+        # legacy behaviour byte-for-byte.
+        _unlabeled_rmsd_threshold = 2.5
+        try:
+            from delfin._deep_enumerator import (
+                deep_enum_unlabeled_rmsd_threshold as _de_rmsd_thresh,
+            )
+            _unlabeled_rmsd_threshold = float(
+                _de_rmsd_thresh(mol, dtype_map=dtype_map)
+            )
+        except Exception as _de_rmsd_exc:
+            logger.debug("Deep-enum RMSD threshold no-op: %s", _de_rmsd_exc)
+
         fps_list = list(seen_fps.keys())
         removed: set = set()
         for i in range(len(fps_list)):
@@ -26829,7 +26881,16 @@ def smiles_to_xyz_isomers(
                 # whose labels diverged due to borderline angles.
                 # Tightened from 1.5 -> 0.8 after reports of
                 # chemically different systems being wrongly merged.
-                rmsd_threshold = 2.5 if base_i == base_j else 0.8
+                # Welle-5m-X: ``_unlabeled_rmsd_threshold`` overrides
+                # the 2.5 A path when BOTH labels are empty under the
+                # deep-enum trigger (default-OFF -> 2.5, bit-exact).
+                if base_i == base_j:
+                    rmsd_threshold = (
+                        _unlabeled_rmsd_threshold
+                        if base_i == '' else 2.5
+                    )
+                else:
+                    rmsd_threshold = 0.8
                 if rmsd < rmsd_threshold:
                     if si <= sj:
                         removed.add(j)
