@@ -73,6 +73,12 @@ Env-flags
 ``DELFIN_5O_CLASH_HH``           (default ``1.7``) — Å, H–H clash cutoff
 ``DELFIN_5O_CLASH_XH``           (default ``1.7``) — Å, X–H clash cutoff
 ``DELFIN_5O_CLASH_XX``           (default ``1.5``) — Å, heavy-heavy clash cutoff
+
+Welle-5p-A hard-gate (default ON when ``DELFIN_5P_A_TOPOLOGY_HARDGATE=1``)
+Every layer's candidate is additionally passed through
+:func:`delfin._topology_hash.topology_preserved` before the energy
+filter.  This rejects chelate-ring twists that flip an amine-H toward
+the metal or perturb M–D edges beyond ``DELFIN_5P_A_MD_TOL``.
 """
 
 from __future__ import annotations
@@ -877,6 +883,22 @@ def generate_conformer_pool(
     if not raw_candidates:
         return [(xyz, "base")]
 
+    # Welle-5p-A: precompute hard-gate parameters (read env vars once)
+    _hardgate_on = _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
+    if _hardgate_on:
+        _amine_min_deg = _env_float(
+            "DELFIN_5P_A_AMINE_H_MIN_DEG", 60.0, lo=0.0, hi=180.0
+        )
+        _hm_min = _env_float("DELFIN_5P_A_CLASH_HM_MIN", 2.30, lo=0.0, hi=10.0)
+        _bond_tol_th = _env_float("DELFIN_5P_A_BOND_TOL", 1.30, lo=0.5, hi=3.0)
+        try:
+            from delfin import _topology_hash as _th  # local import
+        except Exception:
+            _th = None  # type: ignore
+            _hardgate_on = False
+    else:
+        _th = None  # type: ignore
+
     # ---------- Quality filter ----------
     scored_candidates: List[Tuple[float, str, str, List[Coord]]] = []
     for (coords, tag) in raw_candidates:
@@ -896,6 +918,24 @@ def generate_conformer_pool(
             cand_graph = _rot._graph_from_ob(cand_mol)
             if _rot._topology_hash(cand_graph) != base_topo:
                 continue
+            # Welle-5p-A universal hard-gate — single source of truth
+            if _hardgate_on and _th is not None:
+                _gate_res = _th.topology_preserved(
+                    symbols,
+                    base_coords,
+                    coords,
+                    md_tol=md_tol,
+                    amine_h_min_deg=_amine_min_deg,
+                    h_to_metal_min_dist=_hm_min,
+                    bond_tol=_bond_tol_th,
+                )
+                if not _gate_res.passed:
+                    logger.debug(
+                        "5p-A pool reject (%s): %s",
+                        tag,
+                        _gate_res.violations[:3],
+                    )
+                    continue
             energy = _rot._evaluate_xyz(cand_xyz)
             if energy is None:
                 continue

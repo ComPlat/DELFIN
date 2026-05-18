@@ -43,6 +43,17 @@ Env-flags
 ``DELFIN_5L_T6_ROTAMER_MAX_DOFS``  (default ``6``) — DOF cap per isomer
 ``DELFIN_5L_T6_ROTAMER_GRID_CAP``  (default ``64``) — combinatorial grid cap
 ``DELFIN_5L_T6_ROTAMER_MD_TOL``    (default ``0.05``) — Å, M–D invariant
+
+Welle-5p-A hard-gate (default ON when ``DELFIN_5P_A_TOPOLOGY_HARDGATE=1``)
+Every candidate frame is additionally passed through
+:func:`delfin._topology_hash.topology_preserved` which rejects any
+rotation that
+    * changes the bond multiset,
+    * moves an M–D edge,
+    * flips an amine-H (or P-H / As-H) onto the metal side
+      (∠(M-D-H) < 60° or H · · · M < 2.30 Å).
+This catches the X10-ALEQEO Fe(CO)2(NH2-CH2-CH2-S)2 amine-H umbrella
+inversion (User-Direktive 2026-05-18).
 """
 
 from __future__ import annotations
@@ -93,6 +104,12 @@ def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 10.0) -> 
 
 def _is_enabled() -> bool:
     return _env_bool("DELFIN_5L_T6_ROTAMER_DIVERSITY", False)
+
+
+def _topo_hardgate_enabled() -> bool:
+    """Welle-5p-A master flag — read here so the wire-in cost is one
+    `os.environ.get` per candidate when the gate is disabled."""
+    return _env_bool("DELFIN_5P_A_TOPOLOGY_HARDGATE", False)
 
 
 _METAL_ATOMIC_NUMBERS = frozenset(
@@ -708,6 +725,36 @@ def apply(
         cand_graph = _graph_from_ob(cand_mol)
         if _topology_hash(cand_graph) != base_topo:
             continue
+
+        # Welle-5p-A universal topology hard-gate (env-flag gated, default OFF).
+        # Catches amine-H umbrella inversion + M-D set / bond-multiset changes
+        # that the cheap OB topology hash above can miss when OB perceives
+        # a different bond network on the modified geometry.
+        if _topo_hardgate_enabled():
+            try:
+                from delfin import _topology_hash as _th  # local import
+                _gate_res = _th.topology_preserved(
+                    symbols,
+                    base_coords,
+                    coords,
+                    md_tol=md_tol,
+                    amine_h_min_deg=_env_float(
+                        "DELFIN_5P_A_AMINE_H_MIN_DEG", 60.0, lo=0.0, hi=180.0
+                    ),
+                    h_to_metal_min_dist=_env_float(
+                        "DELFIN_5P_A_CLASH_HM_MIN", 2.30, lo=0.0, hi=10.0
+                    ),
+                    bond_tol=_env_float(
+                        "DELFIN_5P_A_BOND_TOL", 1.30, lo=0.5, hi=3.0
+                    ),
+                )
+                if not _gate_res.passed:
+                    logger.debug(
+                        "5p-A rotamer rejected: %s", _gate_res.violations[:3]
+                    )
+                    continue
+            except Exception as _gate_exc:  # pragma: no cover — safety
+                logger.debug("5p-A rotamer gate failed open: %s", _gate_exc)
 
         energy = _evaluate_xyz(cand_xyz)
         if energy is None:

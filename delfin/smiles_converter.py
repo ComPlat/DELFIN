@@ -28697,6 +28697,40 @@ def smiles_to_xyz_isomers(
     except Exception as _pool_exc:
         logger.debug("Welle-5o conformer-pool expansion failed: %s", _pool_exc)
 
+    # --- Welle-5p-A: post-emit topology hard-gate (env-flag gated, default OFF) ---
+    # Final stand-alone amine-H realism check on every emitted frame.  Drops
+    # frames whose amine-N (or P/As) H atoms have flipped toward the metal
+    # (∠(M-D-H) < threshold or H · · · M too close).  This catches T6 / 5o
+    # rotation artifacts that slipped past the per-layer gate as well as
+    # any post-UFF amine-H umbrella inversion introduced upstream.
+    # Default OFF: when DELFIN_5P_A_TOPOLOGY_HARDGATE=0 this is a no-op.
+    try:
+        from delfin import _topology_hash as _th_post  # local import
+        if _th_post.is_hardgate_enabled() and results:
+            _gated: List[Tuple[str, str]] = []
+            _dropped = 0
+            for (_gxyz, _glbl) in results:
+                _gate = _th_post.standalone_amine_h_realism_xyz(_gxyz)
+                if _gate.passed:
+                    _gated.append((_gxyz, _glbl))
+                else:
+                    _dropped += 1
+                    logger.debug(
+                        "5p-A drop emit '%s': %s",
+                        _glbl,
+                        _gate.violations[:3],
+                    )
+            if _gated:
+                results = _gated
+            if _dropped:
+                logger.debug(
+                    "5p-A post-emit gate dropped %d/%d frames",
+                    _dropped,
+                    _dropped + len(_gated),
+                )
+    except Exception as _post_exc:
+        logger.debug("Welle-5p-A post-emit gate failed: %s", _post_exc)
+
     return results, None
 
 
