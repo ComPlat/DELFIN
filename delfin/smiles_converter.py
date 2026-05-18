@@ -30530,6 +30530,25 @@ def _optimize_xyz_openbabel(
             ff = None
         if ff is None:
             ff = pybel._forcefields["uff"]
+        # Welle-5i Agent A (2026-05-17): extreme-formal-charge OB-UFF fallback.
+        # OB-UFF has no parameters for metals whose OB-perceived |formal charge|
+        # exceeds normal coordination chemistry (e.g. user SMILES ``[Mo-4]``,
+        # ``[Hg-6]``, ``[Re-3..-5]``, ``[Rh-3]``).  Such atoms hit the
+        # unparam-TM uninitialised-memory bug and zero frames are emitted.
+        # When enabled, the metal's perceived formal charge is scrubbed to 0
+        # BEFORE Setup() so OB-UFF picks a parametrised atom type.  Read-back
+        # at the end of the routine uses ``GetAtomicNum`` only, so this does
+        # not propagate to downstream chemistry.  Universal: gated on
+        # ``abs(q)`` magnitude, never on metal element or SMILES pattern.
+        if _delfin_env_int("DELFIN_EXTREME_CHARGE_FALLBACK", 0):
+            _ec_thresh = max(1, _delfin_env_int("DELFIN_EXTREME_CHARGE_THRESHOLD", 3))
+            try:
+                for _ob_atom in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
+                    _sym = pybel.ob.GetSymbol(_ob_atom.GetAtomicNum())
+                    if _sym in _METAL_SET and abs(int(_ob_atom.GetFormalCharge())) >= _ec_thresh:
+                        _ob_atom.SetFormalCharge(0)
+            except Exception as _ec_exc:
+                logger.debug("Extreme-charge fallback charge-scrub failed: %s", _ec_exc)
         if not ff.Setup(ob_mol.OBMol):
             logger.debug("Open Babel UFF setup failed, returning unoptimized geometry")
             return (xyz_delfin, None) if return_energy else xyz_delfin
