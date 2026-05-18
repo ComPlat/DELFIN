@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Tuple
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
 
@@ -16518,6 +16518,33 @@ def _verify_topology_from_graph(
                     nbr.GetIdx() for nbr in atom.GetNeighbors()
                     if nbr.GetSymbol() not in _METAL_SET
                 }
+                # Welle-5l T3-B: 1,3-exempt set for phantom-bond check.
+                # Atoms two bonds away from the metal via a donor (the "other"
+                # ring atoms in NHC carbenes, naphthyridine N, salen-N etc.)
+                # are necessarily close to the metal because of the rigid
+                # ligand backbone — Ru-C(carbene)-N(NHC) is a 1,3-relation
+                # whose distance is fixed near r_cov_M + r_cov_X regardless
+                # of UFF state.  Treating them as "phantom" bonds in the
+                # topology verifier rejects valid coordination chemistry
+                # (NHC, naphthyridine, salen, pyrazole-bridged etc.) and is
+                # the main cause of D-AQIWAZ 11% isomer coverage.
+                # Env-flag DELFIN_PHANTOM_13_EXEMPT (default 1 -- always-on
+                # bug-fix).  Set to 0 to restore the legacy (over-strict)
+                # behaviour.
+                _phantom_exempt: Set[int] = set()
+                if _delfin_env_int("DELFIN_PHANTOM_13_EXEMPT", 1):
+                    for _nbr in atom.GetNeighbors():
+                        if _nbr.GetSymbol() in _METAL_SET:
+                            continue
+                        for _nnb in _nbr.GetNeighbors():
+                            _nn_idx = _nnb.GetIdx()
+                            if _nn_idx == m_idx:
+                                continue
+                            if _nnb.GetSymbol() in _METAL_SET:
+                                continue
+                            if _nn_idx in smiles_nbr_ids:
+                                continue
+                            _phantom_exempt.add(_nn_idx)
                 _violation = False
                 for other in mol_template.GetAtoms():
                     o_idx = other.GetIdx()
@@ -16551,6 +16578,10 @@ def _verify_topology_from_graph(
                             _violation = True
                             break
                     else:
+                        if o_idx in _phantom_exempt:
+                            # 1,3 through a donor -- chemically expected
+                            # close contact (NHC, naphthyridine, salen).
+                            continue
                         if _d < _PHANTOM_MIN_FRAC * _cov_sum:
                             _violation = True
                             break
@@ -28352,31 +28383,33 @@ def smiles_to_xyz_isomers(
     # M-D invariant break or new heavy clash.  Aromatic ring H is delegated
     # to Baustein 4 / Iter-9 H1 to avoid double-projection.
     #
-    # Welle-5l T3-A (29-Ni pincer-tBu-imid CH3 umbrella fix):
-    #   Default-flipped 0 -> class-conditional default-ON for metal classes
-    #   {sigma, multi-sigma, hapto, multi-hapto}.  Validated on 29-Ni gold-test:
-    #   12/12 CH3 umbrella violations -> 0/12, M-D invariant Δ=0.000 Å.
-    #   Bit-exact when explicitly disabled (DELFIN_5B_VSEPR_H_REALISM=0) or
-    #   when the molecule classifies outside the default-class set.
+    # Welle-5l T5 REVERT of T3-A class-conditional default-flip:
+    #   T3-A flipped default to class-conditional ON for {sigma, multi-sigma,
+    #   hapto, multi-hapto} based on a SINGLE-SMILES success (29-Ni 12/12
+    #   methyls fixed → 0/12).  T5 broader voll-smoke n=197 then showed at
+    #   scale the mechanism REGRESSES: F19 +17.32pp, F20 +4.93pp, F25 +0.97pp,
+    #   topo −0.8pp, n_isomers −0.24/SMILES, 3 SMILES drop emission entirely
+    #   (Iter-11 antipattern reproduced 4th time).
     #
-    # Master flag DELFIN_5B_VSEPR_H_REALISM (class-conditional default-ON;
-    # set to 0 to force OFF, or DELFIN_5B_VSEPR_H_REALISM_CLASSES to override
-    # the class list).  Sub-flag DELFIN_5F_D_ALKYL_ROTAMER (default 0) adds
-    # an inter-substituent rotamer search inside the VSEPR pass.
-    _vsepr_h_realism_classes = (
-        "sigma", "multi-sigma", "hapto", "multi-hapto",
+    #   Root cause [[feedback_f19_f25_detector_contract_mismatch]]: the
+    #   F19/F20/F25 detectors compare H against XYZ-inferred local geometry
+    #   (not VSEPR-textbook), so moving H toward chemistry-correct VSEPR
+    #   INCREASES detector violations on strained post-UFF TMC.  The 29-Ni
+    #   "12/12 → 0/12" T3-A claim used `find_methyl_angle_quality` which
+    #   measures DIFFERENT quantity than F19/F25 — both can simultaneously
+    #   improve methyl AND worsen aggregate H-realism family.
+    #
+    #   Decision: revert default to bit-exact OFF (universal-fundamental
+    #   doctrine — narrow single-SMILES success is NOT universal evidence).
+    #   Re-investigate in Welle-5m with detector-revision-or-replacement
+    #   precondition met first.
+    #
+    # Master flag DELFIN_5B_VSEPR_H_REALISM (default 0 = bit-exact OFF).
+    # Sub-flag DELFIN_5F_D_ALKYL_ROTAMER (default 0) adds an inter-substituent
+    # rotamer search inside the VSEPR pass.
+    _vsepr_h_realism_active = bool(
+        _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
     )
-    _vsepr_h_realism_active = False
-    try:
-        _vsepr_h_realism_active = _class_conditional_flag(
-            "DELFIN_5B_VSEPR_H_REALISM", mol,
-            default=0,
-            default_classes=_vsepr_h_realism_classes,
-        )
-    except Exception:
-        _vsepr_h_realism_active = bool(
-            _delfin_env_int("DELFIN_5B_VSEPR_H_REALISM", 0)
-        )
     try:
         if results and _vsepr_h_realism_active:
             from delfin._h_vsepr_realism import correct_results as _vsepr_correct
