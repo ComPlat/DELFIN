@@ -239,146 +239,6 @@ def _graph_from_ob(ob_mol) -> Dict:
 # ---------------------------------------------------------------------------
 
 
-def _welle5p_c_hotfix_enabled() -> bool:
-    """Welle-5p-C hotfix: gate buggy T6/5o features behind topology check.
-
-    Default-ON; setting ``DELFIN_5P_C_HOTFIX=0`` opts back into the
-    pre-hotfix behaviour for byte-identical reproduction.  This is an
-    INTERIM scoop-fix until 5p-A (topology-hash hard-gate) and 5p-B
-    (ring-templates) mature.
-    """
-    raw = os.environ.get("DELFIN_5P_C_HOTFIX")
-    if raw is None:
-        return True
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _bond_distance_to_any_metal(
-    graph: Dict, start: int, max_bonds: int
-) -> int:
-    """Return the minimum bond-graph distance from ``start`` to any metal atom.
-
-    Pure BFS over the heavy-atom + H connectivity (the full molecular
-    graph).  Used by the Welle-5p-C hotfix to detect bonds and rings
-    that are within N bonds of a coordinated metal — those endpoints
-    are tied to metal coordination geometry and must NOT be rotated
-    or puckered by T6/5o-Layer{2,3} without a topology-aware template.
-
-    Returns ``max_bonds + 1`` when no metal is reachable within the
-    cap (i.e. the atom is "far" from any metal — safe to rotate).
-    Returns ``0`` when ``start`` itself is a metal.
-    """
-    is_metal = graph.get("is_metal") or []
-    neighbours = graph.get("neighbours") or []
-    n = int(graph.get("n_atoms", 0))
-    if n == 0 or start < 0 or start >= n:
-        return max_bonds + 1
-    if is_metal[start]:
-        return 0
-    visited = {start}
-    frontier = [start]
-    for depth in range(1, max_bonds + 1):
-        next_frontier: List[int] = []
-        for cur in frontier:
-            for nbr in neighbours[cur]:
-                if nbr in visited:
-                    continue
-                visited.add(nbr)
-                if is_metal[nbr]:
-                    return depth
-                next_frontier.append(nbr)
-        if not next_frontier:
-            break
-        frontier = next_frontier
-    return max_bonds + 1
-
-
-def _atoms_in_same_ring(
-    graph: Dict, atom_a: int, atom_b: int, max_ring_size: int = 16
-) -> bool:
-    """Return ``True`` if ``atom_a`` and ``atom_b`` share at least one
-    ring (cycle in the ring-bond subgraph) of size ≤ ``max_ring_size``.
-
-    Universal — uses only the OB-perceived ``is_ring`` bond flag in the
-    graph dict.  Pure-Python BFS bounded by ``max_ring_size`` so cost
-    stays O(ring_size²) per call.
-    """
-    if atom_a == atom_b:
-        return False
-    bonds = graph.get("bonds", [])
-    # Build ring-only adjacency
-    ring_adj: Dict[int, List[int]] = {}
-    for (a, b, _o, _arom, is_ring) in bonds:
-        if not is_ring:
-            continue
-        ring_adj.setdefault(a, []).append(b)
-        ring_adj.setdefault(b, []).append(a)
-    if atom_a not in ring_adj or atom_b not in ring_adj:
-        return False
-    # BFS from atom_a within the ring subgraph, bounded by ring_size cap.
-    visited = {atom_a: 0}
-    frontier = [atom_a]
-    while frontier:
-        nxt: List[int] = []
-        for cur in frontier:
-            cur_depth = visited[cur]
-            if cur_depth >= max_ring_size:
-                continue
-            for nbr in ring_adj.get(cur, []):
-                if nbr == atom_b:
-                    return True
-                if nbr in visited:
-                    continue
-                visited[nbr] = cur_depth + 1
-                nxt.append(nbr)
-        frontier = nxt
-    return False
-
-
-def _bond_endpoint_near_metal_ring(
-    graph: Dict, atom_idx: int, max_bonds: int = 5
-) -> bool:
-    """Welle-5p-C hotfix guard.
-
-    Return ``True`` when ``atom_idx`` is in a ring that also contains
-    a metal atom OR is within ``max_bonds`` bonds of a metal atom.
-    Either condition makes rotation around a bond at this endpoint
-    unsafe for ring-containing chelate cases.  Empirical voll-pool
-    observation (2026-05-18): chelate-ring backbone bond rotation
-    flipped amine donor-H towards the metal in a large fraction of
-    frames.
-
-    Universal — graph features only.  Excludes alkyl rotation (no
-    nearby metal), free macrocycle rotation (no metal in any
-    containing ring), aromatic-ring rotation (already filtered).
-    """
-    is_metal = graph.get("is_metal") or []
-    if not is_metal:
-        return False
-    # Fast path: any metal within ``max_bonds`` of this atom?
-    if _bond_distance_to_any_metal(graph, atom_idx, max_bonds) <= max_bonds:
-        # Confirm the proximity comes via a *ring* — pure chain metal
-        # proximity (terminal ligand alkyl) should still be rotatable.
-        # We check if ``atom_idx`` is in any ring that contains a metal.
-        bonds = graph.get("bonds", [])
-        # Quickly check ring membership of this atom
-        in_any_ring = any(
-            is_ring and (a == atom_idx or b == atom_idx)
-            for (a, b, _o, _arom, is_ring) in bonds
-        )
-        if not in_any_ring:
-            return False
-        # Find metals reachable; for each, check shared-ring
-        n = int(graph.get("n_atoms", 0))
-        for m_idx in range(n):
-            if not is_metal[m_idx]:
-                continue
-            if _atoms_in_same_ring(graph, atom_idx, m_idx, max_ring_size=16):
-                return True
-        return False
-    return False
-
-
 def _fragment_atoms_on_side(
     neighbours: Sequence[Sequence[int]],
     pivot: int,
@@ -435,7 +295,6 @@ def identify_rotamer_dofs(graph: Dict, max_dofs: int = 6) -> List[Dict]:
 
     dofs: List[Dict] = []
     seen: set = set()
-    hotfix_on = _welle5p_c_hotfix_enabled()
     for a, b, order, aromatic, ring in bonds:
         if order != 1 or aromatic or ring:
             continue
@@ -448,19 +307,6 @@ def identify_rotamer_dofs(graph: Dict, max_dofs: int = 6) -> List[Dict]:
         if key in seen:
             continue
         seen.add(key)
-
-        # Welle-5p-C HOTFIX: exclude bonds whose endpoints sit in a ring
-        # that also contains a metal (chelate-ring backbone bonds).
-        # Rotating these flips amine/donor-H orientation towards the
-        # metal — X10-ALEQEO 42% bug.  Universal — graph-feature only.
-        # Alkyl rotation (no nearby metal-ring) is unaffected.
-        if hotfix_on:
-            if _bond_endpoint_near_metal_ring(
-                graph, a, max_bonds=5
-            ) or _bond_endpoint_near_metal_ring(
-                graph, b, max_bonds=5
-            ):
-                continue
 
         # heavy-neighbour counts at each endpoint (excluding the partner)
         def _hcount(atom_idx: int, other_idx: int) -> Tuple[int, int]:

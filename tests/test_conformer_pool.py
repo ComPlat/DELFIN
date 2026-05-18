@@ -275,17 +275,13 @@ def test_layer_dof_count_cyclohexane_ring_pucker():
     assert dof["macrocycle"] == 0
 
 
-def test_layer3_chelate_with_synthetic_graph(monkeypatch):
+def test_layer3_chelate_with_synthetic_graph():
     """Layer-3 chelate-twist on a synthetic 5-ring (M, N, C, C, N) graph.
 
     OB's default bond perception does not connect transition metals to
     donors from XYZ alone, so we test Layer-3 by injecting a graph
     directly.  Universal-fundamental: only graph features used.
-
-    Welle-5p-C hotfix is default-ON and disables Layer-3 entirely;
-    we opt-in to test the layer's mechanics via the back-compat env.
     """
-    monkeypatch.setenv("DELFIN_5P_C_ALLOW_CHELATE_TWIST", "1")
     # 5-membered ring: M(0) - N(1) - C(2) - C(3) - N(4) - M(0)
     # Plus an outer atom on M to satisfy CN.
     graph = {
