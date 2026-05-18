@@ -16629,6 +16629,32 @@ def smiles_to_xyz_isomers(
             for (xyz, lbl), keep in zip(results, _keep) if keep
         ]
 
+    # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
+    # For each emitted isomer, sample staggered rotamers around bulky single
+    # bonds (tBu / PMe3 / iPr / NMe2 …) and append the top-K best-energy
+    # rotamer-frames as additional isomers labelled "<base>_rotamer-N".
+    # Runs after final dedup so rotamer entries are never collapsed by the
+    # label-suffix regex above. The helper is a no-op when the env-flag is
+    # unset, preserving byte-identical default behaviour.
+    try:
+        from delfin import _rotamer_diversity as _rot_div  # local import
+        if _rot_div._is_enabled() and results:
+            expanded: List[Tuple[str, str]] = []
+            for _ridx, (_rxyz, _rlbl) in enumerate(results):
+                _frames = _rot_div.apply_if_enabled(_rxyz)
+                # _frames[0] is the original XYZ; preserve it under the
+                # original label. _frames[1:] are rotamer-variants.
+                if not _frames:
+                    expanded.append((_rxyz, _rlbl))
+                    continue
+                expanded.append((_frames[0], _rlbl))
+                for _k_idx, _fxyz in enumerate(_frames[1:], start=1):
+                    _rot_label = f"{_rlbl}_rotamer-{_k_idx}" if _rlbl else f"rotamer-{_k_idx}"
+                    expanded.append((_fxyz, _rot_label))
+            results = expanded
+    except Exception as _rot_exc:
+        logger.debug("Welle-5l Track-6 rotamer expansion failed: %s", _rot_exc)
+
     return results, None
 
 
