@@ -208,6 +208,33 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print(f"\n{len(tasks)} tasks")
         return 0
 
+    if action == "latest":
+        import time as _time
+        rd = _bm.runs_dir()
+        if not rd.exists():
+            print("No runs yet — use `bench run --model X` first.")
+            return 0
+        files = sorted(
+            rd.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        limit = int(getattr(args, "limit", 10) or 10)
+        if not files:
+            print("No runs yet — use `bench run --model X` first.")
+            return 0
+        for f in files[:limit]:
+            ts = _time.strftime(
+                "%Y-%m-%d %H:%M", _time.localtime(f.stat().st_mtime),
+            )
+            try:
+                n_records = sum(
+                    1 for line in f.open(encoding="utf-8") if line.strip()
+                )
+            except OSError:
+                n_records = 0
+            print(f"  {ts}  {f.name}  ({n_records} tasks)")
+        return 0
+
     if action == "compare":
         baseline = Path(args.baseline).expanduser().resolve()
         candidate = Path(args.candidate).expanduser().resolve()
@@ -219,6 +246,11 @@ def cmd_bench(args: argparse.Namespace) -> int:
         cmp = _bm.compare_runs(baseline, candidate)
         if args.json:
             print(json.dumps(cmp, indent=2, ensure_ascii=False))
+            return 0
+        if getattr(args, "markdown", False):
+            print(_bm.format_compare_markdown(
+                cmp, baseline_path=baseline, candidate_path=candidate,
+            ))
             return 0
         s = cmp["summary"]
         print(f"Verdict: {cmp['verdict'].upper()}")
@@ -397,6 +429,12 @@ def build_parser() -> argparse.ArgumentParser:
     bench_ls = bench_sub.add_parser("list", help="List packaged tasks")
     bench_ls.set_defaults(bench_action="list")
 
+    bench_latest = bench_sub.add_parser(
+        "latest", help="List recent run files in ~/.delfin/benchmark_runs/",
+    )
+    bench_latest.add_argument("--limit", type=int, default=10)
+    bench_latest.set_defaults(bench_action="latest")
+
     bench_cmp = bench_sub.add_parser(
         "compare", help="Diff two run files: baseline vs candidate",
     )
@@ -404,6 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     bench_cmp.add_argument("candidate", help="Candidate JSONL run file")
     bench_cmp.add_argument("--json", action="store_true",
                            help="Emit raw JSON")
+    bench_cmp.add_argument("--markdown", action="store_true",
+                           help="Emit a markdown report (PR-body ready, "
+                                "annotates profile commits between runs)")
     bench.set_defaults(func=cmd_bench, bench_action="run")
 
     # session

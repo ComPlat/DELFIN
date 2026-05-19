@@ -23,9 +23,12 @@ provider.
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -517,6 +520,202 @@ def compare_runs(
     return {"per_task": per_task, "summary": summary, "verdict": verdict}
 
 
+# ---------------------------------------------------------------------------
+# Markdown export + profile-commit linking
+# ---------------------------------------------------------------------------
+
+
+def runs_dir() -> Path:
+    """Public accessor for the default runs directory."""
+    return _DEFAULT_RUNS_DIR
+
+
+def run_timestamp(path: Path) -> float:
+    """Return the ts of the first record (≈ run start) or 0 if unreadable.
+
+    Used to bracket ``git log`` so we can auto-find which profile commit
+    sits between a baseline and a candidate run.
+    """
+    records = read_run(path)
+    if records:
+        try:
+            return float(records[0].get("ts") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def find_profile_commits_between(
+    old_ts: float,
+    new_ts: float,
+    *,
+    profile_file: str = "delfin/agent/model_profiles.py",
+    repo_root: str | Path | None = None,
+    timeout_s: float = 5.0,
+) -> list[str]:
+    """Return ``<short-hash> <subject>`` lines for commits that touched
+    the profile file in the (old_ts, new_ts] window.
+
+    Used to auto-annotate compare reports so we know which knob change
+    drove the observed Δ.  Returns ``[]`` on any git failure (missing
+    repo, no commits, timeout) — never raises.
+    """
+
+    if old_ts <= 0 or new_ts <= 0 or new_ts <= old_ts:
+        return []
+    cwd = str(repo_root) if repo_root else os.getcwd()
+    # Pad the window by 1 s on each side: git stores commit timestamps at
+    # second precision, so a commit at exactly `new_ts` would otherwise
+    # be excluded by `--until` (which is strict "before").
+    try:
+        old_iso = datetime.fromtimestamp(max(0.0, old_ts - 1.0)).isoformat()
+        new_iso = datetime.fromtimestamp(new_ts + 1.0).isoformat()
+    except (OSError, ValueError, OverflowError):
+        return []
+    try:
+        out = subprocess.run(
+            [
+                "git", "log", "--oneline",
+                f"--since={old_iso}", f"--until={new_iso}",
+                "--", profile_file,
+            ],
+            capture_output=True, text=True, timeout=timeout_s, cwd=cwd,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if out.returncode != 0:
+        return []
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+
+
+_VERDICT_EMOJI = {
+    "better": "[+]", "worse": "[-]", "mixed": "[~]",
+    "neutral": "[=]", "thin": "[?]",
+}
+_CLASS_MARK = {"better": "[+]", "worse": "[-]", "neutral": "[=]"}
+
+
+def format_compare_markdown(
+    cmp_result: dict,
+    *,
+    baseline_path: Path | None = None,
+    candidate_path: Path | None = None,
+    include_profile_commits: bool = True,
+    repo_root: str | Path | None = None,
+) -> str:
+    """Render a ``compare_runs`` result as a markdown report.
+
+    Suitable for pasting into a PR body, memory entry, or chat message.
+    If both baseline_path and candidate_path are supplied AND
+    ``include_profile_commits=True``, the report also lists any commits
+    that touched ``delfin/agent/model_profiles.py`` between the two run
+    timestamps — the "which knob change drove this delta?" annotation.
+    """
+
+    summary = cmp_result.get("summary") or {}
+    verdict = str(cmp_result.get("verdict") or "neutral")
+    old = summary.get("old") or {}
+    new = summary.get("new") or {}
+
+    lines: list[str] = ["# Benchmark Comparison Report", ""]
+    lines.append(
+        f"**Verdict: {verdict.upper()}** "
+        f"{_VERDICT_EMOJI.get(verdict, '[?]')}"
+    )
+    lines.append(
+        f"  {summary.get('n_better', 0)} better, "
+        f"{summary.get('n_worse', 0)} worse, "
+        f"{summary.get('n_neutral', 0)} neutral  "
+        f"(n={summary.get('n_overlap', 0)})"
+    )
+    if baseline_path is not None:
+        lines.append(f"  Baseline:  `{baseline_path}`")
+    if candidate_path is not None:
+        lines.append(f"  Candidate: `{candidate_path}`")
+    lines.append("")
+
+    # Summary table
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("|              | Baseline   | Candidate  | Δ          |")
+    lines.append("|--------------|------------|------------|------------|")
+    op = float(old.get("pass_rate") or 0)
+    np_ = float(new.get("pass_rate") or 0)
+    lines.append(
+        f"| Pass rate    | {op:>9.0%}  | {np_:>9.0%}  | "
+        f"{(np_ - op) * 100:+8.0f}pp |"
+    )
+    oq = float(old.get("avg_quality") or 0)
+    nq = float(new.get("avg_quality") or 0)
+    lines.append(
+        f"| Avg quality  | {oq:>10.1f} | {nq:>10.1f} | {nq - oq:+10.1f} |"
+    )
+    oc = float(old.get("total_cost_usd") or 0)
+    nc = float(new.get("total_cost_usd") or 0)
+    lines.append(
+        f"| Total cost   | ${oc:>9.4f} | ${nc:>9.4f} | "
+        f"${nc - oc:+9.4f} |"
+    )
+    od = float(old.get("total_duration_s") or 0)
+    nd = float(new.get("total_duration_s") or 0)
+    lines.append(
+        f"| Total time   | {od:>9.1f}s | {nd:>9.1f}s | {nd - od:+9.1f}s |"
+    )
+    lines.append("")
+
+    # Per-task table
+    per_task = cmp_result.get("per_task") or []
+    if per_task:
+        lines.append("## Per-task")
+        lines.append("")
+        lines.append(
+            "| Task                          | Class   | Quality | Δq   | "
+            "Δcost     | Δdur      |"
+        )
+        lines.append(
+            "|-------------------------------|---------|---------|------|"
+            "-----------|-----------|"
+        )
+        for row in per_task:
+            mark = _CLASS_MARK.get(row.get("class") or "", "[?]")
+            tid = str(row.get("task_id") or "")[:30]
+            oq2 = int(row.get("old_quality") or 0)
+            nq2 = int(row.get("new_quality") or 0)
+            dq = int(row.get("d_quality") or 0)
+            dc = float(row.get("d_cost_usd") or 0)
+            dd = float(row.get("d_duration_s") or 0)
+            lines.append(
+                f"| `{tid:<29}` | {mark:<7} | {oq2:>3}→{nq2:<3} | "
+                f"{dq:+5d} | {dc:+9.4f} | {dd:+8.2f}s |"
+            )
+        lines.append("")
+
+    # Profile-commit annotation
+    if (include_profile_commits and baseline_path is not None
+            and candidate_path is not None):
+        try:
+            old_ts = run_timestamp(baseline_path)
+            new_ts = run_timestamp(candidate_path)
+            commits = find_profile_commits_between(
+                old_ts, new_ts, repo_root=repo_root,
+            )
+        except Exception:
+            commits = []
+        if commits:
+            lines.append("## Profile changes between runs")
+            lines.append("")
+            lines.append(
+                "Commits that modified "
+                "`delfin/agent/model_profiles.py`:"
+            )
+            lines.append("")
+            for c in commits:
+                lines.append(f"- `{c}`")
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 __all__ = [
     "Signal",
     "Task",
@@ -528,4 +727,8 @@ __all__ = [
     "read_run",
     "summarise_run",
     "compare_runs",
+    "runs_dir",
+    "run_timestamp",
+    "find_profile_commits_between",
+    "format_compare_markdown",
 ]
