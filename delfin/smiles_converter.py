@@ -1425,6 +1425,28 @@ def _class_conditional_flag(name: str, mol, default: int = 0,
     return bool(_delfin_env_int(name, default))
 
 
+def _every_append_gate_enabled(mol) -> bool:
+    """Iter-20 (2026-05-19) wrapper for DELFIN_EVERY_APPEND_GATE.
+
+    Default-flipped 0 → 1 for sigma class only (default_classes=["sigma"]).
+    Per cross-archive analysis CROSS_ARCHIVE_RERUN_2026_05_18.md, 123a130
+    is Champion in F3_bond (28.79%), bvs (72.75%), lig_realistic (26.22%),
+    F23_funcgrp_geom (0.51%), cshm_mean (4.16) via per-bond emit-gate.
+
+    Restricted to sigma class to avoid Co+2 M1B determinism issue
+    (feedback_head_co_baseline_latent_nondet: EVERY_APPEND_GATE port drops
+    Co+2 determinism from 80% to 60% via Chem.RWMol + AddConformer side
+    effects).  Hapto / multi_hapto unchanged.
+
+    Operator override via DELFIN_EVERY_APPEND_GATE=0 disables entirely,
+    DELFIN_EVERY_APPEND_GATE_CLASSES=csv overrides the class allow-list.
+    """
+    return _class_conditional_flag(
+        "DELFIN_EVERY_APPEND_GATE", mol, default=0,
+        default_classes=["sigma"],
+    )
+
+
 def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-13 Baustein 3 dispatch helper.
 
@@ -25579,7 +25601,7 @@ def _emit_chelate_pucker_variants(
                 label = f"pucker-{ring_size} {ptype}"
                 # Iter-8.7 every-append gate (123a130 port, env-gated, default OFF)
                 _gate_pass = True
-                if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                if _every_append_gate_enabled(mol):
                     try:
                         _flat = _flatten_sp2_atoms_xyz(new_xyz, mol)
                         if _flat:
@@ -25884,7 +25906,7 @@ def _emit_all_trans_by_type_arrangements(
                     label = f"trans-{geom} {type_str}"
                     # Iter-8.7 every-append gate (123a130, env-gated default OFF)
                     _gate_pass = True
-                    if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                    if _every_append_gate_enabled(mol):
                         try:
                             _flat = _flatten_sp2_atoms_xyz(xyz, mol)
                             if _flat:
@@ -28199,7 +28221,7 @@ def smiles_to_xyz_isomers(
                         _gie_existing_sigs.add(_heavy)
                         # Iter-8.7 every-append gate (123a130, env-gated, default OFF)
                         _gate_pass = True
-                        if _delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0):
+                        if _every_append_gate_enabled(mol):
                             try:
                                 _flat = _flatten_sp2_atoms_xyz(_refined, mol)
                                 if _flat:
@@ -28237,7 +28259,7 @@ def smiles_to_xyz_isomers(
     ):
         try:
             _h1_results: List[Tuple[str, str]] = []
-            _h1_gate_on = bool(_delfin_env_int("DELFIN_EVERY_APPEND_GATE", 0))
+            _h1_gate_on = bool(_every_append_gate_enabled(mol))
             for _h1_xyz, _h1_lbl in results:
                 try:
                     _h1_xyz_snapped = _snap_aromatic_rings_in_xyz(
