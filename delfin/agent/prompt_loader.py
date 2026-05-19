@@ -593,8 +593,120 @@ class PromptLoader:
                 active.add(name)
         return active
 
+    # Models whose attention degrades quickly past 4 k of system prompt.
+    # Auto-trigger ``compact_prompt`` for these + any explicit
+    # ``agent.compact_prompt: true`` setting. The shape is family-
+    # prefix + (\W.*?)? + size-suffix, so names with arbitrary middles
+    # like "qwen2.5-coder:7b" still match. Conservative — only the
+    # small / weak-tier; larger MoE models (qwen3.5-397b, gpt-oss-
+    # 120b, etc.) handle the regular slim prompt fine.
+    _WEAK_MODEL_PATTERNS = (
+        r"gemma.*?(?:^|[^0-9])(?:1|2|3|4|7|9)b\b",
+        r"llama.*?(?:^|[^0-9])(?:3|7|8)b\b",
+        r"qwen.*?(?:^|[^0-9])(?:1\.5|3|7|14)b\b",
+        r"phi.*?(?:^|[^0-9])(?:1\.5|2|3|4)b\b",
+        r"phi-?\d(?![0-9])",                   # phi-1 / phi-2 / phi-3 (bare)
+        r"mistral.*?(?:^|[^0-9])(?:3|7)b\b",
+        r"deepseek.*?(?:lite|(?:^|[^0-9])(?:6|7)b\b)",
+        r"codellama.*?(?:^|[^0-9])(?:7|13)b\b",
+        r"\bsmall[lm]?\b",                      # generic "small" marker
+    )
+    _COMPACT_LINE_MAX = 80   # collapse paragraphs longer than this when compact
+    _COMPACT_TARGET_TOKENS = 3000
+
+    def _is_weak_model(self, model: str = "") -> bool:
+        """Heuristic — does the active model need the compact prompt?"""
+        if not model:
+            return False
+        m = model.lower()
+        import re as _re_wm
+        return any(_re_wm.search(p, m) for p in self._WEAK_MODEL_PATTERNS)
+
+    def _compact_prose(self, text: str) -> str:
+        """Aggressively shrink long prose sections for weak models.
+
+        Strategy: walk the text paragraph-by-paragraph (paragraph =
+        block of consecutive non-blank lines that aren't headers /
+        bullets / code-fences / table rows). For each prose paragraph,
+        join its lines, keep only the FIRST sentence (up to the first
+        period+space), drop the rest. Headers, bullets, code blocks,
+        and tables pass through untouched — those are structural signal
+        the model leans on for navigation.
+        """
+        if not text:
+            return text
+
+        def _is_structural(stripped: str) -> bool:
+            return (
+                stripped.startswith("#")          # header
+                or stripped.startswith("-")        # bullet
+                or stripped.startswith("*")        # bullet
+                or stripped.startswith("|")        # table row
+                or stripped.startswith("> ")       # blockquote
+                or stripped.startswith(">")        # blockquote
+                or stripped.startswith("```")      # code fence
+                or stripped == "---"               # hr / frontmatter
+                or (len(stripped) > 1 and stripped[0].isdigit()
+                    and stripped[1] in ".)")        # 1. / 1)
+            )
+
+        lines = text.splitlines()
+        out: list[str] = []
+        in_code = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code = not in_code
+                out.append(line)
+                i += 1
+                continue
+            if in_code:
+                out.append(line)
+                i += 1
+                continue
+            if not stripped or _is_structural(stripped):
+                out.append(line)
+                i += 1
+                continue
+            # Collect the full paragraph (run of prose lines)
+            paragraph: list[str] = [line]
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j].strip()
+                if not nxt or _is_structural(nxt) or nxt.startswith("```"):
+                    break
+                paragraph.append(lines[j])
+                j += 1
+            joined = " ".join(p.strip() for p in paragraph).strip()
+            # Keep only the first sentence
+            end = joined.find(". ")
+            if end > 30:
+                kept = joined[: end + 1]
+            elif len(joined) > 200:
+                # Long unpunctuated prose — cap at 200 chars
+                kept = joined[:200].rstrip() + " …"
+            else:
+                kept = joined
+            indent_len = len(line) - len(line.lstrip())
+            out.append(" " * indent_len + kept)
+            i = j
+        # Collapse runs of empty lines to a single one
+        result: list[str] = []
+        blank = False
+        for ln in out:
+            if ln.strip():
+                result.append(ln)
+                blank = False
+            elif not blank:
+                result.append(ln)
+                blank = True
+        return "\n".join(result)
+
     def _strip_lazy_modules(
         self, text: str, *, task_text: str, mode_id: str,
+        model: str = "",
     ) -> str:
         """Drop ``<!-- module:X -->``-marked sections whose triggers
         didn't match the current task text.
@@ -604,6 +716,12 @@ class PromptLoader:
         non-module headers between modules are NOT swallowed). The
         marker line itself is always removed; surviving sections come
         through unchanged.
+
+        For weak models (gemma-* / llama-*8b / qwen-*7b / phi-* /
+        mistral-7b / etc.) OR when ``agent.compact_prompt: true`` is
+        set, the surviving prose is run through ``_compact_prose`` to
+        cut prompt size to ~3 k tokens. Small models attend much
+        better to a compact pinpoint prompt than a verbose 10 k one.
         """
         if not text or "<!-- module:" not in text:
             return text
@@ -611,11 +729,17 @@ class PromptLoader:
             from delfin.user_settings import load_settings as _load_settings
             _agent_cfg = (_load_settings() or {}).get("agent", {}) or {}
             _enabled = bool(_agent_cfg.get("slim_prompt", True))
+            _compact_setting = bool(_agent_cfg.get("compact_prompt", False))
         except Exception:
             _enabled = True
+            _compact_setting = False
         if not _enabled:
             # Just strip the marker comments but keep all content
             return self._MODULE_MARKER_RE.sub("", text)
+
+        # Compact mode activates either explicitly (setting) or
+        # heuristically (weak-model detection).
+        _compact = _compact_setting or self._is_weak_model(model)
 
         active = self._detect_active_modules(task_text, mode_id)
         lines = text.splitlines(keepends=True)
@@ -658,7 +782,10 @@ class PromptLoader:
                 if stripped.startswith("## "):
                     break
                 i += 1
-        return "".join(out)
+        result = "".join(out)
+        if _compact:
+            result = self._compact_prose(result)
+        return result
 
     def load_input_template(self) -> str:
         """Load universal_input_template.md."""
@@ -734,6 +861,7 @@ class PromptLoader:
         task_text: str = "",
         session_key: str = "",
         live_state: str = "",
+        model: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -784,6 +912,7 @@ class PromptLoader:
                 try:
                     role_prompt = self._strip_lazy_modules(
                         role_prompt, task_text=task_text, mode_id=mode_id,
+                        model=model,
                     )
                 except Exception:
                     pass

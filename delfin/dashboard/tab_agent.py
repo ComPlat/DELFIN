@@ -1003,6 +1003,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
+    ("Plan", "/plan approve", "Approve a pending plan when model forgot ExitPlanMode", False),
+    ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
@@ -6837,6 +6839,56 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        # /plan approve | /plan reject — manual fallback for plan-mode
+        # when the model forgets to call exit_plan_mode. Especially
+        # important for weak models that hallucinate or never emit the
+        # tool call. The user can read the plan in chat and unblock the
+        # session without restarting.
+        if cmd in ("/plan approve", "/plan reject"):
+            ev = state.get("_plan_approval_event")
+            result = state.get("_plan_approval_result")
+            if ev is None or result is None:
+                _append_system_message(
+                    "No plan is currently awaiting approval. "
+                    "Switch to /mode plan and ask the agent to draft a plan."
+                )
+                return True
+            if cmd == "/plan approve":
+                result["approved"] = True
+                result["new_mode"] = "acceptEdits"
+                # Persist the pending plan body the same way the click
+                # handler does, so /plan approve and the button are
+                # functionally identical.
+                plan_body = state.pop("_pending_plan_body", "") or ""
+                if plan_body.strip():
+                    try:
+                        from delfin.agent.memory_store import save_plan
+                        fpath = save_plan(
+                            plan_body, repo_root=ctx.repo_dir or "."
+                        )
+                        short = str(fpath).replace(str(Path.home()), "~")
+                        result["plan_path"] = str(fpath)
+                        _append_system_message(
+                            f"📝 Plan saved → {short}"
+                        )
+                    except Exception as exc:
+                        _append_system_message(
+                            f"Plan save failed: {exc}"
+                        )
+                _append_system_message(
+                    "✅ Plan approved via /plan approve fallback. "
+                    "Mode flipped to acceptEdits — the agent can now "
+                    "execute the plan."
+                )
+            else:
+                result["approved"] = False
+                result["new_mode"] = "default"
+                _append_system_message(
+                    "🚫 Plan rejected via /plan reject fallback."
+                )
+            ev.set()
+            return True
+
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
@@ -10506,8 +10558,8 @@ def create_tab(ctx):
             "/help", "/clear", "/cost", "/compact", "/stop", "/status",
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-            "/memories", "/remember", "/forget", "/plans", "/hooks", "/session",
-            "/mcp", "/commands", "/init", "/bash", "/failures",
+            "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
+            "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/recalc", "/cancel", "/context", "/agents", "/skills",
