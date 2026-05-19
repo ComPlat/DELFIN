@@ -521,11 +521,14 @@ class APIClient(_BaseClient):
         except ImportError:
             _auto_install("anthropic", "anthropic>=0.40")
             import anthropic  # noqa: F401
-        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        from .credentials import load_credential as _load_cred_anth
+        resolved_key = api_key or _load_cred_anth("ANTHROPIC_API_KEY")
         if not resolved_key:
             raise ValueError(
-                "No Anthropic API key found. Set the ANTHROPIC_API_KEY "
-                "environment variable before launching the dashboard."
+                "No Anthropic API key found. Either set ANTHROPIC_API_KEY in "
+                "the environment, or run `python -m delfin.agent.cli "
+                "credentials set ANTHROPIC_API_KEY` to store it in "
+                "~/.delfin/credentials.json (chmod 0600)."
             )
         import anthropic
 
@@ -5006,11 +5009,14 @@ class OpenAIClient(_BaseClient):
         except ImportError:
             _auto_install("openai", "openai>=1.0")
             import openai  # noqa: F401
-        resolved_key = api_key or os.environ.get(key_env_var, "")
+        from .credentials import load_credential as _load_cred_oai
+        resolved_key = api_key or _load_cred_oai(key_env_var)
         if not resolved_key:
             raise ValueError(
-                f"No API key found. Set the {key_env_var} "
-                "environment variable before launching the dashboard."
+                f"No API key found. Either set {key_env_var} in the "
+                "environment, or run `python -m delfin.agent.cli "
+                f"credentials set {key_env_var}` to store it in "
+                "~/.delfin/credentials.json (chmod 0600)."
             )
         import openai
 
@@ -5822,7 +5828,8 @@ def create_client(
         Extra writable directories for the CLI (``--add-dir``).
     """
     if provider == "kit":
-        kit_key = api_key or os.environ.get("KIT_TOOLBOX_API_KEY", "")
+        from .credentials import load_credential as _load_cred
+        kit_key = api_key or _load_cred("KIT_TOOLBOX_API_KEY")
         kit_workspace = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
 
         # Pull persisted user/repo settings (.delfin-style two-tier
@@ -5892,7 +5899,8 @@ def create_client(
         if backend == "cli":
             return CodexCLIClient(model=model, cwd=cwd,
                                   permission_mode=permission_mode)
-        openai_key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        from .credentials import load_credential as _load_cred_openai
+        openai_key = api_key or _load_cred_openai("OPENAI_API_KEY")
         return OpenAIClient(api_key=openai_key, model=model)
     if provider == "ollama":
         # Ollama, vLLM, LM Studio, llama.cpp-server etc. expose an

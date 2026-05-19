@@ -254,9 +254,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab_lit, _refs_lit = tab_literature.create_tab(ctx)
     tab_ag, refs_ag = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
-    _agent_backend_available = bool(
-        shutil.which("claude") or os.environ.get("ANTHROPIC_API_KEY", "")
-    )
+    try:
+        from delfin.agent.credentials import load_credential as _lc_anth
+        _anth_key = _lc_anth("ANTHROPIC_API_KEY")
+    except Exception:
+        _anth_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    _agent_backend_available = bool(shutil.which("claude") or _anth_key)
 
     tab_specs = [
         {
