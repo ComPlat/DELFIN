@@ -9550,14 +9550,53 @@ def create_tab(ctx):
         # alone returns only ["__DONE__"], which the continuation loop
         # treats as "agent had no actions to execute".
         lines = agent_text.split("\n")
-        _done_seen = any(_re.match(r"^ACTION:\s*/done\b", ln) for ln in lines)
+        # Fault-tolerant ACTION-line parser. Weak local models often
+        # emit slight variations of the canonical "ACTION: /cmd" form:
+        #   ACTION: /tab calc      (canonical)
+        #   ACTION:/tab calc       (no space after colon)
+        #   ACTION /tab calc       (no colon)
+        #   Action: /tab calc      (lower-case keyword)
+        #   /tab calc              (bare slash command — known prefixes)
+        # The helper below accepts all of them. Bare-slash lines
+        # require a known prefix to avoid false-positives on
+        # filesystem paths ("/home/user/file") or URLs.
+        _KNOWN_SLASH_PREFIXES = frozenset((
+            "/tab", "/control", "/orca", "/submit", "/recalc", "/cancel",
+            "/calc", "/analyze", "/jobs", "/ui", "/workspace",
+            "/done",
+        ))
+        _ACTION_RE = _re.compile(
+            r"^\s*(?:ACTION\s*[:.]?\s*)?(/\S+.*?)\s*$",
+            _re.IGNORECASE,
+        )
+
+        def _action_cmd(ln: str) -> str:
+            """Return the slash-command text if ``ln`` is an ACTION-line
+            (canonical, tolerant, or bare-slash with a known prefix);
+            else ''."""
+            stripped = ln.strip()
+            m = _ACTION_RE.match(stripped)
+            if not m:
+                return ""
+            cmd_text = m.group(1).strip()
+            if stripped.upper().startswith("ACTION"):
+                return cmd_text
+            # Bare-slash: only accept if the first token is a known
+            # dashboard slash-command prefix.
+            first = cmd_text.split()[0].lower()
+            if first in _KNOWN_SLASH_PREFIXES:
+                return cmd_text
+            return ""
+
+        _done_seen = any(
+            _action_cmd(ln).lower().startswith("/done") for ln in lines
+        )
 
         commands: list[str] = []
         i = 0
         while i < len(lines):
-            m = _re.match(r"^ACTION:\s*(/\S+.*)$", lines[i])
-            if m:
-                cmd = m.group(1)
+            cmd = _action_cmd(lines[i])
+            if cmd:
                 # /done is the wrap-up sentinel — never executed as a real
                 # command, just signals to the outer loop. Skip the
                 # dispatch path entirely.
@@ -9569,7 +9608,7 @@ def create_tab(ctx):
                     content_lines = [cmd[len("/control set "):]]
                     i += 1
                     while i < len(lines):
-                        if _re.match(r"^ACTION:\s*/", lines[i]):
+                        if _action_cmd(lines[i]):
                             break
                         if lines[i].strip() in ("```", ""):
                             i += 1

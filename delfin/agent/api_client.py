@@ -791,6 +791,31 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "task_create", "task_update", "task_list", "task_get",
 })
 
+# Tools advertised to weak local models (gemma-7b, llama-8b, qwen-7b,
+# phi-3.5, mistral-7b, codellama-7b). 15-tool core that covers 95% of
+# real agent use without overwhelming the model's tool-routing
+# attention. Strong models keep the full 45+ surface — they handle
+# disambiguation reliably; weak ones routinely pick the wrong tool
+# out of a large schema (notebook_edit for a Python file, cron_create
+# instead of /control key, etc.).
+_WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
+    # File-system core
+    "read_file", "write_file", "edit_file", "multi_edit",
+    "grep_file", "list_files",
+    # Shell + verification
+    "bash", "run_tests",
+    # User interaction
+    "ask_user_question",
+    # Planning + delegation
+    "task_create", "task_update", "task_list",
+    "subagent",
+    # Web fallback for simple lookups
+    "web_search",
+    # Skill invocation (lets the user route weak models through
+    # well-defined prompt templates)
+    "skill",
+})
+
 
 def _is_delfin_workspace(workspace: Path | str | None) -> bool:
     """Return True iff *workspace* looks like a DELFIN source tree.
@@ -5158,6 +5183,25 @@ class OpenAIClient(_BaseClient):
                 t for t in advertised_tools
                 if t.get("function", {}).get("name")
                 not in _DELFIN_ONLY_TOOL_NAMES
+            ]
+
+        # Weak-model core-tool filter. Small local models (gemma-7b,
+        # llama-8b, qwen-7b, phi-3.5, mistral-7b, codellama-7b) routinely
+        # pick the wrong tool out of 45 options and end up calling
+        # ``notebook_edit`` for a Python file or ``cron_create`` to set
+        # a CONTROL key. Trim the surface to a 15-tool core that covers
+        # 95% of real agent use: read / write / edit / bash / grep /
+        # subagent / task* / ask_user / a few more. Strong models keep
+        # the full surface — they handle disambiguation reliably.
+        try:
+            from .prompt_loader import PromptLoader
+            _is_weak = PromptLoader()._is_weak_model(self.model)
+        except Exception:
+            _is_weak = False
+        if _is_weak:
+            advertised_tools = [
+                t for t in advertised_tools
+                if t.get("function", {}).get("name") in _WEAK_MODEL_CORE_TOOLS
             ]
 
         # Augment with MCP tools discovered from configured servers.
