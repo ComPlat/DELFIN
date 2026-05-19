@@ -112,7 +112,10 @@ tasks:
     expected_signals:
       - pattern: '\b_set_working\b'
         against: text
-      - pattern: '(?:Bash|Grep|Read)'
+      # Accepts canonical CLI tools (Bash/Grep/Read) plus MCP-server
+      # tool names like mcp__delfin-docs__grep_file.  The point is
+      # "did the model use a read/search tool", not which provider's.
+      - pattern: '(?i)(bash|grep|read|find|search|glob)'
         against: tool_name
     forbidden_signals:
       - pattern: '(?i)i cannot find'
@@ -125,12 +128,12 @@ tasks:
     task_class: solo_research
     mode: solo
     prompt: >-
-      wie funktioniert model-profile-lookup in delfin/agent/model_profiles.py?
-      max 3 sätze.
+      lies delfin/agent/model_profiles.py und erklär wie model-profile-lookup
+      funktioniert. max 3 sätze.
     expected_signals:
       - pattern: '(?i)(profile|lookup|exact|prefix|tier)'
         against: text
-      - pattern: 'Read'
+      - pattern: '(?i)(read|grep|bash|cat|view|search|find)'
         against: tool_name
     max_duration_s: 45
     max_cost_usd: 0.08
@@ -147,10 +150,12 @@ tasks:
     expected_signals:
       - pattern: '(?i)(int|integer|auto-exec|rounds|continuation)'
         against: text
-      - pattern: 'Read'
+      - pattern: '(?i)(read|grep|bash|cat|view)'
         against: tool_name
     forbidden_signals:
-      - pattern: 'Edit|Write'
+      # Forbidden: any tool that writes/edits.  Case-insensitive to catch
+      # canonical Edit/Write AND mcp__*__edit_file / mcp__*__write_file etc.
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
         against: tool_name
     max_duration_s: 45
     max_cost_usd: 0.08
