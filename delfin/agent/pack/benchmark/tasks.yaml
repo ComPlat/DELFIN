@@ -1,0 +1,171 @@
+# Benchmark task suite for iterative agent optimisation.
+#
+# Each task is a self-contained prompt + outcome rubric.  The runner sends
+# `prompt` to the engine in the requested `mode`, then the scorer checks
+# the full trajectory (text + action lines + tool calls) against the
+# expected / forbidden signal patterns.
+#
+# Signal kinds:
+#   - against=text      → matches against assistant text output only
+#   - against=action    → matches against ACTION: lines or bare slash commands
+#   - against=tool_name → matches against the name of any tool call
+#   - against=any       → matches anywhere in the trajectory (default)
+#
+# Add `optional: true` to mark a signal as a bonus (counts toward routing
+# points but its absence does not flip `success` to False).
+#
+# A task is `success=True` iff every non-optional `expected_signals` matched
+# AND every `forbidden_signals` did NOT match.  Cost / duration / call-count
+# budgets are tracked separately and influence the quality score, not the
+# binary success.
+
+tasks:
+
+  # ── dashboard-nav: simple intent → /tab switch ─────────────────────────
+  - id: dash_nav_calc_typo
+    task_class: dashboard_nav
+    mode: dashboard
+    prompt: "öffne Claultions"          # deliberate typo, fuzzy-match target
+    expected_signals:
+      - pattern: '(?:ACTION:\s*)?/tab\s+calc(?:ulations)?'
+        against: action
+    forbidden_signals:
+      - pattern: '(?i)(cannot|don.?t understand|please clarify|spelling)'
+        against: text
+    max_duration_s: 12
+    max_cost_usd: 0.02
+    max_tool_calls: 3
+
+  - id: dash_nav_submit
+    task_class: dashboard_nav
+    mode: dashboard
+    prompt: "wechsel zu Submit"
+    expected_signals:
+      - pattern: '(?:ACTION:\s*)?/tab\s+submit'
+        against: action
+    forbidden_signals:
+      - pattern: '(?i)(cannot|i.?m not sure)'
+        against: text
+    max_duration_s: 10
+    max_cost_usd: 0.02
+    max_tool_calls: 2
+
+  - id: dash_nav_settings_fuzzy
+    task_class: dashboard_nav
+    mode: dashboard
+    prompt: "geh in Setings"             # typo: Setings → Settings
+    expected_signals:
+      - pattern: '(?:ACTION:\s*)?/tab\s+settings'
+        against: action
+    max_duration_s: 10
+    max_cost_usd: 0.02
+    max_tool_calls: 2
+
+  # ── dashboard-explain: short factual answer, no tool needed ────────────
+  - id: dash_explain_fukui
+    task_class: dashboard_explain
+    mode: dashboard
+    prompt: "was macht der Fukui-Tab kurz"
+    expected_signals:
+      - pattern: '(?i)(fukui|reaktiv|electrophil|nucleophil|f\+|f-)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(i don.?t know|sorry, cannot)'
+        against: text
+    max_duration_s: 30
+    max_cost_usd: 0.05
+    max_tool_calls: 1     # may consult one file, but should mostly answer from prompt
+
+  - id: dash_explain_orca_builder
+    task_class: dashboard_explain
+    mode: dashboard
+    prompt: "erkläre kurz den ORCA Builder Tab in 2 sätzen"
+    expected_signals:
+      - pattern: '(?i)(orca|input.?file|keyword|method|basis)'
+        against: text
+    max_duration_s: 30
+    max_cost_usd: 0.05
+    max_tool_calls: 1
+
+  # ── dashboard-recommend: opinionated short answer ──────────────────────
+  - id: dash_recommend_basis_tmc
+    task_class: dashboard_recommend
+    mode: dashboard
+    prompt: "welche basis empfiehlst du für eine schnelle TMC-optimierung?"
+    expected_signals:
+      - pattern: '(?i)(def2-svp|def2.svp|ma-def2|svp)'
+        against: text
+        optional: true
+      - pattern: '(?i)(basis|def2|ecp|effective core)'
+        against: text
+    max_duration_s: 40
+    max_cost_usd: 0.06
+    max_tool_calls: 1
+
+  # ── solo-research: read-only navigation ───────────────────────────────
+  - id: solo_research_setworking
+    task_class: solo_research
+    mode: solo
+    prompt: >-
+      finde alle stellen wo _set_working in delfin/dashboard/tab_agent.py
+      aufgerufen wird und zähl sie. nur die zahl + zwei beispiel-zeilen.
+    expected_signals:
+      - pattern: '\b_set_working\b'
+        against: text
+      - pattern: '(?:Bash|Grep|Read)'
+        against: tool_name
+    forbidden_signals:
+      - pattern: '(?i)i cannot find'
+        against: text
+    max_duration_s: 60
+    max_cost_usd: 0.10
+    max_tool_calls: 5
+
+  - id: solo_research_profile_lookup
+    task_class: solo_research
+    mode: solo
+    prompt: >-
+      wie funktioniert model-profile-lookup in delfin/agent/model_profiles.py?
+      max 3 sätze.
+    expected_signals:
+      - pattern: '(?i)(profile|lookup|exact|prefix|tier)'
+        against: text
+      - pattern: 'Read'
+        against: tool_name
+    max_duration_s: 45
+    max_cost_usd: 0.08
+    max_tool_calls: 3
+
+  # ── solo-edit: small targeted edit ────────────────────────────────────
+  - id: solo_edit_docstring_noop
+    task_class: solo_edit
+    mode: solo
+    prompt: >-
+      lies delfin/agent/agent_metrics.py und nenne den datentyp und die
+      bedeutung des feldes "continuation_rounds" in TurnMetrics in 1 satz.
+      KEINE edits machen.
+    expected_signals:
+      - pattern: '(?i)(int|integer|auto-exec|rounds|continuation)'
+        against: text
+      - pattern: 'Read'
+        against: tool_name
+    forbidden_signals:
+      - pattern: 'Edit|Write'
+        against: tool_name
+    max_duration_s: 45
+    max_cost_usd: 0.08
+    max_tool_calls: 3
+
+  # ── debug: error message → action ─────────────────────────────────────
+  - id: debug_action_parse
+    task_class: debug
+    mode: dashboard
+    prompt: >-
+      der spinner dreht aber die action wird nicht ausgeführt: "ACTION:/tab calc"
+      (ohne leerzeichen). geht das oder nicht?
+    expected_signals:
+      - pattern: '(?i)(ja|yes|works|funktioniert|tolerant|akzepti)'
+        against: text
+    max_duration_s: 30
+    max_cost_usd: 0.05
+    max_tool_calls: 2
