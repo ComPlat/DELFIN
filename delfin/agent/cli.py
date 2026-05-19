@@ -334,6 +334,72 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_credentials(args: argparse.Namespace) -> int:
+    """Manage credentials in ~/.delfin/credentials.json (chmod 0600).
+
+    No subcommand here echoes a stored value — `list` masks every key
+    so the user can verify WHICH credentials are stored without exposing
+    them.  Input is read via getpass so the value is never visible on
+    screen and never lands in shell history.
+    """
+    import getpass
+    from . import credentials as _cred
+    action = getattr(args, "cred_action", "list") or "list"
+
+    if action == "list":
+        items = _cred.list_credentials()
+        if not items:
+            print("No credentials configured.")
+            print()
+            print("To store one securely (input is hidden, never echoed):")
+            print("  python -m delfin.agent.cli credentials set "
+                  "KIT_TOOLBOX_API_KEY")
+            print("Other well-known names: OPENAI_API_KEY, ANTHROPIC_API_KEY")
+            return 0
+        print(f"Credentials (file: {_cred.credentials_path()})")
+        print()
+        for name in sorted(items):
+            info = items[name]
+            src = info.get("source", "?")
+            tag = "[env]" if src == "env" else "[file]"
+            print(f"  {name:<28}  {info.get('value', ''):<14}  {tag}")
+        return 0
+
+    name = (getattr(args, "name", "") or "").strip()
+    if not name:
+        print("ERROR: credential name required.", file=sys.stderr)
+        return 2
+
+    if action == "delete":
+        if _cred.delete_credential(name):
+            print(f"Removed {name}.")
+            return 0
+        print(f"No credential named {name}.", file=sys.stderr)
+        return 1
+
+    if action == "set":
+        try:
+            value = getpass.getpass(
+                f"Enter value for {name} (input hidden, no echo): "
+            )
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return 130
+        if not value:
+            print("No value entered, aborting.", file=sys.stderr)
+            return 1
+        ok = _cred.set_credential(name, value)
+        if ok:
+            print(f"Stored {name} = {_cred.mask(value)} "
+                  f"in {_cred.credentials_path()} (chmod 0600)")
+        else:
+            print(f"{name} already stored with this value (no change).")
+        return 0
+
+    print(f"Unknown credentials action: {action}", file=sys.stderr)
+    return 2
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     from . import session_store as _ss
     if args.session_action == "ls":
@@ -446,6 +512,28 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Emit a markdown report (PR-body ready, "
                                 "annotates profile commits between runs)")
     bench.set_defaults(func=cmd_bench, bench_action="run")
+
+    # credentials — secure key management
+    cred = sub.add_parser(
+        "credentials",
+        help=("Manage API keys in ~/.delfin/credentials.json (chmod 0600); "
+              "no stored value is ever echoed back"),
+    )
+    cred_sub = cred.add_subparsers(dest="cred_action", required=False)
+
+    cred_ls = cred_sub.add_parser("list", help="List stored credentials (masked)")
+    cred_ls.set_defaults(cred_action="list")
+
+    cred_set = cred_sub.add_parser(
+        "set", help="Store a credential (value read via getpass, no echo)",
+    )
+    cred_set.add_argument("name",
+                          help="Credential name, e.g. KIT_TOOLBOX_API_KEY")
+
+    cred_del = cred_sub.add_parser("delete", help="Remove a stored credential")
+    cred_del.add_argument("name")
+
+    cred.set_defaults(func=cmd_credentials, cred_action="list")
 
     # session
     sess = sub.add_parser("session", help="Session inspection")

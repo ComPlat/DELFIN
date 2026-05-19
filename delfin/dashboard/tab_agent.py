@@ -13,6 +13,21 @@ from pathlib import Path
 import ipywidgets as widgets
 
 
+def _provider_key(name: str) -> str:
+    """Resolve an API key: env-var first, then ~/.delfin/credentials.json.
+
+    Mirrors the lookup in delfin/agent/api_client.py so the dashboard's
+    provider-availability checks see file-stored keys, not just env-var
+    keys.  Falls back to bare ``os.environ.get`` if the credentials
+    module is unavailable for any reason.
+    """
+    try:
+        from delfin.agent.credentials import load_credential as _lc
+        return _lc(name)
+    except Exception:
+        return os.environ.get(name, "")
+
+
 # ---------------------------------------------------------------------------
 # CSS for the chat interface
 # ---------------------------------------------------------------------------
@@ -2205,11 +2220,11 @@ def create_tab(ctx):
 
     # Detect which providers are actually usable
     _available_providers: list[tuple[str, str]] = []
-    if _cli_available or os.environ.get("ANTHROPIC_API_KEY", ""):
+    if _cli_available or _provider_key("ANTHROPIC_API_KEY"):
         _available_providers.append(("Claude", "claude"))
-    if _codex_cli_available or os.environ.get("OPENAI_API_KEY", ""):
+    if _codex_cli_available or _provider_key("OPENAI_API_KEY"):
         _available_providers.append(("OpenAI", "openai"))
-    if os.environ.get("KIT_TOOLBOX_API_KEY", ""):
+    if _provider_key("KIT_TOOLBOX_API_KEY"):
         _available_providers.append(("KIT Toolbox", "kit"))
     # Detect a local OpenAI-compatible server (Ollama / vLLM / LM Studio /
     # llama.cpp). We probe the host's /api/tags (Ollama-native) and fall
@@ -2407,7 +2422,7 @@ def create_tab(ctx):
         import json as _json
         try:
             if provider == "kit":
-                key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+                key = _provider_key("KIT_TOOLBOX_API_KEY")
                 if not key:
                     return None
                 url = "https://ki-toolbox.scc.kit.edu/api/v1/models"
@@ -2418,7 +2433,7 @@ def create_tab(ctx):
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = _json.loads(resp.read())
             elif provider == "openai":
-                key = os.environ.get("OPENAI_API_KEY", "")
+                key = _provider_key("OPENAI_API_KEY")
                 if not key:
                     return None
                 url = "https://api.openai.com/v1/models"
@@ -2523,9 +2538,9 @@ def create_tab(ctx):
             else len(_PROVIDER_MODELS[_init_provider])
         ),
         "key_present": (
-            bool(os.environ.get("KIT_TOOLBOX_API_KEY", ""))
+            bool(_provider_key("KIT_TOOLBOX_API_KEY"))
             if _init_provider == "kit"
-            else bool(os.environ.get("OPENAI_API_KEY", ""))
+            else bool(_provider_key("OPENAI_API_KEY"))
             if _init_provider == "openai"
             else True
         ),
@@ -4322,12 +4337,12 @@ def create_tab(ctx):
             preferred = settings.get("backend", "cli")
             if preferred == "cli" and _codex_cli_available:
                 return "cli"
-            if preferred == "api" and os.environ.get("OPENAI_API_KEY", ""):
+            if preferred == "api" and _provider_key("OPENAI_API_KEY"):
                 return "api"
             # Fallback: CLI first, then API
             if _codex_cli_available:
                 return "cli"
-            if os.environ.get("OPENAI_API_KEY", ""):
+            if _provider_key("OPENAI_API_KEY"):
                 return "api"
             return "cli"  # will error at runtime with helpful message
         settings = _get_agent_settings()
@@ -4335,12 +4350,12 @@ def create_tab(ctx):
         if preferred == "cli" and _cli_available:
             return "cli"
         if preferred == "api":
-            if os.environ.get("ANTHROPIC_API_KEY", ""):
+            if _provider_key("ANTHROPIC_API_KEY"):
                 return "api"
         # Fallback: try CLI first, then API
         if _cli_available:
             return "cli"
-        if os.environ.get("ANTHROPIC_API_KEY", ""):
+        if _provider_key("ANTHROPIC_API_KEY"):
             return "api"
         return "cli"  # will error at runtime
 
@@ -4353,11 +4368,11 @@ def create_tab(ctx):
         provider = provider_dropdown.value
         backend = _resolve_backend()
         if provider == "kit":
-            api_key = os.environ.get("KIT_TOOLBOX_API_KEY", "")
+            api_key = _provider_key("KIT_TOOLBOX_API_KEY")
         elif provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY", "")
+            api_key = _provider_key("OPENAI_API_KEY")
         else:
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            api_key = _provider_key("ANTHROPIC_API_KEY")
         model = model_dropdown.value or settings.get("model", "")
 
         try:
