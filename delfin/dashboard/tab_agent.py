@@ -7843,6 +7843,33 @@ def create_tab(ctx):
                 return True
             import re as _re
             old = cw.value
+            # Fuzzy-match the key against keys already present in CONTROL,
+            # so typos like "fucntional" land on "functional" instead of
+            # silently appending a new bogus key. Only kicks in when the
+            # literal key is NOT already in the file — preserves the
+            # "add new key" capability for genuinely new keys.
+            existing_keys = _re.findall(r"^([A-Za-z_][\w-]*)\s*=", old,
+                                         flags=_re.MULTILINE)
+            if existing_keys and key.lower() not in {k.lower() for k in existing_keys}:
+                import difflib as _difflib
+                scored = sorted(
+                    (
+                        (
+                            _difflib.SequenceMatcher(
+                                None, key.lower(), ek.lower()
+                            ).ratio(),
+                            ek,
+                        )
+                        for ek in existing_keys
+                    ),
+                    reverse=True,
+                )
+                if scored and scored[0][0] >= 0.75:
+                    best = scored[0][1]
+                    _append_system_message(
+                        f"(Fuzzy-matched CONTROL key '{key}' → '{best}')"
+                    )
+                    key = best
             # Match key=... (case-insensitive key match)
             pattern = _re.compile(
                 r"^(" + _re.escape(key) + r")\s*=.*$",
@@ -7961,8 +7988,35 @@ def create_tab(ctx):
             }
             widget_key = _orca_param_map.get(param)
             if not widget_key:
-                _append_system_message(f"Unknown param: {param}\nAvailable: {', '.join(_orca_param_map.keys())}")
-                return True
+                # Fuzzy-match: typos like "metod", "basiss", "soltent",
+                # "dispersio", "multipliciti" should still land on the
+                # right ORCA Builder parameter instead of erroring.
+                import difflib as _difflib
+                scored = sorted(
+                    (
+                        (
+                            _difflib.SequenceMatcher(
+                                None, param, alias
+                            ).ratio(),
+                            alias,
+                        )
+                        for alias in _orca_param_map.keys()
+                    ),
+                    reverse=True,
+                )
+                if scored and scored[0][0] >= 0.7:
+                    best = scored[0][1]
+                    _append_system_message(
+                        f"(Fuzzy-matched ORCA param '{param}' → '{best}')"
+                    )
+                    param = best
+                    widget_key = _orca_param_map[param]
+                else:
+                    _append_system_message(
+                        f"Unknown param: {param}\n"
+                        f"Available: {', '.join(_orca_param_map.keys())}"
+                    )
+                    return True
             w = refs.get(widget_key)
             if w:
                 try:

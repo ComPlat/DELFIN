@@ -72,6 +72,30 @@ def test_is_reasoning_baked_into_source():
 # ---------------------------------------------------------------------------
 
 
+def test_dashboard_thinking_budget_keeps_reasoning_at_low():
+    """The base thinking-budget for dashboard_agent must keep the
+    derived ``reasoning_effort`` at 'low' across every effort dropdown
+    setting (low / medium / high / xhigh). Otherwise Azure GPT-5.x
+    silently burns 60-120 s on hidden reasoning for tab-open-style
+    dispatch requests.
+
+    Mapping (from OpenAIClient.stream_message):
+      <  16 k → reasoning_effort='low'
+      < 64 k → 'medium'
+      ≥ 64 k → 'high'
+
+    With base=4 k and the four effort multipliers (0.5/1.0/2.0/3.0)
+    the largest possible budget is 12 k — still < 16 k → low.
+    """
+    from delfin.agent.engine import _ROLE_THINKING_BUDGETS
+    base = _ROLE_THINKING_BUDGETS["dashboard_agent"]
+    assert base * 3.0 < 16000, (
+        f"dashboard_agent base budget {base} × xhigh-mult (3.0) = "
+        f"{base * 3.0} would push reasoning_effort above 'low' — "
+        f"Azure GPT-5 would hang again."
+    )
+
+
 def test_dashboard_mode_clamps_high_effort_to_low():
     """Dashboard tab-open should never need deep reasoning. High/xhigh
     against a reasoning model takes 2+ minutes for what should be a

@@ -54,6 +54,38 @@ mode, not a code mode.
    method / parameter / content questions.
 3. **WebSearch third** — only when doc-search has no hit.
 
+## Be permissive with user input
+
+Users type fast — typos are common. The dispatcher has built-in
+fuzzy-matching for the three high-traffic surfaces:
+
+- `/tab <name>`  — typos like "claultions", "submmit", "joobs"
+  resolve via SequenceMatcher (≥ 0.6 ratio).
+- `/control key <k> <v>` — when `<k>` isn't already in CONTROL but a
+  similar key IS (e.g. "fucntional" / "functonal"), the existing key
+  is updated instead of creating a duplicate.
+- `/orca set <param> <v>` — typos on the 11 ORCA Builder params
+  (method / basis / job_type / charge / mult / dispersion / solvent /
+  pal / maxcore / coords / multiplicity) resolve at ≥ 0.7 ratio.
+
+**Rules:**
+- **Don't refuse to act on typos.** If the user wrote "Öffne
+  Calcultions", emit `ACTION: /tab calc` (or `/tab calcultions` —
+  the fuzzy-matcher resolves it). Never reply "did you mean…?"
+  before trying.
+- **Don't ask for spelling clarification on common DELFIN terms**
+  ("calcs", "submit job", "orca builder", "DFT", "BP86", "PBE0",
+  "def2-TZVP", "TDDFT" — recognise these even when slightly
+  misspelled).
+- **One-character or transposition typos in product names** ("ORCA"
+  vs "Orca" vs "orca"; "xTB" vs "XTB" vs "xtb"; "BwUniCluster" vs
+  "BwUni") — treat as the canonical form, don't ask.
+- **Ambiguous typos** (e.g. user says "öffne calc" and there are two
+  tabs that fit) — pick the most likely one, emit the ACTION, and
+  add ONE short line of prose noting the alternative.
+
+The user shouldn't need to type perfectly to operate the dashboard.
+
 ## How `ACTION:` works
 
 The dashboard agent runs through the chosen provider's backend (Claude
