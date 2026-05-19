@@ -66,26 +66,48 @@ def test_dashboard_auto_exec_returns_done_marker_when_sentinel_present():
     p = (Path(__file__).resolve().parent.parent
          / "delfin" / "dashboard" / "tab_agent.py")
     text = p.read_text(encoding="utf-8")
-    assert 'return ["__DONE__"]' in text
+    # /done is now parsed inline as a sentinel — appended to the
+    # results list AFTER real commands ran, not short-circuited.
     assert "ACTION: /done is a sentinel" in text
+    assert '_done_seen = any(' in text
+    assert 'results.append("__DONE__")' in text
 
 
 def test_continuation_loop_breaks_on_done_marker():
-    """The continuation loop must check the magic marker BEFORE the
-    'no results' branch, otherwise a /done emitted alone would never
-    actually short-circuit because the marker counts as 'one result'."""
+    """The continuation loop must split the ``__DONE__`` sentinel out
+    from real command results so the placeholder + early-break work
+    correctly even when /done was emitted alongside real ACTIONs."""
     p = (Path(__file__).resolve().parent.parent
          / "delfin" / "dashboard" / "tab_agent.py")
     text = p.read_text(encoding="utf-8")
-    idx = text.find("Explicit done-sentinel from the agent")
-    assert idx > 0
-    snippet = text[idx: idx + 600]
-    assert 'exec_results == ["__DONE__"]' in snippet
-    # The break must come BEFORE the empty-results branch so /done
-    # short-circuits even when it appears alone.
-    done_break = snippet.find("if exec_results == [\"__DONE__\"]:")
-    empty_break = snippet.find("if not exec_results:")
-    assert 0 < done_break < empty_break
+    # The loop must compute ``done_seen`` + ``real_results`` slices
+    idx = text.find("Split the done-sentinel from real results")
+    assert idx > 0, "loop must separate sentinel from real results"
+    # Snippet must be large enough to span the entire while-loop body
+    snippet = text[idx: idx + 2500]
+    assert 'done_seen = "__DONE__" in exec_results' in snippet
+    assert "real_results = [r for r in exec_results if r != \"__DONE__\"]" in snippet
+    # Break logic uses the split variables, not the raw list
+    assert "if done_seen:" in snippet
+    assert "if not real_results:" in snippet
+
+
+def test_done_only_response_shows_clear_no_action_placeholder():
+    """When /done was emitted ALONE (no real ACTIONs), the cleaned
+    placeholder must NOT say '(commands executed)' — that's misleading
+    because nothing actually ran. Instead show a 'please clarify'
+    message so the user knows the agent had no idea what to do."""
+    p = (Path(__file__).resolve().parent.parent
+         / "delfin" / "dashboard" / "tab_agent.py")
+    text = p.read_text(encoding="utf-8")
+    idx = text.find("agent had no action to execute")
+    assert idx > 0, (
+        "missing 'no action' placeholder — /done-alone case still "
+        "shows misleading '(commands executed)'"
+    )
+    # And the branch that triggers it: cleaned is empty + no real_results + done_seen
+    block = text[max(0, idx-600): idx + 200]
+    assert "elif done_seen:" in block
 
 
 # ---------------------------------------------------------------------------

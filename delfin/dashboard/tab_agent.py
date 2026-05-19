@@ -9408,12 +9408,14 @@ def create_tab(ctx):
         # all requested actions are now complete and the auto-continue
         # loop should NOT re-prompt the model for a wrap-up commentary.
         # Saves the 30-120 s "(commands executed)" turn that otherwise
-        # costs $0.02-0.05 for zero user value. Detected here so the
-        # marker is returned alongside any sibling commands; the
-        # continuation loop reads the special "__DONE__" result string.
+        # costs $0.02-0.05 for zero user value. The marker is added to
+        # the END of the results list AFTER real ACTIONs have executed,
+        # so a response with both real commands + /done both runs the
+        # commands AND skips the wrap-up turn. A response with /done
+        # alone returns only ["__DONE__"], which the continuation loop
+        # treats as "agent had no actions to execute".
         lines = agent_text.split("\n")
-        if any(_re.match(r"^ACTION:\s*/done\b", ln) for ln in lines):
-            return ["__DONE__"]
+        _done_seen = any(_re.match(r"^ACTION:\s*/done\b", ln) for ln in lines)
 
         commands: list[str] = []
         i = 0
@@ -9421,6 +9423,12 @@ def create_tab(ctx):
             m = _re.match(r"^ACTION:\s*(/\S+.*)$", lines[i])
             if m:
                 cmd = m.group(1)
+                # /done is the wrap-up sentinel — never executed as a real
+                # command, just signals to the outer loop. Skip the
+                # dispatch path entirely.
+                if cmd.strip().lower().startswith("/done"):
+                    i += 1
+                    continue
                 # For /control set: collect continuation lines as content
                 if cmd.lower().startswith("/control set "):
                     content_lines = [cmd[len("/control set "):]]
@@ -9534,6 +9542,12 @@ def create_tab(ctx):
             for msg in state["chat_messages"][n_before:]:
                 if msg["role"] == "system":
                     results.append(msg["content"])
+        # Append the done sentinel AFTER real-command results. Callers
+        # check ``"__DONE__" in results`` for the early-break signal;
+        # ``results == ["__DONE__"]`` specifically means /done was the
+        # ONLY thing the agent emitted (no real commands fired).
+        if _done_seen:
+            results.append("__DONE__")
         return results
 
     # -- feature implementations -------------------------------------------
@@ -11385,26 +11399,45 @@ def create_tab(ctx):
                         _cont_turn += 1
                         raw = "".join(chunks)
                         exec_results = _dashboard_auto_exec(raw)
+                        # Split the done-sentinel from real results so the
+                        # placeholder accurately reflects what happened.
+                        done_seen = "__DONE__" in exec_results
+                        real_results = [r for r in exec_results if r != "__DONE__"]
                         # Remove ACTION: lines from visible output
                         import re as _re_strip
                         cleaned = _re_strip.sub(
                             r"^ACTION:\s*/.*$", "", raw, flags=_re_strip.MULTILINE
                         ).strip()
                         if cleaned != raw.strip():
-                            _update_last_assistant(
-                                cleaned or "(commands executed)",
-                                role_label,
-                            )
+                            if cleaned:
+                                placeholder = cleaned
+                            elif real_results:
+                                placeholder = "(commands executed)"
+                            elif done_seen:
+                                # /done alone — agent emitted no real
+                                # action. Make the empty bubble explicit
+                                # so the user doesn't think something
+                                # ran silently.
+                                placeholder = (
+                                    "(agent had no action to execute — "
+                                    "please clarify or rephrase)"
+                                )
+                            else:
+                                placeholder = "(commands executed)"
+                            _update_last_assistant(placeholder, role_label)
                         # Explicit done-sentinel from the agent — skip
-                        # the wrap-up continuation entirely. The agent
-                        # signals via ``ACTION: /done`` after its final
-                        # real action and we trust it; the user already
-                        # sees the action results in chat.
-                        if exec_results == ["__DONE__"]:
+                        # the wrap-up continuation entirely. Triggers
+                        # whether /done was emitted alone or alongside
+                        # real ACTIONs.
+                        if done_seen:
                             break
                         # No results → nothing to continue on
-                        if not exec_results:
+                        if not real_results:
                             break
+                        # Re-bind exec_results to the real slice so the
+                        # feedback that goes back to the model doesn't
+                        # contain the sentinel.
+                        exec_results = real_results
                         # Inject results and run the agent again
                         feedback = "[Command results]\n" + "\n".join(exec_results)
                         engine.messages.append(
