@@ -64,21 +64,29 @@ def test_detect_terminal_ch3_on_donor_feature_positive_29ni_like():
     assert detect_terminal_ch3_on_donor_feature(m) is True
 
 
-def test_is_feature_gate_enabled_default_off_byte_identical():
-    """Without env-flag the gate is OFF regardless of feature presence.
+def test_is_feature_gate_enabled_default_on_sigma_class():
+    """Iter-19 (2026-05-19): default flipped 0 → 1 for {sigma, multi_sigma}.
 
-    Guarantees bit-exact preservation of pre-T4 HEAD behaviour on the
-    full pool (acceptance criterion #1 of the Welle-5l T4 task).
+    Feature-positive sigma-class molecule, no env-overrides → True
+    (per cross-archive analysis: e6761e4 wins F19/F24/pi_planar/funcgrp_bond).
     """
     from delfin._e6761e4_soft_donor import is_feature_gate_enabled
-    # Strip the env-flag if a sibling test set it.
     with mock.patch.dict(
         os.environ,
         {k: v for k, v in os.environ.items()
          if not k.startswith("DELFIN_5L_T4_")},
         clear=True,
     ):
-        # Feature-positive molecule, but flag unset → False.
+        # Feature-positive sigma class → True (default ON for sigma).
+        m = _mol("[Hf](CC)(CC)(CC)CC")
+        assert is_feature_gate_enabled(m) is True
+
+    # Explicit GATE=0 still disables entirely.
+    with mock.patch.dict(
+        os.environ,
+        {"DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE": "0"},
+        clear=False,
+    ):
         m = _mol("[Hf](CC)(CC)(CC)CC")
         assert is_feature_gate_enabled(m) is False
 

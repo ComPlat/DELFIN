@@ -268,28 +268,35 @@ def detect_terminal_ch3_on_donor_feature(mol) -> bool:
     return False
 
 
+_DEFAULT_CLASSES: frozenset = frozenset({"sigma", "multi_sigma"})
+
+
 def is_feature_gate_enabled(mol) -> bool:
-    """Master gate for the Welle-5l T4 conditional soft-donor revert.
+    """Master gate for the e6761e4 conditional soft-donor revert.
 
-    Logic (in order):
+    Default-flipped 0 → 1 on 2026-05-19 (Iter-19) per cross-archive analysis:
+    e6761e4 wins F19 (51.62%), F24 (0.00%), pi_planar (5.42%), funcgrp_bond
+    (4.33%) — 4 of 20 metrics with soft σ-donor relaxation w=0.3 in
+    _build_hapto_scaffold (vs HEAD's HARD-freeze).  Default-class allow-list
+    {sigma, multi_sigma} to avoid hapto-regression (a3edabe lost 767 hapto
+    isomers from this mechanism).
 
-    1. Env-flag ``DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE`` must be != 0
-       (default ``0``).  Default-OFF means *bit-exact behaviour identical
-       to current HEAD-95767c6*.
-    2. If ``DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE_CLASSES`` is set,
-       ``_classify_complex_class(mol)`` must be in that comma-separated
-       list (e.g. ``"sigma,multi_sigma"``).
-    3. At least one of the two universal graph features must be present:
-       sp3-C donor OR terminal CH₃ on σ-donor.
+    Resolution order:
+    1. ``DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE=0`` → disabled entirely.
+    2. ``DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE_CLASSES=csv`` → operator
+       class override (default = {sigma, multi_sigma}).
+    3. Feature OR-gate: sp3-C donor OR terminal CH₃ on σ-donor must
+       be present (graph-only, no SMILES regex).
 
-    Any RDKit / classify exception → returns ``False`` so the legacy
-    HARD-freeze path stays active.
+    Any RDKit / classify exception → returns ``False`` (legacy HARD-freeze).
     """
-    if _env_int(_ENV_GATE, 0) == 0:
+    if _env_int(_ENV_GATE, 1) == 0:
         return False
-    # Class filter (optional)
     cls_raw = os.environ.get(_ENV_CLASSES, "") or ""
-    cls_filter = {x.strip() for x in cls_raw.split(",") if x.strip()}
+    if cls_raw:
+        cls_filter = {x.strip() for x in cls_raw.split(",") if x.strip()}
+    else:
+        cls_filter = _DEFAULT_CLASSES
     if cls_filter:
         try:
             from delfin.smiles_converter import _classify_complex_class
@@ -298,7 +305,6 @@ def is_feature_gate_enabled(mol) -> bool:
             return False
         if cls not in cls_filter:
             return False
-    # Feature OR-gate
     if detect_sp3_c_donor_feature(mol):
         return True
     if detect_terminal_ch3_on_donor_feature(mol):
