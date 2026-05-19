@@ -368,7 +368,7 @@ tasks:
 
   - id: plan_feature_dark_mode
     task_class: plan_feature
-    mode: plan
+    mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
     prompt: >-
       Plane einen "dark mode" toggle fürs DELFIN dashboard. Nur Plan,
       keine Implementierung. Mindestens 4 nummerierte Schritte.
@@ -388,7 +388,7 @@ tasks:
 
   - id: plan_refactor_split_module
     task_class: plan_refactor
-    mode: plan
+    mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
     prompt: >-
       delfin/agent/api_client.py ist ~6000 Zeilen. Plane wie du das in
       mehrere kleinere Module aufteilen würdest. Mindestens 4 Schritte,
@@ -409,7 +409,7 @@ tasks:
 
   - id: plan_test_strategy
     task_class: plan_test
-    mode: plan
+    mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
     prompt: >-
       Plane eine Test-Strategie für delfin/agent/benchmark.py. Was sollte
       unit-tested werden, was integration-tested, was end-to-end?
@@ -430,7 +430,7 @@ tasks:
 
   - id: plan_chemistry_workflow
     task_class: plan_chemistry
-    mode: plan
+    mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
     prompt: >-
       Plane den Workflow: ORCA-Optimierung eines Transition-Metal-Komplexes
       mit zwei verschiedenen Funktionalen (BP86 und B3LYP) vergleichen,
@@ -456,7 +456,7 @@ tasks:
 
   - id: plan_constraint_3steps
     task_class: plan_constraint
-    mode: plan
+    mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
     prompt: >-
       Plane in GENAU 3 SCHRITTEN (nicht mehr, nicht weniger): wie du
       herausfindest welcher git-commit eine Regression in
