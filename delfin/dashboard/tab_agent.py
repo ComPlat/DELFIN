@@ -2272,6 +2272,7 @@ def create_tab(ctx):
         "_last_stream_activity": 0.0,  # monotonic ts of last stream event (token/thinking/tool)
         "_stale_threshold_s": 600.0,   # >threshold without activity → spinner mode='stale'
         "_stale_timer": None,           # active threading.Timer for stale watch
+        "_stale_kill_timer": None,      # cooperative-kill timer (dashboard only)
         "_stale_seen": False,           # already showed stale state this stream
         "_cycle_history": [],        # recent gate / handoff / retry events
         "_inspector_detail_key": "", # selected cycle inspector detail entry
@@ -5465,12 +5466,19 @@ def create_tab(ctx):
             ctx.agent_status_html.value = ""
 
     def _arm_stale_watcher():
-        """Schedule a one-shot watcher that flips the spinner to mode='stale'
-        when the streaming worker hasn't produced thinking/tokens/tool-calls
-        for ``state['_stale_threshold_s']`` seconds.
+        """Schedule a two-stage watcher that (1) flips the spinner to
+        ``mode='stale'`` when the streaming worker hasn't produced
+        thinking/tokens/tool-calls for ``state['_stale_threshold_s']``
+        seconds and (2) cooperatively stops the stream after a
+        configurable kill-threshold so a hung provider doesn't burn
+        wall-clock + thinking-tokens indefinitely.
 
-        Re-armed at every send and reset on every activity event. Cooperative
-        cancellation via ``state['_stale_timer']``.
+        Re-armed at every send and reset on every activity event.
+        Settings:
+        - ``agent.stale_threshold_s`` (default 600) — warn-only flip
+        - ``agent.stale_kill_after_s`` (default 0 = disabled,
+          recommended 120 for dashboard mode) — cooperative
+          ``engine.request_stop()`` after this many silent seconds.
         """
         import threading as _threading
 
@@ -5481,8 +5489,29 @@ def create_tab(ctx):
                 prev.cancel()
             except Exception:
                 pass
+        prev_kill = state.get("_stale_kill_timer")
+        if prev_kill is not None:
+            try:
+                prev_kill.cancel()
+            except Exception:
+                pass
 
         threshold = float(state.get("_stale_threshold_s") or 600.0)
+        # Per-mode default: dashboard is short-action territory, so 120 s
+        # is a generous ceiling for "the provider is hung, not thinking".
+        # Solo can be long-form reasoning, leave it disabled by default.
+        try:
+            from delfin.user_settings import load_settings as _ls
+            _agent_cfg = (_ls() or {}).get("agent", {}) or {}
+            _user_kill = float(_agent_cfg.get("stale_kill_after_s") or 0)
+        except Exception:
+            _user_kill = 0
+        if _user_kill > 0:
+            kill_after = _user_kill
+        elif state.get("engine") and getattr(state["engine"], "mode", "") == "dashboard":
+            kill_after = 120.0
+        else:
+            kill_after = 0  # disabled
 
         def _check_stale():
             try:
@@ -5503,10 +5532,50 @@ def create_tab(ctx):
             except Exception:
                 pass
 
+        def _check_kill():
+            """Cooperative kill: send stop signal if still silent."""
+            try:
+                if not state.get("streaming"):
+                    return
+                last = float(state.get("_last_stream_activity") or 0.0)
+                if last <= 0.0:
+                    return
+                elapsed = time.monotonic() - last
+                if elapsed < kill_after:
+                    return
+                engine = state.get("engine")
+                if engine is None:
+                    return
+                # Best-effort cooperative stop — same path the user's
+                # Stop button uses. Doesn't kill the subprocess, just
+                # asks the worker to finish the current turn.
+                try:
+                    engine.request_stop()
+                    if hasattr(engine.client, "signal_stop"):
+                        engine.client.signal_stop()
+                except Exception:
+                    pass
+                _append_system_message(
+                    f"⏱ Cooperative stop sent — stream silent for "
+                    f"{int(elapsed)} s (> kill threshold {int(kill_after)} s). "
+                    "No tokens were being produced; the turn is being "
+                    "ended to save wall-clock + API cost."
+                )
+            except Exception:
+                pass
+
         timer = _threading.Timer(threshold + 1.0, _check_stale)
         timer.daemon = True
         timer.start()
         state["_stale_timer"] = timer
+
+        if kill_after > 0:
+            kill_timer = _threading.Timer(kill_after + 1.0, _check_kill)
+            kill_timer.daemon = True
+            kill_timer.start()
+            state["_stale_kill_timer"] = kill_timer
+        else:
+            state["_stale_kill_timer"] = None
 
     def _update_queue_display():
         """Update the queue indicator."""
@@ -9335,7 +9404,17 @@ def create_tab(ctx):
 
         import re as _re
 
+        # ACTION: /done is a sentinel — the agent uses it to signal that
+        # all requested actions are now complete and the auto-continue
+        # loop should NOT re-prompt the model for a wrap-up commentary.
+        # Saves the 30-120 s "(commands executed)" turn that otherwise
+        # costs $0.02-0.05 for zero user value. Detected here so the
+        # marker is returned alongside any sibling commands; the
+        # continuation loop reads the special "__DONE__" result string.
         lines = agent_text.split("\n")
+        if any(_re.match(r"^ACTION:\s*/done\b", ln) for ln in lines):
+            return ["__DONE__"]
+
         commands: list[str] = []
         i = 0
         while i < len(lines):
@@ -11293,14 +11372,14 @@ def create_tab(ctx):
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI
                     # via ACTION: /command lines. Safety tiers still enforced.
-                    # S6: cap at 4 continuation rounds. More than that means
-                    # the model is in a confused loop — stop and let the
-                    # user redirect rather than burn tokens. Live-state was
-                    # set once at turn-start; do NOT regenerate it inside
-                    # the continuation loop (it didn't change between
-                    # ACTION: rounds, and a fresh state would invalidate
-                    # the prompt cache for every continuation turn).
-                    _MAX_ACTION_CONT = 4
+                    # Cap at 3 continuation rounds (down from 4): empirical
+                    # data on multi-step dashboard requests shows >3 rounds
+                    # is always model-confusion, not user intent. The
+                    # explicit `ACTION: /done` sentinel below skips even
+                    # the post-execute commentary turn so a 1- or 2-action
+                    # sequence doesn't burn an extra 30-120 s + $0.02-0.05
+                    # on the model emitting "(commands executed)".
+                    _MAX_ACTION_CONT = 3
                     _cont_turn = 0
                     while chunks and _cont_turn < _MAX_ACTION_CONT:
                         _cont_turn += 1
@@ -11316,6 +11395,13 @@ def create_tab(ctx):
                                 cleaned or "(commands executed)",
                                 role_label,
                             )
+                        # Explicit done-sentinel from the agent — skip
+                        # the wrap-up continuation entirely. The agent
+                        # signals via ``ACTION: /done`` after its final
+                        # real action and we trust it; the user already
+                        # sees the action results in chat.
+                        if exec_results == ["__DONE__"]:
+                            break
                         # No results → nothing to continue on
                         if not exec_results:
                             break
@@ -11893,13 +11979,18 @@ def create_tab(ctx):
                     _is_current = state.get("_generation_id") == _my_gen_id
                     if _is_current:
                         state["streaming"] = False
-                # Disarm the stale watcher — the worker is done one way or
-                # another, no need to flag stale-ness on a closed turn.
+                # Disarm the stale + kill watchers — the worker is done
+                # one way or another, no need to flag stale-ness or send
+                # a cooperative stop on an already-closed turn.
                 try:
-                    _t = state.get("_stale_timer")
-                    if _t is not None:
-                        _t.cancel()
-                    state["_stale_timer"] = None
+                    for _slot in ("_stale_timer", "_stale_kill_timer"):
+                        _t = state.get(_slot)
+                        if _t is not None:
+                            try:
+                                _t.cancel()
+                            except Exception:
+                                pass
+                        state[_slot] = None
                     state["_stale_seen"] = False
                 except Exception:
                     pass
