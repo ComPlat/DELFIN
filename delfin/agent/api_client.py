@@ -5070,9 +5070,19 @@ class OpenAIClient(_BaseClient):
         back in a tool-call loop (up to 5 rounds).
         """
         api_messages: list[dict[str, Any]] = []
-        # Detect reasoning models (o3, o4-mini, azure.o3, azure.o4-mini)
+        # Detect reasoning models. Two families today:
+        # - o-series (o1, o3, o4-mini, azure.o3, azure.o4-mini)
+        # - GPT-5 family (Azure ships gpt-5 / gpt-5.1 / gpt-5.4 / gpt-5-mini
+        #   as reasoning models that REQUIRE ``reasoning_effort`` to be
+        #   set or they silently consume the budget on internal reasoning
+        #   and emit zero text tokens — the live regression we just hit
+        #   on "Öffne Calculations" with Azure GPT-5.4 was exactly this).
         _base = self.model.split(".", 1)[-1] if self.model.startswith(("azure.", "kit.")) else self.model
-        is_reasoning = _base.startswith("o")
+        import re as _re_reason
+        is_reasoning = bool(
+            _re_reason.match(r"^o\d", _base)        # o1 / o3 / o4 ...
+            or _base.startswith("gpt-5")             # GPT-5 family
+        )
 
         if system:
             # o-series uses "developer" role instead of "system"

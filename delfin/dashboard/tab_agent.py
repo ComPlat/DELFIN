@@ -7513,7 +7513,36 @@ def create_tab(ctx):
                 "submit", "recalc", "jobs", "orca", "calc",
                 "archive", "literature", "agent", "settings",
             )
-            title = _tab_map.get(tab_name.lower(), tab_name)
+            tab_key = tab_name.lower()
+            title = _tab_map.get(tab_key)
+            if title is None:
+                # Fuzzy match: typos like "claultions" / "submmt" / "joobs"
+                # should still land on the right tab instead of hard-erroring
+                # and burning a roundtrip for the agent to retry. Uses
+                # SequenceMatcher ratio with a generous 0.6 cut-off (matches
+                # 2-character transpositions / drops on 8-12 letter names).
+                import difflib as _difflib
+                candidates = list(_tab_map.keys()) + list(_tab_map.values())
+                scored = sorted(
+                    (
+                        (
+                            _difflib.SequenceMatcher(
+                                None, tab_key, c.lower()
+                            ).ratio(),
+                            c,
+                        )
+                        for c in candidates
+                    ),
+                    reverse=True,
+                )
+                if scored and scored[0][0] >= 0.6:
+                    best = scored[0][1]
+                    title = _tab_map.get(best.lower(), best)
+                    _append_system_message(
+                        f"(Fuzzy-matched '{tab_name}' → '{title}')"
+                    )
+                else:
+                    title = tab_name  # falls through to the error path below
             if ctx.select_tab(title):
                 _append_system_message(f"Switched to tab: {title}")
             else:
@@ -11201,8 +11230,19 @@ def create_tab(ctx):
                 # Effort multiplier: scales the role-specific budget.
                 # xhigh applies an aggressive multiplier and a higher cap.
                 _effort_mult = {"low": 0.5, "medium": 1.0, "high": 2.0, "xhigh": 3.0}
-                _mult = _effort_mult.get(effort_dropdown.value, 1.0)
-                _budget_cap = 200_000 if effort_dropdown.value == "xhigh" else 128_000
+                # Dashboard mode auto-clamps effort: tab-open / control-key /
+                # submit-job dispatch never needs deep reasoning, and high-
+                # effort against a reasoning model (Azure GPT-5.x, o-series)
+                # routinely takes 2+ minutes for what should be a 100 ms
+                # routing decision. The user can still override via the
+                # dropdown but the default is "low" so the typical case is
+                # fast + cheap.
+                _effective_effort = effort_dropdown.value
+                if (mode_dropdown.value == "dashboard"
+                        and _effective_effort in ("high", "xhigh")):
+                    _effective_effort = "low"
+                _mult = _effort_mult.get(_effective_effort, 1.0)
+                _budget_cap = 200_000 if _effective_effort == "xhigh" else 128_000
 
                 # Store original user task for handoff messages
                 original_task = user_text
