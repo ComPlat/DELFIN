@@ -7,6 +7,7 @@ quality score, and must round-trip cleanly through JSONL.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -276,6 +277,202 @@ def test_compare_runs_credits_cost_drop_at_flat_quality():
     assert cmp["verdict"] == "better"
     for row in cmp["per_task"]:
         assert row["class"] == "better"
+
+
+def test_run_timestamp_reads_first_record(tmp_path):
+    p = tmp_path / "run.jsonl"
+    p.write_text(
+        '{"task_id":"a","ts":1700000000.5,"success":true,"quality_0_100":80}\n'
+        '{"task_id":"b","ts":1700000900.0,"success":true,"quality_0_100":70}\n',
+        encoding="utf-8",
+    )
+    assert bm.run_timestamp(p) == pytest.approx(1700000000.5)
+
+
+def test_run_timestamp_returns_zero_on_missing(tmp_path):
+    assert bm.run_timestamp(tmp_path / "nope.jsonl") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# format_compare_markdown
+# ---------------------------------------------------------------------------
+
+
+def _build_compare(verdict="better"):
+    """Helper: a minimal compare_runs result for markdown tests."""
+    return {
+        "verdict": verdict,
+        "summary": {
+            "n_overlap": 4, "n_better": 4, "n_worse": 0, "n_neutral": 0,
+            "old": {"n_tasks": 4, "n_pass": 3, "pass_rate": 0.75,
+                    "avg_quality": 65.0, "total_cost_usd": 0.40,
+                    "total_duration_s": 30.0, "total_tool_calls": 4},
+            "new": {"n_tasks": 4, "n_pass": 4, "pass_rate": 1.00,
+                    "avg_quality": 82.5, "total_cost_usd": 0.20,
+                    "total_duration_s": 18.0, "total_tool_calls": 4},
+        },
+        "per_task": [
+            {"task_id": "a", "class": "better",
+             "old_quality": 60, "new_quality": 80, "d_quality": 20,
+             "d_cost_usd": -0.05, "d_duration_s": -2.0, "d_tool_calls": 0,
+             "old_success": True, "new_success": True},
+            {"task_id": "b", "class": "better",
+             "old_quality": 50, "new_quality": 70, "d_quality": 20,
+             "d_cost_usd": -0.05, "d_duration_s": -2.0, "d_tool_calls": 0,
+             "old_success": False, "new_success": True},
+        ],
+    }
+
+
+def test_format_compare_markdown_contains_verdict_header():
+    md = bm.format_compare_markdown(_build_compare("better"))
+    assert md.startswith("# Benchmark Comparison Report")
+    assert "Verdict: BETTER" in md
+
+
+def test_format_compare_markdown_contains_summary_table():
+    md = bm.format_compare_markdown(_build_compare())
+    assert "## Summary" in md
+    assert "Pass rate" in md
+    assert "75%" in md and "100%" in md
+    assert "Avg quality" in md
+    assert "Total cost" in md
+
+
+def test_format_compare_markdown_contains_per_task_rows():
+    md = bm.format_compare_markdown(_build_compare())
+    assert "## Per-task" in md
+    assert "`a" in md and "`b" in md
+    assert "60→80" in md
+    assert "+20" in md
+
+
+def test_format_compare_markdown_handles_empty_per_task():
+    cmp = _build_compare()
+    cmp["per_task"] = []
+    md = bm.format_compare_markdown(cmp)
+    assert "## Per-task" not in md
+    assert "Verdict" in md
+
+
+def test_format_compare_markdown_thin_verdict_renders():
+    cmp = _build_compare("thin")
+    md = bm.format_compare_markdown(cmp)
+    assert "Verdict: THIN" in md
+
+
+def test_format_compare_markdown_skips_profile_block_without_paths():
+    md = bm.format_compare_markdown(_build_compare())
+    assert "Profile changes" not in md
+
+
+# ---------------------------------------------------------------------------
+# find_profile_commits_between
+# ---------------------------------------------------------------------------
+
+
+def test_find_profile_commits_rejects_bad_window():
+    """Inverted window / zero timestamps must return [] without git call."""
+    assert bm.find_profile_commits_between(0, 0) == []
+    assert bm.find_profile_commits_between(100, 50) == []
+    assert bm.find_profile_commits_between(-1, 100) == []
+
+
+def test_find_profile_commits_returns_list_on_real_git(tmp_path, monkeypatch):
+    """Run against a tiny throwaway git repo with one commit to the
+    profile-file path — must list it."""
+    import subprocess as _sp
+    repo = tmp_path / "tinyrepo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "a@b.c"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    profile_dir = repo / "delfin" / "agent"
+    profile_dir.mkdir(parents=True)
+    profile_file = profile_dir / "model_profiles.py"
+    profile_file.write_text("# stub\n", encoding="utf-8")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "profile: tweak knob"],
+            cwd=repo, check=True)
+    # Window covering the commit
+    now = time.time()
+    commits = bm.find_profile_commits_between(
+        now - 3600, now + 3600, repo_root=repo,
+    )
+    assert any("profile: tweak knob" in c for c in commits)
+
+
+def test_find_profile_commits_returns_empty_on_non_repo(tmp_path):
+    assert bm.find_profile_commits_between(
+        time.time() - 3600, time.time(), repo_root=tmp_path,
+    ) == []
+
+
+# ---------------------------------------------------------------------------
+# format_compare_markdown with paths → profile-commit annotation
+# ---------------------------------------------------------------------------
+
+
+def test_format_compare_markdown_includes_profile_commits(tmp_path):
+    """End-to-end: when both baseline + candidate paths are supplied and
+    git has commits to model_profiles.py in between, the report lists
+    them."""
+    import subprocess as _sp
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.email", "a@b.c"], cwd=repo, check=True)
+    _sp.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "delfin" / "agent").mkdir(parents=True)
+    pf = repo / "delfin" / "agent" / "model_profiles.py"
+    pf.write_text("# v1\n", encoding="utf-8")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "profile: initial"],
+            cwd=repo, check=True)
+
+    # Write a "baseline" run BEFORE the next commit
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    base_path = runs / "baseline.jsonl"
+    base_path.write_text(
+        '{"task_id":"a","ts":1000.0,"success":true,"quality_0_100":50,'
+        '"cost_usd":0.1,"duration_s":2.0,"tool_calls":1}\n',
+        encoding="utf-8",
+    )
+    # Bump profile + commit at "now" so git sees it
+    pf.write_text("# v2 — tighter stale-kill\n", encoding="utf-8")
+    _sp.run(["git", "add", "."], cwd=repo, check=True)
+    _sp.run(["git", "commit", "-q", "-m", "profile: tighter stale-kill"],
+            cwd=repo, check=True)
+    # Candidate run "now"
+    now = time.time()
+    cand_path = runs / "candidate.jsonl"
+    import json as _json
+    cand_path.write_text(
+        _json.dumps({
+            "task_id": "a", "ts": now, "success": True,
+            "quality_0_100": 80, "cost_usd": 0.05,
+            "duration_s": 1.0, "tool_calls": 1,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    # We bracket the second commit
+    base_ts = bm.run_timestamp(base_path)
+    cand_ts = bm.run_timestamp(cand_path)
+    commits = bm.find_profile_commits_between(
+        base_ts, cand_ts, repo_root=repo,
+    )
+    # The bracketed commit must appear
+    assert any("tighter stale-kill" in c for c in commits)
+
+    # And the full markdown report should include it
+    cmp = _build_compare("better")
+    md = bm.format_compare_markdown(
+        cmp, baseline_path=base_path, candidate_path=cand_path,
+        repo_root=repo,
+    )
+    assert "Profile changes between runs" in md
+    assert "tighter stale-kill" in md
 
 
 def test_summarise_run_computes_basic_aggregates():

@@ -7032,6 +7032,184 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/agents bench" or cmd.startswith("/agents bench "):
+            # Canned-task benchmark suite — list / latest / compare / run.
+            # Runs the same scoring rubric as the CLI; "run" spawns a
+            # subprocess so the dashboard stays responsive while the
+            # suite executes against the current model.
+            import os as _os
+            import subprocess as _sp
+            import sys as _sys
+            import time as _time
+            from pathlib import Path as _Path
+            arg = (
+                cmd[len("/agents bench "):].strip()
+                if cmd.startswith("/agents bench ") else ""
+            )
+
+            if arg == "" or arg == "help":
+                _append_system_message(
+                    "**Benchmark suite** — measure if profile knobs make "
+                    "the agent better at fixed tasks.\n\n"
+                    "  `/agents bench list`            — list packaged tasks\n"
+                    "  `/agents bench latest`          — list recent runs\n"
+                    "  `/agents bench run`             — run suite vs current model (background)\n"
+                    "  `/agents bench run <task_id>`   — run single task\n"
+                    "  `/agents bench compare A B`     — diff two runs (markdown)\n"
+                )
+                return True
+
+            if arg == "list":
+                try:
+                    from delfin.agent.benchmark import load_tasks as _lt
+                    tasks = _lt()
+                except Exception as exc:
+                    _append_system_message(f"Could not load tasks: {exc}")
+                    return True
+                if not tasks:
+                    _append_system_message("No benchmark tasks found.")
+                    return True
+                out = [f"**{len(tasks)} canned tasks** "
+                       f"(`delfin/agent/pack/benchmark/tasks.yaml`):", ""]
+                for t in tasks:
+                    out.append(
+                        f"  `{t.id:<28}` [{t.mode:<9}] {t.task_class}"
+                    )
+                    out.append(f"      {t.prompt[:100]}")
+                _append_system_message("\n".join(out))
+                return True
+
+            if arg == "latest" or arg.startswith("latest "):
+                try:
+                    from delfin.agent.benchmark import runs_dir as _rd
+                    rd = _rd()
+                except Exception as exc:
+                    _append_system_message(f"Could not resolve runs dir: {exc}")
+                    return True
+                if not rd.exists():
+                    _append_system_message(
+                        "No runs yet. `/agents bench run` to create one."
+                    )
+                    return True
+                files = sorted(
+                    rd.glob("*.jsonl"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )[:10]
+                if not files:
+                    _append_system_message(
+                        "No runs yet. `/agents bench run` to create one."
+                    )
+                    return True
+                out = ["Latest benchmark runs (newest first):", ""]
+                for f in files:
+                    ts = _time.strftime(
+                        "%Y-%m-%d %H:%M", _time.localtime(f.stat().st_mtime),
+                    )
+                    out.append(f"  {ts}  `{f.name}`")
+                out.append(
+                    "\nCompare two: `/agents bench compare <name1> <name2>` "
+                    "(file names relative to ~/.delfin/benchmark_runs/)"
+                )
+                _append_system_message("\n".join(out))
+                return True
+
+            if arg.startswith("compare "):
+                try:
+                    from delfin.agent.benchmark import (
+                        compare_runs as _cmp_runs,
+                        format_compare_markdown as _fmt_md,
+                        runs_dir as _rd,
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Could not load benchmark module: {exc}")
+                    return True
+                parts = arg[len("compare "):].split()
+                if len(parts) != 2:
+                    _append_system_message(
+                        "Usage: `/agents bench compare baseline.jsonl candidate.jsonl`\n"
+                        "(file names relative to ~/.delfin/benchmark_runs/ "
+                        "or full paths)"
+                    )
+                    return True
+                rd = _rd()
+                base = _Path(parts[0]).expanduser()
+                cand = _Path(parts[1]).expanduser()
+                if not base.is_absolute() and not base.exists():
+                    base = rd / parts[0]
+                if not cand.is_absolute() and not cand.exists():
+                    cand = rd / parts[1]
+                if not base.exists() or not cand.exists():
+                    missing = base if not base.exists() else cand
+                    _append_system_message(
+                        f"Run file not found: `{missing}`. "
+                        f"Use `/agents bench latest` to see existing runs."
+                    )
+                    return True
+                try:
+                    cmp_result = _cmp_runs(base, cand)
+                    report = _fmt_md(
+                        cmp_result,
+                        baseline_path=base, candidate_path=cand,
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Compare failed: {exc}")
+                    return True
+                _append_system_message(report)
+                return True
+
+            if arg == "run" or arg.startswith("run "):
+                task_arg = arg[len("run"):].strip()
+                current_model = (
+                    getattr(engine, "model", "")
+                    or model_dropdown.value or ""
+                )
+                if not current_model:
+                    _append_system_message(
+                        "No model selected. Set a model in the dropdown first."
+                    )
+                    return True
+                try:
+                    from delfin.agent.benchmark import runs_dir as _rd
+                    rd = _rd()
+                except Exception as exc:
+                    _append_system_message(f"Could not resolve runs dir: {exc}")
+                    return True
+                rd.mkdir(parents=True, exist_ok=True)
+                log_path = rd / f"_bench_{int(_time.time())}.log"
+                argv = [
+                    _sys.executable, "-m", "delfin.agent.cli",
+                    "bench", "run", "--model", current_model,
+                ]
+                if task_arg:
+                    argv.extend(["--task", task_arg])
+                try:
+                    log_f = open(log_path, "w", encoding="utf-8")
+                    proc = _sp.Popen(
+                        argv, stdout=log_f, stderr=_sp.STDOUT,
+                        cwd=_os.getcwd(),
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Failed to start benchmark: {exc}")
+                    return True
+                short = str(log_path).replace(str(_Path.home()), "~")
+                _append_system_message(
+                    f"**Benchmark started** (PID {proc.pid}) for "
+                    f"`{current_model}`"
+                    + (f", task `{task_arg}`" if task_arg else "")
+                    + ".\n\n"
+                    f"Live log: `tail -f {short}`\n"
+                    f"Results land in `~/.delfin/benchmark_runs/` "
+                    f"when done.\n\n"
+                    f"Check progress with `/agents bench latest` "
+                    f"(refresh every ~30s)."
+                )
+                return True
+
+            _append_system_message(
+                f"Unknown subcommand `{arg}`. Try `/agents bench` for help."
+            )
+            return True
+
         if cmd == "/agents stats":
             try:
                 from delfin.agent.subagents import (
