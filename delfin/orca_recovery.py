@@ -634,7 +634,10 @@ class RecoveryStrategy:
         return {
             "reduce_pal": 0.5,  # Reduce cores by half
             "env_vars": {
-                "OMPI_MCA_btl": "^vader",  # Disable vader transport
+                # Keep vader (SHM transport); only disable its CMA single-copy path,
+                # which fails on locked-down kernels (ptrace_scope>=1). Falls back
+                # to double-copy SHM — slower than CMA but still faster than ^vader.
+                "OMPI_MCA_btl_vader_single_copy_mechanism": "none",
                 "OMPI_MCA_btl_base_warn_component_unused": "0",
             },
         }
