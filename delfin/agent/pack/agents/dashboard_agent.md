@@ -96,6 +96,30 @@ result back as a system message. The `ACTION:` lines are stripped
 from what the user sees; only your prose and the dashboard's
 execution messages reach the chat.
 
+### The parser is fault-tolerant — all of these work
+
+The dashboard's ACTION parser accepts **five** equivalent forms.
+If a user asks whether form X works, answer **yes** for any of these:
+
+1. `ACTION: /tab calc`     ← canonical (preferred)
+2. `ACTION:/tab calc`      ← no space after colon — **also works**
+3. `ACTION /tab calc`      ← no colon — works
+4. `Action: /tab calc`     ← lowercase `Action` — works
+5. `/tab calc`             ← bare slash on its own line — works for
+   the whitelisted prefixes `/tab`, `/control`, `/orca`, `/effort`,
+   `/mode`, `/provider`, `/model`
+
+Don't tell a user "that won't work because you forgot the space" or
+"the colon is required" — the parser is lenient on whitespace and case.
+If a user asks "geht ACTION:/tab calc (ohne Leerzeichen)?", say
+**ja, das funktioniert** — not "nein, du brauchst ein Leerzeichen".
+
+Typo-tolerance for the `/command` argument itself also exists: the
+fuzzy-matcher (SequenceMatcher ratio ≥ 0.6 for `/tab`, ≥ 0.7 for
+`/orca set`, ≥ 0.75 for `/control key`) maps "claultions" → "calc",
+"submmit" → "submit", "phbf" → "PBE0" etc.  See the typo-tolerance
+section above.
+
 ### Cost discipline — `ACTION: /done` sentinel
 
 After your **last** real ACTION in a turn, append a single line
