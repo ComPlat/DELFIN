@@ -99,17 +99,22 @@ EngineFactory = Callable[[str, str, str, str], Any]
 
 
 def _default_engine_factory(model: str, backend: str, provider: str, mode: str) -> Any:
-    """Build a real AgentEngine for the given config.  Heavy imports
-    happen here, not at module import time."""
-    from .engine import AgentEngine
-    from .api_client import create_client
+    """Build a real AgentEngine for the given config.
 
-    client = create_client(
-        backend=backend or "api", model=model, provider=provider,
-    )
+    AgentEngine creates its own client internally; we just hand it the
+    resolved tuple and let it own the lifecycle.  Heavy imports happen
+    here, not at module-import time.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+    from .engine import AgentEngine
+
     return AgentEngine(
-        client=client, mode=mode or "solo",
-        backend=backend or "api", provider=provider,
+        repo_dir=_Path(_os.getcwd()).resolve(),
+        backend=backend or "api",
+        provider=provider,
+        model=model,
+        mode=mode or "solo",
     )
 
 

@@ -31,23 +31,26 @@ from typing import Any
 
 
 def _build_engine(args: argparse.Namespace):
-    """Lazy-import the engine + create_client so a bad command line
-    doesn't pull the heavy stack."""
+    """Construct an AgentEngine for the given CLI args.
+
+    AgentEngine creates its own client internally via ``create_client``,
+    so we just hand it the resolved (backend, provider, model, mode)
+    tuple and let it own the lifecycle.
+    """
     from .engine import AgentEngine
-    from .api_client import create_client
 
     backend = args.backend or "api"
     model = args.model or ""
     provider = args.provider or ""
-
-    client = create_client(
-        backend=backend, model=model, provider=provider,
+    mode = getattr(args, "mode", "") or "solo"
+    cwd = getattr(args, "cwd", "") or os.getcwd()
+    return AgentEngine(
+        repo_dir=Path(cwd).expanduser().resolve(),
+        backend=backend,
+        provider=provider,
+        model=model,
+        mode=mode,
     )
-    engine = AgentEngine(
-        client=client, mode=args.mode or "solo",
-        backend=backend, provider=provider,
-    )
-    return engine
 
 
 def _resume_or_create(engine, args: argparse.Namespace) -> str:
@@ -80,31 +83,52 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
 
 
 def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
-    """Stream a single turn and collect text + token-usage."""
+    """Stream a single turn and collect text + tool-calls + token-usage.
+
+    AgentEngine's ``stream_response`` is callback-driven, not event-
+    iterable: text arrives through ``on_token``, tool calls through
+    ``on_tool_use``.  The function also returns the assembled text as
+    a string.  Token usage is read from ``engine.token_usage`` after
+    the call (cumulative for the engine; each benchmark task gets a
+    fresh engine so the cumulative IS per-turn).
+    """
     chunks: list[str] = []
     tool_calls: list[dict] = []
-    in_tokens = out_tokens = 0
     error = ""
+
+    def _on_token(text: str) -> None:
+        if text:
+            chunks.append(text)
+
+    def _on_tool_use(name: str, input_json: str) -> None:
+        try:
+            inp = json.loads(input_json) if input_json else {}
+        except (json.JSONDecodeError, TypeError):
+            inp = {"raw": str(input_json)}
+        tool_calls.append({"name": name, "input": inp})
+
+    in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
+    out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
+
     try:
-        for event in engine.stream_response(prompt):
-            t = getattr(event, "type", "")
-            if t == "text_delta":
-                chunks.append(getattr(event, "text", "") or "")
-            elif t == "tool_use":
-                tool_calls.append({
-                    "name": getattr(event, "tool_name", ""),
-                    "input": getattr(event, "tool_input", {}),
-                })
-            elif t == "message_delta":
-                in_tokens = max(in_tokens, getattr(event, "input_tokens", 0))
-                out_tokens = max(out_tokens, getattr(event, "output_tokens", 0))
+        full_text = engine.stream_response(
+            user_message=prompt,
+            on_token=_on_token,
+            on_tool_use=_on_tool_use,
+            max_tokens=max_tokens,
+        ) or ""
     except Exception as exc:
         error = str(exc)
+        full_text = ""
+
+    in_after = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
+    out_after = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
+
     return {
-        "text": "".join(chunks).strip(),
+        "text": (full_text or "".join(chunks)).strip(),
         "tool_calls": tool_calls,
-        "input_tokens": in_tokens,
-        "output_tokens": out_tokens,
+        "input_tokens": max(0, in_after - in_before),
+        "output_tokens": max(0, out_after - out_before),
         "error": error,
     }
 
