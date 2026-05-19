@@ -282,6 +282,124 @@ def test_run_suite_progress_exception_does_not_abort():
 
 
 # ---------------------------------------------------------------------------
+# run_task — N=3 retry / replicates
+# ---------------------------------------------------------------------------
+
+
+def test_run_task_repeats_runs_engine_N_times():
+    """``repeats=3`` must invoke the factory + run_once exactly 3×."""
+    task = bm.Task(
+        id="rep1", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(bm.Signal(pattern="ok"),),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+    factory_calls = []
+    run_once_calls = []
+
+    def factory(model, backend, provider, mode):
+        factory_calls.append(model)
+        return _FakeEngine()
+
+    def fake_run_once(engine, prompt, *, max_tokens=4096):
+        run_once_calls.append(prompt)
+        return {"text": "ok", "tool_calls": [],
+                "input_tokens": 0, "output_tokens": 0, "error": ""}
+
+    result = br.run_task(
+        task, model="X", engine_factory=factory,
+        run_once=fake_run_once, repeats=3,
+    )
+    assert len(factory_calls) == 3
+    assert len(run_once_calls) == 3
+    assert result.n_samples == 3
+    assert result.success is True
+    assert result.success_rate == 1.0
+
+
+def test_run_task_repeats_majority_success_when_one_fails():
+    task = bm.Task(
+        id="rep2", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(bm.Signal(pattern="ok"),),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+
+    def factory(*a, **kw):
+        return _FakeEngine()
+
+    # 2/3 produce "ok" (PASS), 1/3 produces "nope" (FAIL)
+    counter = [0]
+
+    def fake_run_once(engine, prompt, *, max_tokens=4096):
+        i = counter[0]
+        counter[0] += 1
+        text = "ok" if i != 1 else "nope"
+        return {"text": text, "tool_calls": [],
+                "input_tokens": 0, "output_tokens": 0, "error": ""}
+
+    result = br.run_task(
+        task, model="X", engine_factory=factory,
+        run_once=fake_run_once, repeats=3,
+    )
+    assert result.success is True       # 2-of-3 majority
+    assert result.success_rate == pytest.approx(2 / 3)
+    assert result.n_samples == 3
+
+
+def test_run_task_repeats_on_replicate_callback_fires_per_sample():
+    task = bm.Task(
+        id="rep3", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(bm.Signal(pattern="ok"),),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+
+    def factory(*a, **kw):
+        return _FakeEngine()
+
+    def fake_run_once(*a, **kw):
+        return {"text": "ok", "tool_calls": [],
+                "input_tokens": 0, "output_tokens": 0, "error": ""}
+
+    seen = []
+
+    def cb(idx, result):
+        seen.append((idx, result.success))
+
+    br.run_task(
+        task, model="X", engine_factory=factory,
+        run_once=fake_run_once, repeats=3, on_replicate=cb,
+    )
+    assert [s[0] for s in seen] == [0, 1, 2]
+    assert all(s[1] for s in seen)
+
+
+def test_run_task_repeats_one_is_passthrough():
+    """repeats=1 should not engage aggregation (no n_samples>1 fields)."""
+    task = bm.Task(
+        id="rep4", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(bm.Signal(pattern="ok"),),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+
+    def factory(*a, **kw):
+        return _FakeEngine()
+
+    def fake_run_once(*a, **kw):
+        return {"text": "ok", "tool_calls": [],
+                "input_tokens": 0, "output_tokens": 0, "error": ""}
+
+    result = br.run_task(
+        task, model="X", engine_factory=factory,
+        run_once=fake_run_once, repeats=1,
+    )
+    assert result.n_samples == 1
+    assert result.quality_stdev == 0.0
+
+
+# ---------------------------------------------------------------------------
 # resolve_profile_name
 # ---------------------------------------------------------------------------
 

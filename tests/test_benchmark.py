@@ -475,6 +475,151 @@ def test_format_compare_markdown_includes_profile_commits(tmp_path):
     assert "tighter stale-kill" in md
 
 
+def _make_result(task_id, *, quality, success=True, cost=0.01,
+                 duration=2.0, tool_calls=1, error=""):
+    return bm.BenchmarkResult(
+        task_id=task_id, task_class="misc", model="m",
+        mode="solo", ts=1700000000.0,
+        success=success, quality_0_100=quality,
+        components={"success_pts": 40 if success else 0,
+                    "routing_pts": 15, "speed_pts": 10,
+                    "cost_pts": 8, "clean_pts": 12},
+        duration_s=duration, cost_usd=cost, tool_calls=tool_calls,
+        error=error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# aggregate_replicates — N=3 noise-defeat
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_replicates_requires_nonempty_input():
+    with pytest.raises(ValueError):
+        bm.aggregate_replicates([])
+
+
+def test_aggregate_replicates_requires_same_task_id():
+    a = _make_result("task_a", quality=80)
+    b = _make_result("task_b", quality=70)
+    with pytest.raises(ValueError):
+        bm.aggregate_replicates([a, b])
+
+
+def test_aggregate_replicates_quality_uses_median():
+    """Median, not mean, so one outlier doesn't swing the verdict."""
+    reps = [
+        _make_result("t", quality=q) for q in (60, 80, 30)
+    ]
+    agg = bm.aggregate_replicates(reps)
+    # Median of [30, 60, 80] is 60
+    assert agg.quality_0_100 == 60
+    # stdev of [60, 80, 30] (sample) is sqrt(varvar) ≈ 25.2
+    assert 20 < agg.quality_stdev < 30
+
+
+def test_aggregate_replicates_majority_success_passes():
+    """Majority of N succeed → aggregate.success = True."""
+    reps = [
+        _make_result("t", quality=80, success=True),
+        _make_result("t", quality=80, success=True),
+        _make_result("t", quality=40, success=False),
+    ]
+    agg = bm.aggregate_replicates(reps)
+    assert agg.success is True
+    assert agg.success_rate == pytest.approx(2 / 3)
+
+
+def test_aggregate_replicates_minority_success_fails():
+    reps = [
+        _make_result("t", quality=40, success=False),
+        _make_result("t", quality=40, success=False),
+        _make_result("t", quality=80, success=True),
+    ]
+    agg = bm.aggregate_replicates(reps)
+    assert agg.success is False
+    assert agg.success_rate == pytest.approx(1 / 3)
+
+
+def test_aggregate_replicates_ties_resolve_to_pass():
+    """N=2 with 1 pass + 1 fail → pass (majority is forgiving)."""
+    reps = [
+        _make_result("t", quality=80, success=True),
+        _make_result("t", quality=40, success=False),
+    ]
+    agg = bm.aggregate_replicates(reps)
+    assert agg.success is True
+    assert agg.success_rate == 0.5
+
+
+def test_aggregate_replicates_cost_is_summed():
+    """Cost is REAL spend across N runs — must SUM, not median."""
+    reps = [
+        _make_result("t", quality=70, cost=0.10),
+        _make_result("t", quality=70, cost=0.20),
+        _make_result("t", quality=70, cost=0.30),
+    ]
+    agg = bm.aggregate_replicates(reps)
+    assert agg.cost_usd == pytest.approx(0.60)
+
+
+def test_aggregate_replicates_duration_uses_median():
+    reps = [
+        _make_result("t", quality=70, duration=1.0),
+        _make_result("t", quality=70, duration=2.0),
+        _make_result("t", quality=70, duration=100.0),
+    ]
+    agg = bm.aggregate_replicates(reps)
+    # Median of [1, 2, 100] is 2, not (1+2+100)/3 = 34.3
+    assert agg.duration_s == pytest.approx(2.0)
+
+
+def test_aggregate_replicates_keeps_per_run_history():
+    reps = [_make_result("t", quality=q, success=q >= 50)
+            for q in (40, 70, 90)]
+    agg = bm.aggregate_replicates(reps)
+    assert agg.per_run_quality == [40, 70, 90]
+    assert agg.per_run_success == [False, True, True]
+    assert agg.n_samples == 3
+
+
+def test_aggregate_replicates_single_sample_trivial():
+    """N=1 should round-trip cleanly: same quality, stdev=0,
+    success_rate matches the single value."""
+    r = _make_result("t", quality=75, success=True)
+    agg = bm.aggregate_replicates([r])
+    assert agg.quality_0_100 == 75
+    assert agg.quality_stdev == 0.0
+    assert agg.success_rate == 1.0
+    assert agg.n_samples == 1
+
+
+def test_aggregate_replicates_unions_signals():
+    """Flaky violations (only appearing in 1 of N) must still be
+    surfaced in the aggregate so they don't go unnoticed."""
+    r1 = _make_result("t", quality=70)
+    r1.matched_signals = ["t.expected[0]"]
+    r2 = _make_result("t", quality=70)
+    r2.matched_signals = ["t.expected[0]"]
+    r2.violated_signals = ["t.forbidden[0]"]    # only in run 2
+    agg = bm.aggregate_replicates([r1, r2])
+    assert "t.expected[0]" in agg.matched_signals
+    assert "t.forbidden[0]" in agg.violated_signals
+
+
+def test_aggregate_replicates_jsonl_roundtrip(tmp_path):
+    """An aggregated result must round-trip through write_run/read_run
+    without losing the new fields."""
+    reps = [_make_result("t", quality=q) for q in (60, 80, 70)]
+    agg = bm.aggregate_replicates(reps)
+    path = bm.write_run([agg], model="x", runs_dir=tmp_path)
+    loaded = bm.read_run(path)
+    assert len(loaded) == 1
+    assert loaded[0]["n_samples"] == 3
+    assert loaded[0]["per_run_quality"] == [60, 80, 70]
+    assert loaded[0]["quality_stdev"] > 0
+
+
 def test_summarise_run_computes_basic_aggregates():
     rows = [
         _result_dict("a", quality=80, success=True,  cost=0.01, duration=1.0),

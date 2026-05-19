@@ -132,6 +132,44 @@ def _cost_delta(before: float, after: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _run_task_once(
+    task: Task,
+    *,
+    model: str,
+    backend: str,
+    provider: str,
+    profile_name: str,
+    engine_factory: EngineFactory,
+    max_tokens: int,
+    run_once: Callable[..., dict],
+    clock: Callable[[], float],
+) -> BenchmarkResult:
+    """Single attempt — kept private so retry-aggregation logic lives
+    in one place at the public ``run_task`` entry."""
+    try:
+        engine = engine_factory(model, backend, provider, task.mode)
+    except Exception as exc:
+        traj = Trajectory(error=f"engine init failed: {exc}")
+        return score_outcome(
+            task, traj, model=model, profile_name=profile_name, ts=clock(),
+        )
+    cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
+    t0 = clock()
+    try:
+        raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+    except Exception as exc:
+        raw = {"text": "", "tool_calls": [], "input_tokens": 0,
+               "output_tokens": 0, "error": f"_run_once raised: {exc}"}
+    t1 = clock()
+    cost_after = float(getattr(engine, "cost_usd", 0.0) or 0.0)
+    traj = trajectory_from_run(
+        raw, duration_s=t1 - t0, cost_usd=_cost_delta(cost_before, cost_after),
+    )
+    return score_outcome(
+        task, traj, model=model, profile_name=profile_name, ts=clock(),
+    )
+
+
 def run_task(
     task: Task,
     *,
@@ -141,46 +179,50 @@ def run_task(
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
     max_tokens: int = 1024,
+    repeats: int = 1,
     run_once: Callable[..., dict] | None = None,
     clock: Callable[[], float] | None = None,
+    on_replicate: Callable[[int, BenchmarkResult], None] | None = None,
 ) -> BenchmarkResult:
-    """Execute one task end-to-end and return a scored result.
+    """Execute one task and return a scored result.
+
+    ``repeats=1`` (default): single sample, returned as-is.
+    ``repeats>1``: run the task N times against a FRESH engine each time
+    (so prior-turn state doesn't bias the result) and return a single
+    aggregated BenchmarkResult with median-quality + majority-success
+    + quality_stdev as a noise indicator.  ``on_replicate`` (if given)
+    is called after each individual run with ``(idx, result)`` so a
+    caller can stream progress.
 
     The defaults wire up the real ``AgentEngine`` + ``_run_once`` from
     ``cli.py``; tests can inject stubs.
     """
-
     now = clock or time.time
     factory = engine_factory or _default_engine_factory
-
     if run_once is None:
         from .cli import _run_once as _real_run_once
         run_once = _real_run_once
 
-    try:
-        engine = factory(model, backend, provider, task.mode)
-    except Exception as exc:
-        traj = Trajectory(error=f"engine init failed: {exc}")
-        return score_outcome(
-            task, traj, model=model, profile_name=profile_name, ts=now(),
+    n = max(1, int(repeats))
+    replicates: list[BenchmarkResult] = []
+    for i in range(n):
+        r = _run_task_once(
+            task,
+            model=model, backend=backend, provider=provider,
+            profile_name=profile_name, engine_factory=factory,
+            max_tokens=max_tokens, run_once=run_once, clock=now,
         )
+        replicates.append(r)
+        if on_replicate is not None:
+            try:
+                on_replicate(i, r)
+            except Exception:
+                pass
 
-    cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
-    t0 = now()
-    try:
-        raw = run_once(engine, task.prompt, max_tokens=max_tokens)
-    except Exception as exc:
-        raw = {"text": "", "tool_calls": [], "input_tokens": 0,
-               "output_tokens": 0, "error": f"_run_once raised: {exc}"}
-    t1 = now()
-    cost_after = float(getattr(engine, "cost_usd", 0.0) or 0.0)
-
-    traj = trajectory_from_run(
-        raw, duration_s=t1 - t0, cost_usd=_cost_delta(cost_before, cost_after),
-    )
-    return score_outcome(
-        task, traj, model=model, profile_name=profile_name, ts=now(),
-    )
+    if n == 1:
+        return replicates[0]
+    from .benchmark import aggregate_replicates
+    return aggregate_replicates(replicates)
 
 
 def run_suite(
@@ -192,22 +234,33 @@ def run_suite(
     profile_name: str = "",
     engine_factory: EngineFactory | None = None,
     max_tokens: int = 1024,
+    repeats: int = 1,
     progress: Callable[[Task, BenchmarkResult], None] | None = None,
+    on_replicate: Callable[[Task, int, BenchmarkResult], None] | None = None,
     run_once: Callable[..., dict] | None = None,
 ) -> list[BenchmarkResult]:
-    """Run every task and return scored results.
+    """Run every task and return scored (optionally aggregated) results.
 
-    ``progress`` is invoked after each task with (task, result) so a
-    caller can stream lines to stdout as the suite runs.
+    ``repeats`` is forwarded to ``run_task`` so each task is sampled
+    N times; the returned list still has one entry per task with the
+    aggregate stats.  ``progress`` fires once per task with the final
+    aggregated result; ``on_replicate`` fires for each individual
+    sample as it lands.
     """
 
     out: list[BenchmarkResult] = []
     for task in tasks:
+        per_task_replicate: Callable[..., None] | None = (
+            (lambda t: (lambda i, r: on_replicate(t, i, r)))(task)
+            if on_replicate is not None else None
+        )
         result = run_task(
             task,
             model=model, backend=backend, provider=provider,
             profile_name=profile_name, engine_factory=engine_factory,
-            max_tokens=max_tokens, run_once=run_once,
+            max_tokens=max_tokens, repeats=repeats,
+            run_once=run_once,
+            on_replicate=per_task_replicate,
         )
         out.append(result)
         if progress is not None:
