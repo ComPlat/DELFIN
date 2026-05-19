@@ -341,21 +341,146 @@ tasks:
       plane das in genau 5 nummerierten schritten. keine implementierung,
       nur plan.
     expected_signals:
-      # Look for numbered list (1. 2. ... 5.) or step markers
-      - pattern: '^\s*(?:1\.|step\s+1|schritt\s+1)'
+      # (?m) inline flag so ^/$ anchor at line-starts not just string-start.
+      - pattern: '(?m)^\s*(?:1\.|step\s+1|schritt\s+1)'
         against: text
-      - pattern: '^\s*(?:5\.|step\s+5|schritt\s+5)'
+      - pattern: '(?m)^\s*(?:5\.|step\s+5|schritt\s+5)'
         against: text
       # And mentions one of: CSS / theme / widget / color
       - pattern: '(?i)(css|theme|widget|dark|color|farb)'
         against: text
     forbidden_signals:
-      # Should plan, not edit
       - pattern: '(?i)(edit|write)_file'
         against: tool_name
     max_duration_s: 60
     max_cost_usd: 0.12
     max_tool_calls: 3
+
+  # =====================================================================
+  # Phase 2.A.2 — plan-mode coverage (2026-05-19)
+  # =====================================================================
+  # The previous expansion left plan-mode untested.  These 5 tasks
+  # exercise plan-mode specifically: model produces a structured plan
+  # WITHOUT editing or writing files.  Most patterns use (?m) so the
+  # multi-line anchors fire correctly even when the model opens with
+  # an intro line.
+
+  - id: plan_feature_dark_mode
+    task_class: plan_feature
+    mode: plan
+    prompt: >-
+      Plane einen "dark mode" toggle fürs DELFIN dashboard. Nur Plan,
+      keine Implementierung. Mindestens 4 nummerierte Schritte.
+    expected_signals:
+      - pattern: '(?m)^\s*1\.'
+        against: text
+      - pattern: '(?m)^\s*4\.'
+        against: text
+      - pattern: '(?i)(css|theme|widget|dark|farb|color|toggle)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
+        against: tool_name
+    max_duration_s: 60
+    max_cost_usd: 0.12
+    max_tool_calls: 3
+
+  - id: plan_refactor_split_module
+    task_class: plan_refactor
+    mode: plan
+    prompt: >-
+      delfin/agent/api_client.py ist ~6000 Zeilen. Plane wie du das in
+      mehrere kleinere Module aufteilen würdest. Mindestens 4 Schritte,
+      mit Hinweis welche Klassen wohin gehören. KEINE Implementierung.
+    expected_signals:
+      - pattern: '(?m)^\s*1\.'
+        against: text
+      - pattern: '(?m)^\s*4\.'
+        against: text
+      - pattern: '(?i)(split|aufteil|separate|trenn|module|modul|datei|file|class)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
+        against: tool_name
+    max_duration_s: 90
+    max_cost_usd: 0.15
+    max_tool_calls: 4
+
+  - id: plan_test_strategy
+    task_class: plan_test
+    mode: plan
+    prompt: >-
+      Plane eine Test-Strategie für delfin/agent/benchmark.py. Was sollte
+      unit-tested werden, was integration-tested, was end-to-end?
+      Mindestens 3 nummerierte Schritte. KEIN Code schreiben.
+    expected_signals:
+      - pattern: '(?m)^\s*1\.'
+        against: text
+      - pattern: '(?m)^\s*3\.'
+        against: text
+      - pattern: '(?i)(unit|integration|end-to-end|e2e|fixture|mock)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
+        against: tool_name
+    max_duration_s: 60
+    max_cost_usd: 0.10
+    max_tool_calls: 3
+
+  - id: plan_chemistry_workflow
+    task_class: plan_chemistry
+    mode: plan
+    prompt: >-
+      Plane den Workflow: ORCA-Optimierung eines Transition-Metal-Komplexes
+      mit zwei verschiedenen Funktionalen (BP86 und B3LYP) vergleichen,
+      sowohl Energien als auch Geometrien. Mindestens 5 nummerierte
+      Schritte. KEIN Code.
+    expected_signals:
+      - pattern: '(?m)^\s*1\.'
+        against: text
+      - pattern: '(?m)^\s*5\.'
+        against: text
+      - pattern: '(?i)(bp86)'
+        against: text
+      - pattern: '(?i)(b3lyp)'
+        against: text
+      - pattern: '(?i)(opt|optimi|geom|energ|vergleich|compare)'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
+        against: tool_name
+    max_duration_s: 60
+    max_cost_usd: 0.12
+    max_tool_calls: 3
+
+  - id: plan_constraint_3steps
+    task_class: plan_constraint
+    mode: plan
+    prompt: >-
+      Plane in GENAU 3 SCHRITTEN (nicht mehr, nicht weniger): wie du
+      herausfindest welcher git-commit eine Regression in
+      delfin/agent/engine.py eingeführt hat. Die Constraint „genau 3"
+      ist hart.
+    expected_signals:
+      - pattern: '(?m)^\s*1\.'
+        against: text
+      - pattern: '(?m)^\s*2\.'
+        against: text
+      - pattern: '(?m)^\s*3\.'
+        against: text
+      - pattern: '(?i)(bisect|git\s+log|blame|regression)'
+        against: text
+    forbidden_signals:
+      # If model emits steps 4+ it violated the constraint.
+      - pattern: '(?m)^\s*4\.'
+        against: text
+      - pattern: '(?m)^\s*5\.'
+        against: text
+      - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
+        against: tool_name
+    max_duration_s: 60
+    max_cost_usd: 0.10
+    max_tool_calls: 2
 
   # ── solo: find exact line + class definition ─────────────────────────
   - id: solo_research_class_lineno
