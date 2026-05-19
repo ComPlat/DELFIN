@@ -148,12 +148,12 @@ _AZURE_GPT5 = ModelProfile(
     ),
 )
 
-# Anthropic Claude Sonnet — strong all-rounder, no special handling.
-_CLAUDE_SONNET = ModelProfile(
+# Sonnet — strong all-rounder, no special handling.
+_SONNET = ModelProfile(
     compact_prompt=False,
     core_tools_only=False,
     effort_default="medium",
-    notes="Anthropic Claude Sonnet — strong default, no quirks.",
+    notes="Sonnet — strong default, no quirks.",
 )
 
 
@@ -169,12 +169,12 @@ _PROFILES: dict[str, ModelProfile] = {
     "azure.gpt-5": _AZURE_GPT5,
     "azure.gpt-5-mini": _AZURE_GPT5,
     "azure.gpt-5-nano": _AZURE_GPT5,
-    # Anthropic
-    "sonnet": _CLAUDE_SONNET,
-    "opus": replace(_CLAUDE_SONNET,
-                    notes="Anthropic Claude Opus — top tier, no quirks."),
-    "haiku": replace(_CLAUDE_SONNET, effort_default="low",
-                     notes="Anthropic Claude Haiku — fast/cheap, low effort."),
+    # Frontier-tier (top capability, no special routing needed)
+    "sonnet": _SONNET,
+    "opus": replace(_SONNET,
+                    notes="Opus — top tier, no quirks."),
+    "haiku": replace(_SONNET, effort_default="low",
+                     notes="Haiku — fast/cheap, low effort."),
 }
 
 

@@ -5499,21 +5499,38 @@ def create_tab(ctx):
                 pass
 
         threshold = float(state.get("_stale_threshold_s") or 600.0)
-        # Per-mode default: dashboard is short-action territory, so 120 s
-        # is a generous ceiling for "the provider is hung, not thinking".
-        # Solo can be long-form reasoning, leave it disabled by default.
+        # Stale-kill threshold (priority):
+        # 1. Explicit user setting ``agent.stale_kill_after_s``
+        # 2. Per-model profile's ``stale_kill_after_s`` (centralised
+        #    — reasoning models legitimately take minutes, slow KIT
+        #    Gemma needs 180 s, chat models 90-120 s)
+        # 3. Dashboard mode default (120 s)
+        # 4. Solo mode default (disabled — long-form reasoning is fine)
         try:
             from delfin.user_settings import load_settings as _ls
             _agent_cfg = (_ls() or {}).get("agent", {}) or {}
             _user_kill = float(_agent_cfg.get("stale_kill_after_s") or 0)
         except Exception:
             _user_kill = 0
+        _profile_kill = 0
+        try:
+            from delfin.agent.model_profiles import get_profile as _get_profile
+            _engine = state.get("engine")
+            _model = getattr(_engine, "model", "") if _engine else ""
+            _profile_kill = float(_get_profile(_model).stale_kill_after_s or 0)
+        except Exception:
+            pass
         if _user_kill > 0:
             kill_after = _user_kill
+        elif _profile_kill > 0 and (
+            state.get("engine")
+            and getattr(state["engine"], "mode", "") == "dashboard"
+        ):
+            kill_after = _profile_kill
         elif state.get("engine") and getattr(state["engine"], "mode", "") == "dashboard":
             kill_after = 120.0
         else:
-            kill_after = 0  # disabled
+            kill_after = 0  # disabled (solo mode)
 
         def _check_stale():
             try:

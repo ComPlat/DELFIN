@@ -737,9 +737,21 @@ class PromptLoader:
             # Just strip the marker comments but keep all content
             return self._MODULE_MARKER_RE.sub("", text)
 
-        # Compact mode activates either explicitly (setting) or
-        # heuristically (weak-model detection).
-        _compact = _compact_setting or self._is_weak_model(model)
+        # Compact-mode decision (priority):
+        # 1. Explicit user setting ``agent.compact_prompt``
+        # 2. Per-model profile's ``compact_prompt`` flag (centralised)
+        # 3. Weak-model heuristic on the model name (legacy fallback)
+        _profile_compact = False
+        try:
+            from .model_profiles import get_profile as _get_profile
+            _profile_compact = bool(_get_profile(model).compact_prompt)
+        except Exception:
+            pass
+        _compact = (
+            _compact_setting
+            or _profile_compact
+            or self._is_weak_model(model)
+        )
 
         active = self._detect_active_modules(task_text, mode_id)
         lines = text.splitlines(keepends=True)
