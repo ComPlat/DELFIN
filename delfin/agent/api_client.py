@@ -5189,16 +5189,23 @@ class OpenAIClient(_BaseClient):
         # llama-8b, qwen-7b, phi-3.5, mistral-7b, codellama-7b) routinely
         # pick the wrong tool out of 45 options and end up calling
         # ``notebook_edit`` for a Python file or ``cron_create`` to set
-        # a CONTROL key. Trim the surface to a 15-tool core that covers
-        # 95% of real agent use: read / write / edit / bash / grep /
-        # subagent / task* / ask_user / a few more. Strong models keep
-        # the full surface — they handle disambiguation reliably.
+        # a CONTROL key. The decision is delegated to the per-model
+        # profile registry (``model_profiles.get_profile``) so each
+        # model can be tuned in one central place. Strong models keep
+        # the full surface; profile.core_tools_only=True trims to the
+        # 15-tool _WEAK_MODEL_CORE_TOOLS set.
         try:
-            from .prompt_loader import PromptLoader
-            _is_weak = PromptLoader()._is_weak_model(self.model)
+            from .model_profiles import get_profile as _get_profile
+            _core_only = bool(_get_profile(self.model).core_tools_only)
         except Exception:
-            _is_weak = False
-        if _is_weak:
+            # Fallback to the legacy heuristic if the profile registry
+            # is unavailable for any reason.
+            try:
+                from .prompt_loader import PromptLoader
+                _core_only = PromptLoader()._is_weak_model(self.model)
+            except Exception:
+                _core_only = False
+        if _core_only:
             advertised_tools = [
                 t for t in advertised_tools
                 if t.get("function", {}).get("name") in _WEAK_MODEL_CORE_TOOLS

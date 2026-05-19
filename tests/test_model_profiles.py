@@ -68,12 +68,12 @@ def test_azure_gpt5_variants_all_get_low_effort_default():
         )
 
 
-def test_anthropic_haiku_gets_low_effort():
+def test_haiku_gets_low_effort():
     p = get_profile("haiku")
     assert p.effort_default == "low"
 
 
-def test_anthropic_opus_keeps_medium_effort():
+def test_opus_keeps_medium_effort():
     p = get_profile("opus")
     assert p.effort_default == "medium"
 
