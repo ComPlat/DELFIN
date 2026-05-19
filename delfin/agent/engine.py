@@ -646,6 +646,7 @@ class AgentEngine:
             task_text=task_text,
             session_key=f"engine-session-{self._prompt_session_serial}",
             live_state=live_state,
+            model=getattr(self, "model", "") or "",
         )
 
     def stream_response(
