@@ -6962,6 +6962,76 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/agents metrics" or cmd.startswith("/agents metrics "):
+            from delfin.agent.agent_metrics import (
+                aggregate_by_model, read_turns, compare_windows,
+            )
+            arg = cmd[len("/agents metrics "):].strip() if cmd.startswith("/agents metrics ") else ""
+            # /agents metrics compare <model>
+            if arg.startswith("compare "):
+                model = arg[len("compare "):].strip()
+                cmp = compare_windows(model=model)
+                if cmp is None:
+                    _append_system_message(
+                        f"Not enough turns for `{model}` (need ≥5 in each "
+                        "of the last day vs the preceding 7 days)."
+                    )
+                    return True
+                lines = [
+                    f"Comparison for `{cmp['model']}`:",
+                    f"  old window: {cmp['n_old']} turns",
+                    f"  new window: {cmp['n_new']} turns",
+                    "",
+                ]
+                for field_name, label in (
+                    ("avg_cost_usd",            "avg cost     "),
+                    ("avg_duration_s",          "avg duration "),
+                    ("tool_error_rate",         "tool errors  "),
+                    ("silent_exit_rate",        "silent exits "),
+                    ("user_correction_rate",    "user redir   "),
+                    ("avg_continuation_rounds", "avg cont rnds"),
+                ):
+                    d = cmp[field_name]
+                    arrow = "↓" if d["improved"] else "↑"
+                    mark = "✅" if d["improved"] else "⚠️"
+                    lines.append(
+                        f"  {label}  {d['old']:>9.4f} → {d['new']:>9.4f}  "
+                        f"{arrow}{abs(d['delta']):>9.4f}  {mark}"
+                    )
+                _append_system_message("\n".join(lines))
+                return True
+            # /agents metrics  — global per-model dashboard
+            stats = aggregate_by_model()
+            if not stats:
+                _append_system_message(
+                    "No agent metrics recorded yet. Metrics are auto-"
+                    "written per turn to ~/.delfin/agent_metrics.jsonl."
+                )
+                return True
+            lines = [
+                "Agent metrics (lifetime, per model):",
+                "",
+                f"  {'model':<32} {'n':>5} {'avg s':>7} "
+                f"{'avg $':>9} {'tot $':>9} "
+                f"{'tool err':>9} {'silent':>7} {'coop':>6}",
+            ]
+            for model in sorted(stats):
+                s = stats[model]
+                lines.append(
+                    f"  {model[:32]:<32} {s['n_turns']:>5} "
+                    f"{s['avg_duration_s']:>7.1f} "
+                    f"${s['avg_cost_usd']:>8.4f} "
+                    f"${s['total_cost_usd']:>8.3f} "
+                    f"{s['tool_error_rate']*100:>8.1f}% "
+                    f"{s['silent_exit_rate']*100:>6.1f}% "
+                    f"{s['cooperative_stop_rate']*100:>5.1f}%"
+                )
+            lines.append(
+                "\n/agents metrics compare <model>  — last day vs 7-day baseline"
+            )
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/agents stats":
             try:
                 from delfin.agent.subagents import (
@@ -12290,6 +12360,51 @@ def create_tab(ctx):
                                 f"{tool_count[0]} tool call{'s' if tool_count[0] != 1 else ''}  ·  "
                                 f"{cost_s}"
                             )
+                        # Record agent metrics for iterative behaviour
+                        # tuning. Append-only JSONL keyed by model +
+                        # profile so /agents metrics can compare windows
+                        # before / after a profile change.
+                        try:
+                            from delfin.agent.agent_metrics import (
+                                record_turn, TurnMetrics,
+                            )
+                            from delfin.agent.model_profiles import (
+                                get_profile,
+                            )
+                            _model_name = (
+                                getattr(engine, "model", "")
+                                or model_dropdown.value
+                                or ""
+                            )
+                            _profile = get_profile(_model_name)
+                            record_turn(TurnMetrics(
+                                session_id=getattr(engine, "session_id", "") or "",
+                                model=_model_name,
+                                profile_name=(_profile.notes or "default")[:80],
+                                mode=mode_dropdown.value,
+                                effort=effort_dropdown.value,
+                                duration_s=dur,
+                                input_tokens=d_in,
+                                output_tokens=d_out,
+                                cost_usd=d_cost,
+                                tool_calls=tool_count[0],
+                                tool_errors=int(
+                                    state.get("_turn_tool_errors") or 0
+                                ),
+                                continuation_rounds=int(
+                                    state.get("_last_continuation_rounds") or 0
+                                ),
+                                silent_exit=bool(
+                                    not chunks and not thinking_chunks
+                                ),
+                                cooperative_stop=bool(
+                                    state.get("_last_cooperative_stop")
+                                ),
+                            ))
+                            state["_turn_tool_errors"] = 0
+                            state["_last_cooperative_stop"] = False
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                     # Fire Stop hooks at end-of-turn so user-defined linters
