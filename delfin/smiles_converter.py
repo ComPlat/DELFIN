@@ -1614,6 +1614,69 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_hapto_clearance_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-21 (2026-05-19): Welle-5f-F 81f8a1f-style M-X clearance final post-pass.
+
+    For hapto + multi-hapto class systems, apply the radial M-X clearance
+    push from ``_hapto_final_clearance.enforce_m_x_clearance_xyz`` as the
+    LAST post-emit step (after B3 angle-corrector + B4 π-H projection),
+    bridging the gap between the candidate-select-time gate and the
+    actual emitted XYZ.
+
+    Default-ON for hapto+multi_hapto via _class_conditional_flag.  Per
+    cross-archive analysis CROSS_ARCHIVE_RERUN_2026_05_18.md: 81f8a1f
+    is Champion in cshm_max_max (47.25 vs HEAD 77.66, +30pp gap) via
+    piano-stool cone + inline ring + rigid-body multi-metal mechanism.
+    Welle-5c-CV (2026-05-16): per-bond intact rate edge +1.34pp + per-
+    file +4.33pp on 901-file hapto intersection.
+
+    Universal-fundamental: graph-only metal + hapto-group detection,
+    element symbols only, no SMILES regex.
+
+    Bit-exact when DELFIN_5F_F_HAPTO_FINAL_CLEARANCE=0.  Operator override
+    via DELFIN_5F_F_HAPTO_FINAL_CLEARANCE_CLASSES=csv overrides class list.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_5F_F_HAPTO_FINAL_CLEARANCE", mol, default=0,
+        default_classes=["hapto", "multi_hapto"],
+    ):
+        return results
+    try:
+        from delfin._hapto_final_clearance import enforce_m_x_clearance_xyz
+        _find_hg = _find_hapto_groups
+    except Exception as _imp_exc:
+        try:
+            logger.debug("hapto-clearance import failed: %s", _imp_exc)
+        except Exception:
+            pass
+        return results
+    # Per-frame application
+    new_results: List[Tuple[str, str]] = []
+    n_modified = 0
+    for (xyz, label) in results:
+        try:
+            new_xyz = enforce_m_x_clearance_xyz(xyz, mol, _find_hg)
+            if new_xyz != xyz:
+                n_modified += 1
+            new_results.append((new_xyz, label))
+        except Exception as _hf_exc:
+            try:
+                logger.debug("hapto-clearance frame error (kept input): %s", _hf_exc)
+            except Exception:
+                pass
+            new_results.append((xyz, label))
+    try:
+        if n_modified > 0:
+            logger.debug("hapto-clearance modified %d/%d frames", n_modified, len(results))
+    except Exception:
+        pass
+    return new_results
+
+
 def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
     """Baustein 5 dispatch helper — PBD post-UFF geometry corrector (v2).
 
@@ -27980,6 +28043,14 @@ def smiles_to_xyz_isomers(
     # Runs for both metal AND non-metal complexes — aromatic-H out-of-plane
     # is a generic converter pathology independent of metal presence.
     results = _apply_baustein4_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-21 (2026-05-19): 81f8a1f-style M-X clearance final post-pass ───
+    # For hapto+multi_hapto class: radial push to enforce min M-X 2.5 Å for
+    # non-bonded heavy atoms.  Bridges gap between candidate-select-time gate
+    # and actual emitted XYZ (B3/B4 may re-introduce M-X clash via rotations
+    # / π-projections).  Class-gated default-ON for hapto+multi_hapto only.
+    # Welle-5f-F finally landed.
+    results = _apply_hapto_clearance_if_enabled(mol, results, _dual_parse_done)
 
     # ── Baustein 5 v2: PBD post-UFF geometry corrector ───────────────────────
     # Per-frame: catastrophic M-D break repair, Stage 1 bond corrections,
