@@ -319,13 +319,19 @@ def cmd_bench(args: argparse.Namespace) -> int:
     max_tokens = int(getattr(args, "max_tokens", 1024) or 1024)
     backend = getattr(args, "backend", "") or "api"
     provider = getattr(args, "provider", "") or ""
+    repeats = max(1, int(getattr(args, "repeats", 1) or 1))
     profile_name = _br.resolve_profile_name(model)
 
     def _progress(task, result):
         mark = "PASS" if result.success else "FAIL"
+        extra = ""
+        if result.n_samples > 1:
+            extra = (f"  N={result.n_samples}  "
+                     f"σ={result.quality_stdev:.1f}  "
+                     f"rate={result.success_rate:.0%}")
         print(f"  [{mark}] {task.id:<28} q={result.quality_0_100:>3}  "
               f"{result.duration_s:>5.1f}s  ${result.cost_usd:.4f}  "
-              f"tool={result.tool_calls}",
+              f"tool={result.tool_calls}{extra}",
               flush=True)
         if result.violated_signals or result.missing_signals or result.error:
             for v in result.violated_signals:
@@ -336,8 +342,18 @@ def cmd_bench(args: argparse.Namespace) -> int:
             if result.error:
                 print(f"        error:    {result.error[:120]}", flush=True)
 
+    rep_note = f" × {repeats} repeats" if repeats > 1 else ""
     print(f"Benchmarking {model} (profile={profile_name}) "
-          f"on {len(tasks)} tasks…")
+          f"on {len(tasks)} tasks{rep_note}…")
+
+    def _on_rep(task, idx, result):
+        if repeats > 1:
+            mark = "P" if result.success else "F"
+            print(f"    sample {idx + 1}/{repeats} [{mark}] "
+                  f"{task.id:<28} q={result.quality_0_100:>3}  "
+                  f"{result.duration_s:>5.1f}s",
+                  flush=True)
+
     results = _br.run_suite(
         tasks,
         model=model,
@@ -345,7 +361,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
         provider=provider,
         profile_name=profile_name,
         max_tokens=max_tokens,
+        repeats=repeats,
         progress=_progress,
+        on_replicate=_on_rep if repeats > 1 else None,
     )
     path = _bm.write_run(results, model=model)
     s = _bm.summarise_run(results)
@@ -515,6 +533,12 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Comma-separated task IDs (default: all)")
     bench_run.add_argument("--max-tokens", type=int, default=1024,
                            dest="max_tokens")
+    bench_run.add_argument(
+        "--repeats", type=int, default=1,
+        help=("N retries per task to defeat single-sample noise; "
+              "result is median quality + majority success + quality_stdev "
+              "(default: 1)"),
+    )
 
     bench_ls = bench_sub.add_parser("list", help="List packaged tasks")
     bench_ls.set_defaults(bench_action="list")

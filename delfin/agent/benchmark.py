@@ -100,7 +100,15 @@ class Trajectory:
 
 @dataclass
 class BenchmarkResult:
-    """Score-card for one (task, model, profile) execution."""
+    """Score-card for one (task, model, profile) execution.
+
+    With ``n_samples > 1`` this is an aggregated record over N
+    repeated executions of the same task; ``quality_stdev`` and
+    ``success_rate`` then expose run-to-run noise.  ``components``,
+    ``duration_s`` etc are medians across the N replicates and
+    ``cost_usd`` is the SUM of the N runs (the real spend), not a
+    median — useful for budget tracking.
+    """
 
     task_id: str
     task_class: str
@@ -121,6 +129,12 @@ class BenchmarkResult:
     missing_signals: list[str] = field(default_factory=list)
     budget_violations: list[str] = field(default_factory=list)
     error: str = ""
+    # --- replicate-aware fields (N=1 → trivially the only sample) ---
+    n_samples: int = 1
+    quality_stdev: float = 0.0
+    success_rate: float = 0.0           # fraction of N samples with success=True
+    per_run_quality: list[int] = field(default_factory=list)
+    per_run_success: list[bool] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +344,116 @@ def score_outcome(
         missing_signals=missing,
         budget_violations=budget_violations,
         error=traj.error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Replicate aggregation
+# ---------------------------------------------------------------------------
+
+
+def _median(values: list[float]) -> float:
+    """Numerically-stable median for small lists.  Empty → 0.0."""
+    if not values:
+        return 0.0
+    s = sorted(values)
+    n = len(s)
+    mid = n // 2
+    if n % 2 == 0:
+        return (s[mid - 1] + s[mid]) / 2.0
+    return float(s[mid])
+
+
+def _stdev(values: list[float]) -> float:
+    """Sample standard deviation (Bessel's correction).  Empty/single → 0."""
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    return var ** 0.5
+
+
+def aggregate_replicates(
+    results: list[BenchmarkResult],
+) -> BenchmarkResult:
+    """Collapse N per-run results for the SAME task into one aggregated
+    BenchmarkResult.
+
+    Rules:
+      - ``success`` = majority vote (ceil(N/2) successes required to pass)
+      - ``quality_0_100`` = median across N runs
+      - ``duration_s`` / ``tool_calls`` / ``input_tokens`` / ``output_tokens``
+        = median (typical observation, not skewed by one outlier)
+      - ``cost_usd`` = SUM (real total spend across replicates)
+      - ``components`` = median per component
+      - ``matched_signals`` / ``missing_signals`` / ``violated_signals`` /
+        ``budget_violations`` = union across replicates (so a flaky
+        violation is still visible)
+      - ``quality_stdev`` exposes run-to-run noise; ``success_rate``
+        the fraction of passes; ``per_run_*`` keep the raw samples for
+        deeper analysis.
+
+    Raises ``ValueError`` on empty input or task_id mismatch.
+    """
+    if not results:
+        raise ValueError("aggregate_replicates needs at least one result")
+    first = results[0]
+    if not all(r.task_id == first.task_id for r in results):
+        raise ValueError("aggregate_replicates: all results must share task_id")
+
+    n = len(results)
+    qualities = [int(r.quality_0_100) for r in results]
+    durations = [float(r.duration_s) for r in results]
+    tool_counts = [int(r.tool_calls) for r in results]
+    in_toks = [int(r.input_tokens) for r in results]
+    out_toks = [int(r.output_tokens) for r in results]
+    success_flags = [bool(r.success) for r in results]
+    n_pass = sum(1 for f in success_flags if f)
+
+    # Components: median per field across replicates
+    comp_keys: set[str] = set()
+    for r in results:
+        comp_keys.update((r.components or {}).keys())
+    components = {
+        k: int(round(_median([float((r.components or {}).get(k, 0)) for r in results])))
+        for k in comp_keys
+    }
+
+    # Union of signal labels (preserves order of first occurrence)
+    def _union(field_name: str) -> list[str]:
+        out: list[str] = []
+        for r in results:
+            for s in getattr(r, field_name, []) or []:
+                if s not in out:
+                    out.append(s)
+        return out
+
+    return BenchmarkResult(
+        task_id=first.task_id,
+        task_class=first.task_class,
+        model=first.model,
+        profile_name=first.profile_name,
+        mode=first.mode,
+        ts=first.ts,
+        success=(n_pass * 2 >= n),                   # majority (ties = pass)
+        quality_0_100=int(round(_median([float(q) for q in qualities]))),
+        components=components,
+        duration_s=_median(durations),
+        cost_usd=sum(float(r.cost_usd) for r in results),
+        input_tokens=int(_median([float(x) for x in in_toks])),
+        output_tokens=int(_median([float(x) for x in out_toks])),
+        tool_calls=int(_median([float(x) for x in tool_counts])),
+        matched_signals=_union("matched_signals"),
+        violated_signals=_union("violated_signals"),
+        missing_signals=_union("missing_signals"),
+        budget_violations=_union("budget_violations"),
+        error="; ".join(sorted({r.error for r in results if r.error}))[:500],
+        n_samples=n,
+        quality_stdev=_stdev([float(q) for q in qualities]),
+        success_rate=n_pass / n,
+        per_run_quality=list(qualities),
+        per_run_success=list(success_flags),
     )
 
 
@@ -727,6 +851,7 @@ __all__ = [
     "read_run",
     "summarise_run",
     "compare_runs",
+    "aggregate_replicates",
     "runs_dir",
     "run_timestamp",
     "find_profile_commits_between",
