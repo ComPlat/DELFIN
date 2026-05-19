@@ -255,6 +255,13 @@ fi
 # ======================================================================
 export OMPI_MCA_pml=ob1
 export OMPI_MCA_btl=self,tcp,vader
+# On kernels with kernel.yama.ptrace_scope>=1 (e.g. BwUniCluster3 sets =3),
+# process_vm_readv() returns EPERM and OpenMPI's vader BTL spams stderr
+# with "Read -1, expected N, errno = 1" for every failed CMA attempt
+# (cosmetic — vader falls back to double-copy and the job still runs).
+# Disable CMA so vader never tries it, and silence the unused-component warning.
+export OMPI_MCA_btl_vader_single_copy_mechanism=none
+export OMPI_MCA_btl_base_warn_component_unused=0
 export OMPI_MCA_mpi_show_mca_params_file=0
 export OMPI_MCA_mpi_yield_when_idle=1
 export OMPI_MCA_coll_hcoll_enable=0
