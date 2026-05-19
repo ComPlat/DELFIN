@@ -189,7 +189,14 @@ _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "test_agent": 8000,           # test execution
     "research_agent": 16000,      # deep chemistry method analysis
     "solo_agent": 64000,          # scales: low=32k, medium=64k, high=128k
-    "dashboard_agent": 64000,     # scales: low=32k, medium=64k, high=128k
+    # Dashboard agent dispatches UI commands ("open tab X", "set
+    # functional Y", "submit job") — no deep reasoning required. The
+    # OpenAI/Azure path maps the budget to reasoning_effort buckets
+    # (<16k = low, <64k = medium, ≥64k = high); keeping the base at
+    # 4 k means even the high-effort dropdown setting (mult ×2.0 =
+    # 8 k) still resolves to reasoning_effort=low so Azure GPT-5.x
+    # responds in < 5 s instead of burning 100+ s on hidden reasoning.
+    "dashboard_agent": 4000,
 }
 _DEFAULT_THINKING_BUDGET = 10000
 
