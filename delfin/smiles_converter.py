@@ -1636,6 +1636,42 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_aromatic_planarity_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-24 (2026-05-20) dispatch — post-UFF aromatic-ring flattening.
+
+    Re-grounding forensic: hapto/multi_hapto true-aromatic rings (M_coord
+    chelate rings excluded) pucker 72-75 % @ mean OOP 0.34-0.38 Å.  Flatten
+    them onto their SVD best-fit plane, centroid-preserving (M-ring distance
+    invariant) + ring-H dragged + per-frame M-D-invariant rollback.
+
+    Class-conditional default-ON for {hapto, multi_hapto} via
+    ``DELFIN_AROMATIC_PLANARITY`` (sigma 25 % is borderline/threshold-noise,
+    multi_sigma 10 % already good — excluded).  Bit-exact when the flag is 0
+    or the class is excluded or no qualifying ring is present.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    # Iter-24 WIP: default-OFF.  Pre-commit forensic showed the naive
+    # atom-wise flatten is inconsistent (some pendant rings worsen; coordinated
+    # η-rings trip the M-D invariant).  Needs redesign (centroid-based M-D for
+    # coordinated rings + fix flatten/H-projection interaction) before default-ON.
+    if not _class_conditional_flag(
+        "DELFIN_AROMATIC_PLANARITY", mol, default=0,
+    ):
+        return results
+    try:
+        from delfin._aromatic_ring_flattener import correct_results as _arom_correct
+        return _arom_correct(mol, results)
+    except Exception as _arom_exc:
+        try:
+            logger.debug("Iter-24 aromatic-planarity skipped: %s", _arom_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_hapto_clearance_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-21 (2026-05-19): Welle-5f-F 81f8a1f-style M-X clearance final post-pass.
 
@@ -28144,6 +28180,13 @@ def smiles_to_xyz_isomers(
     results = _apply_fixer_bridging_anion_if_enabled(
         mol, results, _dual_parse_done,
     )
+
+    # ── Iter-24 (2026-05-20): post-UFF aromatic-ring planarity enforcement ──
+    # Flatten puckered TRUE aromatic rings (M_coord chelate rings excluded via
+    # bond-length gate) onto their SVD best-fit plane, centroid-preserving so
+    # the M-ring distance / M-D invariant is untouched; ring-H dragged.
+    # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
+    results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
