@@ -1636,6 +1636,39 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_bond_decollapse_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-25 (2026-05-20) dispatch — final bond-decollapse corrector.
+
+    Calibration breakthrough: ~79% of hapto structures emit collapsed ligands
+    (heavy-heavy pairs 0.24-1.2 A — fused substituents / overlapping rings).
+    This FINAL pass spring-relaxes the non-metal heavy graph to physical bond
+    lengths + repels superimposed atoms, freezing metals + the coordination
+    sphere (M-D invariant preserved).  Per-frame rollback: kept only if the
+    collapsed-bond count strictly drops and no M-D bond breaks.  Geometry-only
+    (atom-order independent).  Aggregate validated -20.5pp collapse on a
+    150-hapto sample.  Class-cond default-ON {hapto, multi_hapto}; bit-exact
+    when flag off / class excluded / no collapsed bond present.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_BOND_DECOLLAPSE", mol, default=0,
+        default_classes=["hapto", "multi_hapto"],
+    ):
+        return results
+    try:
+        from delfin._bond_decollapse import correct_results as _bd_correct
+        return _bd_correct(mol, results)
+    except Exception as _bd_exc:
+        try:
+            logger.debug("Iter-25 bond-decollapse skipped: %s", _bd_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_aromatic_planarity_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-24 (2026-05-20) dispatch — post-UFF aromatic-ring flattening.
 
@@ -26559,6 +26592,10 @@ def smiles_to_xyz_isomers(
                 results_hapto = _apply_baustein4_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
+                # Iter-25: final bond-decollapse (fixes ~79% hapto ligand collapse)
+                results_hapto = _apply_bond_decollapse_if_enabled(
+                    _mol_hapto_gate, results_hapto, _dual_parse_done
+                )
                 return results_hapto, None
             # Multi-metal hapto: the hapto builder already produced the
             # best possible Cp geometry (perfectly planar rings). ETKDG
@@ -26570,6 +26607,10 @@ def smiles_to_xyz_isomers(
             )
             # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
             results_hapto = _apply_baustein4_if_enabled(
+                _mol_hapto_gate, results_hapto, _dual_parse_done
+            )
+            # Iter-25: final bond-decollapse (fixes ~79% hapto ligand collapse)
+            results_hapto = _apply_bond_decollapse_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
             return results_hapto, None
@@ -28204,6 +28245,13 @@ def smiles_to_xyz_isomers(
     # the M-ring distance / M-D invariant is untouched; ring-H dragged.
     # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
     results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-25 (2026-05-20): final bond-decollapse corrector ───────────────
+    # Spring-relax the non-metal heavy graph to physical bond lengths + repel
+    # superimposed atoms (metals + coord-sphere frozen, M-D invariant + collapse-
+    # reduce rollback).  Fixes the ~79% hapto ligand-collapse (validated
+    # -20.5pp).  Class-cond default-ON {hapto, multi_hapto}; runs LAST.
+    results = _apply_bond_decollapse_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
