@@ -14762,6 +14762,47 @@ def _build_hapto_scaffold(
                     np.cos(angle) * (-bond_dir) + np.sin(angle) * perp_in_plane
                 )
                 placed.add(atom_idx)
+
+        # Iter-22 (2026-05-20): fused-aromatic coplanar enforcement.
+        # If this ring is ortho-fused (shares >=2 atoms = a bond-edge) to an
+        # already-placed organic ring, project its non-shared atoms onto the
+        # partner ring's plane so the fused system stays coplanar.  Prevents
+        # the post-UFF ring-twist that derive_xyz_bonds (organic_tol 0.40)
+        # mis-reads as spurious C-C bonds — the hapto %topo bottleneck per
+        # forensik_hapto_class_pre_uff_2026_05_18 (74.1% broken via secondary
+        # fused-aromatic ligand).  In-plane n-gon arrangement is preserved;
+        # only the out-of-plane component is removed (UFF relaxes the rest).
+        # Graph-only, default-ON hapto+multi_hapto, bit-exact for sigma.
+        if _class_conditional_flag(
+            "DELFIN_5F_FUSED_AROMATIC_COPLANAR", mol, default=0,
+            default_classes=["hapto", "multi_hapto"],
+        ):
+            try:
+                _best = None
+                for _other in _organic_rings:
+                    _os = set(_other)
+                    if _os == ring_set or not _os.issubset(placed):
+                        continue
+                    _sh = ring_set & _os
+                    if len(_sh) < 2:
+                        continue
+                    if _best is None or len(_sh) > len(_best[0]):
+                        _pts = np.array([coords[a] for a in _other], dtype=float)
+                        _cen = _pts.mean(axis=0)
+                        _, _, _vh = np.linalg.svd(_pts - _cen)
+                        _nl = float(np.linalg.norm(_vh[2]))
+                        if _nl > 1e-9:
+                            _best = (sorted(_sh), _vh[2] / _nl)
+                if _best is not None:
+                    _shared_atoms, _normal = _best
+                    _plane_pt = coords[_shared_atoms[0]].astype(float)
+                    for _ai in chain:
+                        if _ai in _shared_atoms:
+                            continue
+                        _d = float(np.dot(coords[_ai] - _plane_pt, _normal))
+                        coords[_ai] = coords[_ai] - _d * _normal
+            except Exception:
+                pass
         return True
 
     # ---- BFS propagate remaining atoms with VSEPR local geometry ----
