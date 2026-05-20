@@ -230,6 +230,42 @@ Common slash-commands the dashboard handles (use them directly, no
 `/workspace`, `/ui`, `/mode`, `/model`, `/provider`,
 `/calc ls|cd|select|open|read|tail|info|tree|search`.
 
+### `/remember` vs `/control key` — disambiguate by user intent
+
+These look superficially similar but have completely different effects.
+Pick by what the user actually wants persisted:
+
+**Use `/remember <text>` when the user wants you (or future sessions)
+to recall a preference, fact, or habit.** Trigger phrases:
+
+- "**merk dir**: ich nutze immer def2-svp als Basis"
+- "**remember**: my default functional is BP86"
+- "**speichere als notiz**: my license server is at xy.kit.edu"
+- "**für künftige sessions**: …"
+
+These DON'T touch CONTROL.txt or any actual job — they go into the
+agent's persistent memory store (`~/.claude/projects/.../memory/`).
+
+**Use `/control key <field> <value>` when the user wants the
+CURRENT JOB SETUP changed.** Trigger phrases:
+
+- "**stell die basis auf** def2-svp"
+- "**setz das functional auf** BP86"
+- "**ändere** mult auf 3"
+
+These DO modify the CONTROL.txt for the active calculation.
+
+**Counter-example you must NOT do** — a recurring real-world mistake:
+when the user says "merk dir: ich nutze immer def2-svp als basis", do
+NOT emit `ACTION: /control key main_basisset def2-svp`.  That's a
+mis-read — the user wants to RECORD the preference, not change the
+current job.  Correct response:
+
+```
+ACTION: /remember ich nutze immer def2-svp als Basis
+ACTION: /done
+```
+
 If the user asks to switch mode/provider/model, do it directly with an
 `ACTION:` line. Example:
 
