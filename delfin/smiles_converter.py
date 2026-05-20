@@ -25403,6 +25403,8 @@ def _enumerate_hapto_sigma_isomers(
                     new_coords[ai] = [p.x, p.y, p.z]
 
                 swap_ok = True
+                _mp = conf_obj.GetAtomPosition(metal_idx)
+                metal_pos = np.array([_mp.x, _mp.y, _mp.z])
                 for slot_idx in range(len(sigma_donors)):
                     src_donor = sigma_donors[perm[slot_idx]]
                     tgt_donor = sigma_donors[slot_idx]
@@ -25412,8 +25414,23 @@ def _enumerate_hapto_sigma_isomers(
                     tgt_pos = sigma_positions[slot_idx]
                     src_pos = sigma_positions[perm[slot_idx]]
 
-                    # Translate fragment so donor lands at target position.
-                    delta = tgt_pos - src_pos
+                    # Place the SOURCE donor at the TARGET slot's DIRECTION but
+                    # keep the source donor's OWN (element-correct) M-D distance.
+                    # Bug fix (2026-05-20): the previous ``delta = tgt_pos -
+                    # src_pos`` snapped the donor onto the target donor's
+                    # position, so a permuted donor inherited the *other*
+                    # element's M-distance (e.g. Cl landing at an N slot ended
+                    # up at the N distance ~2.06 Å instead of ~2.40 Å).  Use
+                    # the source donor's existing element-correct radius along
+                    # the target direction instead.
+                    tgt_dir = tgt_pos - metal_pos
+                    _tn = float(np.linalg.norm(tgt_dir))
+                    src_radius = float(np.linalg.norm(src_pos - metal_pos))
+                    if _tn < 1e-6 or src_radius < 1e-6:
+                        delta = tgt_pos - src_pos  # degenerate fallback
+                    else:
+                        new_donor_pos = metal_pos + (src_radius / _tn) * tgt_dir
+                        delta = new_donor_pos - src_pos
                     orig_frag_coords = np.array([
                         [conf_obj.GetAtomPosition(ai).x,
                          conf_obj.GetAtomPosition(ai).y,
