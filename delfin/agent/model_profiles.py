@@ -107,15 +107,20 @@ _QWEN35_397B = ModelProfile(
 
 # kit.gpt-oss-120b — OpenAI's open-weight model. Trained for tool use,
 # good but a notch below Qwen3.5-397b on context handling.
+# 2026-05-20: core_tools_only=True after P2 27-task baseline showed
+# tool-call explosion on chemistry tasks (dash_chemistry_basis_diff
+# spent $2.51 / 24 tools / 77s where gemma takes $0.12 / 1 tool / 6s).
+# Hypothesis: cap to 15 core tools removes the over-tooling without
+# losing the actual chemistry knowledge.
 _GPT_OSS_120B = ModelProfile(
     compact_prompt=False,
-    core_tools_only=False,
+    core_tools_only=True,
     effort_default="medium",
     max_tool_rounds=15,
     tool_result_cap_kb=5,
     strict_action_prefix=False,
     stale_kill_after_s=120.0,
-    notes="KIT GPT-OSS 120B — solid tool calling, full surface.",
+    notes="KIT GPT-OSS 120B — core_tools_only on (2026-05-20 P2 iter).",
 )
 
 # kit.gemma4-31b-it — 31B dense, decent but slower than the MoEs.
