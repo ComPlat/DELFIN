@@ -217,9 +217,11 @@ tasks:
     prompt: >-
       stell functional auf bp86, basis auf def2-svp, dann wechsel zu submit
     expected_signals:
-      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key\s+functional|orca\s+set\s+functional)\s+bp86'
+      # Real DELFIN CONTROL keys include "main_basisset", "functional",
+      # etc.  Accept any key name containing "functional" or "basis".
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*functional\w*\s+bp86'
         against: action
-      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key\s+basis|orca\s+set\s+basis)\s+def2'
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*basis\w*\s+def2'
         against: action
       - pattern: '(?:ACTION:\s*)?/tab\s+submit'
         against: action
