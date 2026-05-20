@@ -475,6 +475,180 @@ def test_format_compare_markdown_includes_profile_commits(tmp_path):
     assert "tighter stale-kill" in md
 
 
+# ---------------------------------------------------------------------------
+# Audit — pattern-bug-vs-real-fail diagnosis
+# ---------------------------------------------------------------------------
+
+
+def test_score_outcome_captures_text_excerpt():
+    task = bm.Task(
+        id="t", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(bm.Signal(pattern="never_matches", against="text"),),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+    traj = bm.Trajectory(
+        text="Hier ist meine Antwort: 1. erst dies, 2. dann das",
+        tool_calls=[{"name": "Read", "input": {}}],
+        duration_s=1.0,
+    )
+    r = bm.score_outcome(task, traj)
+    assert r.success is False
+    assert "Hier ist meine Antwort" in r.text_excerpt
+    assert r.tool_names == ["Read"]
+
+
+def test_score_outcome_text_excerpt_truncates_to_400_chars():
+    task = bm.Task(
+        id="t", task_class="misc", mode="solo", prompt="hi",
+        expected_signals=(),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+    traj = bm.Trajectory(text="x" * 1000, duration_s=1.0)
+    r = bm.score_outcome(task, traj)
+    assert len(r.text_excerpt) <= 400
+
+
+def test_audit_run_flags_pattern_bug_when_excerpt_reasonable():
+    """rate=0% + σ≈0 + non-empty excerpt + no error → likely pattern bug."""
+    record = {
+        "task_id": "t1", "model": "m", "success": False,
+        "quality_0_100": 35, "success_rate": 0.0, "quality_stdev": 0.6,
+        "missing_signals": ["t1.expected[0]"],
+        "violated_signals": [],
+        "text_excerpt": "ACTION: /tab calc\nACTION: /done",
+        "tool_names": [], "error": "",
+    }
+    entries = bm.audit_run([record], tasks=[])
+    assert len(entries) == 1
+    assert entries[0]["hint_pattern_bug"] is True
+
+
+def test_audit_run_does_not_flag_when_error_present():
+    """engine init failed → that's a real fail, not a pattern bug."""
+    record = {
+        "task_id": "t2", "model": "m", "success": False,
+        "quality_0_100": 35, "success_rate": 0.0, "quality_stdev": 0.0,
+        "missing_signals": ["t2.expected[0]"],
+        "violated_signals": [],
+        "text_excerpt": "",
+        "tool_names": [], "error": "engine init failed: no API key",
+    }
+    entries = bm.audit_run([record], tasks=[])
+    assert entries[0]["hint_pattern_bug"] is False
+
+
+def test_audit_run_does_not_flag_when_forbidden_violated():
+    """If model violated a forbidden signal, that's a real fail
+    (explicit misbehaviour), not a pattern bug — even if the rest of
+    the heuristic checkboxes would otherwise tick."""
+    record = {
+        "task_id": "t_violated", "model": "m", "success": False,
+        "quality_0_100": 26, "success_rate": 0.0, "quality_stdev": 0.0,
+        "missing_signals": ["t_violated.expected[0]"],
+        "violated_signals": ["t_violated.forbidden[0]"],
+        "text_excerpt": "ACTION: /tab qwertyzzzz\nACTION: /done",
+        "tool_names": [], "error": "",
+    }
+    entries = bm.audit_run([record], tasks=[])
+    assert entries[0]["hint_pattern_bug"] is False
+
+
+def test_audit_run_does_not_flag_flaky_as_pattern_bug():
+    """high σ → noise, not pattern bug."""
+    record = {
+        "task_id": "t3", "model": "m", "success": False,
+        "quality_0_100": 35, "success_rate": 0.33, "quality_stdev": 25.0,
+        "missing_signals": ["t3.expected[0]"],
+        "violated_signals": [],
+        "text_excerpt": "some response",
+        "tool_names": ["Read"], "error": "",
+    }
+    entries = bm.audit_run([record], tasks=[])
+    assert entries[0]["hint_pattern_bug"] is False
+
+
+def test_audit_run_skips_passing_records():
+    record = {
+        "task_id": "ok", "model": "m", "success": True,
+        "quality_0_100": 90, "success_rate": 1.0, "quality_stdev": 1.0,
+        "missing_signals": [], "violated_signals": [],
+        "text_excerpt": "fine", "tool_names": [], "error": "",
+    }
+    entries = bm.audit_run([record], tasks=[])
+    assert entries == []
+
+
+def test_audit_run_includes_signal_definitions_from_tasks():
+    """When task definitions are provided, audit must surface the
+    regex pattern that failed so the dev can see what was expected."""
+    task = bm.Task(
+        id="t4", task_class="misc", mode="solo", prompt="x",
+        expected_signals=(
+            bm.Signal(pattern=r"never_matches", against="text"),
+        ),
+        forbidden_signals=(),
+        max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2,
+    )
+    record = {
+        "task_id": "t4", "model": "m", "success": False,
+        "quality_0_100": 35, "success_rate": 0.0, "quality_stdev": 0.0,
+        "missing_signals": ["t4.expected[0]"],
+        "violated_signals": [],
+        "text_excerpt": "some output", "tool_names": [], "error": "",
+    }
+    entries = bm.audit_run([record], tasks=[task])
+    assert "never_matches" in entries[0]["signal_defs"]["t4.expected[0]"]
+
+
+def test_format_audit_report_groups_bug_vs_real():
+    bug = {
+        "task_id": "bug1", "model": "m", "quality": 35,
+        "success_rate": 0.0, "quality_stdev": 0.6,
+        "missing_signals": ["bug1.expected[0]"],
+        "violated_signals": [], "tool_names": [],
+        "text_excerpt": "the model said something reasonable",
+        "error": "", "signal_defs": {"bug1.expected[0]": "/foo   (against=text)"},
+        "hint_pattern_bug": True,
+    }
+    real = {
+        "task_id": "real1", "model": "m", "quality": 27,
+        "success_rate": 0.0, "quality_stdev": 0.0,
+        "missing_signals": ["real1.expected[0]"],
+        "violated_signals": ["real1.forbidden[0]"],
+        "tool_names": [], "text_excerpt": "",
+        "error": "", "signal_defs": {},
+        "hint_pattern_bug": False,
+    }
+    out = bm.format_audit_report([bug, real])
+    assert "SUSPECTED PATTERN BUG" in out
+    assert "LIKELY REAL FAIL OR FLAKY" in out
+    assert "bug1" in out
+    assert "real1" in out
+
+
+def test_format_audit_report_empty_when_no_failures():
+    assert "nothing to audit" in bm.format_audit_report([])
+
+
+def test_aggregate_replicates_propagates_text_excerpt():
+    """When ≥1 sample has text, aggregate must pick it (not blank)."""
+    r1 = bm.BenchmarkResult(
+        task_id="t", task_class="misc", model="m", mode="solo",
+        ts=0.0, success=False, quality_0_100=35,
+        text_excerpt="", tool_names=[],
+    )
+    r2 = bm.BenchmarkResult(
+        task_id="t", task_class="misc", model="m", mode="solo",
+        ts=0.0, success=False, quality_0_100=35,
+        text_excerpt="hello world", tool_names=["Read"],
+    )
+    agg = bm.aggregate_replicates([r1, r2])
+    assert agg.text_excerpt == "hello world"
+    assert "Read" in agg.tool_names
+
+
 def _make_result(task_id, *, quality, success=True, cost=0.01,
                  duration=2.0, tool_calls=1, error=""):
     return bm.BenchmarkResult(

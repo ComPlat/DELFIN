@@ -135,6 +135,9 @@ class BenchmarkResult:
     success_rate: float = 0.0           # fraction of N samples with success=True
     per_run_quality: list[int] = field(default_factory=list)
     per_run_success: list[bool] = field(default_factory=list)
+    # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
+    text_excerpt: str = ""              # first ≤400 chars of model output
+    tool_names: list[str] = field(default_factory=list)  # tools the model actually called
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +327,10 @@ def score_outcome(
     }
     quality = max(0, min(100, sum(components.values())))
 
+    excerpt = (traj.text or "")[:400].strip()
+    tool_names = [str(c.get("name", "")) for c in traj.tool_calls
+                  if c.get("name")]
+
     return BenchmarkResult(
         task_id=task.id,
         task_class=task.task_class,
@@ -344,6 +351,8 @@ def score_outcome(
         missing_signals=missing,
         budget_violations=budget_violations,
         error=traj.error,
+        text_excerpt=excerpt,
+        tool_names=tool_names,
     )
 
 
@@ -429,6 +438,20 @@ def aggregate_replicates(
                     out.append(s)
         return out
 
+    # Pick the first non-empty excerpt — gives forensic value without
+    # bloating storage with N copies; tool_names unioned the same way
+    # as signals (a flaky tool-call still surfaces).
+    excerpt = ""
+    for r in results:
+        if r.text_excerpt:
+            excerpt = r.text_excerpt
+            break
+    tool_names_union: list[str] = []
+    for r in results:
+        for n_name in (r.tool_names or []):
+            if n_name and n_name not in tool_names_union:
+                tool_names_union.append(n_name)
+
     return BenchmarkResult(
         task_id=first.task_id,
         task_class=first.task_class,
@@ -454,6 +477,8 @@ def aggregate_replicates(
         success_rate=n_pass / n,
         per_run_quality=list(qualities),
         per_run_success=list(success_flags),
+        text_excerpt=excerpt,
+        tool_names=tool_names_union,
     )
 
 
@@ -840,6 +865,139 @@ def format_compare_markdown(
     return "\n".join(lines).rstrip() + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Audit — pattern-bug-vs-real-fail diagnosis
+# ---------------------------------------------------------------------------
+
+
+def audit_run(
+    records: list[dict] | Path,
+    *,
+    tasks: list[Task] | None = None,
+) -> list[dict]:
+    """Return one audit entry per FAILED task in a run.
+
+    A failure is anything with ``success == False``.  For each, the
+    entry surfaces enough state to decide pattern-bug-vs-real-fail in
+    one glance:
+
+      - task_id / model
+      - quality / success_rate / quality_stdev (low σ + low rate
+        = deterministic; high σ = flaky)
+      - missing / violated signal labels (which check failed)
+      - text_excerpt (what the model actually wrote)
+      - tool_names (which tools the model actually called)
+      - hint_pattern_bug: True if the model output looks reasonable
+        (excerpt is non-empty AND no error AND quality_stdev < 5),
+        which means the signals are likely the problem, not the model.
+    """
+    if isinstance(records, Path):
+        records = read_run(records)
+    task_by_id = {t.id: t for t in (tasks or [])}
+    if not task_by_id:
+        try:
+            task_by_id = {t.id: t for t in load_tasks()}
+        except Exception:
+            task_by_id = {}
+
+    out: list[dict] = []
+    for r in records:
+        if r.get("success"):
+            continue
+        rate = float(r.get("success_rate") or 0)
+        stdev = float(r.get("quality_stdev") or 0)
+        excerpt = str(r.get("text_excerpt") or "")
+        error = str(r.get("error") or "")
+        violated = list(r.get("violated_signals") or [])
+        # Pattern-bug heuristic: deterministic fail + non-empty reasonable-
+        # looking output + no engine error + NO forbidden violation.  A
+        # violated forbidden signal means the model did something explicitly
+        # disallowed → that's real misbehaviour, never a pattern bug.
+        hint_pattern_bug = (
+            rate <= 0.34
+            and stdev < 5.0
+            and len(excerpt) >= 30
+            and not error
+            and not violated
+        )
+        task = task_by_id.get(r.get("task_id") or "")
+        signal_defs: dict[str, str] = {}
+        if task is not None:
+            for idx, sig in enumerate(task.expected_signals):
+                signal_defs[f"{task.id}.expected[{idx}]"] = (
+                    f"{sig.pattern}   (against={sig.against})"
+                )
+            for idx, sig in enumerate(task.forbidden_signals):
+                signal_defs[f"{task.id}.forbidden[{idx}]"] = (
+                    f"{sig.pattern}   (against={sig.against})"
+                )
+        out.append({
+            "task_id": r.get("task_id") or "",
+            "model": r.get("model") or "",
+            "quality": int(r.get("quality_0_100") or 0),
+            "success_rate": rate,
+            "quality_stdev": stdev,
+            "missing_signals": list(r.get("missing_signals") or []),
+            "violated_signals": violated,
+            "tool_names": list(r.get("tool_names") or []),
+            "text_excerpt": excerpt,
+            "error": error,
+            "signal_defs": signal_defs,
+            "hint_pattern_bug": hint_pattern_bug,
+        })
+    return out
+
+
+def format_audit_report(entries: list[dict]) -> str:
+    """Render audit entries as a developer-friendly text report."""
+    if not entries:
+        return "No failed tasks — nothing to audit.\n"
+    lines: list[str] = []
+    bug_entries = [e for e in entries if e["hint_pattern_bug"]]
+    real_entries = [e for e in entries if not e["hint_pattern_bug"]]
+    lines.append(f"=== AUDIT: {len(entries)} failed task(s) "
+                 f"({len(bug_entries)} likely pattern-bug, "
+                 f"{len(real_entries)} likely real-fail) ===\n")
+    for group_name, group in (
+        ("SUSPECTED PATTERN BUG", bug_entries),
+        ("LIKELY REAL FAIL OR FLAKY", real_entries),
+    ):
+        if not group:
+            continue
+        lines.append(f"--- {group_name} ---")
+        for e in group:
+            lines.append(f"\n  task   : {e['task_id']}    (model={e['model']})")
+            lines.append(f"  quality: q={e['quality']}  "
+                         f"rate={e['success_rate']:.0%}  "
+                         f"σ={e['quality_stdev']:.1f}")
+            if e["tool_names"]:
+                lines.append(f"  tools  : {', '.join(e['tool_names'])}")
+            if e["missing_signals"]:
+                lines.append("  missing signals:")
+                for label in e["missing_signals"]:
+                    if label.endswith(":optional"):
+                        continue
+                    defn = e["signal_defs"].get(label, "(definition not found)")
+                    lines.append(f"    {label}")
+                    lines.append(f"      pattern: {defn}")
+            if e["violated_signals"]:
+                lines.append("  VIOLATED signals:")
+                for label in e["violated_signals"]:
+                    defn = e["signal_defs"].get(label, "(definition not found)")
+                    lines.append(f"    {label}")
+                    lines.append(f"      pattern: {defn}")
+            if e["error"]:
+                lines.append(f"  error  : {e['error'][:200]}")
+            if e["text_excerpt"]:
+                lines.append("  model output (≤400 chars):")
+                for line in e["text_excerpt"].splitlines()[:8]:
+                    lines.append(f"    │ {line[:120]}")
+                if len(e["text_excerpt"].splitlines()) > 8:
+                    lines.append("    │ …")
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "Signal",
     "Task",
@@ -856,4 +1014,6 @@ __all__ = [
     "run_timestamp",
     "find_profile_commits_between",
     "format_compare_markdown",
+    "audit_run",
+    "format_audit_report",
 ]
