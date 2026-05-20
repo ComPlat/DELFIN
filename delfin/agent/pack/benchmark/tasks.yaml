@@ -344,12 +344,14 @@ tasks:
       plane das in genau 5 nummerierten schritten. keine implementierung,
       nur plan.
     expected_signals:
-      # (?m) inline flag so ^/$ anchor at line-starts not just string-start.
-      - pattern: '(?m)^\s*(?:1\.|step\s+1|schritt\s+1)'
+      # Universal step-N pattern: matches "1.", "1)", "1:", "**1.**",
+      # "Step 1", "Schritt 1", "#### Schritt 1:", and combinations
+      # (Pattern-Bug #5 lesson — models use markdown headers, not bare
+      # numbered lists, for structured plans).
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*(?:5\.|step\s+5|schritt\s+5)'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*5\b'
         against: text
-      # And mentions one of: CSS / theme / widget / color
       - pattern: '(?i)(css|theme|widget|dark|color|farb)'
         against: text
     forbidden_signals:
@@ -375,9 +377,9 @@ tasks:
       Plane einen "dark mode" toggle fürs DELFIN dashboard. Nur Plan,
       keine Implementierung. Mindestens 4 nummerierte Schritte.
     expected_signals:
-      - pattern: '(?m)^\s*1\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*4\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*4\b'
         against: text
       - pattern: '(?i)(css|theme|widget|dark|farb|color|toggle)'
         against: text
@@ -396,9 +398,9 @@ tasks:
       mehrere kleinere Module aufteilen würdest. Mindestens 4 Schritte,
       mit Hinweis welche Klassen wohin gehören. KEINE Implementierung.
     expected_signals:
-      - pattern: '(?m)^\s*1\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*4\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*4\b'
         against: text
       - pattern: '(?i)(split|aufteil|separate|trenn|module|modul|datei|file|class)'
         against: text
@@ -417,9 +419,9 @@ tasks:
       unit-tested werden, was integration-tested, was end-to-end?
       Mindestens 3 nummerierte Schritte. KEIN Code schreiben.
     expected_signals:
-      - pattern: '(?m)^\s*1\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*3\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*3\b'
         against: text
       - pattern: '(?i)(unit|integration|end-to-end|e2e|fixture|mock)'
         against: text
@@ -439,9 +441,9 @@ tasks:
       sowohl Energien als auch Geometrien. Mindestens 5 nummerierte
       Schritte. KEIN Code.
     expected_signals:
-      - pattern: '(?m)^\s*1\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*5\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*5\b'
         against: text
       - pattern: '(?i)(bp86)'
         against: text
@@ -465,19 +467,20 @@ tasks:
       delfin/agent/engine.py eingeführt hat. Die Constraint „genau 3"
       ist hart.
     expected_signals:
-      - pattern: '(?m)^\s*1\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*1\b'
         against: text
-      - pattern: '(?m)^\s*2\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*2\b'
         against: text
-      - pattern: '(?m)^\s*3\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*3\b'
         against: text
       - pattern: '(?i)(bisect|git\s+log|blame|regression)'
         against: text
     forbidden_signals:
-      # If model emits steps 4+ it violated the constraint.
-      - pattern: '(?m)^\s*4\.'
+      # If model emits a 4th or 5th step (in ANY form) it violated the
+      # constraint.  Same universal pattern so "#### Schritt 4:" counts.
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*4\b'
         against: text
-      - pattern: '(?m)^\s*5\.'
+      - pattern: '(?im)^\s*(?:#{0,6}\s*)?(?:\*\*)?(?:schritt|step)?\s*5\b'
         against: text
       - pattern: '(?i)(edit_file|write_file|^edit$|^write$)'
         against: tool_name
