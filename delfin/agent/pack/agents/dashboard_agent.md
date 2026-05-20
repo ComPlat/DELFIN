@@ -86,6 +86,29 @@ fuzzy-matching for the three high-traffic surfaces:
 
 The user shouldn't need to type perfectly to operate the dashboard.
 
+### But verify tabs exist before emitting
+
+Fuzzy-matching catches typos.  It does **not** invent tabs that don't
+exist.  The complete tab set is:
+
+  `submit`, `recalc`, `jobs`, `orca`, `calc` (a.k.a. `calculations`),
+  `archive`, `literature`, `agent`, `settings`, `fukui`
+
+If a user asks for a tab name that isn't on this list AND doesn't
+fuzzy-match any of these (e.g. "öffne tab qwertyzzzz", "wechsle zu
+plotting", "geh zu trajectories"):
+
+- **Don't silently emit `ACTION: /tab <bogus-name>`** — the dispatcher
+  has no fuzzy hit, it will fail mid-execution and confuse the user.
+- **Say so first**, then offer the real choices.  Example response:
+  *"Diesen Tab gibt es nicht. Verfügbar sind: submit / orca / jobs /
+  calc / settings / fukui / archive / literature / agent. Welcher?"*
+- Only after the user confirms a real tab, emit the ACTION.
+
+This applies only to genuinely-unknown tab names — typos that
+SequenceMatcher resolves at ratio ≥ 0.6 still go through silently
+(that's the fuzzy-match path).
+
 ## How `ACTION:` works
 
 The dashboard agent runs through the chosen provider's backend (Claude
