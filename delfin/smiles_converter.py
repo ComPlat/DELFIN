@@ -1447,6 +1447,28 @@ def _every_append_gate_enabled(mol) -> bool:
     )
 
 
+def _multihapto_etkdg_fallback_enabled(mol) -> bool:
+    """Iter-23 (2026-05-20) wrapper for DELFIN_MULTIHAPTO_ETKDG_FALLBACK.
+
+    Re-enables the "fallback-as-feature" that commit 81f8a1f had by accident
+    (WAVE7_Q archeology): when the analytical hapto scaffold yields only
+    topology-broken candidates, fall back to ``_try_multiple_strategies``
+    (raw stk + ETKDG seed=42).  fdeb9cb silently killed this when it fixed an
+    orphan NameError that used to trigger the outer try/except fallback.
+
+    Default-ON for multi_hapto only (where the scaffold most often produces
+    broken Sn-bridge topology); zero-downside guardrail at the call site only
+    swaps to the fallback when the fallback XYZ is *strictly* topology-OK.
+
+    Operator override: DELFIN_MULTIHAPTO_ETKDG_FALLBACK=0 disables entirely,
+    DELFIN_MULTIHAPTO_ETKDG_FALLBACK_CLASSES=csv overrides the class allow-list.
+    """
+    return _class_conditional_flag(
+        "DELFIN_MULTIHAPTO_ETKDG_FALLBACK", mol, default=0,
+        default_classes=["multi_hapto"],
+    )
+
+
 def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-13 Baustein 3 dispatch helper.
 
@@ -29451,6 +29473,45 @@ def smiles_to_xyz(
                         Path(output_path).write_text(legacy_hapto_xyz, encoding='utf-8')
                     return legacy_hapto_xyz, None
                 return None, "Hapto-approx embedding failed"
+
+            # ---- Iter-23 MULTIHAPTO_ETKDG_FALLBACK (BEGIN) -----------------
+            # WAVE7_Q: when the analytical scaffold yields only topology-broken
+            # candidates, re-enable the ETKDG-seed42 fallback-as-feature that
+            # 81f8a1f had by accident (killed by fdeb9cb).  Zero-downside: only
+            # swap when the fallback XYZ is *strictly* topology-OK; otherwise
+            # keep the scaffold result unchanged.  ``mol`` here is still the
+            # original parsed mol (reassigned to best_mol below) so class
+            # detection is reliable.
+            try:
+                _i23_enabled = _multihapto_etkdg_fallback_enabled(mol)
+            except Exception:
+                _i23_enabled = False
+            if _i23_enabled:
+                try:
+                    _i23_best_xyz = _mol_to_xyz(best_mol)
+                except Exception:
+                    _i23_best_xyz = None
+                _i23_best_ok = bool(_i23_best_xyz) and _hapto_candidate_topology_ok(
+                    _i23_best_xyz, smiles, mol=best_mol, conf_id=0,
+                    hapto_groups=hapto_groups,
+                )
+                if not _i23_best_ok:
+                    try:
+                        _i23_fb_xyz, _ = _try_multiple_strategies(smiles)
+                    except Exception:
+                        _i23_fb_xyz = None
+                    if _i23_fb_xyz and _hapto_candidate_topology_ok(
+                        _i23_fb_xyz, smiles, mol=None, conf_id=0,
+                        hapto_groups=hapto_groups,
+                    ):
+                        logger.info(
+                            "Iter-23 multihapto ETKDG-seed42 fallback recovered "
+                            "topology (%s)", smiles[:48],
+                        )
+                        if output_path:
+                            Path(output_path).write_text(_i23_fb_xyz, encoding='utf-8')
+                        return _i23_fb_xyz, None
+            # ---- Iter-23 MULTIHAPTO_ETKDG_FALLBACK (END) -------------------
 
             mol = best_mol
             xyz_content = _mol_to_xyz(mol)
