@@ -232,6 +232,27 @@ def cmd_bench(args: argparse.Namespace) -> int:
         print(f"\n{len(tasks)} tasks")
         return 0
 
+    if action == "audit":
+        run_path = Path(getattr(args, "run", "")).expanduser().resolve()
+        if not run_path.exists():
+            # Try looking it up in the default runs dir
+            rd = _bm.runs_dir()
+            candidate = rd / getattr(args, "run", "")
+            if candidate.exists():
+                run_path = candidate
+            else:
+                print(f"ERROR: run file not found: {args.run}",
+                      file=sys.stderr)
+                return 2
+        records = _bm.read_run(run_path)
+        if not records:
+            print(f"Run file empty or unreadable: {run_path}",
+                  file=sys.stderr)
+            return 1
+        entries = _bm.audit_run(records)
+        print(_bm.format_audit_report(entries))
+        return 0
+
     if action == "latest":
         import time as _time
         rd = _bm.runs_dir()
@@ -542,6 +563,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     bench_ls = bench_sub.add_parser("list", help="List packaged tasks")
     bench_ls.set_defaults(bench_action="list")
+
+    bench_audit = bench_sub.add_parser(
+        "audit",
+        help=("Diagnose failed tasks in a run: prints model output excerpt + "
+              "missing/violated patterns; flags likely pattern-bugs"),
+    )
+    bench_audit.add_argument(
+        "run",
+        help="Run JSONL file (absolute path or name in ~/.delfin/benchmark_runs/)",
+    )
+    bench_audit.set_defaults(bench_action="audit")
 
     bench_latest = bench_sub.add_parser(
         "latest", help="List recent run files in ~/.delfin/benchmark_runs/",
