@@ -99,29 +99,60 @@ def _detect_aromatic_rings(
     return out
 
 
-def _flatten_ring(pts: np.ndarray, ring: Tuple[int, ...]) -> float:
-    """Project ring heavy atoms onto their SVD best-fit plane through the
-    centroid (centroid preserved → M-ring distance invariant).  Mutates
-    ``pts`` in place.  Returns the pre-flatten max OOP (0.0 if not eligible)."""
-    ring_pts = np.array([pts[i] for i in ring])
-    centroid = ring_pts.mean(axis=0)
-    centered = ring_pts - centroid
+def _fuse_components(rings: List[Tuple[int, ...]]) -> List[List[int]]:
+    """Union aromatic rings that share ≥1 atom into fused components
+    (naphthalene, anthracene, indole, …).  Returns list of unique-atom-index
+    lists, one per maximal fused system.  Flattening a fused system as ONE
+    unit avoids the shared-atom tug-of-war that left per-ring flattening
+    inconsistent (Iter-24 first attempt)."""
+    comps: List[set] = []
+    for ring in rings:
+        rs = set(ring)
+        merged = [rs]
+        rest = []
+        for c in comps:
+            if c & rs:
+                merged.append(c)
+            else:
+                rest.append(c)
+        union = set()
+        for m in merged:
+            union |= m
+        rest.append(union)
+        comps = rest
+    return [sorted(c) for c in comps]
+
+
+def _flatten_atoms(pts: np.ndarray, atoms: List[int]) -> Tuple[float, float]:
+    """Project a set of (fused-)aromatic heavy atoms onto their common SVD
+    best-fit plane through the centroid (centroid preserved → M-centroid /
+    M-ring distance invariant).  Mutates ``pts`` in place ONLY if the plane
+    is well-defined and the pre-flatten OOP is in the actionable band.
+    Returns (oop_before, oop_after); (0.0, 0.0) if skipped."""
+    if len(atoms) < 5:
+        return 0.0, 0.0
+    P = np.array([pts[i] for i in atoms])
+    centroid = P.mean(axis=0)
+    centered = P - centroid
     try:
         _, _, vh = np.linalg.svd(centered, full_matrices=False)
     except np.linalg.LinAlgError:
-        return 0.0
+        return 0.0, 0.0
     normal_raw = vh[-1]
     nn = float(np.linalg.norm(normal_raw))
     if nn < 1e-9:
-        return 0.0
+        return 0.0, 0.0
     normal = normal_raw / nn
-    oop = float(np.max(np.abs(centered @ normal)))
-    if oop <= _OOP_TOL or oop > _PUCKER_CAP:
-        return 0.0
-    for idx in ring:
+    oop_before = float(np.max(np.abs(centered @ normal)))
+    if oop_before <= _OOP_TOL or oop_before > _PUCKER_CAP:
+        return 0.0, 0.0
+    for idx in atoms:
         v = pts[idx] - centroid
         pts[idx] = pts[idx] - float(np.dot(v, normal)) * normal
-    return oop
+    # post-flatten OOP (should be ~0)
+    P2 = np.array([pts[i] for i in atoms])
+    oop_after = float(np.max(np.abs((P2 - P2.mean(axis=0)) @ normal)))
+    return oop_before, oop_after
 
 
 def correct_results(
@@ -176,17 +207,49 @@ def correct_results(
                         return True
             return False
 
+        # Pendant rings only (coordinated η-rings deferred — they need a
+        # centroid-based M-D treatment).  Group fused rings into single
+        # components and flatten each as ONE unit (shared-atom-safe).
+        pendant_rings = [r for r in rings if not _is_coordinated(r)]
+        components = _fuse_components(pendant_rings)
+
         pre_md = _snapshot_md_bonds(pts, syms)
         work = pts.copy()
         moved = False
-        for ring in rings:
-            if _is_coordinated(ring):
+        for atoms in components:
+            before = work.copy()
+            oop_b, oop_a = _flatten_atoms(work, atoms)
+            if oop_b <= 0.0:
                 continue
-            if _flatten_ring(work, ring) > 0.0:
-                moved = True
+            # per-component guard: only keep if this component got flatter.
+            if oop_a >= oop_b - 1e-3:
+                for i in atoms:
+                    work[i] = before[i]  # revert this component
+                continue
+            moved = True
         if not moved:
             out.append((xyz, label))
             continue
+
+        # Frame-level guard: the total worst pendant-aromatic OOP must not
+        # increase (belt-and-suspenders over the per-component guard).
+        def _max_pendant_oop(P: np.ndarray) -> float:
+            worst = 0.0
+            for ring in pendant_rings:
+                rp = np.array([P[i] for i in ring])
+                ctr = rp - rp.mean(axis=0)
+                try:
+                    _, _, vh = np.linalg.svd(ctr, full_matrices=False)
+                except np.linalg.LinAlgError:
+                    continue
+                nrm = vh[-1] / (np.linalg.norm(vh[-1]) + 1e-12)
+                worst = max(worst, float(np.max(np.abs(ctr @ nrm))))
+            return worst
+
+        if _max_pendant_oop(work) > _max_pendant_oop(pts) + 1e-3:
+            out.append((xyz, label))  # net worsened → rollback whole frame
+            continue
+
         # Drag ring-attached H onto the now-flat ring planes (reuse projector).
         try:
             project_ring_h_atoms(syms, work)
