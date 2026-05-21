@@ -48,7 +48,7 @@ def test_extractor_finds_casscf_block(namespace):
     assert "casscf" in namespace
     info = namespace["casscf"]
     assert info["block"] == "%casscf"
-    assert info["n_sections"] > 0
+    assert info["n_chapter_refs"] > 0
     assert info["n_keywords"] > 10  # ~200 in practice
 
 
@@ -82,7 +82,7 @@ def test_extractor_covers_major_method_families(namespace):
     """All these should have at least a few sections in the manual."""
     for block in ("casscf", "mp2", "scf", "method", "freq", "tddft"):
         assert block in namespace, f"Missing block: {block}"
-        assert namespace[block]["n_sections"] > 0
+        assert namespace[block]["n_chapter_refs"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +134,10 @@ def test_committed_snapshot_exists():
     consumers (benchmark, dashboard hints) actually load.  Verify it
     exists + is well-formed."""
     p = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-         / "pack" / "benchmark" / "orca_keywords_groundtruth.json")
+         / "pack" / "benchmark" / "keywords_groundtruth_orca.json")
     assert p.exists(), "ORCA keyword snapshot missing"
     data = json.loads(p.read_text(encoding="utf-8"))
-    assert data.get("orca_version")
+    assert data.get("version") or data.get("orca_version")
     assert "blocks" in data
     assert "casscf" in data["blocks"]
     casscf = data["blocks"]["casscf"]

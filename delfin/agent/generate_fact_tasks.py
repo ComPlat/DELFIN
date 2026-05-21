@@ -29,21 +29,14 @@ import yaml
 
 
 _HERE = Path(__file__).resolve().parent
-_GROUNDTRUTH = _HERE / "pack" / "benchmark" / "orca_keywords_groundtruth.json"
-_OUT_YAML = _HERE / "pack" / "benchmark" / "tasks_auto_orca.yaml"
+_PACK = _HERE / "pack" / "benchmark"
 
 
-# Per-block test definitions.
-#
-# must_have:   keywords the model must mention (validated against the
-#              extracted manual namespace — generator aborts if any of
-#              these is NOT actually in the manual)
-# forbid:      hallucination patterns observed in real production OR
-#              plausible-looking synonyms that ARE NOT in the manual
-#              (validator confirms forbidden list does not accidentally
-#              include real keywords)
-# label:       short user-facing description of what the block is for
-_BLOCK_TESTS: dict[str, dict[str, Any]] = {
+# Per-program block test catalogues.  Add a new program by adding an
+# entry here; the loop at the bottom emits one tasks_auto_<program>.yaml
+# file per program with non-empty entries that match the local doc-index.
+_PROGRAM_BLOCK_TESTS: dict[str, dict[str, dict[str, Any]]] = {
+    "orca": {
     "casscf": {
         "must_have": ["nel", "norb", "mult", "nroots"],
         "forbid":   ["nactel", "nactorb", "multiplicity",
@@ -83,16 +76,34 @@ _BLOCK_TESTS: dict[str, dict[str, Any]] = {
         "forbid":   ["atom_list", "nuclear_list", "magnuclei"],
         "label": "EPR/NMR property calculation",
     },
+    },  # end of orca block tests
+    # ----------------------------------------------------------------
+    # Turbomole — add curated must_have lists here as the TM manual
+    # gets indexed.  Generator simply skips programs whose ground-truth
+    # JSON is empty / missing.
+    "turbomole": {
+        # "dft":   {"must_have": ["functional", "gridsize"],
+        #            "forbid": [...], "label": "DFT setup"},
+    },
+    # Gaussian / NWChem / Q-Chem / Psi4 etc. — add blocks here.
 }
 
 
-def _load_groundtruth() -> dict[str, Any]:
-    if not _GROUNDTRUTH.exists():
-        raise FileNotFoundError(
-            f"ORCA keyword ground-truth missing: {_GROUNDTRUTH}.  "
-            "Run extract_keyword_namespace + write JSON first."
-        )
-    return json.loads(_GROUNDTRUTH.read_text(encoding="utf-8"))
+def _gt_path_for(program: str) -> Path:
+    return _PACK / f"keywords_groundtruth_{program}.json"
+
+
+def _out_yaml_for(program: str) -> Path:
+    return _PACK / f"tasks_auto_{program}.yaml"
+
+
+def _load_groundtruth(program: str) -> dict[str, Any] | None:
+    """Return parsed ground-truth for ``program`` or None if file is
+    missing — caller skips programs without indexed manuals."""
+    p = _gt_path_for(program)
+    if not p.exists():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def _validate_against_manual(
@@ -121,21 +132,28 @@ def _validate_against_manual(
         )
 
 
-def _task_for_block(block_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    """Build one fact_verify task dict for a single block."""
+def _task_for_block(
+    program: str, block_name: str, block_marker: str, cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one fact_verify task dict for a single block.
+
+    ``program`` (e.g. "orca", "turbomole") + ``block_marker``
+    (e.g. ``%casscf``, ``$dft``) appear verbatim in the prompt so the
+    model is queried with program-specific syntax.
+    """
     must = cfg["must_have"]
-    forbid = cfg["forbid"]
+    forbid = cfg.get("forbid") or []
     label = cfg["label"]
     task = {
-        "id": f"fact_orca_{block_name}_keywords_auto",
+        "id": f"fact_{program}_{block_name}_keywords_auto",
         "task_class": "fact_verify_auto",
         "mode": "dashboard",
         "prompt": (
-            f"welche EXAKTEN keyword-namen nutzt ORCA im %{block_name} "
-            f"block für eine typische {label}? Liste mindestens die "
-            f"essentiellen Keywords aus dem ORCA Manual auf. Wichtig: "
-            f"nur Keywords die tatsächlich im Manual stehen — bitte "
-            f"vorher per doc-search im Manual nachschlagen."
+            f"welche EXAKTEN keyword-namen nutzt {program.upper()} im "
+            f"{block_marker}-block für eine typische {label}? Liste "
+            f"mindestens die essentiellen Keywords aus dem {program.upper()} "
+            f"Manual auf. Wichtig: nur Keywords die tatsächlich im Manual "
+            f"stehen — bitte vorher per doc-search im Manual nachschlagen."
         ),
         "expected_signals": [
             {"pattern": rf"(?i)\b{re.escape(kw)}\b", "against": "text"}
@@ -153,27 +171,39 @@ def _task_for_block(block_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
     return task
 
 
-def build_tasks() -> list[dict[str, Any]]:
-    gt = _load_groundtruth()
+def build_tasks_for(program: str) -> list[dict[str, Any]]:
+    """Build the fact_verify_auto tasks for one program."""
+    block_tests = _PROGRAM_BLOCK_TESTS.get(program) or {}
+    if not block_tests:
+        return []
+    gt = _load_groundtruth(program)
+    if gt is None:
+        # No indexed manual yet for this program — silently skip
+        return []
     namespace = gt.get("blocks") or {}
     out: list[dict[str, Any]] = []
-    for block_name, cfg in _BLOCK_TESTS.items():
+    for block_name, cfg in block_tests.items():
         info = namespace.get(block_name)
         if not info:
             continue
         manual_keywords = {k.lower() for k in info.get("keywords", [])}
         _validate_against_manual(block_name, cfg, manual_keywords)
-        out.append(_task_for_block(block_name, cfg))
+        block_marker = info.get("block") or f"%{block_name}"
+        out.append(_task_for_block(program, block_name, block_marker, cfg))
     return out
 
 
-def write_yaml(tasks: list[dict[str, Any]], path: Path | None = None) -> Path:
-    p = path or _OUT_YAML
+def write_yaml(
+    program: str,
+    tasks: list[dict[str, Any]],
+    path: Path | None = None,
+) -> Path:
+    p = path or _out_yaml_for(program)
     header = (
-        "# AUTO-GENERATED from orca_keywords_groundtruth.json.\n"
+        f"# AUTO-GENERATED from keywords_groundtruth_{program}.json.\n"
         "# DO NOT edit this file by hand — re-run\n"
         "# `python -m delfin.agent.generate_fact_tasks` after editing\n"
-        "# _BLOCK_TESTS in delfin/agent/generate_fact_tasks.py.\n\n"
+        "# _PROGRAM_BLOCK_TESTS in delfin/agent/generate_fact_tasks.py.\n\n"
     )
     body = yaml.safe_dump(
         {"tasks": tasks}, sort_keys=False, allow_unicode=True,
@@ -184,13 +214,25 @@ def write_yaml(tasks: list[dict[str, Any]], path: Path | None = None) -> Path:
 
 
 def main() -> int:
-    tasks = build_tasks()
-    path = write_yaml(tasks)
-    print(f"Generated {len(tasks)} fact_verify_auto tasks → {path}")
-    for t in tasks:
-        n_exp = len(t.get("expected_signals", []))
-        n_for = len(t.get("forbidden_signals", []))
-        print(f"  {t['id']:<48}  expected={n_exp}  forbidden={n_for}")
+    """Generate tasks for every program that has both block_tests + a
+    ground-truth JSON.  Programs without one or the other are skipped."""
+    total = 0
+    for program in sorted(_PROGRAM_BLOCK_TESTS):
+        tasks = build_tasks_for(program)
+        if not tasks:
+            continue
+        path = write_yaml(program, tasks)
+        print(f"[{program}] generated {len(tasks)} tasks → {path.name}")
+        for t in tasks:
+            n_exp = len(t.get("expected_signals", []))
+            n_for = len(t.get("forbidden_signals", []))
+            print(f"  {t['id']:<48}  expected={n_exp}  forbidden={n_for}")
+        total += len(tasks)
+    if total == 0:
+        print("No tasks generated.  Add entries to _PROGRAM_BLOCK_TESTS "
+              "and ensure keywords_groundtruth_<program>.json exists.")
+    else:
+        print(f"\nTotal: {total} auto-generated fact_verify_auto tasks.")
     return 0
 
 
