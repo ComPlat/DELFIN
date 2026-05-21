@@ -24,6 +24,7 @@ collapse rate from ~79%.
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -34,6 +35,32 @@ _COV = {'C':0.76,'N':0.71,'O':0.66,'H':0.31,'S':1.05,'Cl':1.02,'P':1.07,'F':0.57
 _MD_TOL = 0.05          # M-D invariant tolerance (Å)
 _MD_FACTOR = 1.30       # M-D bond detection factor
 _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
+
+# Iter-26 (Task #32): vdw/angle-awareness so the decollapse pass cannot trade a
+# collapse fix for vdw-clash / H-planarity / angle regressions (the Iter-25
+# concentrated trade vs iter23: vdw +20%, F3_angle +33%, F20 +3.6pp).
+# Bondi vdW radii — verbatim from quality_framework/scripts/nonbonded_vdw_check.py
+# so the in-corrector clash proxy matches the detector bit-for-bit on radii.
+_VDW = {
+    "H": 1.20, "He": 1.40, "Li": 1.81, "Be": 1.52, "B": 1.92, "C": 1.70,
+    "N": 1.55, "O": 1.52, "F": 1.47, "Ne": 1.54, "Na": 2.27, "Mg": 1.73,
+    "Al": 1.84, "Si": 2.10, "P": 1.80, "S": 1.80, "Cl": 1.75, "Ar": 1.88,
+    "K": 2.75, "Ca": 2.31, "Sc": 2.15, "Ti": 2.11, "V": 2.07, "Cr": 2.06,
+    "Mn": 2.05, "Fe": 2.04, "Co": 2.00, "Ni": 1.97, "Cu": 1.96, "Zn": 2.01,
+    "Ga": 1.87, "Ge": 2.11, "As": 1.85, "Se": 1.90, "Br": 1.85, "Kr": 2.02,
+    "Rb": 3.03, "Sr": 2.49, "Y": 2.32, "Zr": 2.23, "Nb": 2.18, "Mo": 2.17,
+    "Tc": 2.16, "Ru": 2.13, "Rh": 2.10, "Pd": 2.10, "Ag": 2.11, "Cd": 2.18,
+    "In": 1.93, "Sn": 2.17, "Sb": 2.06, "Te": 2.06, "I": 1.98, "Xe": 2.16,
+    "Cs": 3.43, "Ba": 2.68, "La": 2.43, "Hf": 2.23, "Ta": 2.22, "W": 2.18,
+    "Re": 2.16, "Os": 2.16, "Ir": 2.13, "Pt": 2.13, "Au": 2.14, "Hg": 2.23,
+    "Tl": 1.96, "Pb": 2.02, "Bi": 2.07,
+}
+_VDW_DEFAULT = 1.7      # detector default for missing element
+_VDW_FACTOR = 0.85      # clash if d < factor·(vdW_a + vdW_b)  (matches detector)
+_ANGLE_MIN_DEG = 70.0   # optional angle proxy: heavy-heavy-heavy angle < this = bad
+_F20_OOP_TOL = 0.20     # ring-H out-of-plane tolerance (Å)   (matches detector)
+_F20_RING_TOL = 0.10    # ring planarity tolerance (Å)        (matches detector)
+_F20_AROMATIC = {"C", "N", "O", "S"}
 
 
 def _ideal_bond(a: str, b: str) -> float:
@@ -113,6 +140,132 @@ def _geometric_bonds(syms, P) -> List[Tuple[int, int]]:
     return bonds
 
 
+def _neighbor_exclusion(n: int, bonds: List[Tuple[int, int]]) -> List[set]:
+    """1-2 + 1-3 neighbor exclusion sets derived purely from the geometric
+    bonds (no SMILES graph).  Mirrors the detector's 1-3 closure
+    (nonbonded_vdw_check._smiles_to_atom_pairs): excl[i] = adj[i] ∪
+    (⋃_{j∈adj[i]} adj[j]) − {i}.  Used by both the vdw proxy and the
+    pair-aware repulsion floor so true steric clashes are treated
+    identically to the detector while 1-3 contacts are left alone."""
+    adj: List[set] = [set() for _ in range(n)]
+    for i, j in bonds:
+        adj[i].add(j)
+        adj[j].add(i)
+    excl: List[set] = []
+    for i in range(n):
+        s = set(adj[i])
+        for j in adj[i]:
+            s.update(adj[j])
+        s.discard(i)
+        excl.append(s)
+    return excl
+
+
+def _count_vdw_clashes(syms, P, excl) -> int:
+    """Geometry-only reproduction of nonbonded_vdw_check.vdw_clash_report:
+    non-bonded (not 1-2/1-3) heavy pair is a clash if d < 0.85·(vdW_a+vdW_b).
+    Heavy-only, metal-metal pairs skipped."""
+    n = len(syms)
+    cnt = 0
+    for i in range(n):
+        if syms[i] == 'H':
+            continue
+        mi = _is_metal(syms[i])
+        ri = _VDW.get(syms[i], _VDW_DEFAULT)
+        ex = excl[i]
+        for j in range(i + 1, n):
+            if syms[j] == 'H' or j in ex:
+                continue
+            if mi and _is_metal(syms[j]):
+                continue
+            min_d = _VDW_FACTOR * (ri + _VDW.get(syms[j], _VDW_DEFAULT))
+            if float(np.linalg.norm(P[i] - P[j])) < min_d:
+                cnt += 1
+    return cnt
+
+
+def _count_h_planar_viol(syms, P) -> int:
+    """F20 proxy — port of compute_ligand_angles.sp2_h_planarity_check onto
+    (syms, P).  Find 5/6-rings of aromatic-eligible heavy atoms (C/N/O/S),
+    confirm ring planar (≤ _F20_RING_TOL), count ring-bonded H whose OOP
+    distance from the ring plane exceeds _F20_OOP_TOL.  Self-contained
+    distance-bond adjacency (includes H) so it matches the detector."""
+    n = len(syms)
+    nbrs: List[List[int]] = [[] for _ in range(n)]
+    for i in range(n):
+        ri = _COV.get(syms[i], 0.76)
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(P[i] - P[j]))
+            if d < 1.30 * (ri + _COV.get(syms[j], 0.76)):
+                nbrs[i].append(j)
+                nbrs[j].append(i)
+    heavy_only: List[List[int]] = [
+        [j for j in nbrs[i] if syms[j] != 'H' and syms[i] in _F20_AROMATIC
+         and syms[j] in _F20_AROMATIC]
+        for i in range(n)
+    ]
+    rings: set = set()
+    for start in range(n):
+        if syms[start] not in _F20_AROMATIC:
+            continue
+        stack = [(start, [start])]
+        while stack:
+            cur, path = stack.pop()
+            if len(path) > 6:
+                continue
+            for nx in heavy_only[cur]:
+                if nx == path[0] and len(path) >= 5:
+                    rings.add(tuple(sorted(path)))
+                    continue
+                if nx in path:
+                    continue
+                if len(path) < 6:
+                    stack.append((nx, path + [nx]))
+    cnt = 0
+    for ring in rings:
+        ring_pts = np.array([P[i] for i in ring])
+        centroid = ring_pts.mean(axis=0)
+        centered = ring_pts - centroid
+        _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        normal = vh[-1] / max(float(np.linalg.norm(vh[-1])), 1e-9)
+        if float(np.max(np.abs(centered @ normal))) > _F20_RING_TOL:
+            continue
+        for ri_idx in ring:
+            for hi in nbrs[ri_idx]:
+                if syms[hi] != 'H':
+                    continue
+                if float(abs(np.dot(P[hi] - centroid, normal))) > _F20_OOP_TOL:
+                    cnt += 1
+    return cnt
+
+
+def _count_bad_angles(syms, P, heavy_nbr) -> int:
+    """Optional angle proxy — count heavy-heavy-heavy bond angles below
+    _ANGLE_MIN_DEG (physically implausible for any hybridization, exactly
+    what collapse + repulsion-overshoot produce).  Monotone proxy for F3,
+    not the exact metric (F3 needs RDKit hybridization)."""
+    cnt = 0
+    for c in range(len(syms)):
+        if _is_metal(syms[c]) or syms[c] == 'H':
+            continue
+        nb = [k for k in heavy_nbr[c] if syms[k] != 'H']
+        for a_i in range(len(nb)):
+            va = P[nb[a_i]] - P[c]
+            na = float(np.linalg.norm(va))
+            if na < 1e-6:
+                continue
+            for b_i in range(a_i + 1, len(nb)):
+                vb = P[nb[b_i]] - P[c]
+                nbn = float(np.linalg.norm(vb))
+                if nbn < 1e-6:
+                    continue
+                cosang = float(np.dot(va, vb) / (na * nbn))
+                cosang = max(-1.0, min(1.0, cosang))
+                if np.degrees(np.arccos(cosang)) < _ANGLE_MIN_DEG:
+                    cnt += 1
+    return cnt
+
+
 def correct_xyz(mol, xyz: str) -> str:
     """Return a decollapsed copy of ``xyz`` (or the original if no gain).
 
@@ -152,6 +305,14 @@ def correct_xyz(mol, xyz: str) -> str:
         if syms[i] != 'H' and syms[j] != 'H':
             heavy_nbr[i].append(j); heavy_nbr[j].append(i)
 
+    # Iter-26: 1-2/1-3 exclusion + pre-relaxation baselines for the vdw/F20/
+    # angle firewall (reject any relaxed frame that worsens a measured axis).
+    excl = _neighbor_exclusion(n, bonds)
+    anglegate = os.environ.get("DELFIN_BOND_DECOLLAPSE_ANGLEGATE", "0") == "1"
+    clashes0 = _count_vdw_clashes(syms, P, excl)
+    h_planar0 = _count_h_planar_viol(syms, P)
+    angle0 = _count_bad_angles(syms, P, heavy_nbr) if anglegate else 0
+
     work = P.copy()
     bonded_set = set()
     for i, j in bonds:
@@ -184,6 +345,13 @@ def correct_xyz(mol, xyz: str) -> str:
                 diff = work[b] - work[a]
                 d = float(np.linalg.norm(diff))
                 floor = _NONBOND_FLOOR * _ideal_bond(syms[a], syms[b])
+                # Iter-26: for TRUE non-bonded pairs (not 1-3 neighbors) lift the
+                # floor to the vdw-clash threshold so the relaxation stops
+                # settling atoms into the clash band; 1-3 contacts keep the
+                # gentler covalent floor (else rings blow apart).
+                if b not in excl[a] and not (_is_metal(syms[a]) and _is_metal(syms[b])):
+                    floor = max(floor, _VDW_FACTOR * (_VDW.get(syms[a], _VDW_DEFAULT)
+                                                      + _VDW.get(syms[b], _VDW_DEFAULT)))
                 if d < floor and d > 1e-6:
                     f = 0.5 * (d - floor) * (diff / d)
                     forces[a] += f; forces[b] -= f; moved = True
@@ -198,8 +366,16 @@ def correct_xyz(mol, xyz: str) -> str:
     for h, par in h_parent.items():
         work[h] = work[h] + (work[par] - P[par])
 
-    # acceptance: collapse strictly reduced + M-D not broken
+    # acceptance (Iter-26 multi-axis firewall): keep the relaxed frame ONLY if
+    # collapse strictly drops AND no measured axis worsens AND M-D intact.
+    # Cheapest checks first so most rejections short-circuit before the SVD.
     if _count_collapsed(syms, work, bonds) >= n_collapsed:
+        return xyz
+    if _count_vdw_clashes(syms, work, excl) > clashes0:          # vdw (mandatory)
+        return xyz
+    if _count_h_planar_viol(syms, work) > h_planar0:            # F20 firewall
+        return xyz
+    if anglegate and _count_bad_angles(syms, work, heavy_nbr) > angle0:  # opt-in
         return xyz
     if _md_broken(md_snap, work):
         return xyz
