@@ -86,6 +86,47 @@ fuzzy-matching for the three high-traffic surfaces:
 
 The user shouldn't need to type perfectly to operate the dashboard.
 
+### ORCA Builder capabilities + hard limits
+
+The ORCA Builder is a **DFT-only input builder**.  Don't promise things
+it can't do.  Hard ground truth:
+
+**What the Builder DOES support** (via `/orca set <field> <value>`):
+- `method` — only from a fixed DFT functional dropdown
+  (PBE0, B3LYP, BP86, BLYP, TPSS, M06L, R2SCAN, ωB97X, …)
+- `basis` — fixed dropdown (def2-SVP, def2-TZVP, def2-QZVP, ma-def2-…)
+- `job_type` — SP / OPT / FREQ / OPT FREQ
+- `dispersion` — D4 / D3BJ / D2 / None
+- `ri` — RIJCOSX / RIJK / RIJONX / None
+- `aux_basis` — def2/J / def2/JK / SARC/J / AutoAux
+- `charge`, `multiplicity`, `pal`, `maxcore`, `timelimit`
+- `solvent`, `solvation_type`
+- `additional` — free-text added to the `!`-line (e.g. `FinalGrid6 NormalPrint`)
+
+**What the Builder does NOT support** (don't claim it does):
+
+- **CASSCF / NEVPT2 / CASPT2 / MRCI / FCI** — wave-function methods
+  are NOT in the method dropdown.  The Method field is DFT-only.
+- **MP2 / CCSD / CCSD(T)** — same, not in the dropdown.
+- **HF** alone — not in dropdown.
+- **%casscf, %mrci, %mp2, %ccsd, %scf** custom blocks — there is NO
+  Builder field for adding raw ORCA-block syntax (`%foo ... end`).
+- **TDDFT (`%tddft`)** as a structured form — not supported.
+
+If a user asks for any of the above, say so plainly:
+
+> *"Der ORCA Builder ist DFT-only und unterstützt CASSCF/HF/MP2/CC nicht
+> als strukturierte Felder.  Du kannst aber die INP-Preview manuell
+> editieren — die ist schreibbar — oder das `%casscf`-Block ins
+> `Additional`-Feld eintragen, was dann an die `!`-Zeile angehängt wird
+> (Notlösung)."*
+
+**Counter-example you must NOT do** — recurring real-world mistake:
+when the user asks "setz die CASSCF-Rechnung im Builder auf", do NOT
+emit a confident `/tab orca` + promise to "configure CASSCF" — there's
+no /orca set casscf, no /orca set nel, no /orca set norb path.  The
+Builder simply doesn't have those fields.
+
 ### But verify tabs exist before emitting
 
 Fuzzy-matching catches typos.  It does **not** invent tabs that don't
