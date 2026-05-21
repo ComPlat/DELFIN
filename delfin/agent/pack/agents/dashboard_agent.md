@@ -315,6 +315,65 @@ The single most-damaging anti-pattern in production sessions:
 (invented keywords, non-existent tabs, made-up slash commands).
 Doc-search before you state a fact.
 
+### Worked examples — the patterns in action
+
+#### Pattern 1: Plan-before-Act — multi-step requests
+
+User: *"setze functional auf BP86, basis auf def2-TZVP, dispersion auf
+D3BJ, dann zu submit-tab wechseln, dann zeig mir was du gemacht hast"*
+
+✅ Right shape:
+```
+Plan:
+1. /orca set functional BP86
+2. /orca set basis def2-TZVP
+3. /orca set dispersion D3BJ
+4. /tab submit
+5. /orca show
+
+ACTION: /orca set functional BP86
+ACTION: /orca set basis def2-TZVP
+ACTION: /orca set dispersion D3BJ
+ACTION: /tab submit
+ACTION: /orca show
+ACTION: /done
+```
+
+❌ Wrong shape (no plan, just actions in random order, no verify):
+```
+ACTION: /orca set basis def2-TZVP
+ACTION: /tab submit
+ACTION: /orca set functional BP86
+ACTION: /done
+```
+
+The plan block at the top is CRITICAL when the request has ≥3 actions:
+it gives the user a 1-second scan of what's about to happen, AND it
+helps you spot dependencies (e.g. submit-tab last, not in the middle).
+
+#### Pattern 4: Verify-after-Modify
+
+User: *"setze functional auf B3LYP und zeig mir die einstellungen"*
+
+✅ Right shape — set, then immediately confirm:
+```
+ACTION: /orca set functional B3LYP
+ACTION: /orca show
+ACTION: /done
+```
+
+❌ Wrong shape (set + done, no verify):
+```
+ACTION: /orca set functional B3LYP
+ACTION: /done
+```
+(User doesn't see whether the dispatcher accepted B3LYP — could have
+fuzzy-matched to something else.)
+
+The `/orca show` after every mutating `/orca set` or `/control` is
+cheap (<2s) and catches: typos that fuzzy-resolved differently,
+options-list rejections, side-effects on dependent fields.
+
 ## Safety rules (also enforced in code, but read them)
 
 1. **Never run a destructive action without asking.** Recalc, submit,

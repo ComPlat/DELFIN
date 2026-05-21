@@ -13,6 +13,40 @@ from pathlib import Path
 import ipywidgets as widgets
 
 
+_PLAN_HINT_VERBS = re.compile(
+    r"(?i)\b(setze|setz|stelle|ändere|wechsle?|wechsel|öffne|öffnen|"
+    r"zeige?|zeig|nehmen?|löschen?|merk\s*dir|speichere|submit|cancel|"
+    r"set|change|switch|open|show|delete|remove|run|run)\b"
+)
+_PLAN_HINT_CONNECTIVES = re.compile(
+    r"(?i)\b(?:und|dann|danach|außerdem|then|after|next|plus|also)\b"
+)
+_PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
+
+
+def _build_plan_hint(user_text: str) -> str:
+    """Return a one-line plan-reminder if the user's request looks
+    multi-step, else empty string.
+
+    Heuristics:
+    - 3+ action-verb occurrences, OR
+    - 2+ connective ("und"/"dann"/"then") AND 2+ action-verbs, OR
+    - 3+ numbered list markers in the prompt
+    """
+    if not user_text or len(user_text) > 4000:
+        return ""
+    verbs = len(_PLAN_HINT_VERBS.findall(user_text))
+    connectives = len(_PLAN_HINT_CONNECTIVES.findall(user_text))
+    numbered = len(_PLAN_HINT_NUMBERED.findall(user_text))
+    if verbs >= 3 or numbered >= 3 or (verbs >= 2 and connectives >= 2):
+        return (
+            "(Multi-Step erkannt — bitte zuerst einen 1-2 Zeilen Plan "
+            "emittieren, dann die ACTIONs in Reihenfolge, abschließend "
+            "ACTION: /done.)"
+        )
+    return ""
+
+
 def _provider_key(name: str) -> str:
     """Resolve an API key: env-var first, then ~/.delfin/credentials.json.
 
@@ -8367,7 +8401,17 @@ def create_tab(ctx):
                         w.value = int(value)
                     else:
                         w.value = value
-                    _append_system_message(f"ORCA Builder: {param} = {w.value}")
+                    # Confirm AND nudge verify-after-modify (Pattern 4):
+                    # the set-msg already shows the new value, so the
+                    # model gets immediate runtime feedback that the
+                    # change landed.  This eliminates the need for a
+                    # separate /orca show in most cases — but if the
+                    # user asked for an explicit verify, the model is
+                    # still expected to emit /orca show.
+                    _append_system_message(
+                        f"ORCA Builder: {param} = {w.value}  "
+                        f"(verified — value persisted in widget)"
+                    )
                     # Refresh preview
                     update_fn = refs.get("update_orca_preview")
                     if update_fn:
@@ -8376,7 +8420,11 @@ def create_tab(ctx):
                         except Exception:
                             pass
                 except Exception as exc:
-                    _append_system_message(f"Error setting {param}: {exc}")
+                    _append_system_message(
+                        f"Error setting {param}: {exc}  "
+                        f"(value '{value}' rejected; "
+                        f"try `/orca show` to see current state)"
+                    )
             else:
                 _append_system_message(f"Widget not available: {param}")
             return True
@@ -11710,6 +11758,18 @@ def create_tab(ctx):
                         _boot = ""
                     if _boot:
                         current_msg = f"{_boot}\n\n{current_msg}"
+
+                # Plan-before-Act runtime hint (Pattern 1 from the
+                # playbook): if the user's request looks multi-step
+                # (commas separating action verbs, numbered items, or
+                # connectives like "und" / "dann" / "then"), append a
+                # one-line hint reminding the model to emit a brief
+                # plan BEFORE the chained ACTIONs.  Cheap; doesn't
+                # block, just nudges.
+                if mode_dropdown.value == "dashboard":
+                    _hint = _build_plan_hint(user_text)
+                    if _hint:
+                        current_msg = f"{current_msg}\n\n{_hint}"
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.

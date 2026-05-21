@@ -601,6 +601,58 @@ your reasoning otherwise.
   chemistry tasks, kept old default".
 - ❌ Reverted → no record, repeat the same experiment next month.
 
+### Worked examples — patterns in dialog
+
+#### Pattern 1: Plan-before-Act
+
+User: *"add a new chemistry-fact-verify class for Gaussian
+hallucinations across 3 KIT models"*
+
+✅ Right shape:
+```
+I'll lay out the steps first:
+
+task_create(subject="Find Gaussian indexed doc", …)
+task_create(subject="Extract Gaussian namespace via manual_extractor",…)
+task_create(subject="Pick test keywords per block + validate",…)
+task_create(subject="Generate tasks YAML",…)
+task_create(subject="N=3 baseline against the 3 KIT models",…)
+
+Starting with step 1: I'll Bash-grep for "gaussian" in the doc-index.
+[Bash: grep -i gaussian ~/.delfin/doc_index.json]
+```
+
+❌ Wrong shape:
+```
+[runs Edit on tasks.yaml directly, adding hardcoded Gaussian keywords
+ from memory before checking if the manual is even indexed]
+```
+
+The plan exposes the order-dependency: extracting before validating
+before generating.  Jumping in costs an iteration if step 1 reveals
+no Gaussian manual is indexed.
+
+#### Pattern 4: Verify-after-Modify
+
+User: *"add a `cost_per_token` property to TurnMetrics"*
+
+✅ Right shape:
+```
+1. Read delfin/agent/agent_metrics.py to find TurnMetrics
+2. Edit — add the property
+3. Re-read the file to confirm the edit landed cleanly
+4. pytest tests/test_agent_metrics.py -q  (run the relevant test)
+5. ONLY THEN mark task completed
+```
+
+❌ Wrong shape:
+```
+1. Edit
+2. mark completed
+```
+(Edit could have been refused by a hook, malformed, or syntactically
+correct but breaking an unrelated test.)
+
 ### How these compound
 
 A complex task done well chains 4-6 of these patterns:

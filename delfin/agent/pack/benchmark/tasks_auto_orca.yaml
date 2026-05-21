@@ -106,9 +106,9 @@ tasks:
     die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
     bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\b(?:maxiter|calc_hess|scan)\b
+  - pattern: (?i)\b(?:maxiter|redundant|trust|tolmaxg)\b
     against: text
-  - pattern: (?i)\b(?:trust|tole)\b
+  - pattern: (?i)\b(?:coordsys|calc_hess|tole|scan)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
