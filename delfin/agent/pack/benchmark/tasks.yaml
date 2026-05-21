@@ -530,11 +530,15 @@ tasks:
       - pattern: '(?i)(pbe0|b3lyp|bp86|tpss|m06l|r2scan|wb97)'
         against: text
       # AND explicitly say CASSCF/NEVPT2/MP2 is NOT available
-      - pattern: '(?i)(nicht.*verfügbar|nicht.*enthalten|kein.*casscf|nicht.*im.*dropdown|not.*available|excluded|missing|nur DFT)'
+      - pattern: '(?i)(nicht.*verfügbar|nicht.*enthalten|kein.*casscf|nicht.*im.*dropdown|not.*available|excluded|missing|nur DFT|nur.*dft|dft.?only|ausschließlich.*dft|wellenfunktion.*nicht)'
         against: text
     forbidden_signals:
-      # Hallucinated false claim that CASSCF is in the method dropdown
-      - pattern: '(?i)(casscf.*verfügbar|casscf.*dropdown|nevpt2.*verfügbar|mp2.*verfügbar|kannst.*casscf.*wählen)'
+      # Affirmative hallucination only — model claims CASSCF/NEVPT2/MP2 IS in
+      # the dropdown without a negation prefix.  Use explicit "ja"-phrases so
+      # we don't accidentally flag the correct "nicht im Dropdown verfügbar".
+      - pattern: '(?i)(?:ja,?\s+(?:casscf|nevpt2|mp2).*(?:im|ist|dabei))'
+        against: text
+      - pattern: '(?i)(kannst.*casscf.*wählen|casscf.*ist.*dropdown|nevpt2.*ist.*dropdown)'
         against: text
     max_duration_s: 40
     max_cost_usd: 0.10
