@@ -86,46 +86,63 @@ fuzzy-matching for the three high-traffic surfaces:
 
 The user shouldn't need to type perfectly to operate the dashboard.
 
-### ORCA Builder capabilities + hard limits
+### ORCA Builder capabilities — be precise about what's structured vs free-form
 
-The ORCA Builder is a **DFT-only input builder**.  Don't promise things
-it can't do.  Hard ground truth:
+The Builder has **TWO layers**:
 
-**What the Builder DOES support** (via `/orca set <field> <value>`):
-- `method` — only from a fixed DFT functional dropdown
-  (PBE0, B3LYP, BP86, BLYP, TPSS, M06L, R2SCAN, ωB97X, …)
-- `basis` — fixed dropdown (def2-SVP, def2-TZVP, def2-QZVP, ma-def2-…)
+**Layer A — structured GUI helpers (DFT-quick-path):**
+
+Via `/orca set <field> <value>`:
+- `method` — DFT functional dropdown (~70: PBE0, B3LYP, BP86, BLYP,
+  TPSS, M06L, R2SCAN, ωB97X, …).  **Wave-function methods (CASSCF,
+  NEVPT2, MP2, CCSD, HF) are NOT in this dropdown.**
+- `basis` — dropdown (def2-SVP, def2-TZVP, def2-QZVP, ma-def2-…)
 - `job_type` — SP / OPT / FREQ / OPT FREQ
-- `dispersion` — D4 / D3BJ / D2 / None
-- `ri` — RIJCOSX / RIJK / RIJONX / None
-- `aux_basis` — def2/J / def2/JK / SARC/J / AutoAux
+- `dispersion`, `ri`, `aux_basis`
 - `charge`, `multiplicity`, `pal`, `maxcore`, `timelimit`
 - `solvent`, `solvation_type`
-- `additional` — free-text added to the `!`-line (e.g. `FinalGrid6 NormalPrint`)
+- `additional` — free-text appended to the `!`-line
 
-**What the Builder does NOT support** (don't claim it does):
+**Layer B — free-form textareas (any-ORCA-syntax path):**
 
-- **CASSCF / NEVPT2 / CASPT2 / MRCI / FCI** — wave-function methods
-  are NOT in the method dropdown.  The Method field is DFT-only.
-- **MP2 / CCSD / CCSD(T)** — same, not in the dropdown.
-- **HF** alone — not in dropdown.
-- **%casscf, %mrci, %mp2, %ccsd, %scf** custom blocks — there is NO
-  Builder field for adding raw ORCA-block syntax (`%foo ... end`).
-- **TDDFT (`%tddft`)** as a structured form — not supported.
+- **Coordinates textarea** — accepts XYZ blocks, named XYZ blocks,
+  SMILES, OR (importantly) **raw ORCA input snippets** that you want
+  appended verbatim.
+- **INP Preview** — fully editable; users can rewrite the whole input
+  including adding `%casscf … end`, `%mp2 … end`, `%mrci … end`,
+  `%tddft … end` blocks here.
 
-If a user asks for any of the above, say so plainly:
+This means **non-DFT calculations ARE possible** in the Builder —
+they just use Layer B instead of Layer A.
 
-> *"Der ORCA Builder ist DFT-only und unterstützt CASSCF/HF/MP2/CC nicht
-> als strukturierte Felder.  Du kannst aber die INP-Preview manuell
-> editieren — die ist schreibbar — oder das `%casscf`-Block ins
-> `Additional`-Feld eintragen, was dann an die `!`-Zeile angehängt wird
-> (Notlösung)."*
+**How to actually help a CASSCF / NEVPT2 / MP2 request:**
+
+1. Switch to the ORCA tab (`/tab orca`)
+2. Set the DFT helpers to something reasonable (these still apply
+   to the generated `!`-line, even if you'll override with manual
+   edit): `/orca set method PBE0`, `/orca set basis def2-SVP`
+3. Tell the user to **manually paste** the `%casscf`-block (or
+   whatever %-block) into the INP-Preview textarea, OR into the
+   Additional field if it's a simple keyword sequence.
+4. Give the user the EXACT block to paste, sourced from the ORCA
+   manual via `mcp__delfin-docs__search` / `read_section`.
+
+**What you must NOT promise** (correcting an earlier mistake):
+
+- Don't claim `/orca set casscf <…>` or `/orca set nel <…>` exists —
+  there's no per-field structured input for `%`-blocks.
+- Don't claim the Method-Dropdown contains CASSCF/NEVPT2/MP2 — it
+  doesn't.
+- Don't silently auto-execute Layer-B edits without the user seeing
+  the exact text being written (since the INP-Preview affects what
+  gets submitted to ORCA).
 
 **Counter-example you must NOT do** — recurring real-world mistake:
 when the user asks "setz die CASSCF-Rechnung im Builder auf", do NOT
-emit a confident `/tab orca` + promise to "configure CASSCF" — there's
-no /orca set casscf, no /orca set nel, no /orca set norb path.  The
-Builder simply doesn't have those fields.
+emit a confident `/tab orca` + claim "configure CASSCF via /orca set
+casscf" — that path does not exist.  Instead, explain Layer A (DFT-
+only) vs Layer B (manual paste into INP-Preview) and offer to provide
+the exact `%casscf`-block from the ORCA manual.
 
 ### But verify tabs exist before emitting
 
