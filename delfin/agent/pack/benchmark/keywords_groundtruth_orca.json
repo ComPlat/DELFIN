@@ -1,10 +1,25 @@
 {
+  "authoritative_source": "https://orca-manual.mpi-muelheim.mpg.de",
   "blocks": {
     "basis": {
       "aliases": [
         "%basis"
       ],
       "block": "%basis",
+      "chapter_refs": [
+        "ch1",
+        "ch1_6",
+        "ch2_1",
+        "ch2_7",
+        "ch3_16",
+        "ch3_19",
+        "ch5_30",
+        "ch5_35",
+        "ch5_6",
+        "ch6_2",
+        "ch78",
+        "chs"
+      ],
       "keywords": [
         "addgto",
         "allowghostecp",
@@ -74,36 +89,43 @@
         "sto",
         "various"
       ],
-      "n_keywords": 67,
-      "n_sections": 20,
-      "sections": [
-        "ch1_6_5_some_method_specific_recommendations",
-        "ch1_it_probably_should_be_noted_that_a_slightly_awkward_step_in_the_procedure_is",
-        "ch2_1_1_input_blocks",
-        "ch2_7_10_linear_dependence_the_previous_sections_describe_the_assessment_of_a_de",
-        "ch2_7_12_keywords",
-        "ch2_7_1_basic_usage",
-        "ch2_7_2_orbital_basis_sets_in_the_following_we_will_give_an_outline_of_natively_",
-        "ch2_7_4_auxiliary_basis_sets",
-        "ch2_7_6_assigning_or_adding_basis_functions_to_an_element_in_order_to_assign_a_n",
-        "ch2_7_7_assigning_or_adding_basis_functions_to_individual_atoms_sometimes_you_ma",
-        "ch2_7_8_assigning_basis_sets_and_ecps_to_fragments",
-        "ch2_7_9_reading_basis_sets_from_a_file_by_using_the_variables_gtoname_gtoauxjnam",
-        "ch3_16_2_ri_rijk_and_rijcosx_approximation",
-        "ch3_19_9_energy_differences_spin_flipping_there_are_a_number_of_interesting_situ",
-        "ch5_30_magnetic_relaxation",
-        "ch5_35_1_running_an_eda_nocv_analysis_in_orca",
-        "ch5_6_12_computational_aspects_ri_approximation_ao_basis",
-        "ch6_2_2_oniom_methods_general_overview_for_the_simulation_of_large_systems_with_",
-        "ch78_pb_bi_continues_on_next_page",
-        "chs_p_d_f_g_h_i_k_l_m_n"
-      ]
+      "n_chapter_refs": 12,
+      "n_keywords": 67
     },
     "casscf": {
       "aliases": [
         "%casscf"
       ],
       "block": "%casscf",
+      "chapter_refs": [
+        "ch1",
+        "ch2_6",
+        "ch3",
+        "ch3_10",
+        "ch3_11",
+        "ch3_13",
+        "ch3_14",
+        "ch3_15",
+        "ch3_16",
+        "ch3_17",
+        "ch3_18",
+        "ch3_19",
+        "ch3_20",
+        "ch3_21",
+        "ch3_22",
+        "ch5_14",
+        "ch5_24",
+        "ch5_26",
+        "ch5_30",
+        "ch5_31",
+        "ch5_32",
+        "ch5_4",
+        "ch5_8",
+        "ch8_4",
+        "cha",
+        "chh",
+        "chp"
+      ],
       "keywords": [
         "actconstrains",
         "actorbs",
@@ -312,30 +334,8 @@
         "where",
         "will"
       ],
-      "n_keywords": 206,
-      "n_sections": 72,
-      "sections": [
-        "ch1_mrci_0_cepa0_2_ne_acpf",
-        "ch1_up_to_single_excitations_from_the_donor_shell_0_no_excitations_from_the_dono",
-        "ch2_6_1_convergence_tolerances",
-        "ch3_10_4_static_versus_dynamic_correlation",
-        "ch3_11_6_fully_internally_contracted_mrcc_fic_mrcc_several_approaches_have_been_",
-        "ch3_11_7_fully_internally_contracted_nevpt_fic_nevpt4_sd_fic_nevpt3_fic_nevpt2",
-        "ch3_13_10_example_excited_states",
-        "ch3_13_11_example_large_active_spaces_using_ice_ci_the_state_averaged_casscf_pro",
-        "ch3_13_12_example_geometry_optimization",
-        "ch3_13_13_example_natural_orbitals_as_input_for_coupled_cluster_calculations",
-        "ch3_13_15_casscf_properties_the_casscf_program_is_able_to_calculate_uv_transitio",
-        "ch3_13_18_core_excited_spectra_cas_ci_ras_ci_xas_rixs",
-        "ch3_13_19_core_excited_spectra_cas_ci_ras_ci_xes",
-        "ch3_13_3_basic_usage_the_most_elementary_input_information_which_is_always_requi",
-        "ch3_13_4_keywords",
-        "ch3_13_5_a_simple_example_be_ground_state",
-        "ch3_13_6_guess_natural_orbitals_example",
-        "ch3_13_7_guess_atomic_valence_active_space_avas_very_good_starting_orbitals_that",
-        "ch3_13_8_example_symmetry",
-        "ch3_13_9_example_breaking_chemical_bonds"
-      ]
+      "n_chapter_refs": 27,
+      "n_keywords": 206
     },
     "ccsd": {
       "aliases": [
@@ -343,6 +343,28 @@
         "%ccsd"
       ],
       "block": "%mdci",
+      "chapter_refs": [
+        "ch1_7",
+        "ch2",
+        "ch2_1",
+        "ch2_6",
+        "ch3_10",
+        "ch3_20",
+        "ch5_10",
+        "ch5_11",
+        "ch5_12",
+        "ch5_13",
+        "ch5_14",
+        "ch5_15",
+        "ch5_2",
+        "ch5_23",
+        "ch5_31",
+        "ch5_36",
+        "ch5_37",
+        "ch5_4",
+        "ch5_9",
+        "cha"
+      ],
       "keywords": [
         "above",
         "acpf",
@@ -549,36 +571,26 @@
         "which",
         "word"
       ],
-      "n_keywords": 204,
-      "n_sections": 50,
-      "sections": [
-        "ch1_7_14_troublesome_geometry_optimizations_while_some_issues_during_optimizatio",
-        "ch2_1_1_input_blocks",
-        "ch2_6_1_convergence_tolerances",
-        "ch2_x_i_j_a_m_sam_ij",
-        "ch3_10_11_multi_level_calculations",
-        "ch3_10_12_multi_level_calculations_for_ip_and_ea_eom_dlpno_ccsd",
-        "ch3_10_14_keywords",
-        "ch3_10_2_basic_usage",
-        "ch3_10_3_coupled_cluster_densities_if_one_is_mainly_accustomed_to_hartree_fock_o",
-        "ch3_10_6_the_coupled_cluster_s_diagnostic",
-        "ch3_20_1_a_simple_mr_eom_cc_calculation",
-        "ch3_20_3_perturbative_mr_eom_ccpt_the_mr_eom_cc_family_of_methods_now_also_featu",
-        "ch3_20_4_details_on_the_multireference_equation_of_motion_coupled_cluster_mr_eom",
-        "ch3_20_5_an_orbital_selection_scheme_for_more_efficient_calculations_of_excitati",
-        "ch3_20_6_nearly_size_consistent_results_with_mr_eom_cc_by_employing_an_mr_cepa_0",
-        "ch3_20_7_perturbative_mr_eom_ccpt_the_mr_eom_t_approach_was_developed_for_situat",
-        "ch5_10_3_active_space_selection_using_td_dft_densities",
-        "ch5_10_7_properties_the_dipolar_and_transition_moments_as_well_as_the_oscillator",
-        "ch5_10_8_solvation_experimental",
-        "ch5_11_3_solvation_correction_solvent_effects_can_be_approximated_by_a_simple_pe"
-      ]
+      "n_chapter_refs": 20,
+      "n_keywords": 204
     },
     "compound": {
       "aliases": [
         "%compound"
       ],
       "block": "%compound",
+      "chapter_refs": [
+        "ch1_7",
+        "ch4_1",
+        "ch5_15",
+        "ch5_19",
+        "ch5_20",
+        "ch5_5",
+        "ch5_6",
+        "ch8_2",
+        "ch8_3",
+        "ch8_4"
+      ],
       "keywords": [
         "abort",
         "alias",
@@ -633,31 +645,24 @@
         "vpt2",
         "write2file"
       ],
-      "n_keywords": 52,
-      "n_sections": 15,
-      "sections": [
-        "ch1_7_13_scf_convergence_problems_a_typical_problem_that_occurs_for_systems_with",
-        "ch4_1_3_coordinate_systems_for_optimizations_the_coordinate_system_for_the_optim",
-        "ch5_15_2_core_ionization_uhf",
-        "ch5_19_1_vibrational_corrections_of_molecular_properties_using_vpt2",
-        "ch5_20_electrical_properties_electric_moments_and_polarizabilities",
-        "ch5_5_4_intersystem_crossing_rates_unpublished_general_aspects_yet_another_appli",
-        "ch5_6_13_restarting_td_dft_calculations",
-        "ch8_2_compound",
-        "ch8_3_1_commands_below_is_a_list_of_all_available_commands_available_in_compound",
-        "ch8_4_11_multi_reference_introduction",
-        "ch8_4_12_goto_introduction",
-        "ch8_4_2_hello_world_introduction",
-        "ch8_4_3_new_job_introduction",
-        "ch8_4_4_high_accuracy_introduction",
-        "ch8_4_9_bsse_optimization_introduction_this_script_optimizes_the_geometry_of_a_m"
-      ]
+      "n_chapter_refs": 10,
+      "n_keywords": 52
     },
     "elprop": {
       "aliases": [
         "%elprop"
       ],
       "block": "%elprop",
+      "chapter_refs": [
+        "ch2_22",
+        "ch3_11",
+        "ch3_9",
+        "ch5_18",
+        "ch5_20",
+        "ch5_23",
+        "ch5_24",
+        "chx"
+      ],
       "keywords": [
         "abilities",
         "appropriate",
@@ -699,22 +704,8 @@
         "they",
         "tol"
       ],
-      "n_keywords": 39,
-      "n_sections": 12,
-      "sections": [
-        "ch2_22_cp_scf_options_the_coupled_perturbed_self_consistent_field_cp_scf_equatio",
-        "ch3_11_4_autoci_response_properties_via_analytic_derivatives_for_single_referenc",
-        "ch3_9_12_local_mp2_second_derivatives_and_response_properties_analytical_second_",
-        "ch3_9_8_mp2_properties_densities_and_natural_orbitals_the_mp2_method_can_be_used",
-        "ch5_18_4_raman_spectra",
-        "ch5_20_2_elprop_keywords_calculation_of_first_order_electric_dipole_and_quadrupo",
-        "ch5_20_electrical_properties_electric_moments_and_polarizabilities",
-        "ch5_23_1_calculating_properties_from_existing_densities_occasionally_one_may_cal",
-        "ch5_24_2_technical_notes",
-        "ch5_24_3_basic_usage_the_following_is_an_overview_of_the_blocks_required_for_a_p",
-        "ch5_24_4_troubleshooting",
-        "chx_a_qm_l_a"
-      ]
+      "n_chapter_refs": 8,
+      "n_keywords": 39
     },
     "eprnmr": {
       "aliases": [
@@ -722,6 +713,23 @@
         "%nmr"
       ],
       "block": "%eprnmr",
+      "chapter_refs": [
+        "ch2_1",
+        "ch2_22",
+        "ch3",
+        "ch3_11",
+        "ch3_13",
+        "ch3_9",
+        "ch5_18",
+        "ch5_19",
+        "ch5_21",
+        "ch5_22",
+        "ch5_23",
+        "ch5_24",
+        "ch5_25",
+        "cha",
+        "chu"
+      ],
       "keywords": [
         "an",
         "appropriate",
@@ -831,36 +839,21 @@
         "vpt2",
         "word"
       ],
-      "n_keywords": 107,
-      "n_sections": 28,
-      "sections": [
-        "ch2_1_5_jobs_with_multiple_steps",
-        "ch2_22_cp_scf_options_the_coupled_perturbed_self_consistent_field_cp_scf_equatio",
-        "ch3_11_4_autoci_response_properties_via_analytic_derivatives_for_single_referenc",
-        "ch3_11_9_keywords",
-        "ch3_13_1_introduction_the_complete_active_space_self_consistent_field_casscf_met",
-        "ch3_9_12_local_mp2_second_derivatives_and_response_properties_analytical_second_",
-        "ch3_9_8_mp2_properties_densities_and_natural_orbitals_the_mp2_method_can_be_used",
-        "ch3_x_ik",
-        "ch5_18_3_vibrational_circular_dichroism_vcd_spectra_vibrational_circular_dichroi",
-        "ch5_19_1_vibrational_corrections_of_molecular_properties_using_vpt2",
-        "ch5_21_10_spin_rotation_constants",
-        "ch5_21_11_eprnmr_keywords_for_magnetic_properties",
-        "ch5_21_1_nmr_chemical_shifts_nmr_chemical_shifts_at_the_hf_dft_standard_gga_and_",
-        "ch5_21_3_simulating_nmr_spectra",
-        "ch5_21_6_shielding_tensor_orbital_decomposition",
-        "ch5_21_7_treatment_of_tau_in_meta_gga_functionals",
-        "ch5_22_1_the_g_tensor",
-        "ch5_22_2_hyperfine_coupling",
-        "ch5_22_3_zero_field_splitting_the_zero_field_splitting_zfs_is_typically_the_lead",
-        "ch5_22_electron_paramagnetic_resonance_epr_parameters"
-      ]
+      "n_chapter_refs": 15,
+      "n_keywords": 107
     },
     "esd": {
       "aliases": [
         "%esd"
       ],
       "block": "%esd",
+      "chapter_refs": [
+        "ch0",
+        "ch5_5",
+        "chd",
+        "cht",
+        "chu"
+      ],
       "keywords": [
         "above",
         "absorption",
@@ -1015,29 +1008,23 @@
         "where",
         "which"
       ],
-      "n_keywords": 152,
-      "n_sections": 13,
-      "sections": [
-        "ch0_x_if",
-        "ch5_5_11_more_on_the_excited_state_dynamics_module",
-        "ch5_5_12_complete_keyword_list_for_the_esd_module",
-        "ch5_5_1_absorption_spectrum_the_ideal_model_adiabatic_hessian_ah_to_predict_abso",
-        "ch5_5_2_fluorescence_rates_and_spectrum_general_aspects_the_prediction_of_fluore",
-        "ch5_5_3_phosphorescence_rates_and_spectrum_general_aspects_as_with_fluorescence_",
-        "ch5_5_4_intersystem_crossing_rates_unpublished_general_aspects_yet_another_appli",
-        "ch5_5_5_internal_conversion_rates_unpublished_the_esd_module_can_also_calculate_",
-        "ch5_5_6_resonant_raman_spectrum_general_aspects_using_a_theoretical_framework_si",
-        "ch5_5_7_esd_and_steom_ccsd_or_other_higher_level_methods_the_approxaden_option_i",
-        "chd_gs_es_structure",
-        "cht_s_z_x_y",
-        "chu_t"
-      ]
+      "n_chapter_refs": 5,
+      "n_keywords": 152
     },
     "freq": {
       "aliases": [
         "%freq"
       ],
       "block": "%freq",
+      "chapter_refs": [
+        "ch2_10",
+        "ch2_17",
+        "ch4_3",
+        "ch4_6",
+        "ch4_7",
+        "ch5_18",
+        "ch5_5"
+      ],
       "keywords": [
         "abc",
         "accordingly",
@@ -1104,29 +1091,33 @@
         "while",
         "xtbvpt2"
       ],
-      "n_keywords": 64,
-      "n_sections": 13,
-      "sections": [
-        "ch2_10_6_changing_td_dft_cp_scf_and_hessian_grids",
-        "ch2_17_3_combination_of_dipolar_and_quadrupolar_electric_fields_dipolar_and_quad",
-        "ch4_3_5_partial_hessian_vibrational_analysis",
-        "ch4_6_1_mass_dependencies",
-        "ch4_6_3_restarting_numerical_frequency_calculations_to_restart_a_numerical_frequ",
-        "ch4_6_4_frequencies_keyword_list_in_the_orca_program_package_the_calculation_of_",
-        "ch4_6_vibrational_frequencies_vibrational_frequency_calculations_are_available_t",
-        "ch4_7_thermochemistry_the_second_thing_that_you_get_automatically_as_the_result_",
-        "ch5_18_2_overtones_combination_bands_and_near_ir_spectra_via_nearir",
-        "ch5_18_3_vibrational_circular_dichroism_vcd_spectra_vibrational_circular_dichroi",
-        "ch5_5_10_tips_tricks_and_troubleshooting",
-        "ch5_5_11_more_on_the_excited_state_dynamics_module",
-        "ch5_5_1_absorption_spectrum_the_ideal_model_adiabatic_hessian_ah_to_predict_abso"
-      ]
+      "n_chapter_refs": 7,
+      "n_keywords": 64
     },
     "geom": {
       "aliases": [
         "%geom"
       ],
       "block": "%geom",
+      "chapter_refs": [
+        "ch2_11",
+        "ch2_2",
+        "ch4_1",
+        "ch4_10",
+        "ch4_11",
+        "ch4_12",
+        "ch4_2",
+        "ch4_3",
+        "ch4_5",
+        "ch5_18",
+        "ch5_19",
+        "ch6_1",
+        "ch6_3",
+        "ch6_4",
+        "ch8_2",
+        "ch8_4",
+        "cha"
+      ],
       "keywords": [
         "activate",
         "approximately",
@@ -1236,36 +1227,17 @@
         "xyz2",
         "z_tol"
       ],
-      "n_keywords": 107,
-      "n_sections": 36,
-      "sections": [
-        "ch2_11_1_boys_bernardi_counterpoise_correction_bb_cp",
-        "ch2_2_5_mixing_internal_and_cartesian_coordinates",
-        "ch4_10_10_some_general_observations_default_frozen_coordinates_during_uphill_ste",
-        "ch4_10_3_the_final_ensemble",
-        "ch4_11_1_basic_usage",
-        "ch4_12_6_looking_deeper_into_the_output_the_details_related_to_the_grid_and_the_",
-        "ch4_12_7_the_final_steps_after_the_evolution_step_a_total_of_max_sqrt_swarmp_ops",
-        "ch4_12_8_adding_a_bond_bias_to_the_docking_process_the_bond_biases_available_for",
-        "ch4_1_13_geometry_optimization_keywords",
-        "ch4_1_1_basic_usage",
-        "ch4_1_3_coordinate_systems_for_optimizations_the_coordinate_system_for_the_optim",
-        "ch4_1_4_optimization_assuming_a_rigid_body",
-        "ch4_1_5_adding_arbitrary_bias_and_wall_potentials",
-        "ch4_1_6_constant_external_force_mechanochemistry",
-        "ch4_1_7_printing_hessian_in_internal_coordinates_when_a_hessian_is_available_it_",
-        "ch4_1_8_using_model_hessian_from_previous_calculations_if_you_had_a_geometry_opt",
-        "ch4_1_9_geometry_optimizations_using_the_l_bfgs_optimizer",
-        "ch4_2_2_simple_example",
-        "ch4_2_3_complex_example",
-        "ch4_2_4_multidimensional_scans"
-      ]
+      "n_chapter_refs": 17,
+      "n_keywords": 107
     },
     "irc": {
       "aliases": [
         "%irc"
       ],
       "block": "%irc",
+      "chapter_refs": [
+        "ch4_4"
+      ],
       "keywords": [
         "adapt_scale_displ",
         "de_init_displ",
@@ -1287,18 +1259,46 @@
         "sd_parabolicfit",
         "ward"
       ],
-      "n_keywords": 19,
-      "n_sections": 2,
-      "sections": [
-        "ch4_4_1_basic_usage_the_following_keywords_are_available",
-        "ch4_4_2_keywords"
-      ]
+      "n_chapter_refs": 1,
+      "n_keywords": 19
     },
     "method": {
       "aliases": [
         "%method"
       ],
       "block": "%method",
+      "chapter_refs": [
+        "ch1",
+        "ch2",
+        "ch2_1",
+        "ch2_10",
+        "ch2_11",
+        "ch2_16",
+        "ch2_2",
+        "ch2_21",
+        "ch2_22",
+        "ch2_3",
+        "ch2_6",
+        "ch2_8",
+        "ch3_1",
+        "ch3_10",
+        "ch3_11",
+        "ch3_13",
+        "ch3_18",
+        "ch3_19",
+        "ch3_2",
+        "ch3_3",
+        "ch3_4",
+        "ch3_5",
+        "ch3_9",
+        "ch4_1",
+        "ch5_1",
+        "ch5_19",
+        "ch5_25",
+        "ch5_29",
+        "ch5_30",
+        "ch5_6"
+      ],
       "keywords": [
         "able",
         "acc3",
@@ -1698,30 +1698,8 @@
         "znddo_2",
         "zsimple"
       ],
-      "n_keywords": 397,
-      "n_sections": 75,
-      "sections": [
-        "ch1_up_to_single_excitations_from_the_donor_shell_0_no_excitations_from_the_dono",
-        "ch2_10_4_other_details_and_options",
-        "ch2_10_5_scf_grid_keyword_list",
-        "ch2_10_6_changing_td_dft_cp_scf_and_hessian_grids",
-        "ch2_11_2_geometrical_counterpoise_correction_gcp",
-        "ch2_16_scf_stability_analysis",
-        "ch2_1_1_input_blocks",
-        "ch2_1_2_input_priority_and_processing_order",
-        "ch2_21_frozen_core_options_the_frozen_core_fc_approximation_is_usually_applied_i",
-        "ch2_22_cp_scf_options_the_coupled_perturbed_self_consistent_field_cp_scf_equatio",
-        "ch2_2_4_defining_geometry_parameters_and_scanning_potential_energy_surfaces",
-        "ch2_2_6_inclusion_of_point_charges",
-        "ch2_3_1_run_types",
-        "ch2_3_2_method_classes",
-        "ch2_3_3_keywords",
-        "ch2_6_1_convergence_tolerances",
-        "ch2_6_7_trust_region_augmented_hessian_trah_scf",
-        "ch2_8_1_ri_j",
-        "ch2_8_4_rijcosx_frustrated_by_the_large_difference_in_execution_times_between_pu",
-        "ch2_8_7_keywords"
-      ]
+      "n_chapter_refs": 37,
+      "n_keywords": 397
     },
     "mp2": {
       "aliases": [
@@ -1729,6 +1707,36 @@
         "%mdci"
       ],
       "block": "%mp2",
+      "chapter_refs": [
+        "ch1_7",
+        "ch2",
+        "ch2_1",
+        "ch2_6",
+        "ch3_10",
+        "ch3_13",
+        "ch3_19",
+        "ch3_20",
+        "ch3_3",
+        "ch3_9",
+        "ch4",
+        "ch5_10",
+        "ch5_11",
+        "ch5_12",
+        "ch5_13",
+        "ch5_14",
+        "ch5_15",
+        "ch5_2",
+        "ch5_23",
+        "ch5_31",
+        "ch5_35",
+        "ch5_36",
+        "ch5_37",
+        "ch5_4",
+        "ch5_6",
+        "ch5_9",
+        "cha",
+        "chh"
+      ],
       "keywords": [
         "above",
         "acoh",
@@ -2049,36 +2057,28 @@
         "zloc_tol",
         "zloc_usedavidson"
       ],
-      "n_keywords": 318,
-      "n_sections": 73,
-      "sections": [
-        "ch1_7_14_troublesome_geometry_optimizations_while_some_issues_during_optimizatio",
-        "ch2_1_1_input_blocks",
-        "ch2_6_1_convergence_tolerances",
-        "ch2_p_ijc_tij_actij_bc",
-        "ch2_x_i_j_a_m_sam_ij",
-        "ch3_10_11_multi_level_calculations",
-        "ch3_10_12_multi_level_calculations_for_ip_and_ea_eom_dlpno_ccsd",
-        "ch3_10_14_keywords",
-        "ch3_10_2_basic_usage",
-        "ch3_10_3_coupled_cluster_densities_if_one_is_mainly_accustomed_to_hartree_fock_o",
-        "ch3_10_6_the_coupled_cluster_s_diagnostic",
-        "ch3_13_12_example_geometry_optimization",
-        "ch3_13_6_guess_natural_orbitals_example",
-        "ch3_13_8_example_symmetry",
-        "ch3_19_5_excitation_energies_between_different_multiplicities",
-        "ch3_19_7_thresholds",
-        "ch3_20_1_a_simple_mr_eom_cc_calculation",
-        "ch3_20_3_perturbative_mr_eom_ccpt_the_mr_eom_cc_family_of_methods_now_also_featu",
-        "ch3_20_4_details_on_the_multireference_equation_of_motion_coupled_cluster_mr_eom",
-        "ch3_20_5_an_orbital_selection_scheme_for_more_efficient_calculations_of_excitati"
-      ]
+      "n_chapter_refs": 28,
+      "n_keywords": 318
     },
     "mrci": {
       "aliases": [
         "%mrci"
       ],
       "block": "%mrci",
+      "chapter_refs": [
+        "ch2_6",
+        "ch3",
+        "ch3_10",
+        "ch3_13",
+        "ch3_19",
+        "ch3_20",
+        "ch3_21",
+        "ch5_14",
+        "ch5_29",
+        "ch5_30",
+        "ch5_31",
+        "cha"
+      ],
       "keywords": [
         "allsingles",
         "approach",
@@ -2181,36 +2181,18 @@
         "wavefunction",
         "xasmos"
       ],
-      "n_keywords": 100,
-      "n_sections": 25,
-      "sections": [
-        "ch2_6_1_convergence_tolerances",
-        "ch3_10_4_static_versus_dynamic_correlation",
-        "ch3_13_13_example_natural_orbitals_as_input_for_coupled_cluster_calculations",
-        "ch3_13_15_casscf_properties_the_casscf_program_is_able_to_calculate_uv_transitio",
-        "ch3_19_10_potential_energy_surfaces_another_situation_where_multireference_appro",
-        "ch3_19_11_multireference_systems_ozone",
-        "ch3_19_13_efficient_mr_mp2_calculations_for_larger_molecules",
-        "ch3_19_14_properties_calculation_using_the_soc_submodule_zero_field_splitting_th",
-        "ch3_19_15_keywords",
-        "ch3_19_4_a_tutorial_type_example_of_a_mr_calculation",
-        "ch3_19_5_excitation_energies_between_different_multiplicities",
-        "ch3_19_7_thresholds",
-        "ch3_19_8_energy_differences_bond_breaking",
-        "ch3_19_9_energy_differences_spin_flipping_there_are_a_number_of_interesting_situ",
-        "ch3_20_1_a_simple_mr_eom_cc_calculation",
-        "ch3_20_4_details_on_the_multireference_equation_of_motion_coupled_cluster_mr_eom",
-        "ch3_20_5_an_orbital_selection_scheme_for_more_efficient_calculations_of_excitati",
-        "ch3_20_6_nearly_size_consistent_results_with_mr_eom_cc_by_employing_an_mr_cepa_0",
-        "ch3_21_4_list_of_keywords_the_following_keywords_can_be_used_in_conjunction_with",
-        "ch3_in_this_case_the_maximum_overlap_of_the_0th_order_states_with_the_final_ci_v"
-      ]
+      "n_chapter_refs": 12,
+      "n_keywords": 100
     },
     "neb": {
       "aliases": [
         "%neb"
       ],
       "block": "%neb",
+      "chapter_refs": [
+        "ch4_5",
+        "ch6_2"
+      ],
       "keywords": [
         "neb_end_xyzfile",
         "neb_ts_image",
@@ -2223,20 +2205,31 @@
         "restart_gbw_basename",
         "ts"
       ],
-      "n_keywords": 10,
-      "n_sections": 4,
-      "sections": [
-        "ch4_5_15_neb_neb_ts_and_td_dft",
-        "ch4_5_16_summary_of_keywords_the_following_keywords_are_available",
-        "ch4_5_7_optimizations_using_the_nudged_elastic_band_method_so_to_recap_the_nudge",
-        "ch6_2_3_subtractive_qm_qm2_method_oniom2_the_qm_qm2_method_is_a_very_convenient_"
-      ]
+      "n_chapter_refs": 2,
+      "n_keywords": 10
     },
     "output": {
       "aliases": [
         "%output"
       ],
       "block": "%output",
+      "chapter_refs": [
+        "ch2_11",
+        "ch2_12",
+        "ch2_4",
+        "ch2_7",
+        "ch3_13",
+        "ch4_1",
+        "ch5_1",
+        "ch5_19",
+        "ch5_22",
+        "ch5_6",
+        "ch9_1",
+        "ch9_3",
+        "ch9_4",
+        "cha",
+        "chx"
+      ],
       "keywords": [
         "analysis",
         "certain",
@@ -2316,36 +2309,22 @@
         "xyzfile",
         "zora"
       ],
-      "n_keywords": 77,
-      "n_sections": 23,
-      "sections": [
-        "ch2_11_2_geometrical_counterpoise_correction_gcp",
-        "ch2_12_9_keywords",
-        "ch2_4_1_print_options",
-        "ch2_4_control_of_output",
-        "ch2_7_7_assigning_or_adding_basis_functions_to_individual_atoms_sometimes_you_ma",
-        "ch3_13_6_guess_natural_orbitals_example",
-        "ch4_1_10_optimizing_with_external_methods",
-        "ch5_19_anharmonic_analysis_and_vibrational_corrections_using",
-        "ch5_1_11_population_analysis_of_unos",
-        "ch5_1_12_keywords",
-        "ch5_1_4_mayer_population_analysis",
-        "ch5_1_5_natural_population_analysis",
-        "ch5_1_6_hirshfeld_population_analysis_the_partitioning_method_by_hirshfeld_is_on",
-        "ch5_1_7_mbis_charges",
-        "ch5_22_2_hyperfine_coupling",
-        "ch5_6_12_computational_aspects_ri_approximation_ao_basis",
-        "ch9_1_2_surface_plots_general_points",
-        "ch9_3_1_invocation_and_configuration_manual_export_of_orca_data_and_other_option",
-        "ch9_4_2_json_format",
-        "ch9_4_property_file"
-      ]
+      "n_chapter_refs": 15,
+      "n_keywords": 77
     },
     "pal": {
       "aliases": [
         "%pal"
       ],
       "block": "%pal",
+      "chapter_refs": [
+        "ch1",
+        "ch1_7",
+        "ch2_5",
+        "ch4_10",
+        "ch5_5",
+        "ch5_7"
+      ],
       "keywords": [
         "at",
         "calling",
@@ -2361,18 +2340,8 @@
         "was",
         "what"
       ],
-      "n_keywords": 13,
-      "n_sections": 8,
-      "sections": [
-        "ch1_7_3_sudden_termination_of_orca",
-        "ch1_up_to_single_excitations_from_the_donor_shell_0_no_excitations_from_the_dono",
-        "ch2_5_2_hints_on_the_use_of_parallel_orca",
-        "ch2_5_parallel_and_multi_process_runs_most_of_the_important_modules_in_orca_can_",
-        "ch4_10_10_some_general_observations_default_frozen_coordinates_during_uphill_ste",
-        "ch4_10_2_understanding_the_output_after_the_usual_geometry_optimization_the_outp",
-        "ch5_5_4_intersystem_crossing_rates_unpublished_general_aspects_yet_another_appli",
-        "ch5_7_3_transition_metal_l_edges_with_rocis_or_dft_rocis_the_rocis_method_was_de"
-      ]
+      "n_chapter_refs": 6,
+      "n_keywords": 13
     },
     "rocis": {
       "aliases": [
@@ -2380,6 +2349,20 @@
         "%cis"
       ],
       "block": "%rocis",
+      "chapter_refs": [
+        "ch2_10",
+        "ch2_6",
+        "ch5_14",
+        "ch5_16",
+        "ch5_31",
+        "ch5_4",
+        "ch5_6",
+        "ch5_7",
+        "cha",
+        "chh",
+        "cht",
+        "chx"
+      ],
       "keywords": [
         "ble",
         "cis",
@@ -2475,36 +2458,42 @@
         "trootssl",
         "xaselems"
       ],
-      "n_keywords": 93,
-      "n_sections": 26,
-      "sections": [
-        "ch2_10_6_changing_td_dft_cp_scf_and_hessian_grids",
-        "ch2_6_1_convergence_tolerances",
-        "ch5_14_3_natural_electric_circular_dichroism_in_the_case_of_ecd_modeling_intensi",
-        "ch5_14_4_soc_and_ssc_corrected_spectrum_all_the_ops_keywords_and_tables_listed_a",
-        "ch5_14_5_ops_full_list_of_keywords_the_folowing_list_of_keywords_may_be_included",
-        "ch5_16_4_quantum_chemically_assisted_simulations_and_fits_of_optical_bandshapes_",
-        "ch5_31_3_running_mcd_calculations_in_other_modules_the_mcd_implementation_can_al",
-        "ch5_4_2_excited_states_with_restricted_open_shell_cis_rocis",
-        "ch5_6_10_spin_orbit_coupling_it_also_possible_to_include_spin_orbit_coupling_bet",
-        "ch5_6_12_computational_aspects_ri_approximation_ao_basis",
-        "ch5_6_13_restarting_td_dft_calculations",
-        "ch5_6_15_transient_spectra_if_one_wants_to_compute_transient_spectra_or_transiti",
-        "ch5_6_16_excited_state_geometry_optimization",
-        "ch5_6_17_potential_energy_surface_scans",
-        "ch5_6_19_keyword_list",
-        "ch5_6_1_general_features_the_module_is_invoked_with_the_block",
-        "ch5_6_2_semiempirical_methods_the_semiempirical_indo_s_method_is_very_suitable_t",
-        "ch5_6_9_double_hybrid_functionals_and_doubles_correction",
-        "ch5_7_1_general_description_general_spin_rocis_the_gs_rocis_method_is_described_",
-        "ch5_7_2_core_pno_rocis_pno_rocis_dft"
-      ]
+      "n_chapter_refs": 12,
+      "n_keywords": 93
     },
     "scf": {
       "aliases": [
         "%scf"
       ],
       "block": "%scf",
+      "chapter_refs": [
+        "ch1",
+        "ch1_7",
+        "ch2_1",
+        "ch2_14",
+        "ch2_16",
+        "ch2_17",
+        "ch2_20",
+        "ch2_6",
+        "ch2_7",
+        "ch3_1",
+        "ch3_13",
+        "ch3_15",
+        "ch3_5",
+        "ch3_9",
+        "ch5_27",
+        "ch5_28",
+        "ch5_3",
+        "ch5_34",
+        "ch5_35",
+        "ch5_36",
+        "ch5_4",
+        "ch5_7",
+        "ch8_4",
+        "cha",
+        "chh",
+        "chp"
+      ],
       "keywords": [
         "abort",
         "activates",
@@ -2708,30 +2697,8 @@
         "xtbfod",
         "xz"
       ],
-      "n_keywords": 201,
-      "n_sections": 50,
-      "sections": [
-        "ch1_7_13_scf_convergence_problems_a_typical_problem_that_occurs_for_systems_with",
-        "ch1_up_to_single_excitations_from_the_donor_shell_0_no_excitations_from_the_dono",
-        "ch2_14_integral_handling_as_the_number_of_nonzero_integrals_grows_very_rapidly_a",
-        "ch2_16_scf_stability_analysis",
-        "ch2_17_1_dipolar_electric_fields_a_uniform_or_equivalently_speaking_dipolar_elec",
-        "ch2_17_2_quadrupolar_electric_fields",
-        "ch2_17_3_combination_of_dipolar_and_quadrupolar_electric_fields_dipolar_and_quad",
-        "ch2_17_4_keywords",
-        "ch2_1_1_input_blocks",
-        "ch2_1_general_structure_of_the_input_file_in_general_the_input_file_is_a_free_fo",
-        "ch2_20_10_keywords",
-        "ch2_20_3_pmodel_guess",
-        "ch2_20_5_restarting_scf_calculations_to_restart_scf_calculations_it_can_be_very_",
-        "ch2_20_6_autostart_feature_older_versions_of_orca_always_created_a_new_gbw_file_",
-        "ch2_20_7_changing_the_order_of_initial_guess_mos_and_breaking_the_initial_guess_",
-        "ch2_20_8_automatically_breaking_of_the_initial_guess_symmetry",
-        "ch2_20_choice_of_initial_guess_and_restart_of_scf_calculations",
-        "ch2_6_10_local_scf_method",
-        "ch2_6_1_convergence_tolerances",
-        "ch2_6_2_dynamic_and_static_damping"
-      ]
+      "n_chapter_refs": 26,
+      "n_keywords": 201
     },
     "tddft": {
       "aliases": [
@@ -2739,6 +2706,22 @@
         "%tda"
       ],
       "block": "%tddft",
+      "chapter_refs": [
+        "ch0",
+        "ch2_10",
+        "ch4_1",
+        "ch4_5",
+        "ch4_8",
+        "ch5_10",
+        "ch5_14",
+        "ch5_16",
+        "ch5_31",
+        "ch5_4",
+        "ch5_5",
+        "ch5_6",
+        "chd",
+        "cht"
+      ],
       "keywords": [
         "absrange",
         "absscalemode",
@@ -2859,32 +2842,11 @@
         "using",
         "while"
       ],
-      "n_keywords": 118,
-      "n_sections": 34,
-      "sections": [
-        "ch0_x_if",
-        "ch2_10_6_changing_td_dft_cp_scf_and_hessian_grids",
-        "ch4_1_1_basic_usage",
-        "ch4_5_15_neb_neb_ts_and_td_dft",
-        "ch4_8_3_updated_branching_plane_here_the_idea_is_to_start_from_a_guess_nacme_whi",
-        "ch4_8_4_ci_minima_between_excited_states_in_an_analogous_way_the_conical_interse",
-        "ch5_10_3_active_space_selection_using_td_dft_densities",
-        "ch5_14_5_ops_full_list_of_keywords_the_folowing_list_of_keywords_may_be_included",
-        "ch5_16_4_quantum_chemically_assisted_simulations_and_fits_of_optical_bandshapes_",
-        "ch5_31_2_running_and_analyzing_mcd_calculations_in_tddft_module_a_minimum_input_",
-        "ch5_4_1_excited_states_with_rpa_cis_td_dft_and_sf_tda",
-        "ch5_5_11_more_on_the_excited_state_dynamics_module",
-        "ch5_5_1_absorption_spectrum_the_ideal_model_adiabatic_hessian_ah_to_predict_abso",
-        "ch5_5_2_fluorescence_rates_and_spectrum_general_aspects_the_prediction_of_fluore",
-        "ch5_5_3_phosphorescence_rates_and_spectrum_general_aspects_as_with_fluorescence_",
-        "ch5_5_4_intersystem_crossing_rates_unpublished_general_aspects_yet_another_appli",
-        "ch5_5_5_internal_conversion_rates_unpublished_the_esd_module_can_also_calculate_",
-        "ch5_5_6_resonant_raman_spectrum_general_aspects_using_a_theoretical_framework_si",
-        "ch5_6_10_spin_orbit_coupling_it_also_possible_to_include_spin_orbit_coupling_bet",
-        "ch5_6_11_natural_transition_orbitals_results_of_td_dft_or_cis_calculations_can_b"
-      ]
+      "n_chapter_refs": 14,
+      "n_keywords": 118
     }
   },
-  "extracted_from": "orca_manual_6_1_1_DELFIN.pdf via doc_index",
-  "orca_version": "6.1.1"
+  "license_note": "Factual keyword names + bare chapter numbers only. No verbatim manual prose.",
+  "program": "orca",
+  "version": "6.1.1"
 }
