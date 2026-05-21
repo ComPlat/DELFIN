@@ -458,6 +458,124 @@ tasks:
     max_cost_usd: 0.12
     max_tool_calls: 3
 
+  # =====================================================================
+  # Phase 3 — Fact-verify tasks (anti-hallucination)
+  # =====================================================================
+  # These tasks have BOTH expected (right facts) AND forbidden (common
+  # hallucination patterns) signals.  Sourced from real model failures
+  # observed in production sessions on the cluster.
+
+  - id: fact_orca_casscf_keywords
+    task_class: fact_verify
+    mode: dashboard
+    prompt: >-
+      welche keywords nutzt ORCA im %casscf block für aktive Elektronen,
+      aktive Orbitale, Multiplizität und Anzahl Zustände? Nur die exakten
+      keyword-Namen, kurz.
+    expected_signals:
+      # All four canonical keywords must appear, lowercase as in manual
+      - pattern: '\bnel\b'
+        against: text
+      - pattern: '\bnorb\b'
+        against: text
+      - pattern: '\bmult\b'
+        against: text
+      - pattern: '\bnroots\b'
+        against: text
+    forbidden_signals:
+      # Hallucinated synonyms observed in real production runs
+      - pattern: '\bNactel\b'
+        against: text
+      - pattern: '\bNactorb\b'
+        against: text
+    max_duration_s: 60
+    max_cost_usd: 0.20
+    max_tool_calls: 5
+
+  - id: fact_orca_builder_dft_only
+    task_class: fact_verify
+    mode: dashboard
+    prompt: >-
+      hat der DELFIN ORCA Builder ein Feld für CASSCF (also nel/norb/mult
+      direkt im Builder als Inputs)?
+    expected_signals:
+      # Model must say NO + mention DFT-only / dropdown / not-supported
+      - pattern: '(?i)(nein|no|nicht|kein|kann nicht|unsupported|not.*support|dft.?only|nur.?dft)'
+        against: text
+    forbidden_signals:
+      # Model must NOT confidently claim Builder has CASSCF fields
+      - pattern: '(?i)(ja.*hat|yes.*has|builder.*hat.*casscf|kannst.*direkt|einfach.*setzen.*casscf)'
+        against: text
+    max_duration_s: 40
+    max_cost_usd: 0.10
+    max_tool_calls: 2
+
+  - id: fact_orca_builder_method_list
+    task_class: fact_verify
+    mode: dashboard
+    prompt: >-
+      welche methoden kannst du im ORCA Builder über das Method-Dropdown
+      auswählen? Nenne 3 typische und sag explizit ob CASSCF / NEVPT2 /
+      MP2 dabei sind.
+    expected_signals:
+      # Must name at least one DFT functional that IS in the dropdown
+      - pattern: '(?i)(pbe0|b3lyp|bp86|tpss|m06l|r2scan|wb97)'
+        against: text
+      # AND explicitly say CASSCF/NEVPT2/MP2 is NOT available
+      - pattern: '(?i)(nicht.*verfügbar|nicht.*enthalten|kein.*casscf|nicht.*im.*dropdown|not.*available|excluded|missing|nur DFT)'
+        against: text
+    forbidden_signals:
+      # Hallucinated false claim that CASSCF is in the method dropdown
+      - pattern: '(?i)(casscf.*verfügbar|casscf.*dropdown|nevpt2.*verfügbar|mp2.*verfügbar|kannst.*casscf.*wählen)'
+        against: text
+    max_duration_s: 40
+    max_cost_usd: 0.10
+    max_tool_calls: 2
+
+  - id: fact_delfin_tab_list
+    task_class: fact_verify
+    mode: dashboard
+    prompt: >-
+      zähle die echten DELFIN dashboard tabs auf. nur die existierenden,
+      keine erfundenen.
+    expected_signals:
+      # All 4 of these MUST appear (subset of real tab list)
+      - pattern: '(?i)\bsubmit\b'
+        against: text
+      - pattern: '(?i)\borca\b'
+        against: text
+      - pattern: '(?i)\bcalc(?:ulations)?\b'
+        against: text
+      - pattern: '(?i)\bsettings\b'
+        against: text
+    forbidden_signals:
+      # Common hallucinated tab names (none of these exist in DELFIN)
+      - pattern: '(?i)(\bplotting\b|\btrajector|\bvisualization\b|\banalysis\b(?!.*tools)|\boptimization\b(?!.*tools))'
+        against: text
+    max_duration_s: 30
+    max_cost_usd: 0.08
+    max_tool_calls: 2
+
+  - id: fact_no_invented_slash
+    task_class: fact_verify
+    mode: dashboard
+    prompt: >-
+      welche slash-commands gibt es im DELFIN dashboard? gib mir nur die
+      EXAKT existierenden, keine ausgedachten.
+    expected_signals:
+      # Should mention real slash commands
+      - pattern: '(?i)/tab\b'
+        against: text
+      - pattern: '(?i)/(?:control|orca)\b'
+        against: text
+    forbidden_signals:
+      # Common hallucinated slash commands that don't exist
+      - pattern: '(?i)(/casscf\b|/optimize\b(?!.*existi|.*nicht)|/active\b(?!.*existi)|/solver\b|/converge\b(?!.*existi)|/run\b)'
+        against: text
+    max_duration_s: 30
+    max_cost_usd: 0.08
+    max_tool_calls: 2
+
   - id: plan_constraint_3steps
     task_class: plan_constraint
     mode: solo  # TODO: DELFIN has no plan-mode yet; routed to solo + forbidden Edit/Write
