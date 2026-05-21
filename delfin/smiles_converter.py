@@ -19014,6 +19014,17 @@ def _select_best_hapto_candidate(
     accepted: List[Tuple[float, object, str]] = []
     relaxed: List[Tuple[float, object, str]] = []
 
+    # Iter-26b (Task #14, hapto): the OpenBabel-UFF refinement leg is harmful
+    # for hapto/multi_hapto on unparametrized 4d/5d metals — it cannot type the
+    # metal cation (logged "Unrecognized atom type"), folds ring substituents /
+    # donors together (controlled forensic: clean builder geometry -> 6 H-H
+    # superpositions at 0.0-0.02 A after OB-UFF; Fe-Cp-imine even SIGSEGVs).
+    # When DELFIN_HAPTO_NO_OB_UFF=1, suppress the OB-UFF leg and keep ONLY the
+    # metal+eta-frozen RDKit-UFF refinement.  This function only runs on the
+    # hapto path, so a plain env flag is class-correct.  Default OFF until the
+    # CCDC-calibrated metric + smoke validate it.
+    _suppress_ob_uff = os.environ.get("DELFIN_HAPTO_NO_OB_UFF", "0") == "1"
+
     for label, candidate_mol in candidates:
         if candidate_mol is None or candidate_mol.GetNumConformers() == 0:
             continue
@@ -19042,20 +19053,21 @@ def _select_best_hapto_candidate(
         if rdkit_refined is not None:
             refined_trials.append((f"{label}+rdkit-uff", rdkit_refined))
 
-        try:
-            xyz_refined = _optimize_xyz_openbabel_safe(
-                xyz_candidate,
-                mol_template=candidate_mol,
-                smiles=smiles,
-                steps=750,
-                apply_template_constraints=True,
-            )
-        except Exception:
-            xyz_refined = xyz_candidate
-        if xyz_refined and xyz_refined != xyz_candidate:
-            ob_refined = _hapto_mol_from_xyz_template(candidate_mol, xyz_refined)
-            if ob_refined is not None:
-                refined_trials.append((f"{label}+ob-uff", ob_refined))
+        if not _suppress_ob_uff:
+            try:
+                xyz_refined = _optimize_xyz_openbabel_safe(
+                    xyz_candidate,
+                    mol_template=candidate_mol,
+                    smiles=smiles,
+                    steps=750,
+                    apply_template_constraints=True,
+                )
+            except Exception:
+                xyz_refined = xyz_candidate
+            if xyz_refined and xyz_refined != xyz_candidate:
+                ob_refined = _hapto_mol_from_xyz_template(candidate_mol, xyz_refined)
+                if ob_refined is not None:
+                    refined_trials.append((f"{label}+ob-uff", ob_refined))
 
         for refined_label, refined_mol in refined_trials:
             try:
@@ -19077,6 +19089,24 @@ def _select_best_hapto_candidate(
     pool = accepted if accepted else relaxed
     if not pool:
         return None
+    # Iter-26b (Task #14, hapto): prefer the clean RIGID scaffold when its
+    # topology is OK.  The analytical _build_hapto_scaffold places the eta-ring
+    # + substituents + donors geometrically (forensic: ~0 superpositions), but
+    # it loses the score-based selection to ETKDG/UFF candidates that fold
+    # substituents together.  When DELFIN_HAPTO_PREFER_SCAFFOLD=1, return the RAW
+    # scaffold (NOT a UFF-refined variant) if it is in the topology-OK pool;
+    # otherwise fall through to normal scoring (safe — never picks a
+    # topology-broken scaffold).  Default OFF until CCDC-metric + smoke validate.
+    if os.environ.get("DELFIN_HAPTO_PREFER_SCAFFOLD", "0") == "1" and accepted:
+        scaffold_entries = [it for it in accepted if it[2] == "scaffold"]
+        if scaffold_entries:
+            best_score, best_mol, best_label = scaffold_entries[0]
+            logger.info(
+                "Hapto: preferring raw scaffold candidate (score=%.2f, pool=%d)",
+                best_score, len(pool),
+            )
+            _enforce_metal_topology(best_mol, conf_id=0)
+            return best_mol
     pool.sort(key=lambda item: (item[0], item[2]))
     best_score, best_mol, best_label = pool[0]
     logger.info(
