@@ -176,8 +176,28 @@ def _coerce_task(raw: dict) -> Task:
 
 
 def load_tasks(path: Path | None = None) -> list[Task]:
-    """Load tasks from a YAML file.  Defaults to the packaged suite."""
-    p = path or _DEFAULT_TASKS_PATH
+    """Load tasks from a YAML file.  Defaults to the packaged suite
+    PLUS all auto-generated ``tasks_auto_*.yaml`` siblings.
+
+    The default-path case scans the parent directory of the main
+    ``tasks.yaml`` for any ``tasks_auto_*.yaml`` files and concatenates
+    them — that way auto-generated suites (e.g. fact-verify from the
+    ORCA manual extractor) get picked up automatically without the
+    benchmark CLI needing to know about each one.
+
+    Explicit ``path`` only loads that single file (caller controls).
+    """
+    if path is not None:
+        return _load_one(path)
+    out = _load_one(_DEFAULT_TASKS_PATH)
+    # Sibling auto-generated suites
+    parent = _DEFAULT_TASKS_PATH.parent
+    for sibling in sorted(parent.glob("tasks_auto_*.yaml")):
+        out.extend(_load_one(sibling))
+    return out
+
+
+def _load_one(p: Path) -> list[Task]:
     if not p.exists():
         return []
     if _yaml is None:                                           # pragma: no cover
