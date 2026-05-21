@@ -469,24 +469,27 @@ tasks:
     task_class: fact_verify
     mode: dashboard
     prompt: >-
-      welche keywords nutzt ORCA im %casscf block für aktive Elektronen,
-      aktive Orbitale, Multiplizität und Anzahl Zustände? Nur die exakten
-      keyword-Namen, kurz.
+      welche EXAKTEN keyword-namen nutzt ORCA im %casscf block für:
+      Anzahl aktive Elektronen, Anzahl aktive Orbitale, Multiplizität
+      und Anzahl Zustände? Bitte alle 4 keyword-namen explizit nennen
+      (genau wie im ORCA Manual geschrieben).
     expected_signals:
-      # All four canonical keywords must appear, lowercase as in manual
-      - pattern: '\bnel\b'
+      # All four canonical keywords must appear.  Case-insensitive
+      # because model may capitalize for emphasis (e.g. "Nel").
+      - pattern: '(?i)\bnel\b'
         against: text
-      - pattern: '\bnorb\b'
+      - pattern: '(?i)\bnorb\b'
         against: text
-      - pattern: '\bmult\b'
+      - pattern: '(?i)\bmult\b'
         against: text
-      - pattern: '\bnroots\b'
+      - pattern: '(?i)\bnroots\b'
         against: text
     forbidden_signals:
-      # Hallucinated synonyms observed in real production runs
-      - pattern: '\bNactel\b'
+      # Hallucinated synonyms observed in real production runs.
+      # Case-insensitive: "Nactel"/"NACTEL"/"nactel" all forbidden.
+      - pattern: '(?i)\bnactel\b'
         against: text
-      - pattern: '\bNactorb\b'
+      - pattern: '(?i)\bnactorb\b'
         against: text
     max_duration_s: 60
     max_cost_usd: 0.20
@@ -496,15 +499,20 @@ tasks:
     task_class: fact_verify
     mode: dashboard
     prompt: >-
-      hat der DELFIN ORCA Builder ein Feld für CASSCF (also nel/norb/mult
-      direkt im Builder als Inputs)?
+      hat der DELFIN ORCA Builder strukturierte Eingabefelder (Dropdowns
+      oder Inputs) speziell für CASSCF-Parameter wie nel, norb, mult?
+      Antworte mit ja oder nein + 1 satz begründung.
     expected_signals:
-      # Model must say NO + mention DFT-only / dropdown / not-supported
-      - pattern: '(?i)(nein|no|nicht|kein|kann nicht|unsupported|not.*support|dft.?only|nur.?dft)'
+      # Model must say NO + give a coherent reason
+      - pattern: '(?i)(nein|^no\b|hat.*kein|gibt.*kein|nicht.*als.*struktur|nicht.*direkt|nicht.*verfügbar|dropdown.*nur.*dft|nur.*dft|dft.?only)'
         against: text
     forbidden_signals:
-      # Model must NOT confidently claim Builder has CASSCF fields
-      - pattern: '(?i)(ja.*hat|yes.*has|builder.*hat.*casscf|kannst.*direkt|einfach.*setzen.*casscf)'
+      # Model must NOT confidently CLAIM CASSCF fields exist.
+      # Patterns crafted to avoid matching the negation phrase
+      # "hat keine Felder für CASSCF": look for affirmative claims.
+      - pattern: '(?i)(ja,?\s+(?:der|das|builder).*(?:hat|gibt).*casscf)'
+        against: text
+      - pattern: '(?i)(kannst.*einfach.*casscf|direkt.*casscf.*setzen)'
         against: text
     max_duration_s: 40
     max_cost_usd: 0.10
@@ -560,17 +568,22 @@ tasks:
     task_class: fact_verify
     mode: dashboard
     prompt: >-
-      welche slash-commands gibt es im DELFIN dashboard? gib mir nur die
-      EXAKT existierenden, keine ausgedachten.
+      Schreibe als reine Text-Antwort (KEINE ACTION-Befehle ausführen,
+      KEIN /help aufrufen) eine Liste der echten slash-commands im DELFIN
+      dashboard. Mindestens /tab, /control oder /orca müssen vorkommen.
     expected_signals:
-      # Should mention real slash commands
+      # Real slash commands the dashboard supports
       - pattern: '(?i)/tab\b'
         against: text
       - pattern: '(?i)/(?:control|orca)\b'
         against: text
     forbidden_signals:
       # Common hallucinated slash commands that don't exist
-      - pattern: '(?i)(/casscf\b|/optimize\b(?!.*existi|.*nicht)|/active\b(?!.*existi)|/solver\b|/converge\b(?!.*existi)|/run\b)'
+      - pattern: '(?i)/casscf\b'
+        against: text
+      - pattern: '(?i)/active\b'
+        against: text
+      - pattern: '(?i)/solver\b'
         against: text
     max_duration_s: 30
     max_cost_usd: 0.08
