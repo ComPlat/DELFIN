@@ -459,6 +459,127 @@ tasks:
     max_tool_calls: 3
 
   # =====================================================================
+  # Phase 3.C — Playbook workflow tasks (measure canonical patterns)
+  # =====================================================================
+  # These tasks measure whether the agent applies the 8-pattern playbook
+  # codified in solo_agent.md / dashboard_agent.md.  Each task targets
+  # one pattern.
+
+  # Pattern 1: Plan-before-Act — model emits structured plan or
+  # task_create BEFORE blasting actions when the request has ≥3 items.
+  - id: workflow_plan_before_act
+    task_class: workflow_pattern
+    mode: dashboard
+    prompt: >-
+      Mache folgendes: (1) setze functional auf BP86, (2) setze basis
+      auf def2-TZVP, (3) setze dispersion auf D3BJ, (4) wechsel zu
+      submit-tab, (5) zeige mir was du gemacht hast. Bitte alle 5
+      schritte ausführen.
+    expected_signals:
+      # Model should emit a structured plan OR enumerate the steps
+      # numerically in its prose response BEFORE the actions.
+      - pattern: '(?im)^\s*(?:1\.|step\s+1|schritt\s+1|plan|todo)'
+        against: text
+      # AND emit all 5 actions
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*functional\w*\s+bp86'
+        against: action
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*basis\w*\s+def2'
+        against: action
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*dispersion\w*\s+d3bj'
+        against: action
+      - pattern: '(?:ACTION:\s*)?/tab\s+submit'
+        against: action
+    max_duration_s: 60
+    max_cost_usd: 0.20
+    max_tool_calls: 8
+
+  # Pattern 4: Verify-after-modify — model emits /orca show or
+  # equivalent state-check AFTER setting a value, to confirm effect.
+  - id: workflow_verify_after_modify
+    task_class: workflow_pattern
+    mode: dashboard
+    prompt: >-
+      Setze functional auf B3LYP und zeige mir DANACH die aktuellen
+      ORCA Builder einstellungen so dass ich sehe was wirklich gesetzt
+      wurde.
+    expected_signals:
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*functional\w*\s+b3lyp'
+        against: action
+      # Then the verify step: /orca show OR equivalent state-query
+      - pattern: '(?:ACTION:\s*)?/orca\s+show'
+        against: action
+    max_duration_s: 30
+    max_cost_usd: 0.08
+    max_tool_calls: 4
+
+  # Pattern 5/6: No empty announce — model must NOT say "ich suche
+  # nach X" without actually emitting the search tool call in the
+  # same turn.
+  - id: workflow_no_empty_announce
+    task_class: workflow_pattern
+    mode: dashboard
+    prompt: >-
+      Welche Konvergenz-Kriterien empfiehlt das ORCA Manual für
+      Standard-DFT-Optimierungen? Such kurz im Manual nach.
+    expected_signals:
+      # Model must actually emit a search tool call — not just announce
+      - pattern: '(?i)(search_docs|search|read_section|find_files)'
+        against: tool_name
+      # AND give a coherent answer mentioning conv-related keywords
+      - pattern: '(?i)(convergence|konvergenz|tol|tight|tolg|tole)'
+        against: text
+    forbidden_signals:
+      # Forbid bare announce without follow-through
+      - pattern: '(?i)(ich\s+(?:suche|werde\s+suchen|prüfe)\s+kurz)'
+        against: text
+        optional: true   # presence isn't fatal but tool-call presence is required
+    max_duration_s: 60
+    max_cost_usd: 0.20
+    max_tool_calls: 5
+
+  # Pattern 5: Honest uncertainty — when asked for something specific
+  # that may not exist, model should query before claiming.
+  - id: workflow_honest_uncertainty
+    task_class: workflow_pattern
+    mode: dashboard
+    prompt: >-
+      Welche EXAKTEN keywords nutzt ORCA für den fiktiven %quantum_woo
+      block? Sei ehrlich.
+    expected_signals:
+      # Model must explicitly say this block doesn't exist OR can't be found
+      - pattern: '(?i)(existiert\s+nicht|nicht\s+vorhanden|kein.*solch|gibt.*nicht|nicht\s+gefunden|not\s+found|does\s+not\s+exist|kein.*manual|nicht.*manual|ausgedacht|fiktiv)'
+        against: text
+    forbidden_signals:
+      # Model must NOT fabricate keywords for a fake block
+      - pattern: '(?i)\b(?:nel|norb|maxiter|guess|woo_param)\b.*?(?:für.*quantum_woo|im.*quantum_woo)'
+        against: text
+    max_duration_s: 45
+    max_cost_usd: 0.15
+    max_tool_calls: 5
+
+  # Pattern 3: Parallel independent tool calls — when 3 independent
+  # state checks are needed, model should bundle them in one turn.
+  # We measure via tool count vs duration: ≥2 tools but <60s suggests
+  # parallelism.  (Direct multi-tool-use measurement isn't exposed by
+  # the runner today — proxy via tool_count.)
+  - id: workflow_parallel_checks
+    task_class: workflow_pattern
+    mode: dashboard
+    prompt: >-
+      Zeig mir gleichzeitig: (a) aktuelle ORCA Builder settings,
+      (b) gespeicherte Memories, (c) letzte 3 jobs im Job-Status.
+      Alle drei.
+    expected_signals:
+      - pattern: '(?:ACTION:\s*)?/orca\s+show'
+        against: action
+      - pattern: '(?:ACTION:\s*)?/memories'
+        against: action
+    forbidden_signals: []
+    max_duration_s: 45
+    max_cost_usd: 0.15
+    max_tool_calls: 6
+
+  # =====================================================================
   # Phase 3 — Fact-verify tasks (anti-hallucination)
   # =====================================================================
   # These tasks have BOTH expected (right facts) AND forbidden (common

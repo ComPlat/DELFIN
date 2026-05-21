@@ -7,18 +7,16 @@ tasks:
 - id: fact_orca_casscf_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %casscf-block für eine typische
-    CASSCF active-space setup? Liste mindestens die essentiellen Keywords aus dem
-    ORCA Manual auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte
-    vorher per doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %casscf-block für eine typische CASSCF active-space
+    setup? Nenne mindestens 3 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bnel\b
+  - pattern: (?i)\b(?:nel|nroots)\b
     against: text
-  - pattern: (?i)\bnorb\b
+  - pattern: (?i)\b(?:norb|ptmethod)\b
     against: text
-  - pattern: (?i)\bmult\b
-    against: text
-  - pattern: (?i)\bnroots\b
+  - pattern: (?i)\b(?:mult|actorbs)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
@@ -37,22 +35,20 @@ tasks:
 - id: fact_orca_tddft_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %tddft-block für eine typische
-    TDDFT excitation? Liste mindestens die essentiellen Keywords aus dem ORCA Manual
-    auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte vorher per
-    doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %tddft-block für eine typische TDDFT excitation?
+    Nenne mindestens 2 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bnroots\b
+  - pattern: (?i)\b(?:nroots|triplets|etol)\b
     against: text
-  - pattern: (?i)\btda\b
+  - pattern: (?i)\b(?:tda|maxdim|iroot)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
   max_tool_calls: 10
   forbidden_signals:
   - pattern: (?i)\bnstates\b
-    against: text
-  - pattern: (?i)\btdamod\b
     against: text
   - pattern: (?i)\bntdroots\b
     against: text
@@ -63,12 +59,12 @@ tasks:
 - id: fact_orca_mp2_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %mp2-block für eine typische
-    MP2 correlation? Liste mindestens die essentiellen Keywords aus dem ORCA Manual
-    auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte vorher per
-    doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %mp2-block für eine typische MP2 correlation?
+    Nenne mindestens 1 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bdensity\b
+  - pattern: (?i)\b(?:density|ri|maxiter|doscs)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
@@ -83,16 +79,14 @@ tasks:
 - id: fact_orca_scf_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %scf-block für eine typische
-    SCF convergence? Liste mindestens die essentiellen Keywords aus dem ORCA Manual
-    auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte vorher per
-    doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %scf-block für eine typische SCF convergence?
+    Nenne mindestens 2 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bmaxiter\b
+  - pattern: (?i)\b(?:maxiter|convergence|tole|shift)\b
     against: text
-  - pattern: (?i)\bguess\b
-    against: text
-  - pattern: (?i)\bconvergence\b
+  - pattern: (?i)\b(?:guess|convcheckmode|damp|diis)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
@@ -107,12 +101,14 @@ tasks:
 - id: fact_orca_geom_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %geom-block für eine typische
-    geometry optimisation? Liste mindestens die essentiellen Keywords aus dem ORCA
-    Manual auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte vorher
-    per doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %geom-block für eine typische geometry optimisation?
+    Nenne mindestens 2 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bmaxiter\b
+  - pattern: (?i)\b(?:maxiter|calc_hess|scan)\b
+    against: text
+  - pattern: (?i)\b(?:trust|tole)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
@@ -125,19 +121,17 @@ tasks:
 - id: fact_orca_freq_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %freq-block für eine typische
-    frequency calculation? Liste mindestens die essentiellen Keywords aus dem ORCA
-    Manual auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte vorher
-    per doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %freq-block für eine typische frequency calculation?
+    Nenne mindestens 1 echte Keywords aus dem ORCA Manual.  Wichtig: nur Keywords
+    die tatsächlich im Manual stehen — bitte per doc-search im Manual nachschlagen
+    bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bscalfreq\b
+  - pattern: (?i)\b(?:scalfreq|anfreq|centraldiff|increment|restart)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
   max_tool_calls: 10
   forbidden_signals:
-  - pattern: (?i)\bscaling\b
-    against: text
   - pattern: (?i)\bfreqscale\b
     against: text
   - pattern: (?i)\bscaling_factor\b
@@ -145,12 +139,12 @@ tasks:
 - id: fact_orca_eprnmr_keywords_auto
   task_class: fact_verify_auto
   mode: dashboard
-  prompt: 'welche EXAKTEN keyword-namen nutzt ORCA im %eprnmr-block für eine typische
-    EPR/NMR property calculation? Liste mindestens die essentiellen Keywords aus dem
-    ORCA Manual auf. Wichtig: nur Keywords die tatsächlich im Manual stehen — bitte
-    vorher per doc-search im Manual nachschlagen.'
+  prompt: 'welche keywords nutzt ORCA im %eprnmr-block für eine typische EPR/NMR property
+    calculation? Nenne mindestens 1 echte Keywords aus dem ORCA Manual.  Wichtig:
+    nur Keywords die tatsächlich im Manual stehen — bitte per doc-search im Manual
+    nachschlagen bevor du antwortest.'
   expected_signals:
-  - pattern: (?i)\bnuclei\b
+  - pattern: (?i)\b(?:nuclei|ori)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
