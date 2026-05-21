@@ -83,9 +83,12 @@ _PROGRAM_BLOCK_TESTS: dict[str, dict[str, dict[str, Any]]] = {
         "min_required": 2,
     },
     "geom": {
-        "candidate_pool": ["maxiter", "trust", "hess_filename",
-                           "calc_hess", "tols", "tole", "tolg",
-                           "tolx", "scan"],
+        # All confirmed-real %geom keywords per the extracted manual
+        # namespace.  Production models predominantly mention coordsys,
+        # MaxIter, redundant, calc_hess — pool curated to match.
+        "candidate_pool": ["maxiter", "coordsys", "redundant",
+                           "calc_hess", "trust", "tole",
+                           "tolmaxg", "scan"],
         "forbid":   ["maxiterations", "max_iter_count"],
         "label": "geometry optimisation",
         "min_required": 2,
