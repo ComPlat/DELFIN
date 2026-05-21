@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Literal, Optional, Sequence, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, PoolJob, get_current_job_id
@@ -81,10 +82,28 @@ def _derive_charge_from_smiles(smiles: str) -> int:
             parser_params = Chem.SmilesParserParams()
             parser_params.sanitize = False
             parser_params.removeHs = False
-            parser_params.strictParsing = False
+            # `strictParsing` was renamed/removed in newer RDKit; set it only
+            # when available so we stay compatible across RDKit versions.
+            if hasattr(parser_params, "strictParsing"):
+                parser_params.strictParsing = False
             mol = Chem.MolFromSmiles(smiles, parser_params)
             if mol is not None:
-                return int(sum(atom.GetFormalCharge() for atom in mol.GetAtoms()))
+                contributions = [
+                    (atom.GetSymbol(), int(atom.GetFormalCharge()))
+                    for atom in mol.GetAtoms()
+                    if int(atom.GetFormalCharge()) != 0
+                ]
+                total = int(sum(atom.GetFormalCharge() for atom in mol.GetAtoms()))
+                if contributions:
+                    summary = ", ".join(
+                        f"{sym}{'+' if q > 0 else ''}{q}" for sym, q in contributions
+                    )
+                    logger.info(
+                        "SMILES formal charges: %s -> total %+d", summary, total
+                    )
+                else:
+                    logger.info("SMILES formal charges: all zero -> total 0")
+                return total
         except Exception as exc:  # noqa: BLE001
             logger.debug("RDKit formal-charge extraction failed, falling back to token parser: %s", exc)
 
@@ -135,6 +154,74 @@ def _read_first_smiles_line(input_path: Path) -> str:
     raise ValueError(f"No SMILES line found in {input_path}")
 
 
+def _read_smiles_lines(
+    input_path: Path,
+    *,
+    smiles_column: int = 0,
+    name_column: Optional[int] = None,
+) -> List[Tuple[str, Optional[str]]]:
+    """Read multiple SMILES entries from a .txt or .csv file.
+
+    Returns a list of ``(smiles, name_or_None)`` tuples.
+
+    - ``.txt`` / plain: one SMILES per line; ``#`` or ``*`` comment lines are
+      skipped. Optional ``smiles<TAB>name`` or ``smiles name`` splits respected.
+    - ``.csv``: first row may be a header with ``smiles`` and optional ``name``
+      columns; otherwise column 0 is SMILES and column 1 is name. A charge
+      column, if present, is **ignored** — GUPPY always derives charge from
+      the SMILES itself.
+    """
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    entries: List[Tuple[str, Optional[str]]] = []
+
+    if input_path.suffix.lower() == ".csv":
+        import csv as _csv
+        with input_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            reader = _csv.reader(handle)
+            rows = [r for r in reader if r and any(cell.strip() for cell in r)]
+        if not rows:
+            raise ValueError(f"No SMILES rows found in {input_path}")
+
+        smi_col = smiles_column
+        nam_col = name_column
+        header = [cell.strip().lower() for cell in rows[0]]
+        if any(h in header for h in ("smiles", "name")):
+            if "smiles" in header:
+                smi_col = header.index("smiles")
+            if nam_col is None and "name" in header:
+                nam_col = header.index("name")
+            rows = rows[1:]
+
+        for row in rows:
+            if smi_col >= len(row):
+                continue
+            smi = row[smi_col].strip()
+            if not smi or smi.startswith("#") or smi.startswith("*"):
+                continue
+            name: Optional[str] = None
+            if nam_col is not None and nam_col < len(row):
+                name_candidate = row[nam_col].strip()
+                if name_candidate:
+                    name = name_candidate
+            entries.append((smi, name))
+    else:
+        for line in input_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            # Optional 2nd whitespace-separated token = name
+            parts = stripped.split(None, 1)
+            smi = parts[0].strip()
+            name = parts[1].strip() if len(parts) == 2 else None
+            entries.append((smi, name))
+
+    if not entries:
+        raise ValueError(f"No SMILES entries parsed from {input_path}")
+    return entries
+
+
 def _convert_smiles_with_seed(smiles: str, seed: int) -> Tuple[Optional[str], Optional[str]]:
     """Convert SMILES to XYZ coordinates (DELFIN coordinate format, no header).
 
@@ -164,35 +251,58 @@ def _convert_smiles_with_seed(smiles: str, seed: int) -> Tuple[Optional[str], Op
     return smiles_to_xyz(smiles)
 
 
+StartStrategy = Literal["isomers", "isomers+random", "full"]
+_ALLOWED_START_STRATEGIES: Tuple[str, ...] = ("isomers", "isomers+random", "full")
+
+
 def _collect_start_geometries(
     smiles: str,
     *,
     runs: int,
     seed: int,
     prephase_parallel_jobs: int = 1,
+    start_strategy: StartStrategy = "isomers",
+    max_isomers: int = 100,
 ) -> List[StartGeometry]:
-    """Collect start geometries from conversion (isomers + random fill)."""
+    """Collect start geometries from SMILES conversion.
+
+    Strategies:
+    - ``isomers`` (default): deterministic isomer enumeration only. Safety net:
+      ``quick`` + up to 3 seeded conformers if the enumerator returns nothing.
+    - ``isomers+random``: isomers first, then seeded random fill up to ``runs``.
+    - ``full``: legacy behavior — quick + isomers + random fill up to ``runs``.
+    """
+    if start_strategy not in _ALLOWED_START_STRATEGIES:
+        raise ValueError(
+            f"Unknown start_strategy {start_strategy!r}; "
+            f"allowed: {_ALLOWED_START_STRATEGIES}"
+        )
+
     target_confs = max(100, runs * 10)
-    max_isomers = max(1000, runs)
+    iso_cap = int(max_isomers) if max_isomers and int(max_isomers) > 0 else 100
     starts: List[StartGeometry] = []
     next_idx = 1
 
-    # Quick single-conformer conversion as first start geometry.
-    try:
-        quick_xyz, quick_err = smiles_to_xyz_quick(smiles)
-        if quick_xyz and not quick_err:
-            coords_lines = [ln.rstrip() for ln in quick_xyz.splitlines() if ln.strip()]
-            if coords_lines:
-                starts.append((next_idx, coords_lines, "quick", "quick"))
-                next_idx += 1
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Quick conversion failed: %s", exc)
+    include_quick_upfront = start_strategy in ("isomers+random", "full")
 
+    # Quick single-conformer conversion as first start geometry (legacy paths).
+    if include_quick_upfront:
+        try:
+            quick_xyz, quick_err = smiles_to_xyz_quick(smiles)
+            if quick_xyz and not quick_err:
+                coords_lines = [ln.rstrip() for ln in quick_xyz.splitlines() if ln.strip()]
+                if coords_lines:
+                    starts.append((next_idx, coords_lines, "quick", "quick"))
+                    next_idx += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Quick conversion failed: %s", exc)
+
+    iso_count_before = len(starts)
     try:
         iso_results, iso_error = smiles_to_xyz_isomers(
             smiles,
             num_confs=target_confs,
-            max_isomers=max_isomers,
+            max_isomers=iso_cap,
             collapse_label_variants=False,
         )
         if iso_results and not iso_error:
@@ -202,10 +312,60 @@ def _collect_start_geometries(
                     continue
                 starts.append((next_idx, coords_lines, label or "", "isomer"))
                 next_idx += 1
+            if len(iso_results) >= iso_cap:
+                logger.warning(
+                    "Isomer enumeration hit cap (%d); raise --max-isomers if winner may be missed.",
+                    iso_cap,
+                )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Isomer-based conversion failed, continuing with seeded random fill: %s", exc)
+        logger.warning("Isomer-based conversion failed: %s", exc)
 
-    # Fill with seeded random structures up to requested minimum count.
+    iso_added = len(starts) - iso_count_before
+    logger.info(
+        "Start-strategy=%s: %d isomer geometries collected (max_isomers=%d).",
+        start_strategy,
+        iso_added,
+        iso_cap,
+    )
+
+    if start_strategy == "isomers":
+        # Safety net: if isomer enumeration produced (almost) nothing, fall back
+        # to quick + up to 3 seeded conformers so XTB has something to chew on.
+        if len(starts) == 0:
+            try:
+                quick_xyz, quick_err = smiles_to_xyz_quick(smiles)
+                if quick_xyz and not quick_err:
+                    coords_lines = [ln.rstrip() for ln in quick_xyz.splitlines() if ln.strip()]
+                    if coords_lines:
+                        starts.append((next_idx, coords_lines, "quick", "quick"))
+                        next_idx += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Safety-net quick conversion failed: %s", exc)
+
+        if len(starts) < 3:
+            needed = 3 - len(starts)
+            logger.info(
+                "Isomer enumeration returned few starts (%d); adding %d seeded conformer(s) as safety net.",
+                len(starts),
+                needed,
+            )
+            safety_idx = 1
+            for attempt in range(max(needed * 10, 10)):
+                if len(starts) >= 3:
+                    break
+                run_seed = seed + attempt * 1009
+                xyz_text, _error = _convert_smiles_with_seed(smiles, run_seed)
+                if not xyz_text:
+                    continue
+                coords_lines = [ln.rstrip() for ln in xyz_text.splitlines() if ln.strip()]
+                if not coords_lines:
+                    continue
+                starts.append((next_idx, coords_lines, f"safety-{safety_idx:02d}", "safety"))
+                next_idx += 1
+                safety_idx += 1
+        return starts
+
+    # Legacy / opt-in: seeded random fill up to `runs`.
     max_attempts = max(runs * 10, 200)
     random_needed = max(0, runs - len(starts))
     random_idx = 1
@@ -392,6 +552,201 @@ def _read_xyz_coordinates(xyz_path: Path) -> Tuple[int, List[str]]:
         raise ValueError(f"Invalid XYZ content in {xyz_path}")
 
     return natoms, coords
+
+
+def _extract_heavy_atom_coords(coords_lines: Sequence[str]) -> List[Tuple[str, float, float, float]]:
+    """Return [(symbol, x, y, z), ...] for heavy atoms from DELFIN coord lines."""
+    heavy: List[Tuple[str, float, float, float]] = []
+    for line in coords_lines:
+        parts = line.strip().split()
+        if len(parts) < 4:
+            continue
+        sym = parts[0]
+        if sym == "H" or sym == "h":
+            continue
+        try:
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
+        except ValueError:
+            continue
+        heavy.append((sym, x, y, z))
+    return heavy
+
+
+def _sorted_pair_distances(heavy: Sequence[Tuple[str, float, float, float]]) -> List[float]:
+    """Sorted pairwise heavy-atom distances — translation/rotation invariant fingerprint."""
+    n = len(heavy)
+    if n < 2:
+        return []
+    dists: List[float] = []
+    for i in range(n):
+        _, xi, yi, zi = heavy[i]
+        for j in range(i + 1, n):
+            _, xj, yj, zj = heavy[j]
+            dx = xi - xj
+            dy = yi - yj
+            dz = zi - zj
+            dists.append(math.sqrt(dx * dx + dy * dy + dz * dz))
+    dists.sort()
+    return dists
+
+
+def _distance_vector_rmsd(fp_a: Sequence[float], fp_b: Sequence[float]) -> float:
+    """RMSD of two sorted pairwise-distance vectors; ``inf`` if lengths differ."""
+    if len(fp_a) != len(fp_b) or not fp_a:
+        return float("inf")
+    sq = 0.0
+    for a, b in zip(fp_a, fp_b):
+        d = a - b
+        sq += d * d
+    return math.sqrt(sq / len(fp_a))
+
+
+def _constitution_fingerprint_from_coords(
+    mol_template,
+    coords_lines: Sequence[str],
+) -> Optional[tuple]:
+    """Build a coordination-fingerprint for an XTB-optimized geometry.
+
+    Copies ``mol_template`` (SMILES-based connectivity), attaches a conformer
+    whose atom positions come from ``coords_lines`` (XTB output), then delegates
+    to ``_compute_coordination_fingerprint``. Returns ``None`` if the mol cannot
+    be reconstructed (e.g. atom-count mismatch) — caller should fall back to
+    geometric RMSD.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None:
+        return None
+    try:
+        from rdkit import Chem as _Chem
+        from rdkit.Geometry import Point3D
+        from delfin.smiles_converter import (
+            _compute_coordination_fingerprint,
+            _donor_type_map,
+        )
+
+        natoms = mol_template.GetNumAtoms()
+        # Parse coord lines; require same atom count as template.
+        parsed: List[Tuple[str, float, float, float]] = []
+        for line in coords_lines[:natoms]:
+            parts = line.strip().split()
+            if len(parts) < 4:
+                continue
+            try:
+                parsed.append(
+                    (parts[0], float(parts[1]), float(parts[2]), float(parts[3]))
+                )
+            except ValueError:
+                continue
+        if len(parsed) != natoms:
+            return None
+
+        # Sanity: heavy-atom symbols should match between template and XYZ.
+        for idx, (sym, _, _, _) in enumerate(parsed):
+            tpl_sym = mol_template.GetAtomWithIdx(idx).GetSymbol()
+            if tpl_sym != sym and tpl_sym.upper() != sym.upper():
+                return None
+
+        mol = _Chem.RWMol(mol_template)
+        conf = _Chem.Conformer(natoms)
+        for idx, (_sym, x, y, z) in enumerate(parsed):
+            conf.SetAtomPosition(idx, Point3D(x, y, z))
+        cid = mol.AddConformer(conf, assignId=True)
+        dtype_map = _donor_type_map(mol)
+        return _compute_coordination_fingerprint(mol, cid, dtype_map=dtype_map)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Constitution fingerprint failed: %s", exc)
+        return None
+
+
+def _filter_xtb_candidates(
+    results: List["RunResult"],
+    *,
+    rmsd_cutoff: float,
+    energy_window_eh: float,
+    mol_template=None,
+    constitution_dedup: bool = True,
+) -> List["RunResult"]:
+    """Prune XTB candidates before GOAT.
+
+    Strategy:
+    1. Drop candidates above ``min_energy + energy_window_eh``.
+    2. If ``constitution_dedup`` and ``mol_template`` available: group by
+       coordination fingerprint (Trans pairs + cis/trans pattern + Morgan-
+       enriched donor types). Keep only the lowest-energy representative of
+       each fingerprint — conformers of the same constitution collapse.
+    3. For candidates where the fingerprint cannot be computed (no metal,
+       mol reconstruction failed, RDKit missing): fall back to sorted-pair-
+       distance RMSD < ``rmsd_cutoff`` (geometric duplicates only).
+
+    Rationale: GOAT handles the conformational search itself, so feeding two
+    conformers of the same constitution is wasted compute (both converge to
+    the same minimum). Constitution-level dedup keeps exactly one entry per
+    coordination isomer.
+
+    Assumes ``results`` already sorted by ascending energy.
+    """
+    if not results:
+        return results
+    if energy_window_eh <= 0 and rmsd_cutoff <= 0 and not constitution_dedup:
+        return list(results)
+
+    min_energy = results[0][0]
+    kept: List["RunResult"] = []
+    seen_fingerprints: Dict[tuple, int] = {}  # fp -> idx in kept
+    fallback_fps: List[List[float]] = []
+    dropped_energy = 0
+    dropped_constitution = 0
+    dropped_rmsd = 0
+
+    for item in results:
+        energy, _natoms, coords, _run_idx, _label, _source = item
+        if energy_window_eh > 0 and (energy - min_energy) > energy_window_eh:
+            dropped_energy += 1
+            continue
+
+        constitution_fp: Optional[tuple] = None
+        if constitution_dedup:
+            constitution_fp = _constitution_fingerprint_from_coords(
+                mol_template, coords
+            )
+
+        if constitution_fp is not None:
+            if constitution_fp in seen_fingerprints:
+                dropped_constitution += 1
+                continue
+            seen_fingerprints[constitution_fp] = len(kept)
+            kept.append(item)
+            fallback_fps.append([])  # placeholder
+            continue
+
+        # Fallback: geometric RMSD against previously-kept structures that
+        # also lacked a constitution fingerprint.
+        geom_fp = _sorted_pair_distances(_extract_heavy_atom_coords(coords))
+        is_dup = False
+        if rmsd_cutoff > 0 and geom_fp:
+            for prev_fp in fallback_fps:
+                if prev_fp and _distance_vector_rmsd(geom_fp, prev_fp) < rmsd_cutoff:
+                    is_dup = True
+                    break
+        if is_dup:
+            dropped_rmsd += 1
+            continue
+        kept.append(item)
+        fallback_fps.append(geom_fp)
+
+    logger.info(
+        "Dedup: %d -> %d candidates (dropped: %d energy-window, "
+        "%d same-constitution, %d geometric RMSD<%.3f A; unique constitutions: %d).",
+        len(results),
+        len(kept),
+        dropped_energy,
+        dropped_constitution,
+        dropped_rmsd,
+        rmsd_cutoff,
+        len(seen_fingerprints),
+    )
+    return kept
 
 
 def _write_ranked_trajectory(
@@ -768,6 +1123,10 @@ def run_sampling(
     allow_partial: bool,
     goat_topk: int = 0,
     goat_parallel_jobs: Optional[int] = None,
+    start_strategy: StartStrategy = "isomers",
+    max_isomers: int = 100,
+    rmsd_cutoff: float = 0.3,
+    energy_window_kcal: float = 25.0,
 ) -> int:
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
@@ -786,6 +1145,8 @@ def run_sampling(
         runs=runs,
         seed=seed,
         prephase_parallel_jobs=prephase_parallel_jobs,
+        start_strategy=start_strategy,
+        max_isomers=max_isomers,
     )
     if not start_geometries:
         logger.error("SMILES conversion produced no usable start geometries.")
@@ -941,6 +1302,17 @@ def run_sampling(
     _write_best_structure(best_pre_goat_path, results[0])
     _write_ranked_trajectory(output_file, results)
 
+    # Dedup + energy window before GOAT refinement to avoid wasted cycles on
+    # near-identical or high-energy candidates.
+    energy_window_eh = max(0.0, float(energy_window_kcal)) / 627.509474
+    filtered_results = _filter_xtb_candidates(
+        results,
+        rmsd_cutoff=max(0.0, float(rmsd_cutoff)),
+        energy_window_eh=energy_window_eh,
+        mol_template=mol_template,
+        constitution_dedup=True,
+    )
+
     winner_result = results[0]
     winner_source = "xtb"
     goat_results: List[RunResult] = []
@@ -949,7 +1321,7 @@ def run_sampling(
     if goat_topk_resolved > 0:
         goat_parallel = int(goat_parallel_jobs) if goat_parallel_jobs is not None else parallel_jobs
         goat_results, goat_failed_runs = _run_topk_goat_refinement(
-            ranked_results=results,
+            ranked_results=filtered_results,
             resolved_charge=resolved_charge,
             multiplicity=multiplicity,
             pal=pal,
@@ -996,8 +1368,10 @@ def run_sampling(
                     "label": item[4],
                     "source": item[5],
                 }
-                for idx, item in enumerate(results[: max(1, min(goat_topk_resolved, len(results)))], start=1)
+                for idx, item in enumerate(filtered_results[: max(1, min(goat_topk_resolved, len(filtered_results)))], start=1)
             ],
+            "xtb_candidates_total": len(results),
+            "xtb_candidates_after_dedup": len(filtered_results),
             "goat_candidates": [
                 {
                     "rank": idx,
@@ -1014,6 +1388,48 @@ def run_sampling(
         logger.info("Wrote GOAT summary: %s", summary_path)
 
     _write_best_structure(best_structure_path, winner_result)
+
+    # Publication-grade run summary (always written, independent of GOAT).
+    run_summary_path = workdir / "guppy_run_summary.json"
+    run_summary = {
+        "smiles": smiles,
+        "resolved_charge": resolved_charge,
+        "start_strategy": start_strategy,
+        "max_isomers": max_isomers,
+        "seed": seed,
+        "method": method,
+        "multiplicity": multiplicity,
+        "rmsd_cutoff": rmsd_cutoff,
+        "energy_window_kcal": energy_window_kcal,
+        "runs_requested": runs,
+        "start_geometries_found": total_jobs,
+        "xtb_successful": len(results),
+        "xtb_failed_runs": failed_runs,
+        "xtb_candidates_after_dedup": len(filtered_results),
+        "winner_source": winner_source,
+        "winner": {
+            "run_idx": winner_result[3],
+            "energy_eh": winner_result[0],
+            "label": winner_result[4],
+            "source": winner_result[5],
+        },
+        "ranking": [
+            {
+                "rank": idx,
+                "run_idx": item[3],
+                "energy_eh": item[0],
+                "label": item[4],
+                "source": item[5],
+            }
+            for idx, item in enumerate(results, start=1)
+        ],
+    }
+    try:
+        run_summary_path.write_text(json.dumps(run_summary, indent=2) + "\n", encoding="utf-8")
+        logger.info("Wrote run summary: %s", run_summary_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not write run summary: %s", exc)
+
     isomer_results = [item for item in results if item[5] == "isomer"]
     random_results = [item for item in results if item[5] == "random"]
     if isomer_results:
@@ -1100,6 +1516,40 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return success even if some of the runs fail.",
     )
+    parser.add_argument(
+        "--start-strategy",
+        choices=list(_ALLOWED_START_STRATEGIES),
+        default=os.environ.get("GUPPY_START_STRATEGY", "isomers"),
+        help=(
+            "Start-geometry strategy: 'isomers' (default, deterministic isomer "
+            "enumeration + safety net), 'isomers+random' (isomers + seeded random "
+            "fill up to --runs), 'full' (legacy: quick + isomers + random)."
+        ),
+    )
+    parser.add_argument(
+        "--max-isomers",
+        type=int,
+        default=int(os.environ.get("GUPPY_MAX_ISOMERS", "100")),
+        help="Cap on isomer enumerator output (default: 100).",
+    )
+    parser.add_argument(
+        "--rmsd-cutoff",
+        type=float,
+        default=float(os.environ.get("GUPPY_RMSD_CUTOFF", "0.3")),
+        help=(
+            "Heavy-atom sorted-distance RMSD cutoff (Angstrom) for collapsing "
+            "duplicate XTB candidates before GOAT (default: 0.3, set 0 to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--energy-window-kcal",
+        type=float,
+        default=float(os.environ.get("GUPPY_ENERGY_WINDOW_KCAL", "25.0")),
+        help=(
+            "Drop XTB candidates above min_energy + this window (kcal/mol) "
+            "before GOAT (default: 25.0, set 0 to disable)."
+        ),
+    )
     return parser
 
 
@@ -1119,6 +1569,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--goat-topk must be >= 0")
     if args.goat_parallel_jobs <= 0:
         parser.error("--goat-parallel-jobs must be > 0")
+    if args.max_isomers <= 0:
+        parser.error("--max-isomers must be > 0")
+    if args.rmsd_cutoff < 0:
+        parser.error("--rmsd-cutoff must be >= 0")
+    if args.energy_window_kcal < 0:
+        parser.error("--energy-window-kcal must be >= 0")
 
     return run_sampling(
         input_file=Path(args.input_file),
@@ -1134,6 +1590,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         allow_partial=args.allow_partial,
         goat_topk=args.goat_topk,
         goat_parallel_jobs=args.goat_parallel_jobs,
+        start_strategy=args.start_strategy,
+        max_isomers=args.max_isomers,
+        rmsd_cutoff=args.rmsd_cutoff,
+        energy_window_kcal=args.energy_window_kcal,
     )
 
 

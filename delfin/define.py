@@ -189,6 +189,10 @@ GUPPY_RUNS=20
 GUPPY_GOAT=0
 GUPPY_PARALLEL_JOBS=4
 GUPPY_SEED=31
+GUPPY_START_STRATEGY=isomers
+GUPPY_MAX_ISOMERS=100
+GUPPY_RMSD_CUTOFF=0.3
+GUPPY_ENERGY_WINDOW_KCAL=25.0
 ------------------------------------
 Automatic Error Recovery & Retry:
 enable_auto_recovery=yes

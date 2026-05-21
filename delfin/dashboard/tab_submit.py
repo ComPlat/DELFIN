@@ -2,6 +2,7 @@
 
 import html
 import json
+import os
 import re
 import shlex
 import shutil
@@ -285,6 +286,58 @@ def create_tab(ctx):
         description='CONVERT SMILES + UFF', button_style='info',
         layout=widgets.Layout(width='185px'),
     )
+    convert_quality_dropdown = widgets.Dropdown(
+        options=[
+            ('fast (12 seeds)', 'fast'),
+            ('normal (20 seeds)', 'normal'),
+            ('max (40 seeds)', 'max'),
+            ('extreme (60 seeds)', 'extreme'),
+            ('custom (slider)', 'custom'),
+        ],
+        value='normal',
+        description='Quality:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='230px'),
+        tooltip=(
+            'Trade-off between latency and isomer coverage.  '
+            'fast = seconds.  extreme = deep search (~minutes on '
+            'bimetallic systems).  custom = use the seeds slider.'
+        ),
+    )
+    convert_seeds_slider = widgets.IntSlider(
+        value=60,
+        min=10,
+        max=1000,
+        step=10,
+        description='Seeds:',
+        continuous_update=False,
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='300px', display='none'),
+        tooltip=(
+            'Number of ETKDG seeds.  Only used when Quality is '
+            "'custom'.  Larger values widen the conformer search "
+            'space at the cost of runtime (~linear).'
+        ),
+    )
+    convert_n_metal_smart_toggle = widgets.Checkbox(
+        value=True,
+        description='Smart N-metal (truncate k>=4)',
+        indent=False,
+        tooltip=(
+            'When enabled (default), N>=4 metal clusters use top-K '
+            "per-metal geometries instead of the full 4^N Cartesian "
+            'product.  K=2 for N=4, K=1 for N>=5.  Disable for full '
+            'combinatorial enumeration (slow on 5+ metals).'
+        ),
+        layout=widgets.Layout(width='330px'),
+    )
+
+    def _toggle_seeds_slider(change):
+        convert_seeds_slider.layout.display = (
+            '' if change['new'] == 'custom' else 'none'
+        )
+
+    convert_quality_dropdown.observe(_toggle_seeds_slider, names='value')
 
     build_complex_button = widgets.Button(
         description='BUILD COMPLEX', button_style='warning',
@@ -827,11 +880,24 @@ def create_tab(ctx):
         state['isomer_index'] = index
         xyz_string, num_atoms, label = isomers[index]
 
-        # Update navigation label and visibility
+        # Update navigation label and visibility.
+        # Highlight chemically-central labels:
+        #   - trans- → gold (trans-effect coordination, cf. 4d8ceb4)
+        #   - η     → teal (first-class hapto coordination, cf. fa50abe)
+        #   - pucker- → grey/italic (chelate-ring conformer variant)
         if len(isomers) > 1:
             display_label = label or f'Isomer {index + 1}'
+            _lbl_lower = (display_label or '').lower()
+            if _lbl_lower.startswith('trans-') or 'trans-' in _lbl_lower[:8]:
+                _style = 'font-size:13px; color:#d4a017; font-weight:bold;'
+            elif 'η' in display_label:
+                _style = 'font-size:13px; color:#0e8074; font-weight:bold;'
+            elif _lbl_lower.startswith('pucker-'):
+                _style = 'font-size:13px; color:#666; font-style:italic;'
+            else:
+                _style = 'font-size:13px;'
             isomer_label.value = (
-                f'<span style="font-size:13px;">'
+                f'<span style="{_style}">'
                 f'{display_label} ({index + 1}/{len(isomers)})</span>'
             )
             isomer_nav_row.layout.display = ''
@@ -901,12 +967,34 @@ def create_tab(ctx):
                 else:
                     # Interactive metal-complex conversion should prioritize
                     # isomer diversity over strict reproducibility.
+                    # Deterministic for non-hapto, non-deterministic for
+                    # hapto (hapto builder needs OB conformer diversity).
+                    from delfin.smiles_converter import _probe_hapto_groups_from_smiles
+                    _has_hapto = bool(_probe_hapto_groups_from_smiles(cleaned_data))
+                    # Dashboard lets the user pick the quality profile
+                    # via the "Quality" dropdown; choosing ``custom``
+                    # forwards the explicit seed slider value which
+                    # overrides the profile default (range 10..1000).
+                    # The pipeline honours
+                    # ``DELFIN_MAX_PROCESS_WORKERS`` / ``_THREAD_WORKERS``
+                    # (default 64) so CPU / RAM pressure stays bounded.
+                    _quality = convert_quality_dropdown.value or "extreme"
+                    _seeds_override = None
+                    if _quality == "custom":
+                        _quality = "extreme"  # use extreme ranks/topk
+                        try:
+                            _seeds_override = int(convert_seeds_slider.value)
+                        except Exception:
+                            _seeds_override = None
                     isomers, error = smiles_to_xyz_isomers(
                         cleaned_data,
                         apply_uff=apply_uff,
-                        collapse_label_variants=False,
+                        collapse_label_variants=True,
                         include_binding_mode_isomers=True,
-                        deterministic=not contains_metal(cleaned_data),
+                        deterministic=not _has_hapto,
+                        quality_mode=_quality,
+                        seeds_override=_seeds_override,
+                        n_metal_smart=bool(convert_n_metal_smart_toggle.value),
                     )
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
@@ -1274,6 +1362,31 @@ def create_tab(ctx):
             guppy_runs = 20
             guppy_parallel_jobs = 4
             guppy_goat_parallel_jobs = guppy_parallel_jobs
+            # Defaults for the new (M1/M2) GUPPY parameters; overridden below
+            # if CONTROL.txt is present and provides them via the validator.
+            guppy_start_strategy = 'isomers'
+            guppy_max_isomers = 100
+            guppy_rmsd_cutoff = 0.3
+            guppy_energy_window_kcal = 25.0
+            try:
+                from delfin.config_manager import DelfinConfig as _DelfinConfig
+                if os.path.isfile('CONTROL.txt'):
+                    _cfg = _DelfinConfig.from_control_file('CONTROL.txt')
+                    guppy_runs = int(getattr(_cfg, 'GUPPY_RUNS', guppy_runs))
+                    guppy_parallel_jobs = int(getattr(_cfg, 'GUPPY_PARALLEL_JOBS', guppy_parallel_jobs))
+                    guppy_goat_parallel_jobs = guppy_parallel_jobs
+                    guppy_start_strategy = str(
+                        getattr(_cfg, 'GUPPY_START_STRATEGY', guppy_start_strategy)
+                    )
+                    guppy_max_isomers = int(getattr(_cfg, 'GUPPY_MAX_ISOMERS', guppy_max_isomers))
+                    guppy_rmsd_cutoff = float(
+                        getattr(_cfg, 'GUPPY_RMSD_CUTOFF', guppy_rmsd_cutoff)
+                    )
+                    guppy_energy_window_kcal = float(
+                        getattr(_cfg, 'GUPPY_ENERGY_WINDOW_KCAL', guppy_energy_window_kcal)
+                    )
+            except Exception as _exc:  # noqa: BLE001
+                print(f'Note: could not read GUPPY settings from CONTROL.txt ({_exc}); using defaults.')
             guppy_cli_command = shlex.join([
                 'python',
                 '-m',
@@ -1291,6 +1404,14 @@ def create_tab(ctx):
                 str(goat_topk_value),
                 '--goat-parallel-jobs',
                 str(guppy_goat_parallel_jobs),
+                '--start-strategy',
+                guppy_start_strategy,
+                '--max-isomers',
+                str(guppy_max_isomers),
+                '--rmsd-cutoff',
+                str(guppy_rmsd_cutoff),
+                '--energy-window-kcal',
+                str(guppy_energy_window_kcal),
                 '--output',
                 'GUPPY_try.xyz',
             ])
@@ -1301,6 +1422,10 @@ def create_tab(ctx):
                 'GUPPY_PARALLEL_JOBS': str(guppy_parallel_jobs),
                 'GUPPY_GOAT_TOPK': str(goat_topk_value),
                 'GUPPY_GOAT_PARALLEL_JOBS': str(guppy_goat_parallel_jobs),
+                'GUPPY_START_STRATEGY': guppy_start_strategy,
+                'GUPPY_MAX_ISOMERS': str(guppy_max_isomers),
+                'GUPPY_RMSD_CUTOFF': str(guppy_rmsd_cutoff),
+                'GUPPY_ENERGY_WINDOW_KCAL': str(guppy_energy_window_kcal),
             }
 
             raw_input = coords_widget.value.strip()
@@ -2653,7 +2778,9 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
-                      convert_smiles_quick_button],
+                      convert_smiles_quick_button, convert_quality_dropdown],
+                     layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        widgets.HBox([convert_seeds_slider, convert_n_metal_smart_toggle],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
