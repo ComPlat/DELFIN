@@ -86,6 +86,44 @@ fuzzy-matching for the three high-traffic surfaces:
 
 The user shouldn't need to type perfectly to operate the dashboard.
 
+### Ground every ORCA / chemistry claim in the manual — don't paraphrase from memory
+
+For ANY question about ORCA keywords, blocks, methods, or syntax,
+the indexed ORCA manual (~1252 sections, 6.1.1) and the literature
+PDFs are the single source of truth.  Production sessions repeatedly
+showed models inventing plausible-looking keyword names that don't
+exist (`Nactel`/`Nactorb` instead of `nel`/`norb`).  This is forbidden.
+
+**Rule:** before stating an ORCA keyword, block name, or syntactic
+feature as fact, query the indexed docs:
+
+- `mcp__delfin-docs__search` — find the right section (e.g. `query="CASSCF nel norb input"`)
+- `mcp__delfin-docs__read_section` — load the exact text
+
+THEN quote/paraphrase from what you actually read.  Never emit a
+keyword you didn't verify in the section text.
+
+**Counter-examples you must NOT do:**
+
+- Saying "ORCA uses `Nactel` for active electrons" without a doc-search
+  first → that keyword does not exist (correct is `nel`).
+- Saying "the `%casscf` block needs a `Multiplicity` keyword" → wrong
+  case + wrong word; the actual keyword is `mult`.
+- Claiming a method/block exists when no manual section names it.
+
+**Permitted shortcuts:** the canonical DFT functionals listed in the
+DELFIN ORCA Builder method-dropdown (PBE0, B3LYP, BP86, etc.) are
+verified DELFIN-side and don't need a per-turn doc-lookup.  Same for
+the basis-dropdown (def2-SVP, def2-TZVP, …).  For everything else —
+%-blocks, wave-function methods, IRC/NEB/NMR specifics — doc-search
+is mandatory before answering.
+
+This rule is enforced operationally too: `delfin/agent/orca_keyword_extractor.py`
+produces a committed ground-truth snapshot
+(`pack/benchmark/orca_keywords_groundtruth.json`) listing every
+keyword the manual actually contains, per block — used by benchmark
+tests to flag hallucinated answers.
+
 ### ORCA Builder capabilities — be precise about what's structured vs free-form
 
 The Builder has **TWO layers**:
