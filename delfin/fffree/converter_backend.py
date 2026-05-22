@@ -25,11 +25,12 @@ _GEOM_TO_POLYA = {
 }
 
 
-def _xyz(syms, P, comment: str) -> str:
-    out = [str(len(syms)), comment]
-    for s, (x, y, z) in zip(syms, P):
-        out.append(f"{s} {float(x):.6f} {float(y):.6f} {float(z):.6f}")
-    return "\n".join(out)
+def _xyz(syms, P) -> str:
+    # HEADER-LESS atom block — matches the smiles_to_xyz_isomers contract (the
+    # pool-evaluator prepends "{count}\n{comment}"); a full XYZ here would break
+    # downstream consumers.
+    return "\n".join(f"{s} {float(x):.6f} {float(y):.6f} {float(z):.6f}"
+                     for s, (x, y, z) in zip(syms, P))
 
 
 def _fffree_isomers(smiles: str, max_isomers: int = 50
@@ -67,7 +68,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         syms, P = built
         label = f"fffree-{d['geometry'].split()[0]}-{k+1}"
-        results.append((_xyz(syms, P, label), label))
+        results.append((_xyz(syms, P), label))
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
 
