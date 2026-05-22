@@ -26242,6 +26242,22 @@ def smiles_to_xyz_isomers(
     has_metal = contains_metal(smiles)
     hapto_mode = _hapto_approx_enabled(hapto_approx)
 
+    # --- metal-FF-free generation backend (env-gated, default OFF) ---------
+    # delfin.fffree: provably-complete deterministic enumeration (Pólya isomers)
+    # + metal-FF-free geometric assembly on COD-ideal polyhedra.  v1 handles
+    # Werner complexes (mononuclear, explicit metal-donor bonds, all-monodentate,
+    # CN 4-6); decompose() returns None for chelates / hapto / dative / multi-
+    # metal, so those fall through to the legacy pipeline below unchanged.
+    # Bit-exact OFF (default).  See delfin/fffree/.
+    if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
+        try:
+            from delfin.fffree.converter_backend import _fffree_isomers
+            _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
+        except Exception:
+            _ff = None
+        if _ff:
+            return _ff, None
+
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
     _qprof = dict(_resolve_quality_profile(quality_mode))

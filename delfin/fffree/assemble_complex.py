@@ -198,6 +198,40 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     return syms, P, md_act
 
 
+def _ligand_3d_from_mol(frag_mol):
+    """Embed a ligand fragment mol (heavy-atom indices preserved under AddHs)."""
+    m = Chem.AddHs(frag_mol)
+    if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
+        return None
+    AllChem.MMFFOptimizeMolecule(m)
+    syms = [a.GetSymbol() for a in m.GetAtoms()]
+    return syms, m.GetConformer().GetPositions(), m
+
+
+def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs):
+    """vertex_specs[i] = (frag_mol, donor_local_idx).  Like assemble_heteroleptic
+    but takes ligand MOLS directly (preserves donor index; no SMILES round-trip)."""
+    ref = MSB._ref_vectors(geometry)
+    if len(vertex_specs) != len(ref):
+        raise ValueError("vertex_specs count != vertices")
+    out_syms = [metal]; blocks = [np.zeros((1, 3))]
+    for i, (frag, di) in enumerate(vertex_specs):
+        Vunit = ref[i] / np.linalg.norm(ref[i])
+        emb = _ligand_3d_from_mol(frag)
+        if emb is None:
+            return None
+        lsyms, lP, lmol = emb
+        md = MSB.md_distance(metal, lsyms[di])
+        vertex = Vunit * md
+        if len(lsyms) == 1:
+            out_syms += lsyms; blocks.append(vertex.reshape(1, 3)); continue
+        lp = _donor_and_lp(lsyms, lP, lmol, di)
+        R = _rot_align(lp, -Vunit)
+        Q = (lP - lP[di]) @ R.T + vertex
+        out_syms += lsyms; blocks.append(Q)
+    return out_syms, np.vstack(blocks)
+
+
 def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):
     """vertex_specs[i] = (ligand_smiles, donor_idx) for polyhedron vertex i.
     Heteroleptic monodentate assembly (different ligand per vertex) — the basis
