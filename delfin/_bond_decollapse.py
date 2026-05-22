@@ -35,6 +35,8 @@ _COV = {'C':0.76,'N':0.71,'O':0.66,'H':0.31,'S':1.05,'Cl':1.02,'P':1.07,'F':0.57
 _MD_TOL = 0.05          # M-D invariant tolerance (Å)
 _MD_FACTOR = 1.30       # M-D bond detection factor
 _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
+_MAX_STEP = 0.30        # max per-atom displacement per relaxation pass (Å) — keeps
+                        # the vdw-aware repulsion from blowing coordinates up to NaN
 
 # Iter-26 (Task #32): vdw/angle-awareness so the decollapse pass cannot trade a
 # collapse fix for vdw-clash / H-planarity / angle regressions (the Iter-25
@@ -357,11 +359,23 @@ def correct_xyz(mol, xyz: str) -> str:
                     forces[a] += f; forces[b] -= f; moved = True
         if not moved:
             break
-        # apply, but never move frozen atoms
+        # apply, but never move frozen atoms.  Clamp the per-pass displacement:
+        # the vdw-aware repulsion floor can otherwise accumulate unbounded force
+        # over the passes on a heavily-clashing frame and blow coordinates up to
+        # inf -> NaN (Iter-26 regression).  A bounded step keeps the relaxation
+        # stable and still converges.
+        prev = work.copy()
         for i in range(n):
             if i in frozen or syms[i] == 'H':
                 continue
-            work[i] = work[i] + forces[i]
+            step = forces[i]
+            sn = float(np.linalg.norm(step))
+            if sn > _MAX_STEP:
+                step = step * (_MAX_STEP / sn)
+            work[i] = work[i] + step
+        if not np.all(np.isfinite(work)):     # numeric blow-up -> abort cleanly
+            work = prev
+            break
     # drag H rigidly to follow their parent's displacement
     for h, par in h_parent.items():
         work[h] = work[h] + (work[par] - P[par])
@@ -369,6 +383,8 @@ def correct_xyz(mol, xyz: str) -> str:
     # acceptance (Iter-26 multi-axis firewall): keep the relaxed frame ONLY if
     # collapse strictly drops AND no measured axis worsens AND M-D intact.
     # Cheapest checks first so most rejections short-circuit before the SVD.
+    if not np.all(np.isfinite(work)):     # never emit a non-finite frame
+        return xyz
     if _count_collapsed(syms, work, bonds) >= n_collapsed:
         return xyz
     if _count_vdw_clashes(syms, work, excl) > clashes0:          # vdw (mandatory)
