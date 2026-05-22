@@ -33,23 +33,40 @@ _ANTIPODE = {
 }
 
 
-def _classify_coloring(geom_key, coloring) -> str:
-    """Universal isomer name from a vertex->ligand coloring (geometric, from the
-    polyhedron antipode structure — no system-specific rules).  cis/trans (a
-    2-count ligand), fac/mer (a 3-count ligand on octahedron), else descriptive."""
+def _classify_coloring(geom_key, vertex_elems) -> str:
+    """Universal scientific isomer name from per-vertex DONOR ELEMENTS + the
+    polyhedron antipode structure (element-based trans-pair analysis, matching the
+    project's _classify_isomer_label scheme — no system-specific rules):
+      MA4B2 -> cis/trans · MA3B3 -> fac/mer · MA2B2C2 -> all-cis/all-trans/El-trans
+      (square-planar MA2B2 -> cis/trans).  Returns '' for single-isomer cases."""
     from collections import Counter
-    cnt = Counter(coloring)
     anti = _ANTIPODE.get(geom_key)
     if anti is None:
         return ""
-    for lab, c in sorted(cnt.items(), key=lambda x: x[1]):   # minority first
-        verts = [i for i, l in enumerate(coloring) if l == lab]
-        if c == 2:
-            return "cis" if anti.get(verts[0]) != verts[1] else "trans"
-        if c == 3 and geom_key == "octahedron":
-            antipodal = any(anti[verts[a]] == verts[b]
-                            for a in range(3) for b in range(a + 1, 3))
-            return "mer" if antipodal else "fac"
+    cnt = Counter(vertex_elems)
+    n = len(vertex_elems)
+
+    def is_trans(el):
+        v = [i for i, e in enumerate(vertex_elems) if e == el]
+        return any(anti.get(v[a]) == v[b] for a in range(len(v)) for b in range(a + 1, len(v)))
+
+    pairs2 = [el for el, c in cnt.items() if c == 2]
+    threes = [el for el, c in cnt.items() if c == 3]
+    if n == 6:
+        if threes:                                    # MA3B3 / MA3B2C
+            return "mer" if is_trans(threes[0]) else "fac"
+        if len(pairs2) == 3:                           # MA2B2C2
+            trans_els = sorted(el for el in pairs2 if is_trans(el))
+            if not trans_els:
+                return "all-cis"
+            if len(trans_els) == 3:
+                return "all-trans"
+            return "-".join(f"{e}trans" for e in trans_els)
+        if len(pairs2) == 1:                           # MA4B2
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 4:                                       # SP-4 / T-4 MA2B2
+        if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
     return ""
 
 
@@ -71,7 +88,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None
     # ligand identity = canonical SMILES of each fragment; group by it
-    lig_label, lig_ref = [], {}
+    lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
         try:
             lab = Chem.MolToSmiles(lg["mol"])
@@ -79,6 +96,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         lig_label.append(lab)
         lig_ref.setdefault(lab, (lg["mol"], lg["donor_local_idx"]))
+        lab_elem[lab] = lg["donor_elem"]
     spec = dict(Counter(lig_label))
     try:
         colorings = PIC.enumerate_isomers(geom_key, spec)
@@ -96,7 +114,8 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
-        name = _classify_coloring(geom_key, coloring)
+        vertex_elems = [lab_elem[lab] for lab in coloring]
+        name = _classify_coloring(geom_key, vertex_elems)
         geom_tag = d["geometry"].split()[0]
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         results.append((_xyz(syms, P), label))
