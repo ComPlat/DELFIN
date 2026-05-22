@@ -56,15 +56,24 @@ def _violations(syms, P, bonded, adj):
                 u = (P[i] - P[j]) / d
                 push = 0.5 * (tgt - d)
                 moves.append((i, +push * u)); moves.append((j, -push * u))
-    # collapsed bonds -> stretch to ideal
+    # collapsed bonds -> stretch to ideal; distorted heavy-heavy bonds -> toward ideal
     for i, j in bonded:
         d = float(np.linalg.norm(P[i] - P[j]))
+        if d <= 1e-6:
+            continue
         ideal = bd._ideal_bond(syms[i], syms[j])
-        if d < _COLLAPSE * ideal and d > 1e-6:
+        if d < _COLLAPSE * ideal:
             loss += 1
             u = (P[j] - P[i]) / d
             stretch = 0.5 * (ideal - d)
             moves.append((j, +stretch * u)); moves.append((i, -stretch * u))
+        elif syms[i] != "H" and syms[j] != "H":
+            dev = (d - ideal) / ideal
+            if dev < -0.25 or dev > 0.085:        # bond_distort band
+                loss += 1
+                u = (P[j] - P[i]) / d
+                corr = 0.4 * (ideal - d)           # +stretch if short, -compress if long
+                moves.append((j, +corr * u)); moves.append((i, -corr * u))
     # H over-coordination -> push H off the non-parent heavy
     for h in range(n):
         if syms[h] != "H":
@@ -84,7 +93,7 @@ def _violations(syms, P, bonded, adj):
     return loss, moves
 
 
-def refine(syms, P, fixed_idx: Set[int], max_passes: int = 40, damp: float = 0.6):
+def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6):
     """Coordinate descent minimising the defect loss; metal+donors frozen.
     Deterministic. Returns refined P (or original if no improvement)."""
     P = np.array(P, float).copy()
