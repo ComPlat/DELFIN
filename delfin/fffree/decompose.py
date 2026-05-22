@@ -27,7 +27,18 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
 
 
 def decompose(smiles: str) -> Optional[Dict]:
-    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    # Reuse the converter's full organometallic mol-preparation (stk / dative-bond
+    # conversion / charge+H perception) so cleaved ligands have correct chemistry
+    # (NH3 stays NH3, Cl⁻ stays Cl⁻ — not HCl).  Lazy import avoids the import
+    # cycle (smiles_converter -> converter_backend -> decompose).
+    mol = None
+    try:
+        from delfin.smiles_converter import _prepare_mol_for_embedding
+        mol = _prepare_mol_for_embedding(smiles)
+    except Exception:
+        mol = None
+    if mol is None:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
     if mol is None:
         return None
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
