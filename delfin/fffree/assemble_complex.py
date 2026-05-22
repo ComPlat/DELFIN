@@ -208,13 +208,17 @@ def _ligand_3d_from_mol(frag_mol):
     return syms, m.GetConformer().GetPositions(), m
 
 
-def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs):
-    """vertex_specs[i] = (frag_mol, donor_local_idx).  Like assemble_heteroleptic
-    but takes ligand MOLS directly (preserves donor index; no SMILES round-trip)."""
+def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
+                                    refine: bool = True):
+    """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
+    (preserves donor index).  refine=True runs the COD-loss refiner (deterministic
+    coordinate descent, metal+donors frozen) to remove rigid-placement clashes."""
     ref = MSB._ref_vectors(geometry)
     if len(vertex_specs) != len(ref):
         raise ValueError("vertex_specs count != vertices")
     out_syms = [metal]; blocks = [np.zeros((1, 3))]
+    fixed = {0}                       # metal frozen
+    pos = 1
     for i, (frag, di) in enumerate(vertex_specs):
         Vunit = ref[i] / np.linalg.norm(ref[i])
         emb = _ligand_3d_from_mol(frag)
@@ -224,12 +228,22 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs):
         md = MSB.md_distance(metal, lsyms[di])
         vertex = Vunit * md
         if len(lsyms) == 1:
-            out_syms += lsyms; blocks.append(vertex.reshape(1, 3)); continue
+            out_syms += lsyms; blocks.append(vertex.reshape(1, 3))
+            fixed.add(pos); pos += 1; continue
         lp = _donor_and_lp(lsyms, lP, lmol, di)
         R = _rot_align(lp, -Vunit)
         Q = (lP - lP[di]) @ R.T + vertex
         out_syms += lsyms; blocks.append(Q)
-    return out_syms, np.vstack(blocks)
+        fixed.add(pos + di)           # donor frozen at its vertex
+        pos += len(lsyms)
+    P = np.vstack(blocks)
+    if refine:
+        try:
+            from delfin.fffree.refine import refine as _refine
+            P = _refine(out_syms, P, fixed)
+        except Exception:
+            pass
+    return out_syms, P
 
 
 def _constrained_uff_relax(ligmol, fixed_idx, max_its=500):
