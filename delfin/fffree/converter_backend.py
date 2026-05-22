@@ -84,6 +84,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
     ligands = d["ligands"]
+    if any(lg["denticity"] >= 3 for lg in ligands):
+        return None        # tridentate+ not yet supported -> legacy
     specs = []
     for lg in ligands:
         specs.append({
