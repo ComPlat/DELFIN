@@ -365,6 +365,67 @@ def build_and_relax(metal: str, geometry: str, vertex_specs, relax: bool = True)
     return syms, P
 
 
+def assemble_from_config(metal, geometry, config, ligands, refine=True):
+    """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
+    arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
+    onto their two assigned vertices; monodentate ligands are oriented onto their
+    vertex.  Multi-conformer selection per ligand + constrained refine.  Returns
+    (syms, P) = [metal] + ligand atoms, or None on failure."""
+    ref = MSB._ref_vectors(geometry)
+    # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
+    by_lig = {}
+    for v, (li, arm) in config.items():
+        by_lig.setdefault(li, []).append((v, arm))
+    out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
+    fixed = {0}; pos = 1
+    for li, va in by_lig.items():
+        lg = ligands[li]
+        confs = _ligand_confs_from_mol(lg["mol"])
+        if confs is None:
+            return None
+        lsyms, coords_list, lmol = confs
+        dons = lg["donor_local_idxs"]
+        best_Q, best_clash = None, 1e18
+        for lP in coords_list:
+            if lg["denticity"] == 1:
+                v = va[0][0]
+                Vunit = ref[v] / np.linalg.norm(ref[v])
+                md = MSB.md_distance(metal, lsyms[dons[0]])
+                if len(lsyms) == 1:
+                    Q = (Vunit * md).reshape(1, 3)
+                else:
+                    lp = _donor_and_lp(lsyms, lP, lmol, dons[0])
+                    Q = (lP - lP[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
+            else:
+                # chelate: arm a -> donor dons[a] -> its assigned vertex
+                vmap = {arm: v for v, arm in va}
+                d0, d1 = dons[0], dons[1]
+                T0 = ref[vmap[0]] / np.linalg.norm(ref[vmap[0]]) * MSB.md_distance(metal, lsyms[d0])
+                T1 = ref[vmap[1]] / np.linalg.norm(ref[vmap[1]]) * MSB.md_distance(metal, lsyms[d1])
+                Q = _place_chelate_block(metal, lsyms, lP, d0, d1, T0, T1)
+            cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+            if cl < best_clash:
+                best_clash, best_Q = cl, Q
+            if cl == 0:
+                break
+        out_syms += lsyms
+        for row in best_Q:
+            placed.append(row)
+        placed_syms += lsyms
+        # freeze the donor atoms at their vertices
+        for d in dons:
+            fixed.add(pos + d)
+        pos += len(lsyms)
+    P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+    if refine:
+        try:
+            from delfin.fffree.refine import refine as _refine
+            P = _refine(out_syms, P, fixed)
+        except Exception:
+            pass
+    return out_syms, P
+
+
 def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):
     """vertex_specs[i] = (ligand_smiles, donor_idx) for polyhedron vertex i.
     Heteroleptic monodentate assembly (different ligand per vertex) — the basis

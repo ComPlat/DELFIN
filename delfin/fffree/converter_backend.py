@@ -79,18 +79,48 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
+def _fffree_chelate_isomers(d, geom_key, max_isomers):
+    """Build all distinct isomers of a chelate-containing complex (mixed bi-/
+    monodentate) via the universal chelate-config enumerator + per-config
+    geometric assembly.  Returns [(xyz, label), ...] or None."""
+    ligands = d["ligands"]
+    specs = []
+    for lg in ligands:
+        specs.append({
+            "type": Chem.MolToSmiles(lg["mol"]),
+            "denticity": lg["denticity"],
+            "asym": len(set(lg.get("donor_elems", []))) > 1,
+        })
+    try:
+        configs = PIC.enumerate_chelate_configs(geom_key, specs)
+    except Exception:
+        return None
+    if not configs:
+        return None
+    geom_tag = d["geometry"].split()[0]
+    results = []
+    for k, config in enumerate(configs[:max_isomers]):
+        try:
+            built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
+        except Exception:
+            return None
+        if built is None:
+            return None
+        syms, P = built
+        results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
+    return results or None
+
+
 def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
     d = DEC.decompose(smiles)
     if d is None:
         return None
-    if d.get("has_chelate"):
-        # chelate assembly path not wired yet -> legacy (next build step);
-        # decompose now DETECTS chelates (denticity per ligand) as the foundation.
-        return None
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None
+    if d.get("has_chelate"):
+        return _fffree_chelate_isomers(d, geom_key, max_isomers)
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:

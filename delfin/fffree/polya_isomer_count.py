@@ -142,6 +142,71 @@ def enumerate_isomers(geometry: str, donor_spec: Dict[str, int]) -> List[Tuple[s
     return reps
 
 
+_ANTIPODE_FULL = {
+    "octahedron": {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4},
+    "square_planar": {0: 2, 1: 3, 2: 0, 3: 1},
+}
+
+
+def enumerate_chelate_configs(geometry: str, ligand_specs):
+    """Universal isomer enumeration for a mix of chelating (bidentate) + monodentate
+    ligands.  ligand_specs: one dict per ligand instance with keys ``type``
+    (identity label), ``denticity`` (1 or 2), ``asym`` (bool: True if a bidentate's
+    two donor arms are distinguishable).  Returns distinct configs; each maps
+    vertex_index -> (ligand_instance_index, arm_index), one per orbit under the
+    polyhedron's proper rotation group.  Bidentate ligands occupy cis-edges."""
+    group, n = _GROUPS[geometry]
+    anti = _ANTIPODE_FULL[geometry]
+    cis_edges = [(i, j) for i in range(n) for j in range(i + 1, n) if anti[i] != j]
+    order = sorted(range(len(ligand_specs)),
+                   key=lambda k: -ligand_specs[k]["denticity"])
+    seen = set(); out = []
+
+    def canon_key(assign):
+        best = None
+        for g in group:
+            units = {}
+            for v, (li, arm) in assign.items():
+                units.setdefault(li, []).append((g[v], arm))
+            key_units = []
+            for li, vs in units.items():
+                spec = ligand_specs[li]
+                if spec["denticity"] == 1:
+                    key_units.append((spec["type"], (vs[0][0],)))
+                elif spec.get("asym"):
+                    ordered = tuple(v for v, a in sorted(vs, key=lambda x: x[1]))
+                    key_units.append((spec["type"] + "*", ordered))
+                else:
+                    key_units.append((spec["type"], tuple(sorted(v for v, a in vs))))
+            k = tuple(sorted(key_units))
+            if best is None or k < best:
+                best = k
+        return best
+
+    def place(assign):
+        placed = {li for (li, _) in assign.values()}
+        rem = [k for k in order if k not in placed]
+        if not rem:
+            key = canon_key(assign)
+            if key not in seen:
+                seen.add(key); out.append(dict(assign))
+            return
+        k = rem[0]; spec = ligand_specs[k]
+        if spec["denticity"] == 1:
+            for v in [v for v in range(n) if v not in assign]:
+                a = dict(assign); a[v] = (k, 0); place(a)
+        else:
+            for (v1, v2) in cis_edges:
+                if v1 in assign or v2 in assign:
+                    continue
+                a = dict(assign); a[v1] = (k, 0); a[v2] = (k, 1); place(a)
+                if spec.get("asym"):
+                    b = dict(assign); b[v1] = (k, 1); b[v2] = (k, 0); place(b)
+
+    place({})
+    return out
+
+
 def count_chelate_isomers(geometry: str, n_chelate: int) -> int:
     """Count distinct ways to place n_chelate identical symmetric bidentate
     ligands on cis-edges (+ identical monodentate on the rest), up to the proper
