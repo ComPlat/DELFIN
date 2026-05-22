@@ -84,6 +84,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     d = DEC.decompose(smiles)
     if d is None:
         return None
+    if d.get("has_chelate"):
+        # chelate assembly path not wired yet -> legacy (next build step);
+        # decompose now DETECTS chelates (denticity per ligand) as the foundation.
+        return None
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None

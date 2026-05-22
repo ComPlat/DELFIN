@@ -1,11 +1,12 @@
 """delfin.fffree.decompose — SMILES → coordination decomposition for the
 metal-FF-free backend.
 
-v1 scope (safe, falls back to legacy otherwise): mononuclear complex with explicit
-metal-donor bonds in the graph, all-monodentate donors, CN 4/5/6.  Returns the
-metal, per-donor ligand fragments (mol + local donor index + element), CN and a
-default geometry.  Chelates (ligand with >1 metal bond), dative/dot-separated
-representations, hapto, and CN outside 4-6 -> return None (legacy handles them).
+Scope (falls back to None otherwise): mononuclear complex with explicit
+metal-donor bonds in the graph, CN 4/5/6.  Returns the metal, CN, default
+geometry, and per-ligand fragments (mol + local donor indices + donor elements +
+denticity) — monodentate and chelating (bi-/tridentate) ligands are both
+detected; ``has_chelate`` flags whether any ligand is polydentate.  CN outside
+4-6, >1 metal, >tridentate ligands, or unparseable input -> return None.
 """
 from __future__ import annotations
 from typing import Optional, Dict, List
@@ -70,30 +71,41 @@ def decompose(smiles: str) -> Optional[Dict]:
         return None
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
+    n_chelate_bonds = 0
     for fmol, orig_idxs in zip(frags, mapping):
         orig = list(orig_idxs)
         if m in orig:
             continue                                  # the metal's own fragment
         fdonors = [o for o in orig if o in donor_set]
-        if len(fdonors) != 1:
-            return None                               # chelate / bridging -> legacy
-        local_donor = orig.index(fdonors[0])
-        ligands.append({"mol": fmol, "donor_local_idx": local_donor,
-                        "donor_elem": donor_elem[fdonors[0]]})
-    if len(ligands) != cn:
+        if len(fdonors) == 0:
+            return None                               # bridging / spectator -> legacy
+        if len(fdonors) > 3:
+            return None                               # >tridentate (rare) -> legacy
+        local_donors = [orig.index(o) for o in fdonors]
+        ligands.append({
+            "mol": fmol,
+            "donor_local_idx": local_donors[0],       # primary (back-compat)
+            "donor_local_idxs": local_donors,         # all donors (chelate)
+            "denticity": len(fdonors),
+            "donor_elem": donor_elem[fdonors[0]],
+            "donor_elems": [donor_elem[o] for o in fdonors],
+        })
+        n_chelate_bonds += len(fdonors)
+    if n_chelate_bonds != cn:
         return None
-    # V1 ligand-complexity gate: fffree builds SMALL/simple ligands cleanly
-    # (0 hard-defects); large conjugated ligands need conformer work the rigid
-    # placement doesn't do (and the metal-free UFF relax destabilizes them).
-    # Engage fffree only when every ligand is small (<= MAX_LIGAND_HEAVY heavy
-    # atoms); else return None -> legacy.  Grow the threshold as the builder
-    # learns to handle larger ligands.
-    MAX_LIGAND_HEAVY = 8
+    has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
+    # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
+    # small/simple ligands place cleanly; very large conjugated ligands need
+    # conformer work the rigid placement doesn't do, so bail to None for those.
+    # Per-arm (not per-ligand) so a polydentate chelate (e.g. citrate, 13 heavy
+    # over 6 donors ~ 2/arm) is not unfairly rejected for its total size.
+    MAX_HEAVY_PER_DONOR = 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
-        if nheavy > MAX_LIGAND_HEAVY:
+        if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
             return None
     return {"metal": metal, "cn": cn, "geometry": geometry,
+            "has_chelate": has_chelate,
             "donor_elems": [lg["donor_elem"] for lg in ligands],
             "ligands": ligands}
 

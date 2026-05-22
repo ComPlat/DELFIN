@@ -1,14 +1,15 @@
-"""delfin.fffree.refine — COD-loss refiner (NO force field).
+"""delfin.fffree.refine — geometry refiner (NO force field).
 
-Deterministic coordinate descent that directly minimises the structural-defect
-loss the battery measures (clashes / H-overcoordination / bond collapse), moving
-only the ligand periphery with the metal + donor atoms FROZEN.  Per-pass
-accept-if-better gate with rollback (the _bond_decollapse pattern, generalised).
+Deterministic coordinate descent that directly minimises a structural-defect
+count (close-contact clashes / hydrogen over-coordination / collapsed bonds),
+moving only the ligand periphery with the metal + donor atoms FROZEN.  Each pass
+is accepted only if the defect count decreases, otherwise the step is halved and
+rolled back.
 
-This is the mechanism that makes the geometric metal-FF-free placement clean
-WITHOUT a force field on the metal: the placement gives correct topology +
-M-D geometry; the refiner removes the residual clashes that rigid placement
-leaves, which is exactly where UFF-relaxed structures win.
+This makes the rigid geometric placement clean without a force field on the
+metal: the placement already gives correct connectivity and metal-donor
+distances; this step removes the residual close contacts that rigid placement
+leaves behind.
 """
 from __future__ import annotations
 from typing import List, Set, Tuple

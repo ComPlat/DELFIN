@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""conformer_enum.py — Phase 1, Layer 3: deterministic combinatorial conformer
+"""conformer_enum.py — deterministic combinatorial conformer
 enumeration (Confab-style, NOT stochastic global search).  Replaces SEARCH with
 ENUMERATION: rotatable bonds -> discrete torsion-state product -> clash-prune ->
 LOCAL MMFF relax -> RMSD/energy dedup -> keep within the relevant energy window.
@@ -7,7 +7,7 @@ LOCAL MMFF relax -> RMSD/energy dedup -> keep within the relevant energy window.
 This is the Layer-3 generator; completeness here is "all relevant conformers
 within the energy window, up to torsion resolution" (validated by convergence:
 finer grid stops adding distinct minima).  Organic ligand part only (MMFF valid);
-the metal sphere is built separately (Phase 2).
+the metal sphere is built separately.
 
 Deterministic: ETKDG initial embed with fixed seed + numThreads=1; fixed torsion
 grid; MMFF; canonical-RMSD dedup with deterministic ordering.

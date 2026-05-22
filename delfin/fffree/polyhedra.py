@@ -1,10 +1,9 @@
-"""Reference coordination polyhedra (unit vectors) + covalent radii — self-contained
-foundation for the metal-FF-free builder (delfin.fffree).
+"""Reference coordination polyhedra (unit vectors) + covalent radii for the
+metal-FF-free builder (delfin.fffree).
 
-Extracted from the validated agent_workspace metric_coord_shape / metal_sphere_builder
-prototypes so the production package has no agent_workspace dependency.  These ideal
-polyhedra are the COD-shape references; M-D distances use covalent-radii sums (avoids
-the delfin._bond_decollapse._ideal_bond metal default-0.9 bug).
+Self-contained: ideal CN4/5/6 polyhedron vertex sets (tetrahedron, square planar,
+trigonal bipyramid, square pyramid, octahedron, trigonal prism) and a covalent-radii
+table.  Metal-donor distances use covalent-radii sums.
 """
 from __future__ import annotations
 import math

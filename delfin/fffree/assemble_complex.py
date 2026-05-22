@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""assemble_complex.py — Phase 2: assemble a full 3D TMC from a metal + ligand(s) +
+"""assemble_complex.py — assemble a full 3D TMC from a metal + ligand(s) +
 geometry, by orienting each ligand so its donor sits on the placed polyhedron
 vertex with its lone pair pointing at the metal.  Metal-FF-free: the sphere is
 geometric (metal_sphere_builder); ligands are rigidly oriented; (constrained MMFF
@@ -168,7 +168,7 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     """Place a chelating ligand: rigid-fit its donor atoms onto the assigned
     polyhedron vertices (align donor-donor vector to vertex-vertex vector, match
     midpoints), then rotate about that axis so the backbone points away from the
-    metal.  Bidentate prototype; donors land near (not exactly on) vertices if the
+    metal.  Bidentate; donors land near (not exactly on) vertices if the
     ligand bite != vertex spacing (a constrained relax closes that)."""
     ref = MSB._ref_vectors(geometry)
     lsyms, lP, lmol = _ligand_3d(ligand_smiles)
@@ -245,7 +245,7 @@ def _clash_count(Q, existing, syms_Q, syms_ex):
 def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                                     refine: bool = True):
     """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
-    (preserves donor index).  refine=True runs the COD-loss refiner (deterministic
+    (preserves donor index).  refine=True runs the geometry refiner (deterministic
     coordinate descent, metal+donors frozen) to remove rigid-placement clashes."""
     ref = MSB._ref_vectors(geometry)
     if len(vertex_specs) != len(ref):
@@ -263,7 +263,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         md = MSB.md_distance(metal, lsyms[di])
         vertex = Vunit * md
         # UNIVERSAL: pick the conformer whose placement clashes least with the
-        # metal + already-placed ligands (COD-loss-driven conformer selection).
+        # metal + already-placed ligands (defect-count-driven conformer selection).
         best_Q, best_clash = None, 1e18
         for lP in coords_list:
             if len(lsyms) == 1:

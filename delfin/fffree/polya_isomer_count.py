@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""polya_isomer_count.py — Phase 1, Layer 2: EXACT stereoisomer count + enumeration
+"""polya_isomer_count.py — EXACT stereoisomer count + enumeration
 for a coordination polyhedron given a donor-label multiset, via Burnside's lemma
 over the proper rotation group of the polyhedron.
 

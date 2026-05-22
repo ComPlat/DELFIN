@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""coordination_mode_enum.py — Phase 1, Layer 1: enumerate the valid COORDINATION
+"""coordination_mode_enum.py — enumerate the valid COORDINATION
 MODES of a ligand (the hard open core).  For a ligand with multiple potential
 coordination sites, enumerate: donor-selection + denticity (κ1/κ2/κ3…) + linkage
 isomerism (ambidentate N-vs-O, S-vs-N, carboxylate κ1-vs-κ2).
