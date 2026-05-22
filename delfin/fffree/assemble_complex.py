@@ -232,6 +232,76 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs):
     return out_syms, np.vstack(blocks)
 
 
+def _constrained_uff_relax(ligmol, fixed_idx, max_its=500):
+    """METAL-FREE constrained UFF relax (the _hapto_rigid_v2 pattern): the ligands-
+    only mol (no metal, no M-D bonds) is UFF-minimized with the donor atoms FIXED
+    at their placed vertex positions and inter-fragment vdW ON, so ligand
+    peripheries relax + inter-ligand clashes/H-overcoord resolve WITHOUT UFF having
+    to type the metal (which it can't reliably do for 4d/5d)."""
+    try:
+        ff = AllChem.UFFGetMoleculeForceField(ligmol, ignoreInterfragInteractions=False)
+        if ff is None:
+            return False
+        for i in fixed_idx:
+            ff.AddFixedPoint(i)
+        ff.Initialize()
+        ff.Minimize(maxIts=max_its)
+        return True
+    except Exception:
+        return False
+
+
+def build_and_relax(metal: str, geometry: str, vertex_specs, relax: bool = True):
+    """Heteroleptic monodentate assembly + metal-free constrained relax (donors
+    pinned at vertices).  vertex_specs[i] = (frag_mol, donor_local_idx).
+    Returns (syms, P) = [metal] + relaxed ligand atoms.  Deterministic."""
+    ref = MSB._ref_vectors(geometry)
+    if len(vertex_specs) != len(ref):
+        raise ValueError("vertex_specs count != vertices")
+    lig = Chem.RWMol()              # ligands-only mol (no metal) for the FF
+    conf_xyz = []
+    fixed = []
+    for i, (frag, di) in enumerate(vertex_specs):
+        Vunit = ref[i] / np.linalg.norm(ref[i])
+        emb = _ligand_3d_from_mol(frag)
+        if emb is None:
+            return None
+        lsyms, lP, lmol = emb
+        md = MSB.md_distance(metal, lsyms[di])
+        vertex = Vunit * md
+        if len(lsyms) == 1:
+            Q = vertex.reshape(1, 3)
+        else:
+            lp = _donor_and_lp(lsyms, lP, lmol, di)
+            R = _rot_align(lp, -Vunit)
+            Q = (lP - lP[di]) @ R.T + vertex
+        offset = lig.GetNumAtoms()
+        for a in lmol.GetAtoms():
+            lig.AddAtom(Chem.Atom(a.GetAtomicNum()))
+        for b in lmol.GetBonds():
+            lig.AddBond(b.GetBeginAtomIdx() + offset, b.GetEndAtomIdx() + offset,
+                        b.GetBondType())
+        fixed.append(offset + di)          # donor pinned at its vertex
+        for row in Q:
+            conf_xyz.append(np.asarray(row, float))
+    if lig.GetNumAtoms() == 0:
+        return None
+    conf = Chem.Conformer(lig.GetNumAtoms())
+    for k, xyz in enumerate(conf_xyz):
+        conf.SetAtomPosition(k, [float(xyz[0]), float(xyz[1]), float(xyz[2])])
+    lig.AddConformer(conf, assignId=True)
+    if relax:
+        try:
+            Chem.SanitizeMol(lig, catchErrors=True)
+        except Exception:
+            pass
+        _constrained_uff_relax(lig, fixed)
+    LP = lig.GetConformer().GetPositions()
+    syms = [metal] + [a.GetSymbol() for a in lig.GetAtoms()]
+    P = np.vstack([np.zeros((1, 3)), np.array(LP, float)])
+    return syms, P
+
+
 def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):
     """vertex_specs[i] = (ligand_smiles, donor_idx) for polyhedron vertex i.
     Heteroleptic monodentate assembly (different ligand per vertex) — the basis

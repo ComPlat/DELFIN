@@ -82,6 +82,17 @@ def decompose(smiles: str) -> Optional[Dict]:
                         "donor_elem": donor_elem[fdonors[0]]})
     if len(ligands) != cn:
         return None
+    # V1 ligand-complexity gate: fffree builds SMALL/simple ligands cleanly
+    # (0 hard-defects); large conjugated ligands need conformer work the rigid
+    # placement doesn't do (and the metal-free UFF relax destabilizes them).
+    # Engage fffree only when every ligand is small (<= MAX_LIGAND_HEAVY heavy
+    # atoms); else return None -> legacy.  Grow the threshold as the builder
+    # learns to handle larger ligands.
+    MAX_LIGAND_HEAVY = 8
+    for lg in ligands:
+        nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
+        if nheavy > MAX_LIGAND_HEAVY:
+            return None
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "donor_elems": [lg["donor_elem"] for lg in ligands],
             "ligands": ligands}
