@@ -208,6 +208,40 @@ def _ligand_3d_from_mol(frag_mol):
     return syms, m.GetConformer().GetPositions(), m
 
 
+def _ligand_confs_from_mol(frag_mol, k=10):
+    """UNIVERSAL multi-conformer generation for a ligand (deterministic): K diverse
+    ETKDG conformers (fixed seed, single-thread) + MMFF.  Returns (syms, [coords],
+    mol).  Used to pick the clash-minimal conformer per ligand at placement — a
+    fundamental Layer-3 mechanism applied to every ligand, not a per-case patch."""
+    m = Chem.AddHs(frag_mol)
+    cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
+                                           numThreads=1))
+    if not cids:
+        if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
+            return None
+        cids = [0]
+    try:
+        AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
+    except Exception:
+        pass
+    syms = [a.GetSymbol() for a in m.GetAtoms()]
+    return syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m
+
+
+def _clash_count(Q, existing, syms_Q, syms_ex):
+    """# heavy/H pairs between block Q and existing atoms closer than 0.7*(vdW sum)."""
+    if len(existing) == 0:
+        return 0
+    from delfin.fffree.refine import _vdw
+    c = 0
+    for a in range(len(Q)):
+        for b in range(len(existing)):
+            d = float(np.linalg.norm(Q[a] - existing[b]))
+            if d < 0.70 * (_vdw(syms_Q[a]) + _vdw(syms_ex[b])):
+                c += 1
+    return c
+
+
 def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                                     refine: bool = True):
     """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
@@ -217,25 +251,40 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     if len(vertex_specs) != len(ref):
         raise ValueError("vertex_specs count != vertices")
     out_syms = [metal]; blocks = [np.zeros((1, 3))]
+    placed_P = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}                       # metal frozen
     pos = 1
     for i, (frag, di) in enumerate(vertex_specs):
         Vunit = ref[i] / np.linalg.norm(ref[i])
-        emb = _ligand_3d_from_mol(frag)
-        if emb is None:
+        confs = _ligand_confs_from_mol(frag)
+        if confs is None:
             return None
-        lsyms, lP, lmol = emb
+        lsyms, coords_list, lmol = confs
         md = MSB.md_distance(metal, lsyms[di])
         vertex = Vunit * md
+        # UNIVERSAL: pick the conformer whose placement clashes least with the
+        # metal + already-placed ligands (COD-loss-driven conformer selection).
+        best_Q, best_clash = None, 1e18
+        for lP in coords_list:
+            if len(lsyms) == 1:
+                Q = vertex.reshape(1, 3)
+            else:
+                lp = _donor_and_lp(lsyms, lP, lmol, di)
+                R = _rot_align(lp, -Vunit)
+                Q = (lP - lP[di]) @ R.T + vertex
+            cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
+            if cl < best_clash:
+                best_clash, best_Q = cl, Q
+            if cl == 0:
+                break
+        out_syms += lsyms; blocks.append(best_Q)
+        for row in best_Q:
+            placed_P.append(row)
+        placed_syms += lsyms
         if len(lsyms) == 1:
-            out_syms += lsyms; blocks.append(vertex.reshape(1, 3))
-            fixed.add(pos); pos += 1; continue
-        lp = _donor_and_lp(lsyms, lP, lmol, di)
-        R = _rot_align(lp, -Vunit)
-        Q = (lP - lP[di]) @ R.T + vertex
-        out_syms += lsyms; blocks.append(Q)
-        fixed.add(pos + di)           # donor frozen at its vertex
-        pos += len(lsyms)
+            fixed.add(pos); pos += 1
+        else:
+            fixed.add(pos + di); pos += len(lsyms)
     P = np.vstack(blocks)
     if refine:
         try:
