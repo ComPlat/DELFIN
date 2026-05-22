@@ -26,10 +26,11 @@ _GEOM_TO_POLYA = {
 
 
 def _xyz(syms, P) -> str:
-    # HEADER-LESS atom block — matches the smiles_to_xyz_isomers contract (the
-    # pool-evaluator prepends "{count}\n{comment}"); a full XYZ here would break
-    # downstream consumers.
-    return "\n".join(f"{s} {float(x):.6f} {float(y):.6f} {float(z):.6f}"
+    # HEADER-LESS atom block in the CANONICAL converter format ("{sym:4s}
+    # {x:12.6f}..."), byte-identical to every other pool so viewers (Avogadro,
+    # etc.) treat fffree output exactly like all other archives.  The pool
+    # evaluator prepends "{count}\n{comment}".
+    return "\n".join(f"{s:4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}"
                      for s, (x, y, z) in zip(syms, P))
 
 
