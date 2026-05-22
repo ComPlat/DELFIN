@@ -25,6 +25,34 @@ _GEOM_TO_POLYA = {
 }
 
 
+# antipodal vertex pairs per geometry (polya vertex ordering) — for universal
+# cis/trans/fac/mer classification from the coloring.
+_ANTIPODE = {
+    "octahedron": {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4},
+    "square_planar": {0: 2, 1: 3, 2: 0, 3: 1},
+}
+
+
+def _classify_coloring(geom_key, coloring) -> str:
+    """Universal isomer name from a vertex->ligand coloring (geometric, from the
+    polyhedron antipode structure — no system-specific rules).  cis/trans (a
+    2-count ligand), fac/mer (a 3-count ligand on octahedron), else descriptive."""
+    from collections import Counter
+    cnt = Counter(coloring)
+    anti = _ANTIPODE.get(geom_key)
+    if anti is None:
+        return ""
+    for lab, c in sorted(cnt.items(), key=lambda x: x[1]):   # minority first
+        verts = [i for i, l in enumerate(coloring) if l == lab]
+        if c == 2:
+            return "cis" if anti.get(verts[0]) != verts[1] else "trans"
+        if c == 3 and geom_key == "octahedron":
+            antipodal = any(anti[verts[a]] == verts[b]
+                            for a in range(3) for b in range(a + 1, 3))
+            return "mer" if antipodal else "fac"
+    return ""
+
+
 def _xyz(syms, P) -> str:
     # HEADER-LESS atom block in the CANONICAL converter format ("{sym:4s}
     # {x:12.6f}..."), byte-identical to every other pool so viewers (Avogadro,
@@ -68,7 +96,9 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
-        label = f"fffree-{d['geometry'].split()[0]}-{k+1}"
+        name = _classify_coloring(geom_key, coloring)
+        geom_tag = d["geometry"].split()[0]
+        label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         results.append((_xyz(syms, P), label))
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
