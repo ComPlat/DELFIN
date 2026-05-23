@@ -8,13 +8,16 @@ monodentate donors, CN 4/5/6 (decompose.py).  Anything else returns None so the
 caller falls through to the existing pipeline.  Deterministic.
 """
 from __future__ import annotations
+import os
 from collections import Counter
 from typing import List, Optional, Tuple
+import numpy as np
 from rdkit import Chem
 
 from delfin.fffree import decompose as DEC
 from delfin.fffree import polya_isomer_count as PIC
 from delfin.fffree import assemble_complex as AC
+import delfin._bond_decollapse as _bd
 
 _GEOM_TO_POLYA = {
     "OC-6 octahedron": "octahedron",
@@ -79,6 +82,39 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
+def _build_is_clean(syms, P) -> bool:
+    """Self-gate: reject a build that is destroyed — non-finite coordinates,
+    any collapsed heavy-heavy bond, or gross steric overlap — so fffree NEVER
+    emits a structure worse than the legacy fallback would.  A failing build
+    makes the whole complex fall back to the legacy pipeline (return None),
+    which guarantees fffree is never worse than UFF on its addressable subset.
+    Universal, geometry-only (no SMILES graph).  Disable via
+    DELFIN_FFFREE_SELFGATE=0."""
+    if os.environ.get("DELFIN_FFFREE_SELFGATE", "1") == "0":
+        return True
+    P = np.asarray(P, dtype=float)
+    if P.size == 0 or not np.all(np.isfinite(P)):
+        return False
+    syms = list(syms)
+    bonds = _bd._geometric_bonds(syms, P)
+    if _bd._count_collapsed(syms, P, bonds) > 0:        # any collapsed heavy bond
+        return False
+    bset = {(min(i, j), max(i, j)) for i, j in bonds}
+    n = len(syms)
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            if (i, j) in bset:
+                continue
+            d = float(np.linalg.norm(P[i] - P[j]))
+            if d < 0.60 * _bd._ideal_bond(syms[i], syms[j]):   # gross overlap
+                return False
+    return True
+
+
 def _fffree_chelate_isomers(d, geom_key, max_isomers):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
@@ -109,6 +145,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if built is None:
             return None
         syms, P = built
+        if not _build_is_clean(syms, P):     # self-gate: never emit a destroyed build
+            return None
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
 
@@ -150,6 +188,8 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
+        if not _build_is_clean(syms, P):     # self-gate: never emit a destroyed build
+            return None
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         geom_tag = d["geometry"].split()[0]
