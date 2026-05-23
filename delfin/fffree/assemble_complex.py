@@ -11,6 +11,7 @@ sphere placement (where) + this (orient + merge) -> a DFT-startable structure.
 Prototype: homoleptic monodentate [M(L)n].  Deterministic.
 """
 from __future__ import annotations
+import os
 from typing import List, Tuple
 import numpy as np
 from rdkit import Chem
@@ -59,6 +60,90 @@ def _axis_rot(axis: np.ndarray, theta: float) -> np.ndarray:
         [c + x*x*(1-c),   x*y*(1-c)-z*s, x*z*(1-c)+y*s],
         [y*x*(1-c)+z*s, c + y*y*(1-c),   y*z*(1-c)-x*s],
         [z*x*(1-c)-y*s, z*y*(1-c)+x*s, c + z*z*(1-c)]])
+
+
+def _subtree(mol, start, blocked):
+    """Atoms reachable from ``start`` over bonds without crossing ``blocked``."""
+    seen = {start}; stack = [start]
+    while stack:
+        a = stack.pop()
+        for nb in mol.GetAtomWithIdx(a).GetNeighbors():
+            j = nb.GetIdx()
+            if j == blocked or j in seen:
+                continue
+            seen.add(j); stack.append(j)
+    return seen
+
+
+def _vsepr_reconstruct(lsyms, lP, lmol, di):
+    """Re-pyramidalise the donor's LOCAL geometry to ideal VSEPR with one
+    coordination vacancy for the metal, rigidly dragging each substituent's
+    subtree so substituents point AWAY from the metal.
+
+    Fixes donors placed with their free-ligand geometry: e.g. a planar sp2
+    carbanion (–CH2– with Si+H+H) whose two H end up on the M–D bond axis, or
+    any donor whose H/substituents point at the metal — the dominant source of
+    the coordination-angle / H-anomaly deficit.  Returns ``(modified_lP,
+    vacancy_direction)``; the caller aligns the vacancy at the metal.
+
+    Falls back to the plain lone-pair direction (no change) for ring,
+    hypervalent (>=4 substituents), single-substituent (already linear) or
+    degenerate donors.  Universal, geometry-only.  Disable via
+    DELFIN_FFFREE_DONOR_VSEPR=0."""
+    if os.environ.get("DELFIN_FFFREE_DONOR_VSEPR", "1") == "0":
+        return lP, _donor_and_lp(lsyms, lP, lmol, di)
+    atom = lmol.GetAtomWithIdx(di)
+    nbrs = [n.GetIdx() for n in atom.GetNeighbors()]
+    k = len(nbrs)
+    if k == 0 or k >= 4 or atom.IsInRing():
+        return lP, _donor_and_lp(lsyms, lP, lmol, di)
+    lP = np.array(lP, float).copy()
+    d = lP[di]
+    u = []
+    for ni in nbrs:
+        w = lP[ni] - d; nw = np.linalg.norm(w)
+        if nw < 1e-6:
+            return lP, _donor_and_lp(lsyms, lP, lmol, di)
+        u.append(w / nw)
+    u = np.array(u)
+    if k == 1:
+        return lP, -u[0]                       # linear: metal opposite, no move
+    # substituent subtrees must be disjoint (else a ring not through the donor)
+    subs = [_subtree(lmol, nbrs[i], di) for i in range(k)]
+    seen = set()
+    for s in subs:
+        if seen & s:
+            return lP, _donor_and_lp(lsyms, lP, lmol, di)
+        seen |= s
+    # ideal angle of each substituent from the metal vacancy, by hybridisation
+    hyb = str(atom.GetHybridization())
+    theta = {"SP": np.radians(180.0), "SP2": np.radians(120.0)}.get(hyb, np.radians(109.47))
+    # vacancy axis a = where the metal goes; prefer the lone-pair sum, fall back
+    # to the substituent-plane normal when the donor is planar (sum ~ 0).
+    a = -u.sum(axis=0); na = np.linalg.norm(a)
+    if na < 0.20 and k >= 2:
+        a = np.cross(u[0], u[1]); na = np.linalg.norm(a)
+    if na < 1e-6:
+        return lP, _donor_and_lp(lsyms, lP, lmol, di)
+    a = a / na
+    tmp = np.array([1.0, 0, 0]) if abs(a[0]) < 0.9 else np.array([0, 1.0, 0])
+    e1 = tmp - a * float(np.dot(tmp, a)); e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    moved = lP.copy()
+    for i, ni in enumerate(nbrs):
+        ip = u[i] - a * float(np.dot(u[i], a))     # azimuthal component
+        nip = np.linalg.norm(ip)
+        if nip < 1e-6:
+            phi = i * (2 * np.pi / k)               # on-axis: spread evenly
+            azim = np.cos(phi) * e1 + np.sin(phi) * e2
+        else:
+            azim = ip / nip
+        target = np.cos(theta) * a + np.sin(theta) * azim
+        target = target / np.linalg.norm(target)
+        R = _rot_align(u[i], target)               # rotate this subtree about donor
+        for j in subs[i]:
+            moved[j] = (lP[j] - d) @ R.T + d
+    return moved, a
 
 
 def assemble_monodentate(metal: str, ligand_smiles: str, donor_idx: int,
@@ -269,9 +354,9 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
             if len(lsyms) == 1:
                 Q = vertex.reshape(1, 3)
             else:
-                lp = _donor_and_lp(lsyms, lP, lmol, di)
+                lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
                 R = _rot_align(lp, -Vunit)
-                Q = (lP - lP[di]) @ R.T + vertex
+                Q = (lPv - lPv[di]) @ R.T + vertex
             cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
