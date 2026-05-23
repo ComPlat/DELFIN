@@ -479,8 +479,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                 if len(lsyms) == 1:
                     Q = (Vunit * md).reshape(1, 3)
                 else:
-                    lp = _donor_and_lp(lsyms, lP, lmol, dons[0])
-                    Q = (lP - lP[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
+                    lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, dons[0])
+                    Q = (lPv - lPv[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
             else:
                 # chelate: arm a -> donor dons[a] -> its assigned vertex
                 vmap = {arm: v for v, arm in va}
