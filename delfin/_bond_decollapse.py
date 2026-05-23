@@ -241,6 +241,26 @@ def _count_h_planar_viol(syms, P) -> int:
     return cnt
 
 
+def _count_bond_distort(syms, P, bonds) -> int:
+    """F3_bond proxy — heavy-heavy bonds whose length deviates outside the CSD
+    band [-0.25, +0.085] of the element-pair ideal (matches the _violations
+    distort band).  The decollapse moves non-frozen atoms to fix collapse but
+    can stretch/compress other bonds out of band; this lets the acceptance gate
+    reject such trades (the F3_bond regression seen vs iter23/iter25)."""
+    cnt = 0
+    for i, j in bonds:
+        if syms[i] == "H" or syms[j] == "H":
+            continue
+        d = float(np.linalg.norm(P[i] - P[j]))
+        ideal = _ideal_bond(syms[i], syms[j])
+        if ideal <= 1e-6:
+            continue
+        dev = (d - ideal) / ideal
+        if dev < -0.25 or dev > 0.085:
+            cnt += 1
+    return cnt
+
+
 def _count_bad_angles(syms, P, heavy_nbr) -> int:
     """Optional angle proxy — count heavy-heavy-heavy bond angles below
     _ANGLE_MIN_DEG (physically implausible for any hybridization, exactly
@@ -313,6 +333,7 @@ def correct_xyz(mol, xyz: str) -> str:
     anglegate = os.environ.get("DELFIN_BOND_DECOLLAPSE_ANGLEGATE", "0") == "1"
     clashes0 = _count_vdw_clashes(syms, P, excl)
     h_planar0 = _count_h_planar_viol(syms, P)
+    bond0 = _count_bond_distort(syms, P, bonds)
     angle0 = _count_bad_angles(syms, P, heavy_nbr) if anglegate else 0
 
     work = P.copy()
@@ -390,6 +411,8 @@ def correct_xyz(mol, xyz: str) -> str:
     if _count_vdw_clashes(syms, work, excl) > clashes0:          # vdw (mandatory)
         return xyz
     if _count_h_planar_viol(syms, work) > h_planar0:            # F20 firewall
+        return xyz
+    if _count_bond_distort(syms, work, bonds) > bond0:          # F3_bond firewall
         return xyz
     if anglegate and _count_bad_angles(syms, work, heavy_nbr) > angle0:  # opt-in
         return xyz
