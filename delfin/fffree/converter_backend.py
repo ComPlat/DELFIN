@@ -82,13 +82,14 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P) -> bool:
+def _build_is_clean(syms, P, cn=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
-    any collapsed heavy-heavy bond, or gross steric overlap — so fffree NEVER
-    emits a structure worse than the legacy fallback would.  A failing build
-    makes the whole complex fall back to the legacy pipeline (return None),
-    which guarantees fffree is never worse than UFF on its addressable subset.
-    Universal, geometry-only (no SMILES graph).  Disable via
+    any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
+    (more heavy atoms packed into the metal's first shell than the intended CN)
+    — so fffree NEVER emits a structure worse than the legacy fallback would.
+    A failing build makes the whole complex fall back to the legacy pipeline
+    (return None), guaranteeing fffree is never worse than UFF on its
+    addressable subset.  Universal, geometry-only.  Disable via
     DELFIN_FFFREE_SELFGATE=0."""
     if os.environ.get("DELFIN_FFFREE_SELFGATE", "1") == "0":
         return True
@@ -111,6 +112,23 @@ def _build_is_clean(syms, P) -> bool:
                 continue
             d = float(np.linalg.norm(P[i] - P[j]))
             if d < 0.60 * _bd._ideal_bond(syms[i], syms[j]):   # gross overlap
+                return False
+    # over-coordination: backbone atoms intruding into the metal's first shell
+    # produce shape-distorted builds (worst-case cshm/polyhedron outliers).  If
+    # the metal has clearly MORE heavy atoms within bonding distance than the
+    # intended coordination number, the build is malformed -> legacy.
+    if cn:
+        for m in range(n):
+            if not _bd._is_metal(syms[m]):
+                continue
+            close = 0
+            for j in range(n):
+                if j == m or syms[j] == "H":
+                    continue
+                cutoff = max(1.45 * _bd._ideal_bond(syms[m], syms[j]), 2.7)
+                if float(np.linalg.norm(P[j] - P[m])) < cutoff:
+                    close += 1
+            if close > cn + 1:                          # +1 slack for borderline
                 return False
     return True
 
@@ -145,7 +163,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P):     # self-gate: never emit a destroyed build
+        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
             return None
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
@@ -188,7 +206,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P):     # self-gate: never emit a destroyed build
+        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
             return None
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
