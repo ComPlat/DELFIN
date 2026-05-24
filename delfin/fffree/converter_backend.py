@@ -17,7 +17,6 @@ from rdkit import Chem
 from delfin.fffree import decompose as DEC
 from delfin.fffree import polya_isomer_count as PIC
 from delfin.fffree import assemble_complex as AC
-from delfin.fffree import polyhedra as PLY
 import delfin._bond_decollapse as _bd
 
 _GEOM_TO_POLYA = {
@@ -83,7 +82,7 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P, cn=None, geom=None) -> bool:
+def _build_is_clean(syms, P, cn=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (more heavy atoms packed into the metal's first shell than the intended CN)
@@ -119,45 +118,18 @@ def _build_is_clean(syms, P, cn=None, geom=None) -> bool:
     # the metal has clearly MORE heavy atoms within bonding distance than the
     # intended coordination number, the build is malformed -> legacy.
     if cn:
-        _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "4.0"))
         for m in range(n):
             if not _bd._is_metal(syms[m]):
                 continue
             close = 0
-            dirs = []            # (dist, unit-vector) for every heavy non-metal
             for j in range(n):
                 if j == m or syms[j] == "H":
                     continue
-                v = P[j] - P[m]
-                dist = float(np.linalg.norm(v))
                 cutoff = max(1.45 * _bd._ideal_bond(syms[m], syms[j]), 2.7)
-                if dist < cutoff:
+                if float(np.linalg.norm(P[j] - P[m])) < cutoff:
                     close += 1
-                if dist > 1e-6:
-                    dirs.append((dist, v / dist))
-            if close > cn + 1:
-                # Over-coordination COUNT alone over-rejects valid chelates:
-                # chelate backbone atoms naturally sit ~2.6-2.9 A from the metal
-                # and get counted, so a clean octahedral chelate trips close>cn+1
-                # despite a perfect polyhedron.  Reject ONLY when the SHAPE is
-                # ALSO bad — i.e. the cn nearest donors do not form the intended
-                # coordination polyhedron (genuine over-pack / backbone intrusion
-                # that distorts it).  Calibrated CShM gate (validated on the 271
-                # #34-rejected builds: a clean low-CShM cluster to recover + a
-                # high-CShM over-pack cluster to keep rejecting; 0 collateral on
-                # builds that already pass the count check).  Env-tunable
-                # DELFIN_FFFREE_SHAPE_MAX (default 4.0); geometry-only.
-                if geom is None:
-                    return False
-                dirs.sort(key=lambda t: t[0])
-                obs = np.array([d[1] for d in dirs[:cn]])
-                if len(obs) < cn:
-                    return False
-                try:
-                    if PLY.cshm(obs, geom) > _shmax:
-                        return False
-                except Exception:
-                    return False
+            if close > cn + 1:                          # +1 slack for borderline
+                return False
     return True
 
 
@@ -191,7 +163,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord -> legacy
+        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
             return None
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
@@ -234,7 +206,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord -> legacy
+        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
             return None
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
