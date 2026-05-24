@@ -26181,7 +26181,47 @@ def _emit_all_trans_by_type_arrangements(
     return n_added
 
 
-def smiles_to_xyz_isomers(
+def _filter_nonfinite_isomers(results):
+    """Universal output contract (#36): never emit a structure with non-finite
+    (NaN/inf) coordinates — it is not a valid DFT startpoint and corrupts every
+    downstream metric.  Drops ONLY the broken isomer/conformer, keeps the finite
+    ones (no coverage loss when other builds for the same SMILES are valid).
+    Applies to EVERY build path (legacy, hapto, fffree) since it gates the public
+    entry point.  Geometry-only, deterministic."""
+    if not results:
+        return results
+    clean = []
+    for item in results:
+        xyz = item[0] if isinstance(item, (tuple, list)) and item else item
+        finite = True
+        for ln in str(xyz).splitlines():
+            p = ln.split()
+            if len(p) >= 4:
+                try:
+                    x, y, z = float(p[1]), float(p[2]), float(p[3])
+                except ValueError:
+                    continue
+                if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
+                    finite = False
+                    break
+        if finite:
+            clean.append(item)
+    return clean
+
+
+def smiles_to_xyz_isomers(*args, **kwargs):
+    """Public entry point.  Thin wrapper enforcing the finite-coordinate output
+    contract (#36) over EVERY return path of the implementation; otherwise the
+    (isomers, error) result passes through unchanged."""
+    r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+    if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
+        return _filter_nonfinite_isomers(r[0]), r[1]
+    if isinstance(r, list):
+        return _filter_nonfinite_isomers(r)
+    return r
+
+
+def _smiles_to_xyz_isomers_impl(
     smiles: str,
     num_confs: int = 200,
     max_isomers: int = 50,
