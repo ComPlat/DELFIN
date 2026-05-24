@@ -63,3 +63,49 @@ def ref_vectors(geometry: str) -> np.ndarray:
 
 def md_distance(metal: str, donor: str) -> float:
     return COV.get(metal, 1.5) + COV.get(donor, 0.75)
+
+
+def _kabsch_resid(P: np.ndarray, Q: np.ndarray) -> float:
+    """Min mean-squared deviation aligning P onto Q by proper rotation (Kabsch,
+    determinant-corrected to forbid reflection)."""
+    H = P.T @ Q
+    U, _, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    diff = P @ R.T - Q
+    return float((diff * diff).sum() / len(P))
+
+
+def cshm(observed_vecs, geometry: str) -> float:
+    """Continuous shape measure (0 = ideal, larger = worse) of the observed
+    donor unit-vectors against the ideal ``geometry`` polyhedron.  Scale-,
+    rotation- and permutation-invariant: each vertex permutation of the ideal
+    set is Kabsch-aligned and the smallest normalised residual is returned,
+    mapped to S = 100·min_resid/obs_var.  Self-contained (no external dep);
+    matches the offline calibration definition used to set the shape threshold.
+    Deterministic.  Returns 0.0 for degenerate / size-mismatched input."""
+    import itertools
+    try:
+        Q = ref_vectors(geometry)
+    except KeyError:
+        return 0.0
+    P = np.asarray(observed_vecs, dtype=float)
+    n = len(P)
+    if n < 2 or n != len(Q):
+        return 0.0
+
+    def _unit_rms(a):
+        rms = math.sqrt(float((a * a).sum()) / len(a))
+        return a / rms if rms > 1e-9 else a
+
+    P = _unit_rms(P)
+    Q = _unit_rms(Q)
+    obs_var = float((P * P).sum() / n)
+    if obs_var < 1e-9:
+        return 0.0
+    best = float("inf")
+    for perm in itertools.permutations(range(n)):
+        r = _kabsch_resid(P, Q[list(perm)])
+        if r < best:
+            best = r
+    return 100.0 * best / obs_var
