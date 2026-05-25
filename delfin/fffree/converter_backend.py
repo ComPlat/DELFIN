@@ -17,6 +17,7 @@ from rdkit import Chem
 from delfin.fffree import decompose as DEC
 from delfin.fffree import polya_isomer_count as PIC
 from delfin.fffree import assemble_complex as AC
+from delfin.fffree import polyhedra as PLY
 import delfin._bond_decollapse as _bd
 
 _GEOM_TO_POLYA = {
@@ -82,7 +83,7 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P, cn=None) -> bool:
+def _build_is_clean(syms, P, cn=None, geom=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (more heavy atoms packed into the metal's first shell than the intended CN)
@@ -130,6 +131,29 @@ def _build_is_clean(syms, P, cn=None) -> bool:
                     close += 1
             if close > cn + 1:                          # +1 slack for borderline
                 return False
+    # #39: reject catastrophic coordination-SHAPE outliers.  fffree builds have
+    # near-ideal coordination (CShM p75 ~0.14), but a ~8% tail is badly distorted
+    # (CShM >> typical) and sets the pool worst-case poly_max/cshm_max above UFF.
+    # Legacy is better for that tail → reject it (self-gate: never worse than
+    # legacy).  Threshold sits deep in the valley (p75 0.14 ↔ p90 10.7), so good
+    # builds are untouched.  Geometry-only.  Env DELFIN_FFFREE_SHAPE_MAX (def 20).
+    if cn and geom:
+        _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "20.0"))
+        for m in range(n):
+            if not _bd._is_metal(syms[m]):
+                continue
+            ds = sorted((float(np.linalg.norm(P[j] - P[m])), j)
+                        for j in range(n) if j != m and syms[j] != "H")
+            if len(ds) < cn:
+                break
+            obs = np.array([(P[j] - P[m]) / (d if d > 1e-9 else 1.0)
+                            for d, j in ds[:cn]])
+            try:
+                if PLY.cshm(obs, geom) > _shmax:
+                    return False
+            except Exception:
+                pass
+            break
     return True
 
 
@@ -163,7 +187,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
@@ -206,7 +230,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if built is None:
             return None
         syms, P = built
-        if not _build_is_clean(syms, P, cn=d.get("cn")):   # self-gate: destroyed/over-coord -> legacy
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
