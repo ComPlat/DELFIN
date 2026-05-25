@@ -155,6 +155,24 @@ def _count_h_bad(syms, P, bonds) -> int:
     return cnt
 
 
+def _metal_shell(syms, P) -> int:
+    """Occupancy of every metal's first coordination shell (heavy atoms within bonding
+    range).  A torsion must NEVER swing a backbone atom INTO the coordination sphere —
+    that is what perturbs the constructed polyhedron (coord_geom).  Coordination is
+    fffree's sacred strength; this guard keeps it inviolable.  Geometry-only, universal."""
+    n = len(syms); shell = 0
+    for m in range(n):
+        if not bd._is_metal(syms[m]):
+            continue
+        for j in range(n):
+            if j == m or syms[j] == "H":
+                continue
+            cut = max(1.35 * bd._ideal_bond(syms[m], syms[j]), 2.6)
+            if float(np.linalg.norm(P[j] - P[m])) < cut:
+                shell += 1
+    return shell
+
+
 def _firewall(syms, P):
     """Never-worse multi-axis guard mirroring the metrics earlier versions broke."""
     bonds, bonded, adj = _bonds_adj(syms, P)
@@ -165,6 +183,7 @@ def _firewall(syms, P):
         "hplanar": bd._count_h_planar_viol(syms, P),
         "hbad": _count_h_bad(syms, P, bonds),
         "badang": bd._count_bad_angles(syms, P, adj),
+        "mshell": _metal_shell(syms, P),    # coordination-sphere intrusion guard (v4)
     }
 
 
