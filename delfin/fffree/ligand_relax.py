@@ -167,7 +167,10 @@ def _metal_shell(syms, P) -> int:
         for j in range(n):
             if j == m or syms[j] == "H":
                 continue
-            cut = max(1.35 * bd._ideal_bond(syms[m], syms[j]), 2.6)
+            # mirror the coord_geom detector's M-D detection EXACTLY (min(1.65*ideal,
+            # 2.90)) so any atom swinging into the polyhedron-detection sphere is caught
+            # -> coord_geom cannot regress (build-against-the-metric).
+            cut = min(1.65 * bd._ideal_bond(syms[m], syms[j]), 2.90)
             if float(np.linalg.norm(P[j] - P[m])) < cut:
                 shell += 1
     return shell
