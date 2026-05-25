@@ -76,31 +76,10 @@ def _h_parent_map(syms, P, adj) -> Dict[int, int]:
     return hp
 
 
-def _rigid_group_atoms(syms, P, adj) -> Set[int]:
-    """Atoms of rigid functional groups that the per-atom loss would otherwise break:
-    oxoanions / carboxylates -- a C/N centre with >=2 bonded O, or S/P with >=3 bonded
-    O.  Freeze the centre + its O (and the O's H, e.g. -COOH) so they move only via the
-    frozen coordination, never internally.  Geometry-only."""
-    rigid: Set[int] = set()
-    for c in range(len(syms)):
-        sc = syms[c]
-        if sc not in ("C", "N", "S", "P"):
-            continue
-        oxy = [k for k in adj[c] if syms[k] == "O"]
-        need = 3 if sc in ("S", "P") else 2
-        if len(oxy) >= need:
-            rigid.add(c)
-            for o in oxy:
-                rigid.add(o)
-                for k in adj[o]:           # -OH hydrogens / terminal
-                    if syms[k] == "H":
-                        rigid.add(k)
-    return rigid
-
-
-def _loss_and_moves(syms, P, bonded, adj, movable):
+def _loss_and_moves(syms, P, bonded, adj, movable, bond0):
     """Continuous COD loss (scalar) + per-atom displacement moves for MOVABLE heavy
-    atoms only.  Pure function, deterministic."""
+    atoms only.  Pure function, deterministic.  `bond0` = {(i,j): input length} —
+    bonds are restrained to their CONSTRUCTION length (see bond term)."""
     n = len(syms)
     loss = 0.0
     moves: List[Tuple[int, np.ndarray]] = []
@@ -111,8 +90,20 @@ def _loss_and_moves(syms, P, bonded, adj, movable):
         d = float(np.linalg.norm(P[i] - P[j]))
         if d <= 1e-6:
             continue
-        r0 = bd._ideal_bond(syms[i], syms[j])
-        dev = d - r0
+        # UNIVERSAL (element-agnostic): bond LENGTHS come from the construction (ideal
+        # covalent length per element pair).  The relaxer must NOT change them — it only
+        # cleans up angles / conformation / planarity / clashes.  So each bond is stiffly
+        # restrained to its INPUT length bond0 (capped at the +0.085 band edge if the
+        # construction made it overlong; never stretched).  This preserves multiple
+        # bonds, aromatics, oxoanions, amides for ANY element without element lists.
+        key = (min(i, j), max(i, j))
+        target = bond0.get(key)
+        if target is None:                       # bond formed during relaxation -> ideal
+            target = bd._ideal_bond(syms[i], syms[j])
+        ideal = bd._ideal_bond(syms[i], syms[j])
+        if ideal > 1e-6 and target > ideal * 1.085:
+            target = ideal * 1.085               # fix overlong construction bonds only
+        dev = d - target
         loss += _W_BOND * dev * dev
         u = (P[j] - P[i]) / d
         corr = 0.5 * _W_BOND * (-dev)
@@ -208,36 +199,43 @@ def _count_h_bad(syms, P, bonds) -> int:
 def _firewall(syms, P):
     """Cheap geometry-only proxies mirroring the metrics v1 broke.  A pass that raises
     ANY of these above the input baseline is rejected (never-worse guarantee)."""
-    bonds, bonded, _ = _bonds_adj(syms, P)
+    bonds, bonded, adj = _bonds_adj(syms, P)
     excl = bd._neighbor_exclusion(len(syms), bonds)
     return {
         "distort": bd._count_bond_distort(syms, P, bonds),
         "vdw": bd._count_vdw_clashes(syms, P, excl),
         "hplanar": bd._count_h_planar_viol(syms, P),
         "hbad": _count_h_bad(syms, P, bonds),
+        "badang": bd._count_bad_angles(syms, P, adj),   # universal angle-collapse guard
     }
 
 
 def relax(syms, P, fixed_idx: Set[int], max_passes: int = 120, damp: float = 0.4):
     """COD-loss coordinate descent on free ligand-internal heavy atoms.  Frozen:
-    metal + donors + donor heavy-neighbours + rigid oxoanion/carboxylate groups.  H is
-    dragged rigidly with its parent.  Multi-axis firewall + ‖M-D‖ never-worse gate.
-    Deterministic.  Returns relaxed P, or the original if nothing strictly improved."""
+    metal + donors + donor heavy-neighbours.  Bond LENGTHS are restrained to the
+    construction value (bonds are not a relaxation DOF); only angles / conformation /
+    planarity / clashes are optimised.  H is dragged rigidly with its parent.  Multi-
+    axis never-worse firewall + ‖M-D‖ gate.  Deterministic.  Universal (no element
+    lists).  Returns relaxed P, or the original if nothing strictly improved."""
     P = np.array(P, float).copy()
     if P.size == 0 or not np.all(np.isfinite(P)):
         return P
     n = len(syms)
     syms = list(syms)
     bonds, bonded, adj = _bonds_adj(syms, P)
+    # capture construction bond lengths -> bonds are restrained to these (universal)
+    bond0 = {(min(i, j), max(i, j)): float(np.linalg.norm(P[i] - P[j]))
+             for i, j in bonded}
 
-    # frozen set: metal + donors (caller) + donor heavy-neighbours + rigid groups
+    # frozen set: metal + donors (caller) + donor heavy-neighbours.  Rigid functional
+    # groups (oxoanions/amides/aromatics) are protected UNIVERSALLY by the bond-term
+    # (never stretch short multiple-bonds) + the multi-axis firewall -- no element lists.
     frozen = set(int(i) for i in fixed_idx)
     for d_ in list(frozen):
         if d_ < n:
             for k in adj[d_]:
                 if syms[k] != "H":
                     frozen.add(k)
-    frozen |= _rigid_group_atoms(syms, P, adj)
 
     hp = _h_parent_map(syms, P, adj)
     h_offset = {h: P[h] - P[par] for h, par in hp.items()}
@@ -250,19 +248,29 @@ def relax(syms, P, fixed_idx: Set[int], max_passes: int = 120, damp: float = 0.4
 
     fw0 = _firewall(syms, P)
     md_snap = bd._md_snapshot(syms, P)
-    best_loss, _ = _loss_and_moves(syms, P, bonded, adj, movable)
+    best_loss, _ = _loss_and_moves(syms, P, bonded, adj, movable, bond0)
     if best_loss <= 1e-9:
         return P
 
     for _ in range(max_passes):
         bonds, bonded, adj = _bonds_adj(syms, P)
-        loss, moves = _loss_and_moves(syms, P, bonded, adj, movable)
+        loss, moves = _loss_and_moves(syms, P, bonded, adj, movable, bond0)
         disp = np.zeros((n, 3)); cnt = np.zeros(n)
         for idx, dvec in moves:
             disp[idx] += dvec; cnt[idx] += 1
         for i in range(n):
             if cnt[i] > 0:
                 disp[i] /= cnt[i]
+        # UNIVERSAL bond-length preservation: project each atom's move PERPENDICULAR to
+        # its bonds, so atoms rotate about their bonds (changing angles/torsions) instead
+        # of stretching them.  Bond lengths come from the construction and stay fixed for
+        # ANY element/motif.  (Hard firewall bond-change guard below is the backstop.)
+        for i in movable:
+            for k in adj[i]:
+                e = P[i] - P[k]; ne = float(np.linalg.norm(e))
+                if ne > 1e-6:
+                    e /= ne
+                    disp[i] = disp[i] - float(np.dot(disp[i], e)) * e
         step = damp * disp
         norms = np.linalg.norm(step, axis=1)
         big = norms > _MAX_STEP
@@ -281,9 +289,18 @@ def relax(syms, P, fixed_idx: Set[int], max_passes: int = 120, damp: float = 0.4
                 break
             continue
         tb, tbonded, ta = _bonds_adj(syms, trial)
-        tloss, _ = _loss_and_moves(syms, trial, tbonded, ta, movable)
+        # hard universal bond-length-preservation guard: reject if any construction bond
+        # drifts >5% (the firewall distort band is blind to within-band drift of short
+        # multiple-bonds; this catches it for ANY element).
+        bondchg = 0.0
+        for i, j in tbonded:
+            key = (min(i, j), max(i, j))
+            b = bond0.get(key)
+            if b and b > 1e-6:
+                bondchg = max(bondchg, abs(float(np.linalg.norm(trial[i] - trial[j])) - b) / b)
+        tloss, _ = _loss_and_moves(syms, trial, tbonded, ta, movable, bond0)
         fw = _firewall(syms, trial)
-        worse = any(fw[k] > fw0[k] for k in fw0)
+        worse = any(fw[k] > fw0[k] for k in fw0) or bondchg > 0.05
         if tloss < best_loss - 1e-9 and not worse:
             P = trial; best_loss = tloss
         else:
@@ -302,16 +319,31 @@ if __name__ == "__main__":
         [0.0, 3.0, 0.0], [1.2, 3.0, 0.0], [-0.6, 4.0, 0.0], [-0.6, 2.0, 0.0],   # nitrate NO3
     ], float)
     fixed = {0, 1}
-    no3_before = P[5:9].copy()
+    def _no3_geom(X):
+        N = X[5]; Os = X[6:9]
+        bl = [float(np.linalg.norm(o - N)) for o in Os]
+        ang = []
+        for a in range(3):
+            for b in range(a + 1, 3):
+                va, vb = Os[a] - N, Os[b] - N
+                c = np.dot(va, vb) / (np.linalg.norm(va) * np.linalg.norm(vb))
+                ang.append(float(np.degrees(np.arccos(np.clip(c, -1, 1)))))
+        return np.array(bl), np.array(ang)
+    bl0, ang0 = _no3_geom(P)
     out1 = relax(syms, P, fixed); out2 = relax(syms, P, fixed)
-    b0, bo0, a0 = _bonds_adj(syms, P); l0, _ = _loss_and_moves(syms, P, bo0, a0,
-        set(range(len(syms))))
-    b1, bo1, a1 = _bonds_adj(syms, out1); l1, _ = _loss_and_moves(syms, out1, bo1, a1,
-        set(range(len(syms))))
+    bl1, ang1 = _no3_geom(out1)
+    full = set(range(len(syms)))
+    _, bo0, a0 = _bonds_adj(syms, P)
+    bond0 = {(min(i, j), max(i, j)): float(np.linalg.norm(P[i] - P[j])) for i, j in bo0}
+    l0, _ = _loss_and_moves(syms, P, bo0, a0, full, bond0)
+    _, bo1, a1 = _bonds_adj(syms, out1)
+    l1, _ = _loss_and_moves(syms, out1, bo1, a1, full, bond0)
     fw0 = _firewall(syms, P); fw1 = _firewall(syms, out1)
     print(f"loss {l0:.4f} -> {l1:.4f}")
     print(f"firewall in={fw0} out={fw1}  never-worse={all(fw1[k]<=fw0[k] for k in fw0)}")
     print(f"metal+donor frozen: {np.allclose(out1[0],P[0]) and np.allclose(out1[1],P[1])}")
-    print(f"nitrate intact: {np.allclose(out1[5:9], no3_before)}")
+    print(f"nitrate internal geom preserved: bonds dmax={np.abs(bl1-bl0).max():.4f}A "
+          f"angles dmax={np.abs(ang1-ang0).max():.2f}deg "
+          f"(intact={np.abs(bl1-bl0).max()<0.05 and np.abs(ang1-ang0).max()<3.0})")
     print(f"deterministic: {np.allclose(out1,out2)}  finite: {np.all(np.isfinite(out1))}")
     print(f"M-D intact: {not bd._md_broken(bd._md_snapshot(syms,P), out1)}")
