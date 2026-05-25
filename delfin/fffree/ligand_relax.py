@@ -202,6 +202,17 @@ def relax(syms, P, fixed_idx: Set[int], max_sweeps: int = _MAX_SWEEPS):
     bonds, bonded, adj = _bonds_adj(syms, P)
     frozen = set(int(i) for i in fixed_idx)
     metals = [i for i in range(n) if bd._is_metal(syms[i])]
+    # FREEZE every atom coord_geom counts as a coordinating donor (its cutoff
+    # min(1.65*ideal, 2.90)).  The caller's donor set / a geometric fixed set can be
+    # TIGHTER than this, leaving a borderline donor (1.45x-1.65x) movable -> rotating it
+    # perturbs the constructed polyhedron (coord_geom).  Matching the detector's donor
+    # radius makes the coordination inviolable in BOTH smoke and production. Universal.
+    for m in metals:
+        for j in range(n):
+            if j == m or syms[j] == "H":
+                continue
+            if float(np.linalg.norm(P[j] - P[m])) < min(1.65 * bd._ideal_bond(syms[m], syms[j]), 2.90):
+                frozen.add(j)
 
     ringb = _ring_bonds(bonded, adj)
     roots = metals if metals else ([min(frozen)] if frozen else [0])
