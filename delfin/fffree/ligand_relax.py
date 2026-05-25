@@ -38,9 +38,9 @@ _VDW = bd._VDW
 _VDW_D = bd._VDW_DEFAULT
 _CLASH_FACTOR = 0.85
 _MULTIPLE_BOND = 0.92          # bond shorter than this*ideal = multiple/conjugated -> rigid
-_ANGLE_SCAN = (30.0, 60.0, 90.0, 120.0, 150.0, 180.0,
-               210.0, 240.0, 270.0, 300.0, 330.0)
-_MAX_SWEEPS = 4
+_ANGLE_SCAN = (60.0, 120.0, 180.0, 240.0, 300.0)   # staggered torsion states
+_MAX_SWEEPS = 2
+_MAX_ROTATABLE = 12         # cap per-structure cost (huge flexible ligands -> skip extras)
 
 
 def _vdw(s: str) -> float:
@@ -239,6 +239,9 @@ def relax(syms, P, fixed_idx: Set[int], max_sweeps: int = _MAX_SWEEPS):
         rotatable.append((parent, child, frozenset(sub)))
     if not rotatable:
         return P
+    if len(rotatable) > _MAX_ROTATABLE:                # cap cost: largest sub-trees first
+        rotatable.sort(key=lambda t: (-len(t[2]), t[0], t[1]))
+        rotatable = rotatable[:_MAX_ROTATABLE]
 
     fw0 = _firewall(syms, P)
     md_snap = bd._md_snapshot(syms, P)
@@ -246,6 +249,9 @@ def relax(syms, P, fixed_idx: Set[int], max_sweeps: int = _MAX_SWEEPS):
     if best_clash <= 1e-9:
         return P
 
+    # Speed: a rigid rotation PRESERVES bonds, so `bonded` is reused for clash scoring
+    # (no per-angle bond rebuild).  The angle scan uses only the cheap clash loss; the
+    # expensive multi-axis firewall + M-D check run ONCE per bond on the BEST candidate.
     for _ in range(max_sweeps):
         improved = False
         for parent, child, sub in rotatable:
@@ -253,23 +259,21 @@ def relax(syms, P, fixed_idx: Set[int], max_sweeps: int = _MAX_SWEEPS):
             if float(np.linalg.norm(axis)) < 1e-6:
                 continue
             idxs = list(sub)
-            best_theta, best_trial, best_l = None, None, best_clash
+            best_theta, best_l = None, best_clash
             for theta in _ANGLE_SCAN:
                 trial = _rotate(P, idxs, P[parent], axis, theta)
-                if not np.all(np.isfinite(trial)):
-                    continue
-                _, tbonded, _ = _bonds_adj(syms, trial)
-                cl = _clash_loss(syms, trial, tbonded)
+                cl = _clash_loss(syms, trial, bonded)     # bonds preserved -> reuse
                 if cl < best_l - 1e-9:
-                    fw = _firewall(syms, trial)
-                    if any(fw[k] > fw0[k] for k in fw0):
-                        continue
-                    if bd._md_broken(md_snap, trial):
-                        continue
-                    best_theta, best_trial, best_l = theta, trial, cl
-            if best_trial is not None:
-                P = best_trial; best_clash = best_l; improved = True
-                _, bonded, adj = _bonds_adj(syms, P)
+                    best_theta, best_l = theta, cl
+            if best_theta is None:
+                continue
+            trial = _rotate(P, idxs, P[parent], axis, best_theta)
+            if not np.all(np.isfinite(trial)) or bd._md_broken(md_snap, trial):
+                continue
+            fw = _firewall(syms, trial)                   # ONCE on best candidate only
+            if any(fw[k] > fw0[k] for k in fw0):
+                continue
+            P = trial; best_clash = best_l; improved = True
         if not improved:
             break
     return P
