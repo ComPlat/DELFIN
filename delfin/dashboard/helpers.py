@@ -221,10 +221,20 @@ def resolve_time_limit(toggle_widget, custom_widget, default='48:00:00'):
     toggle_val = toggle_widget.value
     if toggle_val == 'Custom':
         try:
-            hours = int(custom_widget.value)
-            if hours < 1:
+            if hasattr(custom_widget, 'hours_widget'):
+                hours = int(custom_widget.hours_widget.value)
+                minutes = int(custom_widget.minutes_widget.value)
+                seconds = int(custom_widget.seconds_widget.value)
+            else:
+                # Backward-compat: bare hours-only widget
+                hours = int(custom_widget.value)
+                minutes = 0
+                seconds = 0
+            if hours < 0 or not (0 <= minutes <= 59) or not (0 <= seconds <= 59):
                 raise ValueError
-            return f'{hours}:00:00'
+            if hours == 0 and minutes == 0 and seconds == 0:
+                raise ValueError
+            return f'{hours}:{minutes:02d}:{seconds:02d}'
         except (ValueError, TypeError):
             return default
     return JOB_TIME_LIMITS.get(toggle_val, default)
@@ -268,12 +278,34 @@ def create_time_limit_widgets(style=None):
     )
     toggle.add_class('delfin-time-limit-toggle')
 
-    custom = widgets.BoundedIntText(
-        value=72, min=1, max=720, step=1,
+    hours_widget = widgets.BoundedIntText(
+        value=72, min=0, max=720, step=1,
         description='Hours:',
-        layout=widgets.Layout(width='180px', display='none', margin='6px 0 0 0'),
+        layout=widgets.Layout(width='150px'),
         style=style,
     )
+    minutes_widget = widgets.BoundedIntText(
+        value=0, min=0, max=59, step=1,
+        description='Min:',
+        layout=widgets.Layout(width='120px'),
+        style=style,
+    )
+    seconds_widget = widgets.BoundedIntText(
+        value=0, min=0, max=59, step=1,
+        description='Sec:',
+        layout=widgets.Layout(width='120px'),
+        style=style,
+    )
+
+    custom = widgets.HBox(
+        [hours_widget, minutes_widget, seconds_widget],
+        layout=widgets.Layout(display='none', margin='6px 0 0 0'),
+    )
+    # Expose the sub-widgets so resolve_time_limit and resets can reach them
+    # while keeping the (toggle, custom) two-tuple contract intact.
+    custom.hours_widget = hours_widget
+    custom.minutes_widget = minutes_widget
+    custom.seconds_widget = seconds_widget
 
     def _toggle_visibility(change):
         custom.layout.display = '' if change['new'] == 'Custom' else 'none'
