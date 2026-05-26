@@ -197,8 +197,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
     ligands = d["ligands"]
-    if any(lg["denticity"] >= 3 for lg in ligands):
-        return None        # tridentate+ not yet supported -> legacy
+    if any(lg["denticity"] >= 4 for lg in ligands):
+        return None        # kappa>=4 (porphyrin/salen/DTPA) not yet supported -> legacy
     # Aromatic donors on the NEWLY-enabled CN5 chelate geometries (TBP-5/SPY-5) would be
     # placed face-on (ring-normal perp to M-N): _vsepr_reconstruct skips ring donors and
     # there is no in-plane orientation yet (deferred to the aromatic-N-in-plane iter).  The
@@ -227,17 +227,20 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     geom_tag = d["geometry"].split()[0]
     results = []
     for k, config in enumerate(configs[:max_isomers]):
+        # per-config pruning (generate-gate-floor): a geometrically infeasible config
+        # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
+        # bad isomer no longer drops the whole complex to legacy.  Clean isomers survive.
         try:
             built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
         except Exception:
-            return None
+            continue
         if built is None:
-            return None
+            continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors):   # donor-aware self-gate -> legacy
-            return None
+                               donors=donors):   # donor-aware self-gate -> skip config
+            continue
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
 

@@ -12,6 +12,7 @@ Prototype: homoleptic monodentate [M(L)n].  Deterministic.
 """
 from __future__ import annotations
 import os
+import itertools
 from typing import List, Tuple
 import numpy as np
 from rdkit import Chem
@@ -92,21 +93,31 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6):
         return None
 
 
-def _orient_chelate_to_vertices(lP, d0, d1, T0, T1):
+def _orient_chelate_to_vertices(lP, donor_idxs, targets):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
-    donor directions best-fit the target vertex directions (Kabsch on the two unit
-    M->donor vectors), then uniformly rescale to the ideal M-donor distance.  The
-    ring geometry (incl. the backbone-clears-metal arrangement) is preserved as a
-    rigid body; donors land near their vertices at the natural bite."""
-    n0 = np.linalg.norm(lP[d0]); n1 = np.linalg.norm(lP[d1])
-    if n0 < 1e-6 or n1 < 1e-6:
+    donor directions best-fit the target vertex directions, then uniformly rescale
+    to the ideal M-donor distance.  Tries EVERY donor<->target correspondence and
+    keeps the lowest-residual Kabsch rotation, so a bi-/tri-dentate auto-seats on
+    the matching cis-edge / mer / fac vertex arrangement without the enumerator
+    needing to know it.  The ring geometry (backbone clears the metal) is preserved
+    as a rigid body.  Works for any denticity."""
+    dvecs = [np.asarray(lP[d], float) for d in donor_idxs]
+    nrm = [float(np.linalg.norm(v)) for v in dvecs]
+    if any(x < 1e-6 for x in nrm):
         return None
-    u = np.array([lP[d0] / n0, lP[d1] / n1])
-    V = np.array([T0 / np.linalg.norm(T0), T1 / np.linalg.norm(T1)])
-    R = _kabsch_rot(u, V)
-    Q = lP @ R.T
-    s = (np.linalg.norm(T0) + np.linalg.norm(T1)) / (np.linalg.norm(Q[d0]) + np.linalg.norm(Q[d1]))
-    return Q * s
+    u = np.array([v / x for v, x in zip(dvecs, nrm)])
+    Vt = [np.asarray(T, float) / np.linalg.norm(T) for T in targets]
+    best = None
+    for perm in itertools.permutations(range(len(targets))):
+        Varr = np.array([Vt[p] for p in perm])
+        R = _kabsch_rot(u, Varr)
+        resid = float(np.sum((u @ R.T - Varr) ** 2))
+        if best is None or resid < best[0]:
+            best = (resid, R)
+    Q = lP @ best[1].T
+    obs = sum(float(np.linalg.norm(Q[d])) for d in donor_idxs)
+    tgt = sum(float(np.linalg.norm(T)) for T in targets)
+    return Q * (tgt / obs if obs > 1e-6 else 1.0)
 
 
 def _donor_and_lp(syms, P, mol, donor_idx: int) -> np.ndarray:
@@ -580,7 +591,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         ring_confs = None
         lmol = None
         if lg["denticity"] >= 2:
-            ring_confs = _embed_metallacycle(lg["mol"], dons[:2], metal)
+            ring_confs = _embed_metallacycle(lg["mol"], dons[:lg["denticity"]], metal)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
@@ -600,21 +611,27 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, dons[0])
                     Q = (lPv - lPv[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
             else:
-                # chelate: arm a -> donor dons[a] -> its assigned vertex
-                vmap = {arm: v for v, arm in va}
-                d0, d1 = dons[0], dons[1]
-                T0 = ref[vmap[0]] / np.linalg.norm(ref[vmap[0]]) * MSB.md_distance(metal, lsyms[d0])
-                T1 = ref[vmap[1]] / np.linalg.norm(ref[vmap[1]]) * MSB.md_distance(metal, lsyms[d1])
+                # chelate (bi-/tri-dentate): the d assigned vertices host the d donors;
+                # the exact donor<->vertex seating is found geometrically in orient.
+                dent = lg["denticity"]
+                dons_d = dons[:dent]
+                verts = [v for v, arm in sorted(va, key=lambda x: x[1])]
+                targets = [ref[verts[i]] / np.linalg.norm(ref[verts[i]])
+                           * MSB.md_distance(metal, lsyms[dons_d[i]]) for i in range(dent)]
                 Q = None
                 if ring_confs is not None:
-                    Q = _orient_chelate_to_vertices(lP, d0, d1, T0, T1)
-                if Q is None:                       # embed/orient failed -> rigid fallback
-                    Q = _place_chelate_block(metal, lsyms, lP, d0, d1, T0, T1)
+                    Q = _orient_chelate_to_vertices(lP, dons_d, targets)
+                if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
+                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
+                if Q is None:                       # tridentate embed failure -> skip this config
+                    continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
                 break
+        if best_Q is None:                  # no conformer could be placed -> bail to legacy
+            return None
         out_syms += lsyms
         for row in best_Q:
             placed.append(row)

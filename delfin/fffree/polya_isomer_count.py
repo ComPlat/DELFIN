@@ -232,16 +232,28 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
                 seen.add(key); out.append(dict(assign))
             return
         k = rem[0]; spec = ligand_specs[k]
-        if spec["denticity"] == 1:
+        dent = spec["denticity"]
+        if dent == 1:
             for v in [v for v in range(n) if v not in assign]:
                 a = dict(assign); a[v] = (k, 0); place(a)
-        else:
+        elif dent == 2:
             for (v1, v2) in cis_edges:
                 if v1 in assign or v2 in assign:
                     continue
                 a = dict(assign); a[v1] = (k, 0); a[v2] = (k, 1); place(a)
                 if spec.get("asym"):
                     b = dict(assign); b[v1] = (k, 1); b[v2] = (k, 0); place(b)
+        else:
+            # tridentate+ (kappa>=3): occupy any d-vertex subset.  Assembly seats the
+            # ligand on the matching mer/fac arrangement (metallacycle embed + best-
+            # permutation Kabsch) and the self-gate prunes geometrically infeasible
+            # subsets, so the combinatorial enumeration need not know mer-vs-fac.
+            free = [v for v in range(n) if v not in assign]
+            for combo in itertools.combinations(free, dent):
+                a = dict(assign)
+                for arm, v in enumerate(combo):
+                    a[v] = (k, arm)
+                place(a)
 
     place({})
     return out
