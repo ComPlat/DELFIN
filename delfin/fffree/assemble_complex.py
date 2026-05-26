@@ -508,9 +508,9 @@ def _constrained_uff_relax(ligmol, fixed_idx, max_its=500):
         ff = AllChem.UFFGetMoleculeForceField(ligmol, ignoreInterfragInteractions=False)
         if ff is None:
             return False
-        for i in fixed_idx:
-            ff.AddFixedPoint(i)
-        ff.Initialize()
+        ff.Initialize()                       # MUST precede AddFixedPoint, else the fixed
+        for i in fixed_idx:                   # points are cleared -> donors drift (M-D break)
+            ff.AddFixedPoint(int(i))
         ff.Minimize(maxIts=max_its)
         return True
     except Exception:
@@ -581,9 +581,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         by_lig.setdefault(li, []).append((v, arm))
     out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}; pos = 1
+    relax_frags = []          # (AddHs(lg.mol), ligands-only offset) for the internal relax
     for li, va in by_lig.items():
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
+        lig_offset = pos - 1                       # start index in the ligands-only frame
         # Chelates: embed the metallacycle (ligand + dative-bonded metal) so the
         # ring forms with correct geometry (backbone clears the metal) instead of
         # rigid-fitting a non-chelating free-ligand conformer.  Fall back to the
@@ -636,17 +638,61 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         for row in best_Q:
             placed.append(row)
         placed_syms += lsyms
+        relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))   # bonds for internal relax
         # freeze the donor atoms at their vertices
         for d in dons:
             fixed.add(pos + d)
         pos += len(lsyms)
     P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
     if refine:
+        # FUNDAMENTAL internal relaxation (division-of-labor doctrine): build the
+        # ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
+        # DONORS FIXED + inter-fragment vdW ON.  All organic internals (bond lengths,
+        # angles, funcgroup/aromatic planarity, H geometry) recover to MM-ideal and
+        # inter-ligand clashes resolve, while the constructed coordination is preserved
+        # (donors pinned -> M-D invariant; metal never enters the force field).  This
+        # replaces the weak defect-count refine(), which left ETKDG-rough internals.
+        relaxed = False
         try:
-            from delfin.fffree.refine import refine as _refine
-            P = _refine(out_syms, P, fixed)
+            # METAL-FREE constrained UFF relax: ligands-only mol (no metal, no M-D bonds)
+            # at the placed coords, donors FIXED at their constructed vertex positions,
+            # inter-fragment vdW ON.  All organic internals (bonds/angles/funcgroup &
+            # aromatic planarity, H geometry) recover to MM-ideal and inter-ligand clashes
+            # resolve, while the coordination is preserved (donors pinned -> M-D invariant)
+            # WITHOUT UFF having to type the metal (unreliable for 4d/5d, and M-D bonds
+            # would distort the constructed M-D).  Replaces the weak defect-count refine().
+            ligmol = Chem.RWMol()
+            for frag, _off in relax_frags:
+                base = ligmol.GetNumAtoms()
+                for a in frag.GetAtoms():
+                    ligmol.AddAtom(Chem.Atom(a.GetAtomicNum()))
+                for b in frag.GetBonds():
+                    ligmol.AddBond(b.GetBeginAtomIdx() + base, b.GetEndAtomIdx() + base,
+                                   b.GetBondType())
+            n_lig = ligmol.GetNumAtoms()
+            if n_lig == len(out_syms) - 1 and n_lig > 0:
+                conf = Chem.Conformer(n_lig)
+                for kk in range(n_lig):
+                    x = P[kk + 1]
+                    conf.SetAtomPosition(kk, [float(x[0]), float(x[1]), float(x[2])])
+                ligmol.AddConformer(conf, assignId=True)
+                try:
+                    Chem.SanitizeMol(ligmol, catchErrors=True)
+                except Exception:
+                    pass
+                fixed_lo = [d - 1 for d in sorted(fixed - {0})]   # donors in ligands-only frame
+                if _constrained_uff_relax(ligmol, fixed_lo):
+                    LP = ligmol.GetConformer().GetPositions()
+                    P = np.vstack([np.zeros((1, 3)), np.array(LP, float)])
+                    relaxed = True
         except Exception:
-            pass
+            relaxed = False
+        if not relaxed:                            # UFF unavailable/failed -> defect-count fallback
+            try:
+                from delfin.fffree.refine import refine as _refine
+                P = _refine(out_syms, P, fixed)
+            except Exception:
+                pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     return out_syms, P, donors
 
