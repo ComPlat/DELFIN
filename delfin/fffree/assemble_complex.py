@@ -568,21 +568,12 @@ def build_and_relax(metal: str, geometry: str, vertex_specs, relax: bool = True)
     return syms, P
 
 
-def assemble_from_config(metal, geometry, config, ligands, refine=True,
-                         use_metallacycle=True):
+def assemble_from_config(metal, geometry, config, ligands, refine=True):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
     vertex.  Multi-conformer selection per ligand + constrained refine.  Returns
-    (syms, P) = [metal] + ligand atoms, or None on failure.
-
-    ``use_metallacycle``: if True, bidentate/tridentate ligands are placed via the
-    metallacycle embed (correct ring geometry, but ETKDG-rough internals).  If
-    False, the legacy free-ligand rigid-fit is used (clean MMFF internals, but the
-    free-ligand conformer may collapse a tight chelate's backbone into the metal).
-    The caller tries False first (keep clean builds) and falls back to True only
-    where the rigid fit fails the self-gate or for kappa>=3 (rigid-fit is
-    bidentate-only)."""
+    (syms, P) = [metal] + ligand atoms, or None on failure."""
     ref = MSB._ref_vectors(geometry)
     # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
     by_lig = {}
@@ -599,7 +590,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # free-ligand path if the metallacycle embed fails.
         ring_confs = None
         lmol = None
-        if use_metallacycle and lg["denticity"] >= 2:
+        if lg["denticity"] >= 2:
             ring_confs = _embed_metallacycle(lg["mol"], dons[:lg["denticity"]], metal)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs

@@ -225,39 +225,23 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     if not configs:
         return None
     geom_tag = d["geometry"].split()[0]
-
-    def _build(use_metallacycle):
-        out = []
-        for k, config in enumerate(configs[:max_isomers]):
-            # per-config pruning (generate-gate-floor): a geometrically infeasible config
-            # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
-            # bad isomer no longer drops the whole complex to legacy.
-            try:
-                built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
-                                                use_metallacycle=use_metallacycle)
-            except Exception:
-                continue
-            if built is None:
-                continue
-            syms, P, donors = built
-            syms, P = _maybe_relax(syms, P)
-            if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                   donors=donors):   # donor-aware self-gate -> skip config
-                continue
-            out.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
-        return out
-
-    # HYBRID: try the legacy free-ligand rigid fit FIRST (clean MMFF internals); only fall
-    # back to the metallacycle embed (correct ring, rougher internals) where the rigid fit
-    # fails the self-gate (tight-chelate backbone collapse) or for kappa>=3 (rigid fit is
-    # bidentate-only).  This keeps the already-clean chelate builds unchanged (no internal
-    # regression) and uses the metallacycle only where it strictly beats legacy/collapse.
-    if any(lg["denticity"] >= 3 for lg in ligands):
-        results = _build(use_metallacycle=True)        # rigid fit is bidentate-only
-    else:
-        results = _build(use_metallacycle=False)
-        if not results:
-            results = _build(use_metallacycle=True)
+    results = []
+    for k, config in enumerate(configs[:max_isomers]):
+        # per-config pruning (generate-gate-floor): a geometrically infeasible config
+        # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
+        # bad isomer no longer drops the whole complex to legacy.  Clean isomers survive.
+        try:
+            built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
+        except Exception:
+            continue
+        if built is None:
+            continue
+        syms, P, donors = built
+        syms, P = _maybe_relax(syms, P)
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                               donors=donors):   # donor-aware self-gate -> skip config
+            continue
+        results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
 
 
