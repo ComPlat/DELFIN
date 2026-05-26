@@ -84,10 +84,29 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6):
             cids = [0]
         keep = [i for i in range(mh.GetNumAtoms()) if i != mi]      # drop placeholder metal
         lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
+        metal_pos = {cid: np.array(mh.GetConformer(cid).GetPositions()[mi], float)
+                     for cid in cids}
+        # MMFF-relax the ligand INTERNALS with the donors FIXED.  The metallacycle embed
+        # gets the chelating ring SHAPE right but leaves ETKDG-rough internals (funcgroup
+        # planarity, bond lengths, H geometry); MMFF cannot touch the placeholder metal
+        # (no params), so remove it and relax the metal-free ligand while pinning the
+        # donor atoms -> internals recover to MMFF-ideal WITHOUT losing the chelating
+        # donor arrangement.  Donor indices (< mi) are unchanged by the metal removal,
+        # and the ligand atom order then equals `keep` / lsyms.
+        ligrw = Chem.RWMol(mh); ligrw.RemoveAtom(mi); ligmol = ligrw.GetMol()
         coords = []
         for cid in cids:
-            P = np.array(mh.GetConformer(cid).GetPositions(), float)
-            coords.append(P[keep] - P[mi])                          # metal -> origin
+            try:
+                props = AllChem.MMFFGetMoleculeProperties(ligmol)
+                ff = AllChem.MMFFGetMoleculeForceField(ligmol, props, confId=cid) if props else None
+                if ff is not None:
+                    for di in donor_idxs:
+                        ff.AddFixedPoint(int(di))
+                    ff.Minimize(maxIts=200)
+            except Exception:
+                pass
+            P = np.array(ligmol.GetConformer(cid).GetPositions(), float)
+            coords.append(P - metal_pos[cid])                       # metal -> origin
         return lsyms, coords
     except Exception:
         return None
