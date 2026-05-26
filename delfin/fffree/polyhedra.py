@@ -24,8 +24,12 @@ def _ref_polyhedra():
     R[("CN5", "TBP-5 trigonal bipyramid")] = np.array(
         [[0, 0, 1], [0, 0, -1], [1, 0, 0],
          [-0.5, math.sqrt(3) / 2, 0], [-0.5, -math.sqrt(3) / 2, 0]])
+    # basal vertices in 90deg-cyclic order (45,135,225,315) so the proper-rotation
+    # C4 in polya_isomer_count._spy_group (1->2->3->4) is a real geometric symmetry of
+    # this vertex set -> chelate cis-edge enumeration & isomer dedup are consistent with
+    # placement (the index space here IS the one assemble_from_config places into).
     R[("CN5", "SPY-5 square pyramid")] = _norm_rows(np.array(
-        [[0, 0, 1], [1, 1, 0.2], [1, -1, 0.2], [-1, 1, 0.2], [-1, -1, 0.2]], float))
+        [[0, 0, 1], [1, 1, 0.2], [-1, 1, 0.2], [-1, -1, 0.2], [1, -1, 0.2]], float))
     R[("CN6", "OC-6 octahedron")] = np.array(
         [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], float)
     R[("CN6", "TPR-6 trigonal prism")] = _norm_rows(np.array(

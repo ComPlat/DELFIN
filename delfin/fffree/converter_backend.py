@@ -107,15 +107,21 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P, cn=None, geom=None) -> bool:
+def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
-    (more heavy atoms packed into the metal's first shell than the intended CN)
-    — so fffree NEVER emits a structure worse than the legacy fallback would.
-    A failing build makes the whole complex fall back to the legacy pipeline
-    (return None), guaranteeing fffree is never worse than UFF on its
-    addressable subset.  Universal, geometry-only.  Disable via
-    DELFIN_FFFREE_SELFGATE=0."""
+    (a non-coordinating atom intruding into the metal's first shell) — so fffree
+    NEVER emits a structure worse than the legacy fallback would.  A failing build
+    makes the whole complex fall back to the legacy pipeline (return None),
+    guaranteeing fffree is never worse than UFF on its addressable subset.
+    Universal, geometry-only.  Disable via DELFIN_FFFREE_SELFGATE=0.
+
+    ``donors`` (optional, global indices of the cn constructed donor atoms): when
+    fffree KNOWS the coordinating atoms (it built them), the coordination-shape and
+    over-coordination checks use the donors directly instead of the cn-closest-heavy
+    heuristic.  This is essential for CHELATES, whose ring backbone legitimately sits
+    ~2.4-2.9 A from the metal: the heuristic miscounts a ring carbon as a donor (wrong
+    cshm) or as over-coordination, falsely rejecting correct chelate geometry."""
     if os.environ.get("DELFIN_FFFREE_SELFGATE", "1") == "0":
         return True
     P = np.asarray(P, dtype=float)
@@ -138,46 +144,51 @@ def _build_is_clean(syms, P, cn=None, geom=None) -> bool:
             d = float(np.linalg.norm(P[i] - P[j]))
             if d < 0.60 * _bd._ideal_bond(syms[i], syms[j]):   # gross overlap
                 return False
-    # over-coordination: backbone atoms intruding into the metal's first shell
-    # produce shape-distorted builds (worst-case cshm/polyhedron outliers).  If
-    # the metal has clearly MORE heavy atoms within bonding distance than the
-    # intended coordination number, the build is malformed -> legacy.
-    if cn:
-        for m in range(n):
-            if not _bd._is_metal(syms[m]):
-                continue
+    mi = next((i for i in range(n) if _bd._is_metal(syms[i])), None)
+    donor_set = set(donors) if donors else None
+    # over-coordination / spurious intrusion into the metal's first shell.
+    if cn and mi is not None:
+        if donor_set is not None:
+            # donor-aware: reject only a NON-donor heavy atom that sits IN FRONT of
+            # the coordination shell (closer than the donors) = real collapse; a
+            # chelate ring backbone atom at normal ring distance (>= ~donor shell)
+            # is legitimate and must pass.
+            md = [float(np.linalg.norm(P[d] - P[mi])) for d in donor_set]
+            md_min = min(md) if md else 0.0
+            for j in range(n):
+                if j == mi or j in donor_set or syms[j] == "H":
+                    continue
+                if float(np.linalg.norm(P[j] - P[mi])) < 0.92 * md_min:
+                    return False
+        else:
             close = 0
             for j in range(n):
-                if j == m or syms[j] == "H":
+                if j == mi or syms[j] == "H":
                     continue
-                cutoff = max(1.45 * _bd._ideal_bond(syms[m], syms[j]), 2.7)
-                if float(np.linalg.norm(P[j] - P[m])) < cutoff:
+                cutoff = max(1.45 * _bd._ideal_bond(syms[mi], syms[j]), 2.7)
+                if float(np.linalg.norm(P[j] - P[mi])) < cutoff:
                     close += 1
             if close > cn + 1:                          # +1 slack for borderline
                 return False
-    # #39: reject catastrophic coordination-SHAPE outliers.  fffree builds have
-    # near-ideal coordination (CShM p75 ~0.14), but a ~8% tail is badly distorted
-    # (CShM >> typical) and sets the pool worst-case poly_max/cshm_max above UFF.
-    # Legacy is better for that tail → reject it (self-gate: never worse than
-    # legacy).  Threshold sits deep in the valley (p75 0.14 ↔ p90 10.7), so good
-    # builds are untouched.  Geometry-only.  Env DELFIN_FFFREE_SHAPE_MAX (def 20).
-    if cn and geom:
+    # #39: reject catastrophic coordination-SHAPE outliers (CShM >> typical sets the
+    # worst-case poly_max/cshm_max above UFF; legacy is better for that tail).
+    # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
+    if cn and geom and mi is not None:
         _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "20.0"))
-        for m in range(n):
-            if not _bd._is_metal(syms[m]):
-                continue
-            ds = sorted((float(np.linalg.norm(P[j] - P[m])), j)
-                        for j in range(n) if j != m and syms[j] != "H")
-            if len(ds) < cn:
-                break
-            obs = np.array([(P[j] - P[m]) / (d if d > 1e-9 else 1.0)
-                            for d, j in ds[:cn]])
+        if donor_set is not None and len(donor_set) == cn:
+            sel = list(donor_set)                       # the KNOWN constructed donors
+        else:
+            ds = sorted((float(np.linalg.norm(P[j] - P[mi])), j)
+                        for j in range(n) if j != mi and syms[j] != "H")
+            sel = [j for _, j in ds[:cn]]
+        if len(sel) >= cn:
+            obs = np.array([(P[j] - P[mi]) / (max(float(np.linalg.norm(P[j] - P[mi])), 1e-9))
+                            for j in sel])
             try:
                 if PLY.cshm(obs, geom) > _shmax:
                     return False
             except Exception:
                 pass
-            break
     return True
 
 
@@ -188,6 +199,18 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     ligands = d["ligands"]
     if any(lg["denticity"] >= 3 for lg in ligands):
         return None        # tridentate+ not yet supported -> legacy
+    # Aromatic donors on the NEWLY-enabled CN5 chelate geometries (TBP-5/SPY-5) would be
+    # placed face-on (ring-normal perp to M-N): _vsepr_reconstruct skips ring donors and
+    # there is no in-plane orientation yet (deferred to the aromatic-N-in-plane iter).  The
+    # self-gate catches collapse/over-coord/shape but NOT face-on, so route aromatic CN5
+    # chelates to legacy (never-worse).  Scoped to TBP-5/SPY-5 only -> existing OC-6/SP-4
+    # chelate coverage (e.g. M(bipy)3) stays byte-identical.
+    if geom_key in ("trigonal_bipyramid", "square_pyramid"):
+        for lg in ligands:
+            lmol = lg["mol"]
+            if any(lmol.GetAtomWithIdx(i).GetIsAromatic()
+                   for i in lg.get("donor_local_idxs", [])):
+                return None
     specs = []
     for lg in ligands:
         specs.append({
@@ -210,9 +233,10 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             return None
         if built is None:
             return None
-        syms, P = built
+        syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                               donors=donors):   # donor-aware self-gate -> legacy
             return None
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None

@@ -40,6 +40,75 @@ def _ligand_3d(smiles: str):
     return syms, np.array(P, float), m
 
 
+def _kabsch_rot(Pobs: np.ndarray, Ptgt: np.ndarray) -> np.ndarray:
+    """Proper-rotation matrix best-fitting rows of Pobs onto rows of Ptgt
+    (Kabsch, determinant-corrected to forbid reflection)."""
+    H = Pobs.T @ Ptgt
+    U, _, Vt = np.linalg.svd(H)
+    dsign = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1.0, 1.0, dsign]) @ U.T
+
+
+def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6):
+    """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
+    donor atoms, so the metallacycle ring forms with correct ring geometry.  A
+    free-ligand embed yields the (energetically preferred) extended/anti conformer
+    whose backbone, once the donor-donor vector is rigid-fit onto the metal, buckles
+    INTO the coordination shell; embedding the actual M-N-...-N ring instead places
+    the backbone on the ring's far side (carbons ~2.5-2.9 A from M, not ~1.7).
+
+    Distance-geometry only needs the M-donor bond lengths (covalent-radii sums), so
+    the real metal symbol is used as the placeholder; NO MMFF (no metal params ->
+    would distort M-D).  Returns (lsyms, [coords,...], metal_local_idx) where lsyms +
+    coords EXCLUDE the placeholder metal, are RECENTERED so the metal sits at the
+    origin (donor positions are then the M->donor vectors), and match AddHs(lmol)
+    atom order (donor indices preserved), or None on failure.  Deterministic."""
+    try:
+        rw = Chem.RWMol(lmol)
+        mi = rw.AddAtom(Chem.Atom(metal_sym))
+        for di in donor_idxs:
+            rw.AddBond(int(di), mi, Chem.BondType.DATIVE)   # donor->metal: preserves donor valence/H
+        m = rw.GetMol()
+        try:
+            Chem.SanitizeMol(m, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+        except Exception:
+            pass
+        mh = Chem.AddHs(m)
+        cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, randomSeed=SEED,
+                                               numThreads=1, useRandomCoords=False))
+        if not cids:
+            if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
+                return None
+            cids = [0]
+        keep = [i for i in range(mh.GetNumAtoms()) if i != mi]      # drop placeholder metal
+        lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
+        coords = []
+        for cid in cids:
+            P = np.array(mh.GetConformer(cid).GetPositions(), float)
+            coords.append(P[keep] - P[mi])                          # metal -> origin
+        return lsyms, coords
+    except Exception:
+        return None
+
+
+def _orient_chelate_to_vertices(lP, d0, d1, T0, T1):
+    """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
+    donor directions best-fit the target vertex directions (Kabsch on the two unit
+    M->donor vectors), then uniformly rescale to the ideal M-donor distance.  The
+    ring geometry (incl. the backbone-clears-metal arrangement) is preserved as a
+    rigid body; donors land near their vertices at the natural bite."""
+    n0 = np.linalg.norm(lP[d0]); n1 = np.linalg.norm(lP[d1])
+    if n0 < 1e-6 or n1 < 1e-6:
+        return None
+    u = np.array([lP[d0] / n0, lP[d1] / n1])
+    V = np.array([T0 / np.linalg.norm(T0), T1 / np.linalg.norm(T1)])
+    R = _kabsch_rot(u, V)
+    Q = lP @ R.T
+    s = (np.linalg.norm(T0) + np.linalg.norm(T1)) / (np.linalg.norm(Q[d0]) + np.linalg.norm(Q[d1]))
+    return Q * s
+
+
 def _donor_and_lp(syms, P, mol, donor_idx: int) -> np.ndarray:
     """Lone-pair direction at the donor = away from the centroid of its neighbours."""
     nbrs = [n.GetIdx() for n in mol.GetAtomWithIdx(donor_idx).GetNeighbors()]
@@ -215,21 +284,73 @@ def clash_relief(metal, ligand_smiles, donor_idx, geometry, grid=12, passes=3):
     return assemble_monodentate(metal, ligand_smiles, donor_idx, geometry, thetas), thetas
 
 
+def _bite_aware_targets(lP, d1, d2, T1, T2):
+    """Contract the ideal vertex targets T1,T2 to the chelate's NATURAL bite
+    (donor-donor distance from the ligand conformer), keeping each M-D distance
+    and the vertex-pair bisector + plane.  A chelate's natural bite angle is a
+    real structural feature (e.g. ethylenediamine ~78 deg, not the ideal 90 deg
+    cis-edge): forcing donors onto the exact ideal vertices over-stretches the
+    donor-donor distance, so the rigid ring buckles its backbone INWARD toward
+    the metal -> shape-outlier / over-coordination.  Placing the donors at the
+    natural bite keeps the ring relaxed and the backbone outside the shell, while
+    the coordination stays realistic.  Only CONTRACTS (tight chelates); wide
+    chelates keep the ideal vertices.  Universal, geometry-only, deterministic."""
+    b_nat = float(np.linalg.norm(lP[d1] - lP[d2]))
+    d_vert = float(np.linalg.norm(T1 - T2))
+    if not (1e-6 < b_nat < d_vert):
+        return T1, T2                          # wide/degenerate -> ideal vertices
+    r1 = float(np.linalg.norm(T1)); r2 = float(np.linalg.norm(T2))
+    if r1 < 1e-6 or r2 < 1e-6:
+        return T1, T2
+    u1, u2 = T1 / r1, T2 / r2
+    bis = u1 + u2
+    nb = np.linalg.norm(bis)
+    pdir = u1 - u2
+    pdir = pdir - (pdir @ (bis / nb)) * (bis / nb) if nb > 1e-9 else pdir
+    npd = np.linalg.norm(pdir)
+    if nb < 1e-9 or npd < 1e-9:
+        return T1, T2                          # collinear donors -> can't contract in-plane
+    bis /= nb; pdir /= npd
+    # angle between the two donors that yields donor-donor distance == b_nat
+    cos_t = (r1 * r1 + r2 * r2 - b_nat * b_nat) / (2.0 * r1 * r2)
+    theta = float(np.arccos(np.clip(cos_t, -1.0, 1.0)))
+    h = theta / 2.0
+    T1n = r1 * (np.cos(h) * bis + np.sin(h) * pdir)
+    T2n = r2 * (np.cos(h) * bis - np.sin(h) * pdir)
+    return T1n, T2n
+
+
 def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
     """Rigid-fit a chelating ligand's donors onto targets T1,T2; return placed
     coords. (donor-donor vector -> target vector, midpoints matched, backbone
-    rotated away from metal at origin.)"""
+    rotated away from metal at origin.)
+
+    Targets are first contracted to the chelate's natural bite (see
+    _bite_aware_targets) so a tight ring is not over-stretched onto the ideal
+    vertices.  The axial sweep then maximises the MINIMUM metal-distance of the
+    non-donor heavy atoms (not the centroid distance): donors sit ON the rotation
+    axis so only the backbone moves, and pushing its CLOSEST atom as far from the
+    metal as possible keeps backbone atoms out of the coordination shell (the
+    self-gate's cshm picks the cn closest atoms; a single intruder -> shape
+    outlier / over-coordination).  Universal across all chelate geometries,
+    deterministic."""
+    T1, T2 = _bite_aware_targets(lP, d1, d2, T1, T2)
     Q = lP.copy()
     R1 = _rot_align(Q[d2] - Q[d1], T2 - T1)
     Q = (Q - Q[d1]) @ R1.T + Q[d1]
     Q = Q + (0.5 * (T1 + T2) - 0.5 * (Q[d1] + Q[d2]))
     axis = T2 - T1
+    mid = 0.5 * (T1 + T2)
+    body_idx = [i for i in range(len(lsyms))
+                if i not in (d1, d2) and lsyms[i] != "H"]
+    if not body_idx:
+        return Q                              # diatomic chelate: no backbone to rotate
     best, bestQ = -1e9, Q
     for k in range(36):
-        Qr = (Q - 0.5 * (T1 + T2)) @ _axis_rot(axis, 2 * np.pi * k / 36).T + 0.5 * (T1 + T2)
-        body = Qr[[i for i in range(len(lsyms)) if i not in (d1, d2)]].mean(axis=0)
-        if np.linalg.norm(body) > best:
-            best, bestQ = np.linalg.norm(body), Qr
+        Qr = (Q - mid) @ _axis_rot(axis, 2 * np.pi * k / 36).T + mid
+        score = min(float(np.linalg.norm(Qr[i])) for i in body_idx)   # closest backbone atom to metal
+        if score > best:
+            best, bestQ = score, Qr
     return bestQ
 
 
@@ -261,22 +382,8 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     md1 = MSB.md_distance(metal, lsyms[d1]); md2 = MSB.md_distance(metal, lsyms[d2])
     T1 = ref[vertex_indices[0]] / np.linalg.norm(ref[vertex_indices[0]]) * md1
     T2 = ref[vertex_indices[1]] / np.linalg.norm(ref[vertex_indices[1]]) * md2
-    Q = lP.copy()
-    # 1) align donor-donor vector to target-target vector
-    R1 = _rot_align(Q[d2] - Q[d1], T2 - T1)
-    Q = (Q - Q[d1]) @ R1.T + Q[d1]
-    # 2) match midpoints
-    Q = Q + (0.5 * (T1 + T2) - 0.5 * (Q[d1] + Q[d2]))
-    # 3) axial rotation: push ligand body away from metal (origin)
-    axis = T2 - T1
-    best, bestQ = -1e9, Q
-    for k in range(36):
-        th = 2 * np.pi * k / 36
-        Qr = (Q - 0.5 * (T1 + T2)) @ _axis_rot(axis, th).T + 0.5 * (T1 + T2)
-        body = Qr[[i for i in range(len(lsyms)) if i not in (d1, d2)]].mean(axis=0)
-        score = np.linalg.norm(body)              # max distance of body from metal
-        if score > best:
-            best, bestQ = score, Qr
+    # rigid-fit + backbone-away-from-metal axial sweep (single source of truth)
+    bestQ = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
     syms = [metal] + lsyms
     P = np.vstack([np.zeros((1, 3)), bestQ])
     md_act = (float(np.linalg.norm(bestQ[d1])), float(np.linalg.norm(bestQ[d2])))
@@ -465,11 +572,22 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     fixed = {0}; pos = 1
     for li, va in by_lig.items():
         lg = ligands[li]
-        confs = _ligand_confs_from_mol(lg["mol"])
-        if confs is None:
-            return None
-        lsyms, coords_list, lmol = confs
         dons = lg["donor_local_idxs"]
+        # Chelates: embed the metallacycle (ligand + dative-bonded metal) so the
+        # ring forms with correct geometry (backbone clears the metal) instead of
+        # rigid-fitting a non-chelating free-ligand conformer.  Fall back to the
+        # free-ligand path if the metallacycle embed fails.
+        ring_confs = None
+        lmol = None
+        if lg["denticity"] >= 2:
+            ring_confs = _embed_metallacycle(lg["mol"], dons[:2], metal)
+        if ring_confs is not None:
+            lsyms, coords_list = ring_confs
+        else:
+            confs = _ligand_confs_from_mol(lg["mol"])
+            if confs is None:
+                return None
+            lsyms, coords_list, lmol = confs
         best_Q, best_clash = None, 1e18
         for lP in coords_list:
             if lg["denticity"] == 1:
@@ -487,7 +605,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                 d0, d1 = dons[0], dons[1]
                 T0 = ref[vmap[0]] / np.linalg.norm(ref[vmap[0]]) * MSB.md_distance(metal, lsyms[d0])
                 T1 = ref[vmap[1]] / np.linalg.norm(ref[vmap[1]]) * MSB.md_distance(metal, lsyms[d1])
-                Q = _place_chelate_block(metal, lsyms, lP, d0, d1, T0, T1)
+                Q = None
+                if ring_confs is not None:
+                    Q = _orient_chelate_to_vertices(lP, d0, d1, T0, T1)
+                if Q is None:                       # embed/orient failed -> rigid fallback
+                    Q = _place_chelate_block(metal, lsyms, lP, d0, d1, T0, T1)
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
@@ -508,7 +630,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             P = _refine(out_syms, P, fixed)
         except Exception:
             pass
-    return out_syms, P
+    donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
+    return out_syms, P, donors
 
 
 def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):

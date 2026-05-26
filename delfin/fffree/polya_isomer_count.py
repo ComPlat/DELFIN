@@ -147,6 +147,47 @@ _ANTIPODE_FULL = {
     "square_planar": {0: 2, 1: 3, 2: 0, 3: 1},
 }
 
+# Max ideal vertex-vertex angle (deg) for a pair to host a bidentate chelate ("cis"
+# edge).  Larger separations are trans-like and not chelate-feasible.  100deg:
+#  - reproduces octahedron/square_planar EXACTLY (their only non-90deg pairs are 180deg),
+#  - admits the ~90deg chelate edges of TBP-5 (axial-equatorial) and SPY-5 (apical-basal
+#    + adjacent-basal), while excluding TBP equatorial-equatorial (120deg) and SPY basal
+#    diagonals (164deg) — those are not real chelate positions, and admitting them would
+#    feed self-gate-rejected configs to the all-or-nothing chelate gate (one bad isomer
+#    bails the whole complex to legacy).
+CHELATE_CIS_MAX_DEG = 100.0
+
+_GEOM_KEY_TO_SHAPE = {
+    "octahedron": "OC-6 octahedron",
+    "square_planar": "SP-4 square planar",
+    "tetrahedron": "T-4 tetrahedron",
+    "trigonal_bipyramid": "TBP-5 trigonal bipyramid",
+    "square_pyramid": "SPY-5 square pyramid",
+}
+
+
+def _chelate_cis_edges(geometry: str, n: int):
+    """Vertex pairs a bidentate chelate can span (cis edges), derived geometrically from
+    the ideal polyhedron: pairs whose ideal angular separation is below
+    CHELATE_CIS_MAX_DEG.  Single source of truth = the SAME vertex set the assembler
+    places into (delfin.fffree.polyhedra), so enumeration and placement stay consistent
+    for every geometry (incl. TBP-5/SPY-5).  Byte-identical to the old antipode table for
+    octahedron/square_planar.  Falls back to the antipode table if no reference vectors."""
+    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    if shape is not None:
+        try:
+            import math
+            import numpy as np
+            from delfin.fffree import polyhedra as _PLY
+            V = _PLY.ref_vectors(shape)
+            cos_max = math.cos(math.radians(CHELATE_CIS_MAX_DEG))
+            return [(i, j) for i in range(n) for j in range(i + 1, n)
+                    if float(np.clip(V[i] @ V[j], -1.0, 1.0)) > cos_max]
+        except Exception:
+            pass
+    anti = _ANTIPODE_FULL[geometry]
+    return [(i, j) for i in range(n) for j in range(i + 1, n) if anti[i] != j]
+
 
 def enumerate_chelate_configs(geometry: str, ligand_specs):
     """Universal isomer enumeration for a mix of chelating (bidentate) + monodentate
@@ -156,8 +197,7 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
     vertex_index -> (ligand_instance_index, arm_index), one per orbit under the
     polyhedron's proper rotation group.  Bidentate ligands occupy cis-edges."""
     group, n = _GROUPS[geometry]
-    anti = _ANTIPODE_FULL[geometry]
-    cis_edges = [(i, j) for i in range(n) for j in range(i + 1, n) if anti[i] != j]
+    cis_edges = _chelate_cis_edges(geometry, n)
     order = sorted(range(len(ligand_specs)),
                    key=lambda k: -ligand_specs[k]["denticity"])
     seen = set(); out = []
