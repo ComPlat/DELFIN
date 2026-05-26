@@ -661,14 +661,14 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         # inter-ligand clashes resolve, while the constructed coordination is preserved
         # (donors pinned -> M-D invariant; metal never enters the force field).  This
         # replaces the weak defect-count refine(), which left ETKDG-rough internals.
-        # INTERNAL relax in the COORDINATED environment: full complex (metal + M-donor
-        # bonds), metal + donors HARD-fixed (AddFixedPoint after Initialize -> M-D invariant;
-        # donors already at ideal symmetric M-D from the per-donor orient).  The frozen metal
-        # gives the steric presence (no inward collapse) + coordinated context that a metal-
-        # free relax lacks; only the organic internals (bonds/angles/clashes) relax.  UFF
-        # types the metal (frozen -> its params never move anything).  Falls back to the
-        # defect-count refine() if UFF is unavailable.
-        relaxed = False
+        # INTERNAL finishing.  THREE-WAY RACE design:
+        #   Track 3 (FF-FREE, DEFAULT): pure construction -- GEOMETRIC correctors only
+        #     (sp2-flatten projection + defect-count clash-relief).  No force field.
+        #   Track 2 (ligand-FF, opt-in DELFIN_FFFREE_LIGANDFF=1): additionally a constrained
+        #     UFF relax of the organic internals (metal + donors frozen) before the geometric
+        #     correctors.  Track 1 (UFF) is the legacy path (DELFIN_FFFREE_BUILDER=0).
+        # The complex mol (metal + ligand bonds) is the sp2-flatten template (and the optional
+        # UFF mol); metal + donors stay frozen so the constructed coordination is preserved.
         try:
             cm = Chem.RWMol()
             cm.AddAtom(Chem.Atom(out_syms[0]))
@@ -690,34 +690,36 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     Chem.SanitizeMol(cm, catchErrors=True)
                 except Exception:
                     pass
-                if _constrained_uff_relax(cm, [0] + donor_globals):
-                    P = np.array(cm.GetConformer().GetPositions(), float)
-                    relaxed = True
-                    # sp2-flatten polish (Legacy's planarity stack): UFF keeps ring/amide
-                    # junctions only ~planar; project every non-metal sp2 atom onto its
-                    # neighbour plane to enforce aromatic/amide/funcgroup planarity (the
-                    # axis UFF alone leaves rough).  Purely geometric, <0.25 A per atom.
-                    try:
-                        from delfin.smiles_converter import _flatten_sp2_atoms_xyz
-                        xyz_str = "\n".join(
-                            f"{s} {float(p[0]):.6f} {float(p[1]):.6f} {float(p[2]):.6f}"
-                            for s, p in zip(out_syms, P))
-                        flat = _flatten_sp2_atoms_xyz(xyz_str, cm)
-                        if flat:
-                            newP = np.array([[float(x) for x in ln.split()[1:4]]
-                                             for ln in flat.splitlines() if ln.strip()], float)
-                            if newP.shape == P.shape:
-                                P = newP
-                    except Exception:
-                        pass
+                if os.environ.get("DELFIN_FFFREE_LIGANDFF", "0") == "1":   # Track 2: FF relax
+                    if _constrained_uff_relax(cm, [0] + donor_globals):
+                        Pn = np.array(cm.GetConformer().GetPositions(), float)
+                        if Pn.shape == P.shape:
+                            P = Pn
+                            c = cm.GetConformer()
+                            for kk in range(len(P)):
+                                c.SetAtomPosition(kk, [float(P[kk][0]), float(P[kk][1]), float(P[kk][2])])
+                # FF-FREE geometric planarity corrector (BOTH tracks): project sp2 atoms onto
+                # their neighbour plane (aromatic/amide/funcgroup planarity).  Pure geometry.
+                try:
+                    from delfin.smiles_converter import _flatten_sp2_atoms_xyz
+                    xyz_str = "\n".join(f"{s} {float(p[0]):.6f} {float(p[1]):.6f} {float(p[2]):.6f}"
+                                        for s, p in zip(out_syms, P))
+                    flat = _flatten_sp2_atoms_xyz(xyz_str, cm)
+                    if flat:
+                        newP = np.array([[float(x) for x in ln.split()[1:4]]
+                                         for ln in flat.splitlines() if ln.strip()], float)
+                        if newP.shape == P.shape:
+                            P = newP
+                except Exception:
+                    pass
         except Exception:
-            relaxed = False
-        if not relaxed:
-            try:
-                from delfin.fffree.refine import refine as _refine
-                P = _refine(out_syms, P, fixed)
-            except Exception:
-                pass
+            pass
+        # FF-free geometric clash-relief (both tracks)
+        try:
+            from delfin.fffree.refine import refine as _refine
+            P = _refine(out_syms, P, fixed)
+        except Exception:
+            pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     return out_syms, P, donors
 
