@@ -263,8 +263,43 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         geom_tag = d["geometry"].split()[0]
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         results.append((_xyz(syms, P), label))
+    # CN5 polytopal completeness (#coverage): decompose defaults CN5 -> TBP-5, but SPY-5
+    # is the Berry-pseudorotation partner — real CN5 complexes split between the two.
+    # Additively enumerate SPY-5 too (best-effort; never bails the TBP-5 result).
+    if d.get("cn") == 5:
+        results += _enumerate_geometry(d, "square_pyramid", "SPY-5 square pyramid",
+                                       lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
+
+
+def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
+    """Build all clean isomers of `d`'s ligand set on a SPECIFIC polyhedron (geom_name).
+    Best-effort: skips isomers that fail to build / fail the self-gate, returns [] on any
+    enumeration error.  Used to add SPY-5 alongside TBP-5 for CN5 (polytopal completeness)."""
+    out: List[Tuple[str, str]] = []
+    try:
+        colorings = PIC.enumerate_isomers(geom_key, spec)
+    except Exception:
+        return out
+    geom_tag = geom_name.split()[0]
+    for k, coloring in enumerate(colorings[:max_isomers]):
+        vertex_specs = [lig_ref[lab] for lab in coloring]
+        try:
+            built = AC.assemble_heteroleptic_from_mols(d["metal"], geom_name, vertex_specs)
+        except Exception:
+            continue
+        if built is None:
+            continue
+        syms, P = built
+        syms, P = _maybe_relax(syms, P)
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name):
+            continue
+        vertex_elems = [lab_elem[lab] for lab in coloring]
+        name = _classify_coloring(geom_key, vertex_elems)
+        label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
+        out.append((_xyz(syms, P), label))
+    return out
 
 
 if __name__ == "__main__":
