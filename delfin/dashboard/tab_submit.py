@@ -2222,7 +2222,9 @@ def create_tab(ctx):
         smiles_batch_widget.value = ''
         control_widget.value = ctx.default_control
         job_type_widget.value = '48h'
-        custom_time_widget.value = 72
+        custom_time_widget.hours_widget.value = 72
+        custom_time_widget.minutes_widget.value = 0
+        custom_time_widget.seconds_widget.value = 0
         only_goat_charge.value = 0
         only_goat_solvent.value = ''
         only_goat_smiles_converter.value = 'QUICK'
