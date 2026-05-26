@@ -141,11 +141,20 @@ install_conda_stack() {
     fi
   elif [[ "${FORCE_CONDA_UPDATE}" == "1" ]]; then
     log "update local conda env at ${MAMBA_ENV}"
-    # NOTE: use 'update', not 'install'. An unversioned 'install xtb' is a
-    # no-op when xtb is already present (the spec is already satisfied), so
-    # it never upgrades an outdated build. 'update' pulls the newest
-    # conda-forge version of each named tool.
-    "${mamba}" update -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
+    # Use 'update', not 'install': an unversioned 'install xtb' is a no-op
+    # when xtb is already present (the spec is already satisfied), so it
+    # never upgrades an outdated build.
+    #
+    # Update each tool INDIVIDUALLY. A joint 'update xtb crest dftbplus'
+    # can leave xtb at an old version when the newest builds of the three
+    # are not mutually compatible (the solver then keeps a compatible, but
+    # older, combination). Per-tool updates let each reach the latest
+    # conda-forge build on its own, mirroring a targeted 'install xtb=...'.
+    for _tool in xtb crest dftbplus; do
+      log "updating ${_tool}"
+      "${mamba}" update -y -p "${MAMBA_ENV}" -c conda-forge "${_tool}" \
+        || log "WARNING: update of ${_tool} did not complete"
+    done
   fi
 
   link_into_bin "${MAMBA_ENV}/bin/xtb" xtb
