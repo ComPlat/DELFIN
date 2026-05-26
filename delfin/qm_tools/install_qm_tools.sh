@@ -141,11 +141,11 @@ install_conda_stack() {
     fi
   elif [[ "${FORCE_CONDA_UPDATE}" == "1" ]]; then
     log "update local conda env at ${MAMBA_ENV}"
-    if [[ "$(basename "${mamba}")" == "micromamba" ]]; then
-      "${mamba}" install -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    else
-      "${mamba}" install -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    fi
+    # NOTE: use 'update', not 'install'. An unversioned 'install xtb' is a
+    # no-op when xtb is already present (the spec is already satisfied), so
+    # it never upgrades an outdated build. 'update' pulls the newest
+    # conda-forge version of each named tool.
+    "${mamba}" update -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
   fi
 
   link_into_bin "${MAMBA_ENV}/bin/xtb" xtb
