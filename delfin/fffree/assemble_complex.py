@@ -661,17 +661,63 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         # inter-ligand clashes resolve, while the constructed coordination is preserved
         # (donors pinned -> M-D invariant; metal never enters the force field).  This
         # replaces the weak defect-count refine(), which left ETKDG-rough internals.
-        # LIGHT clash-relief only (metal + donors frozen).  Ligand-INTERNAL quality
-        # (funcgroup/aromatic/amide planarity, bond/angle refinement) is intentionally
-        # left to the downstream GFN-FF -> GFN2 cascade, not forced here: an MM relax in
-        # the builder fights aromatic/amide planarity and is redundant with the cascade.
-        # The builder's job is correct COORDINATION + TOPOLOGY + ideal M-D (done above);
-        # the cascade relaxes the internals from this clean starting geometry.
+        # INTERNAL relax in the COORDINATED environment: full complex (metal + M-donor
+        # bonds), metal + donors HARD-fixed (AddFixedPoint after Initialize -> M-D invariant;
+        # donors already at ideal symmetric M-D from the per-donor orient).  The frozen metal
+        # gives the steric presence (no inward collapse) + coordinated context that a metal-
+        # free relax lacks; only the organic internals (bonds/angles/clashes) relax.  UFF
+        # types the metal (frozen -> its params never move anything).  Falls back to the
+        # defect-count refine() if UFF is unavailable.
+        relaxed = False
         try:
-            from delfin.fffree.refine import refine as _refine
-            P = _refine(out_syms, P, fixed)
+            cm = Chem.RWMol()
+            cm.AddAtom(Chem.Atom(out_syms[0]))
+            for frag, _off in relax_frags:
+                base = cm.GetNumAtoms()
+                for a in frag.GetAtoms():
+                    cm.AddAtom(Chem.Atom(a.GetAtomicNum()))
+                for b in frag.GetBonds():
+                    cm.AddBond(b.GetBeginAtomIdx() + base, b.GetEndAtomIdx() + base, b.GetBondType())
+            donor_globals = sorted(fixed - {0})
+            for dg in donor_globals:
+                cm.AddBond(0, dg, Chem.BondType.SINGLE)
+            if cm.GetNumAtoms() == len(out_syms):
+                conf = Chem.Conformer(cm.GetNumAtoms())
+                for kk in range(cm.GetNumAtoms()):
+                    x = P[kk]; conf.SetAtomPosition(kk, [float(x[0]), float(x[1]), float(x[2])])
+                cm.AddConformer(conf, assignId=True)
+                try:
+                    Chem.SanitizeMol(cm, catchErrors=True)
+                except Exception:
+                    pass
+                if _constrained_uff_relax(cm, [0] + donor_globals):
+                    P = np.array(cm.GetConformer().GetPositions(), float)
+                    relaxed = True
+                    # sp2-flatten polish (Legacy's planarity stack): UFF keeps ring/amide
+                    # junctions only ~planar; project every non-metal sp2 atom onto its
+                    # neighbour plane to enforce aromatic/amide/funcgroup planarity (the
+                    # axis UFF alone leaves rough).  Purely geometric, <0.25 A per atom.
+                    try:
+                        from delfin.smiles_converter import _flatten_sp2_atoms_xyz
+                        xyz_str = "\n".join(
+                            f"{s} {float(p[0]):.6f} {float(p[1]):.6f} {float(p[2]):.6f}"
+                            for s, p in zip(out_syms, P))
+                        flat = _flatten_sp2_atoms_xyz(xyz_str, cm)
+                        if flat:
+                            newP = np.array([[float(x) for x in ln.split()[1:4]]
+                                             for ln in flat.splitlines() if ln.strip()], float)
+                            if newP.shape == P.shape:
+                                P = newP
+                    except Exception:
+                        pass
         except Exception:
-            pass
+            relaxed = False
+        if not relaxed:
+            try:
+                from delfin.fffree.refine import refine as _refine
+                P = _refine(out_syms, P, fixed)
+            except Exception:
+                pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     return out_syms, P, donors
 
