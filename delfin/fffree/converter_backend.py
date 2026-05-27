@@ -50,6 +50,9 @@ _GEOM_TO_POLYA = {
     "T-4 tetrahedron": "tetrahedron",
     "TBP-5 trigonal bipyramid": "trigonal_bipyramid",
     "SPY-5 square pyramid": "square_pyramid",
+    "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
+    "SQAP-8 square antiprism": "square_antiprism",
+    "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
 }
 
 

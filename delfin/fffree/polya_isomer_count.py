@@ -67,12 +67,39 @@ def _spy_group():
     return _close_group([C4], 5)
 
 
+def _pentagonal_bipyramid_group():
+    # CN7 PB (matches polyhedra CN7 index order): 0,1 axial (+z,-z); 2-6 equatorial
+    # pentagon (0,72,...,288 deg). Proper rotation group D5 (order 10).
+    C5 = (0, 1, 3, 4, 5, 6, 2)        # C5 about z: equator 2->3->4->5->6->2, axials fixed
+    C2 = (1, 0, 2, 6, 5, 4, 3)        # C2 through vertex 2: swap axials, fix v2, 3<->6 4<->5
+    return _close_group([C5, C2], 7)
+
+
+def _square_antiprism_group():
+    # CN8 SQAP (matches polyhedra CN8 index order): 0-3 top square (0,90,180,270 deg),
+    # 4-7 bottom square (45,135,225,315 deg). Proper rotation group D4 (order 8).
+    C4 = (1, 2, 3, 0, 5, 6, 7, 4)     # C4 about z: each square cycles
+    C2 = (4, 7, 6, 5, 0, 3, 2, 1)     # C2 (axis at 22.5 deg) swaps top<->bottom
+    return _close_group([C4, C2], 8)
+
+
+def _tricapped_trigonal_prism_group():
+    # CN9 TTP (matches polyhedra CN9 index order): 0-2 top triangle, 3-5 bottom triangle
+    # (eclipsed prism), 6-8 caps (60,180,300 deg). Proper rotation group D3 (order 6).
+    C3 = (1, 2, 0, 4, 5, 3, 7, 8, 6)  # C3 about z: triangles + caps cycle
+    C2 = (4, 3, 5, 1, 0, 2, 6, 8, 7)  # C2 through cap6: swap top<->bottom, fix cap6, 7<->8
+    return _close_group([C3, C2], 9)
+
+
 _GROUPS = {
     "octahedron": (_octahedron_group(), 6),
     "square_planar": (_square_group(), 4),
     "tetrahedron": (_tetrahedron_group(), 4),
     "trigonal_bipyramid": (_tbp_group(), 5),
     "square_pyramid": (_spy_group(), 4 + 1),
+    "pentagonal_bipyramid": (_pentagonal_bipyramid_group(), 7),
+    "square_antiprism": (_square_antiprism_group(), 8),
+    "tricapped_trigonal_prism": (_tricapped_trigonal_prism_group(), 9),
 }
 
 
@@ -163,6 +190,9 @@ _GEOM_KEY_TO_SHAPE = {
     "tetrahedron": "T-4 tetrahedron",
     "trigonal_bipyramid": "TBP-5 trigonal bipyramid",
     "square_pyramid": "SPY-5 square pyramid",
+    "pentagonal_bipyramid": "PB-7 pentagonal bipyramid",
+    "square_antiprism": "SQAP-8 square antiprism",
+    "tricapped_trigonal_prism": "TTP-9 tricapped trigonal prism",
 }
 
 

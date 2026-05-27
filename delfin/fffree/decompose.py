@@ -9,6 +9,7 @@ detected; ``has_chelate`` flags whether any ligand is polydentate.  CN outside
 4-6, >1 metal, >tridentate ligands, or unparseable input -> return None.
 """
 from __future__ import annotations
+import os
 from typing import Optional, Dict, List
 from rdkit import Chem
 import delfin._bond_decollapse as bd
@@ -24,6 +25,12 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
         return "TBP-5 trigonal bipyramid"
     if cn == 4:
         return "SP-4 square planar" if metal in _D8 else "T-4 tetrahedron"
+    if cn == 7:
+        return "PB-7 pentagonal bipyramid"
+    if cn == 8:
+        return "SQAP-8 square antiprism"
+    if cn == 9:
+        return "TTP-9 tricapped trigonal prism"
     return None
 
 
@@ -49,7 +56,10 @@ def decompose(smiles: str) -> Optional[Dict]:
     matom = mol.GetAtomWithIdx(m)
     donor_idx = [n.GetIdx() for n in matom.GetNeighbors()]
     cn = len(donor_idx)
-    if cn not in (4, 5, 6):
+    # High-CN (7-9) support is env-gated: default coverage stays CN 4-6 (byte-
+    # identical), CN 7-9 polyhedra (PB-7/SQAP-8/TTP-9) only when DELFIN_FFFREE_HIGHCN=1.
+    _allowed = (4, 5, 6, 7, 8, 9) if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1" else (4, 5, 6)
+    if cn not in _allowed:
         return None
     metal = matom.GetSymbol()
     geometry = _default_geometry(metal, cn)

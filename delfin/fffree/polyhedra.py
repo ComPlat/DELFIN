@@ -35,6 +35,28 @@ def _ref_polyhedra():
     R[("CN6", "TPR-6 trigonal prism")] = _norm_rows(np.array(
         [[1, 0, 0.7], [-0.5, math.sqrt(3) / 2, 0.7], [-0.5, -math.sqrt(3) / 2, 0.7],
          [1, 0, -0.7], [-0.5, math.sqrt(3) / 2, -0.7], [-0.5, -math.sqrt(3) / 2, -0.7]]))
+    # --- High-CN polyhedra (CN7-9). Vertex INDEX ORDER is chosen to match the
+    # proper-rotation generators in polya_isomer_count (_pentagonal_bipyramid_group /
+    # _square_antiprism_group / _tricapped_trigonal_prism_group) so isomer dedup is a
+    # real geometric symmetry of this vertex set (same contract as SPY-5/TPR-6 above).
+    # CN7 PB: idx 0,1 = axial (+z,-z); idx 2-6 = equatorial regular pentagon (0,72,...,288 deg).
+    _pent = [[math.cos(2 * math.pi * k / 5), math.sin(2 * math.pi * k / 5), 0.0] for k in range(5)]
+    R[("CN7", "PB-7 pentagonal bipyramid")] = _norm_rows(np.array(
+        [[0, 0, 1], [0, 0, -1]] + _pent, float))
+    # CN8 square antiprism: idx 0-3 = top square (0,90,180,270 deg, +z); idx 4-7 = bottom
+    # square (45,135,225,315 deg, -z) -- the 45deg stagger that defines the antiprism.
+    _h8 = 0.62
+    _top = [[math.cos(math.pi * k / 2), math.sin(math.pi * k / 2), _h8] for k in range(4)]
+    _bot = [[math.cos(math.pi * (k + 0.5) / 2 + 0.0), math.sin(math.pi * (k + 0.5) / 2), -_h8] for k in range(4)]
+    # bottom at 45,135,225,315: angle = 45 + 90k
+    _bot = [[math.cos(math.radians(45 + 90 * k)), math.sin(math.radians(45 + 90 * k)), -_h8] for k in range(4)]
+    R[("CN8", "SQAP-8 square antiprism")] = _norm_rows(np.array(_top + _bot, float))
+    # CN9 tricapped trigonal prism: idx 0-2 = top triangle (0,120,240 deg, +z); idx 3-5 =
+    # bottom triangle (eclipsed, -z); idx 6-8 = caps on the 3 rectangular faces (60,180,300 deg, z=0).
+    _tri_t = [[math.cos(math.radians(120 * k)), math.sin(math.radians(120 * k)), 0.7] for k in range(3)]
+    _tri_b = [[math.cos(math.radians(120 * k)), math.sin(math.radians(120 * k)), -0.7] for k in range(3)]
+    _caps = [[1.3 * math.cos(math.radians(60 + 120 * k)), 1.3 * math.sin(math.radians(60 + 120 * k)), 0.0] for k in range(3)]
+    R[("CN9", "TTP-9 tricapped trigonal prism")] = _norm_rows(np.array(_tri_t + _tri_b + _caps, float))
     return {k: _norm_rows(v) for k, v in R.items()}
 
 
@@ -44,6 +66,9 @@ GEOM_BY_CN = {
     4: ["T-4 tetrahedron", "SP-4 square planar"],
     5: ["TBP-5 trigonal bipyramid", "SPY-5 square pyramid"],
     6: ["OC-6 octahedron", "TPR-6 trigonal prism"],
+    7: ["PB-7 pentagonal bipyramid"],
+    8: ["SQAP-8 square antiprism"],
+    9: ["TTP-9 tricapped trigonal prism"],
 }
 
 # covalent radii (metal subset + donors); M-D = r(M) + r(D)
