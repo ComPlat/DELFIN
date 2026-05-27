@@ -178,6 +178,13 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
     # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
     if cn and geom and mi is not None:
         _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "20.0"))
+        # High-CN (CN>=7) placement is less reliable than CN4-6, so a build that
+        # only passes the loose CN4-6 threshold can still be worse than the legacy
+        # fallback there.  A tighter high-CN shape gate (default 5.0) makes the
+        # high-CN subset cleanly net-better than legacy (measured: net +11 vs +9 at
+        # 20, regressions 10->6).  Deterministic, CN-keyed; env-tunable.
+        if cn >= 7:
+            _shmax = min(_shmax, float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HIGHCN", "5.0")))
         if donor_set is not None and len(donor_set) == cn:
             sel = list(donor_set)                       # the KNOWN constructed donors
         else:
