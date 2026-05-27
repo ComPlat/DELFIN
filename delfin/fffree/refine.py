@@ -13,8 +13,25 @@ leaves behind.
 """
 from __future__ import annotations
 from typing import List, Set, Tuple
+import os
 import numpy as np
 import delfin._bond_decollapse as bd
+from delfin.fffree import cod_ideals as _CODI
+
+# Iter 29 (construction-driver): refine heavy-heavy bonds toward COD-empirical lengths
+# (real crystal p50) instead of the generic covalent-sum _ideal_bond, which is
+# systematically too long for aromatic/conjugated ligands (C-C 1.52 vs COD 1.40) and
+# was the dominant F3_bond / fragfit gap of FF-free vs UFF.  Env-gated, default OFF
+# (byte-identical when unset).  CCDC-ready: cod_ideals is swappable for a CSD source.
+_USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
+
+
+def _bond_ideal(a, b):
+    if _USE_COD_BONDS:
+        v = _CODI.cod_ideal_bond(a, b)
+        if v is not None:
+            return v
+    return bd._ideal_bond(a, b)
 
 _VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80, "S": 1.80,
         "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10, "Se": 1.90,
@@ -62,7 +79,7 @@ def _violations(syms, P, bonded, adj):
         d = float(np.linalg.norm(P[i] - P[j]))
         if d <= 1e-6:
             continue
-        ideal = bd._ideal_bond(syms[i], syms[j])
+        ideal = _bond_ideal(syms[i], syms[j])
         if d < _COLLAPSE * ideal:
             loss += 1
             u = (P[j] - P[i]) / d
