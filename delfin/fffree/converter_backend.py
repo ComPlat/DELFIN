@@ -60,10 +60,20 @@ _GEOM_TO_POLYA = {
 
 
 # antipodal vertex pairs per geometry (polya vertex ordering) — for universal
-# cis/trans/fac/mer classification from the coloring.
+# cis/trans/fac/mer classification from the coloring.  Iter-32d (User 2026-05-28
+# GUVZIH "fac koord fehlt"): extended to CN5 (TBP/SPY) + CN3 (T-shape).
+# Octahedron: opposite pairs along x/y/z axes.
+# Square-planar: opposite pairs across the square.
+# TBP-5: axials 0↔1 are antipodes (trans); equatorials 2,3,4 are all-cis to each other.
+# SPY-5: apical (0) is "trans" to no basal vertex (the opposite is empty); basal pairs
+#        2↔4 (diagonal across square base) are trans, 1↔3 also; adjacent are cis.
+# T-shape: the two trans vertices are 0↔1 (the "T arms" 180°); 2 is the cis stem (90°).
 _ANTIPODE = {
     "octahedron": {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4},
     "square_planar": {0: 2, 1: 3, 2: 0, 3: 1},
+    "trigonal_bipyramid": {0: 1, 1: 0},        # only axial pair has a trans partner
+    "square_pyramid": {1: 3, 3: 1, 2: 4, 4: 2},  # basal diagonals (apical has no trans)
+    "tshape": {0: 1, 1: 0},                    # T-arms (vertex 2 = stem has no trans)
 }
 
 
@@ -100,6 +110,14 @@ def _classify_coloring(geom_key, vertex_elems) -> str:
             return "trans" if is_trans(pairs2[0]) else "cis"
     elif n == 4:                                       # SP-4 / T-4 MA2B2
         if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 5:                                       # TBP-5 / SPY-5
+        if threes:                                     # MA3B2 (or MA3B1C1)
+            return "mer" if is_trans(threes[0]) else "fac"
+        if len(pairs2) == 1:                           # MA4B (degenerate; MA3B2 if 2nd singleton)
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 3:                                       # SP-3 trigonal-planar / T-3
+        if len(pairs2) == 1:                           # MA2B
             return "trans" if is_trans(pairs2[0]) else "cis"
     return ""
 
