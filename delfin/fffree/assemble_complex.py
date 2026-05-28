@@ -18,6 +18,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from delfin.fffree import metal_sphere_builder as MSB
+import delfin._bond_decollapse as _bd
 
 SEED = 42
 
@@ -130,6 +131,36 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None)
         return lsyms, coords
     except Exception:
         return None
+
+
+def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
+    """True if any heavy-heavy non-metal bonded pair sits below `factor` × the
+    covalent-sum ideal — catches the YILNUF-class oxalate-embed failure where the
+    DG metallacycle places C-C and C-O backbone bonds below the chemistry-possible
+    threshold and the self-gate later rejects the whole build to legacy.
+
+    Iter-32e (User 2026-05-28): a post-orient sanity check so a bad embed can fall
+    back to the rigid-fit path BEFORE poisoning the assembled coords.  Universal,
+    geometry-only, no SMILES knowledge.  Env-gated default OFF: byte-identical
+    when DELFIN_FFFREE_CHELATE_REJECT_COLLAPSED unset.
+    """
+    if os.environ.get("DELFIN_FFFREE_CHELATE_REJECT_COLLAPSED", "0") != "1":
+        return False
+    n = len(syms)
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            d = float(np.linalg.norm(P[i] - P[j]))
+            ideal = _bd._ideal_bond(syms[i], syms[j])
+            # only check pairs that ARE bonded (not random non-bonded close contacts)
+            if d > 1.30 * ideal:
+                continue
+            if d < factor * ideal:
+                return True
+    return False
 
 
 def _orient_chelate_to_vertices(lP, donor_idxs, targets):
@@ -681,6 +712,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                 Q = None
                 if ring_confs is not None:
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets)
+                    # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
+                    # embed sometimes produces a backbone with collapsed C-C / C-O bonds.
+                    # _orient_chelate_to_vertices preserves that (rigid Kabsch+rescale),
+                    # so the resulting Q poisons _build_is_clean and the whole complex
+                    # falls back to legacy.  Reject such Q here → the bidentate rigid
+                    # fallback below picks up; for tridentate we skip the config (the
+                    # build-gate would reject anyway).  Env-gated default OFF.
+                    if Q is not None and _has_collapsed_heavy_bonds(lsyms, Q):
+                        Q = None
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
                 if Q is None:                       # tridentate embed failure -> skip this config
