@@ -17,6 +17,14 @@ def _norm_rows(V: np.ndarray) -> np.ndarray:
 def _ref_polyhedra():
     R = {}
     t = 1 / math.sqrt(3)
+    # CN3 (iter-32c, User 2026-05-28 ADUMOD: Pd CN3 built as Td=109.5°/linear=180°
+    # instead of correct SP-3 trigonal-planar 120° or d8 T-shape 90°/180°).
+    R[("CN3", "SP-3 trigonal planar")] = np.array(
+        [[1.0, 0.0, 0.0],
+         [-0.5, math.sqrt(3) / 2, 0.0],
+         [-0.5, -math.sqrt(3) / 2, 0.0]])
+    R[("CN3", "T-3 T-shape")] = np.array(
+        [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     R[("CN4", "T-4 tetrahedron")] = np.array(
         [[t, t, t], [t, -t, -t], [-t, t, -t], [-t, -t, t]])
     R[("CN4", "SP-4 square planar")] = np.array(
@@ -63,6 +71,7 @@ def _ref_polyhedra():
 REFS = _ref_polyhedra()
 
 GEOM_BY_CN = {
+    3: ["SP-3 trigonal planar", "T-3 T-shape"],
     4: ["T-4 tetrahedron", "SP-4 square planar"],
     5: ["TBP-5 trigonal bipyramid", "SPY-5 square pyramid"],
     6: ["OC-6 octahedron", "TPR-6 trigonal prism"],

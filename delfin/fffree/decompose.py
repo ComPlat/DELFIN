@@ -25,6 +25,12 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
         return "TBP-5 trigonal bipyramid"
     if cn == 4:
         return "SP-4 square planar" if metal in _D8 else "T-4 tetrahedron"
+    if cn == 3:
+        # iter-32c (User 2026-05-28 ADUMOD: Pd CN3 was built as Td/linear).
+        # d⁸ Pt/Pd/Ni/Au/Rh/Ir CN3 prefer T-shape (square-planar with one vacancy);
+        # all other metals get trigonal-planar SP-3.  Both isomers can be additively
+        # enumerated via DELFIN_FFFREE_DUAL_CN3=1 (mirror of dual-CN4 / dual-CN6 wiring).
+        return "T-3 T-shape" if metal in _D8 else "SP-3 trigonal planar"
     if cn == 7:
         return "PB-7 pentagonal bipyramid"
     if cn == 8:
@@ -58,7 +64,13 @@ def decompose(smiles: str) -> Optional[Dict]:
     cn = len(donor_idx)
     # High-CN (7-9) support is env-gated: default coverage stays CN 4-6 (byte-
     # identical), CN 7-9 polyhedra (PB-7/SQAP-8/TTP-9) only when DELFIN_FFFREE_HIGHCN=1.
-    _allowed = (4, 5, 6, 7, 8, 9) if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1" else (4, 5, 6)
+    # Low-CN (3) support is env-gated: DELFIN_FFFREE_CN3=1 enables SP-3/T-3 (iter-32c).
+    _allowed = set()
+    _allowed.update({4, 5, 6})
+    if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
+        _allowed.update({7, 8, 9})
+    if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
+        _allowed.add(3)
     if cn not in _allowed:
         return None
     metal = matom.GetSymbol()

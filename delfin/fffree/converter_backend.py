@@ -45,6 +45,8 @@ def _maybe_relax(syms, P):
         return syms, P
 
 _GEOM_TO_POLYA = {
+    "SP-3 trigonal planar": "trigonal_planar",     # iter-32c (User 2026-05-28 ADUMOD): CN3
+    "T-3 T-shape": "tshape",
     "OC-6 octahedron": "octahedron",
     "SP-4 square planar": "square_planar",
     "T-4 tetrahedron": "tetrahedron",
@@ -325,6 +327,15 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                                            lig_ref, lab_elem, spec, max_isomers)
         elif d["geometry"] == "T-4 tetrahedron":
             results += _enumerate_geometry(d, "square_planar", "SP-4 square planar",
+                                           lig_ref, lab_elem, spec, max_isomers)
+    # Iter-32c: CN3 dual SP-3 trigonal-planar / T-3 T-shape (mirror of dual-CN4).
+    # decompose picks ONE (d⁸ → T-shape, else SP-3); dual flag adds the other.
+    if d.get("cn") == 3 and os.environ.get("DELFIN_FFFREE_DUAL_CN3", "0") == "1":
+        if d["geometry"] == "SP-3 trigonal planar":
+            results += _enumerate_geometry(d, "tshape", "T-3 T-shape",
+                                           lig_ref, lab_elem, spec, max_isomers)
+        elif d["geometry"] == "T-3 T-shape":
+            results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None

@@ -32,6 +32,22 @@ def _close_group(generators: List[Tuple[int, ...]], n: int) -> List[Tuple[int, .
     return sorted(group)
 
 
+def _trigonal_planar_group():
+    # CN3 SP-3 trigonal planar: 3 vertices in a plane at 120°.  Proper rotation group
+    # D3 (order 6): C3 about perp axis + 3 C2 through each vertex (and midpoint of
+    # opposite edge in the plane).  Iter-32c (User 2026-05-28 ADUMOD).
+    C3 = (1, 2, 0)
+    C2 = (0, 2, 1)            # C2 through vertex 0
+    return _close_group([C3, C2], 3)
+
+
+def _tshape_group():
+    # CN3 T-3 T-shape: 2 trans + 1 cis (e.g., d8 Pt CN3).  Proper rotation group C2
+    # (order 2): C2 swaps the two trans vertices, fixes the cis one.
+    C2 = (1, 0, 2)
+    return _close_group([C2], 3)
+
+
 def _octahedron_group():
     # vertices 0=+x 1=-x 2=+y 3=-y 4=+z 5=-z
     Rz = (2, 3, 1, 0, 4, 5)   # +x->+y,+y->-x,-x->-y,-y->+x
@@ -103,6 +119,8 @@ def _tricapped_trigonal_prism_group():
 
 
 _GROUPS = {
+    "trigonal_planar": (_trigonal_planar_group(), 3),
+    "tshape": (_tshape_group(), 3),
     "octahedron": (_octahedron_group(), 6),
     "square_planar": (_square_group(), 4),
     "tetrahedron": (_tetrahedron_group(), 4),
