@@ -50,6 +50,7 @@ _GEOM_TO_POLYA = {
     "T-4 tetrahedron": "tetrahedron",
     "TBP-5 trigonal bipyramid": "trigonal_bipyramid",
     "SPY-5 square pyramid": "square_pyramid",
+    "TPR-6 trigonal prism": "trigonal_prism",      # iter-31 (User 2026-05-28): CN6 dual
     "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
     "SQAP-8 square antiprism": "square_antiprism",
     "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
@@ -306,6 +307,25 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if d.get("cn") == 5:
         results += _enumerate_geometry(d, "square_pyramid", "SPY-5 square pyramid",
                                        lig_ref, lab_elem, spec, max_isomers)
+    # Iter-31 (User 2026-05-28): CN6 dual OC-6 / TPR-6.  decompose defaults CN6 -> OC-6
+    # but early-TM Mo/W CN6 prefer TPR — coverage gap previously missed (no TPR-6 in
+    # the FF-free Pólya enumerator).  Additive, env-gated default OFF (byte-identical
+    # when unset).  Same pattern as CN5 SPY-5: best-effort, never bails OC-6 result.
+    if d.get("cn") == 6 and os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1" \
+            and d["geometry"] != "TPR-6 trigonal prism":
+        results += _enumerate_geometry(d, "trigonal_prism", "TPR-6 trigonal prism",
+                                       lig_ref, lab_elem, spec, max_isomers)
+    # Iter-31 (User 2026-05-28): CN4 dual SP-4 / T-4.  decompose picks ONE per metal via
+    # _PREFERRED_CN4_GEOMETRY ('SQ' or 'TH') but real CN4 complexes can be either — esp.
+    # Cu²⁺ where both T-4 (Cu(I)-like) and SP-4 (Cu(II) Jahn-Teller) exist.  Additive,
+    # env-gated default OFF.  Adds the OPPOSITE of whichever the primary picked.
+    if d.get("cn") == 4 and os.environ.get("DELFIN_FFFREE_DUAL_CN4", "0") == "1":
+        if d["geometry"] == "SP-4 square planar":
+            results += _enumerate_geometry(d, "tetrahedron", "T-4 tetrahedron",
+                                           lig_ref, lab_elem, spec, max_isomers)
+        elif d["geometry"] == "T-4 tetrahedron":
+            results += _enumerate_geometry(d, "square_planar", "SP-4 square planar",
+                                           lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
 

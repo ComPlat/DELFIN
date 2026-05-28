@@ -25,6 +25,15 @@ from delfin.fffree import cod_ideals as _CODI
 # (byte-identical when unset).  CCDC-ready: cod_ideals is swappable for a CSD source.
 _USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
 
+# Iter 30 (User 2026-05-28, RUJSIY eye-validation): when a heavy atom (C/N/O of a ring)
+# is moved by the refiner, the H atoms bonded to it MUST move along (rigid-H drag),
+# else the X–H bond stretches from 1.08 Å to ~1.3 Å as the heavy drifts away — user
+# observed "in den frames bewegen sich nur die C und N atome im ring aber die H bleiben
+# an ihrer stelle und dadurch entstehen unrealitische strukturen".  Env-gated default
+# OFF (byte-identical when unset); the propagation copies the heavy's accumulated
+# displacement onto its bonded H atoms before the step is applied.
+_RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
+
 
 def _bond_ideal(a, b):
     if _USE_COD_BONDS:
@@ -135,6 +144,23 @@ def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6
         for i in range(n):
             if cnt[i] > 0:
                 disp[i] /= cnt[i]
+        # Iter 30: rigid-H drag — propagate heavy-atom displacement to bonded H atoms
+        # so X-H bonds preserve length instead of stretching as the heavy drifts.
+        # H atoms must not already have an own displacement (else they get double-pushed
+        # — overwrite only when cnt[h]==0).
+        if _RIGID_H_DRAG:
+            # bonded H map: for each H, identify its closest heavy (parent) using the
+            # current bonded graph that produced this pass (`adj`)
+            for hi in range(n):
+                if syms[hi] != "H" or hi in fixed or cnt[hi] > 0:
+                    continue
+                parents = [k for k in adj[hi] if syms[k] != "H" and not bd._is_metal(syms[k])]
+                if not parents:
+                    continue
+                par = parents[0] if len(parents) == 1 else min(
+                    parents, key=lambda k: float(np.linalg.norm(P[hi] - P[k])))
+                if cnt[par] > 0:
+                    disp[hi] = disp[par]      # rigid drag: H rides with its heavy parent
         trial = P + damp * disp
         _, tb, ta = _bonds_adj(syms, trial)
         tloss, _ = _violations(syms, trial, tb, ta)

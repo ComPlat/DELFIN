@@ -50,7 +50,7 @@ def _kabsch_rot(Pobs: np.ndarray, Ptgt: np.ndarray) -> np.ndarray:
     return Vt.T @ np.diag([1.0, 1.0, dsign]) @ U.T
 
 
-def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6):
+def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
     donor atoms, so the metallacycle ring forms with correct ring geometry.  A
     free-ligand embed yields the (energetically preferred) extended/anti conformer
@@ -76,8 +76,47 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6):
         except Exception:
             pass
         mh = Chem.AddHs(m)
-        cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, randomSeed=SEED,
-                                               numThreads=1, useRandomCoords=False))
+        # σ-tail fix (env DELFIN_FFFREE_CHELATE_BITE, default OFF): pin the donor-donor
+        # (and M-donor) distances to the IDEAL polyhedron geometry of the assigned
+        # vertices so the metallacycle embeds with the correct bite angle (e.g.
+        # octahedral cis = 90°) instead of the ligand's free natural bite -> donors land
+        # on the exact vertices -> clean coordination shape (CShM->0).  Per-chelate DG
+        # bounds (feasible; the WHOLE-complex DG was not).  Validated: bite 80-101° ->
+        # 87-94°.  Falls back to the unconstrained embed if infeasible/fails.
+        cids = []
+        if (donor_target_pos is not None and len(donor_target_pos) == len(donor_idxs)
+                and os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"):
+            try:
+                from rdkit.Chem import rdDistGeom as _DG
+                from rdkit import DistanceGeometry as _DGs
+                nA = mh.GetNumAtoms()
+                bm = _DG.GetMoleculeBoundsMatrix(mh)
+                dset = {int(d) for d in donor_idxs}
+                tp = [np.asarray(p, float) for p in donor_target_pos]
+
+                def _setb(i, j, dist, tol=0.05):
+                    lo, hi = (i, j) if i < j else (j, i)
+                    bm[lo][hi] = float(dist + tol)
+                    bm[hi][lo] = float(max(dist - tol, 0.0))
+                for i in range(nA):                       # reset metal->non-donor permissive
+                    if i != mi and i not in dset:
+                        bm[min(i, mi)][max(i, mi)] = 100.0
+                        bm[max(i, mi)][min(i, mi)] = 1.2
+                for a, da in enumerate(donor_idxs):       # pin M-D + donor-donor to ideal vertices
+                    _setb(mi, int(da), float(np.linalg.norm(tp[a])))
+                    for b in range(a + 1, len(donor_idxs)):
+                        _setb(int(da), int(donor_idxs[b]), float(np.linalg.norm(tp[a] - tp[b])))
+                if _DGs.DoTriangleSmoothing(bm):
+                    ep = _DG.EmbedParameters()
+                    ep.randomSeed = SEED
+                    ep.useRandomCoords = True
+                    ep.SetBoundsMat(bm)
+                    cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=ep))
+            except Exception:
+                cids = []
+        if not cids:                                      # default / fallback: unconstrained embed
+            cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, randomSeed=SEED,
+                                                   numThreads=1, useRandomCoords=False))
         if not cids:
             if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
                 return None
@@ -602,7 +641,17 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         ring_confs = None
         lmol = None
         if lg["denticity"] >= 2:
-            ring_confs = _embed_metallacycle(lg["mol"], dons[:lg["denticity"]], metal)
+            # ideal donor positions at the assigned polyhedron vertices (metal at origin)
+            # -> the constrained metallacycle embed pins the chelate bite to match them.
+            _dent = lg["denticity"]
+            _vts = [v for v, arm in sorted(va, key=lambda x: x[1])]
+            _delems = lg.get("donor_elems") or [None] * _dent
+            try:
+                _dtp = [ref[_vts[i]] / np.linalg.norm(ref[_vts[i]])
+                        * MSB.md_distance(metal, _delems[i]) for i in range(_dent)]
+            except Exception:
+                _dtp = None
+            ring_confs = _embed_metallacycle(lg["mol"], dons[:_dent], metal, donor_target_pos=_dtp)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:

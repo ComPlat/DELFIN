@@ -67,6 +67,17 @@ def _spy_group():
     return _close_group([C4], 5)
 
 
+def _trigonal_prism_group():
+    # CN6 TPR (matches polyhedra CN6 index order): 0-2 top triangle at z=+0.7 (0,120,240
+    # deg); 3-5 bottom triangle at z=-0.7 (eclipsed: 0,120,240 deg).  Proper rotation
+    # group of an eclipsed trigonal prism is D3 (order 6): C3 about z + three C2 through
+    # rectangular-face midpoints.  Iter-31 (User 2026-05-28: early-TM Mo/W CN6 prefer
+    # TPR over OC — coverage gap previously missed).
+    C3 = (1, 2, 0, 4, 5, 3)           # C3 about z: top triangle 0->1->2->0, bottom 3->4->5->3
+    C2 = (3, 5, 4, 0, 2, 1)           # C2 about x-axis (through midpoints of 0-3, 1-5, 2-4 edges)
+    return _close_group([C3, C2], 6)
+
+
 def _pentagonal_bipyramid_group():
     # CN7 PB (matches polyhedra CN7 index order): 0,1 axial (+z,-z); 2-6 equatorial
     # pentagon (0,72,...,288 deg). Proper rotation group D5 (order 10).
@@ -97,6 +108,7 @@ _GROUPS = {
     "tetrahedron": (_tetrahedron_group(), 4),
     "trigonal_bipyramid": (_tbp_group(), 5),
     "square_pyramid": (_spy_group(), 4 + 1),
+    "trigonal_prism": (_trigonal_prism_group(), 6),
     "pentagonal_bipyramid": (_pentagonal_bipyramid_group(), 7),
     "square_antiprism": (_square_antiprism_group(), 8),
     "tricapped_trigonal_prism": (_tricapped_trigonal_prism_group(), 9),
