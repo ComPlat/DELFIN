@@ -22,6 +22,12 @@ import delfin._bond_decollapse as _bd
 
 SEED = 42
 
+# Track 3 pure FF-free: skip MMFF in ligand 3D embed; rely on ETKDG initial
+# coordinates + downstream refine.py (FF-free defect-loss gradient descent).
+# DELFIN_FFFREE_PURE_TRACK3=1 → no FF anywhere in fffree pipeline.
+# Default OFF (byte-identical when unset). Universal, deterministic, no template.
+_PURE_TRACK3 = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+
 
 def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Rotation matrix mapping unit vector a -> unit vector b (Rodrigues)."""
@@ -36,7 +42,8 @@ def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 def _ligand_3d(smiles: str):
     m = Chem.AddHs(Chem.MolFromSmiles(smiles))
     AllChem.EmbedMolecule(m, randomSeed=SEED)
-    AllChem.MMFFOptimizeMolecule(m)
+    if not _PURE_TRACK3:                 # Track 3 pure FF-free: skip MMFF
+        AllChem.MMFFOptimizeMolecule(m)
     P = m.GetConformer().GetPositions()
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     return syms, np.array(P, float), m
@@ -485,7 +492,8 @@ def _ligand_3d_from_mol(frag_mol):
     m = Chem.AddHs(frag_mol)
     if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
         return None
-    AllChem.MMFFOptimizeMolecule(m)
+    if not _PURE_TRACK3:                 # Track 3 pure FF-free: skip MMFF
+        AllChem.MMFFOptimizeMolecule(m)
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     return syms, m.GetConformer().GetPositions(), m
 
@@ -502,10 +510,11 @@ def _ligand_confs_from_mol(frag_mol, k=10):
         if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
             return None
         cids = [0]
-    try:
-        AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
-    except Exception:
-        pass
+    if not _PURE_TRACK3:                 # Track 3 pure FF-free: skip MMFF
+        try:
+            AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
+        except Exception:
+            pass
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     return syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m
 
