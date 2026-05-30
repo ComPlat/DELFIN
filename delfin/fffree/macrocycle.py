@@ -32,6 +32,72 @@ _MACROCYCLE = _PURE_TRACK3 or os.environ.get("DELFIN_FFFREE_MACROCYCLE", "0") ==
 
 # Porphyrin distortion modes (Jentzen-Shelnutt-Smith Normal-Coordinate-Structural-Decomposition, NSD)
 # Reference: Jentzen et al. JACS 1997. Universal across all porphyrins.
+# Calixarene conformations (Gutsche 1989 standard naming)
+# Universal across calix[4], calix[5], calix[6], calix[8] arenes.
+# 4 phenyl units can each point "up" or "down" relative to mean plane → 2^4 = 16
+# but symmetry reduces to 4 canonical: cone (all up), partial-cone (3up+1down),
+# 1,2-alternate (up-up-down-down), 1,3-alternate (up-down-up-down)
+CALIXARENE_MODES = {
+    "cone":           (1, 1, 1, 1),
+    "partial_cone":   (1, 1, 1, -1),
+    "1,2-alternate":  (1, 1, -1, -1),
+    "1,3-alternate":  (1, -1, 1, -1),
+}
+
+
+def apply_calixarene_mode(
+    coords: np.ndarray,
+    phenyl_anchor_atoms: Sequence[int],
+    mode: str = "cone",
+    amplitude: float = 1.5,
+) -> np.ndarray:
+    """Apply a calixarene conformation by tilting each phenyl up/down.
+
+    Parameters
+    ----------
+    coords : (M, 3) full molecule coords
+    phenyl_anchor_atoms : 4 atom indices identifying each phenyl bridge-C
+    mode : one of CALIXARENE_MODES keys
+    amplitude : Å tilt amplitude (typical: 1.0-2.0 Å)
+
+    Universal across calix[N]arenes (N=4 fully supported; N=5/6/8 fallback).
+    """
+    if mode not in CALIXARENE_MODES:
+        return coords
+    pattern = CALIXARENE_MODES[mode]
+    P = coords.copy()
+    if len(phenyl_anchor_atoms) != 4:
+        return P
+    # Mean plane of anchor atoms
+    anchors = np.array([P[int(i)] for i in phenyl_anchor_atoms])
+    com = anchors.mean(axis=0)
+    centered = anchors - com
+    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+    normal = Vt[-1]
+    # Apply z-shift per anchor
+    for k, idx in enumerate(phenyl_anchor_atoms):
+        P[int(idx)] = P[int(idx)] + normal * amplitude * pattern[k]
+    return P
+
+
+def enumerate_calixarene_conformers(
+    coords: np.ndarray,
+    phenyl_anchor_atoms: Sequence[int],
+    amplitude: float = 1.5,
+) -> Iterator[np.ndarray]:
+    """Enumerate all 4 canonical calixarene conformations."""
+    if not _MACROCYCLE:
+        return
+    for mode in CALIXARENE_MODES:
+        yield apply_calixarene_mode(coords, phenyl_anchor_atoms, mode, amplitude)
+
+
+# Crown-ether large-ring pucker amplitudes (Cremer-Pople for large N)
+# For crown-N (N = 12, 15, 18, 21, 24, 30): universal CP via ring_pucker module.
+# Crown ethers benefit from the same Cremer-Pople formalism but with more
+# flexibility — multiple low-frequency modes contribute.
+
+
 PORPHYRIN_MODES = {
     "planar":   {"ruffling": 0.0, "saddling": 0.0, "doming": 0.0, "waving_x": 0.0, "waving_y": 0.0},
     "ruffled":  {"ruffling": 1.5, "saddling": 0.0, "doming": 0.0, "waving_x": 0.0, "waving_y": 0.0},
