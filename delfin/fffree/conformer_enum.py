@@ -18,11 +18,17 @@ from typing import List, Tuple
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolTransforms
 
+import os
 SEED = 42
 TORSIONS = (60.0, 180.0, 300.0)   # gauche+/anti/gauche- ; resolution = 120 deg
 RMSD_DEDUP = 0.5                  # A; conformers closer than this are the same
 ENERGY_WINDOW = 5.0               # kcal/mol above the global min = "relevant"
 MAX_ROT = 7                       # cap combinatorial blow-up (3^7 = 2187)
+
+# Track 3 pure FF-free: replace MMFF with structural-quality score.
+# DELFIN_FFFREE_PURE_TRACK3=1 → use defect-count score instead of MMFF energy.
+# Universal, deterministic, no force field.
+_PURE_TRACK3 = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
 
 
 def _rotatable_bonds(mol) -> List[Tuple[int, int]]:
@@ -56,6 +62,64 @@ def _mmff_energy(mol) -> float:
     return ff.CalcEnergy()
 
 
+# Pure Track 3 FF-free: structural-quality score replaces MMFF energy
+# Universal, no template, classical mechanics principles only.
+_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80, "S": 1.80,
+        "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10, "Se": 1.90,
+        "As": 1.85, "Te": 2.06}
+_COV = {"H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "P": 1.07, "S": 1.05,
+        "Cl": 1.02, "Br": 1.20, "I": 1.39, "B": 0.84, "Si": 1.11, "Se": 1.20,
+        "As": 1.19}
+_CLASH_FACTOR = 0.70
+
+
+def _structural_quality_score(mol) -> float:
+    """Pure FF-free defect-count score (lower = better conformer).
+
+    Counts: (a) bonded pairs with length deviation^2 from ideal covalent sum,
+    (b) non-bonded close contacts < 0.7 * (vdW_i + vdW_j). Universal, deterministic,
+    no force field. Used when DELFIN_FFFREE_PURE_TRACK3=1.
+    """
+    import numpy as _np
+    n = mol.GetNumAtoms()
+    conf = mol.GetConformer()
+    syms = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(n)]
+    coords = _np.array([[conf.GetAtomPosition(i).x,
+                          conf.GetAtomPosition(i).y,
+                          conf.GetAtomPosition(i).z] for i in range(n)])
+    bonded = set()
+    score = 0.0
+    for b in mol.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        bonded.add((min(i, j), max(i, j)))
+        ideal = _COV.get(syms[i], 1.0) + _COV.get(syms[j], 1.0)
+        d = float(_np.linalg.norm(coords[i] - coords[j]))
+        score += (d - ideal) ** 2
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (i, j) in bonded:
+                continue
+            d = float(_np.linalg.norm(coords[i] - coords[j]))
+            clash_threshold = _CLASH_FACTOR * (_VDW.get(syms[i], 1.7) + _VDW.get(syms[j], 1.7))
+            if d < clash_threshold:
+                score += (clash_threshold - d) ** 2 * 10.0  # clash penalty
+    return score
+
+
+def _conformer_score(mol) -> float:
+    """Dispatch based on DELFIN_FFFREE_PURE_TRACK3 env-flag."""
+    if _PURE_TRACK3:
+        return _structural_quality_score(mol)
+    return _mmff_energy(mol)
+
+
+def _optimize_or_skip(mol):
+    """MMFF-optimize (Track 1/2) or skip (Track 3 pure FF-free)."""
+    if _PURE_TRACK3:
+        return  # rely on ETKDG starting coords; no FF post-process
+    AllChem.MMFFOptimizeMolecule(mol)
+
+
 def enumerate_conformers(smiles: str):
     """Return (n_combos, conformers) where conformers = list of (energy, mol) within
     the energy window, deduped by RMSD.  Deterministic."""
@@ -65,7 +129,7 @@ def enumerate_conformers(smiles: str):
     mol = Chem.AddHs(mol)
     if AllChem.EmbedMolecule(mol, randomSeed=SEED) != 0:
         return 0, []
-    AllChem.MMFFOptimizeMolecule(mol)
+    _optimize_or_skip(mol)
     rot = _rotatable_bonds(mol)
     refs = [( _dihedral_ref(mol, b1, b2), b1, b2) for b1, b2 in rot]
     refs = [(r, b1, b2) for (r, b1, b2) in refs if r[0] is not None and r[1] is not None]
@@ -80,9 +144,10 @@ def enumerate_conformers(smiles: str):
         conf = m.GetConformer()
         for ((a1, a3), b1, b2), ang in zip(refs, combo):
             rdMolTransforms.SetDihedralDeg(conf, a1, b1, b2, a3, ang)
-        if AllChem.MMFFOptimizeMolecule(m) not in (0, 1):
-            continue
-        e = _mmff_energy(m)
+        if not _PURE_TRACK3:
+            if AllChem.MMFFOptimizeMolecule(m) not in (0, 1):
+                continue
+        e = _conformer_score(m)
         # dedup by RMSD against kept
         dup = False
         for _, mk in kept:
