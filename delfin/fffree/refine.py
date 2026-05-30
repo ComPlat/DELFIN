@@ -45,8 +45,12 @@ _USE_COD_BONDS = _PURE_TRACK3 or os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") 
 _RIGID_H_DRAG = _PURE_TRACK3 or os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
 
 
-def _bond_ideal(a, b):
-    if _USE_COD_BONDS:
+def _bond_ideal(a, b, use_cod=None):
+    """Bond ideal length. use_cod=None uses module-level _USE_COD_BONDS;
+    pass use_cod=False to force covalent-sum (used in Phase 3b hapto gate)."""
+    if use_cod is None:
+        use_cod = _USE_COD_BONDS
+    if use_cod:
         v = _CODI.cod_ideal_bond(a, b)
         if v is not None:
             return v
@@ -73,9 +77,12 @@ def _bonds_adj(syms, P):
     return b, bonded, adj
 
 
-def _violations(syms, P, bonded, adj):
+def _violations(syms, P, bonded, adj, use_cod=None):
     """Return (loss, moves) where moves = list of (atom_idx, displacement) that
-    would relieve a violation.  loss = #clashes + #collapses + #h_overcoord."""
+    would relieve a violation.  loss = #clashes + #collapses + #h_overcoord.
+
+    Phase 3b: use_cod parameter forwards to _bond_ideal for class-conditional gating
+    (hapto systems pass use_cod=False to skip COD_BONDS auto-enable)."""
     n = len(syms)
     loss = 0
     moves: List[Tuple[int, np.ndarray]] = []
@@ -98,7 +105,7 @@ def _violations(syms, P, bonded, adj):
         d = float(np.linalg.norm(P[i] - P[j]))
         if d <= 1e-6:
             continue
-        ideal = _bond_ideal(syms[i], syms[j])
+        ideal = _bond_ideal(syms[i], syms[j], use_cod=use_cod)
         if d < _COLLAPSE * ideal:
             loss += 1
             u = (P[j] - P[i]) / d
@@ -130,19 +137,56 @@ def _violations(syms, P, bonded, adj):
     return loss, moves
 
 
+def _has_hapto_signature(syms, P) -> bool:
+    """Heuristic hapto detection: metal with ≥3 bonded C atoms clustered at
+    ~2.0-2.5 Å (Cp/allyl/π-system signature). Returns True if any metal carries a
+    hapto motif. Phase 3b uses this to gate Phase 3a auto-enable: hapto systems
+    skip COD_BONDS + RIGID_H_DRAG to avoid refine-loop oscillation on Cp rings
+    (Sn-Cp case: 3/4 multi-hapto SMILES timed out under Phase 3a auto-enable).
+
+    Pure geometry, no FF, universal across all CN.
+    """
+    n = len(syms)
+    for m in range(n):
+        if not bd._is_metal(syms[m]):
+            continue
+        c_neighbors = [k for k in range(n)
+                       if k != m and syms[k] == "C"
+                       and float(np.linalg.norm(P[k] - P[m])) < 2.7]
+        if len(c_neighbors) < 3:
+            continue
+        # check cluster: spread of M-C distances small (hapto = ~equidistant)
+        d_to_m = sorted(float(np.linalg.norm(P[k] - P[m])) for k in c_neighbors)
+        if d_to_m[2] - d_to_m[0] < 0.4:
+            return True
+    return False
+
+
 def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6):
     """Coordinate descent minimising the defect loss; metal+donors frozen.
-    Deterministic. Returns refined P (or original if no improvement)."""
+    Deterministic. Returns refined P (or original if no improvement).
+
+    Phase 3b (User 2026-05-30): when PURE_TRACK3 + hapto signature detected,
+    disable COD_BONDS + RIGID_H_DRAG locally to prevent refine-loop oscillation
+    on Cp-type π systems (preserves the +1460% multi-hapto coverage breakthrough
+    of Phase 1+2 while keeping the +4-axis Phase 3a quality win on σ systems).
+    """
     P = np.array(P, float).copy()
     fixed = set(fixed_idx)
     n = len(syms)
+    # Phase 3b: class-conditional gate for auto-enabled Phase 3a flags.
+    # Hapto systems (Cp/allyl/π) skip COD_BONDS + RIGID_H_DRAG to avoid refine-loop
+    # oscillation that caused 3/4 Sn multi-hapto smoke timeouts under Phase 3a.
+    _hapto = _PURE_TRACK3 and _has_hapto_signature(syms, P)
+    _use_rigid_h = _RIGID_H_DRAG and not _hapto
+    _use_cod = _USE_COD_BONDS and not _hapto
     _, bonded, adj = _bonds_adj(syms, P)
-    best_loss, _ = _violations(syms, P, bonded, adj)
+    best_loss, _ = _violations(syms, P, bonded, adj, use_cod=_use_cod)
     if best_loss == 0:
         return P
     for _ in range(max_passes):
         _, bonded, adj = _bonds_adj(syms, P)
-        loss, moves = _violations(syms, P, bonded, adj)
+        loss, moves = _violations(syms, P, bonded, adj, use_cod=_use_cod)
         if loss == 0:
             break
         disp = np.zeros((n, 3))
@@ -158,7 +202,7 @@ def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6
         # so X-H bonds preserve length instead of stretching as the heavy drifts.
         # H atoms must not already have an own displacement (else they get double-pushed
         # — overwrite only when cnt[h]==0).
-        if _RIGID_H_DRAG:
+        if _use_rigid_h:
             # bonded H map: for each H, identify its closest heavy (parent) using the
             # current bonded graph that produced this pass (`adj`)
             for hi in range(n):
@@ -173,7 +217,7 @@ def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6
                     disp[hi] = disp[par]      # rigid drag: H rides with its heavy parent
         trial = P + damp * disp
         _, tb, ta = _bonds_adj(syms, trial)
-        tloss, _ = _violations(syms, trial, tb, ta)
+        tloss, _ = _violations(syms, trial, tb, ta, use_cod=_use_cod)
         if tloss < best_loss:          # accept-if-better gate
             P = trial; best_loss = tloss
         else:
