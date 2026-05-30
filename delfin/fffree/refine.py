@@ -18,12 +18,21 @@ import numpy as np
 import delfin._bond_decollapse as bd
 from delfin.fffree import cod_ideals as _CODI
 
+# Track 3 pure FF-free mode (User 2026-05-30): when PURE_TRACK3=1, MMFF is removed
+# from the fffree pipeline (Phases 1+2). To compensate AND BEAT the FF baseline, the
+# pure-Track-3 mode auto-enables the FF-free defect correctors below (COD-empirical
+# bond targets + rigid-H drag) as part of the integrated FF-free correction stack.
+# When PURE_TRACK3 is off, individual flags remain independent (byte-identical
+# behaviour preserved). Race-strategy: FF-free must win, not just match.
+_PURE_TRACK3 = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+
 # Iter 29 (construction-driver): refine heavy-heavy bonds toward COD-empirical lengths
 # (real crystal p50) instead of the generic covalent-sum _ideal_bond, which is
 # systematically too long for aromatic/conjugated ligands (C-C 1.52 vs COD 1.40) and
 # was the dominant F3_bond / fragfit gap of FF-free vs UFF.  Env-gated, default OFF
 # (byte-identical when unset).  CCDC-ready: cod_ideals is swappable for a CSD source.
-_USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
+# Auto-enabled under PURE_TRACK3 to close the bondlen frac_outlier gap vs MMFF.
+_USE_COD_BONDS = _PURE_TRACK3 or os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
 
 # Iter 30 (User 2026-05-28, RUJSIY eye-validation): when a heavy atom (C/N/O of a ring)
 # is moved by the refiner, the H atoms bonded to it MUST move along (rigid-H drag),
@@ -32,7 +41,8 @@ _USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
 # an ihrer stelle und dadurch entstehen unrealitische strukturen".  Env-gated default
 # OFF (byte-identical when unset); the propagation copies the heavy's accumulated
 # displacement onto its bonded H atoms before the step is applied.
-_RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
+# Auto-enabled under PURE_TRACK3 to close the H-anomaly gap vs MMFF.
+_RIGID_H_DRAG = _PURE_TRACK3 or os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
 
 
 def _bond_ideal(a, b):
