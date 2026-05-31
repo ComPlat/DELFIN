@@ -60,9 +60,24 @@ def decompose(smiles: str) -> Optional[Dict]:
     if mol is None:
         return None
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
-    if len(metals) != 1:
-        return None                                   # mononuclear only (v1)
-    m = metals[0]
+    if len(metals) == 0:
+        return None
+    # Phase G4 (2026-05-31): multi-metal extension.
+    # Previously: mononuclear only. Now: under PURE_TRACK3 or DELFIN_FFFREE_MULTI_METAL,
+    # we pick the PRIMARY metal (max neighbours) and treat the other metal + its
+    # local ligands as a single "metal-containing ligand" fragment.
+    # Use case: HUCPIH (Sn-Ru bond), Mn2(CO)10, Re2(Cl)10 = pick the more
+    # densely-coordinated metal as primary.
+    # Expected CCDC build-rate gain: +10%.
+    _PT3_MULTI = (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+                  or os.environ.get("DELFIN_FFFREE_MULTI_METAL", "0") == "1")
+    if len(metals) > 1:
+        if not _PT3_MULTI:
+            return None                               # mononuclear only (legacy)
+        # Pick primary metal = highest CN (most neighbors)
+        m = max(metals, key=lambda mi: mol.GetAtomWithIdx(mi).GetDegree())
+    else:
+        m = metals[0]
     matom = mol.GetAtomWithIdx(m)
     donor_idx = [n.GetIdx() for n in matom.GetNeighbors()]
     cn = len(donor_idx)
