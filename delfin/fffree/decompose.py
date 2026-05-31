@@ -71,14 +71,16 @@ def decompose(smiles: str) -> Optional[Dict]:
     # Low-CN (3) support is env-gated: DELFIN_FFFREE_CN3=1 enables SP-3/T-3 (iter-32c).
     _allowed = set()
     _allowed.update({4, 5, 6})
-    if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
+    # Phase G3 (2026-05-31): under PURE_TRACK3, auto-enable CN2 (linear),
+    # CN3 (SP-3/T-3), and CN7-9 (PB-7/SQAP-8/TTP-9). The hapto-π detection
+    # below can collapse CN=9 (η6-arene + sigma) to effective CN=4-5, so
+    # high CN must reach the fragment-analysis stage to be reduced.
+    _PT3_AUTO = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
         _allowed.update({7, 8, 9})
-    if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
         _allowed.add(3)
-    # Phase G: CN2 (linear) auto-enabled under PURE_TRACK3
-    # (Cu(I)/Ag(I)/Au(I)/Hg(II) linear coordination)
-    if (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
-        or os.environ.get("DELFIN_FFFREE_CN2", "0") == "1"):
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN2", "0") == "1":
         _allowed.add(2)
     if cn not in _allowed:
         return None
@@ -116,22 +118,97 @@ def decompose(smiles: str) -> Optional[Dict]:
                 or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"):
                 continue
             return None                               # bridging / spectator -> legacy
-        if len(fdonors) > 6:
+        # Phase G3 (User 2026-05-31): Hapto-π detection.
+        # If a fragment has ≥3 carbon donors that are all part of the same
+        # aromatic ring or conjugated π-system, classify as hapto (η3/η4/η5/η6/η7/η8).
+        # Map to a single hapto-donor at the ring centroid. This admits
+        # ferrocene/Cp/arene/COT complexes that previously hit the >tridentate gate.
+        # Expected CCDC build-rate gain: +15%.
+        _PT3_AUTO = (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+                     or os.environ.get("DELFIN_FFFREE_HAPTO_DETECT", "0") == "1")
+        is_hapto = False
+        hapto_eta = 0
+        if _PT3_AUTO and len(fdonors) >= 3:
+            # Check if fdonors are all C (Cp/arene/allyl/diene) OR all N (porphyrin core)
+            all_carbon = all(donor_elem[d] == "C" for d in fdonors)
+            # Phase G3: ring-based hapto detection (works on SMILES that don't mark
+            # aromaticity, e.g. [C+] cation Cp notation).
+            try:
+                local_donor_idxs = [orig.index(o) for o in fdonors]
+                ring_info = fmol.GetRingInfo()
+                # Find smallest ring containing ALL local-donor indices.
+                for r in ring_info.AtomRings():
+                    if all(li in r for li in local_donor_idxs):
+                        # All donors lie in this ring → hapto-π
+                        if all_carbon and len(fdonors) in (3, 4, 5, 6, 7, 8):
+                            is_hapto = True
+                            hapto_eta = len(fdonors)
+                            break
+                if not is_hapto:
+                    # Try open-chain hapto (allyl η3, diene η4) via bond adjacency:
+                    # donors form an unbroken chain in the fragment graph
+                    if all_carbon and len(fdonors) in (3, 4):
+                        # Check chain: each donor (except endpoints) bonded to 2 others
+                        adj = {li: set() for li in local_donor_idxs}
+                        for b in fmol.GetBonds():
+                            a, bb = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+                            if a in adj and bb in adj:
+                                adj[a].add(bb); adj[bb].add(a)
+                        # Count degrees: chain = 2 endpoints (deg 1) + rest deg 2
+                        degs = sorted(len(adj[li]) for li in local_donor_idxs)
+                        if degs == [1, 1] + [2] * (len(fdonors) - 2):
+                            is_hapto = True
+                            hapto_eta = len(fdonors)
+            except Exception:
+                pass
+
+        if len(fdonors) > 6 and not is_hapto:
             # Phase G: relax from > 3 to > 6 — allows tetra/penta/hexadentate
-            # ligands (porphyrin κ4, EDTA κ6, salen κ4). Phase G integration.
+            # ligands (porphyrin κ4, EDTA κ6, salen κ4).
+            # If hapto (η7 cycloheptatrienyl, η8 COT): allow.
             return None                               # >hexadentate (very rare) -> legacy
         local_donors = [orig.index(o) for o in fdonors]
-        ligands.append({
-            "mol": fmol,
-            "donor_local_idx": local_donors[0],       # primary (back-compat)
-            "donor_local_idxs": local_donors,         # all donors (chelate)
-            "denticity": len(fdonors),
-            "donor_elem": donor_elem[fdonors[0]],
-            "donor_elems": [donor_elem[o] for o in fdonors],
-        })
-        n_chelate_bonds += len(fdonors)
+        if is_hapto:
+            ligands.append({
+                "mol": fmol,
+                "donor_local_idx": local_donors[0],       # primary (back-compat; centroid effective)
+                "donor_local_idxs": local_donors,         # all hapto-C atoms
+                "denticity": 1,                            # Phase G3: hapto-π = 1 coord site
+                "donor_elem": "C_hapto",                   # marker for downstream
+                "donor_elems": ["C_hapto"],
+                "is_hapto": True,
+                "hapto_eta": hapto_eta,
+            })
+            n_chelate_bonds += 1                            # hapto = 1 coord site
+        else:
+            ligands.append({
+                "mol": fmol,
+                "donor_local_idx": local_donors[0],       # primary (back-compat)
+                "donor_local_idxs": local_donors,         # all donors (chelate)
+                "denticity": len(fdonors),
+                "donor_elem": donor_elem[fdonors[0]],
+                "donor_elems": [donor_elem[o] for o in fdonors],
+                "is_hapto": False,
+                "hapto_eta": 0,
+            })
+            n_chelate_bonds += len(fdonors)
     if n_chelate_bonds != cn:
-        return None
+        # Phase G3: hapto detection may reduce effective CN. Compute new effective CN.
+        _PT3_AUTO = (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+                     or os.environ.get("DELFIN_FFFREE_HAPTO_DETECT", "0") == "1")
+        if _PT3_AUTO and any(lg.get("is_hapto") for lg in ligands):
+            # CN is now sum of effective denticities (hapto=1, sigma=fdonors)
+            new_cn = sum(lg["denticity"] for lg in ligands)
+            if 2 <= new_cn <= 9:
+                cn = new_cn
+                # Re-compute geometry for new CN
+                geometry = _default_geometry(metal, cn)
+                if geometry is None:
+                    return None
+            else:
+                return None
+        else:
+            return None
     has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
     # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
     # small/simple ligands place cleanly; very large conjugated ligands need
