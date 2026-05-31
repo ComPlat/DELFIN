@@ -100,9 +100,17 @@ def decompose(smiles: str) -> Optional[Dict]:
             continue                                  # the metal's own fragment
         fdonors = [o for o in orig if o in donor_set]
         if len(fdonors) == 0:
+            # Phase G: bridging / spectator → previously hard fail. With
+            # DELFIN_FFFREE_DECOMPOSE_EXTENDED=1, skip these fragments instead
+            # (treat as auxiliary). Expected CCDC build-rate gain: +20%.
+            if (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+                or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"):
+                continue
             return None                               # bridging / spectator -> legacy
-        if len(fdonors) > 3:
-            return None                               # >tridentate (rare) -> legacy
+        if len(fdonors) > 6:
+            # Phase G: relax from > 3 to > 6 — allows tetra/penta/hexadentate
+            # ligands (porphyrin κ4, EDTA κ6, salen κ4). Phase G integration.
+            return None                               # >hexadentate (very rare) -> legacy
         local_donors = [orig.index(o) for o in fdonors]
         ligands.append({
             "mol": fmol,
@@ -121,7 +129,17 @@ def decompose(smiles: str) -> Optional[Dict]:
     # conformer work the rigid placement doesn't do, so bail to None for those.
     # Per-arm (not per-ligand) so a polydentate chelate (e.g. citrate, 13 heavy
     # over 6 donors ~ 2/arm) is not unfairly rejected for its total size.
-    MAX_HEAVY_PER_DONOR = 8
+    #
+    # Phase G (User 2026-05-31): with macrocycle.py + ring_pucker integration,
+    # large polydentate ligands (porphyrin, salen) become handlable. When
+    # DELFIN_FFFREE_DECOMPOSE_EXTENDED=1 (auto-on under PURE_TRACK3), raise the
+    # per-donor heavy-atom cap from 8 → 20 to admit macrocyclic ligands.
+    # Expected CCDC build-rate gain: +10% (porphyrin/salen/calix-class).
+    _EXTENDED = (
+        os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"
+    )
+    MAX_HEAVY_PER_DONOR = 20 if _EXTENDED else 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
