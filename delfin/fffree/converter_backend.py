@@ -35,6 +35,14 @@ def _maybe_relax(syms, P):
     collapsed heavy-heavy bonds + clashes. This is the universal solution to
     the 75% of selfgate-rejected cases that have collapsed bonds from rigid
     fitting. Metal + donors frozen, ligand periphery relaxed. Pure geometric.
+
+    Phase G12 (User 2026-05-31, Mogul TOP-blindspot on fb1ae9a-PT3): aromatic
+    rings (PPh3 / PR3-aryl etc.) buckle after rigid placement + refine, leading
+    to C sp2 bonds stretched to 1.835 Å vs COD 1.397 Å (+31 %, total severity
+    26 307 on 41/500 files).  After the defect refiner, snap each detected
+    aromatic ring to its SVD best-fit plane (perpendicular projection,
+    minimal-movement), with ring-H rigidly riding the parent and M-coordinated
+    atoms frozen.  Universal geometric, FF-free, auto under PURE_TRACK3.
     """
     out_syms = list(syms)
     P_curr = np.asarray(P, dtype=float)
@@ -51,6 +59,24 @@ def _maybe_relax(syms, P):
                             < 1.45 * _bd._ideal_bond(syms[m], syms[j]):
                         fixed.add(j)
             P_curr = RF.refine(out_syms, P_curr, fixed_idx=fixed)
+        except Exception:
+            pass
+    # Phase G12 REVERTED (User 2026-05-31, smoke 461 vs fb1ae9a equal-n):
+    # Aromatic-ring planarity snap was wired here but REGRESSED 37 severe axes
+    # (net -59, pi_planar +115 %, hapto_geom +214 %, stereo +181 %) -- the SVD
+    # plane projection over-corrected on chelate-attached rings and the
+    # metal-coordinated-atom freeze did NOT propagate to the rest of the
+    # rotational subtree, so the projection drift broke the linkage between
+    # ring atoms and their non-ring substituents. Module + tests retained as
+    # standby; an env-gated re-entry will require a per-ring "ring + bonded
+    # substituent" rigid-body rotation (not a free atom-by-atom projection)
+    # and additional validation before wire-on. See task #84 ("KEEP OFF").
+    # Default OFF -- explicit no-op even under PURE_TRACK3.
+    _AROMSNAP_ON = os.environ.get("DELFIN_FFFREE_AROMSNAP_FORCE", "0") == "1"
+    if _AROMSNAP_ON:
+        try:
+            from delfin.fffree.aromatic_snap import snap_aromatic_rings
+            out_syms, P_curr = snap_aromatic_rings(out_syms, P_curr)
         except Exception:
             pass
     if os.environ.get("DELFIN_FFFREE_LIGAND_RELAX", "0") != "1":
