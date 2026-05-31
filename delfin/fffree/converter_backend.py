@@ -281,6 +281,34 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -
     return True
 
 
+def _g13_ring_scale_polish(syms, P, cn=None, geom=None, donors=None,
+                            has_hapto=False):
+    """Phase G13 polish: rigid uniform aromatic-ring scaling AFTER the build
+    has passed the clean check.  Returns the polished (syms, P) if the polish
+    also passes _build_is_clean, otherwise the input unchanged.  Falls back
+    silently on any exception (the polish must never break a clean build).
+
+    Distinct from the failed G12 plane-snap [[feedback_g12_aromsnap_failed_isomer_selection]]:
+    G12 ran BEFORE the clean gate and perturbed isomer selection -> regressed
+    pi_planar +115 % on smoke 461 via 17 A fallback isomers. G13 runs AFTER
+    the gate; the worst case is a no-op revert to the already-clean input.
+    """
+    try:
+        from delfin.fffree.aromatic_ring_scale import (
+            scale_aromatic_rings, is_enabled as _ars_on
+        )
+        if not _ars_on():
+            return list(syms), np.asarray(P, dtype=float)
+        syms2, P2 = scale_aromatic_rings(list(syms), np.asarray(P, dtype=float))
+        if not _build_is_clean(syms2, P2, cn=cn, geom=geom,
+                                donors=donors, has_hapto=has_hapto):
+            # post-polish broke the clean check -> revert
+            return list(syms), np.asarray(P, dtype=float)
+        return syms2, P2
+    except Exception:
+        return list(syms), np.asarray(P, dtype=float)
+
+
 def _fffree_chelate_isomers(d, geom_key, max_isomers):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
@@ -341,6 +369,19 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                donors=donors, has_hapto=_has_hapto):   # donor-aware self-gate -> skip config
             continue
+        # Phase G13 REVERTED (HEAL-FIRST verdict): smoke 529 vs fb1ae9a-equal-n
+        # net +2 BUT 9 severe regressions including hapto_geom +162 %,
+        # frame_pct_element_list_change +98 %, F3_bond +42 % (the very metric we
+        # wanted to fix). Module + 8 pytest cases retained as standby behind
+        # DELFIN_FFFREE_RING_SCALE_FORCE=1; needs hapto-pi-explicit freeze guard
+        # (current metal-coordinated check misses cases where mean M-C exceeds
+        # 1.45 * ideal_bond) and element-list invariance audit before re-entry.
+        _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
+        if _polish_on:
+            syms, P = _g13_ring_scale_polish(
+                syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                donors=donors, has_hapto=_has_hapto,
+            )
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
 
@@ -388,6 +429,14 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                 has_hapto=_has_hapto):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
+        # Phase G13 REVERTED (HEAL-FIRST). See chelate-path comment above for
+        # details. Standby behind DELFIN_FFFREE_RING_SCALE_FORCE=1.
+        _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
+        if _polish_on:
+            syms, P = _g13_ring_scale_polish(
+                syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                has_hapto=_has_hapto,
+            )
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         geom_tag = d["geometry"].split()[0]
