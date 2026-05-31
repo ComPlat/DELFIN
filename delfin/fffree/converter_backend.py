@@ -28,21 +28,44 @@ def _maybe_relax(syms, P):
     coordination (metal + donors within the coord_geom detection sphere) frozen, rigid
     fragments preserved, multi-axis never-worse firewall.  Validated on smoke: net +11,
     0 severe (hanom -22%, inter-ligand -29%, h-clash -27%, coord_geom unchanged).
-    Enable via DELFIN_FFFREE_LIGAND_RELAX=1."""
+    Enable via DELFIN_FFFREE_LIGAND_RELAX=1.
+
+    Phase G9 (User 2026-05-31 'fundamental universell'): under PURE_TRACK3, ALSO
+    run the FF-free defect refiner (delfin.fffree.refine.refine) to fix
+    collapsed heavy-heavy bonds + clashes. This is the universal solution to
+    the 75% of selfgate-rejected cases that have collapsed bonds from rigid
+    fitting. Metal + donors frozen, ligand periphery relaxed. Pure geometric.
+    """
+    out_syms = list(syms)
+    P_curr = np.asarray(P, dtype=float)
+    # Phase G9: universal FF-free defect refiner (auto under PURE_TRACK3)
+    _PT3_REFINE = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    if _PT3_REFINE:
+        try:
+            from delfin.fffree import refine as RF
+            mi = [i for i, s in enumerate(syms) if _bd._is_metal(s)]
+            fixed = set(mi)
+            for m in mi:
+                for j in range(len(syms)):
+                    if j != m and syms[j] != "H" and float(np.linalg.norm(P_curr[j] - P_curr[m])) \
+                            < 1.45 * _bd._ideal_bond(syms[m], syms[j]):
+                        fixed.add(j)
+            P_curr = RF.refine(out_syms, P_curr, fixed_idx=fixed)
+        except Exception:
+            pass
     if os.environ.get("DELFIN_FFFREE_LIGAND_RELAX", "0") != "1":
-        return syms, P
+        return out_syms, P_curr
     try:
-        P2 = np.asarray(P, dtype=float)
         mi = [i for i, s in enumerate(syms) if _bd._is_metal(s)]
         fixed = set(mi)
         for m in mi:
             for j in range(len(syms)):
-                if j != m and syms[j] != "H" and float(np.linalg.norm(P2[j] - P2[m])) \
+                if j != m and syms[j] != "H" and float(np.linalg.norm(P_curr[j] - P_curr[m])) \
                         < 1.45 * _bd._ideal_bond(syms[m], syms[j]):
                     fixed.add(j)
-        return list(syms), LR.relax(list(syms), P2, fixed)
+        return list(syms), LR.relax(list(syms), P_curr, fixed)
     except Exception:
-        return syms, P
+        return out_syms, P_curr
 
 _GEOM_TO_POLYA = {
     "L-2 linear": "linear",                         # Phase G (2026-05-31): CN2 Cu(I)/Ag(I)/Au(I)
