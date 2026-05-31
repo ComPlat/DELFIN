@@ -45,6 +45,7 @@ def _maybe_relax(syms, P):
         return syms, P
 
 _GEOM_TO_POLYA = {
+    "L-2 linear": "linear",                         # Phase G (2026-05-31): CN2 Cu(I)/Ag(I)/Au(I)
     "SP-3 trigonal planar": "trigonal_planar",     # iter-32c (User 2026-05-28 ADUMOD): CN3
     "T-3 T-shape": "tshape",
     "OC-6 octahedron": "octahedron",

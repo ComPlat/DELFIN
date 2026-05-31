@@ -19,6 +19,10 @@ _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
 
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
+    if cn == 2:
+        # Phase G: linear coordination (Cu(I), Ag(I), Au(I), Hg(II)).
+        # Simple D∞h: 2 donors 180° apart on metal axis.
+        return "L-2 linear"
     if cn == 6:
         return "OC-6 octahedron"
     if cn == 5:
@@ -71,6 +75,11 @@ def decompose(smiles: str) -> Optional[Dict]:
         _allowed.update({7, 8, 9})
     if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
         _allowed.add(3)
+    # Phase G: CN2 (linear) auto-enabled under PURE_TRACK3
+    # (Cu(I)/Ag(I)/Au(I)/Hg(II) linear coordination)
+    if (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_CN2", "0") == "1"):
+        _allowed.add(2)
     if cn not in _allowed:
         return None
     metal = matom.GetSymbol()

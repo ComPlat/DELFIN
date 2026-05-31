@@ -17,6 +17,10 @@ def _norm_rows(V: np.ndarray) -> np.ndarray:
 def _ref_polyhedra():
     R = {}
     t = 1 / math.sqrt(3)
+    # Phase G (2026-05-31): CN2 L-2 linear D∞h symmetry.
+    # 2 donors 180° apart on metal axis (Cu(I), Ag(I), Au(I), Hg(II)).
+    R[("CN2", "L-2 linear")] = np.array(
+        [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]])
     # CN3 (iter-32c, User 2026-05-28 ADUMOD: Pd CN3 built as Td=109.5°/linear=180°
     # instead of correct SP-3 trigonal-planar 120° or d8 T-shape 90°/180°).
     R[("CN3", "SP-3 trigonal planar")] = np.array(
@@ -71,6 +75,7 @@ def _ref_polyhedra():
 REFS = _ref_polyhedra()
 
 GEOM_BY_CN = {
+    2: ["L-2 linear"],                              # Phase G: Cu(I)/Ag(I)/Au(I)/Hg(II)
     3: ["SP-3 trigonal planar", "T-3 T-shape"],
     4: ["T-4 tetrahedron", "SP-4 square planar"],
     5: ["TBP-5 trigonal bipyramid", "SPY-5 square pyramid"],
