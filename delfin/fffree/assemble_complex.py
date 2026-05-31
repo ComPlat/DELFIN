@@ -699,9 +699,43 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             if confs is None:
                 return None
             lsyms, coords_list, lmol = confs
+        # Phase G6 (2026-05-31): hapto-π piano-stool placement.
+        # When the ligand is hapto (η3/η4/η5/η6/η7/η8 Cp/arene/allyl/diene/COT),
+        # is_hapto=True from decompose.py. Place the ring centroid at the
+        # polyhedron vertex, with the ring perpendicular to the M-centroid axis.
+        # Universal across hapto modes via hapto_modes.m_centroid_distance().
+        is_hapto_lig = lg.get("is_hapto", False)
+        eta = lg.get("hapto_eta", 0)
         best_Q, best_clash = None, 1e18
         for lP in coords_list:
-            if lg["denticity"] == 1:
+            if is_hapto_lig and eta >= 3:
+                # Piano-stool placement: metal at vertex, ring centroid at distance
+                # _md (from hapto_modes table) along the vertex unit vector.
+                v = va[0][0]
+                Vunit = ref[v] / np.linalg.norm(ref[v])
+                # Get all hapto-donor positions (the ring carbons)
+                ring_indices = lg.get("donor_local_idxs", [dons[0]])
+                ring_pos = np.array([lP[i] for i in ring_indices])
+                centroid = ring_pos.mean(axis=0)
+                # M-centroid distance from hapto_modes (env-gated import; fallback to 1.7)
+                try:
+                    from delfin.fffree.hapto_modes import m_centroid_distance
+                    _mc = m_centroid_distance(metal, eta)
+                except Exception:
+                    _mc = 1.7
+                # Rotate ring so its normal aligns with Vunit, then place centroid at Vunit*_mc
+                centered = ring_pos - centroid
+                _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+                ring_normal = Vt[-1]
+                # Ensure normal points outward from metal
+                if np.dot(ring_normal, Vunit) < 0:
+                    ring_normal = -ring_normal
+                # Rotate all ligand atoms so ring-normal -> Vunit
+                R = _rot_align(ring_normal, Vunit)
+                lP_aligned = (lP - centroid) @ R.T
+                # Translate so ring centroid sits at Vunit * _mc
+                Q = lP_aligned + Vunit * _mc
+            elif lg["denticity"] == 1:
                 v = va[0][0]
                 Vunit = ref[v] / np.linalg.norm(ref[v])
                 md = MSB.md_distance(metal, lsyms[dons[0]])

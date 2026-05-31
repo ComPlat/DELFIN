@@ -221,7 +221,10 @@ _ANTIPODE_FULL = {
 #    diagonals (164deg) — those are not real chelate positions, and admitting them would
 #    feed self-gate-rejected configs to the all-or-nothing chelate gate (one bad isomer
 #    bails the whole complex to legacy).
-CHELATE_CIS_MAX_DEG = 100.0
+CHELATE_CIS_MAX_DEG = 115.0   # Phase G6 (2026-05-31): raised from 100 → 115
+# to admit tetrahedron T-4 chelates (all T-4 angles = 109.5°, previously
+# rejected). Universal fix: works for OC-6 (90°), SP-4 (90°), TBP-5 (90/120°),
+# T-4 (109.5°). Octahedron unchanged (90° still well under 115°).
 
 _GEOM_KEY_TO_SHAPE = {
     "octahedron": "OC-6 octahedron",
