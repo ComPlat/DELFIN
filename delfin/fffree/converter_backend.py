@@ -246,13 +246,15 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     )
     if any(lg["denticity"] >= 4 for lg in ligands) and not _PT3_HIGH_DENT:
         return None        # kappa>=4 (porphyrin/salen/DTPA) not yet supported -> legacy
-    # Aromatic donors on the NEWLY-enabled CN5 chelate geometries (TBP-5/SPY-5) would be
-    # placed face-on (ring-normal perp to M-N): _vsepr_reconstruct skips ring donors and
-    # there is no in-plane orientation yet (deferred to the aromatic-N-in-plane iter).  The
-    # self-gate catches collapse/over-coord/shape but NOT face-on, so route aromatic CN5
-    # chelates to legacy (never-worse).  Scoped to TBP-5/SPY-5 only -> existing OC-6/SP-4
-    # chelate coverage (e.g. M(bipy)3) stays byte-identical.
-    if geom_key in ("trigonal_bipyramid", "square_pyramid"):
+    # Phase G8 (User 2026-05-31): fundamental + universal → remove the
+    # class-specific aromatic-CN5 chelate pre-rejection. Let the universal
+    # self-gate (_build_is_clean) decide based on geometry, not on chemical-
+    # class hard-coding.  When PURE_TRACK3 enabled, skip this pre-filter and
+    # rely on the universal mechanisms downstream.
+    # Original gate kept for env-OFF byte-identity (existing OC-6/SP-4 untouched).
+    _PT3_NO_AROMATIC_GATE = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    if (not _PT3_NO_AROMATIC_GATE
+        and geom_key in ("trigonal_bipyramid", "square_pyramid")):
         for lg in ligands:
             lmol = lg["mol"]
             if any(lmol.GetAtomWithIdx(i).GetIsAromatic()
