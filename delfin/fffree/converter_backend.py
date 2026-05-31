@@ -132,7 +132,7 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
+def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (a non-coordinating atom intruding into the metal's first shell) — so fffree
@@ -140,6 +140,10 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
     makes the whole complex fall back to the legacy pipeline (return None),
     guaranteeing fffree is never worse than UFF on its addressable subset.
     Universal, geometry-only.  Disable via DELFIN_FFFREE_SELFGATE=0.
+
+    Phase G7 (2026-05-31): has_hapto=True relaxes CShM threshold for hapto
+    structures (η-Cp/arene/allyl/diene placements have donors at ring-centroid
+    distance, not σ-bond distance, which inflates CShM). Universal across η3-η8.
 
     ``donors`` (optional, global indices of the cn constructed donor atoms): when
     fffree KNOWS the coordinating atoms (it built them), the coordination-shape and
@@ -200,12 +204,16 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
     # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
     if cn and geom and mi is not None:
         _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "20.0"))
+        # Phase G7: hapto structures have donors at ring-centroid distance,
+        # which inflates CShM measured at the σ-donor-shell. Relax to 60 Å.
+        if has_hapto:
+            _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HAPTO", "60.0"))
         # High-CN (CN>=7) placement is less reliable than CN4-6, so a build that
         # only passes the loose CN4-6 threshold can still be worse than the legacy
         # fallback there.  A tighter high-CN shape gate (default 5.0) makes the
         # high-CN subset cleanly net-better than legacy (measured: net +11 vs +9 at
         # 20, regressions 10->6).  Deterministic, CN-keyed; env-tunable.
-        if cn >= 7:
+        if cn >= 7 and not has_hapto:
             _shmax = min(_shmax, float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HIGHCN", "5.0")))
         if donor_set is not None and len(donor_set) == cn:
             sel = list(donor_set)                       # the KNOWN constructed donors
@@ -277,8 +285,10 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
+        # Phase G7: propagate hapto status to self-gate (relaxes CShM threshold).
+        _has_hapto = any(lg.get("is_hapto") for lg in ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors):   # donor-aware self-gate -> skip config
+                               donors=donors, has_hapto=_has_hapto):   # donor-aware self-gate -> skip config
             continue
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
@@ -322,7 +332,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         syms, P = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
+        # Phase G7: propagate hapto status to self-gate
+        _has_hapto = any(lg.get("is_hapto") for lg in d.get("ligands", []))
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                                has_hapto=_has_hapto):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
