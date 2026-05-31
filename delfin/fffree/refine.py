@@ -218,7 +218,19 @@ def refine(syms, P, fixed_idx: Set[int], max_passes: int = 80, damp: float = 0.6
         trial = P + damp * disp
         _, tb, ta = _bonds_adj(syms, trial)
         tloss, _ = _violations(syms, trial, tb, ta, use_cod=_use_cod)
-        if tloss < best_loss:          # accept-if-better gate
+        # Phase G10 (User 2026-05-31): under PURE_TRACK3, accept moves even if
+        # loss equals current — allows escape from saddle points where collapsed
+        # bonds can't unwind because stretching one creates a temporary defect
+        # elsewhere. Fundamental: gradient descent shouldn't reject equal-loss
+        # moves on a complex landscape. Universal across all molecule classes.
+        if _PURE_TRACK3:
+            if tloss <= best_loss:
+                P = trial; best_loss = tloss
+            else:
+                damp *= 0.6
+                if damp < 0.05:
+                    break
+        elif tloss < best_loss:          # accept-if-better gate (legacy)
             P = trial; best_loss = tloss
         else:
             damp *= 0.6                # smaller step
