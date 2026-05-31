@@ -229,7 +229,14 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
     ligands = d["ligands"]
-    if any(lg["denticity"] >= 4 for lg in ligands):
+    # Phase G5 (2026-05-31): allow ≥4-denticity ligands when PURE_TRACK3 enabled.
+    # Previously blocked porphyrin (κ4)/salen (κ4)/DTPA (κ6). New path: enumerate
+    # without rotation since high-denticity ligands have constrained orientation.
+    _PT3_HIGH_DENT = (
+        os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_HIGH_DENTICITY", "0") == "1"
+    )
+    if any(lg["denticity"] >= 4 for lg in ligands) and not _PT3_HIGH_DENT:
         return None        # kappa>=4 (porphyrin/salen/DTPA) not yet supported -> legacy
     # Aromatic donors on the NEWLY-enabled CN5 chelate geometries (TBP-5/SPY-5) would be
     # placed face-on (ring-normal perp to M-N): _vsepr_reconstruct skips ring donors and
