@@ -120,19 +120,16 @@ def decompose(smiles: str) -> Optional[Dict]:
     # first (preserves existing behaviour); on failure under PT3, retry with
     # sanitizeFrags=False so the fragment graph survives. Expected native
     # rate gain: ~21/200 = 10.5 pp.
-    _PT3_RESCUE = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    # G14-PIVOT GetMolFrags-sanitize-False fallback REVERTED -- it rescued
+    # 21/200 SMILES into fffree-native, but downstream assembly produced
+    # rougher internals than the UFF-relaxed legacy fallback those SMILES
+    # would have used, regressing the iter_gate basket by 21 severe axes.
+    # Returns to the original sanitize=True only path.
     try:
         frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
                                  fragsMolAtomMapping=mapping)
     except Exception:
-        if not _PT3_RESCUE:
-            return None
-        try:
-            mapping = []
-            frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
-                                     fragsMolAtomMapping=mapping)
-        except Exception:
-            return None
+        return None
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
@@ -256,13 +253,17 @@ def decompose(smiles: str) -> Optional[Dict]:
         os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
         or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"
     )
-    # Phase G14-PIVOT: raise heavy-per-donor cap from 20 -> 40 under PT3.
-    # Iminophosphorane Ph3P=N-R, multi-phenyl-substituted phosphines, large
-    # bulky-aryl PR3 and similar valid monodentate ligands routinely exceed 20
-    # heavy atoms per donor (Ag-[PR3] sample seen at the 15-failure count).
-    # Cap 40 still excludes obviously pathological inputs but admits the real
-    # ligand library. Expected native rate gain: ~15/200 = 7.5 pp.
-    MAX_HEAVY_PER_DONOR = 40 if _EXTENDED else 8
+    # G14-PIVOT REVERTED (smoke 520 vs eqn 517 = net -27, 21 severe regressions
+    # including frame_pct_element_list_change +102 %, F3_bond +56 %,
+    # lig_pct_realistic -45 %). Lifting decompose coverage admits more SMILES
+    # into fffree-native quality territory, replacing the UFF-quality legacy
+    # output for those SMILES in the comparison archive. The iter_gate then
+    # measures fffree-native (rougher internals) vs UFF-legacy (relaxed)
+    # on those rescued SMILES and finds fffree worse. This confirms the
+    # diagnosis that the 63-axis gap is structural to fffree's construction
+    # rougher-than-UFF internals; pure coverage shift cannot close it.
+    # Keeping previous cap 20.
+    MAX_HEAVY_PER_DONOR = 20 if _EXTENDED else 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
