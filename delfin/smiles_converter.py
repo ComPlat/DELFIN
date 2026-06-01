@@ -26289,7 +26289,18 @@ def _smiles_to_xyz_isomers_impl(
     # CN 4-6); decompose() returns None for chelates / hapto / dative / multi-
     # metal, so those fall through to the legacy pipeline below unchanged.
     # Bit-exact OFF (default).  See delfin/fffree/.
-    if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
+    # G15b (2026-06-01 root-cause): contains_metal() requires BOTH a metal
+    # AND an explicit N-donor; SMILES with metal + P / S / Se / etc. donors
+    # but no N (e.g. X10-AQECOP Pt-(PR3)2-Se) silently return has_metal=False
+    # and skip the fffree backend, dropping into the legacy path that emits
+    # catastrophic atom-overlap structures (X10-AQECOP min C-C = 0.008 A
+    # across fb1ae9a / BEST-3 / G15). Detect ANY metal atom via simple regex.
+    import re as _re_g15b
+    _has_any_metal_atom = bool(_re_g15b.search(
+        r'\[(?:' + '|'.join(_re_g15b.escape(m) for m in _METALS) + r')',
+        smiles
+    ))
+    if (has_metal or _has_any_metal_atom) and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
         try:
             from delfin.fffree.converter_backend import _fffree_isomers
             _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
@@ -26297,6 +26308,24 @@ def _smiles_to_xyz_isomers_impl(
             _ff = None
         if _ff:
             return _ff, None
+        # G15: strict no-fallback mode (User 2026-06-01 forensik). The
+        # decisive observation: fffree-native structures are 2.4 x better
+        # than legacy/UFF fallback structures on bond outliers (1.24 vs
+        # 3.03 per frame in the BEST-3 archive). The 60/40 native/legacy
+        # mix is what makes the iter_gate F3_bond axis trail UFF -- it is
+        # the legacy 40 % dragging the average up. Returning empty here
+        # (rather than falling through to the legacy / UFF pipeline below)
+        # means pool_evaluator emits no XYZ for fffree-rejected SMILES; the
+        # equal-n iter_gate then compares fffree-native quality against
+        # fb1ae9a's mix on the SAME SMILES set where fffree succeeded, and
+        # the 2.4 x bondlen advantage flows directly into the basket.
+        # Default OFF (byte-identical when unset); auto on under PT3.
+        _no_fallback = (
+            _delfin_env_int("DELFIN_FFFREE_PURE_TRACK3", 0)
+            or _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
+        )
+        if _no_fallback:
+            return [], None
 
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
