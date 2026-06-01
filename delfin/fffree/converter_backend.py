@@ -369,13 +369,18 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                donors=donors, has_hapto=_has_hapto):   # donor-aware self-gate -> skip config
             continue
-        # Phase G13 REVERTED (HEAL-FIRST verdict): smoke 529 vs fb1ae9a-equal-n
-        # net +2 BUT 9 severe regressions including hapto_geom +162 %,
-        # frame_pct_element_list_change +98 %, F3_bond +42 % (the very metric we
-        # wanted to fix). Module + 8 pytest cases retained as standby behind
-        # DELFIN_FFFREE_RING_SCALE_FORCE=1; needs hapto-pi-explicit freeze guard
-        # (current metal-coordinated check misses cases where mean M-C exceeds
-        # 1.45 * ideal_bond) and element-list invariance audit before re-entry.
+        # Phase G13b: aromatic ring scaling polish with HAPTO-PI EXPLICIT FREEZE
+        # + SUBSTITUENT SUBTREE DRAG. Iter G13 (first variant) regressed
+        # hapto_geom +162 % and frame_pct_element_list_change +98 %; the fixes
+        # are (a) freeze any metal near-neighbour cluster of >=3 same-element
+        # heavy atoms within 3.0 A (covers eta-3 / eta-5 / eta-6 hapto-pi
+        # regardless of cov-sum mismatch), (b) translate every substituent
+        # subtree atom by the same vector as its parent ring atom (preserves
+        # ring_C / substituent_root attachment + all subtree-internal bonds).
+        # Default OFF; PT3 auto-enable via env flag.
+        # G13b REVERTED (HEAL-FIRST x2): substituent-subtree-drag broke
+        # element-list (+99 %), decoord (+126 %), vdW (+57 %). Standby behind
+        # explicit FORCE flag only. Need build-time fix, not post-hoc polish.
         _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
         if _polish_on:
             syms, P = _g13_ring_scale_polish(
@@ -429,8 +434,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                 has_hapto=_has_hapto):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
-        # Phase G13 REVERTED (HEAL-FIRST). See chelate-path comment above for
-        # details. Standby behind DELFIN_FFFREE_RING_SCALE_FORCE=1.
+        # Phase G13b polish (see chelate path above for full rationale).
+        # G13b REVERTED (HEAL-FIRST x2): substituent-subtree-drag broke
+        # element-list (+99 %), decoord (+126 %), vdW (+57 %). Standby behind
+        # explicit FORCE flag only. Need build-time fix, not post-hoc polish.
         _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
         if _polish_on:
             syms, P = _g13_ring_scale_polish(

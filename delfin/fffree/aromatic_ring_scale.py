@@ -123,20 +123,51 @@ def _is_aromatic_ring(ring: Sequence[int], syms: Sequence[str],
 
 
 def _metal_coordinated_atoms(syms: Sequence[str], P: np.ndarray,
-                              max_md_factor: float = 1.45) -> Set[int]:
-    """Indices of atoms within max_md_factor * ideal_bond of any metal.
-    These rings get frozen (preserves M-D invariant + chelate attachment)."""
+                              max_md_factor: float = 1.45,
+                              hapto_pi_cutoff: float = 3.0) -> Set[int]:
+    """Indices of atoms within ``max_md_factor * ideal_bond`` of any metal
+    (covalent / dative coordination), PLUS hapto-pi ring members detected
+    geometrically. Frozen during scaling to preserve M-D invariant + chelate
+    attachment + eta-pi placements.
+
+    G13b (post-G13 HEAL-FIRST forensik): the original ``max_md_factor * ideal``
+    guard misses hapto-pi rings where mean M-C exceeds 1.45 * cov-sum (esp. for
+    second / third-row TM and softer late metals). The fix is to additionally
+    flag any heavy atom within ``hapto_pi_cutoff`` (3.0 A absolute) of a metal
+    if at least three of the metal's near neighbours are non-metal heavy atoms
+    of the same element clustering inside the cutoff -- that is the geometric
+    fingerprint of an eta-3 / eta-5 / eta-6 hapto placement. Universal across
+    all metals, no element-specific rules.
+    """
     n = len(syms)
     frozen: Set[int] = set()
     for m in range(n):
         if not _bd._is_metal(syms[m]):
             continue
+        # 1. Standard covalent/dative coordination
+        near_heavy: List[Tuple[int, str, float]] = []
         for j in range(n):
             if j == m or syms[j] == "H":
                 continue
             d = float(np.linalg.norm(P[j] - P[m]))
             if d < max_md_factor * _bd._ideal_bond(syms[m], syms[j]):
                 frozen.add(j)
+            if d < hapto_pi_cutoff:
+                near_heavy.append((j, syms[j], d))
+        # 2. Hapto-pi geometric fingerprint: >=3 same-element heavy neighbours
+        # of the metal within the absolute hapto cutoff. Freeze all of them
+        # plus any further atoms in the SAME ring (if a 5- / 6-cycle of those
+        # near neighbours can be assembled). We restrict to C / N / O / S
+        # because pi-bound rings are exclusively those elements.
+        from collections import defaultdict
+        by_elem: dict = defaultdict(list)
+        for j, e, d in near_heavy:
+            if e in {"C", "N", "O", "S"}:
+                by_elem[e].append(j)
+        for elem, idxs in by_elem.items():
+            if len(idxs) >= 3:
+                for j in idxs:
+                    frozen.add(j)
     return frozen
 
 
@@ -155,6 +186,46 @@ def _ring_attached_hs(ring_set: Set[int], syms: Sequence[str],
         parent = heavy_nbrs[0]
         if parent in ring_set:
             pairs.append((h, parent))
+    return pairs
+
+
+def _ring_attached_substituent_subtrees(
+    ring_set: Set[int], syms: Sequence[str],
+    heavy_adj: List[List[int]], frozen: Set[int],
+) -> List[Tuple[int, int]]:
+    """For each (ring_atom, non_ring_heavy_substituent_root) edge, return the
+    list of (atom, parent_ring_atom) for the whole subtree descending through
+    the substituent root, EXCLUDING:
+      - the ring atom itself,
+      - any atom in another aromatic ring (those are scaled independently),
+      - any frozen atom (metal-coordinated or hapto-pi).
+
+    G13b: without subtree drag, scaling a ring moves the ring carbons inward
+    but leaves the substituent root in place -> ring_C / substituent bond
+    stretches or breaks, causing F3_bond / element_list_change spikes
+    [[feedback_g13_ringscale_isomer_brittleness]]. With the rigid drag every
+    substituent atom moves by the same vector as its parent ring carbon,
+    preserving ALL internal bonds of the substituent subtree.
+    """
+    pairs: List[Tuple[int, int]] = []
+    for ring_atom in ring_set:
+        for nbr in heavy_adj[ring_atom]:
+            if nbr in ring_set:
+                continue                       # ring-internal edge
+            if nbr in frozen:
+                continue                       # frozen subtree root
+            # BFS through the subtree, never re-entering the ring and never
+            # entering a frozen atom.
+            visited: Set[int] = {nbr}
+            queue: List[int] = [nbr]
+            while queue:
+                cur = queue.pop()
+                pairs.append((cur, ring_atom))
+                for nn in heavy_adj[cur]:
+                    if nn in visited or nn in ring_set or nn in frozen:
+                        continue
+                    visited.add(nn)
+                    queue.append(nn)
     return pairs
 
 
@@ -236,6 +307,28 @@ def scale_aromatic_rings(syms: Sequence[str], P: np.ndarray,
         h_pairs = _ring_attached_hs(ring_set, syms, adj_with_h)
         for h, parent in h_pairs:
             P_out[h] = P_out[h] + moves[parent]
+        # G13b: substituent subtree drag -- every heavy atom in a non-ring
+        # subtree descending from a ring atom translates by the same vector
+        # as its parent ring atom. Preserves ALL substituent-internal bonds
+        # and the ring_C / substituent_root attachment bond.
+        sub_pairs = _ring_attached_substituent_subtrees(
+            ring_set, syms, heavy_adj, frozen
+        )
+        for sub_atom, parent in sub_pairs:
+            P_out[sub_atom] = P_out[sub_atom] + moves[parent]
+        # H atoms attached to the substituent atoms ALSO need to ride: find
+        # H whose only heavy neighbour is in the moved subtree and translate
+        # by the same vector.
+        moved_atoms = {a: m for a, m in [(a, moves[p]) for a, p in sub_pairs]}
+        for h in range(len(syms)):
+            if syms[h] != "H":
+                continue
+            hn = [k for k in adj_with_h[h] if syms[k] != "H"]
+            if len(hn) != 1:
+                continue
+            parent_atom = hn[0]
+            if parent_atom in moved_atoms:
+                P_out[h] = P_out[h] + moved_atoms[parent_atom]
 
     return list(syms), P_out
 
