@@ -91,9 +91,27 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None)
         # on the exact vertices -> clean coordination shape (CShM->0).  Per-chelate DG
         # bounds (feasible; the WHOLE-complex DG was not).  Validated: bite 80-101° ->
         # 87-94°.  Falls back to the unconstrained embed if infeasible/fails.
+        #
+        # G15c (2026-06-01, User pure-construction-mandate): auto-enable this path
+        # under PT3 with RELAXED donor-donor tolerance.  The old CHELATE_BITE used
+        # tight donor-donor (+/- 0.05 A), which forces the bipyridine's natural 2.7 A
+        # bite up to the cis-octahedron 2.9 A vertex-distance and stretches M-D
+        # asymmetrically (e.g. Pt-N3 2.07, Pt-N14 2.46 -- the 28-iter-gate-axis
+        # signature).  Relaxing donor-donor to +/- 0.20 A under PT3 lets the
+        # bipy stay at its natural bite while M-D lands on the COD-empirical ideal,
+        # closing the M-X distortion gap at the SOURCE (no post-hoc polish brittle-
+        # ness).  M-D bound stays tight (+/- 0.05) because M-D length is the
+        # quantity we want preserved.  Feasibility: triangle smoothing checks
+        # this is satisfiable; otherwise the existing unconstrained-embed fallback
+        # still fires.
         cids = []
+        _G15C_DD_RELAX = (
+            os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+            or os.environ.get("DELFIN_FFFREE_DD_RELAX", "0") == "1"
+        )
         if (donor_target_pos is not None and len(donor_target_pos) == len(donor_idxs)
-                and os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"):
+                and (os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"
+                     or _G15C_DD_RELAX)):
             try:
                 from rdkit.Chem import rdDistGeom as _DG
                 from rdkit import DistanceGeometry as _DGs
@@ -106,14 +124,19 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None)
                     lo, hi = (i, j) if i < j else (j, i)
                     bm[lo][hi] = float(dist + tol)
                     bm[hi][lo] = float(max(dist - tol, 0.0))
+                # M-D tolerance stays tight (M-D length is the conserved quantity).
+                # Donor-donor tolerance is the new G15c relaxation knob.
+                md_tol = 0.05
+                dd_tol = 0.20 if _G15C_DD_RELAX else 0.05
                 for i in range(nA):                       # reset metal->non-donor permissive
                     if i != mi and i not in dset:
                         bm[min(i, mi)][max(i, mi)] = 100.0
                         bm[max(i, mi)][min(i, mi)] = 1.2
                 for a, da in enumerate(donor_idxs):       # pin M-D + donor-donor to ideal vertices
-                    _setb(mi, int(da), float(np.linalg.norm(tp[a])))
+                    _setb(mi, int(da), float(np.linalg.norm(tp[a])), tol=md_tol)
                     for b in range(a + 1, len(donor_idxs)):
-                        _setb(int(da), int(donor_idxs[b]), float(np.linalg.norm(tp[a] - tp[b])))
+                        _setb(int(da), int(donor_idxs[b]),
+                              float(np.linalg.norm(tp[a] - tp[b])), tol=dd_tol)
                 if _DGs.DoTriangleSmoothing(bm):
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
