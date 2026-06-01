@@ -112,11 +112,27 @@ def decompose(smiles: str) -> Optional[Dict]:
         if em.GetBondBetweenAtoms(m, d) is not None:
             em.RemoveBond(m, d)
     mapping: List = []
+    # Phase G14-PIVOT (User 2026-05-31 night, 70.5 % legacy fallback discovery):
+    # sanitized GetMolFrags fails on charged-aromatic NHC, carbonyl carbene,
+    # iminophosphorane and other systems whose fragment valence becomes
+    # invalid after the M-X bond is cleaved (e.g. [N+] in imidazolium losing
+    # its C-M coordination -> N now has invalid coordination). Try sanitised
+    # first (preserves existing behaviour); on failure under PT3, retry with
+    # sanitizeFrags=False so the fragment graph survives. Expected native
+    # rate gain: ~21/200 = 10.5 pp.
+    _PT3_RESCUE = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
     try:
         frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
                                  fragsMolAtomMapping=mapping)
     except Exception:
-        return None
+        if not _PT3_RESCUE:
+            return None
+        try:
+            mapping = []
+            frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
+                                     fragsMolAtomMapping=mapping)
+        except Exception:
+            return None
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
@@ -240,7 +256,13 @@ def decompose(smiles: str) -> Optional[Dict]:
         os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
         or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"
     )
-    MAX_HEAVY_PER_DONOR = 20 if _EXTENDED else 8
+    # Phase G14-PIVOT: raise heavy-per-donor cap from 20 -> 40 under PT3.
+    # Iminophosphorane Ph3P=N-R, multi-phenyl-substituted phosphines, large
+    # bulky-aryl PR3 and similar valid monodentate ligands routinely exceed 20
+    # heavy atoms per donor (Ag-[PR3] sample seen at the 15-failure count).
+    # Cap 40 still excludes obviously pathological inputs but admits the real
+    # ligand library. Expected native rate gain: ~15/200 = 7.5 pp.
+    MAX_HEAVY_PER_DONOR = 40 if _EXTENDED else 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
