@@ -867,6 +867,78 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                             P = newP
                 except Exception:
                     pass
+                # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When
+                # DELFIN_FFFREE_GRIP=1 we run the CCDC-grounded L-BFGS
+                # refinement on the post-sp2-flatten geometry, BEFORE the
+                # final ff-free clash-relief refine.  grip_polish is
+                # internally safe (accept-if-better, M-D/topology/chiral
+                # validators, NaN-guard), but we add a defence-in-depth
+                # M-D check and a NaN gate here so any unexpected failure
+                # cleanly rolls back to the pre-GRIP P.  Default-OFF =
+                # byte-identical to HEAD (the entire block is skipped).
+                if os.environ.get("DELFIN_FFFREE_GRIP", "0") == "1":
+                    try:
+                        from delfin.fffree.grip_polish import grip_polish
+                        from delfin.fffree.grip_mogul_lookup import GripLibrary
+                        _grip_lib = GripLibrary.get_default()  # may be None
+                        _md_targets = [float(np.linalg.norm(P[d] - P[0])) for d in donor_globals]
+                        Pg = grip_polish(
+                            P, cm, metal=0, donors=donor_globals,
+                            geom=str(geometry or ""), mogul_lib=_grip_lib,
+                        )
+                        if (
+                            Pg is not None
+                            and isinstance(Pg, np.ndarray)
+                            and Pg.shape == P.shape
+                            and np.all(np.isfinite(Pg))
+                        ):
+                            # Defence-in-depth M-D check (±0.05 Å, SPEC §11).
+                            _md_ok = True
+                            for _di, _dg in enumerate(donor_globals):
+                                _d_now = float(np.linalg.norm(Pg[_dg] - Pg[0]))
+                                if abs(_d_now - _md_targets[_di]) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = Pg
+                    except Exception:
+                        pass  # silent fallback to existing P
+                # Phase 5 (User 2026-06-02, post-GRIP-hapto-VOLLPOOL forensik):
+                # post-GRIP geometric correctors -- env-gated, default OFF =
+                # byte-identical.  Three independent fixes that each verify the
+                # M-D invariant before accepting.  See
+                # delfin.fffree.post_grip_corrector for fix details (F20 sp2
+                # planarity, haxis donor-H rotation, mdshort secondary-contact
+                # push-back).  Activates when any of the per-fix env flags is set
+                # or DELFIN_FFFREE_POST_GRIP_ALL=1.
+                try:
+                    from delfin.fffree.post_grip_corrector import (
+                        post_grip_corrections, any_active as _pg_any_active,
+                    )
+                    if _pg_any_active():
+                        Pc, _ = post_grip_corrections(
+                            out_syms, P, metal_idx=0, donor_idxs=donor_globals,
+                        )
+                        if (
+                            Pc is not None
+                            and isinstance(Pc, np.ndarray)
+                            and Pc.shape == P.shape
+                            and np.all(np.isfinite(Pc))
+                        ):
+                            # Defence-in-depth M-D check (mirrors GRIP block).
+                            _md_ok = True
+                            _md_targets_pg = [
+                                float(np.linalg.norm(P[d] - P[0])) for d in donor_globals
+                            ]
+                            for _di, _dg in enumerate(donor_globals):
+                                _d_now = float(np.linalg.norm(Pc[_dg] - Pc[0]))
+                                if abs(_d_now - _md_targets_pg[_di]) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = Pc
+                except Exception:
+                    pass  # silent fallback to pre-corrector P
         except Exception:
             pass
         # FF-free geometric clash-relief (both tracks)

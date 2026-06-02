@@ -281,6 +281,33 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -
     return True
 
 
+def _g16_soft_polyhedron_polish(syms, P, cn=None, geom=None, donors=None,
+                                  has_hapto=False):
+    """Phase G16/G16b polish: soft polyhedron M-D relaxation AFTER the build
+    has passed the clean check. Monodentate donors: per-atom subtree drag.
+    Chelating donors: rigid-body translation of the chelate ligand body.
+    Fallback to pre-snap on any failure or post-snap _build_is_clean fail.
+
+    Targets the 28 iter-gate HEAL-FIRST axes (F3_bond +163 %, vdw +137 %,
+    funcgrp +266 %) remaining after G15b eliminated the catastrophic-overlap
+    class -- the construction-vs-relaxation trade-off documented in the
+    Mogul -94.7 % paper headline.
+    """
+    try:
+        from delfin.fffree.soft_polyhedron_relax import (
+            relax_md_stretches, is_enabled as _soft_on
+        )
+        if not _soft_on():
+            return list(syms), np.asarray(P, dtype=float)
+        syms2, P2 = relax_md_stretches(list(syms), np.asarray(P, dtype=float))
+        if not _build_is_clean(syms2, P2, cn=cn, geom=geom,
+                                donors=donors, has_hapto=has_hapto):
+            return list(syms), np.asarray(P, dtype=float)
+        return syms2, P2
+    except Exception:
+        return list(syms), np.asarray(P, dtype=float)
+
+
 def _g13_ring_scale_polish(syms, P, cn=None, geom=None, donors=None,
                             has_hapto=False):
     """Phase G13 polish: rigid uniform aromatic-ring scaling AFTER the build
@@ -387,12 +414,39 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                 donors=donors, has_hapto=_has_hapto,
             )
+        # G16/G16b: soft polyhedron M-D relaxation (chelate-aware rigid-body +
+        # monodentate subtree drag). Auto-enabled under PT3.
+        _soft_poly_on = (
+            os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+            or os.environ.get("DELFIN_FFFREE_SOFT_POLY", "0") == "1"
+        )
+        if _soft_poly_on:
+            syms, P = _g16_soft_polyhedron_polish(
+                syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                donors=donors, has_hapto=_has_hapto,
+            )
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
     return results or None
 
 
 def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
+    # GRIP-Ensemble hook (Hebel #101, 2026-06-02).  When the env flag
+    # ``DELFIN_FFFREE_GRIP_ENSEMBLE=1`` is set we delegate to the
+    # deterministic-completeness enumerator (Pólya × Cremer-Pople ×
+    # GRIP-polish × ranked).  Default OFF -> byte-identical to HEAD
+    # (this entire block is skipped when the flag is unset).  On
+    # ANY failure inside the ensemble we fall through to the legacy
+    # path so production stays safe.
+    if os.environ.get("DELFIN_FFFREE_GRIP_ENSEMBLE", "0") == "1":
+        try:
+            _eres = _ensemble_isomers(smiles, max_isomers)
+            if _eres is not None and len(_eres) > 0:
+                return _eres
+        except Exception:
+            pass
+        # silent fall-through to legacy on ensemble failure
+
     d = DEC.decompose(smiles)
     if d is None:
         return None
@@ -441,6 +495,16 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
         if _polish_on:
             syms, P = _g13_ring_scale_polish(
+                syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                has_hapto=_has_hapto,
+            )
+        # G16/G16b soft polyhedron polish (non-chelate path)
+        _soft_poly_on = (
+            os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+            or os.environ.get("DELFIN_FFFREE_SOFT_POLY", "0") == "1"
+        )
+        if _soft_poly_on:
+            syms, P = _g16_soft_polyhedron_polish(
                 syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                 has_hapto=_has_hapto,
             )
@@ -514,6 +578,92 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         out.append((_xyz(syms, P), label))
     return out
+
+
+# ---------------------------------------------------------------------------
+# GRIP-Ensemble adapter (Hebel #101, 2026-06-02)
+# ---------------------------------------------------------------------------
+def _ensemble_isomers(smiles: str, max_isomers: int = 50
+                       ) -> Optional[List[Tuple[str, str]]]:
+    """Bridge :func:`grip_ensemble_enumerate` -> ``[(xyz, label), ...]``.
+
+    Called only when ``DELFIN_FFFREE_GRIP_ENSEMBLE=1``.  Returns the
+    top-K (or full) ranked ensemble as the same ``(xyz_string, label)``
+    list shape :func:`_fffree_isomers` produces, so downstream
+    smiles_converter handling is unchanged.
+
+    Determinism
+    -----------
+    The ensemble enumerator iterates Pólya configs + Cremer-Pople states
+    in fixed sorted order, with a deterministic score-based ranking and
+    lex tiebreak by ``(isomer_id, conformer_id, label)``.  Two calls with
+    the same SMILES + same env produce the same XYZ list byte-for-byte.
+
+    Failure mode
+    ------------
+    Returns ``None`` on ANY enumerator failure (no candidates, decompose
+    skip, exception); the caller (``_fffree_isomers``) then falls through
+    to the legacy non-ensemble path so production stays safe.
+    """
+    try:
+        from .grip_ensemble import (
+            grip_ensemble_enumerate,
+            ensemble_emit_full,
+            ensemble_topk,
+            DEFAULT_MAX_CONFORMERS_PER_ISOMER,
+            DEFAULT_MAX_TOTAL,
+        )
+    except Exception:
+        return None
+    # Cremer-Pople knob: opt-in via env.  When the GRIP-Ensemble is active
+    # (the gate that gets us into this function in the first place) we
+    # default to 4 ring-pucker conformers per isomer so the enumeration
+    # actually covers chair/boat/twist + envelope variants on common
+    # 5/6-rings — matches the spec in
+    # ``project_grip_ensemble_complete_conformer_coverage_2026_06_02``.
+    # Set ``DELFIN_FFFREE_GRIP_ENSEMBLE_MAX_CONF=1`` to fall back to a
+    # single conformer per isomer for forensic A/B.
+    try:
+        max_conf = int(os.environ.get(
+            "DELFIN_FFFREE_GRIP_ENSEMBLE_MAX_CONF", "4"
+        ).strip())
+    except (TypeError, ValueError):
+        max_conf = 4
+    if max_conf < 1:
+        max_conf = 1
+    try:
+        max_tot = int(os.environ.get(
+            "DELFIN_FFFREE_GRIP_ENSEMBLE_MAX_TOTAL",
+            str(DEFAULT_MAX_TOTAL),
+        ).strip())
+    except (TypeError, ValueError):
+        max_tot = DEFAULT_MAX_TOTAL
+    try:
+        res = grip_ensemble_enumerate(
+            smiles,
+            max_isomers=int(max_isomers),
+            max_conformers_per_isomer=int(max_conf),
+            max_total=int(max_tot),
+        )
+    except Exception:
+        return None
+    if res is None or res.skip_reason or not res.candidates:
+        return None
+    # Pick top-K (or full ensemble when env DELFIN_FFFREE_GRIP_ENSEMBLE_FULL=1).
+    if ensemble_emit_full():
+        winners = res.candidates
+    else:
+        winners = res.top_k or res.candidates[: max(1, ensemble_topk())]
+    out: List[Tuple[str, str]] = []
+    for cand in winners:
+        # Reuse the canonical _xyz formatter so emitted blocks match every
+        # other archive byte-for-byte.
+        try:
+            xyz = _xyz(list(cand.syms), cand.P)
+        except Exception:
+            continue
+        out.append((xyz, cand.label))
+    return out or None
 
 
 if __name__ == "__main__":
