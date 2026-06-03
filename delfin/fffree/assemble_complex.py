@@ -806,6 +806,27 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     cl = cl + _bcg_count(lsyms, Q)
             except Exception:
                 pass
+            # SURGICAL FIX 1 (User 2026-06-03 F24-interlig forensik):
+            # inter-ligand non-bonded vdW penalty.  Adds a quadratic overlap
+            # score between the candidate ``Q`` and already-placed atoms
+            # ``placed`` so configurations with cis-CO axis collisions /
+            # bulky-phosphine methyl clashes / π-π-too-close are
+            # deprioritised.  Pure read-only score; coordinates unchanged.
+            # Env-gated default-OFF byte-identical -- helper returns
+            # (0.0, 0) when no flag set.
+            try:
+                from delfin.fffree.build_time_clash_gate import (
+                    interlig_penalty_active as _ilp_active,
+                    _interlig_penalty_for_pair as _ilp_pair,
+                    _interlig_weight as _ilp_w,
+                )
+                if _ilp_active() and len(placed) > 1:
+                    _ilp_score, _ilp_n = _ilp_pair(
+                        lsyms, Q, placed_syms, np.array(placed),
+                    )
+                    cl = cl + _ilp_w() * _ilp_score
+            except Exception:
+                pass
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
@@ -915,6 +936,40 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                          for ln in flat.splitlines() if ln.strip()], float)
                         if newP.shape == P.shape:
                             P = newP
+                except Exception:
+                    pass
+                # SURGICAL FIX 2 (User 2026-06-03 F24-interlig forensik):
+                # terminal CO/NO/CN ligand torsion stagger.  When two
+                # terminal sp-ligands occupy adjacent polyhedron vertices
+                # the default placement collides their O/N atoms at d ~
+                # 1.85 A; a rigid 60 deg spin of the SECOND ligand about
+                # its own M-donor axis preserves r(M-donor) EXACTLY
+                # while opening the terminal-terminal distance.  Donors
+                # and the metal are NEVER moved.  Env-gated default-OFF
+                # byte-identical (helper returns (P_copy, 0) when no
+                # flag set).
+                try:
+                    from delfin.fffree.terminal_ligand_stagger import (
+                        apply_stagger, stagger_active as _tls_active,
+                    )
+                    if _tls_active():
+                        P_pre_t = P.copy()
+                        P_t, _ntls = apply_stagger(
+                            out_syms, P, metal_idx=0,
+                            donor_idxs=donor_globals,
+                        )
+                        if (P_t is not None and isinstance(P_t, np.ndarray)
+                            and P_t.shape == P.shape
+                            and np.all(np.isfinite(P_t))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_t[_dg] - P_pre_t[0]))
+                                _d_new = float(np.linalg.norm(P_t[_dg] - P_t[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_t
                 except Exception:
                     pass
                 # CONSTRUCTION-FIX #1 (User 2026-06-03): amide-VSEPR template.
