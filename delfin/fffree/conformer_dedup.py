@@ -36,6 +36,17 @@ Env-gates (all default OFF):
                                                   point-group-order +
                                                   severity score (see
                                                   :func:`select_symmetric_representative`).
+  - ``DELFIN_FFFREE_RMSD_DEDUP_SYMMETRY_PRIORITY``
+                                              -> 0/1, default 0.  Symmetry-
+                                                  Priority Rotamere hook
+                                                  (2026-06-03): cluster
+                                                  representative scored by
+                                                  ``w_sym * log2(pg_order)
+                                                  - w_sev * severity`` from
+                                                  :mod:`delfin.fffree.conformer_symmetry`.
+  - ``DELFIN_FFFREE_RMSD_DEDUP_SYM_WEIGHT``    -> float, default 0.5.  The
+                                                  ``w_sym`` weight on the
+                                                  log2-symmetry term.
 """
 from __future__ import annotations
 
@@ -152,6 +163,7 @@ def dedup_by_rmsd_preserve_originals(
     clusters = butina_cluster(M, th)
     if symmetric_rep is None:
         symmetric_rep = _env_symmetric_rep()
+    use_priority = _env_symmetry_priority() and syms is not None
 
     keepers: List[int] = []
     seen: Set = set()  # type: ignore[name-defined]
@@ -169,7 +181,14 @@ def dedup_by_rmsd_preserve_originals(
         cluster_origs = [int(idx) for idx in c if int(idx) in orig_set]
         if cluster_origs:
             continue  # this cluster already has an original kept
-        if symmetric_rep and syms is not None:
+        if use_priority:
+            from delfin.fffree.conformer_symmetry import (
+                select_symmetric_priority_representative,
+            )
+            best = select_symmetric_priority_representative(
+                c, coords_list, sev_list, list(syms),
+            )
+        elif symmetric_rep and syms is not None:
             best = select_symmetric_representative(
                 c, coords_list, sev_list, list(syms),
             )
@@ -206,6 +225,25 @@ def _env_symmetric_rep(default: bool = False) -> bool:
     """
     v = os.environ.get("DELFIN_FFFREE_SYMMETRIC_REP", "1" if default else "0")
     return str(v).strip() in ("1", "true", "True", "on")
+
+
+def _env_symmetry_priority(default: bool = False) -> bool:
+    """Symmetry-priority cluster-representative hook (Symmetry-Priority
+    Rotamere module, 2026-06-03).
+
+    When True (env ``DELFIN_FFFREE_RMSD_DEDUP_SYMMETRY_PRIORITY=1``), the
+    cluster representative is chosen by the log2-symmetry / severity
+    score in :mod:`delfin.fffree.conformer_symmetry`
+    (``score_conformer_for_representative``).  When False (default,
+    byte-identical to HEAD), we keep the historical selection rule.
+
+    This flag is INDEPENDENT of ``DELFIN_FFFREE_SYMMETRIC_REP`` (the
+    earlier ``pg + 1/(1+sev)`` linear score); the priority flag wins when
+    both are set.
+    """
+    v = os.environ.get("DELFIN_FFFREE_RMSD_DEDUP_SYMMETRY_PRIORITY",
+                       "1" if default else "0")
+    return str(v).strip() in ("1", "true", "True", "on", "yes", "YES")
 
 
 # ------------------------------------------------------------------
@@ -614,8 +652,18 @@ def dedup_by_rmsd(
     # then env-flag.  Default OFF -> byte-identical to HEAD.
     if symmetric_rep is None:
         symmetric_rep = _env_symmetric_rep()
+    use_priority = _env_symmetry_priority() and syms is not None
     keepers: List[int] = []
-    if symmetric_rep and syms is not None:
+    if use_priority:
+        from delfin.fffree.conformer_symmetry import (
+            select_symmetric_priority_representative,
+        )
+        for c in clusters:
+            best = select_symmetric_priority_representative(
+                c, coords_list, sev_list, list(syms),
+            )
+            keepers.append(int(best))
+    elif symmetric_rep and syms is not None:
         for c in clusters:
             best = select_symmetric_representative(
                 c, coords_list, sev_list, list(syms),
