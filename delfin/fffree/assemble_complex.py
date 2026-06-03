@@ -1035,6 +1035,42 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                 P = P_o
                 except Exception:
                     pass
+                # CONSTRUCTION-FIX (hapto-honest, 2026-06-03): rigid-block
+                # correction of hapto units (η²-η⁸).  After all σ-side
+                # construction fixes and BEFORE GRIP/refine, snap each
+                # detected π-cluster centroid to the empirical M-centroid
+                # distance for (metal, η) AND align the ring axis to the
+                # M-centroid line.  Metal + σ donors NEVER moved (the
+                # σ-only metric stays byte-invariant).  Defence-in-depth
+                # M-D validator + rigid-block validator inside the helper.
+                # Env-gated default-OFF byte-identical.  Pairs with the
+                # standalone hapto-only-CShM metric (see
+                # ``agent_workspace/quality_framework/scripts/
+                # hapto_only_cshm.py``).
+                try:
+                    from delfin.fffree.hapto_honest_construction import (
+                        apply_hapto_honest, honest_active as _hho_active,
+                    )
+                    if _hho_active():
+                        P_pre_h = P.copy()
+                        P_h, _nfh = apply_hapto_honest(
+                            out_syms, P, metal_idx=0,
+                            donor_idxs=donor_globals,
+                        )
+                        if (P_h is not None and isinstance(P_h, np.ndarray)
+                            and P_h.shape == P.shape
+                            and np.all(np.isfinite(P_h))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_h[_dg] - P_pre_h[0]))
+                                _d_new = float(np.linalg.norm(P_h[_dg] - P_h[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_h
+                except Exception:
+                    pass
                 # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When
                 # DELFIN_FFFREE_GRIP=1 we run the CCDC-grounded L-BFGS
                 # refinement on the post-sp2-flatten geometry, BEFORE the
