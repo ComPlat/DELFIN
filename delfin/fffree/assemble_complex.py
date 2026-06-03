@@ -685,6 +685,43 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     onto their two assigned vertices; monodentate ligands are oriented onto their
     vertex.  Multi-conformer selection per ligand + constrained refine.  Returns
     (syms, P) = [metal] + ligand atoms, or None on failure."""
+    # Phase B Task #63 (2026-06-03): multi-metal / cluster dispatcher.
+    # When DELFIN_FFFREE_MULTI_METAL=1 (or DELFIN_FFFREE_PURE_TRACK3=1) AND the
+    # decomposed config carries a multi-metal mol (>=2 metal atoms in the graph),
+    # dispatch to the cluster orchestrator BEFORE the single-metal assembly.
+    # Hard-rollback on contract violation: the orchestrator returns None and we
+    # silently continue into the legacy single-metal path -> byte-identical when
+    # the env flag is unset.
+    try:
+        _mm_mol = None
+        if isinstance(config, dict):
+            _mm_mol = config.get("__multi_metal_mol__")
+        if _mm_mol is None and ligands:
+            for _lg in ligands:
+                if isinstance(_lg, dict):
+                    _cand = _lg.get("__parent_mol__") or _lg.get("mol")
+                    if _cand is not None:
+                        try:
+                            n_metal = sum(1 for a in _cand.GetAtoms()
+                                          if _bd._is_metal(a.GetSymbol()))
+                        except Exception:
+                            n_metal = 0
+                        if n_metal >= 2:
+                            _mm_mol = _cand
+                            break
+        if _mm_mol is not None:
+            from delfin.fffree import multi_metal_assemble as _MMA
+            if _MMA.should_dispatch_multi_metal(_mm_mol):
+                _mm_res = _MMA.assemble_multi_metal(_mm_mol, ligands=ligands,
+                                                    metals=None, config=config)
+                if _mm_res is not None:
+                    return _mm_res
+                # _mm_res is None -> silent fall-through to single-metal path.
+    except Exception:
+        # Any error in the multi-metal branch is non-fatal: we drop to the
+        # legacy single-metal path. Production safety contract.
+        pass
+
     ref = MSB._ref_vectors(geometry)
     # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
     by_lig = {}
