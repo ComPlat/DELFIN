@@ -82,6 +82,7 @@ __all__ = [
     "ensemble_emit_full",
     "ensemble_topk",
     "burnside_conformer_quotient_active",
+    "sigma_only_mode_active",
     "count_inter_ligand_clashes",
     "identify_ligand_subgraphs",
     "grip_ensemble_enumerate",
@@ -193,6 +194,35 @@ def burnside_conformer_quotient_active() -> bool:
     Env: ``DELFIN_FFFREE_BURNSIDE_CONFORMER`` (1/true/yes/on).
     """
     return _env_bool("DELFIN_FFFREE_BURNSIDE_CONFORMER", default=False)
+
+
+def sigma_only_mode_active() -> bool:
+    """``True`` iff class-conditional σ-only GRIP mode is enabled.
+
+    Default OFF (byte-identical to HEAD c03a550).  When set, the GRIP
+    polish (called per candidate by this module) expands its hapto-π
+    skip set to cover the WHOLE π-system of every C-donor ring + its H
+    atoms, so the L-BFGS only optimises σ-bonded ligand internals.
+
+    The hapto / π contribution to coordination shape is left to the
+    placement step (assemble_complex), which fffree already gets right
+    via piano-stool / sandwich templates.  GRIP focuses on what it does
+    best: σ-bonded bond / angle / improper priors against CCDC medians.
+
+    This pairs with the publication-grade σ-only-CShM metric
+    (see ``agent_workspace/quality_framework/scripts/sigma_only_cshm.py``)
+    to support the "fffree+GRIP achieves σ-only-cshm < UFF" claim and
+    to address the hapto_geom_per_frame regression observed in the
+    race-stack smoke (+2862 % vs f8c9905).
+
+    Env: ``DELFIN_FFFREE_GRIP_SIGMA_ONLY_MODE`` (1/true/yes/on).
+
+    The actual gating is implemented in
+    :func:`delfin.fffree.grip_polish._sigma_only_mode_active`; this
+    helper re-exports it so the env-flag inventory has a single
+    grip_ensemble entry-point.
+    """
+    return _env_bool("DELFIN_FFFREE_GRIP_SIGMA_ONLY_MODE", default=False)
 
 
 # ---------------------------------------------------------------------------
