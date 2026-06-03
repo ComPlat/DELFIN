@@ -86,14 +86,29 @@ This is a representative slice of the master_v3_plus pool covering 7 different t
 
 ### With oxoanion-VSEPR ON
 
-A parallel run with `DELFIN_FFFREE_OXOANION_VSEPR=1` was performed to certify the new template module preserves determinism (see § 4).  Result documented separately at `/tmp/provability_lib_oxo_<TS>/PROVABILITY_LIB.md` once that background job completes; spot-check via a 2-SMILES control PASSED:
+A parallel n=10 run with `DELFIN_FFFREE_OXOANION_VSEPR=1` was performed to certify the new template module preserves determinism (see § 4):
 
-| SID | n_iso_A | n_iso_B | sha256_A[:16] | sha256_B[:16] | identical |
-|-----|---------|---------|---------------|---------------|-----------|
-| cation     | 1 | 1 | `cfa0b3d287236694` | `cfa0b3d287236694` | YES |
-| Fe-CO-NHC  | 7 | 7 | `b8f07532b9acd010` | `b8f07532b9acd010` | YES |
+- SMILES with isomers (both runs): 10 / 10
+- Per-isomer XYZ strings compared: 42
+- Per-isomer byte-identical: **42 / 42 (100.000 %)**
+- Wall time: 384.3 s
 
-Note the Fe-CO-NHC SHA-256 matches the OFF-run hash byte-for-byte, demonstrating that the oxoanion module is correctly **default-OFF byte-identical** and adds no perturbation on SMILES that contain no oxoanion fragment.
+**Every per-SMILES SHA-256 matches the OFF-flag run bit-for-bit** (these 10 SMILES contain no oxoanion fragments, so the new module never fires).  Side-by-side proof of empirical default-OFF byte-identity:
+
+| SID | OFF SHA[:16] | ON SHA[:16] | identical |
+|-----|--------------|-------------|-----------|
+| 01-Fe(CO)3(NHC)2     | `b8f07532b9acd010` | `b8f07532b9acd010` | YES |
+| 02-Ir(ppy)2(acac)    | `fb85d848bb66f4e8` | `fb85d848bb66f4e8` | YES |
+| 03-Cd-histidine(H2O)3| `dc222a87fba2cf79` | `dc222a87fba2cf79` | YES |
+| 042-ARABUR           | `e4789920d1d7692f` | `e4789920d1d7692f` | YES |
+| 043-OVUHAP           | `6f647577e7a722b7` | `6f647577e7a722b7` | YES |
+| 044-SIYMEU           | `9df890a1db7c0e57` | `9df890a1db7c0e57` | YES |
+| 045-JABBIY           | `3b271c6f7a4a4f52` | `3b271c6f7a4a4f52` | YES |
+| 046-BAZSEB           | `277173d5c52a7b88` | `277173d5c52a7b88` | YES |
+| 047-CIRJUK           | `f4288fb2746093ed` | `f4288fb2746093ed` | YES |
+| 048-AMEBIF           | `9b78a3073240309b` | `9b78a3073240309b` | YES |
+
+This is the strongest empirical certification of the **default-OFF byte-identical** contract: at the full-pipeline level, switching the new flag ON adds no perturbation on SMILES that have no oxoanion fragment.  Combined with the unit-test proof that the template *does* fire and *does* preserve M-O on broken-nitrate inputs (see § 4), this establishes the module's correctness on both axes.
 
 ---
 
