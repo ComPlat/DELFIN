@@ -10,7 +10,7 @@ caller falls through to the existing pipeline.  Deterministic.
 from __future__ import annotations
 import os
 from collections import Counter
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import numpy as np
 from rdkit import Chem
 
@@ -179,6 +179,444 @@ def _xyz(syms, P) -> str:
     # evaluator prepends "{count}\n{comment}".
     return "\n".join(f"{s:4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}"
                      for s, (x, y, z) in zip(syms, P))
+
+
+def _parse_xyz_block(xyz_block: str):
+    """Inverse of :func:`_xyz` -- parse the headerless atom block back into
+    ``(syms, P)``.  Used by the conformer-enumeration + RMSD-dedup
+    post-processing path to round-trip XYZ strings without touching the
+    upstream emit shape.  Returns ``(None, None)`` on any failure.
+    """
+    try:
+        syms: List[str] = []
+        P_rows: List[List[float]] = []
+        for line in xyz_block.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            syms.append(parts[0])
+            P_rows.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        if not syms:
+            return None, None
+        return syms, np.asarray(P_rows, dtype=float)
+    except Exception:
+        return None, None
+
+
+def _conformer_enum_post(results, d):
+    """Optional post-processing: enumerate single-bond rotamers and full
+    Cremer-Pople ring puckers for each existing fffree result, then
+    deduplicate the union by Kabsch-RMSD.
+
+    Three independently env-gated knobs (default OFF -> byte-identical
+    to HEAD):
+
+      * ``DELFIN_FFFREE_ENUMERATE_ROTAMERS=1``  -> single-bond rotamer enum
+      * ``DELFIN_FFFREE_RING_PUCKER_ALL=1``     -> Cremer-Pople enum on every
+                                                   non-aromatic 5/6/7-ring
+      * ``DELFIN_FFFREE_RMSD_DEDUP=1``          -> Kabsch-RMSD dedup of
+                                                   the final union
+
+    The two enumerators are ADDITIVE -- they extend the result list with
+    new variants while keeping the originals.  When dedup is on, the
+    extended list is collapsed by Butina clustering down to the essential
+    conformer set (severity proxy = position in the input list, so the
+    original isomers always win their cluster).
+    """
+    rot_on = os.environ.get("DELFIN_FFFREE_ENUMERATE_ROTAMERS", "0") == "1"
+    pucker_on = os.environ.get("DELFIN_FFFREE_RING_PUCKER_ALL", "0") == "1"
+    dedup_on = os.environ.get("DELFIN_FFFREE_RMSD_DEDUP", "0") == "1"
+    if not (rot_on or pucker_on or dedup_on):
+        return results
+    if not results:
+        return results
+
+    # Hard caps to keep post-processing bounded per SMILES.  Without these,
+    # a high-isomer-count input (chelate Pólya enumeration up to 64) crossed
+    # with a flexible ligand (5 rotors -> 243 each) crossed with multi-ring
+    # systems (Cremer-Pople -> 32 per isomer) can blow up to 100k+ frames
+    # whose pairwise RMSD matrix becomes O(N^2 * M) = minutes per SMILES.
+    # The caps are env-tunable.
+    try:
+        _ROT_PER = int(os.environ.get(
+            "DELFIN_FFFREE_ENUMERATE_ROTAMERS_PER_ISOMER", "8"
+        ))
+    except (TypeError, ValueError):
+        _ROT_PER = 8
+    try:
+        _PUCKER_PER = int(os.environ.get(
+            "DELFIN_FFFREE_RING_PUCKER_PER_ISOMER", "8"
+        ))
+    except (TypeError, ValueError):
+        _PUCKER_PER = 8
+    try:
+        _MAX_TOTAL = int(os.environ.get(
+            "DELFIN_FFFREE_CONFORMER_POST_MAX_TOTAL", "200"
+        ))
+    except (TypeError, ValueError):
+        _MAX_TOTAL = 200
+
+    # ------------------------------------------------------------------
+    # 1)  Parse each emitted XYZ block back into (syms, P).
+    # ------------------------------------------------------------------
+    parsed: List[Tuple[List[str], np.ndarray, str]] = []
+    for xyz_block, label in results:
+        syms_p, P_p = _parse_xyz_block(xyz_block)
+        if syms_p is None:
+            continue
+        parsed.append((syms_p, P_p, label))
+    if not parsed:
+        return results
+
+    # Determine universal CN / geometry context for the self-gate when
+    # we have a decompose dict.  These are used to reject new variants
+    # whose post-rotation/post-pucker geometry no longer passes
+    # _build_is_clean (the same gate the original emit went through).
+    _ctx_cn = None
+    _ctx_geom = None
+    _ctx_hapto = False
+    if isinstance(d, dict):
+        _ctx_cn = d.get("cn")
+        _ctx_geom = d.get("geometry")
+        _ctx_hapto = any(
+            lg.get("is_hapto", False) for lg in d.get("ligands", []) or []
+        )
+
+    # ------------------------------------------------------------------
+    # 2)  Build a tiny RDKit mol that we can use as graph topology for
+    #     the rotamer enumerator (single bonds, ring info).  We re-use
+    #     :func:`delfin._bond_decollapse._geometric_bonds` which gives a
+    #     deterministic heavy-atom bond graph from coordinates -- the same
+    #     graph the self-gate uses.
+    # ------------------------------------------------------------------
+    extended: List[Tuple[List[str], np.ndarray, str]] = list(parsed)
+
+    if rot_on or pucker_on:
+        try:
+            from delfin.fffree.single_bond_rotamers import (
+                enumerate_single_bond_rotamers,
+            )
+        except Exception:
+            enumerate_single_bond_rotamers = None
+        try:
+            from delfin.fffree.ring_pucker_integration import (
+                enumerate_mol_ring_conformers,
+            )
+        except Exception:
+            enumerate_mol_ring_conformers = None
+
+        for syms_p, P_p, label in parsed:
+            mol_g = None
+            try:
+                from rdkit import Chem as _Chem
+                rw = _Chem.RWMol()
+                for s in syms_p:
+                    rw.AddAtom(_Chem.Atom(s))
+                # Add geometric bonds (heavy-heavy by distance) so the
+                # rotamer + ring-pucker detection has a real bond graph.
+                bonds = _bd._geometric_bonds(syms_p, P_p)
+                added = set()
+                for ii, jj in bonds:
+                    key = (min(ii, jj), max(ii, jj))
+                    if key in added:
+                        continue
+                    try:
+                        rw.AddBond(int(ii), int(jj), _Chem.BondType.SINGLE)
+                        added.add(key)
+                    except Exception:
+                        pass
+                # Also add metal->donor bonds explicitly (geometric_bonds
+                # skips them).  This lets the rotor / ring detector know
+                # which atoms are coordinated -- metal-incident bonds are
+                # excluded inside the rotamer enumerator, ring-pucker
+                # detector keeps chelate rings.
+                nm = len(syms_p)
+                for im in range(nm):
+                    if not _bd._is_metal(syms_p[im]):
+                        continue
+                    for jm in range(nm):
+                        if jm == im or syms_p[jm] == "H":
+                            continue
+                        if _bd._is_metal(syms_p[jm]):
+                            continue
+                        try:
+                            ideal = _bd._ideal_bond(syms_p[im], syms_p[jm])
+                            dij = float(np.linalg.norm(P_p[jm] - P_p[im]))
+                            if dij < 1.30 * ideal:
+                                key = (min(im, jm), max(im, jm))
+                                if key not in added:
+                                    rw.AddBond(int(im), int(jm),
+                                                _Chem.BondType.SINGLE)
+                                    added.add(key)
+                        except Exception:
+                            pass
+                mol_g = rw.GetMol()
+                # Sanitize best-effort (ring detection needs SSSR).
+                try:
+                    _Chem.SanitizeMol(mol_g, catchErrors=True)
+                except Exception:
+                    pass
+                # Explicit ring perception so GetRingInfo().AtomRings()
+                # works on the geometric-bond mol even if SanitizeMol
+                # bailed out partway.
+                try:
+                    _Chem.GetSSSR(mol_g)
+                except Exception:
+                    pass
+                try:
+                    _Chem.FastFindRings(mol_g)
+                except Exception:
+                    pass
+            except Exception:
+                mol_g = None
+            if mol_g is None:
+                continue
+
+            if len(extended) >= _MAX_TOTAL:
+                break
+
+            # Subagent #129 follow-up: pre-polish inter-ligand clash gate.
+            # When DELFIN_FFFREE_PRE_POLISH_CLASH_GATE (or auto-on under
+            # ENUMERATE_ROTAMERS) is active, we count quick inter-ligand
+            # clashes on the un-polished rotamer candidate BEFORE invoking
+            # _maybe_relax / _build_is_clean.  Cheap up-front reject saves
+            # the GRIP-polish compute for tractable cases.
+            try:
+                from delfin.fffree.inter_ligand_clash_gate import (
+                    gate_enabled as _ilg_on,
+                    count_inter_ligand_clashes_quick,
+                    env_clash_threshold as _ilg_thr,
+                    env_clash_vdw_fraction as _ilg_vdw,
+                )
+            except Exception:
+                _ilg_on = None
+                count_inter_ligand_clashes_quick = None
+            _CLASH_GATE_ON = bool(
+                _ilg_on(enumerate_rotamers_on=rot_on)
+            ) if _ilg_on is not None else False
+
+            # Identify ligand subgraphs ONCE per (parsed) isomer so the
+            # clash gate doesn't re-walk the bond graph per rotamer.
+            _ligand_subgraphs = None
+            _metal_idx_local = None
+            if _CLASH_GATE_ON:
+                try:
+                    from delfin.fffree.grip_ensemble import (
+                        identify_ligand_subgraphs,
+                    )
+                    # Pick metal index from syms_p.
+                    _metal_idx_local = next(
+                        (i for i, s in enumerate(syms_p) if _bd._is_metal(s)),
+                        None,
+                    )
+                    # Donors heuristic: all heavy near-metal atoms within
+                    # 1.45 * ideal_bond -- same as _maybe_relax fixed-set.
+                    _donor_idx: List[int] = []
+                    if _metal_idx_local is not None:
+                        for j in range(len(syms_p)):
+                            if j == _metal_idx_local or syms_p[j] == "H":
+                                continue
+                            try:
+                                dij = float(np.linalg.norm(
+                                    P_p[j] - P_p[_metal_idx_local]
+                                ))
+                                if dij < 1.45 * _bd._ideal_bond(
+                                    syms_p[_metal_idx_local], syms_p[j]
+                                ):
+                                    _donor_idx.append(j)
+                            except Exception:
+                                continue
+                    _ligand_subgraphs = identify_ligand_subgraphs(
+                        mol_g, _metal_idx_local or 0, _donor_idx,
+                    )
+                except Exception:
+                    _ligand_subgraphs = None
+
+            def _accept_variant(syms_v, P_v, new_lab):
+                """Push the variant through _maybe_relax + _build_is_clean
+                + the soft-polyhedron polish so a new rotamer/pucker frame
+                receives the SAME post-processing the original isomer did.
+                Reject the variant if the self-gate fails -- this prevents
+                the dedup step from emitting unpolished broken geometries
+                that inflate per-frame defect rates.
+
+                Pre-polish clash gate (subagent #129 follow-up): when the
+                env-flag is on, reject the variant BEFORE _maybe_relax when
+                the quick inter-ligand clash count exceeds
+                ``DELFIN_FFFREE_PRE_POLISH_CLASH_MAX`` (default 5).
+
+                Returns the polished (syms, P, label) tuple on success or
+                ``None`` if the variant is rejected.
+                """
+                # Pre-polish clash gate (cheap, runs BEFORE polish).
+                if (_CLASH_GATE_ON
+                    and _ligand_subgraphs is not None
+                    and count_inter_ligand_clashes_quick is not None):
+                    try:
+                        _n_clash = count_inter_ligand_clashes_quick(
+                            np.asarray(P_v, dtype=float),
+                            list(syms_v),
+                            _ligand_subgraphs,
+                            metal_idx=_metal_idx_local,
+                            threshold=_ilg_vdw(),
+                        )
+                    except Exception:
+                        _n_clash = 0
+                    if _n_clash > _ilg_thr():
+                        return None
+                try:
+                    s_l, P_l = _maybe_relax(list(syms_v), np.asarray(P_v,
+                                                                      dtype=float))
+                except Exception:
+                    return None
+                if not np.all(np.isfinite(P_l)):
+                    return None
+                try:
+                    if not _build_is_clean(
+                        s_l, P_l, cn=_ctx_cn, geom=_ctx_geom,
+                        has_hapto=_ctx_hapto,
+                    ):
+                        return None
+                except Exception:
+                    pass
+                # G16 soft polyhedron polish (auto under PURE_TRACK3).
+                if (
+                    os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+                    or os.environ.get("DELFIN_FFFREE_SOFT_POLY", "0") == "1"
+                ):
+                    try:
+                        s_l, P_l = _g16_soft_polyhedron_polish(
+                            s_l, P_l, cn=_ctx_cn, geom=_ctx_geom,
+                            has_hapto=_ctx_hapto,
+                        )
+                    except Exception:
+                        pass
+                return list(s_l), np.asarray(P_l, dtype=float), str(new_lab)
+
+            # Rotamer enumeration -- skip the very first variant which is
+            # the identity = original.  Capped at _ROT_PER per isomer.
+            if rot_on and enumerate_single_bond_rotamers is not None:
+                try:
+                    rot_iter = enumerate_single_bond_rotamers(
+                        mol_g, P_p, max_configs=_ROT_PER + 1
+                    )
+                    n_added = 0
+                    for vk, (Pv, rot_lab) in enumerate(rot_iter):
+                        if vk == 0:
+                            continue
+                        if n_added >= _ROT_PER:
+                            break
+                        if len(extended) >= _MAX_TOTAL:
+                            break
+                        if not np.all(np.isfinite(Pv)):
+                            continue
+                        polished = _accept_variant(
+                            syms_p, Pv, f"{label}__{rot_lab}"
+                        )
+                        if polished is None:
+                            continue
+                        extended.append(polished)
+                        n_added += 1
+                except Exception:
+                    pass
+
+            # Cremer-Pople ring-pucker enumeration over EVERY non-aromatic
+            # 5-7 ring.  The integrator already deduplicates internally,
+            # caps the per-ring/total variants, and yields the original
+            # geometry as its first frame (which we drop).
+            if pucker_on and enumerate_mol_ring_conformers is not None:
+                try:
+                    pk_iter = enumerate_mol_ring_conformers(
+                        mol_g, P_p,
+                        max_per_ring=None,
+                        skip_aromatic=True,
+                        chelate_only=False,
+                        rmsd_dedup_tol=0.15,
+                        max_total_variants=_PUCKER_PER + 1,
+                    )
+                    n_added = 0
+                    for vk, Pv in enumerate(pk_iter):
+                        if vk == 0:
+                            continue
+                        if n_added >= _PUCKER_PER:
+                            break
+                        if len(extended) >= _MAX_TOTAL:
+                            break
+                        if not np.all(np.isfinite(Pv)):
+                            continue
+                        polished = _accept_variant(
+                            syms_p, Pv, f"{label}__pucker{vk}"
+                        )
+                        if polished is None:
+                            continue
+                        extended.append(polished)
+                        n_added += 1
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------
+    # 3)  RMSD dedup the union.  Severity proxy: position in the extended
+    #     list so the originals (added first) always win their cluster.
+    # ------------------------------------------------------------------
+    if dedup_on:
+        try:
+            from delfin.fffree.conformer_dedup import (
+                dedup_by_rmsd,
+                dedup_by_rmsd_preserve_originals,
+                _env_pre_cluster_emit,
+            )
+            # Frames as (label, P, severity); shared syms (all atoms align
+            # via the parse step above -- one isomer per input result).
+            #
+            # We dedup PER (atom-count + atom-symbol fingerprint) bucket so
+            # that frames from different isomers with different atom
+            # orderings don't get compared (Kabsch demands matching shape).
+            #
+            # Sub-bucket bookkeeping: ``n_orig_per_bucket`` keeps the number
+            # of ORIGINAL parsed frames (i.e. those present in ``parsed``)
+            # per bucket so the pre-cluster-emit path can preserve them.
+            n_orig_total = len(parsed)
+            buckets: Dict[Tuple[str, int], List[Tuple[str, np.ndarray, float]]] = {}
+            n_orig_per_bucket: Dict[Tuple[str, int], int] = {}
+            for k, (syms_p_e, P_p_e, label) in enumerate(extended):
+                key = ("".join(syms_p_e), len(syms_p_e))
+                buckets.setdefault(key, []).append((label, P_p_e, float(k)))
+                if k < n_orig_total:
+                    n_orig_per_bucket[key] = n_orig_per_bucket.get(key, 0) + 1
+            collapsed: List[Tuple[List[str], np.ndarray, str]] = []
+            _PRE_CLUSTER_EMIT = _env_pre_cluster_emit()
+            # Iterate buckets in insertion order to keep output deterministic.
+            for key, group in buckets.items():
+                # syms reconstructed from the bucket key
+                syms_b = list(key[0])  # may differ from list of element symbols
+                # Use the actual syms from the first frame instead.
+                first_idx = extended.index(
+                    next(e for e in extended if "".join(e[0]) == key[0])
+                )
+                syms_b = list(extended[first_idx][0])
+                if _PRE_CLUSTER_EMIT:
+                    n_orig_in_bucket = n_orig_per_bucket.get(key, 0)
+                    kept_frames = dedup_by_rmsd_preserve_originals(
+                        group, n_originals=n_orig_in_bucket, syms=syms_b,
+                    )
+                else:
+                    kept_frames = dedup_by_rmsd(group, syms=syms_b)
+                for lab, P_k, _sev in kept_frames:
+                    collapsed.append((list(syms_b), P_k, lab))
+            extended = collapsed
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 4)  Re-emit as the (xyz_string, label) shape the caller expects.
+    # ------------------------------------------------------------------
+    out: List[Tuple[str, str]] = []
+    for syms_p, P_p, label in extended:
+        try:
+            out.append((_xyz(syms_p, P_p), str(label)))
+        except Exception:
+            continue
+    return out or results
 
 
 def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -> bool:
@@ -426,6 +864,10 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 donors=donors, has_hapto=_has_hapto,
             )
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
+    # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
+    # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
+    # -> this call is a no-op byte-identical to HEAD when none are set.
+    results = _conformer_enum_post(results, d)
     return results or None
 
 
@@ -442,6 +884,15 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         try:
             _eres = _ensemble_isomers(smiles, max_isomers)
             if _eres is not None and len(_eres) > 0:
+                # Hebel #101 conformer post-processing also applies to
+                # the GRIP-ensemble path -- decompose first so the helper
+                # has access to the metal / cn metadata; fall back to a
+                # minimal stub on failure.
+                try:
+                    _d_ens = DEC.decompose(smiles)
+                except Exception:
+                    _d_ens = None
+                _eres = _conformer_enum_post(_eres, _d_ens or {})
                 return _eres
         except Exception:
             pass
@@ -547,6 +998,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         elif d["geometry"] == "T-3 T-shape":
             results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
+    # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
+    # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
+    # -> this call is a no-op byte-identical to HEAD when none are set.
+    results = _conformer_enum_post(results, d)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
 

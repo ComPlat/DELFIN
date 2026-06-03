@@ -280,6 +280,82 @@ def relax_md_stretches(syms: Sequence[str], P: np.ndarray,
         if parent in moves:
             P_out[h] = P_out[h] + moves[parent]
 
+    # G16b chelate-aware pass: monodentate donors are handled by the per-atom
+    # subtree drag above; chelating donors share a subtree through their
+    # backbone, so the in_other_subtree guard blocks all their atoms (the same
+    # ligand atom belongs to BOTH donor subtrees). For each chelate ring
+    # (a connected component of donors sharing a heavy subtree) we instead
+    # apply a 6-dof rigid-body transform to the ligand body that minimises
+    # the summed squared M-D distance errors. Coarse 1-axis numerical search
+    # along the M->centroid direction is enough -- the optimum is at the
+    # translation that puts the donor centroid at the mean ideal M-D from M.
+    chelate_groups = _find_chelate_groups(donors, subtrees)
+    chelate_moves: dict = {}
+    for group in chelate_groups:
+        if len(group) < 2:
+            continue                      # only true chelates here
+        # Body = union of subtrees of the chelate's donors, MINUS the metal.
+        body = set()
+        for d in group:
+            body |= subtrees[d]
+        body.discard(metal)
+        if not body:
+            continue
+        # Pre-transform donor M-D distances & ideals.
+        m_pos = P_out[metal]
+        d_obs_list = [float(np.linalg.norm(P_out[d] - m_pos)) for d in group]
+        d_ideal_list = [_cod_md_ideal(metal_elem, syms[d]) for d in group]
+        # If all donors are already within tolerance, skip.
+        if all(d_obs <= RELAX_FACTOR_THRESHOLD * d_id
+               for d_obs, d_id in zip(d_obs_list, d_ideal_list)):
+            continue
+        # Compute donor centroid and ideal centroid distance from M.
+        centroid = np.mean([P_out[d] for d in group], axis=0)
+        c_obs = float(np.linalg.norm(centroid - m_pos))
+        c_ideal = float(np.mean(d_ideal_list))
+        if c_obs < c_ideal * 1.02:
+            continue                      # already close enough on aggregate
+        # Direction from centroid toward M.
+        u = (m_pos - centroid) / c_obs
+        # Partial translation -- shrink centroid distance toward ideal by
+        # SHRINK_FRACTION. Hard floor on individual donors enforced post-hoc:
+        # if any donor would become shorter than HARD_FLOOR * ideal, scale
+        # the translation down.
+        shrink = SHRINK_FRACTION * (c_obs - c_ideal)
+        # Check per-donor floor
+        for d, d_obs, d_id in zip(group, d_obs_list, d_ideal_list):
+            d_min = HARD_FLOOR_FACTOR * d_id
+            # Project translation onto donor direction
+            d_vec = P_out[d] - m_pos
+            d_unit = d_vec / max(d_obs, 1e-9)
+            proj = float(np.dot(u, d_unit)) * shrink
+            # Donor new distance approx d_obs - proj
+            d_new_approx = d_obs - proj
+            if d_new_approx < d_min:
+                # Scale shrink down so this donor lands at d_min
+                allowable = (d_obs - d_min) / max(float(np.dot(u, d_unit)), 1e-9)
+                shrink = min(shrink, allowable)
+        translation = shrink * u
+        for a in body:
+            chelate_moves.setdefault(a, np.zeros(3))
+            chelate_moves[a] += translation
+
+    # Apply chelate moves (additive on top of any monodentate moves).
+    for a, mv in chelate_moves.items():
+        P_out[a] = P_out[a] + mv
+
+    # Ride-along H for chelate-moved atoms.
+    for h in range(n):
+        if syms[h] != "H":
+            continue
+        heavy_nbrs = [k for k in f_adj[h] if syms[k] != "H"]
+        if len(heavy_nbrs) != 1:
+            continue
+        parent = heavy_nbrs[0]
+        if parent in chelate_moves and parent not in moves:
+            # Avoid double-applying for atoms already in monodentate moves
+            P_out[h] = P_out[h] + chelate_moves[parent]
+
     # CShM guard
     post_cshm = _compute_cshm(metal, donors, P_out)
     if post_cshm > pre_cshm + cshm_tolerance:
@@ -287,6 +363,40 @@ def relax_md_stretches(syms: Sequence[str], P: np.ndarray,
         return list(syms), np.asarray(P, dtype=float).copy()
 
     return list(syms), P_out
+
+
+def _find_chelate_groups(donors: List[int], subtrees: dict) -> List[List[int]]:
+    """Group donors that share at least one heavy atom in their subtrees.
+    Each group is a list of donor indices that all belong to the SAME chelate
+    ligand body. Universal: no SMILES-specific rules.
+    """
+    if not donors:
+        return []
+    parent = {d: d for d in donors}
+
+    def _find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Union-find on donors that share subtree atoms.
+    donor_list = list(donors)
+    for i in range(len(donor_list)):
+        for j in range(i + 1, len(donor_list)):
+            if subtrees[donor_list[i]] & subtrees[donor_list[j]]:
+                _union(donor_list[i], donor_list[j])
+
+    groups: dict = {}
+    for d in donor_list:
+        root = _find(d)
+        groups.setdefault(root, []).append(d)
+    return list(groups.values())
 
 
 def is_enabled() -> bool:

@@ -792,6 +792,20 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+            # CONSTRUCTION-FIX #3 (User 2026-06-03): build-time clash gate.
+            # Penalise candidates that internally contain collapsed bonds (X-H
+            # or heavy-heavy below the structqual floor) so the selection loop
+            # naturally picks the conformer with the fewest intra-Q defects.
+            # Env-gated default-OFF byte-identical (helper returns 0 when no
+            # flag set).
+            try:
+                from delfin.fffree.build_time_clash_gate import (
+                    _flag_active as _bcg_active, collapse_count as _bcg_count,
+                )
+                if _bcg_active():
+                    cl = cl + _bcg_count(lsyms, Q)
+            except Exception:
+                pass
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
@@ -853,6 +867,42 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                             c = cm.GetConformer()
                             for kk in range(len(P)):
                                 c.SetAtomPosition(kk, [float(P[kk][0]), float(P[kk][1]), float(P[kk][2])])
+                # CONSTRUCTION-FIX #2 (User 2026-06-03): M-D direction alignment.
+                # Before sp2-flatten so the lone-pair-anti rotation re-orients
+                # aromatic donors / sp3-anti donors INTO their correct M-D
+                # geometry; the sp2-flatten then sees the already-correct
+                # neighbour plane.  Pure axis rotation around M-D preserves
+                # the donor distance EXACTLY (M-D invariant by construction).
+                # Env-gated default-OFF byte-identical.
+                try:
+                    from delfin.fffree.mddir_alignment import (
+                        align_donor_lonepairs, _flag_active as _mda_active,
+                    )
+                    if _mda_active():
+                        P_pre = P.copy()
+                        P_md, _nf, _ns = align_donor_lonepairs(
+                            out_syms, P, metal_idx=0, donor_idxs=donor_globals,
+                        )
+                        if (P_md is not None and isinstance(P_md, np.ndarray)
+                            and P_md.shape == P.shape
+                            and np.all(np.isfinite(P_md))):
+                            # M-D invariant defence-in-depth
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre[_dg] - P_pre[0]))
+                                _d_new = float(np.linalg.norm(P_md[_dg] - P_md[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_md
+                                conf = cm.GetConformer()
+                                for kk in range(len(P)):
+                                    conf.SetAtomPosition(kk, [float(P[kk][0]),
+                                                              float(P[kk][1]),
+                                                              float(P[kk][2])])
+                except Exception:
+                    pass
                 # FF-FREE geometric planarity corrector (BOTH tracks): project sp2 atoms onto
                 # their neighbour plane (aromatic/amide/funcgroup planarity).  Pure geometry.
                 try:
@@ -865,6 +915,35 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                          for ln in flat.splitlines() if ln.strip()], float)
                         if newP.shape == P.shape:
                             P = newP
+                except Exception:
+                    pass
+                # CONSTRUCTION-FIX #1 (User 2026-06-03): amide-VSEPR template.
+                # AFTER sp2-flatten so it cleans up the amide-N residue the
+                # geometric flatten misses (sp2 angle window 100-135 deg leaves
+                # some pyramidal amide-N untouched).  Pure projection of N
+                # onto the 3-substituent plane.  Donors NEVER moved (M-D
+                # invariant by construction).  Env-gated default-OFF.
+                try:
+                    from delfin.fffree.amide_vsepr_template import (
+                        enforce_amide_planarity, _flag_active as _amd_active,
+                    )
+                    if _amd_active():
+                        P_pre_a = P.copy()
+                        P_a, _nfa = enforce_amide_planarity(
+                            out_syms, P, metal_idx=0, donor_idxs=donor_globals,
+                        )
+                        if (P_a is not None and isinstance(P_a, np.ndarray)
+                            and P_a.shape == P.shape
+                            and np.all(np.isfinite(P_a))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_a[_dg] - P_pre_a[0]))
+                                _d_new = float(np.linalg.norm(P_a[_dg] - P_a[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_a
                 except Exception:
                     pass
                 # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When

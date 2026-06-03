@@ -48,6 +48,7 @@ __all__ = [
     "lookup_bond",
     "lookup_angle",
     "lookup_improper",
+    "lookup_torsion",
     "DEFAULT_LIB_PATH",
     "DELFIN_GRIP_LIB_PATH_ENV",
     "GRIP_LOOKUP_MIN_N",
@@ -158,6 +159,42 @@ class GripLibrary:
         self._improper_mu = self._lib["improper_mu"]
         self._improper_sigma = self._lib["improper_sigma"]
         self._improper_n = self._lib["improper_n"]
+
+        # ----- v2 extension: torsion arrays (NEW; optional in v1) -----
+        # v1 libraries do not have these — keep all v2-only attributes as
+        # ``None`` so callers can detect availability with ``has_torsions``.
+        if self.version >= 2 and "torsion_keys" in self._lib.files:
+            self._torsion_keys = self._lib["torsion_keys"].tolist()
+            self._torsion_key_to_idx: dict[str, int] = {
+                str(k): i for i, k in enumerate(self._torsion_keys)
+            }
+            self._torsion_n = self._lib["torsion_n"]
+            self._torsion_n_components = self._lib["torsion_n_components"]
+            self._torsion_pi = self._lib["torsion_pi"]
+            self._torsion_mu = self._lib["torsion_mu"]
+            self._torsion_sigma = self._lib["torsion_sigma"]
+            try:
+                self.n_torsion = int(self._lib["n_torsion"])
+            except KeyError:
+                self.n_torsion = len(self._torsion_keys)
+        else:
+            self._torsion_keys = None
+            self._torsion_key_to_idx = {}
+            self._torsion_n = None
+            self._torsion_n_components = None
+            self._torsion_pi = None
+            self._torsion_mu = None
+            self._torsion_sigma = None
+            self.n_torsion = 0
+
+    @property
+    def has_torsions(self) -> bool:
+        """``True`` when the library exposes a torsion (1-4 dihedral) table.
+
+        Libraries built by ``grip_build_mogul_lib_v2.py`` have this; the
+        original ``grip_lib_v1.npz`` does not.
+        """
+        return self._torsion_keys is not None and self.n_torsion > 0
 
     # ------------------------------------------------------------------
     # Singleton accessor
@@ -335,6 +372,128 @@ class GripLibrary:
             chain, self._angle_mu, self._angle_sigma, self._angle_n, min_n
         )
 
+    # ------------------------------------------------------------------
+    # v2 torsion lookup helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _to_torsion_key_str(parsed) -> str:
+        return json.dumps(parsed, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _torsion_canonicalise(z_a, z_b, hyb_b, z_c, hyb_c, z_d,
+                              ring_bc, arom_b, arom_c):
+        bc1 = (str(z_b), str(hyb_b))
+        bc2 = (str(z_c), str(hyb_c))
+        if bc1 <= bc2:
+            return [str(z_b), str(hyb_b),
+                    str(z_c), str(hyb_c),
+                    str(z_a), str(z_d),
+                    int(ring_bc), bool(arom_b), bool(arom_c)]
+        return [str(z_c), str(hyb_c),
+                str(z_b), str(hyb_b),
+                str(z_d), str(z_a),
+                int(ring_bc), bool(arom_c), bool(arom_b)]
+
+    @staticmethod
+    def _torsion_fallback_levels(parsed) -> list[str]:
+        if not isinstance(parsed, list) or len(parsed) != 9:
+            return [GripLibrary._to_torsion_key_str(parsed)]
+        Zb, hyb_b, Zc, hyb_c, Za, Zd, ring_bc, arom_b, arom_c = parsed
+        levels: list[str] = []
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, hyb_b, Zc, hyb_c, Za, Zd, ring_bc, arom_b, arom_c]
+        ))
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, hyb_b, Zc, hyb_c, Za, Zd, -1, arom_b, arom_c]
+        ))
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, hyb_b, Zc, hyb_c, Za, Zd, -1, False, False]
+        ))
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, hyb_b, Zc, hyb_c, _WILDCARD, _WILDCARD, -1, False, False]
+        ))
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, _WILDCARD, Zc, _WILDCARD, _WILDCARD, _WILDCARD, -1, False, False]
+        ))
+        levels.append(GripLibrary._to_torsion_key_str(
+            [Zb, _WILDCARD, Zc, _WILDCARD, _WILDCARD, _WILDCARD, -1, False, False]
+        ))
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in levels:
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
+
+    def lookup_torsion(
+        self,
+        z_a: str,
+        z_b: str,
+        hyb_b: str,
+        z_c: str,
+        hyb_c: str,
+        z_d: str,
+        ring_min_bc: int = -1,
+        arom_b: bool = False,
+        arom_c: bool = False,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[dict]:
+        """Look up the Gaussian-mixture torsion distribution at edge b-c.
+
+        Available only when :attr:`has_torsions` is ``True`` (v2 libraries).
+
+        Returns a dict::
+
+            {
+                "n_components": int (1..3),
+                "pi":     [float, ...],   # mixture weights, sums to 1
+                "mu":     [float, ...],   # component means in degrees
+                "sigma":  [float, ...],   # component stds in degrees
+                "n":      int,            # sample size of the matched bin
+            }
+
+        ``None`` when ``has_torsions`` is False, the chain finds no bin with
+        ``n >= min_n``, or any inputs are malformed.  Keys are canonicalised
+        so that the dihedral ``a-b-c-d`` and its reverse ``d-c-b-a`` hit the
+        same bin (consistent with the build script).
+        """
+        if not self.has_torsions:
+            return None
+        try:
+            parsed = self._torsion_canonicalise(
+                z_a, z_b, hyb_b, z_c, hyb_c, z_d,
+                int(ring_min_bc), bool(arom_b), bool(arom_c),
+            )
+        except Exception:
+            return None
+        chain = self._torsion_fallback_levels(parsed)
+        for key_str in chain:
+            idx = self._torsion_key_to_idx.get(key_str)
+            if idx is None:
+                continue
+            n = int(self._torsion_n[idx])
+            if n < min_n:
+                continue
+            nc = int(self._torsion_n_components[idx])
+            if nc < 1 or nc > 3:
+                continue
+            mus = [float(self._torsion_mu[idx, k]) for k in range(nc)]
+            sigs = [float(self._torsion_sigma[idx, k]) for k in range(nc)]
+            pis = [float(self._torsion_pi[idx, k]) for k in range(nc)]
+            if not all(np.isfinite(v) for v in (*mus, *sigs, *pis)):
+                continue
+            if any(s <= 0.0 for s in sigs):
+                continue
+            return {
+                "n_components": nc,
+                "pi": pis,
+                "mu": mus,
+                "sigma": sigs,
+                "n": n,
+            }
+        return None
+
     def lookup_improper(
         self,
         z_center: str,
@@ -446,5 +605,33 @@ def lookup_improper(
         z_center, hyb_center, neighbor_zs_sorted,
         ring_size_min=ring_size_min,
         neighbor_hybs_sorted=neighbor_hybs_sorted,
+        min_n=min_n,
+    )
+
+
+def lookup_torsion(
+    z_a: str,
+    z_b: str,
+    hyb_b: str,
+    z_c: str,
+    hyb_c: str,
+    z_d: str,
+    *,
+    ring_min_bc: int = -1,
+    arom_b: bool = False,
+    arom_c: bool = False,
+    library: Optional[GripLibrary] = None,
+    min_n: int = GRIP_LOOKUP_MIN_N,
+) -> Optional[dict]:
+    """Module-level shortcut for :meth:`GripLibrary.lookup_torsion`.
+
+    Returns ``None`` when the default library is v1 (no torsions) or the
+    chain has no bin with ``n >= min_n``.  See :meth:`GripLibrary.lookup_torsion`
+    for the returned dict schema.
+    """
+    lib = library if library is not None else get_default_library()
+    return lib.lookup_torsion(
+        z_a, z_b, hyb_b, z_c, hyb_c, z_d,
+        ring_min_bc=ring_min_bc, arom_b=arom_b, arom_c=arom_c,
         min_n=min_n,
     )
