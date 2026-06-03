@@ -190,6 +190,8 @@ __all__ = [
     "DEFAULT_ACCEPT_CLASH_ALPHA",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
+    "expand_hapto_for_sigma_only",
+    "_sigma_only_mode_active",
 ]
 
 
@@ -497,6 +499,170 @@ def detect_hapto_atoms(
 
 
 # ---------------------------------------------------------------------------
+# Class-conditional σ-only mode (2026-06-03):
+# DELFIN_FFFREE_GRIP_SIGMA_ONLY_MODE expands the hapto-protected atom set so
+# the L-BFGS polish only acts on σ-bonded ligand internals.  The π-system
+# (every ring carrying a C-donor and every H attached to such a carbon) is
+# excluded from the loss entirely, which:
+#   (a) addresses the hapto_geom_per_frame regression observed in the
+#       race-stack smoke (+2862 % vs f8c9905) — the Burnside-Konformer /
+#       Symmetry-Priority touches piano-stool / sandwich geometries the
+#       hapto-protection (Heal Option 1) handled at the η3-η8 ring level
+#       but not at the η1/η2 / aromatic-σ-N ring level;
+#   (b) supports the "fffree+GRIP achieves σ-only-cshm < UFF on the σ
+#       sub-polyhedron" publication claim — the polish only optimises σ
+#       internals; the π contribution is left to the placement step.
+# Default OFF -> byte-identical to HEAD c03a550.
+# ---------------------------------------------------------------------------
+_SIGMA_ONLY_MODE_ENV: str = "DELFIN_FFFREE_GRIP_SIGMA_ONLY_MODE"
+
+
+def _sigma_only_mode_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_SIGMA_ONLY_MODE`` is on (default OFF)."""
+    raw = os.environ.get(_SIGMA_ONLY_MODE_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def expand_hapto_for_sigma_only(
+    mol,
+    metal_idx: int,
+    donors: Sequence[int],
+    base_hapto: Set[int],
+    md_cut: float = 2.6,
+) -> Set[int]:
+    """Extend ``base_hapto`` to cover the WHOLE π-system of every
+    C-donor in the M-D-cut shell, plus every H attached to a π atom.
+
+    The σ-only mode protects more than the η³-η⁸ rings detect_hapto_atoms
+    catches: any C-donor in an aromatic ring (even η¹ phenyl, η² alkene)
+    is treated as π and excluded together with the ring carbons + the H
+    atoms riding on the ring (the H–C bond/angle priors otherwise drag
+    the ring into a sp² geometry that fights the M-η placement).
+
+    Pure-functional, deterministic; same ``(mol, metal_idx, donors,
+    base_hapto)`` -> same returned set.  ``base_hapto`` is NOT mutated.
+
+    Parameters
+    ----------
+    mol : RDKit Mol-like
+        Read-only molecular graph.
+    metal_idx : int
+        Atom index of the metal.
+    donors : sequence of int
+        Atom indices of the M-D-rigid donors (the constructed shell).
+    base_hapto : set of int
+        Starting set from :func:`detect_hapto_atoms`.  May be empty.
+    md_cut : float
+        M-C distance cutoff (Å) above which a C-donor is not eligible for
+        π-protection in σ-only mode.  Default 2.6 Å — matches the SPEC
+        and the standard η M-C distance (typical η⁵-Cp M-C ≈ 2.0-2.2 Å).
+
+    Returns
+    -------
+    set of int
+        Expanded π-set.  Always a SUPERSET of ``base_hapto``.
+    """
+    out: Set[int] = set(int(i) for i in base_hapto)
+    if mol is None:
+        return out
+    try:
+        donor_set: Set[int] = set(int(d) for d in donors)
+    except Exception:
+        return out
+    metal_idx = int(metal_idx)
+
+    # --- 1) Identify C-donors that are within md_cut of the metal AND in a
+    #        ring (aromatic OR any ring).  Use mol's built-in geometry/ring
+    #        info; the M-D rigidity has already been enforced by the
+    #        builder, so the M-C distance comes from the bond table when no
+    #        coordinates are available.
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import RWMol
+    except Exception:
+        # No RDKit available -> we can only return the base set.
+        return out
+
+    # Build a ring view that skips the metal-donor edges so the underlying
+    # Cp/arene ring is not collapsed into M-C-C triangles.
+    try:
+        sub = RWMol(mol)
+        to_remove: List[Tuple[int, int]] = []
+        for bond in sub.GetBonds():
+            u = int(bond.GetBeginAtomIdx())
+            v = int(bond.GetEndAtomIdx())
+            if u == metal_idx or v == metal_idx:
+                to_remove.append((u, v))
+        for u, v in to_remove:
+            sub.RemoveBond(u, v)
+        Chem.GetSSSR(sub)
+        rings = [tuple(int(a) for a in r) for r in sub.GetRingInfo().AtomRings()]
+    except Exception:
+        try:
+            ri = mol.GetRingInfo()
+            rings = [tuple(int(a) for a in r) for r in ri.AtomRings()]
+        except Exception:
+            rings = []
+
+    # --- 2) For each donor C, find the rings it sits in.  When the ring
+    #        is all-C OR any-aromatic -> include the WHOLE ring.  This
+    #        catches η¹ phenyl (1 C donor in a phenyl ring) too, which
+    #        detect_hapto_atoms (which requires >= 3 C donors per ring)
+    #        does not.
+    donor_C: Set[int] = set()
+    for d in donor_set:
+        try:
+            atom = mol.GetAtomWithIdx(int(d))
+        except Exception:
+            continue
+        try:
+            if atom.GetSymbol() == "C":
+                donor_C.add(int(d))
+        except Exception:
+            continue
+
+    for ring in rings:
+        ring_set = set(int(a) for a in ring)
+        if not (ring_set & donor_C):
+            continue
+        # Aromatic ring OR all-C ring -> include in π-protection.
+        try:
+            ring_aromatic = all(
+                mol.GetAtomWithIdx(int(a)).GetIsAromatic() for a in ring
+            )
+        except Exception:
+            ring_aromatic = False
+        try:
+            ring_all_c = all(
+                mol.GetAtomWithIdx(int(a)).GetSymbol() == "C" for a in ring
+            )
+        except Exception:
+            ring_all_c = False
+        if ring_aromatic or ring_all_c:
+            out.update(ring_set)
+
+    # --- 3) Include H atoms attached to any π atom.  H-C ring-bond
+    #        priors otherwise hold the ring geometry to its free-ligand
+    #        sp² template, fighting the M-η placement.
+    pi_atoms_snapshot = set(out)
+    for a in pi_atoms_snapshot:
+        try:
+            atom = mol.GetAtomWithIdx(int(a))
+        except Exception:
+            continue
+        try:
+            for nb in atom.GetNeighbors():
+                if nb.GetSymbol() == "H":
+                    out.add(int(nb.GetIdx()))
+        except Exception:
+            continue
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Mogul severity (the iter_gate-facing metric)
 # ---------------------------------------------------------------------------
 def mogul_severity(
@@ -660,6 +826,21 @@ def grip_polish(
         hapto_atoms = detect_hapto_atoms(mol, metal, donors_t)
     except Exception:
         hapto_atoms = set()
+    # Class-conditional σ-only mode (2026-06-03): when active, expand the
+    # hapto-protected atom set to cover the WHOLE π-system (every aromatic /
+    # all-C ring containing a C-donor + the H atoms on those rings).  This
+    # is a SUPERSET of the η³-η⁸ detection, so byte-identity with the env
+    # OFF code-path is preserved (default-OFF returns the original set).
+    if _sigma_only_mode_active():
+        try:
+            hapto_atoms = expand_hapto_for_sigma_only(
+                mol, metal, donors_t, hapto_atoms,
+            )
+        except Exception:
+            # On any failure fall back to the base set; the polish then
+            # behaves exactly as if σ-only-mode was off, which is the
+            # safe default.
+            pass
     try:
         # Heal-1 (2026-06-01, mddir-fix): pass donors explicitly so the
         # detector can additionally protect the donor's first-shell
