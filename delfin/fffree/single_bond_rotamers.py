@@ -21,6 +21,14 @@ Rotamer-step tightening (subagent #129 follow-up to #128):
 Env-gate: ``DELFIN_FFFREE_ENUMERATE_ROTAMERS=1`` (default OFF -> the
 module is byte-identical to no integration when callers honor the
 flag at the call-site).
+
+Symmetry-priority rotamer pre-ranking (Phase 2, 2026-06-03):
+  - ``DELFIN_FFFREE_SYMMETRY_PRIORITY_ROTAMERS=1`` (default OFF) opt-in
+    flag that re-sorts the yielded rotamer variants so configurations
+    that maximise the whole-complex point-group order come FIRST.
+    Implemented via :func:`rerank_rotamers_by_symmetry`, callable
+    standalone for tests and used internally by
+    :func:`enumerate_single_bond_rotamers` when the flag is set.
 """
 from __future__ import annotations
 
@@ -391,6 +399,74 @@ def apply_rotamer_config(
 
 
 # ------------------------------------------------------------------
+# Symmetry-priority pre-ranking (Phase 2, 2026-06-03)
+# ------------------------------------------------------------------
+
+
+_ENV_SYMMETRY_PRIORITY = "DELFIN_FFFREE_SYMMETRY_PRIORITY_ROTAMERS"
+
+
+def _env_symmetry_priority_rotamers(default: bool = False) -> bool:
+    """Return True when the symmetry-priority rotamer pre-ranking hook is
+    on (env ``DELFIN_FFFREE_SYMMETRY_PRIORITY_ROTAMERS=1``).  Default OFF
+    -> byte-identical to HEAD.
+    """
+    v = os.environ.get(_ENV_SYMMETRY_PRIORITY, "1" if default else "0")
+    return str(v).strip() in ("1", "true", "True", "on", "yes", "YES")
+
+
+def rerank_rotamers_by_symmetry(
+    variants: Sequence[Tuple[np.ndarray, str]],
+    atomic_numbers: Sequence,
+    tol: float = 0.1,
+) -> List[Tuple[np.ndarray, str]]:
+    """Sort rotamer variants by detected point-group order DESC.
+
+    The pre-ranking strategy puts the most-symmetric whole-complex
+    configurations first in the enumeration, so downstream consumers
+    (Mogul polish, RMSD-dedup, conformer selection) preferentially see
+    them as the head of the list.  Ties break by the variant's original
+    input position (stable sort) -> deterministic.
+
+    Parameters
+    ----------
+    variants : sequence of (P, label) tuples
+        As yielded by :func:`enumerate_single_bond_rotamers`.
+    atomic_numbers : sequence of int or element symbols
+        Aligned with the variant coordinate arrays.
+    tol : float, default 0.1
+        Position tolerance for the point-group detector.
+
+    Returns
+    -------
+    list of (P, label) tuples
+        Re-sorted; highest detected point-group order first.
+
+    Universal: depends only on coordinates and atomic numbers; no SMILES,
+    no metal-specific heuristics.  Deterministic (stable sort).
+    """
+    try:
+        from delfin.fffree.conformer_symmetry import detect_point_group_order
+    except Exception:
+        # No symmetry module -> return as-is.
+        return list(variants)
+    items = list(variants)
+    if not items:
+        return items
+    scored: List[Tuple[int, int, Tuple[np.ndarray, str]]] = []
+    for orig_idx, (P, lab) in enumerate(items):
+        try:
+            pg = detect_point_group_order(P, list(atomic_numbers), tol=tol)
+        except Exception:
+            pg = 1
+        # Negative pg so descending sort puts max first; original index is
+        # the secondary key for stable tiebreak.
+        scored.append((-int(pg), int(orig_idx), (P, lab)))
+    scored.sort(key=lambda t: (t[0], t[1]))
+    return [t[2] for t in scored]
+
+
+# ------------------------------------------------------------------
 # Public API: enumerate_single_bond_rotamers
 # ------------------------------------------------------------------
 
@@ -402,6 +478,7 @@ def enumerate_single_bond_rotamers(
     max_configs: Optional[int] = None,
     n_states: Optional[int] = None,
     step_degrees: Optional[float] = None,
+    atomic_numbers: Optional[Sequence] = None,
 ) -> Iterator[Tuple[np.ndarray, str]]:
     """Yield ``(coords_variant, label)`` for each enumerated rotamer config.
 
@@ -453,24 +530,37 @@ def enumerate_single_bond_rotamers(
         # No rotors -> yield the input unchanged.
         yield P0.copy(), "rot_identity"
         return
-    for combo in enumerate_rotamer_configs(
-        len(rotors),
-        n_states=n_states,
-        max_configs=max_configs,
-        step_degrees=step_degrees,
-    ):
-        # Build the label deterministically: e.g. rot_+120_0_-120
-        lab_parts = []
-        for offset in combo:
-            if abs(offset) < 1e-9:
-                lab_parts.append("0")
-            elif offset > 0:
-                lab_parts.append(f"+{int(round(offset))}")
-            else:
-                lab_parts.append(f"{int(round(offset))}")
-        label = "rot_" + "_".join(lab_parts)
-        Pv = apply_rotamer_config(mol, P0, rotors, combo)
-        yield Pv, label
+
+    def _stream():
+        for combo in enumerate_rotamer_configs(
+            len(rotors),
+            n_states=n_states,
+            max_configs=max_configs,
+            step_degrees=step_degrees,
+        ):
+            lab_parts = []
+            for offset in combo:
+                if abs(offset) < 1e-9:
+                    lab_parts.append("0")
+                elif offset > 0:
+                    lab_parts.append(f"+{int(round(offset))}")
+                else:
+                    lab_parts.append(f"{int(round(offset))}")
+            label = "rot_" + "_".join(lab_parts)
+            Pv = apply_rotamer_config(mol, P0, rotors, combo)
+            yield Pv, label
+
+    # Phase 2 hook: when the symmetry-priority env flag is on AND we have
+    # atomic-number information, materialise the stream and re-rank by
+    # detected whole-complex point-group order before yielding.  Default
+    # OFF -> byte-identical streaming behaviour preserved.
+    if _env_symmetry_priority_rotamers() and atomic_numbers is not None:
+        ordered = rerank_rotamers_by_symmetry(list(_stream()), atomic_numbers)
+        for item in ordered:
+            yield item
+    else:
+        for item in _stream():
+            yield item
 
 
 # ------------------------------------------------------------------
