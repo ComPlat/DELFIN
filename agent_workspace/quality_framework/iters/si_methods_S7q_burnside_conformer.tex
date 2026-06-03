@@ -1,0 +1,127 @@
+% SI-Methods Section S7q — Burnside's Lemma for Conformer Orbit Counting
+%
+% Proposed addition to si_methods.tex (located at
+% /home/qmchem_max/draft_SMILES2xyz/si_methods.tex).
+% NOT written to the draft repo per the worktree-isolation policy of
+% this task brief.  Merge manually after review.
+%
+% Cross-references assumed already defined elsewhere in the SI:
+%   \cref{si:polya}        — S7.x Pólya isomer counting
+%   \cref{si:cp_pucker}    — S7.x Cremer-Pople ring conformers
+%   \cref{si:grip_ensemble}— S7.x GRIP-ensemble overview
+
+\subsection{S7q. Burnside's lemma for conformer orbit counting}
+\label{si:burnside_conformer}
+
+The Pólya enumeration on coordination-isomer topology
+(\cref{si:polya}) and the Cremer-Pople canonical-state enumeration
+on individual rings (\cref{si:cp_pucker}) together generate a
+finite product space of candidate three-dimensional conformers,
+\begin{equation}
+  X \;=\; X_{\mathrm{iso}}
+  \,\times\, \prod_{r=1}^{R} X_{\mathrm{ring}, r}
+  \,\times\, X_{\mathrm{rot}},
+  \label{eq:product_space}
+\end{equation}
+of cardinality
+$\lvert X \rvert = n_{\mathrm{iso}} \cdot \prod_r m_r \cdot n_{\mathrm{rot}}$.
+This raw product, however, in general over-counts because the
+\emph{molecular point group} $G\subseteq O(3)$ of the assembled
+complex acts non-trivially on $X$, identifying configurations that
+differ only by a symmetry-equivalent relabelling of equivalent
+ligands or arms.  For example, the $C_3$ axis of
+$\Delta\text{-}[\mathrm{Co(en)}_3]^{3+}$ permutes the three ethylene-
+diamine chelate rings, so the three distinct $\delta\delta\lambda$
+assignments (depending on which ring carries the $\lambda$
+puckering) represent a single physical conformer.
+
+To recover the rigorous count of distinct conformers, we apply
+\emph{Burnside's lemma} (also called the Cauchy--Frobenius
+counting theorem):
+\begin{equation}
+  \lvert X / G \rvert
+  \;=\;
+  \frac{1}{\lvert G \rvert} \sum_{g \in G} \lvert \mathrm{Fix}(g) \rvert,
+  \label{eq:burnside}
+\end{equation}
+where $\mathrm{Fix}(g) = \{ x \in X : g \cdot x = x\}$ is the set of
+elements fixed by the group element $g$.  In our implementation
+(\texttt{delfin/fffree/burnside\_conformer.py}), Eq.~\eqref{eq:burnside}
+is realised in two complementary forms:
+\begin{enumerate}
+  \item For an \emph{explicit} candidate set $X$, we compute the
+        induced permutation action of $G$ on the canonical-form
+        index set --- each $g$ becomes a permutation of $\{1,\dots,
+        \lvert X \rvert\}$ via inertial-frame alignment and
+        atom-tuple lexicographic sort --- and apply
+        Eq.~\eqref{eq:burnside} directly
+        (\texttt{count\_distinct\_conformers}).
+  \item For a \emph{formal} product space whose cardinalities are
+        known but whose elements have not been materialised, we use
+        the cyclic-action specialisation: when $C_k \subseteq G$
+        permutes $kt$ equivalent ring slots, each filled by one of
+        $m$ states, Pólya's cycle index gives
+        \begin{equation}
+          \frac{1}{k}\sum_{j=0}^{k-1} m^{\,t\,\gcd(j,k)},
+          \label{eq:cycle_index}
+        \end{equation}
+        and multiplied with the unaffected factors yields the orbit
+        count (\texttt{count\_orbits\_product\_space}).
+\end{enumerate}
+
+\paragraph{Worked example: $[\mathrm{Co(en)}_3]^{3+}$.}
+With $n_{\mathrm{iso}} = 2$ ($\Delta, \Lambda$),
+three en chelate rings each contributing two CP states
+($\delta, \lambda$), no additional rotatable bonds
+($n_{\mathrm{rot}} = 1$), and the $C_3$ axis permuting the three
+rings, the raw product is $\lvert X \rvert = 2 \cdot 2^3 \cdot 1 = 16$.
+Equation~\eqref{eq:cycle_index} gives
+$\tfrac{1}{3}\!\left(2^3 + 2 + 2\right) = 4$ orbits on the ring
+slots, and the full count
+$\lvert X / C_3 \rvert = 2 \cdot 4 \cdot 1 = 8$ matches the textbook
+enumeration $\{\Delta, \Lambda\} \times \{\delta\delta\delta,
+\delta\delta\lambda, \delta\lambda\lambda, \lambda\lambda\lambda\}$.
+
+\paragraph{Connection to existing layers.}
+The three counting layers form a subgroup tower
+\begin{equation*}
+  G_{\mathrm{complex}} \;\supseteq\; G_{\mathrm{polyhedron}}
+  \;\supseteq\; G_{\mathrm{ring},1} \times \cdots \times G_{\mathrm{torsion}},
+\end{equation*}
+and Eq.~\eqref{eq:burnside} restricted to each subgroup reproduces
+the corresponding existing count: the Pólya isomer count of
+\cref{si:polya} when restricted to $G_{\mathrm{polyhedron}}$
+acting on the iso-factor, the Cremer-Pople ring conformer count of
+\cref{si:cp_pucker} when restricted to $G_{\mathrm{ring},r}$.
+The new \emph{conformer-level} layer adds the additional elements of
+$G_{\mathrm{complex}}$ that interchange equivalent ligands, which is
+the contribution that no competing tool currently provides
+(ETKDG\cite{Riniker2015}, CREST\cite{Pracht2020},
+OMEGA\cite{Hawkins2010}, molSimplify\cite{Ioannidis2016},
+Frog2\cite{Miteva2010}, CSD Conformer Generator\cite{Cole2018}).
+
+\paragraph{Determinism contract.}
+The orbit count is independent of insertion order and floating-point
+representation.  We enforce \texttt{PYTHONHASHSEED=0}, iterate over
+explicit (not dict-derived) sequences, sort atom tuples
+lexicographically after rounding coordinates to a tolerance
+$\epsilon_{\mathrm{pos}} = 10^{-4}\,\text{\AA}$, and compare canonical
+forms within an RMS tolerance $\epsilon_{\mathrm{rms}} = 0.05\,
+\text{\AA}$.  The closed-form Eq.~\eqref{eq:cycle_index} is integer
+arithmetic.  Two independent runs on the same input return
+byte-identical orbit counts (test
+\texttt{test\_determinism\_two\_runs\_identical}).
+
+\paragraph{Completeness verdict.}
+For reporting in
+\cref{si:grip_ensemble}, we expose the function
+\texttt{completeness\_report} which returns a dictionary with the
+raw product, the Burnside orbit count, the emitted count, the
+reduction factor, and a label
+$\in \{\textsf{complete}, \textsf{mostly\_complete},
+\textsf{incomplete}, \textsf{redundant}, \textsf{empty}\}$.  When
+the emitted count agrees with the Burnside count to within $\pm 1$
+(allowing for tolerance ties), the ensemble is \emph{provably
+mathematically complete} on the chosen product space under the
+detected point group.  This is the technical content of our
+completeness claim.

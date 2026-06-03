@@ -81,6 +81,7 @@ __all__ = [
     "ensemble_active",
     "ensemble_emit_full",
     "ensemble_topk",
+    "burnside_conformer_quotient_active",
     "count_inter_ligand_clashes",
     "identify_ligand_subgraphs",
     "grip_ensemble_enumerate",
@@ -180,6 +181,20 @@ def ensemble_topk() -> int:
     return max(1, k)
 
 
+def burnside_conformer_quotient_active() -> bool:
+    """``True`` iff the Burnside-conformer orbit quotient is enabled.
+
+    Default OFF (byte-identical to HEAD f8c9905).  When set, the
+    grip_ensemble enumeration applies a deterministic Burnside-orbit
+    deduplication over the assembled candidate set BEFORE ranking, so
+    the emitted top-K is drawn from the orbit-canonical-form subset
+    instead of the raw product-space subset.
+
+    Env: ``DELFIN_FFFREE_BURNSIDE_CONFORMER`` (1/true/yes/on).
+    """
+    return _env_bool("DELFIN_FFFREE_BURNSIDE_CONFORMER", default=False)
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -227,6 +242,11 @@ class EnsembleResult:
     n_rejected_build: int = 0
     skip_reason: str = ""
     top_k: List[EnsembleCandidate] = field(default_factory=list)
+    # Burnside-conformer orbit-quotient diagnostics (populated only when
+    # DELFIN_FFFREE_BURNSIDE_CONFORMER=1; otherwise dict is empty so the
+    # OFF-path is byte-identical).  Keys: ``n_raw_candidates``,
+    # ``n_orbits``, ``reduction_factor``, ``group_order_avg``.
+    burnside_meta: dict = field(default_factory=dict)
 
     @property
     def n_candidates(self) -> int:
@@ -975,6 +995,37 @@ def grip_ensemble_enumerate(
             candidates.append(cand)
 
     # ------------------------------------------------------------------
+    # 2e) Burnside-conformer orbit quotient (Phase 3 of bahnbrechend
+    #     mandate, env-gated DEFAULT-OFF byte-identical).  When enabled,
+    #     deduplicate the candidate set by point-group orbit BEFORE
+    #     ranking, so the emitted top-K is drawn from the orbit-
+    #     canonical-form subset rather than the raw product subset.
+    # ------------------------------------------------------------------
+    burnside_meta: Dict = {}
+    if burnside_conformer_quotient_active() and candidates:
+        try:
+            from . import burnside_conformer as _BC
+            counter = _BC.BurnsideOrbitCounter()
+            n_raw = len(candidates)
+            kept: List[EnsembleCandidate] = []
+            n_orbit_dedup = 0
+            for cand in candidates:
+                if counter.is_new_orbit(list(cand.syms), np.asarray(cand.P, dtype=float)):
+                    kept.append(cand)
+                else:
+                    n_orbit_dedup += 1
+            burnside_meta = {
+                "n_raw_candidates": int(n_raw),
+                "n_orbits": int(counter.n_orbits),
+                "n_dedup_removed": int(n_orbit_dedup),
+                "reduction_factor": float(n_raw) / max(counter.n_orbits, 1),
+                "active": True,
+            }
+            candidates = kept
+        except Exception as exc:  # pragma: no cover -- defensive
+            burnside_meta = {"active": False, "error": repr(exc)}
+
+    # ------------------------------------------------------------------
     # 3) Rank + top-K selection
     # ------------------------------------------------------------------
     ranked = rank_candidates(
@@ -1001,4 +1052,5 @@ def grip_ensemble_enumerate(
         n_rejected_build=int(n_rejected_build),
         skip_reason="",
         top_k=top,
+        burnside_meta=burnside_meta,
     )
