@@ -1215,6 +1215,46 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                 P = P_h
                 except Exception:
                     pass
+                # CONSTRUCTION-FIX (sp³-H umbrella, 2026-06-04, GUPPY
+                # ea26dcb): rebuild every sp³-C/N H umbrella that is
+                # degenerate (H-X-H 90°/180° pattern observed in
+                # 29-Ni_pincer-tBu-imid_.xyz where all 3 methyls had H
+                # atoms on orthogonal cartesian axes).  L-BFGS angle-loss
+                # cannot move 180° H pairs (saddle of cos(angle)), so this
+                # correction MUST live in construction.  Metal + σ donors
+                # NEVER moved; centre + heavy neighbours NEVER moved; only
+                # H positions are rewritten on a Td template anchored on
+                # the heavy-atom direction.  Defence-in-depth M-D check.
+                # Env-gated default-OFF, byte-identical when unset.
+                try:
+                    from delfin.fffree.sp3_h_umbrella import (
+                        enforce_all_sp3_umbrella,
+                        umbrella_active as _sp3_umbrella_active,
+                    )
+                    if _sp3_umbrella_active():
+                        P_pre_u = P.copy()
+                        P_u, _rep_u = enforce_all_sp3_umbrella(
+                            P, out_syms, mol=None,
+                            preserve_bond_lengths=True,
+                            only_degenerate=True,
+                            enable_clash_rollback=True,
+                        )
+                        if (P_u is not None and isinstance(P_u, np.ndarray)
+                            and P_u.shape == P.shape
+                            and np.all(np.isfinite(P_u))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(
+                                    P_pre_u[_dg] - P_pre_u[0]))
+                                _d_new = float(np.linalg.norm(
+                                    P_u[_dg] - P_u[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_u
+                except Exception:
+                    pass
                 # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When
                 # DELFIN_FFFREE_GRIP=1 we run the CCDC-grounded L-BFGS
                 # refinement on the post-sp2-flatten geometry, BEFORE the
