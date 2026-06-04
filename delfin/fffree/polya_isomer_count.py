@@ -14,7 +14,7 @@ MA2B2C2=6, MABCDEF=30; square-planar MA2B2=2; tetrahedral MABCD=2).
 from __future__ import annotations
 import itertools
 from collections import Counter
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def _close_group(generators: List[Tuple[int, ...]], n: int) -> List[Tuple[int, ...]]:
@@ -142,6 +142,45 @@ _GROUPS = {
 }
 
 
+# Phase C (Task #64, 2026-06-04): lazily merge f-block CN8-12 groups from
+# delfin.fffree.f_block_polyhedra when they are referenced.  Done lazily to
+# avoid a circular import (f_block_polyhedra → polyhedra → polya_isomer_count
+# → f_block_polyhedra would loop).
+def _fblock_group_for(key: str) -> Optional[Tuple[Tuple[Tuple[int, ...], ...], int]]:
+    """Return ``(group, n)`` for a Phase-C f-block polyhedron key or None."""
+    try:
+        from delfin.fffree import f_block_polyhedra as _FBP
+    except ImportError:
+        return None
+    # Map Pólya group keys to f-block canonical names.
+    mapping = {
+        "sap_8": "SAP-8 square antiprism",
+        "dd_8": "DD-8 dodecahedron",
+        "tdd_8": "TDD-8 triangular dodecahedron",
+        "ttp_9_fblock": "TTP-9 tricapped trigonal prism",  # alias avoids clash
+        "csap_9": "CSAP-9 capped square antiprism",
+        "bicap_10": "BICAP-10 bicapped square antiprism",
+        "ih_12": "IH-12 icosahedron",
+    }
+    canonical = mapping.get(key)
+    if canonical is None:
+        return None
+    res = _FBP.fblock_group(canonical)
+    if res is None:
+        return None
+    return res
+
+
+def _get_group(geometry_key: str) -> Tuple[List[Tuple[int, ...]], int]:
+    """Look up a Pólya group, falling back to the f-block table."""
+    if geometry_key in _GROUPS:
+        return _GROUPS[geometry_key]
+    fb = _fblock_group_for(geometry_key)
+    if fb is None:
+        raise KeyError(geometry_key)
+    return fb
+
+
 def _multiset_from_spec(spec: Dict[str, int], n: int) -> List[str]:
     labels = []
     for lab, cnt in spec.items():
@@ -154,7 +193,7 @@ def _multiset_from_spec(spec: Dict[str, int], n: int) -> List[str]:
 def count_isomers(geometry: str, donor_spec: Dict[str, int]) -> int:
     """Burnside: (1/|G|) Σ_g |colorings fixed by g|.  A coloring (assignment of the
     donor multiset to vertices) is fixed by g iff every cycle of g is monochromatic."""
-    group, n = _GROUPS[geometry]
+    group, n = _get_group(geometry)
     labels = _multiset_from_spec(donor_spec, n)
     mult = Counter(labels)
     total = 0
@@ -198,7 +237,7 @@ def _fixed_colorings(cycle_sizes: List[int], mult: Counter) -> int:
 
 def enumerate_isomers(geometry: str, donor_spec: Dict[str, int]) -> List[Tuple[str, ...]]:
     """Distinct vertex-colorings up to the rotation group (one representative each)."""
-    group, n = _GROUPS[geometry]
+    group, n = _get_group(geometry)
     labels = _multiset_from_spec(donor_spec, n)
     seen = set(); reps = []
     for perm in set(itertools.permutations(labels)):
@@ -235,6 +274,14 @@ _GEOM_KEY_TO_SHAPE = {
     "pentagonal_bipyramid": "PB-7 pentagonal bipyramid",
     "square_antiprism": "SQAP-8 square antiprism",
     "tricapped_trigonal_prism": "TTP-9 tricapped trigonal prism",
+    # Phase C f-block CN8-12 (Task #64).
+    "sap_8": "SAP-8 square antiprism",
+    "dd_8": "DD-8 dodecahedron",
+    "tdd_8": "TDD-8 triangular dodecahedron",
+    "ttp_9_fblock": "TTP-9 tricapped trigonal prism",
+    "csap_9": "CSAP-9 capped square antiprism",
+    "bicap_10": "BICAP-10 bicapped square antiprism",
+    "ih_12": "IH-12 icosahedron",
 }
 
 
@@ -268,7 +315,7 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
     two donor arms are distinguishable).  Returns distinct configs; each maps
     vertex_index -> (ligand_instance_index, arm_index), one per orbit under the
     polyhedron's proper rotation group.  Bidentate ligands occupy cis-edges."""
-    group, n = _GROUPS[geometry]
+    group, n = _get_group(geometry)
     cis_edges = _chelate_cis_edges(geometry, n)
     order = sorted(range(len(ligand_specs)),
                    key=lambda k: -ligand_specs[k]["denticity"])
@@ -337,7 +384,7 @@ def count_chelate_isomers(geometry: str, n_chelate: int) -> int:
     rotation group.  Chelates occupy EDGES (cis vertex pairs), not vertices, so
     this is edge-combinatorics (counts enantiomers as distinct: e.g. octahedral
     en2X2 -> trans + cis-Δ + cis-Λ = 3)."""
-    group, n = _GROUPS[geometry]
+    group, n = _get_group(geometry)
     if geometry == "octahedron":
         antipode = {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4}
     else:
