@@ -62,6 +62,7 @@ delfin/agent/*.local.json
 # Solver run logs (large, regenerated per run)
 censo.log
 *.log
+<<<<<<< HEAD
 # Run-output artifacts (move to quality_framework/results/ instead)
 /reports/
 /topology_summary.json
@@ -73,3 +74,5 @@ censo.log
 
 # Design docs / forensik reports — keep LOCAL in agent_workspace, NEVER in DELFIN repo
 iters/
+=======
+>>>>>>> worktree-agent-a346f443631c52e3a

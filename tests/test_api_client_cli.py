@@ -23,7 +23,10 @@ def client(tmp_path):
     c.mcp_config = ""
     c.allowed_tools = None
     c.extra_dirs = None
+<<<<<<< HEAD
     c.effort = ""
+=======
+>>>>>>> worktree-agent-a346f443631c52e3a
     c._proc = None
     c._session_id = ""
     return c
@@ -154,6 +157,7 @@ def test_non_empty_user_content_writes_stdin(client):
     fake_proc.stdin.write.assert_called()
     written = fake_proc.stdin.write.call_args_list[0].args[0]
     assert '"text": "hello"' in written or '"text":"hello"' in written
+<<<<<<< HEAD
 
 
 # ---------------------------------------------------------------------------
@@ -245,3 +249,5 @@ def test_invalid_effort_omits_flag(tmp_path):
         c._ensure_proc(system="sys", session_id="")
 
     assert "--effort" not in captured["cmd"]
+=======
+>>>>>>> worktree-agent-a346f443631c52e3a
