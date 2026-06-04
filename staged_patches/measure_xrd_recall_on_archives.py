@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--index-path", default=DEFAULT_INDEX)
     ap.add_argument("--master-pool", default=DEFAULT_MASTER)
     ap.add_argument("--rmsd-A", type=float, default=0.5)
+    ap.add_argument("--no-per-smiles", action="store_true",
+                    help="Skip per-SMILES detailed report (3-5min/archive)")
     ap.add_argument("--paper-data-dir", default=str(
         Path(__file__).resolve().parent.parent.parent.parent /
         "ComPlat" / "DELFIN" / ".claude" / "worktrees" /
@@ -102,19 +104,32 @@ def main():
                             "nan", "nan", args.rmsd_A, round(time.time() - t0, 1)])
                 continue
 
+            print(f"  [stage] isomer-recall ({n_with_fam} SMILES with family)...", flush=True)
+            t_iso = time.time()
             iso = XRDM.compute_isomer_recall(by_smi, table)
+            print(f"    iso = {iso:.4f}  ({time.time()-t_iso:.1f}s)", flush=True)
+            print(f"  [stage] conformer-recall (RMSD vs CCDC heavy-atom positions)...", flush=True)
+            t_conf = time.time()
             conf = XRDM.compute_conformer_recall(by_smi, table, index,
-                                                  rmsd_threshold=args.rmsd_A)
+                                                  rmsd_threshold=args.rmsd_A,
+                                                  max_emitted_per_smiles=10)
+            print(f"    conf = {conf:.4f}  ({time.time()-t_conf:.1f}s)", flush=True)
             print(f"  iso_recall = {iso:.3f}  conf_recall = {conf:.3f}", flush=True)
 
-            # Per-SMILES detailed report
-            per = XRDM.per_smiles_recall_report(by_smi, table, index,
-                                                rmsd_threshold=args.rmsd_A)
-            per_path = Path(args.paper_data_dir) / f"xrd_recall_per_smiles_{archive_label}.jsonl"
-            with per_path.open("w") as fjs:
-                for r in per:
-                    fjs.write(json.dumps(r) + "\n")
-            print(f"  per-SMILES → {per_path.name}", flush=True)
+            # Per-SMILES detailed report (slow ~5 min; skip if requested)
+            if args.no_per_smiles:
+                print(f"  per-SMILES report skipped (--no-per-smiles)", flush=True)
+            else:
+                print(f"  [stage] per-SMILES detailed report...", flush=True)
+                t_per = time.time()
+                per = XRDM.per_smiles_recall_report(by_smi, table, index,
+                                                    rmsd_threshold=args.rmsd_A)
+                per_path = Path(args.paper_data_dir) / f"xrd_recall_per_smiles_{archive_label}.jsonl"
+                with per_path.open("w") as fjs:
+                    for r in per:
+                        fjs.write(json.dumps(r) + "\n")
+                print(f"  per-SMILES → {per_path.name}  ({time.time()-t_per:.1f}s)",
+                      flush=True)
 
             w.writerow([archive_label, n_xyz, len(by_smi), n_with_fam,
                         round(iso, 4) if iso == iso else "nan",
