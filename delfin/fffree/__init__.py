@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """DELFIN fffree — FF-free TMC structure generation pipeline.
 
 Universal, deterministic, mathematically complete 3D structure generation
