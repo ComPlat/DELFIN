@@ -235,7 +235,14 @@ __all__ = [
     "_GRIP_METHOD_ENV",
     "_GRIP_METHOD_LBFGS",
     "_GRIP_METHOD_LM",
+    "_TOPOLOGY_HEALING_ENV",
 ]
+
+
+# Topology-healing hook -- env-flag name re-exported so callers / tests can
+# reference it without importing the submodule directly.  The actual gate
+# lives in :mod:`topology_healing`.
+_TOPOLOGY_HEALING_ENV: str = "DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING"
 
 
 def build_ligand_atom_id_map(
@@ -836,6 +843,54 @@ def grip_polish(
     metal = int(metal)
     donors_t = tuple(int(d) for d in donors)
     vdw_table = vdw_radii_by_symbol if vdw_radii_by_symbol is not None else DEFAULT_VDW_RADII
+
+    # ------------------------------------------------------------------
+    # 0a. Optional PRE-POLISH topology healing (2026-06-04, env-gated).
+    # Fixes bond-graph defects (phantom bonds / missing bonds / wrong
+    # angles) BEFORE the L-BFGS / LM polish so the smooth optimisation
+    # starts from a topologically-consistent geometry.
+    #
+    # Composability:
+    #   - topology_healing fixes bond-graph defects (this hook)
+    #   - grip_healing_mode (parallel module) fixes atom-level outliers
+    #   - polish minimises the smooth Mahalanobis loss
+    # Order when all enabled: topology_healing -> grip_healing -> polish.
+    #
+    # Default OFF -> byte-identical to HEAD 93b396d.
+    # ------------------------------------------------------------------
+    try:
+        from .topology_healing import is_active as _topology_healing_active
+        from .topology_healing import topology_healing_pipeline as _topology_healing_pipeline
+        if _topology_healing_active() and mol is not None:
+            try:
+                # Build the symbol list once -- the healing pipeline is
+                # mol-agnostic but needs element symbols + the bond list.
+                _syms = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+                _topo_bonds = _mol_bonds(mol)
+                P_healed = _topology_healing_pipeline(
+                    P_init,
+                    _syms,
+                    _topo_bonds,
+                    metal_idx=metal,
+                    donors=donors_t,
+                    md_tol=md_tol,
+                )
+                if (
+                    P_healed is not None
+                    and isinstance(P_healed, np.ndarray)
+                    and P_healed.shape == P_init.shape
+                    and np.all(np.isfinite(P_healed))
+                ):
+                    P_init = P_healed
+            except Exception as exc:  # never let healing crash the polish
+                _LOG.warning(
+                    "grip_polish: topology_healing raised %r; falling back to P0",
+                    exc,
+                )
+    except Exception:
+        # topology_healing module unavailable -- silent skip (default-OFF
+        # behaviour preserved when the module fails to import).
+        pass
 
     # ------------------------------------------------------------------
     # 1. Detect fragments.  Frozen = {metal, *donors}.
