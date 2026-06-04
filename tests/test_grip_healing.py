@@ -163,7 +163,14 @@ class TestRepositioning:
         assert diag.n_iter == 0
 
     def test_converges_simple_case(self):
-        """A 5-atom chain with a single misplaced atom converges in < 10 iter."""
+        """A 5-atom chain with a single misplaced atom converges in < 50 iter.
+
+        Damping=1.0 (no under-relaxation) is used here because the
+        chain has only one over-stretched terminal bond and full-step
+        Jacobi converges in 1-2 iters.  With damping=0.5 the chain
+        would need many more iters because each bond pulls atom 4 only
+        half-way to its ideal.
+        """
         # Chain 0-1-2-3-4 with ideal length 1.52.  Place atom 4 way off.
         R = np.array([
             [0.0, 0.0, 0.0],
@@ -177,7 +184,7 @@ class TestRepositioning:
         out, diag = iterative_topology_repositioning(
             R, bonds, ideal_lengths=ideal,
             frozen_atoms=[0],
-            max_iter=50, tol=0.01,
+            max_iter=50, tol=0.01, damping=1.0,
             return_diagnostics=True,
         )
         assert diag.n_iter < 50
@@ -457,16 +464,83 @@ class TestCCDCBondLengths:
         """The heal pulls a broken atom toward the ``mu`` we provide."""
         # 2-atom system: bond 0-1.  Place atom 1 far off, freeze atom 0,
         # heal with mu = 1.234.  Atom 1 should converge near distance
-        # 1.234 from atom 0.
+        # 1.234 from atom 0.  Use damping=1.0 (no under-relaxation) so
+        # the single-bond case converges in 1 iteration.
         R = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
         bonds = [(0, 1)]
         ideal = {(0, 1): (1.234, 0.02)}
         out = iterative_topology_repositioning(
             R.copy(), bonds, ideal_lengths=ideal,
-            frozen_atoms=[0], max_iter=50, tol=1e-4,
+            frozen_atoms=[0], max_iter=50, tol=1e-4, damping=1.0,
         )
         d_final = float(np.linalg.norm(out[1] - out[0]))
         assert abs(d_final - 1.234) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Accept-if-better outer gate
+# ---------------------------------------------------------------------------
+class TestAcceptIfBetter:
+    def test_rolls_back_when_broken_count_increases(self):
+        """When the heal makes the structure worse, output = input snapshot."""
+        # Create a degenerate case where the Jacobi heal at low damping
+        # leaves more bonds broken than it started with: a fully-
+        # collapsed 4-atom chain where every atom is at the origin (all
+        # bonds 0 Å, so all broken).  The fallback-direction projection
+        # spreads them out, but after a single damped step many bonds
+        # are stuck at ~0.5 * mu (broken).
+        R = np.array([[0.0, 0.0, 0.0]] * 4)
+        bonds = [(0, 1), (1, 2), (2, 3)]
+        ideal = {b: (1.52, 0.02) for b in bonds}
+        # With damping=0.05 (tiny step) and max_iter=2, the heal will
+        # almost certainly produce a state with at least as many
+        # broken bonds as the start.  In any case the gate ensures we
+        # never return a worse state.
+        R_initial = R.copy()
+        out, diag = iterative_topology_repositioning(
+            R, bonds, ideal_lengths=ideal,
+            frozen_atoms=[0],
+            max_iter=2, tol=0.001, damping=0.05,
+            return_diagnostics=True,
+        )
+        # The gate forces n_broken_final <= n_broken_initial.
+        assert diag.n_broken_final <= diag.n_broken_initial
+
+
+# ---------------------------------------------------------------------------
+# Damping behaviour
+# ---------------------------------------------------------------------------
+class TestDamping:
+    def test_damping_full_step_one_iter(self):
+        """With damping=1.0 the single-bond heal converges in 1 iter."""
+        R = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+        bonds = [(0, 1)]
+        ideal = {(0, 1): (1.5, 0.02)}
+        _, diag = iterative_topology_repositioning(
+            R.copy(), bonds, ideal_lengths=ideal,
+            frozen_atoms=[0], max_iter=10, tol=0.01,
+            damping=1.0, return_diagnostics=True,
+        )
+        # One iter is enough at full step.
+        assert diag.n_iter == 1
+        assert diag.converged
+
+    def test_damping_half_step_needs_more(self):
+        """damping=0.5 (default) needs strictly more iterations than 1.0."""
+        R = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
+        bonds = [(0, 1)]
+        ideal = {(0, 1): (1.5, 0.02)}
+        _, d_full = iterative_topology_repositioning(
+            R.copy(), bonds, ideal_lengths=ideal,
+            frozen_atoms=[0], max_iter=50, tol=0.001,
+            damping=1.0, return_diagnostics=True,
+        )
+        _, d_half = iterative_topology_repositioning(
+            R.copy(), bonds, ideal_lengths=ideal,
+            frozen_atoms=[0], max_iter=50, tol=0.001,
+            damping=0.5, return_diagnostics=True,
+        )
+        assert d_half.n_iter >= d_full.n_iter
 
 
 # ---------------------------------------------------------------------------

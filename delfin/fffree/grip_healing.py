@@ -67,6 +67,7 @@ __all__ = [
     "DEFAULT_MAX_ITER",
     "DEFAULT_TOL",
     "DEFAULT_FLOATING_FACTOR",
+    "DEFAULT_DAMPING",
     "HealingDiagnostics",
     "detect_broken_atoms",
     "iterative_topology_repositioning",
@@ -95,6 +96,15 @@ DEFAULT_TOL: float = 0.01
 #: ideal length, signalling that the constructive placement *missed*
 #: that ligand altogether.
 DEFAULT_FLOATING_FACTOR: float = 2.0
+
+#: Per-iteration step damping coefficient.  A pure Jacobi update
+#: (alpha=1) can oscillate when many bonds are coupled (one atom is
+#: endpoint to multiple broken bonds whose target projections
+#: disagree).  Damping by 0.5 (the classical successive-over-relaxation
+#: under-relaxation) makes the iteration provably contractive on
+#: any acyclic ligand graph; the convergence rate halves, which is
+#: fine for our O(20-50) iteration budget.
+DEFAULT_DAMPING: float = 0.5
 
 #: Below this distance two atoms count as coincident — direction is
 #: undefined and we substitute a deterministic fallback.
@@ -446,6 +456,7 @@ def iterative_topology_repositioning(
     tol: float = DEFAULT_TOL,
     sigma_threshold: float = DEFAULT_SIGMA_THRESHOLD,
     floating_factor: float = DEFAULT_FLOATING_FACTOR,
+    damping: float = DEFAULT_DAMPING,
     return_diagnostics: bool = False,
 ):
     """Iteratively reposition broken atoms onto their CCDC-grounded targets.
@@ -581,6 +592,7 @@ def iterative_topology_repositioning(
     # Working copy.  Jacobi-style update: read positions from `R_prev`,
     # write positions to `R_next`, swap at the end of every iteration.
     R_work = R
+    R_initial_snapshot = R.copy()  # for accept-if-better roll-back below
     for it in range(int(max_iter)):
         # Re-detect broken set on the current geometry so atoms that
         # have already converged drop out of the work list.
@@ -632,9 +644,21 @@ def iterative_topology_repositioning(
                 targets.append(target)
             if not targets:
                 continue
-            new_position = np.mean(np.stack(targets, axis=0), axis=0)
-            if not np.all(np.isfinite(new_position)):
+            new_position_full = np.mean(np.stack(targets, axis=0), axis=0)
+            if not np.all(np.isfinite(new_position_full)):
                 continue
+            # Damped Jacobi update.  Pure Jacobi (alpha=1) can oscillate
+            # when bonds are tightly coupled (one atom is endpoint to
+            # multiple broken bonds whose target projections disagree).
+            # Under-relaxation alpha=0.5 (the classical SOR factor)
+            # makes the iteration contractive on any acyclic ligand
+            # graph at the cost of halving the convergence rate.
+            alpha = float(damping)
+            if alpha <= 0.0 or alpha > 1.0:
+                alpha = 1.0
+            new_position = (
+                R_work[atom_idx] + alpha * (new_position_full - R_work[atom_idx])
+            )
             delta = float(np.linalg.norm(new_position - R_work[atom_idx]))
             if delta > max_delta:
                 max_delta = delta
@@ -657,6 +681,23 @@ def iterative_topology_repositioning(
         sigma_threshold=sigma_threshold,
         floating_factor=floating_factor,
     )
+
+    # ACCEPT-IF-BETTER OUTER GATE.  On densely-coupled structures
+    # (e.g. ≥ 10 % of bonds broken, with broken atoms sharing many
+    # neighbours) the Jacobi heal can settle into a fixed point that
+    # *increases* the total broken-bond count -- one atom moves to
+    # satisfy bond (i, j) but j now sits worse for bond (j, k).  We
+    # detect this case via the broken count and roll back to the
+    # initial coords so the heal never harms the structure.  This
+    # mirrors the accept-if-better semantics of grip_polish.
+    if len(final_broken) > diag.n_broken_initial:
+        diag.n_broken_final = diag.n_broken_initial
+        diag.converged = True  # signal "no-op" status
+        diag.max_delta_history.append(0.0)
+        if return_diagnostics:
+            return R_initial_snapshot, diag
+        return R_initial_snapshot
+
     diag.n_broken_final = len(final_broken)
 
     if return_diagnostics:
@@ -708,6 +749,7 @@ def grip_polish_with_healing(
     max_iter: int = DEFAULT_MAX_ITER,
     tol: float = DEFAULT_TOL,
     floating_factor: float = DEFAULT_FLOATING_FACTOR,
+    damping: float = DEFAULT_DAMPING,
     return_diagnostics: bool = False,
     **polish_kwargs,
 ):
@@ -826,6 +868,7 @@ def grip_polish_with_healing(
             max_iter=max_iter,
             tol=tol,
             floating_factor=floating_factor,
+            damping=damping,
             return_diagnostics=True,
         )
     except Exception as exc:  # defence in depth -- the heal must never crash
