@@ -60,12 +60,25 @@ import numpy as np
 _FLAG_MULTI_METAL = "DELFIN_FFFREE_MULTI_METAL"
 _FLAG_PT3 = "DELFIN_FFFREE_PURE_TRACK3"
 
+# Post-construction global-clash gate (Surgical fix 2026-06-04, b00f9a0 forensik).
+# When set, after the existing M-M / M-D rollback contract passes we additionally
+# verify that the assembled (metals + bridges + terminals) structure has zero
+# heavy-heavy or X-H collapse violations as measured by
+# ``build_time_clash_gate.collapse_count``.  Any non-zero count rolls back the
+# multi-metal path and falls through to the legacy single-metal assembler
+# (production-safe).  Default OFF -> byte-identical to b00f9a0.
+_FLAG_GLOBAL_CLASH_GATE = "DELFIN_FFFREE_MULTI_METAL_CLASH_GATE"
+
 
 def _multi_metal_enabled() -> bool:
     return (
         os.environ.get(_FLAG_MULTI_METAL, "0") == "1"
         or os.environ.get(_FLAG_PT3, "0") == "1"
     )
+
+
+def _global_clash_gate_active() -> bool:
+    return os.environ.get(_FLAG_GLOBAL_CLASH_GATE, "0") == "1"
 
 
 # Public boolean for callers that want to short-circuit at module load.
@@ -683,6 +696,27 @@ def assemble_multi_metal(
     if len(syms) != len(coords):
         return None
     P = np.vstack(coords)
+
+    # Surgical fix (2026-06-04, b00f9a0 forensik): optional global-clash gate.
+    # The hard-rollback gate above validates M-M and M-D distances against
+    # empirical targets but does NOT detect heavy-heavy or X-H clashes between
+    # ligand donors / bridges that have been placed on opposite vertices of
+    # the same metal.  When the assembled poly-nuclear structure has any
+    # clash, downstream detectors see it as funcgrp / F20_h / angles
+    # violations on the otherwise-correct multi-metal skeleton.  Reject and
+    # fall back to the legacy single-metal path on any clash.
+    # Default OFF -> byte-identical to b00f9a0.
+    if _global_clash_gate_active():
+        try:
+            from delfin.fffree import build_time_clash_gate as _bcg
+            if _bcg.collapse_count(syms, P) > 0:
+                return None
+        except Exception:
+            # Defensive: any failure in the clash gate is non-fatal — we
+            # accept the existing-validated structure (no behaviour change
+            # vs the existing rollback contract).
+            pass
+
     return syms, P, donor_indices_out
 
 
