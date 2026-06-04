@@ -154,9 +154,14 @@ PYTHONHASHSEED=0 \
   --archive /home/qmchem_max/agent_workspace/quality_framework/xyz_archive/b00f9a0-full7-VOLLPOOL \
   --out paper_data/grip_loss_diagnostic_vs_ccdc.csv
 
-# 4. Test suite (all 44 tests pass in <1s)
-PYTHONPATH=/home/qmchem_max/ComPlat/DELFIN/.claude/worktrees/agent-a139a8b1b0514f345 \
-  /home/qmchem_max/micromamba/envs/delfin/bin/python -m pytest \
+# 4. Test suite (all 44 tests pass in ~15s)
+# The worktree's delfin/fffree/ subdir only has the 3 new modules; the
+# tests need to find the full delfin/ package, so copy them into the
+# main DELFIN checkout for execution (or run on a fresh worktree
+# created from a commit that has the modules merged):
+cp delfin/fffree/{mogul_detector_v3_tuned,grip_loss_weights_tuned,xrd_recall_metric}.py /home/qmchem_max/ComPlat/DELFIN/delfin/fffree/
+cp tests/test_{mogul_v3_tuned,grip_loss_weights_tuned,xrd_recall_metric}.py /home/qmchem_max/ComPlat/DELFIN/tests/
+cd /home/qmchem_max/ComPlat/DELFIN && /home/qmchem_max/micromamba/envs/delfin/bin/python -m pytest \
   tests/test_xrd_recall_metric.py \
   tests/test_mogul_v3_tuned.py \
   tests/test_grip_loss_weights_tuned.py -v
