@@ -235,6 +235,9 @@ __all__ = [
     "_GRIP_METHOD_ENV",
     "_GRIP_METHOD_LBFGS",
     "_GRIP_METHOD_LM",
+    "_HEALING_MODE_ENV",
+    "_healing_mode_active_safe",
+    "_healing_recursion_guard",
 ]
 
 
@@ -568,6 +571,62 @@ def _sigma_only_mode_active() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# ---------------------------------------------------------------------------
+# GRIP-Healing-Mode hook (2026-06-04).  Env-gated, default-OFF byte-identical.
+# Adds an iterative distance-geometry pre-pass that pulls broken atoms back
+# onto CCDC-grounded ideal bond lengths BEFORE the L-BFGS/LM polish.
+# Implementation lives in :mod:`delfin.fffree.grip_healing` so this file
+# stays focused on the L-BFGS/LM dispatcher.
+# ---------------------------------------------------------------------------
+_HEALING_MODE_ENV: str = "DELFIN_FFFREE_GRIP_HEALING_MODE"
+
+# Thread-local recursion guard so ``grip_polish_with_healing`` can call
+# ``grip_polish`` *internally* (on the healed coords) without triggering
+# the healing-mode hook again -- otherwise the polish call inside
+# ``grip_polish_with_healing`` would recurse back into the healing hook
+# and we would loop until the stack blows up.
+import threading as _threading
+
+_HEALING_TLS = _threading.local()
+
+
+def _healing_mode_active_safe() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_HEALING_MODE`` is on (default OFF)."""
+    raw = os.environ.get(_HEALING_MODE_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _healing_recursion_guard() -> bool:
+    """``True`` when the current thread is already inside the healing wrapper.
+
+    Used by :func:`grip_polish` to bypass the healing-mode hook on the
+    *inner* polish call issued by :func:`grip_polish_with_healing` --
+    that inner call only runs the regular L-BFGS / LM polish on the
+    already-healed coordinates.
+    """
+    return bool(getattr(_HEALING_TLS, "active", False))
+
+
+class _HealingRecursionLock:
+    """Context manager that toggles the thread-local recursion guard."""
+
+    def __enter__(self):
+        _HEALING_TLS.active = True
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _HEALING_TLS.active = False
+        return False
+
+
+def _healing_recursion_lock() -> _HealingRecursionLock:
+    """Return the thread-local recursion lock (see
+    :func:`_healing_recursion_guard`)."""
+    return _HealingRecursionLock()
+
+
 def expand_hapto_for_sigma_only(
     mol,
     metal_idx: int,
@@ -822,6 +881,36 @@ def grip_polish(
     # 0. Coerce inputs.  Always operate on a local float64 copy so the
     # caller's array is never mutated.
     # ------------------------------------------------------------------
+    # GRIP-Healing-Mode pre-pass (2026-06-04).  Env-gated, default-OFF
+    # byte-identical with HEAD 93b396d.  When the env-flag is set and
+    # the input geometry carries broken atoms (bond residuals beyond
+    # the σ-threshold) we run an iterative distance-geometry pre-pass
+    # to pull those atoms back onto CCDC-grounded ideal bond lengths
+    # BEFORE the regular L-BFGS / LM polish.  Default-OFF guarantees
+    # the legacy path is untouched.
+    if _healing_mode_active_safe() and not _healing_recursion_guard():
+        try:
+            from .grip_healing import grip_polish_with_healing  # local
+            with _healing_recursion_lock():
+                return grip_polish_with_healing(
+                    P0, mol, metal, donors, geom,
+                    mogul_lib=mogul_lib,
+                    max_iter=max_iter,
+                    gtol=gtol,
+                    ftol=ftol,
+                    clash_weight=clash_weight,
+                    md_tol=md_tol,
+                    topo_max_multiplier=topo_max_multiplier,
+                    cshm_tol=cshm_tol,
+                    vdw_radii_by_symbol=vdw_radii_by_symbol,
+                    return_diagnostics=return_diagnostics,
+                )
+        except Exception as _exc:
+            _LOG.warning(
+                "grip_polish: healing-mode hook raised (%r); falling back to legacy path",
+                _exc,
+            )
+
     P_init = _coerce_R(P0)
     n_atoms = P_init.shape[0]
     if not np.all(np.isfinite(P_init)):
