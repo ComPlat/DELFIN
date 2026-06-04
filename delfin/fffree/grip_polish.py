@@ -53,6 +53,45 @@ _LOG = logging.getLogger(__name__)
 DEFAULT_CLASH_WEIGHT: float = 5.0
 _CLASH_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_CLASH_WEIGHT"
 
+# Optimiser-method dispatcher (2026-06-04).  Default ``lbfgs`` preserves
+# byte-identity with HEAD bcf56f8 (L-BFGS-B via scipy.minimize).  Set to
+# ``lm`` to dispatch to :func:`grip_polish_lm` (TRF, Trust-Region-Reflective
+# Levenberg-Marquardt-like solver with bounds support).  Unknown values
+# fall back to the L-BFGS default with a single warning -- the polish must
+# never crash on a misconfigured env-flag.
+_GRIP_METHOD_ENV: str = "DELFIN_FFFREE_GRIP_METHOD"
+_GRIP_METHOD_LBFGS: str = "lbfgs"
+_GRIP_METHOD_LM: str = "lm"
+_GRIP_METHOD_ALIASES: Dict[str, str] = {
+    "": _GRIP_METHOD_LBFGS,
+    "lbfgs": _GRIP_METHOD_LBFGS,
+    "l-bfgs": _GRIP_METHOD_LBFGS,
+    "l-bfgs-b": _GRIP_METHOD_LBFGS,
+    "default": _GRIP_METHOD_LBFGS,
+    "lm": _GRIP_METHOD_LM,
+    "trf": _GRIP_METHOD_LM,
+    "levenberg-marquardt": _GRIP_METHOD_LM,
+    "levenberg_marquardt": _GRIP_METHOD_LM,
+}
+
+
+def _resolve_grip_method() -> str:
+    """Return the canonical method tag (``"lbfgs"`` or ``"lm"``).
+
+    Read ``DELFIN_FFFREE_GRIP_METHOD`` (case-insensitive).  Unknown values
+    fall back to ``"lbfgs"`` (default-OFF byte-identity) and emit a single
+    warning so the misconfiguration is visible.
+    """
+    raw = os.environ.get(_GRIP_METHOD_ENV, "").strip().lower()
+    tag = _GRIP_METHOD_ALIASES.get(raw)
+    if tag is None:
+        _LOG.warning(
+            "grip_polish: unknown %s=%r; falling back to %s",
+            _GRIP_METHOD_ENV, raw, _GRIP_METHOD_LBFGS,
+        )
+        return _GRIP_METHOD_LBFGS
+    return tag
+
 # Fix A (2026-06-02 User-Direktive): inter-ligand clash boost weight + the
 # acceptance-gate extension that consumes it.  Default values keep the
 # operator byte-identical with the legacy path -- only when the L-BFGS
@@ -192,6 +231,10 @@ __all__ = [
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
     "_sigma_only_mode_active",
+    "_resolve_grip_method",
+    "_GRIP_METHOD_ENV",
+    "_GRIP_METHOD_LBFGS",
+    "_GRIP_METHOD_LM",
 ]
 
 
@@ -974,31 +1017,131 @@ def grip_polish(
             )
         return P_init
 
-    try:
-        from scipy.optimize import minimize
-    except Exception as exc:  # pragma: no cover -- scipy is in the env
-        if return_diagnostics:
-            return GripPolishResult(
-                P=P_init, accepted=False,
-                severity_before=sev_before, severity_after=sev_before,
-                n_iter=0, n_terms=len(fragments),
-                rollback_reason=f"scipy unavailable: {exc!r}",
-            )
-        return P_init
+    # ------------------------------------------------------------------
+    # 5a. Method dispatcher (2026-06-04).
+    #
+    # The default ``lbfgs`` path runs scipy.minimize(L-BFGS-B) exactly as
+    # before -- byte-identical with HEAD bcf56f8 when the env-flag is unset
+    # (resolver returns "lbfgs").
+    #
+    # The ``lm`` path runs scipy.optimize.least_squares(method='trf') via
+    # :func:`grip_lm.grip_polish_lm` on the SAME prepared inputs (frozen
+    # set, fragments, clash data, ligand-aware weights).  When LM diverges
+    # or scipy is missing we fall through to L-BFGS so the polish never
+    # crashes on a misconfigured env-flag (defence in depth).
+    # ------------------------------------------------------------------
+    grip_method = _resolve_grip_method()
 
-    res = minimize(
-        loss_and_grad,
-        P_init.reshape(-1).copy(),
-        method="L-BFGS-B",
-        jac=True,
-        options={
-            "maxiter": int(max_iter),
-            "gtol": float(gtol),
-            "ftol": float(ftol),
-        },
-    )
-    P_refined = np.asarray(res.x, dtype=np.float64).reshape(n_atoms, 3)
-    n_iter = int(getattr(res, "nit", 0))
+    if grip_method == _GRIP_METHOD_LM:
+        try:
+            from .grip_lm import grip_polish_lm
+        except Exception as exc:
+            _LOG.warning(
+                "grip_polish: failed to import grip_lm (%r); falling back to L-BFGS",
+                exc,
+            )
+            grip_method = _GRIP_METHOD_LBFGS
+
+    if grip_method == _GRIP_METHOD_LM:
+        # Build the pre-screened clash pair list (deterministic, sorted by
+        # (i, j)) and the radii ndarray expected by the LM residual path.
+        from .grip_lm import (
+            _enumerate_clash_pairs as _lm_enumerate_clash_pairs,
+            grip_polish_lm,
+        )
+        radii_arr = np.full(n_atoms, np.nan, dtype=np.float64)
+        for idx, r in vdw_idx_table.items():
+            if 0 <= idx < n_atoms:
+                radii_arr[idx] = float(r)
+        try:
+            lm_clash_pairs = _lm_enumerate_clash_pairs(
+                radii_arr, excl_13, n_atoms,
+            )
+        except Exception as exc:
+            _LOG.warning(
+                "grip_polish: clash-pair enumeration failed (%r); LM falling back to L-BFGS",
+                exc,
+            )
+            lm_clash_pairs = None
+
+        # Optional inter-ligand weight override: when the L-BFGS path
+        # would boost inter-ligand pairs (ligand_map is not None), expose
+        # the same boosted weight to the LM residual via a per-pair map.
+        inter_lig_weight_map: Optional[Dict[Tuple[int, int], float]] = None
+        if ligand_map is not None and lm_clash_pairs is not None:
+            inter_lig_weight_map = {}
+            for (i, j) in lm_clash_pairs:
+                li = ligand_map.get(int(i))
+                lj = ligand_map.get(int(j))
+                if li is not None and lj is not None and li != lj:
+                    inter_lig_weight_map[(int(i), int(j))] = float(w_inter_resolved)
+                else:
+                    inter_lig_weight_map[(int(i), int(j))] = float(effective_clash_weight)
+
+        if lm_clash_pairs is not None:
+            try:
+                P_refined, lm_diag = grip_polish_lm(
+                    P_init,
+                    fragments=fragments,
+                    clash_pairs=lm_clash_pairs,
+                    radii=radii_arr,
+                    clash_weight=float(effective_clash_weight),
+                    floor_fraction=0.85,
+                    frozen_atoms=frozen,
+                    n_atoms=n_atoms,
+                    max_nfev=int(max_iter),
+                    ftol=float(ftol),
+                    xtol=float(gtol),
+                    gtol=float(gtol),
+                    inter_ligand_weight_map=inter_lig_weight_map,
+                )
+                n_iter = int(lm_diag.get("n_nfev", 0))
+                if not lm_diag.get("ok", False):
+                    _LOG.info(
+                        "grip_polish[lm]: solver bailed (%s); rolling back to P0",
+                        lm_diag.get("reason", "unknown"),
+                    )
+                    if return_diagnostics:
+                        return GripPolishResult(
+                            P=P_init, accepted=False,
+                            severity_before=sev_before, severity_after=sev_before,
+                            n_iter=n_iter, n_terms=len(fragments),
+                            rollback_reason=f"lm: {lm_diag.get('reason', 'unknown')}",
+                        )
+                    return P_init
+            except Exception as exc:
+                _LOG.warning(
+                    "grip_polish: LM path raised (%r); falling back to L-BFGS",
+                    exc,
+                )
+                grip_method = _GRIP_METHOD_LBFGS
+
+    if grip_method == _GRIP_METHOD_LBFGS:
+        try:
+            from scipy.optimize import minimize
+        except Exception as exc:  # pragma: no cover -- scipy is in the env
+            if return_diagnostics:
+                return GripPolishResult(
+                    P=P_init, accepted=False,
+                    severity_before=sev_before, severity_after=sev_before,
+                    n_iter=0, n_terms=len(fragments),
+                    rollback_reason=f"scipy unavailable: {exc!r}",
+                )
+            return P_init
+
+        res = minimize(
+            loss_and_grad,
+            P_init.reshape(-1).copy(),
+            method="L-BFGS-B",
+            jac=True,
+            options={
+                "maxiter": int(max_iter),
+                "gtol": float(gtol),
+                "ftol": float(ftol),
+            },
+        )
+        P_refined = np.asarray(res.x, dtype=np.float64).reshape(n_atoms, 3)
+        n_iter = int(getattr(res, "nit", 0))
 
     # ------------------------------------------------------------------
     # 6. Hard-constraint validation.  Any failure -> rollback to P0.
