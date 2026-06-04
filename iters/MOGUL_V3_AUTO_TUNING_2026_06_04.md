@@ -60,17 +60,34 @@ threshold for that bucket.
 - `tests/test_mogul_v3_tuned.py` — 13 tests (table loader, env gating,
   class-key canonicalisation, filter mechanics).
 
-## Results — paper claim template
-```
-The per-class threshold tuning improves the agreement between
-mogul_detector_v3 and CCDC's authoritative GeometryAnalyser at
-the bond / angle / torsion level. On the held-out test set the
-median F1 across N tuned classes is X with median precision
-P and median recall R, an improvement of dF1 over the single
-global threshold of 2.5.
-```
-The concrete X / P / R / dF1 values are read from
-`paper_data/mogul_v3_threshold_summary.json` when generating the SI.
+## Results — smoke run (15 structures, b00f9a0-full7-VOLLPOOL)
+
+2 classes tuned (small-N caveat — production needs n>=200 × 5+ archives):
+
+| axis  | class           | optimal threshold     | recall | precision | F1   |
+|---|---|---:|---:|---:|---:|
+| bonds | bonds::C-C    | 1.5 (vs default 2.5) | 1.00 | 0.25 | 0.40 |
+| angles| angles::C-C-C | 3.0 (vs default 2.5) | 1.00 | 0.33 | 0.50 |
+
+**Reading:**
+- **C-C bonds: CCDC is STRICTER than our v3** — default 2.5 misses
+  unusual C-C bonds CCDC flags; lowering to 1.5 hits 100% recall.
+- **C-C-C angles: CCDC is MORE LENIENT** — default 2.5 flags C-C-C
+  angles CCDC considers normal; raising to 3.0 cuts false positives.
+
+Consistent with chemical intuition: C-C bond lengths are tight (ring
++ chain distributions), C-C-C angles span sp/sp2/sp3 broadly.
+
+## Production claim
+> On the b00f9a0-full7-VOLLPOOL smoke set (15 structures), per-class
+> threshold tuning identifies two classes where mogul_detector_v3's
+> global threshold (2.5) is mis-calibrated: bonds::C-C should use 1.5
+> (recall 1.0, precision 0.25), and angles::C-C-C should use 3.0
+> (recall 1.0, precision 0.33). The production module
+> `delfin.fffree.mogul_detector_v3_tuned` consumes
+> `paper_data/mogul_v3_threshold_optimization.csv` and applies the
+> per-class thresholds when `DELFIN_MOGUL_V3_TUNED=1`. A larger run
+> (n>=200 × 5 archives) is needed for the full per-class table.
 
 ## Reproducibility
 ```bash
