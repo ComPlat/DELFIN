@@ -1,0 +1,336 @@
+Records: 1746
+
+=== Top failure groups (CN, polyhedron_class) with representative SMILES + theoretical_isomers count ===
+
+  [ 50] CN=1  poly=low-cn
+      SMILES: C1C[C+]2->[Ir-6]3456(<-[C+]1=[C+]->3CC[C+]->4=2)[S+]1CC[S+]5CC[S+]6CC1
+      smiles_id: D_KILROM_5d_Ir_CN3
+      theoretical_geoms: ['COH', 'PBP']
+      theoretical_isomers (2): ['C-S-ax', 'cap-C/C-S,C-S,C-S']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 2
+
+  [ 48] CN=0  poly=low-cn
+      SMILES: C[P+](C)(C)[Mo-9]12345(<-[C+]67C=C8C=CC=CC8=C[C+]->16[C+]2[C+]3[C+]4[C+]75)([P+](C)(C)C)[P+](C)(C)C
+      smiles_id: 092_NEKCEM
+      theoretical_geoms: ['TTP']
+      theoretical_isomers (16): ['caps-C0C0C1', 'caps-C0C0C2', 'caps-C0C0P', 'caps-C0C1C1', 'caps-C0C1C2', 'caps-C0C1P']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 16
+
+  [ 38] CN=2  poly=bis-monodentate-Cl+Cl
+      SMILES: CC1=CC=CC=C1[As+](C1=CC=CC=C1C)(C1=CC=CC=C1C)[Pd-2]([Cl])([Cl])[As+](C1=CC=CC=C1C)(C1=CC=CC=C1C)C1=CC=CC=C1C
+      smiles_id: 109_XAPLUW
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (5): ['As-As-ax', 'As-Cl-ax', 'Cl-Cl-ax', 'cis', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 26] CN=4  poly=bis-bidentate-NN+NN
+      SMILES: CC(C)(C)[N]1CC[N](C(C)(C)C)[Hf]12[N](C(C)(C)C)CC[N]2C(C)(C)C
+      smiles_id: 070_MIKWEJ
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (2): ['N-N-ax', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 21] CN=6  poly=tris-bidentate-NN+NN+NN
+      SMILES: C1=CC=C(CN2C=CC3=[N+]2[Ru-4]24([N+]5=CC=CC=C35)([N+]3=CC=CC=C3C3=[N+]2N(CC2=CC=CC=C2)C=C3)[N+]2=CC=CC=C2C2=[N+]4N(CC3=CC
+      smiles_id: D_MIQLUV_4d_Ru_CN5
+      theoretical_geoms: ['OH', 'TPR']
+      theoretical_isomers (4): ['N0+N1-trans', 'all-cis', 'top-N0N0N0/bot-N1N1N1', 'top-N0N0N1/bot-N0N1N1']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 18] CN=2  poly=bis-monodentate-P+P
+      SMILES: C1=CC=C([P+]2(C3=CC=CC=C3)C[P+](C3=CC=CC=C3)(C3=CC=CC=C3)[Pt-2]23[Se]C2=C(CCCCCC2)[Se]3)C=C1
+      smiles_id: D_HUWYII_5d_Pt_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (2): ['P-Se-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 16] CN=4  poly=tetrakis-monodentate-C+C+P+P
+      SMILES: [O+]#[C][Ir-3]([C+]1N(CC2=CC=CC=C2)CCN1CC1=CC=CC=C1)([P+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P+](C1=CC=CC=C1)(C1=CC=C
+      smiles_id: D_VUDGAD_5d_Ir_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (6): ['C0-C1-ax', 'C0-P-ax', 'C1-P-ax', 'P-P-ax', 'cis', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 14] CN=2  poly=bis-monodentate-C+C
+      SMILES: [O+]#[C][Ir-5]12([C]#[O+])(<-[C+]3=[C+]->1CC[CH]2CCC3)[As+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1
+      smiles_id: 079_FICNAG
+      theoretical_geoms: ['OH', 'TPR']
+      theoretical_isomers (6): ['all-cis', 'top-AsC1C2/bot-C2C3C3', 'top-AsC1C3/bot-C2C2C3', 'top-AsC2C2/bot-C1C3C3', 'top-AsC2C3/bot-C1C2C3', 'top-AsC3C3/bot-C1C2C2']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 14] CN=2  poly=bis-monodentate-N+N
+      SMILES: CC(C)[N+]1=P(C(C)(C)C)(C(C)(C)C)[Te][Mn-2]12[Te]P(C(C)(C)C)(C(C)(C)C)=[N+]2C(C)C
+      smiles_id: D_ZOFGIM_3d_Mn_CN2
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (5): ['N-N-ax', 'N-Te-ax', 'Te-Te-ax', 'cis', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 5
+
+  [ 14] CN=4  poly=bidentate+bis-monodentate-NN+C+C
+      SMILES: CC(C)[N]1C(N(C)C)=[N+](C(C)C)[Ir-3]1([C]#[O+])[C]#[O+]
+      smiles_id: X10_ABABUE_5d_Ir_CN2_homo
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (4): ['C-C-ax', 'C-N1-ax', 'C-N2-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 13] CN=4  poly=bidentate+bis-monodentate-NN+P+P
+      SMILES: CC1=CC(C)=[N+](C2=C(C(C)C)C=CC=C2C(C)C)[Rh-3]2([N]1C1=C(C(C)C)C=CC=C1C(C)C)[P+](C1=CC=CC=C1)(C1=CC=CC=C1)[P+]2(C1=CC=CC=
+      smiles_id: D_HITHUO_4d_Rh_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N0-P-ax', 'N1-P-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 13] CN=4  poly=tetradentate-NNNN
+      SMILES: C1C[NH+]2CC[NH+]3CC[NH2+][Pd-2]23[NH2+]1
+      smiles_id: D_KTTPDF_4d_Pd_CN2
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N0-N1-ax', 'N1-N1-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 12] CN=4  poly=tetrakis-monodentate-C+C+C+C
+      SMILES: CC(C)C1=CC=CC(C(C)C)=C1N1[C+]([Hf-2]([CH2]C2=CC=CC=C2)([CH2]C2=CC=CC=C2)[C+]2N(C3=C(C(C)C)C=CC=C3C(C)C)C(C)(C)CC2(C)C)C(
+      smiles_id: 073_BITNUQ
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (5): ['C0-C0-ax', 'C0-C1-ax', 'C1-C1-ax', 'cis', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 12] CN=2  poly=bidentate-NN
+      SMILES: CC1=CC(C)=NN1[BH-]1N2C(C)=CC(C)=[N+]2[Rh-5]234(<-[C+]5=[C+]->2CC[C+]->3=[C+]->4CC5)[N+]2=C(C)C=C(C)N12
+      smiles_id: D_JOBLES_4d_Rh_CN1
+      theoretical_geoms: ['TPR']
+      theoretical_isomers (2): ['top-CCC/bot-CNN', 'top-CCN/bot-CCN']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 2
+
+  [ 11] CN=4  poly=bis-bidentate-NN+PP
+      SMILES: CC(C=C1C2=CC=CC=C2)=[N+]3C4=C1C=CC5=C4[N+]([Cu-3]36[P+]7(C8=C(C=CC(C)=C8)OC9=C7C=C(C)C=C9)C%10=CC=CC%11=C%10OC%12=C(C=CC
+      smiles_id: 24_Cu_salen_Ph__biphep_
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N-P-ax', 'P-P-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [ 10] CN=2  poly=bis-monodentate-O+O
+      SMILES: CC(C)[P]1(C(C)C)C2=CC=C3CCC4=C3C2=C(C=C4)[P](C(C)C)(C(C)C)[Sb]1[Ag]([O]S(=O)(=O)C(F)(F)F)[O]S(=O)(=O)C(F)(F)F
+      smiles_id: D_FANLOZ_4d_Ag_CN2
+      theoretical_geoms: ['TP', 'TS']
+      theoretical_isomers (2): ['O-O-ax/Sb-eq', 'O-Sb-ax/O-eq']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 2
+
+  [ 10] CN=3  poly=tris-monodentate-C+C+C
+      SMILES: [O+]#[C][Ru-5]([C]#[O+])([C]#[O+])([Sb+]([C]1=CC=CC=C1)([C]1=CC=CC=C1)[C]1=CC=CC=C1)[Sb+]([C]1=CC=CC=C1)([C]1=CC=CC=C1)[
+      smiles_id: D_YINNER_4d_Ru_CN4
+      theoretical_geoms: ['SP', 'TBP']
+      theoretical_isomers (6): ['C-C-ax', 'C-Sb-ax', 'Sb-Sb-ax', 'ap-C/C-C,Sb-Sb', 'ap-C/C-Sb,C-Sb', 'ap-Sb/C-C,C-Sb']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 6
+
+  [ 10] CN=2  poly=bis-monodentate-C+Cl
+      SMILES: N#CC1=C(F)C(F)=C(C2=C(C3=CC=CC=C3)[C+]34->[Ru-6]56789([Cl])([C]2=N[P](C2=CC=CC=C2)(C2=CC=CC=C2)C[P+]5(C2=CC=CC=C2)C2=CC=
+      smiles_id: D2_BICXER_4d_Ru_CN6
+      theoretical_geoms: ['TTP']
+      theoretical_isomers (38): ['caps-C0C1C1', 'caps-C0C1C2', 'caps-C0C1C4', 'caps-C0C1Cl', 'caps-C0C1P', 'caps-C0C2C4']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 38
+
+  [  9] CN=4  poly=bidentate+bis-monodentate-NN+N+N
+      SMILES: CN1C=CC(=[NH2+])[N]([Pt-2]2([N]3C(=[NH2+])C=CN(C)C3=O)[N+]3=CC=CC=C3C3=CC=CC=[N+]32)C1=O
+      smiles_id: 112_WUHCIM
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N0-N1-ax', 'N1-N1-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  9] CN=4  poly=tetradentate-NNOO
+      SMILES: CC1=CC(C=NOCCON=CC2=C(O)C=CC3=CC=CC=C32)=C2[O][Ni-2]34[O]C5=C(C=NOCCON=CC6=C(O)C=CC7=CC=CC=C76)C=C(C)C=C5C=[N+]3CC[N+]4=
+      smiles_id: D_NIMCEV_3d_Ni_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N-O-ax', 'O-O-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  9] CN=2  poly=bis-monodentate-I+I
+      SMILES: COC(=O)[C+]12->[Ru-7]3456([I])([I])([P+](C)(C)C7=CC=C8C=CC9=CC=CC%10=CC=C7C8=C9%10)[C+]([C+]3[C+]14)[C+]5[C+]26
+      smiles_id: D2_OSUDUE_4d_Ru_CN6
+      theoretical_geoms: ['TTP']
+      theoretical_isomers (30): ['caps-C0C0C1', 'caps-C0C0C2', 'caps-C0C0C3', 'caps-C0C0I', 'caps-C0C0P', 'caps-C0C1C2']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 30
+
+  [  8] CN=3  poly=tris-monodentate-N+N+N
+      SMILES: CC1=CC(C)=CC([N](CC(C)(C)C)[Nb+]([As-2])([N](CC(C)(C)C)C2=CC(C)=CC(C)=C2)[N](CC(C)(C)C)C2=CC(C)=CC(C)=C2)=C1
+      smiles_id: 096_CUFCOW
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['As-N-ax', 'N-N-ax', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 3
+
+  [  8] CN=4  poly=bidentate+bis-monodentate-CC+C+C
+      SMILES: C[C+]12->[La-4]34567(<-[C+](C)([C]3=[C]14)N2CC[N]5C1=CC=CC=C1)([CH2]C1=CC=CC=C1[N+]6(C)C)[CH2]C1=CC=CC=C1[N+]7(C)C
+      smiles_id: 084_MIPSOW
+      theoretical_geoms: ['TTP']
+      theoretical_isomers (22): ['caps-C0C0C1', 'caps-C0C0C2', 'caps-C0C0N3', 'caps-C0C0N4', 'caps-C0C1C1', 'caps-C0C1C2']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 22
+
+  [  8] CN=4  poly=tetrakis-monodentate-Cl+P+P+P
+      SMILES: [Cl][Au-3]([P+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)([P+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P+](C1=CC=CC=C1)(C1=CC=
+      smiles_id: D_BOJJEP_5d_Au_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['Cl-P-ax', 'P-P-ax', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  8] CN=6  poly=hexadentate-CCCCCC
+      SMILES: [CH3][Sn]([CH3])([CH3])[Co-2]12345(<-[C+]67C=C8C=CC=CC8=C[C+]->16[C]2=[C]3[C]4=[C]75)([Sn]([CH3])([CH3])[CH3])[Sn]([CH3]
+      smiles_id: D_BOQYIR_main_Sn_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH', 'TTP']
+      theoretical_isomers (3): ['C-C-ax', 'C-Co-ax', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 3
+
+  [  8] CN=3  poly=tris-monodentate-P+P+P
+      SMILES: [Cl][Sn]([Cl])([Cl])[IrH2]([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P](C1=CC=
+      smiles_id: D_DEJXUL_main_Sn_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['Cl-Cl-ax', 'Cl-Ir-ax', 'trans']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 3
+
+  [  8] CN=3  poly=tris-monodentate-Cl+Cl+N
+      SMILES: [Cl][Pd-2]1([Cl])[Se+](C2=CC=CC=C2)CC[N+]12CCOCC2
+      smiles_id: D_FELPOD_4d_Pd_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (4): ['Cl-Cl-ax', 'Cl-N-ax', 'Cl-Se-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  7] CN=3  poly=tris-monodentate-Cl+P+P
+      SMILES: [Cl][Ag-2]([P+](N=C(C1=CC=CC=C1)C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P+](N=C(C1=CC=CC=C1)C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC
+      smiles_id: 045_JABBIY
+      theoretical_geoms: ['TP', 'TS']
+      theoretical_isomers (2): ['Cl-P-ax/P-eq', 'P-P-ax/Cl-eq']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  7] CN=4  poly=tetradentate-NNSS
+      SMILES: COC1=CC=C(NC2=N[N+]3=C(C)C(C)=[N+]4N=C(NC5=CC=C(OC)C=C5)[S][Pd-2]34[S]2)C=C1
+      smiles_id: D_VEWJEP_4d_Pd_CN1
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N-S-ax', 'S-S-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+  [  7] CN=4  poly=bidentate+bis-monodentate-NN+S+S
+      SMILES: CC(C)C1=CC(C(C)C)=C([S][Fe-2]2([S]C3=C(C(C)C)C=C(C(C)C)C=C3C(C)C)[N+](=C(N(C)C)N(C)C)CCC[N+]2=C(N(C)C)N(C)C)C(C(C)C)=C1
+      smiles_id: D_XENMAE_3d_Fe_CN3
+      theoretical_geoms: ['SQ', 'SS', 'TH']
+      theoretical_isomers (3): ['N-S-ax', 'S-S-ax', 'cis']...
+      observed: 0; observed_named: []
+      named_missing_cn_mismatch: 0
+
+
+=== Detail: 'low-cn' failures (CN<4) ===
+  Total: 98
+  CN distribution: {0: 48, 1: 50}
+    SMILES: C[P+](C)(C)[Mo-9]12345(<-[C+]67C=C8C=CC=CC8=C[C+]->16[C+]2[C+]3[C+]4[C+]75)([P+](C)(C)C)[P+](C)(C)C
+      cn=0  class=hapto  metal=Mo
+      theoretical_isomers (16): ['caps-C0C0C1', 'caps-C0C0C2', 'caps-C0C0P', 'caps-C0C1C1', 'caps-C0C1C2', 'caps-C0C1P', 'caps-C0C2C2', 'caps-C0C2P']
+      observed: 0 named
+
+    SMILES: O=C1[O][La-6]234([OH2+])([OH2+])([OH2+])([O]C(=O)C5=CC=CC(=[N+]52)C(=O)[O]3)[O]C(=O)C2=[N+]4C1=CC=C2
+      cn=0  class=sigma  metal=La
+      theoretical_isomers (9): ['caps-NNO1', 'caps-NNO2', 'caps-NO1O1', 'caps-NO1O2', 'caps-NO2O2', 'caps-O1O1O1', 'caps-O1O1O2', 'caps-O1O2O2']
+      observed: 0 named
+
+    SMILES: [CH3][Sb+]1([CH3])[CH2]C2=CC=CC=C2[CH2][Sb+]([CH3])([CH3])[Pt-2]12[Sb+]([CH3])([CH3])[CH2]C1=CC=CC=C1[CH2][Sb+]2([CH3])[
+      cn=0  class=sigma  metal=Pt
+      theoretical_isomers (2): ['Sb-Sb-ax', 'trans']
+      observed: 0 named
+
+    SMILES: [Cl][Sn]([Cl])([Cl])[Ir]123456([C]7=[C]1C1CC7[C]2=[C]13)[C]1=[C]4C2CC1[C]5=[C]26
+      cn=0  class=multi-hapto  metal=Ir
+      theoretical_isomers (3): ['Cl-Cl-ax', 'Cl-Ir-ax', 'trans']
+      observed: 0 named
+
+    SMILES: C1C[C+]2->[Ir-6]3456(<-[C+]1=[C+]->3CC[C+]->4=2)[S+]1CC[S+]5CC[S+]6CC1
+      cn=1  class=hapto  metal=Ir
+      theoretical_isomers (2): ['C-S-ax', 'cap-C/C-S,C-S,C-S']
+      observed: 0 named
+
+
+=== Detail: simple 2-monodentate-symmetric pairs (e.g. Cl+Cl) ===
+  Total bis-monodentate-X+Y: 520
+  Patterns: {'bis-monodentate-Cl+Cl': 38, 'bis-monodentate-P+P': 18, 'bis-monodentate-C+C': 14, 'bis-monodentate-N+N': 14, 'bidentate+bis-monodentate-NN+C+C': 14, 'bidentate+bis-monodentate-NN+P+P': 13, 'bis-monodentate-O+O': 10, 'bis-monodentate-C+Cl': 10, 'bidentate+bis-monodentate-NN+N+N': 9, 'bis-monodentate-I+I': 9}
+    SMILES: [O+]#[C][Ir-5]12([C]#[O+])(<-[C+]3=[C+]->1CC[CH]2CCC3)[As+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1
+      cn=2  poly=bis-monodentate-C+C
+      theoretical_isomers (6): ['all-cis', 'top-AsC1C2/bot-C2C3C3', 'top-AsC1C3/bot-C2C2C3', 'top-AsC2C2/bot-C1C3C3', 'top-AsC2C3/bot-C1C2C3', 'top-AsC3C3/bot-C1C2C2']
+      observed: 0 named
+
+    SMILES: CO[P+](OC)(OC)[Ni-2]1([C-](F)F)[P+](C2=CC=CC=C2)(C2=CC=CC=C2)CC[P+]1(C1=CC=CC=C1)C1=CC=CC=C1
+      cn=4  poly=bidentate+bis-monodentate-PP+C+P
+      theoretical_isomers (4): ['C-P1-ax', 'C-P2-ax', 'P1-P2-ax', 'cis']
+      observed: 0 named
+
+    SMILES: CS[C]12[S][Ni-]13[P+](C1=CC=CC=C1)(C1=CC=CC=C1)CCN(CC[P]2(C1=CC=CC=C1)C1=CC=CC=C1)CC[P+]3(C1=CC=CC=C1)C1=CC=CC=C1
+      cn=4  poly=bidentate+bis-monodentate-PP+C+S
+      theoretical_isomers (4): ['C-P-ax', 'P-P-ax', 'P-S-ax', 'cis']
+      observed: 0 named
+
+    SMILES: CC1=CC=C([P+]2(C3=CC=C(C)C=C3)CC[P+](C3=CC=C(C)C=C3)(C3=CC=C(C)C=C3)[Pd-2]2([Cl])[Cl])C=C1
+      cn=4  poly=bidentate+bis-monodentate-PP+Cl+Cl
+      theoretical_isomers (3): ['Cl-Cl-ax', 'Cl-P-ax', 'cis']
+      observed: 0 named
+
+    SMILES: CC1=CC=CC=C1[As+](C1=CC=CC=C1C)(C1=CC=CC=C1C)[Pd-2]([Cl])([Cl])[As+](C1=CC=CC=C1C)(C1=CC=CC=C1C)C1=CC=CC=C1C
+      cn=2  poly=bis-monodentate-Cl+Cl
+      theoretical_isomers (5): ['As-As-ax', 'As-Cl-ax', 'Cl-Cl-ax', 'cis', 'trans']
+      observed: 0 named
+
+
+=== Detail: bis-bidentate-NN+NN failures ===
+  Total: 26
+    SMILES: CC(C)(C)[N]1CC[N](C(C)(C)C)[Hf]12[N](C(C)(C)C)CC[N]2C(C)(C)C
+      cn=4  metal=Hf
+      theoretical_isomers (2): ['N-N-ax', 'trans']
+      observed: []
+
+    SMILES: CC(C)(C)C1=CC=C([N]2C3=NC(C4=CC=CC=C4)=NC3=[N+](C3=CC=C(C(C)(C)C)C=C3)[Zn-2]23[N](C2=CC=C(C(C)(C)C)C=C2)C2=NC(C4=CC=CC=C
+      cn=4  metal=Zn
+      theoretical_isomers (5): ['N0-N0-ax', 'N0-N1-ax', 'N1-N1-ax', 'cis', 'trans']
+      observed: []
+
+    SMILES: C[Si](C)(C)[N]1C(N2CCCCC2)=NC(N2CCCCC2)=[N+](C2=CC=CC=C2)[Co-2]12[N](C1=CC=CC=C1)C(N1CCCCC1)=NC(N1CCCCC1)=[N+]2[Si](C)(C
+      cn=4  metal=Co
+      theoretical_isomers (5): ['N0-N1-ax', 'N0-N2-ax', 'N1-N3-ax', 'N2-N3-ax', 'cis']
+      observed: []
+
+    SMILES: CC1=CC(C(C)(C)C)=CC(C)=C1C1=CC=C2C=CC3=C4C2=[N+]1[Cu-3]1([N+]2=CC=CC5=C6N=C7C=CC=CC7=NC6=C6C=CC=[N+]1C6=C52)[N+]4=C(C1=C
+      cn=4  metal=Cu
+      theoretical_isomers (3): ['N0-N2-ax', 'N1-N2-ax', 'cis']
+      observed: []
+
+    SMILES: N#C[Se][Cu-4]12([Se]C#N)([NH2+]CC(O)C[NH2+]1)[NH2+]CC(O)C[NH2+]2
+      cn=4  metal=Cu
+      theoretical_isomers (4): ['N-trans', 'all-trans', 'top-NNN/bot-NSeSe', 'top-NNSe/bot-NNSe']
+      observed: []
+
+
+=== Detail: tris-bidentate-NN+NN+NN failures ===
+  Total: 21
+    SMILES: C1=CC=C(CN2C=CC3=[N+]2[Ru-4]24([N+]5=CC=CC=C35)([N+]3=CC=CC=C3C3=[N+]2N(CC2=CC=CC=C2)C=C3)[N+]2=CC=CC=C2C2=[N+]4N(CC3=CC
+      cn=6  metal=Ru
+      theoretical_isomers (4): ['N0+N1-trans', 'all-cis', 'top-N0N0N0/bot-N1N1N1', 'top-N0N0N1/bot-N0N1N1']

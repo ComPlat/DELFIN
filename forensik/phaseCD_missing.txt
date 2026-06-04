@@ -1,0 +1,201 @@
+error    libmamba Could not set lock (Resource temporarily unavailable)
+warning  libmamba Cannot lock '/home/qmchem_max/.cache/mamba/proc'
+    Waiting for other mamba process to finish
+=== Missing-isomer label analysis ===
+
+  Theoretical geom-sets by coverage bucket:
+  geom-set                         total      0%   1-25%    100%   0%-rate
+  ('OH', 'TPR')                     4431     392     978     251      8.8%
+  ('SQ', 'SS', 'TH')                2618     940     312     317     35.9%
+  ('SP', 'TBP')                     1732      58     343     150      3.3%
+  ('COH', 'PBP')                     445      62     164      29     13.9%
+  ('TTP',)                           386      71      42      27     18.4%
+  ()                                 262     262       0       0    100.0%
+  ('TP', 'TS')                       243     110       0      94     45.3%
+  ('LIN',)                           177      72       0     105     40.7%
+  ('DD', 'SAP')                      159      59      46       7     37.1%
+  ('TPR',)                            76      62       1       6     81.6%
+  ('SS', 'TH')                        75      62       0       8     82.7%
+  ('SP', 'SQ', 'SS', 'TBP', 'TH'       7       1       6       0     14.3%
+
+
+=== Most-missing isomer labels (in 0%-records) ===
+  Top 30 missing labels:
+     729  cis
+     464  trans
+     362  all-cis
+     203  P-P-ax
+     118  C-P-ax
+     102  C-C-ax
+      93  N-P-ax
+      79  N-N-ax
+      76  C-N-ax
+      74  Cl-Cl-ax
+      72  C0-C1-ax
+      68  Cl-P-ax
+      61  Cl-N-ax
+      60  C-Cl-ax
+      60  Se-Se-ax
+      57  O-O-ax
+      56  A0/B0-trans
+      54  N0-N1-ax
+      54  S-S-ax
+      50  all-trans
+      45  P-S-ax
+      42  N-O-ax
+      42  C-O-ax
+      41  O-P-ax
+      41  C1-P-ax
+      40  caps-C0C1C2
+      40  C0-P-ax
+      39  N1-N2-ax
+      39  C-trans
+      38  P-trans
+
+  Top missing-label prefixes:
+     1722  'top'
+     1533  'caps'
+      729  'cis'
+      716  'cap'
+      674  'C'
+      464  'trans'
+      444  'Cl'
+      412  'all'
+      407  'P'
+      365  'N'
+      247  'C0'
+      215  'ap'
+      191  'C1'
+      188  'N0'
+      186  'N1'
+      184  'O'
+      159  'Br'
+      138  'I'
+      122  'A0'
+      116  'As'
+
+
+=== 0%-coverage records with theory=2 (simple cis/trans only): 240 ===
+  Top 15 pairs:
+      22  ('A0/B0-trans', 'all-cis')
+      14  ('Se-Se-ax', 'trans')
+       9  ('P-P-ax', 'trans')
+       7  ('top-CCC/bot-CClP', 'top-CCCl/bot-CCP')
+       6  ('N-N-ax', 'trans')
+       6  ('C-P-ax/P-eq', 'P-P-ax/C-eq')
+       5  ('top-C0C1C1/bot-C1C1N', 'top-C0C1N/bot-C1C1C1')
+       5  ('N-P-ax/P-eq', 'P-P-ax/N-eq')
+       5  ('top-CCC/bot-CPP', 'top-CCP/bot-CCP')
+       5  ('Te-Te-ax', 'trans')
+       5  ('top-C0C1C1/bot-C1C1Cl', 'top-C0C1Cl/bot-C1C1C1')
+       4  ('Sb-Sb-ax', 'trans')
+       4  ('C-N1-ax/N2-eq', 'C-N2-ax/N1-eq')
+       4  ('top-C0C1C1/bot-C1C1I', 'top-C0C1I/bot-C1C1C1')
+       4  ('top-CCC/bot-CNP', 'top-CCN/bot-CCP')
+
+
+=== bis-bidentate-NN+NN (Werner cis/trans) full detail ===
+  Total 0%-coverage: 26
+  CNs: Counter({4: 26})
+  Class: Counter({'sigma': 26})
+
+    smiles_id: 070_MIKWEJ
+    smiles: CC(C)(C)[N]1CC[N](C(C)(C)C)[Hf]12[N](C(C)(C)C)CC[N]2C(C)(C)C
+    cn=4  theory_geoms=['SQ', 'SS', 'TH']
+    theoretical_isomers: ['N-N-ax', 'trans']
+    observed: ['TH']
+    obs labels: ['']
+    obs matched: ['unknown']
+
+    smiles_id: D_GOYZEZ_3d_Zn_CN3
+    smiles: CC(C)(C)C1=CC=C([N]2C3=NC(C4=CC=CC=C4)=NC3=[N+](C3=CC=C(C(C)(C)C)C=C3)[Zn-2]23[N](C2=CC=C(C(C)(C)C)C=C2)C2=NC(C4=CC=CC=C4)=NC2=[N+
+    cn=4  theory_geoms=['SQ', 'SS', 'TH']
+    theoretical_isomers: ['N0-N0-ax', 'N0-N1-ax', 'N1-N1-ax', 'cis', 'trans']
+    observed: ['TH', 'TH']
+    obs labels: ['', '']
+    obs matched: ['unknown', 'unknown']
+
+    smiles_id: D_LIGSUR_3d_Co_CN3
+    smiles: C[Si](C)(C)[N]1C(N2CCCCC2)=NC(N2CCCCC2)=[N+](C2=CC=CC=C2)[Co-2]12[N](C1=CC=CC=C1)C(N1CCCCC1)=NC(N1CCCCC1)=[N+]2[Si](C)(C)C
+    cn=4  theory_geoms=['SQ', 'SS', 'TH']
+    theoretical_isomers: ['N0-N1-ax', 'N0-N2-ax', 'N1-N3-ax', 'N2-N3-ax', 'cis']
+    observed: ['TH', 'TH']
+    obs labels: ['', '']
+    obs matched: ['unknown', 'unknown']
+
+
+=== PARTIAL-coverage records: systematically-missing labels ===
+
+  sigma: top 15 missing labels in partial records:
+     1506  all-cis
+      489  cis
+      271  C-P-ax
+      244  P-P-ax
+      234  O-trans
+      220  Cl-Cl-ax
+      216  Cl-P-ax
+      201  C-C-ax
+      182  all-trans
+      179  P-trans
+      175  N-trans
+      162  trans
+      157  Cl-trans
+      145  Cl-N-ax
+      138  C-trans
+
+  hapto: top 15 missing labels in partial records:
+       72  caps-C0C1Cl
+       70  all-cis
+       69  caps-C1C1Cl
+       65  caps-C1C2Cl
+       65  caps-C0C0Cl
+       63  caps-C0C2Cl
+       48  caps-C0C1N
+       48  caps-C0C1P
+       45  caps-C0ClN
+       44  caps-C1C2N
+       44  caps-C1C3N
+       43  caps-C1C1N
+       42  caps-C1ClN
+       41  caps-C1C3Cl
+       40  caps-C2C3Cl
+
+  multi-sigma: top 15 missing labels in partial records:
+        7  P-P-ax
+        7  P-Sn-ax
+        3  C-Sn-ax
+        2  ap-P/P-P,P-Sn
+        2  ap-Sn/P-P,P-P
+        2  ap-N/O-O,O-O
+        2  ap-O/N-O,O-O
+        2  ap-C/O-P,P-Sn
+        2  ap-C/O-Sn,P-P
+        2  ap-O/C-P,P-Sn
+        2  ap-O/C-Sn,P-P
+        2  ap-P/C-P,O-Sn
+        2  ap-P/C-Sn,O-P
+        2  ap-Sn/C-P,O-P
+        1  S-Sn-ax
+
+  multi-hapto: top 15 missing labels in partial records:
+        4  P-Sn-ax
+        2  C0-Sn-ax
+        2  C-Sn-ax
+        2  top-CCC/bot-CPSn
+        1  caps-CCSn
+        1  C-Ir-ax
+        1  trans
+        1  caps-CCC
+        1  C0-P-ax
+        1  C1-P-ax
+        1  C1-Sn-ax
+        1  cap-C1/C0-C1,C1-P,C1-Sn
+        1  top-CCP/bot-CCSn
+        1  P-P-ax
+        1  cap-C/C-P,C-P,C-Sn
+
+
+=== CN7 (PBP/COH) detail: ax vs cap label distribution ===
+  Total CN7 records: 391
+  ax labels observed: 1425  missing: 1131  -> miss-rate 44.2%
+  cap labels observed: 1658  missing: 3565  -> miss-rate 68.3%

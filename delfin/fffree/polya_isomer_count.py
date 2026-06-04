@@ -284,6 +284,19 @@ _GEOM_KEY_TO_SHAPE = {
     "ih_12": "IH-12 icosahedron",
 }
 
+# POLYA-COVERAGE-FIX-v1 (env-gated additions to _GEOM_KEY_TO_SHAPE).
+# Consulted ONLY when ``DELFIN_FFFREE_POLYA_COVERAGE_FIX_v1=1``; default-OFF
+# preserves HEAD bcf56f8's KeyError-into-_ANTIPODE_FULL path so existing
+# ``enumerate_chelate_configs("trigonal_prism", ...)`` callers (e.g.
+# converter_backend._enumerate_geometry's TPR-6 branch, line ~979) keep
+# returning ``None`` exactly as today.  With the flag flipped, TPR-6 gets a
+# real cis-edge map derived from polyhedra.ref_vectors and chelate enumeration
+# stops being silently dropped — closing the 26 ``bis-bidentate-NN+NN``
+# 0%-coverage cases identified in b00f9a0 forensik.
+_GEOM_KEY_TO_SHAPE_FIX_V1: Dict[str, str] = {
+    "trigonal_prism": "TPR-6 trigonal prism",
+}
+
 
 def _chelate_cis_edges(geometry: str, n: int):
     """Vertex pairs a bidentate chelate can span (cis edges), derived geometrically from
@@ -292,7 +305,14 @@ def _chelate_cis_edges(geometry: str, n: int):
     places into (delfin.fffree.polyhedra), so enumeration and placement stay consistent
     for every geometry (incl. TBP-5/SPY-5).  Byte-identical to the old antipode table for
     octahedron/square_planar.  Falls back to the antipode table if no reference vectors."""
+    import os as _os
     shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    # POLYA-COVERAGE-FIX-v1: extend the shape lookup with v1 additions (e.g.
+    # TPR-6) ONLY when the env-flag is on.  Default OFF -> HEAD bcf56f8 behaviour
+    # (KeyError into _ANTIPODE_FULL fallback) is preserved bit-exact.
+    if shape is None and _os.environ.get("DELFIN_FFFREE_POLYA_COVERAGE_FIX_v1",
+                                          "") not in ("", "0"):
+        shape = _GEOM_KEY_TO_SHAPE_FIX_V1.get(geometry)
     if shape is not None:
         try:
             import math
@@ -383,10 +403,30 @@ def count_chelate_isomers(geometry: str, n_chelate: int) -> int:
     ligands on cis-edges (+ identical monodentate on the rest), up to the proper
     rotation group.  Chelates occupy EDGES (cis vertex pairs), not vertices, so
     this is edge-combinatorics (counts enantiomers as distinct: e.g. octahedral
-    en2X2 -> trans + cis-Δ + cis-Λ = 3)."""
+    en2X2 -> trans + cis-Δ + cis-Λ = 3).
+
+    Default (env-OFF): historical behaviour — only ``octahedron`` supported;
+    every other geometry raises ``NotImplementedError`` for bit-exact parity
+    with HEAD bcf56f8.
+
+    Env DELFIN_FFFREE_POLYA_COVERAGE_FIX_v1=1 (or the ``universal=True`` kwarg):
+    falls back to ``count_chelate_isomers_universal`` for any geometry that has
+    a Pólya group + geometric cis-edge map registered, including SP-4, T-4,
+    TBP-5, SPY-5, TPR-6, PBP-7, SAP/DD-8, TTP-9 and the f-block CN8-12 set.
+    The octahedron branch keeps its original edge-combinatorial algorithm
+    byte-identical when env is unset.
+    """
+    import os as _os
+    universal = bool(_os.environ.get("DELFIN_FFFREE_POLYA_COVERAGE_FIX_v1", "")
+                     not in ("", "0"))
     group, n = _get_group(geometry)
     if geometry == "octahedron":
         antipode = {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4}
+    elif universal:
+        return count_chelate_isomers_universal(
+            geometry, n_chelate, n_monodentate_fillers=n - 2 * n_chelate,
+            asymmetric=False,
+        )
     else:
         raise NotImplementedError(geometry)
     cis = [(i, j) for i in range(n) for j in range(i + 1, n) if antipode[i] != j]
@@ -407,6 +447,120 @@ def count_chelate_isomers(geometry: str, n_chelate: int) -> int:
         if orbit_min not in seen:
             seen.add(orbit_min); count += 1
     return count
+
+
+# =====================================================================
+# POLYA-COVERAGE-FIX-v1 (env DELFIN_FFFREE_POLYA_COVERAGE_FIX_v1=1)
+# ---------------------------------------------------------------------
+# Forensik (b00f9a0 voll-pool isocoverage, 2026-06-04, n=10647) showed that
+# 1746 SMILES (16.4%) reach 0% coverage with theoretical >= 2 isomers — a
+# pure builder gap. The biggest single contributor is *bidentate chelate
+# enumeration for non-octahedral polyhedra*, where ``count_chelate_isomers``
+# raised ``NotImplementedError`` and the downstream pipeline silently
+# defaulted to "1 isomer" for SP-4 / T-4 / TBP-5 / SPY-5 / TPR-6 / PBP-7 /
+# SAP-8 / DD-8 / TTP-9.  The universal helper below treats chelate counting
+# as a generalisation of the existing ``enumerate_chelate_configs`` machinery
+# (which already drives the FF-free builder via converter_backend / grip_ensemble)
+# so the *theoretical reference* and the *builder* now use the same algorithm.
+#
+# Determinism: pure-Python, no RNG, no hash-dependent dict iteration on the
+# critical path — input ``ligand_specs`` is sorted by stable key before the
+# orbit canonicalisation pass.  Bit-exact across runs with PYTHONHASHSEED=0
+# and idempotent across machines (verified by ``tests/test_polya_coverage_fix_v1.py``).
+# =====================================================================
+
+def count_chelate_isomers_universal(
+    geometry: str,
+    n_chelate: int,
+    n_monodentate_fillers: int = 0,
+    asymmetric: bool = False,
+    monodentate_labels: Optional[Tuple[str, ...]] = None,
+) -> int:
+    """Universal chelate-isomer counter — generalisation of the octahedron
+    edge-combinatorial form above to *every* polyhedron registered in
+    ``_GROUPS`` (or the lazy f-block fallback).
+
+    Parameters
+    ----------
+    geometry
+        Polyhedron key, e.g. ``"square_planar"``, ``"tetrahedron"``,
+        ``"trigonal_bipyramid"``, ``"square_pyramid"``, ``"octahedron"``,
+        ``"trigonal_prism"``, ``"pentagonal_bipyramid"``,
+        ``"square_antiprism"``, ``"tricapped_trigonal_prism"`` or any
+        f-block CN8-12 key (``"sap_8"``, ``"dd_8"`` ...).
+    n_chelate
+        Number of identical bidentate chelates (each occupies one cis-edge).
+    n_monodentate_fillers
+        Remaining vertices to be filled with monodentate ligands.  Defaults
+        to ``0`` (homochelate, ``n_chelate * 2 == n``).
+    asymmetric
+        ``True`` if the two arms of each bidentate are distinguishable
+        (e.g. pyridyl-amine bipy-fragment).  Doubles the orbit count where
+        the arm-swap symmetry would have collapsed.
+    monodentate_labels
+        Optional tuple of length ``n_monodentate_fillers`` giving distinct
+        labels for the monodentate ligands.  When ``None`` (default) all
+        monodentates are treated as identical ("X").
+
+    Returns
+    -------
+    int
+        Number of geometric isomers (orbits under the polyhedron's proper
+        rotation group), counting enantiomers as distinct — consistent with
+        the rest of this module.
+
+    Notes
+    -----
+    * The implementation is a thin wrapper around ``enumerate_chelate_configs``
+      (which is the same engine the FF-free builder uses for placement),
+      ensuring the theoretical count and the builder's enumeration draw from
+      one single source of truth.
+    * For the octahedron, ``count_chelate_isomers`` retains its original
+      edge-combinatorial algorithm and is *byte-identical* — this helper
+      is reachable from there only when the env-flag opts into the
+      universal path.
+    """
+    group, n = _get_group(geometry)
+    if n_chelate < 0 or n_monodentate_fillers < 0:
+        raise ValueError("counts must be non-negative")
+    if 2 * n_chelate + n_monodentate_fillers != n:
+        raise ValueError(
+            f"2*n_chelate + n_monodentate_fillers ({2*n_chelate + n_monodentate_fillers})"
+            f" != polyhedron CN ({n}) for geometry={geometry!r}"
+        )
+
+    # Build ligand_specs in a deterministic order: chelates first (by id), then
+    # monodentates (by index/label).  We use identical "type"='B' for symmetric
+    # bidentates so all are interchangeable under the orbit canonicalisation,
+    # and labels 'X0','X1',... for the monodentates when none are supplied.
+    specs: List[Dict] = []
+    for k in range(n_chelate):
+        specs.append({"type": "B", "denticity": 2, "asym": bool(asymmetric)})
+    if monodentate_labels is None:
+        # All monodentates identical.
+        for k in range(n_monodentate_fillers):
+            specs.append({"type": "X", "denticity": 1})
+    else:
+        if len(monodentate_labels) != n_monodentate_fillers:
+            raise ValueError("monodentate_labels length mismatch")
+        for lab in monodentate_labels:
+            specs.append({"type": str(lab), "denticity": 1})
+
+    configs = enumerate_chelate_configs(geometry, specs)
+    return len(configs)
+
+
+def list_supported_chelate_geometries() -> List[str]:
+    """Return the geometry keys for which ``count_chelate_isomers_universal``
+    has a registered Pólya group + cis-edge map.  Useful as a sanity check
+    and as documentation of what the v1 fix unlocks vs HEAD bcf56f8."""
+    out = list(_GROUPS.keys())
+    # f-block keys are added lazily via _fblock_group_for; advertise them too.
+    for k in ("sap_8", "dd_8", "tdd_8", "ttp_9_fblock",
+              "csap_9", "bicap_10", "ih_12"):
+        if k not in out and _fblock_group_for(k) is not None:
+            out.append(k)
+    return sorted(out)
 
 
 if __name__ == "__main__":
