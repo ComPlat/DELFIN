@@ -1,0 +1,96 @@
+diff --git a/quality_framework/scripts/pool_evaluator.py b/quality_framework/scripts/pool_evaluator.py
+index 930e94ffd..cf3a10634 100644
+--- a/quality_framework/scripts/pool_evaluator.py
++++ b/quality_framework/scripts/pool_evaluator.py
+@@ -22,6 +22,75 @@ sys.path.insert(0, str(SCRIPTS))
+ from benchmark_runner import run_one_smiles
+ 
+ 
++def _run_xrd_recall_hook(archive_dir: Path, pool_results_jsonl: str) -> None:
++    """Post-pool full-CCDC XRD-recall metric (env-gated, no-op on errors).
++
++    Reads each archive XYZ + maps to its source SMILES via pool_results_jsonl
++    sid lookup, then runs delfin.fffree.xrd_recall_metric_full.
++
++    Env-flags consulted (besides DELFIN_QF_AUTO_XRD_RECALL):
++      DELFIN_FFFREE_XRD_RECALL_TABLE_PATH (required for non-trivial output)
++      DELFIN_FFFREE_XRD_RECALL_INDEX_PATH (required for conformer-recall)
++      DELFIN_FFFREE_XRD_RECALL_RMSD_A     (default 0.5)
++      DELFIN_FFFREE_XRD_RECALL_WEIGHTED   (default "0")
++    """
++    try:
++        import json as _json
++        # Build SMILES mapping from pool results JSONL
++        sid_to_smiles = {}
++        try:
++            with open(pool_results_jsonl) as fh:
++                for line in fh:
++                    try:
++                        rec = _json.loads(line)
++                    except Exception:
++                        continue
++                    sid = rec.get("sid") or rec.get("id") or rec.get("smiles_label")
++                    smi = rec.get("smiles") or rec.get("input_smiles")
++                    if sid and smi:
++                        sid_to_smiles[str(sid)] = smi
++        except Exception as exc:
++            print(f"[xrd-recall-hook] could not read {pool_results_jsonl}: {exc}",
++                  flush=True)
++        # Build mapping for archive XYZ filenames
++        # Naming convention: <sid>_<iso>.xyz or <sid>/iso.xyz; key on the sid
++        # prefix.
++        smiles_mapping = {}
++        for f in Path(archive_dir).rglob("*.xyz"):
++            stem = f.stem
++            for sid, smi in sid_to_smiles.items():
++                if stem.startswith(sid):
++                    smiles_mapping[stem] = smi
++                    smiles_mapping[f.name] = smi
++                    break
++
++        from delfin.fffree import xrd_recall_metric_full as _XRDM
++        res = _XRDM.score_archive(str(archive_dir),
++                                  smiles_mapping=smiles_mapping)
++        out_path = Path(archive_dir) / "_xrd_recall_report.jsonl"
++        with out_path.open("w") as fh:
++            fh.write(_json.dumps(res) + "\n")
++
++        # Per-SMILES detailed report
++        table = _XRDM.load_ccdc_family_table()
++        index = _XRDM.load_ccdc_tmc_index()
++        if table:
++            by_smi = _XRDM.group_archive_by_smiles(str(archive_dir),
++                                                   smiles_mapping=smiles_mapping)
++            per = _XRDM.per_smiles_recall_report(by_smi, table, index)
++            per_path = Path(archive_dir) / "_xrd_recall_per_smiles.jsonl"
++            with per_path.open("w") as fh:
++                for r in per:
++                    fh.write(_json.dumps(r) + "\n")
++
++        print(f"\n[xrd-recall-hook] global iso_recall={res.get('isomer_recall')}  "
++              f"conf_recall={res.get('conformer_recall')}  "
++              f"n_smiles_with_family={res.get('n_smiles_with_ccdc_family', 0)}  "
++              f"→ {out_path}\n", flush=True)
++    except Exception as exc:
++        print(f"[xrd-recall-hook] skipped (error): {exc}", flush=True)
++
++
+ def load_pool(path: str):
+     smiles = []
+     with open(path) as f:
+@@ -359,6 +428,15 @@ def main():
+             json.dump(manifest, f, indent=2)
+         print(f"[qf] manifest → {manifest_path}\n")
+ 
++    # ----------------------------------------------------------------
++    # Full-CCDC XRD-recall hook (env-gated, default OFF byte-identical)
++    # ----------------------------------------------------------------
++    if os.environ.get("DELFIN_QF_AUTO_XRD_RECALL", "") == "1" and xyz_archive_root:
++        _run_xrd_recall_hook(
++            archive_dir=Path(xyz_archive_root) / commit_label,
++            pool_results_jsonl=args.out,
++        )
++
+     # summary
+     print(f"{'class':<10}{'smiles':>8}{'failed':>8}{'isomers':>9}{'%topo':>8}{'%poly':>8}{'%lig':>7}{'%all3':>8}{'%pass-1':>10}")
+     print("-" * 80)
