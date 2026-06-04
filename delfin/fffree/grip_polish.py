@@ -273,6 +273,47 @@ _HH_CLASH_INCLUDE_ENV: str = "DELFIN_FFFREE_HH_CLASH_INCLUDE"
 _SP3_H_HEAL_ENV: str = "DELFIN_FFFREE_SP3_H_HEAL"
 
 
+# Breadcrumb logging — default OFF; env-flag DELFIN_FFFREE_VERIFY_BREADCRUMBS=1
+# emits a single WARNING line whenever a heal hook actually fires AND moves
+# coordinates.  Used by overnight verification (2026-06-04) to confirm
+# modules are not silently passing through.
+_BREADCRUMB_ENV: str = "DELFIN_FFFREE_VERIFY_BREADCRUMBS"
+
+
+def _breadcrumbs_active() -> bool:
+    raw = os.environ.get(_BREADCRUMB_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _emit_breadcrumb(module: str, P_in: np.ndarray, P_out: np.ndarray,
+                     extra: str = "") -> None:
+    """Log a one-line ``MODULE_FIRED: <module> rmsd=<x>`` breadcrumb.
+
+    Only emitted when ``DELFIN_FFFREE_VERIFY_BREADCRUMBS=1`` AND the output
+    coords differ from input.  Optional file sink via
+    ``DELFIN_FFFREE_VERIFY_BREADCRUMB_FILE`` so callers don't have to rely
+    on log capture.
+    """
+    if not _breadcrumbs_active():
+        return
+    try:
+        diff = np.asarray(P_out, dtype=np.float64) - np.asarray(P_in, dtype=np.float64)
+        rms = float(np.sqrt(np.mean(np.sum(diff.reshape(-1, 3) ** 2, axis=1))))
+    except Exception:
+        rms = float("nan")
+    if rms > 1e-12:
+        _LOG.warning("MODULE_FIRED: %s rmsd=%.4f %s", module, rms, extra)
+        try:
+            crumb_file = os.environ.get(
+                "DELFIN_FFFREE_VERIFY_BREADCRUMB_FILE", ""
+            ).strip()
+            if crumb_file:
+                with open(crumb_file, "a") as fh:
+                    fh.write(f"MODULE_FIRED: {module} rmsd={rms:.4f} {extra}\n")
+        except Exception:
+            pass
+
+
 def _topology_healing_active() -> bool:
     """``True`` iff ``DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING`` is on (default OFF).
 
@@ -367,6 +408,7 @@ def _run_pre_polish_topology_healing(
         out = np.asarray(out, dtype=np.float64)
         if out.shape != P_init.shape or not np.all(np.isfinite(out)):
             return P_init
+        _emit_breadcrumb("topology_healing", P_init, out)
         return out
     except Exception as exc:
         _LOG.warning(
@@ -428,6 +470,7 @@ def _run_pre_polish_grip_healing(
         out = np.asarray(out, dtype=np.float64)
         if out.shape != P_init.shape or not np.all(np.isfinite(out)):
             return P_init
+        _emit_breadcrumb("grip_healing", P_init, out)
         return out
     except Exception as exc:
         _LOG.warning(
@@ -483,6 +526,7 @@ def _run_pre_polish_sp3_h_heal(
         out = np.asarray(out, dtype=np.float64)
         if out.shape != P_init.shape or not np.all(np.isfinite(out)):
             return P_init
+        _emit_breadcrumb("sp3_h_heal", P_init, out)
         return out
     except Exception as exc:
         _LOG.warning(
