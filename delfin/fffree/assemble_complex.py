@@ -739,6 +739,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         # rigid-fitting a non-chelating free-ligand conformer.  Fall back to the
         # free-ligand path if the metallacycle embed fails.
         ring_confs = None
+        ring_confs_unconstrained = None     # alt embed for the pick-better gate
         lmol = None
         if lg["denticity"] >= 2:
             # ideal donor positions at the assigned polyhedron vertices (metal at origin)
@@ -752,6 +753,22 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             except Exception:
                 _dtp = None
             ring_confs = _embed_metallacycle(lg["mol"], dons[:_dent], metal, donor_target_pos=_dtp)
+            # CHELATE_BITE pick-better gate (Task #55-56, 2026-06-04).
+            # When DELFIN_FFFREE_CHELATE_BITE=1 + DELFIN_FFFREE_CHELATE_BITE_PICK_BETTER=1:
+            # ALSO compute the unconstrained embed (donor_target_pos=None) so we can
+            # later choose, per-chelate, whichever placement gives lower local CShM.
+            # Filters out the catastrophic regressions (D-YOMHIR / D-DIMXUS / D-JAHZUQ)
+            # while keeping the wins (ABUMET 11.97 -> 0.055 etc).  Env-gated default-OFF
+            # byte-identical -- the alt embed is NEVER computed unless BOTH env flags
+            # are set, so HEAD path is unchanged.
+            try:
+                from delfin.fffree.chelate_bite_pick_better import pick_better_active
+                if pick_better_active():
+                    ring_confs_unconstrained = _embed_metallacycle(
+                        lg["mol"], dons[:_dent], metal, donor_target_pos=None,
+                    )
+            except Exception:
+                ring_confs_unconstrained = None
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
@@ -824,6 +841,45 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     # build-gate would reject anyway).  Env-gated default OFF.
                     if Q is not None and _has_collapsed_heavy_bonds(lsyms, Q):
                         Q = None
+                # CHELATE_BITE pick-better gate (Task #55-56, 2026-06-04).
+                # When BOTH env flags set, orient the unconstrained embed too and
+                # pick whichever placement gives lower local CShM (vs the assigned
+                # polyhedron geometry).  Eliminates catastrophic regressions while
+                # keeping wins.  Env-gated default-OFF byte-identical: the
+                # ``ring_confs_unconstrained`` reference is None unless the alt
+                # embed was computed above, so this block is a no-op.
+                if (ring_confs_unconstrained is not None
+                        and Q is not None
+                        and len(lP) == len(ring_confs_unconstrained[1][0])):
+                    try:
+                        from delfin.fffree.chelate_bite_pick_better import (
+                            pick_better as _pb,
+                            md_invariant_preserved as _md_ok,
+                        )
+                        _alt_lsyms, _alt_coords_list = ring_confs_unconstrained
+                        # Use the first unconstrained conformer (matches the current
+                        # outer-loop iteration on ``lP`` from coords_list); both embeds
+                        # share atom indexing because metallacycle keeps the donor
+                        # local idxs invariant.
+                        _alt_lP = _alt_coords_list[0]
+                        _alt_Q = _orient_chelate_to_vertices(_alt_lP, dons_d, targets)
+                        if _alt_Q is not None and _has_collapsed_heavy_bonds(_alt_lsyms, _alt_Q):
+                            _alt_Q = None
+                        if _alt_Q is not None:
+                            _picked, _src, _c, _u = _pb(
+                                Q, _alt_Q, dons_d, geometry,
+                                metal_pos=np.zeros(3),
+                            )
+                            # Defence-in-depth: only swap when M-D invariant holds
+                            # (orient already places donors on the targets; this
+                            # guards against any future change).
+                            if (_picked is not None
+                                    and _md_ok(Q, _picked, dons_d, metal_pos=np.zeros(3))):
+                                Q = _picked
+                    except Exception:
+                        # Any failure -> keep the constrained Q (legacy CHELATE_BITE
+                        # behaviour).  Build never regresses on import errors.
+                        pass
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
                 if Q is None:                       # tridentate embed failure -> skip this config
