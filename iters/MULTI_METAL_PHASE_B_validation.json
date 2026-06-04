@@ -1,0 +1,440 @@
+{
+  "n_built": 18,
+  "n_skeleton_chosen": 20,
+  "n_total": 20,
+  "rows": [
+    {
+      "built": false,
+      "i": 0,
+      "metal_syms": [
+        "Sc",
+        "Fe"
+      ],
+      "mm_declared": 0,
+      "mm_distance_target": 2.869,
+      "mm_implied": 1,
+      "n_bridges": 1,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "O=S(O[Sc](OS(=O)(C(F)(F)F)=O)(OS(=O)(C(F)(F)F)=O)(OS(=O)(C(F)(F)F)=O)(O)O[Fe-3]123[N@@+]4(C)CCC[N@@+]1(CC[N@@+]2(CCC[N@+",
+      "status": "rollback_or_failed"
+    },
+    {
+      "built": true,
+      "i": 1,
+      "metal_syms": [
+        "Fe",
+        "Fe"
+      ],
+      "mm_declared": 0,
+      "mm_distance_target": 2.51,
+      "mm_implied": 1,
+      "mm_obs_all": [
+        2.51
+      ],
+      "n_atoms_out": 15,
+      "n_bridges": 1,
+      "n_donors": 13,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "O=[Fe-5]1234([N+]5=CC=CC=C5C6=[N+]1C(C7=[N+]2C(C8=[N+]3C(C9=CC=CC=[N+]94)=CC=C8)=CC=C7)=CC=C6)O[Fe+]%10%11%12%13([N+]%14",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 2,
+      "metal_syms": [
+        "Ru",
+        "Sn"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.812,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.812
+      ],
+      "n_atoms_out": 10,
+      "n_bridges": 0,
+      "n_donors": 8,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC1=C(C)N(C)[C]([Ru]23([C]4N(C)C(C)=C(C)N4C)([CH2]N4[C]2N(C)C(C)=C4C)[P](C2=CC=CC=C2)(C2=CC=CC=C2)C2=CC=CC=[C]2[Sn]3([CH",
+      "status": "ok"
+    },
+    {
+      "built": false,
+      "i": 3,
+      "metal_syms": [
+        "Sn",
+        "Co",
+        "Sn",
+        "Sn"
+      ],
+      "mm_declared": 3,
+      "mm_distance_target": 2.622,
+      "mm_implied": 0,
+      "n_bridges": 0,
+      "n_metals": 4,
+      "skeleton_kind": "M4_butterfly",
+      "smiles": "[CH3][Sn]([CH3])([CH3])[Co-2]12345(<-[C+]67C=C8C=CC=CC8=C[C+]->16[C]2=[C]3[C]4=[C]75)([Sn]([CH3])([CH3])[CH3])[Sn]([CH3]",
+      "status": "rollback_or_failed"
+    },
+    {
+      "built": true,
+      "i": 4,
+      "metal_syms": [
+        "Sn",
+        "Ir"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.764,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.764
+      ],
+      "n_atoms_out": 13,
+      "n_bridges": 0,
+      "n_donors": 11,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[Cl][Sn]([Cl])([Cl])[Ir]123456([C]7=[C]1CC[C]2=[C]3CC7)[C]1=[C]4CC[C]5=[C]6CC1",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 5,
+      "metal_syms": [
+        "Sn",
+        "Ir"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.764,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.764
+      ],
+      "n_atoms_out": 8,
+      "n_bridges": 0,
+      "n_donors": 6,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[Cl][Sn]([Cl])([Cl])[IrH2]([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P](C1=CC=",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 6,
+      "metal_syms": [
+        "Sn",
+        "Ir"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.764,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.764
+      ],
+      "n_atoms_out": 13,
+      "n_bridges": 0,
+      "n_donors": 11,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[CH3][Sn]([CH3])([CH3])[Ir]123456([C]7=[C]1C1CC7[C]2=[C]13)[C]1=[C]4C2CC1[C]5=[C]26",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 7,
+      "metal_syms": [
+        "Sn",
+        "Ir"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.764,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.764
+      ],
+      "n_atoms_out": 13,
+      "n_bridges": 0,
+      "n_donors": 11,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[CH3][Sn]([CH3])([CH3])[Ir]123456([C]7=[C]1CC[C]2=[C]3CC7)[C]1=[C]4CC[C]5=[C]6CC1",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 8,
+      "metal_syms": [
+        "Sn",
+        "Ir"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.764,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.764
+      ],
+      "n_atoms_out": 13,
+      "n_bridges": 0,
+      "n_donors": 11,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[Cl][Sn]([Cl])([Cl])[Ir]123456([C]7=[C]1C1CC7[C]2=[C]13)[C]1=[C]4C2CC1[C]5=[C]26",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 9,
+      "metal_syms": [
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.774,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.774
+      ],
+      "n_atoms_out": 9,
+      "n_bridges": 0,
+      "n_donors": 7,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[Cl][Sn]([C]1=CC=CC=C1)([C]1=CC=CC=C1)[Rh]12([S]C3=CC=CC=C3[P]1(C1=CC=CC=C1)C1=CC=CC=C1)[S]C1=CC=CC=C1[P]2(C1=CC=CC=C1)C",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 10,
+      "metal_syms": [
+        "Sn",
+        "Os"
+      ],
+      "mm_declared": 0,
+      "mm_distance_target": 2.793,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.793
+      ],
+      "n_atoms_out": 11,
+      "n_bridges": 0,
+      "n_donors": 9,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "C[Si](C)([O][Sn]([CH3])([CH3])[CH3])[Os-3]([Cl])([C]#[O+])([P+](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)[P+](C1=CC=CC=C1)(C",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 11,
+      "metal_syms": [
+        "Sn",
+        "Os"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.793,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.793
+      ],
+      "n_atoms_out": 8,
+      "n_bridges": 0,
+      "n_donors": 6,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CCC[CH2][Sn]([CH2]CCC)([CH2]CCC)[OsH3]([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C1)([P](C1=CC=CC=C1)(C1=CC=CC=C1)C1=CC=CC=C",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 12,
+      "metal_syms": [
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 0,
+      "mm_distance_target": 2.774,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.774
+      ],
+      "n_atoms_out": 15,
+      "n_bridges": 0,
+      "n_donors": 13,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC1=CC(C)=CC([N]2[Sn-]3[N](C4=CC(C)=CC(C)=C4)[Si](C)(C)[Si](C)([Si]2(C)C)[Si](C)(C)[N]3[C+]23->[Rh-9]456789%10(<-[C+]%11",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 13,
+      "metal_syms": [
+        "Sn",
+        "Ru"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.812,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.812
+      ],
+      "n_atoms_out": 13,
+      "n_bridges": 0,
+      "n_donors": 11,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "[Cl][Sn]([Cl])([Cl])[Ru]12345([Cl])([P](OC6=CC=CC=C6)(OC6=CC=CC=C6)OC6=CC=CC=C6)[C]6=[C]1[C]2=[C]3[C]4=[C]65",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 14,
+      "metal_syms": [
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.774,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.774
+      ],
+      "n_atoms_out": 10,
+      "n_bridges": 0,
+      "n_donors": 8,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC(C)C1=CC(C(C)C)=C(C2=[C]3[Sn-2][Rh-5]45678(<-[C+]9(C(C)C)[C+]4[C+]->5(C(C)C)[C+]->6(C3=CC=C2)[C+]->7(C(C)C)[C+]98)[P+]",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 15,
+      "metal_syms": [
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.774,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.774
+      ],
+      "n_atoms_out": 7,
+      "n_bridges": 0,
+      "n_donors": 5,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC(C)C1=CC(C(C)C)=C(C2=CC=CC(C3=C(C(C)C)C=C(C(C)C)C=C3C(C)C)=[C]2[SnH2][Rh]23([P](C)(C)CC[P]2(C)C)[P](C)(C)CC[P]3(C)C)C(",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 16,
+      "metal_syms": [
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.774,
+      "mm_implied": 1,
+      "mm_obs_all": [
+        2.774
+      ],
+      "n_atoms_out": 6,
+      "n_bridges": 1,
+      "n_donors": 4,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC(C)C1=CC(C(C)C)=C(C2=CC=CC(C3=C(C(C)C)C=C(C(C)C)C=C3C(C)C)=[C]2[Sn+]2[H+][RhH-4]2([P+](C2=CC=CC=C2)(C2=CC=CC=C2)C2=CC=",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 17,
+      "metal_syms": [
+        "Sn",
+        "Fe"
+      ],
+      "mm_declared": 1,
+      "mm_distance_target": 2.679,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        2.679
+      ],
+      "n_atoms_out": 11,
+      "n_bridges": 0,
+      "n_donors": 9,
+      "n_metals": 2,
+      "skeleton_kind": "M2_dimer",
+      "smiles": "CC(C)C1=CC=CC(C(C)C)=C1N1C=CN2[C]1[Sn+]1[N](C3=C(C(C)C)C=CC=C3C(C)C)[Si](C(C)C)(C(C)C)C[P+](C3=CC=CC=C3)(C3=CC=CC=C3)[Fe",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 18,
+      "metal_syms": [
+        "Sn",
+        "Sn",
+        "Rh"
+      ],
+      "mm_declared": 2,
+      "mm_distance_target": 2.85,
+      "mm_implied": 1,
+      "mm_obs_all": [
+        2.85,
+        5.7,
+        2.85
+      ],
+      "n_atoms_out": 10,
+      "n_bridges": 1,
+      "n_donors": 7,
+      "n_metals": 3,
+      "skeleton_kind": "M3_linear",
+      "smiles": "CC(C)(C)[N]1[Si](C)(C)[N](C(C)(C)C)[Sn]12[Cl+][Sn-]1([N](C(C)(C)C)[Si](C)(C)[N]1C(C)(C)C)[Rh]2([P](C1=CC=CC=C1)(C1=CC=CC",
+      "status": "ok"
+    },
+    {
+      "built": true,
+      "i": 19,
+      "metal_syms": [
+        "Sn",
+        "Os",
+        "Sn",
+        "Sn",
+        "Sn",
+        "Sn"
+      ],
+      "mm_declared": 5,
+      "mm_distance_target": 2.85,
+      "mm_implied": 0,
+      "mm_obs_all": [
+        4.031,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        4.031,
+        2.85,
+        2.85,
+        2.85,
+        2.85,
+        4.031
+      ],
+      "n_atoms_out": 22,
+      "n_bridges": 0,
+      "n_donors": 16,
+      "n_metals": 6,
+      "skeleton_kind": "M6_octahedron",
+      "smiles": "[Cl][Sn]([Cl])([Cl])[Os-4]([Cl])([Sn]([Cl])([Cl])[Cl])([Sn]([Cl])([Cl])[Cl])([Sn]([Cl])([Cl])[Cl])[Sn]([Cl])([Cl])[Cl]",
+      "status": "ok"
+    }
+  ]
+}

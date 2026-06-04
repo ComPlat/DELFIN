@@ -685,6 +685,43 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     onto their two assigned vertices; monodentate ligands are oriented onto their
     vertex.  Multi-conformer selection per ligand + constrained refine.  Returns
     (syms, P) = [metal] + ligand atoms, or None on failure."""
+    # Phase B Task #63 (2026-06-03): multi-metal / cluster dispatcher.
+    # When DELFIN_FFFREE_MULTI_METAL=1 (or DELFIN_FFFREE_PURE_TRACK3=1) AND the
+    # decomposed config carries a multi-metal mol (>=2 metal atoms in the graph),
+    # dispatch to the cluster orchestrator BEFORE the single-metal assembly.
+    # Hard-rollback on contract violation: the orchestrator returns None and we
+    # silently continue into the legacy single-metal path -> byte-identical when
+    # the env flag is unset.
+    try:
+        _mm_mol = None
+        if isinstance(config, dict):
+            _mm_mol = config.get("__multi_metal_mol__")
+        if _mm_mol is None and ligands:
+            for _lg in ligands:
+                if isinstance(_lg, dict):
+                    _cand = _lg.get("__parent_mol__") or _lg.get("mol")
+                    if _cand is not None:
+                        try:
+                            n_metal = sum(1 for a in _cand.GetAtoms()
+                                          if _bd._is_metal(a.GetSymbol()))
+                        except Exception:
+                            n_metal = 0
+                        if n_metal >= 2:
+                            _mm_mol = _cand
+                            break
+        if _mm_mol is not None:
+            from delfin.fffree import multi_metal_assemble as _MMA
+            if _MMA.should_dispatch_multi_metal(_mm_mol):
+                _mm_res = _MMA.assemble_multi_metal(_mm_mol, ligands=ligands,
+                                                    metals=None, config=config)
+                if _mm_res is not None:
+                    return _mm_res
+                # _mm_res is None -> silent fall-through to single-metal path.
+    except Exception:
+        # Any error in the multi-metal branch is non-fatal: we drop to the
+        # legacy single-metal path. Production safety contract.
+        pass
+
     ref = MSB._ref_vectors(geometry)
     # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
     by_lig = {}
@@ -806,6 +843,27 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     cl = cl + _bcg_count(lsyms, Q)
             except Exception:
                 pass
+            # SURGICAL FIX 1 (User 2026-06-03 F24-interlig forensik):
+            # inter-ligand non-bonded vdW penalty.  Adds a quadratic overlap
+            # score between the candidate ``Q`` and already-placed atoms
+            # ``placed`` so configurations with cis-CO axis collisions /
+            # bulky-phosphine methyl clashes / π-π-too-close are
+            # deprioritised.  Pure read-only score; coordinates unchanged.
+            # Env-gated default-OFF byte-identical -- helper returns
+            # (0.0, 0) when no flag set.
+            try:
+                from delfin.fffree.build_time_clash_gate import (
+                    interlig_penalty_active as _ilp_active,
+                    _interlig_penalty_for_pair as _ilp_pair,
+                    _interlig_weight as _ilp_w,
+                )
+                if _ilp_active() and len(placed) > 1:
+                    _ilp_score, _ilp_n = _ilp_pair(
+                        lsyms, Q, placed_syms, np.array(placed),
+                    )
+                    cl = cl + _ilp_w() * _ilp_score
+            except Exception:
+                pass
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
@@ -917,6 +975,40 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                             P = newP
                 except Exception:
                     pass
+                # SURGICAL FIX 2 (User 2026-06-03 F24-interlig forensik):
+                # terminal CO/NO/CN ligand torsion stagger.  When two
+                # terminal sp-ligands occupy adjacent polyhedron vertices
+                # the default placement collides their O/N atoms at d ~
+                # 1.85 A; a rigid 60 deg spin of the SECOND ligand about
+                # its own M-donor axis preserves r(M-donor) EXACTLY
+                # while opening the terminal-terminal distance.  Donors
+                # and the metal are NEVER moved.  Env-gated default-OFF
+                # byte-identical (helper returns (P_copy, 0) when no
+                # flag set).
+                try:
+                    from delfin.fffree.terminal_ligand_stagger import (
+                        apply_stagger, stagger_active as _tls_active,
+                    )
+                    if _tls_active():
+                        P_pre_t = P.copy()
+                        P_t, _ntls = apply_stagger(
+                            out_syms, P, metal_idx=0,
+                            donor_idxs=donor_globals,
+                        )
+                        if (P_t is not None and isinstance(P_t, np.ndarray)
+                            and P_t.shape == P.shape
+                            and np.all(np.isfinite(P_t))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_t[_dg] - P_pre_t[0]))
+                                _d_new = float(np.linalg.norm(P_t[_dg] - P_t[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_t
+                except Exception:
+                    pass
                 # CONSTRUCTION-FIX #1 (User 2026-06-03): amide-VSEPR template.
                 # AFTER sp2-flatten so it cleans up the amide-N residue the
                 # geometric flatten misses (sp2 angle window 100-135 deg leaves
@@ -944,6 +1036,76 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                     break
                             if _md_ok:
                                 P = P_a
+                except Exception:
+                    pass
+                # CONSTRUCTION-FIX #4 (User 2026-06-03): oxoanion-VSEPR
+                # template (re-activation of iter-32a-3).  Voll-pool
+                # f8c9905 verdict showed nitrate_pct_files_with_violation
+                # +139 % and nitrate_pct_no3_broken +93 % vs pgcorr-v3.
+                # This hook projects detected NO3-/ClO4-/SO4^2-/PO4^3-
+                # oxygens onto their ideal D3h/Td template AFTER the
+                # amide-VSEPR step (templates are independent --
+                # amide-N never overlaps an oxoanion-X centre).  Donors
+                # NEVER moved (M-D invariant by construction).
+                # Env-gated default-OFF, byte-identical when unset.
+                try:
+                    from delfin.fffree.oxoanion_vsepr_template import (
+                        enforce_oxoanion_vsepr,
+                        _flag_active as _oxo_active,
+                    )
+                    if _oxo_active():
+                        P_pre_o = P.copy()
+                        P_o, _nfo = enforce_oxoanion_vsepr(
+                            out_syms, P, metal_idx=0, donor_idxs=donor_globals,
+                        )
+                        if (P_o is not None and isinstance(P_o, np.ndarray)
+                            and P_o.shape == P.shape
+                            and np.all(np.isfinite(P_o))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_o[_dg] - P_pre_o[0]))
+                                _d_new = float(np.linalg.norm(P_o[_dg] - P_o[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_o
+                except Exception:
+                    pass
+                # CONSTRUCTION-FIX (hapto-honest, 2026-06-03): rigid-block
+                # correction of hapto units (η²-η⁸).  After all σ-side
+                # construction fixes and BEFORE GRIP/refine, snap each
+                # detected π-cluster centroid to the empirical M-centroid
+                # distance for (metal, η) AND align the ring axis to the
+                # M-centroid line.  Metal + σ donors NEVER moved (the
+                # σ-only metric stays byte-invariant).  Defence-in-depth
+                # M-D validator + rigid-block validator inside the helper.
+                # Env-gated default-OFF byte-identical.  Pairs with the
+                # standalone hapto-only-CShM metric (see
+                # ``agent_workspace/quality_framework/scripts/
+                # hapto_only_cshm.py``).
+                try:
+                    from delfin.fffree.hapto_honest_construction import (
+                        apply_hapto_honest, honest_active as _hho_active,
+                    )
+                    if _hho_active():
+                        P_pre_h = P.copy()
+                        P_h, _nfh = apply_hapto_honest(
+                            out_syms, P, metal_idx=0,
+                            donor_idxs=donor_globals,
+                        )
+                        if (P_h is not None and isinstance(P_h, np.ndarray)
+                            and P_h.shape == P.shape
+                            and np.all(np.isfinite(P_h))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(P_pre_h[_dg] - P_pre_h[0]))
+                                _d_new = float(np.linalg.norm(P_h[_dg] - P_h[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_h
                 except Exception:
                     pass
                 # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When

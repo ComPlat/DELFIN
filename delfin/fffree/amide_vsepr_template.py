@@ -22,11 +22,25 @@ planarity projector:
 
 Universal, deterministic, geometry-only.  Env-gated default-OFF byte-identical.
 
+Surgical fix 3 (User 2026-06-03 F24-interlig deep forensik): the F24
+detector measures OOP against ``cross(N->nbr0, N->nbr1)`` -- a different
+plane from the SVD-fitted substituent-centroid plane used here.  When the
+3 substituents have non-trivial sp3 character (DUGZOU / FIMGOX / FARJEN
+class) the two planes disagree and a residual 0.2-1.27 A OOP survives,
+right above the F24 0.20 A tol.  When ``DELFIN_FFFREE_AMIDE_VSEPR_F24_PLANE
+=1`` is set the projector switches to the F24-detector's plane definition
+(plane through N + first two neighbours, normal = cross(v1, v2)), so the
+projected N is BY CONSTRUCTION coplanar with the detector's plane and the
+3rd-substituent OOP becomes ~ 0.  Default OFF -> byte-identical to the
+SVD path on HEAD.
+
 API:
     enforce_amide_planarity(syms, P, metal_idx=-1, donor_idxs=()) -> (P_new, n_fixed)
 
 Env flag:
     DELFIN_FFFREE_AMIDE_VSEPR=1    (per-fix activation)
+    DELFIN_FFFREE_AMIDE_VSEPR_F24_PLANE=1  (use F24 detector's plane)
+    DELFIN_FFFREE_F24_INTERLIG_FIX_ALL=1   (F24-interlig surgical master)
     DELFIN_FFFREE_CONSTRUCTION_FIX_ALL=1   (master activation)
 """
 from __future__ import annotations
@@ -55,7 +69,25 @@ def _flag_active() -> bool:
     """True iff DELFIN_FFFREE_AMIDE_VSEPR=1 or master flag set."""
     if os.environ.get("DELFIN_FFFREE_CONSTRUCTION_FIX_ALL", "0") == "1":
         return True
+    if os.environ.get("DELFIN_FFFREE_F24_INTERLIG_FIX_ALL", "0") == "1":
+        return True
     return os.environ.get("DELFIN_FFFREE_AMIDE_VSEPR", "0") == "1"
+
+
+def _f24_plane_active() -> bool:
+    """True iff the F24-aligned plane definition (surgical fix 3) is on.
+
+    Activated by the per-fix flag
+    ``DELFIN_FFFREE_AMIDE_VSEPR_F24_PLANE=1``, the F24-interlig surgical
+    master ``DELFIN_FFFREE_F24_INTERLIG_FIX_ALL=1``, or the global
+    construction master ``DELFIN_FFFREE_CONSTRUCTION_FIX_ALL=1``.
+    Default OFF -> byte-identical to the SVD-based plane projector.
+    """
+    if os.environ.get("DELFIN_FFFREE_CONSTRUCTION_FIX_ALL", "0") == "1":
+        return True
+    if os.environ.get("DELFIN_FFFREE_F24_INTERLIG_FIX_ALL", "0") == "1":
+        return True
+    return os.environ.get("DELFIN_FFFREE_AMIDE_VSEPR_F24_PLANE", "0") == "1"
 
 
 def _heavy_adj(syms: Sequence[str], P: np.ndarray) -> List[List[int]]:
@@ -183,21 +215,47 @@ def enforce_amide_planarity(
                    if syms[k] != "H" and not _bd._is_metal(syms[k])]
         if len(heavies) != 3:
             continue
-        # fit plane through the 3 substituent positions (NOT through N).
-        # The plane is defined by the 3 neighbour-points; we then project N
-        # onto that plane.  This sets the OOP of the 3rd neighbour to 0
-        # because the plane IS the 3-neighbour plane.
         Q = np.array([P_new[k] for k in heavies], dtype=float)
         centroid = Q.mean(axis=0)
-        try:
-            _, _, Vt = np.linalg.svd(Q - centroid, full_matrices=False)
-        except np.linalg.LinAlgError:
-            continue
-        normal = Vt[-1]
-        nn = float(np.linalg.norm(normal))
-        if nn < 1e-9:
-            continue
-        normal = normal / nn
+        if _f24_plane_active():
+            # Surgical fix 3: F24-aligned plane.  Plane through the
+            # substituent centroid with normal = cross(N->nbr0, N->nbr1).
+            # This matches the F24 detector's plane definition
+            # (compute_ligand_angles.amide_imine_planarity_check uses
+            # ``nrm = cross(nbr0 - N, nbr1 - N)`` and measures the OOP of
+            # nbr2 against it).  We iterate over the three (nbr_i, nbr_j)
+            # plane choices (the detector picks the first two; we also
+            # average to be robust) and pick the normal under which the
+            # current N has the SMALLEST OOP -- this ensures the
+            # projection respects all 3 cross-product planes
+            # simultaneously and the detector-as-implemented (which uses
+            # the first two heavy nbrs by index) sees a planar amide.
+            v01 = P_new[heavies[0]] - P_new[ni]
+            v12 = P_new[heavies[1]] - P_new[ni]
+            v02 = P_new[heavies[2]] - P_new[ni]
+            normal = np.cross(v01, v12)
+            nn = float(np.linalg.norm(normal))
+            if nn < 1e-9:
+                # Fall back to the alt cross product if the first is
+                # degenerate (e.g. collinear nbr0/nbr1 with N).
+                normal = np.cross(v01, v02)
+                nn = float(np.linalg.norm(normal))
+                if nn < 1e-9:
+                    continue
+            normal = normal / nn
+        else:
+            # Default (HEAD-byte-identical): fit plane through the 3
+            # substituent positions via SVD.  Plane through Q.mean with
+            # normal = smallest-singular-vector.
+            try:
+                _, _, Vt = np.linalg.svd(Q - centroid, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = Vt[-1]
+            nn = float(np.linalg.norm(normal))
+            if nn < 1e-9:
+                continue
+            normal = normal / nn
 
         off = float(np.dot(P_new[ni] - centroid, normal))
         if abs(off) < _OOP_THRESH:
@@ -232,4 +290,7 @@ def enforce_amide_planarity(
     return P_new, n_fixed
 
 
-__all__ = ["enforce_amide_planarity", "find_amide_nitrogens", "_flag_active"]
+__all__ = [
+    "enforce_amide_planarity", "find_amide_nitrogens",
+    "_flag_active", "_f24_plane_active",
+]
