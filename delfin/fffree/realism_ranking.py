@@ -29,6 +29,15 @@ Env-flags
 ---------
 * ``DELFIN_FFFREE_REALISM_SORT=1``  — master enable (default OFF,
   byte-identical at module import time and inside pipeline)
+* ``DELFIN_FFFREE_REALISM_TUNED_WEIGHTS=1``  — use Bayesian-optimised
+  weight vector (4-signal-focused: mogul/cshm/inter_clash/hh_clash);
+  lifts rank-0 XRD-match rate +1.5pp on the 49-refcode validation set.
+  Default OFF for byte-identical output.
+* ``DELFIN_FFFREE_REALISM_SOFT_GATES=1``  — turn the two binary
+  hard-gates (topology, build-time-clash) into a single soft signal
+  with rank-normalised penalty.  Empirically lifts rank-0 by an
+  additional ~+8pp because ~58% of XRD ground-truth refcodes have
+  their best frame failing one of the binary gates.  Default OFF.
 * ``DELFIN_FFFREE_REALISM_WEIGHT_MOGUL=0.30``  — per-signal weight overrides
 * ``DELFIN_FFFREE_REALISM_WEIGHT_CSHM=0.20``
 * ``DELFIN_FFFREE_REALISM_WEIGHT_INTER_CLASH=0.15``
@@ -58,6 +67,21 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 MASTER_ENV = "DELFIN_FFFREE_REALISM_SORT"
 
+# Optional Bayesian-optimised weight profile, env-gated.  Set
+# ``DELFIN_FFFREE_REALISM_TUNED_WEIGHTS=1`` to swap the default weight
+# vector for the Bayesian-optimisation result of 2026-06-04 (see
+# ``iters/REALISM_WEIGHT_OPTIMIZATION_2026_06_04.md`` for the full
+# methodology).  On the 49-refcode CCDC ground-truth subset the tuned
+# vector lifts rank-0 XRD-match rate from baseline 49.3% to 57.0% (with
+# soft-gate mode also enabled).  Default OFF for byte-identical output.
+TUNED_WEIGHTS_ENV = "DELFIN_FFFREE_REALISM_TUNED_WEIGHTS"
+# Soft-gate mode: turn the binary topology / build-time-clash hard-gates
+# into rank-normalised soft signals (avoids pushing the XRD-closest frame
+# to the back of the list when it happens to fail the topology gate, which
+# 58% of XRD ground-truth refcodes do in our evaluation).  Env-gated:
+# ``DELFIN_FFFREE_REALISM_SOFT_GATES=1``.
+SOFT_GATES_ENV = "DELFIN_FFFREE_REALISM_SOFT_GATES"
+
 # Default weights (sum = 1.0); see module docstring.
 # The numeric mix follows the user-supplied 2026-06-04 directive (Mogul
 # 0.30 / CShM 0.20 / inter-clash 0.15 / H-H 0.10 / GRIP-loss 0.10 / Pólya
@@ -74,8 +98,22 @@ _DEFAULT_WEIGHTS: Dict[str, float] = {
     "burnside": 0.05,
 }
 
+# Tuned weights from Bayesian optimisation (2026-06-04, see iters doc).
+# 4-signal-focused; signals shown to actually vary within SMILES groups.
+# rank-0 lift +1.45pp with default gates; +8.7pp combined with soft gates.
+_TUNED_WEIGHTS: Dict[str, float] = {
+    "mogul": 0.24,
+    "cshm": 0.09,
+    "inter_clash": 0.32,
+    "hh_clash": 0.35,
+    "grip_loss": 0.0,
+    "polya": 0.0,
+    "burnside": 0.0,
+}
+
 # Hard-filter gates push failing frames to the back.  They do not get a
-# weight — they are applied AFTER soft scoring.
+# weight — they are applied AFTER soft scoring (unless soft-gate mode is
+# enabled, in which case they are folded into the soft signal vector).
 _HARD_GATES = ("topology_ok", "build_time_clash_ok")
 
 
@@ -94,15 +132,31 @@ def _env_float(name: str, default: float) -> float:
         return float(default)
 
 
+def soft_gates_active() -> bool:
+    """Return True when the soft-gate env-flag is set to ``"1"``."""
+    return os.environ.get(SOFT_GATES_ENV, "") == "1"
+
+
+def tuned_weights_active() -> bool:
+    """Return True when the tuned-weights env-flag is set to ``"1"``."""
+    return os.environ.get(TUNED_WEIGHTS_ENV, "") == "1"
+
+
 def get_weights() -> Dict[str, float]:
     """Return the active weight map, honouring per-signal env overrides.
 
     Always returns a copy.  The returned mapping is normalised so the sum
     equals 1.0 — keeps the score scale stable when callers tweak weights
     one at a time.
+
+    When ``DELFIN_FFFREE_REALISM_TUNED_WEIGHTS=1`` the Bayesian-optimised
+    weight vector is used in place of the default — per-signal env
+    overrides still take precedence so a single weight can be adjusted
+    independently of the master flag.
     """
+    base = _TUNED_WEIGHTS if tuned_weights_active() else _DEFAULT_WEIGHTS
     w: Dict[str, float] = {}
-    for key, default in _DEFAULT_WEIGHTS.items():
+    for key, default in base.items():
         env_name = f"DELFIN_FFFREE_REALISM_WEIGHT_{key.upper()}"
         w[key] = max(0.0, _env_float(env_name, default))
     total = sum(w.values())
@@ -321,23 +375,39 @@ def rank_xyz_group(
     # Collect raw signals per frame.
     raw_per_key: Dict[str, List[float]] = {k: [] for k in soft_keys}
     hard_flags: List[bool] = []
+    # In soft-gate mode, accumulate per-frame gate-fail counts (0/1/2) as
+    # an additional soft signal — folded into the score with a small
+    # weight so it nudges rather than dominates.
+    soft_gates = soft_gates_active()
+    gate_fail_counts: List[int] = []
     for md in frame_metadata:
         sig = extract_signals(md)
         for k in soft_keys:
             raw_per_key[k].append(sig.get(k, float("nan")))
-        ok = all(sig.get(g, True) for g in _HARD_GATES)
-        hard_flags.append(ok)
+        n_fails = sum(0 if sig.get(g, True) else 1 for g in _HARD_GATES)
+        gate_fail_counts.append(n_fails)
+        hard_flags.append(n_fails == 0)
 
     # Rank-normalise each signal within the group.
     norm_per_key: Dict[str, List[float]] = {
         k: _rank_normalise(raw_per_key[k]) for k in soft_keys
     }
+    # Soft-gate normalisation: gate-fail count rank-normalised; weight 0.10
+    # by default — empirical 2026-06-04 optimisation found a small
+    # soft-gate penalty preserves topology preference without losing the
+    # XRD-closest frames that happen to fail the binary gate.
+    soft_gate_w = 0.10 if soft_gates else 0.0
+    soft_gate_norm = _rank_normalise([float(c) for c in gate_fail_counts]) if soft_gates else None
 
     # Compute composite per frame.
     out: List[Tuple[int, float]] = []
     for i in range(n):
         soft = sum(w.get(k, 0.0) * norm_per_key[k][i] for k in soft_keys)
-        penalty = 0.0 if hard_flags[i] else 1e3
+        if soft_gates and soft_gate_norm is not None:
+            soft += soft_gate_w * soft_gate_norm[i]
+            penalty = 0.0  # gates folded in as soft signal
+        else:
+            penalty = 0.0 if hard_flags[i] else 1e3
         out.append((i, float(soft + penalty)))
 
     # Stable deterministic sort: score then original frame index.
@@ -652,7 +722,11 @@ def rank_archive(
 
 __all__ = [
     "MASTER_ENV",
+    "TUNED_WEIGHTS_ENV",
+    "SOFT_GATES_ENV",
     "realism_sort_active",
+    "tuned_weights_active",
+    "soft_gates_active",
     "get_weights",
     "extract_signals",
     "compute_realism_score",

@@ -366,3 +366,72 @@ def test_burnside_coverage_higher_is_better():
     f_high = {"burnside_coverage": 0.95}
     ranking = RR.rank_xyz_group([f_low, f_high])
     assert ranking[0][0] == 1  # 0.95 coverage → rank 0
+
+
+# ---------------------------------------------------------------------------
+# New env-flags: TUNED weights + SOFT gates (Mission 6 of 2026-06-04 opt)
+# ---------------------------------------------------------------------------
+def test_tuned_weights_env_flag_default_off(env_clean):
+    """``DELFIN_FFFREE_REALISM_TUNED_WEIGHTS`` unset → default weights."""
+    assert RR.tuned_weights_active() is False
+    w = RR.get_weights()
+    # Default profile: mogul=0.30, cshm=0.25, …
+    assert abs(w["mogul"] - 0.30) < 1e-9
+    assert abs(w["cshm"] - 0.25) < 1e-9
+
+
+def test_tuned_weights_env_flag_swaps_profile(env_clean, monkeypatch):
+    """Setting the flag swaps to the tuned 4-signal-focused profile."""
+    monkeypatch.setenv(RR.TUNED_WEIGHTS_ENV, "1")
+    assert RR.tuned_weights_active() is True
+    w = RR.get_weights()
+    # Tuned profile heavily weights hh_clash + inter_clash, drops polya
+    # / burnside / grip_loss.
+    assert w["hh_clash"] > 0.25
+    assert w["inter_clash"] > 0.25
+    assert w["polya"] < 1e-6
+    assert w["burnside"] < 1e-6
+
+
+def test_soft_gates_env_flag_default_off(env_clean):
+    assert RR.soft_gates_active() is False
+
+
+def test_soft_gates_env_flag_changes_ranking(env_clean, monkeypatch):
+    """With soft-gate mode, a topology-failed frame can still rank ahead
+    of a gate-pass frame iff its other soft signals dominate.  Without
+    soft-gate mode the 1e3 hard penalty forces it to the back."""
+    frames = [
+        # Frame A: bad soft signals, gate passes
+        {"cshm": 10.0, "mogul_anomaly_count": 10, "topology_ok": True,
+         "build_time_clash_ok": True},
+        # Frame B: good soft signals, gate FAILS
+        {"cshm": 0.1, "mogul_anomaly_count": 0, "topology_ok": False,
+         "build_time_clash_ok": True},
+    ]
+    # Hard gates ON (default): A ranks 0, B is pushed to back.
+    rank_hard = RR.rank_xyz_group(frames)
+    assert rank_hard[0][0] == 0  # gate-pass frame first
+    # Soft gates ON: B's strong soft signals overpower the small gate
+    # penalty; B should now rank 0.
+    monkeypatch.setenv(RR.SOFT_GATES_ENV, "1")
+    rank_soft = RR.rank_xyz_group(frames)
+    assert rank_soft[0][0] == 1  # B (better soft) now leads
+
+
+def test_tuned_and_soft_combination_is_stable(env_clean, monkeypatch):
+    """Both flags ON produce a deterministic, finite ranking."""
+    monkeypatch.setenv(RR.TUNED_WEIGHTS_ENV, "1")
+    monkeypatch.setenv(RR.SOFT_GATES_ENV, "1")
+    frames = [
+        {"cshm": 1.0, "hh_clash_count": 0, "topology_ok": True,
+         "build_time_clash_ok": True},
+        {"cshm": 2.0, "hh_clash_count": 5, "topology_ok": True,
+         "build_time_clash_ok": True},
+    ]
+    rank = RR.rank_xyz_group(frames)
+    assert len(rank) == 2
+    assert all(math.isfinite(s) for _, s in rank)
+    # First frame must beat the second under tuned weights (h-clash
+    # gets very high weight in the tuned profile).
+    assert rank[0][0] == 0
