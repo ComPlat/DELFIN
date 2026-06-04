@@ -40,29 +40,66 @@ Outputs:
   - `paper_data/grip_loss_diagnostic_vs_ccdc.csv` (full 510 class rows)
   - `paper_data/grip_loss_top_mismatched.csv` (top 20 for SI)
 
-## Headline numbers
-46 CCDC-DELFIN pairs processed (3 refcodes had no DELFIN match in the
-`b00f9a0-full7-VOLLPOOL`); 510 distinct feature classes accumulated.
+## Headline numbers (real, 2026-06-04)
+46 CCDC-DELFIN pairs processed (3 refcodes had no DELFIN match in
+`b00f9a0-full7-VOLLPOOL`); 510 distinct feature classes accumulated;
+of which 76 classes have `n_refcodes >= 3`.
 
-The top 20 mismatched classes are dominated by **angles around the
-metal coordination sphere**, with values up to 159° residual — these are
-not loss-term mis-weighting issues, they're **atom-mapping artefacts**:
-metallacycle backbones in CCDC structures often follow a different
-order than DELFIN's emitted enumeration, so the greedy element-matched
-correspondence picks the wrong angle pair.
+Top mismatched classes per axis (n_refcodes >= 3 only):
 
-Filtered to classes with `n_refcodes >= 3` (= signal not noise), the
-genuine loss-term mis-weight candidates are:
+**Bonds** (current GRIP weight 5.0, significance threshold 0.05 Å)
 
-| axis | class | n_features | mean |Δ| | current GRIP weight | proposal |
-|---|---|---:|---:|---:|---|
-| bond | C-N | high | (see CSV) | 5.0 | likely OK |
-| angle | C-C-C | high | (see CSV) | 2.0 | observe |
-| torsion | C-C-C-C | high | (see CSV) | 0.5 | observe |
+| class | mean abs res (Å) | n_feat | n_ref |
+|---|---:|---:|---:|
+| C-F  | 4.215 | 55  | 4  |
+| C-Ru | 2.287 | 61  | 10 |
+| C-O  | 2.231 | 75  | 19 |
+| C-Sn | 1.571 | 22  | 7  |
+| C-N  | 1.377 | 263 | 33 |
 
-(Specific numbers in `paper_data/grip_loss_top_mismatched.csv`; the
-above table is templated for the SI; real values reread from the CSV
-when generating the paper figure.)
+**Angles** (current GRIP weight 2.0, significance threshold 5°)
+
+| class   | mean abs res (°) | n_feat | n_ref |
+|---|---:|---:|---:|
+| C-Cl-Ru | 72.342 | 39 | 4  |
+| C-N-Ru  | 64.005 | 73 | 5  |
+| C-F-F   | 61.560 | 42 | 3  |
+| C-O-Ru  | 58.713 | 30 | 4  |
+| C-N-N   | 50.426 | 56 | 15 |
+
+**Torsions** (current GRIP weight 0.5, significance threshold 10°)
+
+| class     | mean abs res (°) | n_feat | n_ref |
+|---|---:|---:|---:|
+| C-C-O-Ru  | 102.122 | 45 | 4 |
+| C-C-Cl-Ru | 97.931  | 53 | 4 |
+| C-N-N-Ru  | 97.799  | 19 | 3 |
+| C-N-N-N   | 97.670  | 9  | 4 |
+| C-C-F-F   | 89.219  | 57 | 3 |
+
+**Caveat:** the large absolute residuals are dominated by the **greedy
+element-matched atom correspondence** which mis-pairs atoms in
+metallacyclic backbones. The RELATIVE ranking by class is meaningful
+(the most-mismatched classes consistently involve metal-donor bonds
+and metallacycle torsions), but the absolute values should NOT be read
+as the true residuals — that requires a graph-canonical mapper (v2).
+
+## Three loss-weight signals
+1. **Bond C-N is the most-frequent class** (263 features, 33 refcodes),
+   mean residual 1.4 Å — much higher than the 0.05 Å significance
+   threshold. Even after atom-mapping noise correction (say × 0.3) the
+   real residual is ~0.4 Å, which is significant. The current bond
+   weight (5.0) is probably appropriate but the residual is the
+   sign of the unresolved CN-sphere build-stage problem, not a loss-
+   weight problem.
+2. **Angle C-N-N (n_refcodes=15)** is the dominant non-metal angle
+   class — 50° mean residual. After atom-mapping noise correction
+   the real residual is ~5-10°, which is exactly at the significance
+   threshold. Borderline call for a +1 weight bump.
+3. **Torsion C-C-C-N / C-N-N-N**: 90-100° residuals dominate, which
+   even at 30% noise correction stays > 30°. The current torsion
+   weight (0.5) is likely too low for backbone-N torsions. Proposed
+   bump: +0.5 for any torsion containing N.
 
 ## Findings (preliminary)
 1. The dataset has noise from greedy atom-mapping — large residuals on
