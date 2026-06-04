@@ -135,6 +135,21 @@ def honest_active() -> bool:
     return os.environ.get("DELFIN_FFFREE_HAPTO_HONEST_CONSTRUCTION", "0") == "1"
 
 
+def _post_correction_clash_gate_active() -> bool:
+    """Surgical-fix env-flag (2026-06-04, b00f9a0 forensik).
+
+    When set, after each rigid-block hapto correction the global heavy-heavy
+    / X-H collapse count is recomputed via ``build_time_clash_gate`` and the
+    correction is reverted when the count INCREASES vs the pre-correction
+    state.  This catches the failure mode where snapping a ring centroid to
+    its ideal M-centroid distance pushes ring atoms into nearby ligand
+    atoms.  Default OFF -> byte-identical to b00f9a0.
+    """
+    return os.environ.get(
+        "DELFIN_FFFREE_HAPTO_HONEST_CLASH_GATE", "0"
+    ) == "1"
+
+
 # ---------------------------------------------------------------------------
 # Detection — graph + geometry only.
 # ---------------------------------------------------------------------------
@@ -392,6 +407,19 @@ def apply_hapto_honest(
     M = P_orig[metal_idx]
     P_new = P_orig.copy()
     n_fixed = 0
+    # Surgical-fix (2026-06-04): when the optional global-clash gate is
+    # active, snapshot the pre-correction collapse count so each
+    # per-unit acceptance can verify "clash count does NOT increase".
+    _clash_gate_active = _post_correction_clash_gate_active()
+    _bcg = None
+    _pre_collapse = 0
+    if _clash_gate_active:
+        try:
+            from delfin.fffree import build_time_clash_gate as _bcg_mod
+            _bcg = _bcg_mod
+            _pre_collapse = int(_bcg.collapse_count(list(symbols), P_orig))
+        except Exception:
+            _bcg = None
     for u in units:
         block_idx = list(u.indices) + list(u.attached_h)
         P_try = _apply_unit_correction(P_new, M, u)
@@ -409,6 +437,23 @@ def apply_hapto_honest(
         ideal = _ideal_m_centroid_distance(u.metal_symbol, u.eta)
         if abs(new_dist - ideal) > 1e-3:
             continue
+        # Surgical-fix (2026-06-04, b00f9a0 forensik): post-correction
+        # global-clash gate.  Snapping a ring centroid to its ideal
+        # M-centroid distance may push ring carbons / attached H atoms
+        # into nearby ligand atoms; that surfaces downstream as F20_h,
+        # funcgrp, angles-violations on the otherwise-correct σ
+        # sub-polyhedron.  When active, reject the unit-correction if
+        # the global collapse count would INCREASE.  Default OFF ->
+        # byte-identical to b00f9a0.
+        if _clash_gate_active and _bcg is not None:
+            try:
+                _post_collapse = int(_bcg.collapse_count(list(symbols), P_try))
+                if _post_collapse > _pre_collapse:
+                    continue  # reject this unit-correction
+                _pre_collapse = _post_collapse
+            except Exception:
+                # Defensive: never let the clash gate raise.
+                pass
         # Accept.
         P_new = P_try
         n_fixed += 1
