@@ -350,3 +350,80 @@ def test_interlig_pair_helper_co_carbonyl_clash():
     pen, n = _interlig_penalty_for_pair(syms_a, P_a, syms_b, P_b)
     assert pen > 0.0
     assert n >= 1
+
+
+# ---------------------------------------------------------------------------
+# Healing-wiring cleanup (2026-06-04) — H-H clash inclusion in collapse_count
+# / has_collapse via DELFIN_FFFREE_HH_CLASH_INCLUDE.
+# ---------------------------------------------------------------------------
+def _two_methyls(separation: float = 2.5):
+    """Two CH3 groups facing each other -- inter-fragment H-H ≈ 1.78 Å."""
+    syms = ["C", "H", "H", "H", "C", "H", "H", "H"]
+    P = np.array([
+        [0.00, 0.00, 0.00],
+        [1.03, 0.00, 0.36],
+        [-0.52, 0.89, 0.36],
+        [-0.52, -0.89, 0.36],
+        [0.00, 0.00, separation],
+        [1.03, 0.00, separation - 0.36],
+        [-0.52, 0.89, separation - 0.36],
+        [-0.52, -0.89, separation - 0.36],
+    ], dtype=float)
+    return syms, P
+
+
+def test_hh_clash_byte_identical_when_off(monkeypatch):
+    """Env-OFF: collapse_count returns the legacy count -- byte-identical to
+    HEAD b195dba (no H-H augmentation)."""
+    monkeypatch.delenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", raising=False)
+    from delfin.fffree.build_time_clash_gate import collapse_count, has_collapse
+    syms, P = _two_methyls(separation=2.5)
+    # Two isolated methyls with no clash collapse < 0.70 floor.
+    n = collapse_count(syms, P)
+    # Without H-H augmentation, this geometry has no collapse violations.
+    assert n == 0
+    # has_collapse is master-gated; the build_gate flag is OFF -> False.
+    assert has_collapse(syms, P) is False
+
+
+def test_hh_clash_included_when_env_on(monkeypatch):
+    """Env-ON: collapse_count is augmented by the H-H pair count from
+    :mod:`hh_clash_detector` (3 face-to-face H-H pairs in the 2-methyl
+    fixture)."""
+    monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", "1")
+    from delfin.fffree.build_time_clash_gate import collapse_count
+    syms, P = _two_methyls(separation=2.5)
+    n = collapse_count(syms, P)
+    # 3 face-to-face H-H pairs at ~1.78 Å (below Bondi 2.04 Å floor).
+    assert n >= 3
+
+
+def test_hh_clash_has_collapse_when_env_on(monkeypatch):
+    """Env-ON: has_collapse returns True on a pure H-H clash geometry when
+    the build-gate master is active."""
+    monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", "1")
+    monkeypatch.setenv("DELFIN_FFFREE_BUILD_CLASH_GATE", "1")
+    from delfin.fffree.build_time_clash_gate import has_collapse
+    syms, P = _two_methyls(separation=2.5)
+    assert has_collapse(syms, P) is True
+
+
+def test_hh_clash_predicate_active():
+    """The build_time_clash_gate exposes a local env-predicate; sanity-check
+    its default-OFF + truthy parsing."""
+    import os
+    from delfin.fffree.build_time_clash_gate import _hh_clash_include_active
+    saved = os.environ.pop("DELFIN_FFFREE_HH_CLASH_INCLUDE", None)
+    try:
+        assert _hh_clash_include_active() is False
+        for v in ("1", "true", "yes", "on"):
+            os.environ["DELFIN_FFFREE_HH_CLASH_INCLUDE"] = v
+            assert _hh_clash_include_active() is True
+        for v in ("0", "false", "no", "off", ""):
+            os.environ["DELFIN_FFFREE_HH_CLASH_INCLUDE"] = v
+            assert _hh_clash_include_active() is False
+    finally:
+        if saved is None:
+            os.environ.pop("DELFIN_FFFREE_HH_CLASH_INCLUDE", None)
+        else:
+            os.environ["DELFIN_FFFREE_HH_CLASH_INCLUDE"] = saved

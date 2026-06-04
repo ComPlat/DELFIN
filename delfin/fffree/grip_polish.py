@@ -235,7 +235,186 @@ __all__ = [
     "_GRIP_METHOD_ENV",
     "_GRIP_METHOD_LBFGS",
     "_GRIP_METHOD_LM",
+    # Healing-wiring (2026-06-04) — pre-polish heal hooks, env-gated default-OFF.
+    "_topology_healing_active",
+    "_grip_healing_active",
+    "_run_pre_polish_topology_healing",
+    "_run_pre_polish_grip_healing",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Healing-wiring env-flag predicates (2026-06-04, wiring cleanup).
+#
+# Three standalone healing modules ship with HEAD b195dba but are NOT yet
+# called by the pipeline.  This block adds env-gated pre-polish hooks so the
+# orchestration sits in ONE place (grip_polish dispatcher) instead of forking
+# the call graph at every site.  All flags default OFF -> byte-identical with
+# HEAD b195dba when unset.  Order (when all enabled):
+#
+#     coords -> topology_healing  (phantom / missing / wrong-angle, graph)
+#            -> grip_healing      (broken-atom iterative reposition, atoms)
+#            -> grip_polish_inner (L-BFGS / LM Mahalanobis polish)
+#
+# H-H clash inclusion is wired separately via ClashFloorPenalty extras +
+# the per-endpoint hooks in grip_constraints / build_time_clash_gate /
+# inter_ligand_clash_gate / assemble_complex (env DELFIN_FFFREE_HH_CLASH_INCLUDE).
+# ---------------------------------------------------------------------------
+_TOPOLOGY_HEALING_ENV: str = "DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING"
+_GRIP_HEALING_ENV: str = "DELFIN_FFFREE_GRIP_HEALING_MODE"
+_HH_CLASH_INCLUDE_ENV: str = "DELFIN_FFFREE_HH_CLASH_INCLUDE"
+
+
+def _topology_healing_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING`` is on (default OFF).
+
+    Mirror of :func:`delfin.fffree.topology_healing.is_active` kept local
+    so the grip_polish dispatcher does not pay a hard import cost when the
+    flag is OFF (the topology_healing module is imported lazily inside the
+    hook below).
+    """
+    raw = os.environ.get(_TOPOLOGY_HEALING_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _grip_healing_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_HEALING_MODE`` is on (default OFF).
+
+    Mirror of :func:`delfin.fffree.grip_healing.healing_mode_active`.
+    """
+    raw = os.environ.get(_GRIP_HEALING_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _hh_clash_include_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF)."""
+    raw = os.environ.get(_HH_CLASH_INCLUDE_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _run_pre_polish_topology_healing(
+    P_init: np.ndarray,
+    mol,
+    metal: int,
+    donors: Sequence[int],
+) -> np.ndarray:
+    """Run :func:`topology_healing.topology_healing_pipeline` on ``P_init``.
+
+    Pure pass-through when the env-flag is OFF -- returns ``P_init`` unchanged
+    (byte-identical with HEAD b195dba).  When ON, the topology heal:
+
+      * detects phantom / missing / wrong-angle defects using SMILES
+        topology from ``mol``,
+      * applies accept-if-better rolls (defects must not increase),
+      * preserves the M-D invariant (metal + donors are frozen).
+
+    Any exception -> swallow + return ``P_init`` (defence in depth; the heal
+    must never crash the polish).
+    """
+    if not _topology_healing_active():
+        return P_init
+    try:
+        from .topology_healing import topology_healing_pipeline
+    except Exception as exc:  # pragma: no cover -- module missing
+        _LOG.warning(
+            "grip_polish: failed to import topology_healing (%r); skipping",
+            exc,
+        )
+        return P_init
+    try:
+        # Extract symbols + bond topology from mol.  Falls back to no-op
+        # if either is missing (avoids reading bogus data).
+        try:
+            syms = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+        except Exception:
+            return P_init
+        if len(syms) != P_init.shape[0]:
+            return P_init
+        out = topology_healing_pipeline(
+            P_init,
+            syms,
+            mol,
+            metal_idx=int(metal),
+            donors=tuple(int(d) for d in donors),
+            return_diagnostics=False,
+        )
+        out = np.asarray(out, dtype=np.float64)
+        if out.shape != P_init.shape or not np.all(np.isfinite(out)):
+            return P_init
+        return out
+    except Exception as exc:
+        _LOG.warning(
+            "grip_polish: topology_healing raised (%r); falling back to P_init",
+            exc,
+        )
+        return P_init
+
+
+def _run_pre_polish_grip_healing(
+    P_init: np.ndarray,
+    mol,
+    metal: int,
+    donors: Sequence[int],
+    library,
+) -> np.ndarray:
+    """Run :func:`grip_healing.iterative_topology_repositioning` on ``P_init``.
+
+    Pure pass-through when the env-flag is OFF -- returns ``P_init`` unchanged
+    (byte-identical with HEAD b195dba).  When ON, the grip_healing pass
+    repositions broken atoms (bond residual > σ-threshold) onto their
+    CCDC-grounded targets while keeping the metal + donors frozen.
+
+    Any exception -> swallow + return ``P_init``.
+    """
+    if not _grip_healing_active():
+        return P_init
+    try:
+        from .grip_healing import (
+            iterative_topology_repositioning,
+            _build_ideal_table,
+            _extract_mol_bonds,
+            _extract_symbols,
+        )
+    except Exception as exc:  # pragma: no cover
+        _LOG.warning(
+            "grip_polish: failed to import grip_healing (%r); skipping",
+            exc,
+        )
+        return P_init
+    try:
+        bonds = _extract_mol_bonds(mol)
+        syms = _extract_symbols(mol)
+        if not bonds or not syms:
+            return P_init
+        if len(syms) != P_init.shape[0]:
+            return P_init
+        ideal_table = _build_ideal_table(bonds, syms, library=library)
+        frozen = set([int(metal), *[int(d) for d in donors]])
+        out = iterative_topology_repositioning(
+            P_init,
+            bonds,
+            ideal_lengths=ideal_table,
+            symbols=syms,
+            library=library,
+            frozen_atoms=frozen,
+            return_diagnostics=False,
+        )
+        out = np.asarray(out, dtype=np.float64)
+        if out.shape != P_init.shape or not np.all(np.isfinite(out)):
+            return P_init
+        return out
+    except Exception as exc:
+        _LOG.warning(
+            "grip_polish: grip_healing raised (%r); falling back to P_init",
+            exc,
+        )
+        return P_init
 
 
 def build_ligand_atom_id_map(
@@ -838,7 +1017,19 @@ def grip_polish(
     vdw_table = vdw_radii_by_symbol if vdw_radii_by_symbol is not None else DEFAULT_VDW_RADII
 
     # ------------------------------------------------------------------
-    # 1. Detect fragments.  Frozen = {metal, *donors}.
+    # 0b. Pre-polish healing pipeline (2026-06-04, wiring cleanup).
+    #
+    # Three standalone healing modules ship in HEAD b195dba but were not
+    # wired into the polish dispatcher.  This block invokes them in a
+    # fixed order BEFORE fragment detection so the polish operates on
+    # a "best-effort-healed" geometry:
+    #
+    #     1. topology_healing  -> phantom / missing-bond / wrong-angle
+    #     2. grip_healing      -> broken-atom iterative repositioning
+    #
+    # Both hooks are env-gated default-OFF byte-identical with HEAD
+    # b195dba (return ``P_init`` verbatim when their flags are unset).
+    # Each is independently composable: one can run without the other.
     # ------------------------------------------------------------------
     library = mogul_lib if mogul_lib is not None else None
     if library is None:
@@ -846,6 +1037,9 @@ def grip_polish(
             library = get_default_library()
         except Exception:
             library = None
+
+    P_init = _run_pre_polish_topology_healing(P_init, mol, metal, donors_t)
+    P_init = _run_pre_polish_grip_healing(P_init, mol, metal, donors_t, library)
     frozen: FrozenSet[int] = frozenset((metal, *donors_t))
     # Option-B (2026-06-01): adaptive shell-1 protection.  Env-gated so
     # the polish operator can be A/B-tested in equal-n smokes without a
@@ -949,6 +1143,36 @@ def grip_polish(
     # ------------------------------------------------------------------
     vdw_idx_table = _vdw_table_for_mol(mol, vdw_table)
     excl_13 = _build_13_exclusions(mol_bonds, n_atoms)
+    # H-H clash refinement (2026-06-04, wiring cleanup).
+    #
+    # ``ClashFloorPenalty`` already iterates EVERY non-bonded, non-1,3
+    # pair using its vdW table (which includes H at 1.20 Å), so H-H
+    # contacts already enter the loss surface.  The standalone
+    # :mod:`hh_clash_detector` module adds a small but important
+    # refinement: it knows that geminal H-H (~1.78 Å on a methylene C)
+    # and 1-3 H-H within the same methyl group (~1.78 Å) are NOT
+    # clashes -- chemically correct close contacts that should not
+    # contribute to the Pauli penalty.  When the env-flag is ON we
+    # extend ``excl_13`` with those H-H pairs so the penalty fires
+    # only on genuine 1-4+ H-H eclipsing / inter-ligand contacts.
+    #
+    # Default OFF -> ``excl_13`` is byte-identical with HEAD b195dba.
+    if _hh_clash_include_active():
+        try:
+            from .hh_clash_detector import build_hh_exclusion_pairs
+            try:
+                hh_syms = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+            except Exception:
+                hh_syms = []
+            if len(hh_syms) == n_atoms:
+                hh_excl = build_hh_exclusion_pairs(hh_syms, P_init)
+                if hh_excl:
+                    excl_13 = excl_13 | set(hh_excl)
+        except Exception as exc:
+            _LOG.warning(
+                "grip_polish: hh_clash_detector exclusion build failed (%r); skipping",
+                exc,
+            )
     effective_clash_weight = _resolve_clash_weight(clash_weight)
     # Fix A: inter-ligand clash boost (User-Direktive 2026-06-02).  Only
     # activated when the env-flag is set to a finite numeric value (the

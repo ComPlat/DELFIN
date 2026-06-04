@@ -542,8 +542,32 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     return syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m
 
 
+def _hh_clash_include_active_assemble() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF).
+
+    Wired-in 2026-06-04 (healing-wiring cleanup).  Default OFF ->
+    :func:`_clash_count` returns the byte-identical legacy 0.70× heavy/H
+    count.  When ON, the count is augmented by cross-block H-H pairs
+    below the Bondi vdW floor (0.85 × 2.40 Å), catching methyl-methyl
+    eclipsing that the loose 0.70× factor passes through clean.
+    """
+    import os as _os_loc
+    raw = _os_loc.environ.get("DELFIN_FFFREE_HH_CLASH_INCLUDE", "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
 def _clash_count(Q, existing, syms_Q, syms_ex):
-    """# heavy/H pairs between block Q and existing atoms closer than 0.7*(vdW sum)."""
+    """# heavy/H pairs between block Q and existing atoms closer than 0.7*(vdW sum).
+
+    H-H clash augmentation (2026-06-04, wiring cleanup)
+    --------------------------------------------------
+    When ``DELFIN_FFFREE_HH_CLASH_INCLUDE=1`` is set, the count is augmented
+    by cross-block H-H pairs below the Bondi vdW floor (0.85 × 2 × 1.20 Å
+    = 2.04 Å) -- catches methyl-methyl eclipsing between Q and the already-
+    placed atoms.  Default OFF -> byte-identical with HEAD b195dba.
+    """
     if len(existing) == 0:
         return 0
     from delfin.fffree.refine import _vdw
@@ -553,6 +577,33 @@ def _clash_count(Q, existing, syms_Q, syms_ex):
             d = float(np.linalg.norm(Q[a] - existing[b]))
             if d < 0.70 * (_vdw(syms_Q[a]) + _vdw(syms_ex[b])):
                 c += 1
+    # H-H augmentation (env-gated, default OFF byte-identical).
+    if _hh_clash_include_active_assemble():
+        try:
+            from delfin.fffree.hh_clash_detector import (
+                H_VDW_RADIUS,
+                hh_clash_factor,
+            )
+            fac = hh_clash_factor()
+            d_min = fac * (H_VDW_RADIUS + H_VDW_RADIUS)
+            for a in range(len(Q)):
+                if str(syms_Q[a]) != "H":
+                    continue
+                Qa = Q[a]
+                for b in range(len(existing)):
+                    if str(syms_ex[b]) != "H":
+                        continue
+                    d = float(np.linalg.norm(Qa - existing[b]))
+                    # Skip exact coincidence + already-counted (d < 0.70 floor).
+                    if d < 1e-9:
+                        continue
+                    if d < 0.70 * (_vdw(syms_Q[a]) + _vdw(syms_ex[b])):
+                        continue  # already in c
+                    if d < d_min:
+                        c += 1
+        except Exception:
+            # Defence in depth: detector failure must never break assembly.
+            pass
     return c
 
 

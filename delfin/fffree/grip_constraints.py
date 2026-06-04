@@ -1,5 +1,17 @@
 """GRIP — Hard Constraints + Clash Floor (Phase 3, v1).
 
+H-H clash inclusion (2026-06-04 wiring cleanup)
+-----------------------------------------------
+``ClashFloorPenalty`` always iterates every non-bonded, non-1,3 pair
+including H atoms (Bondi radius 1.20 Å is in the standard vdW table).
+The :func:`hh_pair_contribution` helper exposed at the bottom of this
+module returns the H-H sub-contribution to the loss when the env-flag
+``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is set, so callers can diagnose
+whether the polish actually relieved H-H eclipsing.  When the flag is
+OFF the helper returns ``(0.0, 0)`` -- byte-identical with HEAD
+``b195dba``.
+
+
 Implements the constraint stack from SPEC §3.2 used by the GRIP polish
 optimiser (:mod:`grip_polish`):
 
@@ -38,7 +50,67 @@ __all__ = [
     "TopologyConstraint",
     "ChiralVolumeConstraint",
     "ClashFloorPenalty",
+    "hh_clash_include_active",
+    "hh_pair_contribution",
 ]
+
+
+# ---------------------------------------------------------------------------
+# H-H clash inclusion env-predicate (2026-06-04, wiring cleanup).
+#
+# The standalone :mod:`hh_clash_detector` module ships specialised geometry
+# for H-H contacts (geminal / 1-3 / 1-4 topology filter, Bondi vdW floor).
+# When the env-flag ``DELFIN_FFFREE_HH_CLASH_INCLUDE=1`` is set, callers
+# refine ``ClashFloorPenalty.exclude_13_pairs`` to skip non-clash H-H pairs
+# (geminal + 1-3 within CH3) so the Pauli penalty fires only on real
+# eclipsing.  Default OFF -> byte-identical with HEAD b195dba.
+# ---------------------------------------------------------------------------
+import os as _os_for_hh  # local alias so we don't pollute the public namespace
+
+
+def hh_clash_include_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF)."""
+    raw = _os_for_hh.environ.get(
+        "DELFIN_FFFREE_HH_CLASH_INCLUDE", ""
+    ).strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def hh_pair_contribution(
+    syms: Sequence[str],
+    R: np.ndarray,
+    *,
+    factor: Optional[float] = None,
+) -> Tuple[float, int]:
+    """Return ``(severity, count)`` of H-H clashes in ``R`` when the env-flag
+    is ON; ``(0.0, 0)`` when OFF (byte-identical).
+
+    Diagnostic helper kept next to :class:`ClashFloorPenalty` so callers can
+    measure the H-H contribution of a polished geometry without re-walking
+    the full pair table.  The detector internally honours the
+    ``DELFIN_FFFREE_HH_CLASH_FACTOR`` and ``DELFIN_FFFREE_HH_CLASH_MIN_TOPO``
+    env-flags; pass ``factor`` to override the vdW-sum fraction.
+
+    Returns
+    -------
+    (severity, count)
+        ``severity`` = ``Σ max(0, d_min - d)^2`` (Å²), summed over H-H
+        clashes; ``count`` = pair count.  Both 0 when env is OFF.
+    """
+    if not hh_clash_include_active():
+        return 0.0, 0
+    try:
+        from .hh_clash_detector import detect_hh_clashes
+    except Exception:
+        return 0.0, 0
+    try:
+        clashes = detect_hh_clashes(syms, R, factor=factor)
+    except Exception:
+        return 0.0, 0
+    sev = float(sum(t[3] for t in clashes))
+    return sev, int(len(clashes))
 
 
 # Numerical floor for distance-norm divisions in the analytic gradient.
