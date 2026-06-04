@@ -1,0 +1,187 @@
+Total isocov records: 10647
+Unique smiles_id values: 10505
+
+=== PHASE A: Per-SMILES Coverage Histogram ===
+       0%  :  2169  ( 20.4%)
+    1-25%  :  1897  ( 17.8%)
+   26-50%  :  2920  ( 27.4%)
+   51-75%  :  1904  ( 17.9%)
+   76-99%  :   761  (  7.1%)
+     100%  :   996  (  9.4%)
+
+=== Per-Class Coverage ===
+            hapto: n= 1070  0%= 410 (38.3%)  100%=  40 ( 3.7%)  mean= 27.7%
+      multi-hapto: n=   23  0%=  13 (56.5%)  100%=   0 ( 0.0%)  mean= 18.3%
+      multi-sigma: n=   23  0%=   9 (39.1%)  100%=   0 ( 0.0%)  mean= 14.8%
+            sigma: n= 9531  0%=1737 (18.2%)  100%= 956 (10.0%)  mean= 43.3%
+
+=== PHASE B: Clustering 0%-coverage SMILES ===
+Total 0%-coverage records: 2169
+
+  By metal:
+      Pd: 195
+      Pt: 183
+      Ru: 182
+      Ni: 155
+      Rh: 146
+      Cu: 116
+      Ir: 109
+      Co: 94
+      Fe: 91
+       ?: 83
+      Ag: 75
+      Zn: 65
+      Cd: 64
+      Mo: 60
+      Hg: 58
+      Au: 53
+      Re: 53
+      Os: 50
+       Y: 43
+       W: 42
+
+  By metal class:
+            4d: 823
+            3d: 674
+            5d: 589
+         other: 83
+
+  By CN:
+    CN0: 80
+    CN1: 62
+    CN2: 285
+    CN3: 263
+    CN4: 869
+    CN5: 107
+    CN6: 235
+    CN7: 47
+    CN8: 51
+    CN9: 12
+    CN10: 39
+    CN11: 4
+    CN12: 30
+    CN13: 1
+    CN15: 1
+    CN?: 83
+
+  By polyhedron_class (top 25 patterns):
+     142  low-cn
+      83  ?
+      38  bis-monodentate-Cl+Cl
+      35  bis-monodentate-C+C
+      30  bis-monodentate-N+N
+      28  bis-monodentate-P+P
+      26  bis-bidentate-NN+NN
+      26  bis-hexadentate-CCCCCC+CCCCCC
+      21  tris-bidentate-NN+NN+NN
+      18  bidentate-NN
+      18  tetradentate-NNNN
+      16  tetrakis-monodentate-C+C+P+P
+      14  bidentate+bis-monodentate-NN+C+C
+      13  bis-monodentate-O+O
+      13  bidentate+bis-monodentate-NN+P+P
+      12  tetrakis-monodentate-C+C+C+C
+      12  tridentate+monodentate-NNN+O
+      12  hexadentate-CCCCCC
+      11  bis-bidentate-NN+PP
+      10  tris-monodentate-N+N+N
+      10  tris-monodentate-C+C+C
+      10  bis-monodentate-C+Cl
+      10  bis-monodentate-I+I
+      10  tridentate+monodentate-NNN+Cl
+       9  bidentate+bis-monodentate-NN+N+N
+
+  By denticity composition (top 20):
+     729  (('monodentate', 1),)
+     443  (('bidentate', 1), ('monodentate', 1))
+     264  NO_DENT
+     206  (('monodentate', 1), ('tridentate', 1))
+     196  (('bidentate', 1),)
+      66  (('tetradentate', 1),)
+      46  (('hexadentate', 1),)
+      42  (('tridentate', 1),)
+      36  (('monodentate', 1), ('tetradentate', 1))
+      25  (('hexadentate', 1), ('monodentate', 1))
+      23  (('bidentate', 1), ('monodentate', 1), ('tridentate', 1))
+      21  (('bidentate', 1), ('tetradentate', 1))
+      16  (('monodentate', 1), ('pentadentate', 1))
+      12  (('bidentate', 1), ('tridentate', 1))
+      10  (('hexadentate', 1), ('tetradentate', 1))
+       8  (('pentadentate', 1),)
+       6  (('bidentate', 1), ('monodentate', 1), ('tetradentate', 1))
+       5  (('bidentate', 1), ('hexadentate', 1))
+       3  (('tetradentate', 1), ('tridentate', 1))
+       2  (('bidentate', 1), ('pentadentate', 1))
+
+  Theoretical_isomers count among 0%-coverage records:
+    n with theoretical=0: 336
+    n with theoretical=1: 87
+    n with theoretical>=2: 1746
+    n with theoretical>=10: 140
+    n with theoretical>=50: 4
+    max theoretical: 97
+
+  Decomposition of 0%-coverage:
+    Theory=0 (enumeration broken, no isomers known): 336 -- NOT real coverage issue
+    Theory>=2 + observed=0 (BUILDER missed all): 1746 -- TRUE coverage failure
+
+  Top polyhedron_class for theory=0:
+      83  ?
+      36  low-cn
+      26  bis-hexadentate-CCCCCC+CCCCCC
+      16  bis-monodentate-C+C
+      14  bis-monodentate-N+N
+      10  bis-monodentate-P+P
+       9  octadentate-CCCCCCNN
+       8  hexadentate+tetradentate-CCCCCC+CCCC
+       6  bidentate-NN
+       5  bis-pentadentate-CCCCC+CCCCC
+       4  hexadentate-CCCCCC
+       4  bis-monodentate-S+S
+       3  bis-monodentate-O+O
+       3  heptadentate+monodentate-CCCCCCC+C
+       3  bidentate-CP
+
+  Theory>=2 + observed=0 (TRUE coverage failures):
+    By class:
+             sigma: 1471
+             hapto: 259
+       multi-sigma: 9
+       multi-hapto: 7
+    By CN:
+      CN0: 48
+      CN1: 50
+      CN2: 209
+      CN3: 232
+      CN4: 814
+      CN5: 103
+      CN6: 229
+      CN7: 42
+      CN8: 19
+    By metal class:
+              4d: 689
+              3d: 544
+              5d: 513
+    Top polyhedron_class:
+        98  low-cn
+        38  bis-monodentate-Cl+Cl
+        26  bis-bidentate-NN+NN
+        21  tris-bidentate-NN+NN+NN
+        18  bis-monodentate-P+P
+        16  tetrakis-monodentate-C+C+P+P
+        14  bis-monodentate-C+C
+        14  bis-monodentate-N+N
+        14  bidentate+bis-monodentate-NN+C+C
+        13  bidentate+bis-monodentate-NN+P+P
+        13  tetradentate-NNNN
+        12  tetrakis-monodentate-C+C+C+C
+        12  bidentate-NN
+        11  bis-bidentate-NN+PP
+        10  bis-monodentate-O+O
+
+=== Partial-coverage records (1-99%): 7482 ===
+  mean coverage: 45.9%
+           sigma: n=6838  mean=46.3%
+           hapto: n=620  mean=41.4%
+     multi-sigma: n=14  mean=24.3%
+     multi-hapto: n=10  mean=42.0%
