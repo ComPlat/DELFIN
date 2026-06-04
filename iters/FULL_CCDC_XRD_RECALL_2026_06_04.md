@@ -171,13 +171,28 @@ python pool_evaluator.py ...
 > **Isomer-recall** is the fraction of CCDC-family isomer-classes that
 > appear in the DELFIN emission; **conformer-recall** at 0.5 Å is the
 > fraction of CCDC-family refcodes for which some DELFIN emission has
-> heavy-atom Kabsch-RMSD < 0.5 Å. DELFIN achieves **N%** isomer-recall
-> and **M%** conformer-recall, averaged over **X** SMILES with ≥1 CCDC
-> match. The metric is implementable as a runtime CCDC-free callable
-> (`delfin.fffree.xrd_recall_metric_full`) and integrates directly into
-> the pool evaluator as a post-pool hook.
+> heavy-atom Kabsch-RMSD < 0.5 Å. On the `b00f9a0-full7-VOLLPOOL`
+> archive (10,576 XYZ from 10,535 unique SMILES), 4728 SMILES (44.9 %)
+> had ≥1 CCDC family member at signature granularity (mean 9.4 refcodes
+> per matched SMILES). DELFIN achieves **isomer-recall 11.0 %** and
+> **conformer-recall 0.12 %** at 0.5 Å heavy-atom Kabsch-RMSD, averaged
+> over the 4728 matched SMILES. The low conformer-recall is consistent
+> with DELFIN's design role as a startpoint generator for the GFN-FF →
+> GFN2 → DFT cascade (coordination-sphere-correct but not
+> crystal-conformer-accurate). The metric is implementable as a runtime
+> CCDC-free callable (`delfin.fffree.xrd_recall_metric_full`) and
+> integrates directly into the pool evaluator as a post-pool hook
+> (`DELFIN_QF_AUTO_XRD_RECALL=1`).
 
-(N, M, X to be filled by Mission 4 measurement.)
+### Numbers (measured 2026-06-04)
+
+| archive | n_xyz | n_smiles | with_family | isomer_recall | conformer_recall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| b00f9a0-full7-VOLLPOOL | 10576 | 10535 | 4728 | 0.1102 | 0.0012 |
+
+(TMC index at measurement time: 111,844 records — partial; full CSD
+build still in progress. Re-measurement once the full ~500k index lands
+is queued.)
 
 ## Legal Separation
 
