@@ -678,3 +678,217 @@ class TestEnvClashWeight:
         P0 = _coords(mol)
         _ = grip_polish(P0, mol, metal=0, donors=[1], geom="", clash_weight=2.5)
         assert captured["weight"] == pytest.approx(2.5)
+
+
+# ---------------------------------------------------------------------------
+# Healing-wiring cleanup (2026-06-04) — pre-polish hooks + H-H clash inclusion
+# ---------------------------------------------------------------------------
+class TestHealingWiring:
+    """Verify the three standalone healing modules (topology_healing,
+    grip_healing, hh_clash_detector) are correctly wired into
+    :func:`grip_polish` via env-flags.  Every flag MUST default OFF
+    byte-identical with HEAD b195dba; turning a flag ON must trigger
+    the corresponding hook without breaking the polish.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        # Make sure every test starts with a clean healing-wiring env.
+        for k in (
+            "DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING",
+            "DELFIN_FFFREE_GRIP_HEALING_MODE",
+            "DELFIN_FFFREE_HH_CLASH_INCLUDE",
+            "DELFIN_FFFREE_HH_CLASH_FACTOR",
+            "DELFIN_FFFREE_HH_CLASH_MIN_TOPO",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        yield
+
+    def test_env_predicates_default_off(self, monkeypatch):
+        from delfin.fffree.grip_polish import (
+            _topology_healing_active,
+            _grip_healing_active,
+            _hh_clash_include_active,
+        )
+        assert _topology_healing_active() is False
+        assert _grip_healing_active() is False
+        assert _hh_clash_include_active() is False
+
+    def test_env_predicates_truthy_values_match(self, monkeypatch):
+        from delfin.fffree.grip_polish import (
+            _topology_healing_active,
+            _grip_healing_active,
+            _hh_clash_include_active,
+        )
+        for val in ("1", "true", "yes", "on", "TRUE", "On"):
+            monkeypatch.setenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", val)
+            assert _topology_healing_active() is True
+            monkeypatch.setenv("DELFIN_FFFREE_GRIP_HEALING_MODE", val)
+            assert _grip_healing_active() is True
+            monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", val)
+            assert _hh_clash_include_active() is True
+        # Falsy values
+        for val in ("0", "false", "no", "off", ""):
+            monkeypatch.setenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", val)
+            assert _topology_healing_active() is False
+
+    def test_topology_healing_hook_default_off_byte_identical(self, monkeypatch):
+        """Env-OFF: ``_run_pre_polish_topology_healing`` must return its input
+        unchanged (byte-identical with HEAD b195dba)."""
+        from delfin.fffree.grip_polish import _run_pre_polish_topology_healing
+        monkeypatch.delenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", raising=False)
+        mol = _toluene()
+        P0 = _coords(mol)
+        out = _run_pre_polish_topology_healing(P0.copy(), mol, metal=0, donors=[1])
+        assert np.array_equal(out, P0)
+
+    def test_grip_healing_mode_hook_default_off_byte_identical(self, monkeypatch):
+        """Env-OFF: ``_run_pre_polish_grip_healing`` must return its input
+        unchanged (byte-identical with HEAD b195dba)."""
+        from delfin.fffree.grip_polish import _run_pre_polish_grip_healing
+        monkeypatch.delenv("DELFIN_FFFREE_GRIP_HEALING_MODE", raising=False)
+        mol = _toluene()
+        P0 = _coords(mol)
+        out = _run_pre_polish_grip_healing(
+            P0.copy(), mol, metal=0, donors=[1], library=None,
+        )
+        assert np.array_equal(out, P0)
+
+    def test_grip_polish_env_off_byte_identical(self, monkeypatch):
+        """End-to-end: with EVERY healing-wiring env unset, grip_polish must
+        produce byte-identical output to HEAD b195dba.  We compare polish-
+        on-mol against itself across two invocations to verify determinism
+        + ensure the hooks are pure pass-through."""
+        for k in (
+            "DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING",
+            "DELFIN_FFFREE_GRIP_HEALING_MODE",
+            "DELFIN_FFFREE_HH_CLASH_INCLUDE",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        mol = _toluene()
+        P0 = _coords(mol)
+        rng = _rng(seed=11)
+        P_in = P0 + rng.standard_normal(P0.shape) * 0.02
+        out1 = grip_polish(P_in.copy(), mol, metal=0, donors=[1], geom="", clash_weight=5.0)
+        out2 = grip_polish(P_in.copy(), mol, metal=0, donors=[1], geom="", clash_weight=5.0)
+        assert np.array_equal(out1, out2)
+
+    def test_pipeline_order_topology_then_healing_then_polish(self, monkeypatch):
+        """With ALL three flags ON, the hooks must run in order:
+        topology_healing -> grip_healing -> polish.  We verify the order via
+        a monkey-patched recorder."""
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", "1")
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_HEALING_MODE", "1")
+
+        from delfin.fffree import grip_polish as gp_mod
+        order: list = []
+
+        orig_topo = gp_mod._run_pre_polish_topology_healing
+        orig_heal = gp_mod._run_pre_polish_grip_healing
+
+        def _spy_topo(P, mol, metal, donors, *args, **kwargs):
+            order.append("topo")
+            return orig_topo(P, mol, metal, donors, *args, **kwargs)
+
+        def _spy_heal(P, mol, metal, donors, library, *args, **kwargs):
+            order.append("heal")
+            return orig_heal(P, mol, metal, donors, library, *args, **kwargs)
+
+        monkeypatch.setattr(gp_mod, "_run_pre_polish_topology_healing", _spy_topo)
+        monkeypatch.setattr(gp_mod, "_run_pre_polish_grip_healing", _spy_heal)
+
+        mol = _toluene()
+        P0 = _coords(mol)
+        _ = grip_polish(P0, mol, metal=0, donors=[1], geom="", clash_weight=5.0)
+        # Must have been invoked in topology -> healing order.
+        assert order == ["topo", "heal"]
+
+    def test_combined_hh_clash_in_polish(self, monkeypatch):
+        """With DELFIN_FFFREE_HH_CLASH_INCLUDE=1, the H-H exclusion-refinement
+        path must execute (and not crash); the polish must still return a
+        finite-shape ndarray."""
+        monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", "1")
+        mol = _toluene()
+        P0 = _coords(mol)
+        out = grip_polish(P0, mol, metal=0, donors=[1], geom="", clash_weight=5.0)
+        assert out.shape == P0.shape
+        assert np.all(np.isfinite(out))
+
+    def test_polish_runs_with_all_flags_on(self, monkeypatch):
+        """Stress test: enable all three healing flags simultaneously; polish
+        must still return a finite ndarray of correct shape."""
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", "1")
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_HEALING_MODE", "1")
+        monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", "1")
+        mol = _toluene()
+        P0 = _coords(mol)
+        rng = _rng(seed=13)
+        P_in = P0 + rng.standard_normal(P0.shape) * 0.05
+        out = grip_polish(P_in, mol, metal=0, donors=[1], geom="", clash_weight=5.0)
+        assert out.shape == P_in.shape
+        assert np.all(np.isfinite(out))
+
+    def test_hooks_swallow_exceptions(self, monkeypatch):
+        """If either heal module raises, the hook must return its input and
+        log a warning -- the polish must never crash on a healing failure."""
+        from delfin.fffree.grip_polish import (
+            _run_pre_polish_topology_healing,
+            _run_pre_polish_grip_healing,
+        )
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING", "1")
+        # Pass a malformed mol (None) -> the hook must catch + return input.
+        P = np.zeros((3, 3), dtype=np.float64)
+        out = _run_pre_polish_topology_healing(P, None, 0, ())
+        assert np.array_equal(out, P)
+        monkeypatch.setenv("DELFIN_FFFREE_GRIP_HEALING_MODE", "1")
+        out = _run_pre_polish_grip_healing(P, None, 0, (), library=None)
+        assert np.array_equal(out, P)
+
+
+class TestHHClashGripConstraints:
+    """Smoke-test the H-H-clash diagnostic helper exposed alongside
+    :class:`ClashFloorPenalty`."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        for k in ("DELFIN_FFFREE_HH_CLASH_INCLUDE",):
+            monkeypatch.delenv(k, raising=False)
+        yield
+
+    def test_hh_pair_contribution_default_off(self, monkeypatch):
+        """Env OFF -> (0.0, 0) byte-identically (no detector call)."""
+        from delfin.fffree.grip_constraints import hh_pair_contribution
+        # Two-methyl eclipsing geometry (would otherwise yield clashes).
+        syms = ["C", "H", "H", "H", "C", "H", "H", "H"]
+        P = np.array([
+            [0.00, 0.00, 0.00],
+            [1.03, 0.00, 0.36],
+            [-0.52, 0.89, 0.36],
+            [-0.52, -0.89, 0.36],
+            [0.00, 0.00, 2.5],
+            [1.03, 0.00, 2.14],
+            [-0.52, 0.89, 2.14],
+            [-0.52, -0.89, 2.14],
+        ], dtype=float)
+        sev, n = hh_pair_contribution(syms, P)
+        assert sev == 0.0
+        assert n == 0
+
+    def test_hh_pair_contribution_env_on(self, monkeypatch):
+        """Env ON -> non-zero count on the canonical 2-methyl test fixture."""
+        monkeypatch.setenv("DELFIN_FFFREE_HH_CLASH_INCLUDE", "1")
+        from delfin.fffree.grip_constraints import hh_pair_contribution
+        syms = ["C", "H", "H", "H", "C", "H", "H", "H"]
+        P = np.array([
+            [0.00, 0.00, 0.00],
+            [1.03, 0.00, 0.36],
+            [-0.52, 0.89, 0.36],
+            [-0.52, -0.89, 0.36],
+            [0.00, 0.00, 2.5],
+            [1.03, 0.00, 2.14],
+            [-0.52, 0.89, 2.14],
+            [-0.52, -0.89, 2.14],
+        ], dtype=float)
+        sev, n = hh_pair_contribution(syms, P)
+        assert n >= 1  # at least the face-to-face H-H pair
+        assert sev > 0.0

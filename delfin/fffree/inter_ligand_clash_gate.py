@@ -306,6 +306,82 @@ def enumerate_with_clash_gate(
 # ------------------------------------------------------------------
 
 
+# ------------------------------------------------------------------
+# H-H clash diagnostics helper (2026-06-04, healing-wiring cleanup).
+#
+# The standalone :mod:`hh_clash_detector` reports non-bonded H-H pairs
+# below the Bondi-vdW floor.  Inter-ligand pools often surface methyl-
+# methyl eclipsing pairs across ligand boundaries that the heavy-pair
+# inter-ligand clash counter misses.  This helper exposes the H-H pair
+# count from inside the inter-ligand gate so forensics can A/B compare
+# rotamer pools on the same metric the rest of the stack uses.
+#
+# Default OFF -> returns 0 byte-identically with HEAD b195dba.
+# ------------------------------------------------------------------
+
+
+def _hh_clash_include_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF)."""
+    raw = os.environ.get("DELFIN_FFFREE_HH_CLASH_INCLUDE", "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def count_inter_ligand_hh_clashes(
+    P: np.ndarray,
+    syms: Sequence[str],
+    ligand_subgraphs: Sequence[Iterable[int]],
+    metal_idx: Optional[int] = None,
+) -> int:
+    """Count H-H pairs from DIFFERENT ligand subgraphs flagged by the
+    specialised :mod:`hh_clash_detector`.
+
+    Restrictive variant of :func:`count_inter_ligand_clashes_quick` that
+    consults :func:`hh_clash_detector.detect_hh_clashes` for the H-H
+    pair list and filters down to cross-ligand pairs only.
+
+    Returns
+    -------
+    int
+        Number of inter-ligand H-H clashes; ``0`` when the env-flag is
+        OFF or when the detector is unavailable.
+
+    Default OFF -> returns 0 byte-identically with HEAD b195dba.
+    """
+    if not _hh_clash_include_active():
+        return 0
+    try:
+        from .hh_clash_detector import detect_hh_clashes
+    except Exception:
+        return 0
+    P = np.asarray(P, dtype=float)
+    if P.ndim == 1:
+        if P.size % 3 != 0:
+            return 0
+        P = P.reshape(-1, 3)
+    n = P.shape[0]
+    metal_set: Set[int] = {int(metal_idx)} if metal_idx is not None else set()
+    sg_of: List[int] = [-1] * n
+    for k, comp in enumerate(ligand_subgraphs):
+        for a in comp:
+            ai = int(a)
+            if 0 <= ai < n and ai not in metal_set:
+                sg_of[ai] = k
+    try:
+        clashes = detect_hh_clashes(syms, P)
+    except Exception:
+        return 0
+    count = 0
+    for (i, j, _d, _sev) in clashes:
+        si = sg_of[i] if 0 <= i < n else -1
+        sj = sg_of[j] if 0 <= j < n else -1
+        if si < 0 or sj < 0 or si == sj:
+            continue
+        count += 1
+    return count
+
+
 def gate_stats(
     combos_iter: Iterable,
     assembler: Callable,

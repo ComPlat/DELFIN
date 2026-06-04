@@ -179,6 +179,13 @@ def has_collapse(syms: Sequence[str], P: np.ndarray) -> bool:
 
     Env-gated default-OFF: returns False when no flag set (no rejection ->
     byte-identical behaviour).
+
+    H-H clash augmentation (2026-06-04, wiring cleanup)
+    --------------------------------------------------
+    When ``DELFIN_FFFREE_HH_CLASH_INCLUDE=1`` is set (and the build-gate
+    master flag is active), the function additionally returns True when
+    :func:`hh_clash_detector.count_hh_clashes` reports any pair below the
+    Bondi vdW floor.  Default OFF -> byte-identical with HEAD b195dba.
     """
     if not _flag_active():
         return False
@@ -199,15 +206,47 @@ def has_collapse(syms: Sequence[str], P: np.ndarray) -> bool:
             ideal = _bd._ideal_bond(syms[i], syms[j])
             if d < HH_COLLAPSE_RATIO * ideal:
                 return True
+    # 4. H-H clash augmentation (env-gated, default OFF byte-identical).
+    if _hh_clash_include_active():
+        try:
+            from .hh_clash_detector import count_hh_clashes
+            if int(count_hh_clashes(syms, P)) > 0:
+                return True
+        except Exception:
+            pass
     return False
+
+
+def _hh_clash_include_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF).
+
+    Wired-in 2026-06-04 (healing-wiring cleanup) so the construction-time
+    gate can include the specialised :mod:`hh_clash_detector` count in its
+    ranking score.  Default OFF -> ``collapse_count`` returns the byte-
+    identical legacy total.
+    """
+    raw = os.environ.get("DELFIN_FFFREE_HH_CLASH_INCLUDE", "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
 
 
 def collapse_count(syms: Sequence[str], P: np.ndarray) -> int:
     """Total number of collapse-violation atom-pairs (used for ranking).
 
-    Always counts (no env flag) -- this is read-only.  Callers gate on
-    `has_collapse` and use `collapse_count` to pick the candidate with the
-    FEWEST violations when none is fully clean.
+    Always counts (no env flag for the 3 legacy criteria) -- this is read-
+    only.  Callers gate on ``has_collapse`` and use ``collapse_count`` to
+    pick the candidate with the FEWEST violations when none is fully clean.
+
+    H-H clash augmentation (2026-06-04, wiring cleanup)
+    --------------------------------------------------
+    When ``DELFIN_FFFREE_HH_CLASH_INCLUDE=1`` is set, the count is augmented
+    by the number of non-bonded, non-geminal, non-1,3 H-H pairs below the
+    Bondi vdW floor (0.85 × 2.40 Å = 2.04 Å), as measured by
+    :func:`hh_clash_detector.count_hh_clashes`.  This catches the methyl-
+    methyl eclipsing / methylene-methyl rotamer mistakes that pass clean
+    through the 0.70× heavy-collapse and 0.70 Å X-H thresholds.  Default
+    OFF -> byte-identical legacy count.
     """
     if len(syms) == 0:
         return 0
@@ -230,6 +269,14 @@ def collapse_count(syms: Sequence[str], P: np.ndarray) -> int:
             ideal = _bd._ideal_bond(syms[i], syms[j])
             if d < HH_COLLAPSE_RATIO * ideal:
                 n_pairs += 1
+    # 4. H-H clash augmentation (env-gated, default OFF byte-identical).
+    if _hh_clash_include_active():
+        try:
+            from .hh_clash_detector import count_hh_clashes
+            n_pairs += int(count_hh_clashes(syms, P))
+        except Exception:
+            # Defence in depth: detector failure must never break the build.
+            pass
     return n_pairs
 
 
