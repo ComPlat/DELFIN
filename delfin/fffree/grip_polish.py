@@ -240,6 +240,9 @@ __all__ = [
     "_grip_healing_active",
     "_run_pre_polish_topology_healing",
     "_run_pre_polish_grip_healing",
+    # GRACE env-gated dispatcher (default OFF, byte-identical to HEAD 00f1a5b).
+    "grace_dispatch_active",
+    "grace_polish_or_enumerate",
 ]
 
 
@@ -415,6 +418,50 @@ def _run_pre_polish_grip_healing(
             exc,
         )
         return P_init
+
+
+# ---------------------------------------------------------------------------
+# GRACE env-gated dispatcher (default OFF, byte-identical to HEAD 00f1a5b).
+# Deterministic Group-theoretic Reproducible Adaptive Conformer Ensemble —
+# Pólya × Cremer-Pople × Rotamer enumeration with topology_healing pre-polish
+# and LM/L-BFGS dispatch.  See delfin.fffree.grace_ensemble for the algorithm.
+# ---------------------------------------------------------------------------
+
+
+def grace_dispatch_active() -> bool:
+    """``True`` iff GRACE-Ensemble dispatch is enabled.
+
+    Reads the GRACE master env flag without importing grace_ensemble
+    eagerly (so the OFF path keeps the import surface byte-identical
+    to HEAD 00f1a5b).
+    """
+    raw = os.environ.get("DELFIN_FFFREE_GRACE_ENABLE", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def grace_polish_or_enumerate(smiles: Optional[str] = None, **kwargs):
+    """Public dispatcher: when GRACE is active, run
+    :func:`delfin.fffree.grace_ensemble.grace_enumerate` and return the
+    :class:`GraceResult`; otherwise return ``None`` (caller falls back
+    to the single-shot :func:`grip_polish`).
+
+    This hook is intended to be called from
+    :func:`delfin.fffree.assemble_complex.assemble_from_config` (or any
+    other top-level orchestrator) when a deterministic global ensemble
+    is preferred over a single local polish.  The default-OFF check is
+    cheap (one env-var read) so the dispatcher is safe to call from any
+    hot path.
+    """
+    if not grace_dispatch_active():
+        return None
+    if not smiles:
+        return None
+    try:
+        from .grace_ensemble import grace_enumerate
+    except Exception as exc:  # pragma: no cover -- import-time wiring
+        _LOG.warning("grace_polish_or_enumerate: grace_ensemble import failed: %r", exc)
+        return None
+    return grace_enumerate(smiles, **kwargs)
 
 
 def build_ligand_atom_id_map(
