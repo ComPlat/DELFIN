@@ -13,10 +13,10 @@ User direction (verbatim):
 
 | # | mission | output artefact | status |
 |---|---|---|---|
-| 1 | Mogul-v3 per-class threshold auto-tuning | `mogul_v3_threshold_optimization.csv` + `mogul_detector_v3_tuned.py` | runner ready, table populated by Mission-4 CCDC analysis |
+| 1 | Mogul-v3 per-class threshold auto-tuning | `mogul_v3_threshold_optimization.csv` + `mogul_detector_v3_tuned.py` | 2 classes tuned (smoke); production runner ready |
 | 2 | GRIP loss-term diagnostic vs CCDC | `grip_loss_diagnostic_vs_ccdc.csv` + `grip_loss_weights_tuned.py` | 510 classes, top-20 atlas done |
 | 3 | **XRD-recall metric** (KEY NEW METRIC) | `xrd_isomer_conformer_recall_trajectory.csv` + `xrd_recall_metric.py` | scored 7 voll-pools, 2.2× improvement |
-| 4 | Anomaly pattern atlas | `anomaly_pattern_atlas.csv` | runner ready, smoke run in progress |
+| 4 | Anomaly pattern atlas | `anomaly_pattern_atlas.csv` + `_cache.csv` | 20-struct cache rebuilt, 97 classes |
 | 5 | CCDC reference dataset (CCDC-legal) | `ccdc_ground_truth_48.json` + `.npz` | 44/49 refcodes shipped |
 
 ## Headline numbers — Mission 3 XRD-recall (the user-direction metric)
