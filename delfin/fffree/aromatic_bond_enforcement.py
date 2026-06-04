@@ -112,12 +112,20 @@ def _aromatic_edges_from_geometry(syms: Sequence[str], P: np.ndarray,
                                   ring_size_lo: int = 5,
                                   ring_size_hi: int = 6,
                                   ) -> List[Tuple[int, int]]:
-    """Fallback when no RDKit mol is available: detect 5/6-ring of C/N/O/S/B
-    via geometric bonds and return the in-ring edges.  Deterministic.
+    """Fallback when no RDKit mol is available: detect 5/6-rings that look
+    aromatic AND planar AND have every ring-bond in the aromatic length
+    range [1.20, 1.55].  Deterministic.
 
-    Implementation note: this is a heuristic geometric fallback; it is only
-    used when the RDKit ``mol`` is not passed in.  All real callers should
-    pass the ``mol`` so we get exact RDKit aromaticity.
+    The geometric heuristic is tightened (vs the legacy aromatic_ring_scale
+    detector) to avoid false positives on conjugated-non-aromatic systems
+    that the bond-pull would otherwise mis-target.  In particular:
+    * planarity: max out-of-plane distance < 0.35 Å for the ring
+    * length sanity: every ring-bond in [1.20, 1.55] Å (admits the
+      already-compressed LUHMOT case but excludes sp3 saturated rings whose
+      C-C is at 1.52)
+    * element set: only C / N / O / S / B (no metals, no halides, no Si/P
+      since their aromatic ideals carry larger sigmas and the
+      element-pair miss-rate is higher)
     """
     n = len(syms)
     # Heavy-atom adjacency from geometric bonds.
@@ -151,12 +159,71 @@ def _aromatic_edges_from_geometry(syms: Sequence[str], P: np.ndarray,
     for ring in cycles:
         if not all(syms[a] in allowed for a in ring):
             continue
-        # in-ring neighbour pairs along the cycle
         ring_set = set(ring)
-        for a in ring:
-            for nb in heavy_adj[a]:
-                if nb in ring_set and a < nb:
-                    out.add((a, nb))
+        ring_atoms = sorted(ring)
+        # Build a sub-adjacency restricted to ring atoms.
+        sub_nbrs = {a: [b for b in heavy_adj[a] if b in ring_set] for a in ring_atoms}
+        # Each ring atom must have AT LEAST 2 in-ring nbrs.  A collapsed atom
+        # may have extra spurious in-ring contacts (e.g. LUHMOT C13 sees C14,
+        # C18, C19 as "bonded" because the ring is squished), but the ring
+        # itself remains a valid 6-cycle.
+        if not all(len(sub_nbrs[a]) >= 2 for a in ring_atoms):
+            continue
+        # Reconstruct the ring as a cycle in the order returned by the DFS
+        # cycle finder; collect its consecutive edges.  The DFS path is
+        # already a Hamiltonian cycle of the ring atoms.
+        ring_seq = list(ring)
+        edges: Set[Tuple[int, int]] = set()
+        # Find a Hamiltonian cycle in sub_nbrs starting from min(ring).
+        start = min(ring_atoms)
+        path = [start]
+        cur = start
+        prev = -1
+        for _ in range(len(ring_atoms) - 1):
+            cands = [b for b in sub_nbrs[cur] if b != prev and b in ring_set]
+            # Prefer the candidate that is NOT already on path
+            cands_new = [b for b in cands if b not in path]
+            if cands_new:
+                nxt = sorted(cands_new)[0]
+            elif cands:
+                nxt = sorted(cands)[0]
+            else:
+                break
+            path.append(nxt)
+            prev = cur
+            cur = nxt
+        if len(path) != len(ring_atoms):
+            continue
+        for k in range(len(path)):
+            a, b = path[k], path[(k + 1) % len(path)]
+            edges.add(tuple(sorted((a, b))))
+        # Length sanity: every ring-bond in [1.05, 1.65] AND mean length in
+        # the aromatic band [1.30, 1.48].  The mean-band check excludes
+        # cyclohexane / cyclopentane (mean ~1.52) from being mis-pulled to
+        # aromatic 1.40 — they are sp3 saturated rings whose ring-C-C
+        # mean correctly sits ABOVE the aromatic band.  Smoke 158
+        # forensik (079-FICNAG, 092-NEKCEM): without this gate, two
+        # files were mis-pulled from 1.51 → 1.40.
+        lens = [float(np.linalg.norm(P[a] - P[b])) for (a, b) in edges]
+        if not all(1.05 <= L <= 1.65 for L in lens):
+            continue
+        mean_len = float(np.mean(lens))
+        if not (1.30 <= mean_len <= 1.48):
+            continue
+        # Planarity check: SVD on centered ring atoms, sv[-1] < 0.40 Å
+        # (relaxed from 0.35 for sub-collapsed cases — LUHMOT ring has
+        # sv[-1] = 0.27).
+        pts = np.array([P[a] for a in ring_atoms], dtype=float)
+        ctr = pts.mean(axis=0)
+        centered = pts - ctr
+        try:
+            _, sv, _ = np.linalg.svd(centered, full_matrices=False)
+        except Exception:
+            continue
+        if len(sv) >= 3 and sv[-1] > 0.40:
+            continue
+        for e in edges:
+            out.add(e)
     return sorted(out)
 
 
