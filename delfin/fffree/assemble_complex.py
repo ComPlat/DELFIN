@@ -1255,6 +1255,42 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                                 P = P_u
                 except Exception:
                     pass
+                # Overnight aromatic-bond fix (2026-06-04, LUHMOT 1.13 Å
+                # bug): per-bond pull of aromatic edges toward CCDC empirical
+                # means (delfin.fffree.aromatic_bond_targets). Catches the
+                # case where aromatic_ring_scale's mean-based / uniform pull
+                # misses intra-ring variance AND topology_healing ignores
+                # compressed bonds. Frozen-set: metal-coordinated + hapto-π
+                # + donors. M-D invariance check before accept. Default-OFF
+                # byte-identical (env DELFIN_FFFREE_AROMATIC_BONDS=1; auto
+                # under PURE_TRACK3).
+                try:
+                    from delfin.fffree.aromatic_bond_enforcement import (
+                        enforce_aromatic_bonds as _enforce_aromatic_bonds,
+                        is_enabled as _aromatic_bonds_enabled,
+                    )
+                    if _aromatic_bonds_enabled():
+                        P_pre_ab = P.copy()
+                        _, P_ab = _enforce_aromatic_bonds(
+                            out_syms, P, mol=None,
+                            fixed=set(donor_globals) | {0},
+                        )
+                        if (P_ab is not None and isinstance(P_ab, np.ndarray)
+                            and P_ab.shape == P.shape
+                            and np.all(np.isfinite(P_ab))):
+                            _md_ok = True
+                            for _dg in donor_globals:
+                                _d_old = float(np.linalg.norm(
+                                    P_pre_ab[_dg] - P_pre_ab[0]))
+                                _d_new = float(np.linalg.norm(
+                                    P_ab[_dg] - P_ab[0]))
+                                if abs(_d_old - _d_new) > 0.05:
+                                    _md_ok = False
+                                    break
+                            if _md_ok:
+                                P = P_ab
+                except Exception:
+                    pass  # silent fallback to pre-aromatic P
                 # Phase 4 (SPEC_GRIP §4.2): env-gated GRIP polish.  When
                 # DELFIN_FFFREE_GRIP=1 we run the CCDC-grounded L-BFGS
                 # refinement on the post-sp2-flatten geometry, BEFORE the

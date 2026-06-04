@@ -65,7 +65,27 @@ _F20_RING_TOL = 0.10    # ring planarity tolerance (Å)        (matches detector
 _F20_AROMATIC = {"C", "N", "O", "S"}
 
 
-def _ideal_bond(a: str, b: str) -> float:
+def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
+    """Element-pair ideal bond length (Å).
+
+    Default behaviour (``aromatic=False``) is the legacy sum of Cordero 2008
+    covalent radii — single-bond target.  When ``aromatic=True`` AND the env
+    gate ``DELFIN_FFFREE_GRIP_AROMATIC_AWARE=1`` is set, we look up the empirical
+    CCDC aromatic mean from
+    :mod:`delfin.fffree.aromatic_bond_targets`; if no quality-gated entry
+    exists, we fall back to the legacy covalent sum.  Default OFF byte-identical.
+    """
+    if aromatic:
+        import os as _os
+        if (_os.environ.get("DELFIN_FFFREE_GRIP_AROMATIC_AWARE", "0") == "1"
+            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+            try:
+                from delfin.fffree.aromatic_bond_targets import aromatic_mu
+                mu = aromatic_mu(a, b)
+                if mu is not None and mu > 0:
+                    return float(mu)
+            except Exception:
+                pass
     return _COV.get(a, 0.9) + _COV.get(b, 0.9)
 
 
@@ -291,10 +311,13 @@ def _count_bad_angles(syms, P, heavy_nbr) -> int:
 def correct_xyz(mol, xyz: str) -> str:
     """Return a decollapsed copy of ``xyz`` (or the original if no gain).
 
-    ``mol`` is accepted for signature parity but NOT used — connectivity is
-    derived geometrically so the corrector is robust to mol/XYZ atom-order
-    drift (the actual failure mode that made a mol-bond version detect 0
-    collapses on a clearly-collapsed OKOKUU frame).
+    ``mol`` is accepted for signature parity.  Connectivity is derived
+    geometrically (robust to mol/XYZ atom-order drift — the OKOKUU failure
+    mode).  When the env gate ``DELFIN_FFFREE_GRIP_AROMATIC_AWARE=1`` is set
+    AND ``mol`` is an RDKit mol with detectable per-atom aromaticity, we use
+    the aromatic flags to switch ``_ideal_bond`` targets from naive
+    covalent-sum to the empirical CCDC aromatic mean for those bonds where
+    both endpoints are aromatic.
     """
     try:
         syms, P, _ = _parse(xyz)
@@ -308,6 +331,19 @@ def correct_xyz(mol, xyz: str) -> str:
     n_collapsed = _count_collapsed(syms, P, bonds)
     if n_collapsed == 0:
         return xyz  # bit-exact early return
+
+    # Optional aromatic flag per atom (default all False; only populated when
+    # the env gate is on AND mol is a valid RDKit mol with matching atom count
+    # — otherwise byte-identical to legacy).
+    aromatic_atom = [False] * n
+    if (os.environ.get("DELFIN_FFFREE_GRIP_AROMATIC_AWARE", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+        try:
+            if mol is not None and mol.GetNumAtoms() == n:
+                for i in range(n):
+                    aromatic_atom[i] = bool(mol.GetAtomWithIdx(i).GetIsAromatic())
+        except Exception:
+            aromatic_atom = [False] * n
 
     # Freeze metals + coordination sphere (atoms within M-D distance).
     frozen = set(i for i in range(n) if _is_metal(syms[i]))
@@ -350,7 +386,11 @@ def correct_xyz(mol, xyz: str) -> str:
                 continue
             diff = work[j] - work[i]
             d = float(np.linalg.norm(diff))
-            tgt = _ideal_bond(syms[i], syms[j])
+            # Aromatic-aware ideal: if both endpoints are RDKit-aromatic AND
+            # the env gate is on, pull toward CCDC empirical aromatic mean
+            # (1.40 for C-C) instead of the single-bond covalent sum (1.52).
+            tgt = _ideal_bond(syms[i], syms[j],
+                              aromatic=(aromatic_atom[i] and aromatic_atom[j]))
             if d < 1e-6:
                 diff = np.random.default_rng(_pass).standard_normal(3); d = float(np.linalg.norm(diff))
             if abs(d - tgt) > 0.02:
