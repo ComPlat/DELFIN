@@ -421,3 +421,26 @@ def test_isomer_match_handles_ccdc_geom_labels():
 def test_isomer_match_rejects_wrong_cn():
     assert M._isomer_match("CN4-tet-or-sp", "octahedral_or_TP", 6) is False
     assert M._isomer_match("CN6-OH", "TBP_or_SPY", 5) is False
+
+
+def test_score_archive_end_to_end(tiny_table_and_index, tmp_path):
+    """End-to-end score_archive with file-based table/index/mapping."""
+    M._TABLE_CACHE.clear()
+    M._INDEX_CACHE.clear()
+    table_path, index_path, fam = tiny_table_and_index
+    arc = tmp_path / "arc"
+    arc.mkdir()
+    _write_xyz(arc / "fe_test.xyz", _make_octahedral("Fe"))
+    res = M.score_archive(
+        str(arc),
+        table_path=str(table_path),
+        index_path=str(index_path),
+        rmsd_threshold=0.5,
+        smiles_mapping={"fe_test": fam[0]["smiles"]},
+        master_pool_path="",  # explicitly disable master_map
+    )
+    assert "error" not in res
+    assert res["n_smiles_with_ccdc_family"] >= 1
+    assert math.isfinite(res["isomer_recall"])
+    assert math.isfinite(res["conformer_recall"])
+    assert res["rmsd_threshold_A"] == 0.5
