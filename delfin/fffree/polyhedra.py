@@ -85,6 +85,37 @@ GEOM_BY_CN = {
     9: ["TTP-9 tricapped trigonal prism"],
 }
 
+
+def geometries_for_cn(cn: int, metal: str = "") -> list:
+    """CN → list of valid geometry names, optionally metal-aware.
+
+    Phase C extension (Task #64): when ``metal`` is an f-block element AND
+    ``DELFIN_FFFREE_FBLOCK_CN8_12=1`` (or PURE_TRACK3=1), CN 8-12 expand to
+    include the dedicated f-block polyhedra (SAP-8, DD-8, TTP-9, CSAP-9,
+    BICAP-10, CAP-11, IH-12) from :mod:`delfin.fffree.f_block_polyhedra`.
+
+    Default OFF — byte-identical to ``GEOM_BY_CN[cn]`` when unset.
+    """
+    import os as _os
+    base = list(GEOM_BY_CN.get(cn, []))
+    if not (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
+            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+        return base
+    if not metal:
+        return base
+    try:
+        from delfin.fffree import f_block_polyhedra as _FBP
+    except ImportError:
+        return base
+    if not _FBP.is_f_block(metal):
+        return base
+    extra = _FBP.FBLOCK_GEOM_BY_CN.get(cn, [])
+    # Append extras NOT already present (lex-deterministic).
+    for g in extra:
+        if g not in base:
+            base.append(g)
+    return base
+
 # covalent radii (metal subset + donors); M-D = r(M) + r(D)
 COV = {
     "H": 0.31, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "P": 1.07, "S": 1.05,
@@ -101,10 +132,50 @@ def ref_vectors(geometry: str) -> np.ndarray:
     for (cn, shape), v in REFS.items():
         if shape == geometry:
             return v
+    # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).  Env-gated
+    # (``DELFIN_FFFREE_FBLOCK_CN8_12=1`` or ``DELFIN_FFFREE_PURE_TRACK3=1``)
+    # — when unset, the new geometries are NEVER reached because callers
+    # only pick them via ``decompose._default_geometry`` which itself
+    # honours the env-gate.  We still attempt the f-block dispatch on the
+    # error path so explicitly-named SAP-8/DD-8/TTP-9/… calls work even
+    # outside the gate (read-only; geometry strings come from the caller).
+    try:
+        from delfin.fffree import f_block_polyhedra as _FBP
+        return _FBP.ref_vectors_fblock(geometry)
+    except (KeyError, ImportError):
+        pass
     raise KeyError(geometry)
 
 
+# Phase C: Shannon-radii M-D fallback for f-block metals.  When the metal is
+# Ln/An AND the (metal, donor) pair is in the Shannon table, prefer that over
+# the covalent-radii sum (Ln/An ionic bonding is poorly described by COV).
+_FBLOCK_FALLBACK = None
+
+
+def _get_fblock_fallback():
+    global _FBLOCK_FALLBACK
+    if _FBLOCK_FALLBACK is None:
+        try:
+            from delfin.fffree import f_block_polyhedra as _FBP
+            _FBLOCK_FALLBACK = _FBP
+        except ImportError:
+            _FBLOCK_FALLBACK = False
+    return _FBLOCK_FALLBACK if _FBLOCK_FALLBACK is not False else None
+
+
 def md_distance(metal: str, donor: str) -> float:
+    # Phase C: f-block metals get Shannon-radii distances (env-gated; default
+    # path is byte-identical because the gate also controls whether f-block
+    # CN8-12 geometries are reached at all).
+    import os as _os
+    if (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
+            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+        _FBP = _get_fblock_fallback()
+        if _FBP is not None:
+            r = _FBP.md_distance_fblock(metal, donor)
+            if r is not None:
+                return r
     return COV.get(metal, 1.5) + COV.get(donor, 0.75)
 
 

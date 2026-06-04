@@ -19,6 +19,21 @@ _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
 
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
+    # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).
+    # Env-gated default OFF: only when DELFIN_FFFREE_FBLOCK_CN8_12=1 (or
+    # PURE_TRACK3=1) AND metal is Ln/An AND CN in 8-12 do we route to the
+    # dedicated f-block polyhedron (SAP-8, TTP-9, BICAP-10, CAP-11, IH-12).
+    # Otherwise the legacy dispatch below runs unchanged (byte-identical).
+    if (os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
+            or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+        try:
+            from delfin.fffree import f_block_polyhedra as _FBP
+            if _FBP.is_f_block(metal):
+                g = _FBP.default_geometry_fblock(metal, cn)
+                if g is not None:
+                    return g
+        except ImportError:
+            pass
     if cn == 2:
         # Phase G: linear coordination (Cu(I), Ag(I), Au(I), Hg(II)).
         # Simple D∞h: 2 donors 180° apart on metal axis.
@@ -97,6 +112,12 @@ def decompose(smiles: str) -> Optional[Dict]:
         _allowed.add(3)
     if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN2", "0") == "1":
         _allowed.add(2)
+    # Phase C f-block CN10-12 (Task #64): only enabled when explicit env
+    # flag is set AND the metal is f-block (checked AFTER metal is known).
+    # Setting only CN10-12 here is safe — _default_geometry returns None
+    # for non-f-block at CN10-12, which bails to legacy (None return).
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1":
+        _allowed.update({10, 11, 12})
     if cn not in _allowed:
         return None
     metal = matom.GetSymbol()
@@ -227,7 +248,12 @@ def decompose(smiles: str) -> Optional[Dict]:
         if _PT3_AUTO and any(lg.get("is_hapto") for lg in ligands):
             # CN is now sum of effective denticities (hapto=1, sigma=fdonors)
             new_cn = sum(lg["denticity"] for lg in ligands)
-            if 2 <= new_cn <= 9:
+            # Phase C: extend upper cap to 12 when f-block env-gate is set.
+            _CN_MAX = 12 if (
+                os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
+                or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+            ) else 9
+            if 2 <= new_cn <= _CN_MAX:
                 cn = new_cn
                 # Re-compute geometry for new CN
                 geometry = _default_geometry(metal, cn)
