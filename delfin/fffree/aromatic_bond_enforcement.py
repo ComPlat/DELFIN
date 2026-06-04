@@ -327,6 +327,54 @@ def _md_preserved(P_before: np.ndarray, P_after: np.ndarray,
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def _symmetry_homogenise(
+    P: np.ndarray,
+    syms: Sequence[str],
+    edges: List[Tuple[int, int]],
+    aromatic_set: Set[int],
+    frozen: Set[int],
+    alpha: float = 5.0,
+    max_iters: int = 30,
+    step_scale: float = 0.05,
+    conv_tol: float = 1e-3,
+) -> np.ndarray:
+    """Apply symmetry-equivalence variance penalty as a soft gradient step.
+
+    For each automorphism orbit of aromatic edges, drive their lengths
+    toward the orbit mean.  Frozen atoms pinned.  Convergence on max
+    per-atom displacement.
+
+    Conservative: ``step_scale=0.05`` (small steps) and ``max_iters=30`` so
+    the homogenisation cannot overpower the per-bond mu pull.  Default-OFF
+    via ``DELFIN_FFFREE_SYMMETRY_EQUIVALENCE`` (caller-gated).
+    """
+    from delfin.fffree.symmetry_equivalence import (
+        find_equivalence_classes, variance_penalty, is_enabled as _sym_enabled,
+    )
+    if not _sym_enabled():
+        return P
+    aromatic_flags = [i in aromatic_set for i in range(len(syms))]
+    classes = find_equivalence_classes(syms, edges, aromatic_atoms=aromatic_flags)
+    # Keep only orbits with >=2 aromatic bonds.
+    classes = [cls for cls in classes if len(cls) >= 2]
+    if not classes:
+        return P
+
+    Q = P.copy()
+    for _ in range(max_iters):
+        _, grad = variance_penalty(Q, classes, alpha=alpha)
+        # Gradient descent step with frozen mask.
+        step = -step_scale * grad
+        for i in range(len(syms)):
+            if i in frozen:
+                step[i] = 0.0
+        Q = Q + step
+        max_d = float(np.max(np.linalg.norm(step, axis=1)))
+        if max_d < conv_tol:
+            break
+    return Q
+
+
 def enforce_aromatic_bonds(
     syms: Sequence[str],
     P: np.ndarray,
@@ -353,6 +401,14 @@ def enforce_aromatic_bonds(
     ``(syms_out, P_out)`` — fresh copy.  If the env flag is unset, returns
     the input unchanged (byte-identical no-op).  If the post-fix geometry
     fails the M-D invariance check, the pre-fix coords are returned.
+
+    Pipeline (all default-OFF, byte-identical no-op when unset):
+    1. Detect aromatic edges (RDKit if mol supplied else geometric 5/6-ring).
+    2. Per-bond Gauss-Seidel pull toward CCDC empirical mu (z-trigger 2.5).
+    3. (Optional, ``DELFIN_FFFREE_SYMMETRY_EQUIVALENCE=1``) graph-automorphism
+       variance penalty step that homogenises within-orbit bond lengths.
+    4. Rigid-H drag.
+    5. M-D invariance check; on failure return pre-step coords.
     """
     if not is_enabled():
         return list(syms), np.asarray(P, dtype=float).copy()
@@ -371,6 +427,7 @@ def enforce_aromatic_bonds(
     # Aromatic ideal per edge — only keep edges with a real library entry.
     keep_edges: List[Tuple[int, int]] = []
     keep_targets: List[Tuple[float, float]] = []
+    aromatic_set: Set[int] = set()
     for (a, b) in edges:
         hit = aromatic_ideal(syms[a], syms[b])
         if hit is None:
@@ -378,6 +435,7 @@ def enforce_aromatic_bonds(
         mu, sigma, _n = hit
         keep_edges.append((a, b))
         keep_targets.append((mu, sigma))
+        aromatic_set.add(a); aromatic_set.add(b)
     if not keep_edges:
         return list(syms), P_in
 
@@ -392,13 +450,18 @@ def enforce_aromatic_bonds(
     for i, j in bonds_geom:
         adj_with_h[i].append(j); adj_with_h[j].append(i)
 
-    # Per-bond Gauss-Seidel pull.
+    # Step 2: per-bond Gauss-Seidel pull.
     P_after = _per_bond_pull(P_in, keep_edges, keep_targets, frozen)
 
-    # H drag.
+    # Step 3: symmetry-equivalence variance step (env-gated; no-op when off).
+    P_after = _symmetry_homogenise(
+        P_after, syms, keep_edges, aromatic_set, frozen,
+    )
+
+    # Step 4: H drag.
     P_after = _h_drag(syms, P_in, P_after, adj_with_h)
 
-    # M-D invariance check.
+    # Step 5: M-D invariance check.
     if not _md_preserved(P_in, P_after, syms, tol=0.05):
         return list(syms), P_in
 
