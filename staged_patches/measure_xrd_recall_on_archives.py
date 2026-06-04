@@ -78,11 +78,13 @@ def main():
           flush=True)
 
     csv_path = Path(args.paper_data_dir) / "xrd_recall_full_ccdc_trajectory.csv"
-    with csv_path.open("w") as fcsv:
+    csv_existed = csv_path.exists() and csv_path.stat().st_size > 0
+    with csv_path.open("a") as fcsv:
         w = csv.writer(fcsv)
-        w.writerow(["archive", "n_xyz", "n_smiles_in_archive",
-                    "n_smiles_with_family", "isomer_recall",
-                    "conformer_recall", "rmsd_threshold_A", "elapsed_s"])
+        if not csv_existed:
+            w.writerow(["archive", "n_xyz", "n_smiles_in_archive",
+                        "n_smiles_with_family", "isomer_recall",
+                        "conformer_recall", "rmsd_threshold_A", "elapsed_s"])
 
         for archive_label in args.archives:
             archive = Path(args.archive_root) / archive_label
