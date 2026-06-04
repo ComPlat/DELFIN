@@ -240,6 +240,8 @@ __all__ = [
     "_grip_healing_active",
     "_run_pre_polish_topology_healing",
     "_run_pre_polish_grip_healing",
+    "_sp3_h_heal_active",
+    "_run_pre_polish_sp3_h_heal",
     # GRACE env-gated dispatcher (default OFF, byte-identical to HEAD 00f1a5b).
     "grace_dispatch_active",
     "grace_polish_or_enumerate",
@@ -266,6 +268,9 @@ __all__ = [
 _TOPOLOGY_HEALING_ENV: str = "DELFIN_FFFREE_GRIP_TOPOLOGY_HEALING"
 _GRIP_HEALING_ENV: str = "DELFIN_FFFREE_GRIP_HEALING_MODE"
 _HH_CLASH_INCLUDE_ENV: str = "DELFIN_FFFREE_HH_CLASH_INCLUDE"
+# sp³-H umbrella heal (2026-06-04, tBu-CH3 90°/180° defect, GUPPY ea26dcb).
+# Default OFF byte-identical; orthogonal to the two heals above.
+_SP3_H_HEAL_ENV: str = "DELFIN_FFFREE_SP3_H_HEAL"
 
 
 def _topology_healing_active() -> bool:
@@ -296,6 +301,18 @@ def _grip_healing_active() -> bool:
 def _hh_clash_include_active() -> bool:
     """``True`` iff ``DELFIN_FFFREE_HH_CLASH_INCLUDE`` is on (default OFF)."""
     raw = os.environ.get(_HH_CLASH_INCLUDE_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _sp3_h_heal_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_SP3_H_HEAL`` is on (default OFF).
+
+    Mirror of :func:`delfin.fffree.sp3_h_heal.heal_active` kept local so
+    the dispatcher avoids a hard import when the flag is OFF.
+    """
+    raw = os.environ.get(_SP3_H_HEAL_ENV, "").strip().lower()
     if not raw:
         return False
     return raw in ("1", "true", "yes", "on")
@@ -415,6 +432,61 @@ def _run_pre_polish_grip_healing(
     except Exception as exc:
         _LOG.warning(
             "grip_polish: grip_healing raised (%r); falling back to P_init",
+            exc,
+        )
+        return P_init
+
+
+def _run_pre_polish_sp3_h_heal(
+    P_init: np.ndarray,
+    mol,
+    metal: int,
+    donors: Sequence[int],
+) -> np.ndarray:
+    """Run :func:`sp3_h_heal.heal_degenerate_sp3_h` on ``P_init``.
+
+    Pure pass-through when ``DELFIN_FFFREE_SP3_H_HEAL`` is OFF -- returns
+    ``P_init`` unchanged (byte-identical with HEAD ea26dcb).  When ON, the
+    pass rewrites every degenerate sp³-C/N H umbrella (H-X-H angles
+    outside (95°, 125°) or near-collinear) to the canonical Td template,
+    keeping the metal + σ-donors frozen and respecting an accept-if-better
+    gate (max H-X-H deviation must strictly decrease).
+
+    Any exception -> swallow + return ``P_init`` (defence in depth).
+    """
+    if not _sp3_h_heal_active():
+        return P_init
+    try:
+        from .sp3_h_heal import heal_degenerate_sp3_h
+    except Exception as exc:  # pragma: no cover -- module missing
+        _LOG.warning(
+            "grip_polish: failed to import sp3_h_heal (%r); skipping",
+            exc,
+        )
+        return P_init
+    try:
+        try:
+            syms = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+        except Exception:
+            return P_init
+        if len(syms) != P_init.shape[0]:
+            return P_init
+        frozen = {int(metal), *[int(d) for d in donors]}
+        out, _report = heal_degenerate_sp3_h(
+            P_init,
+            mol=mol,
+            syms=syms,
+            frozen_atoms=frozen,
+            preserve_bond_lengths=True,
+            accept_if_better=True,
+        )
+        out = np.asarray(out, dtype=np.float64)
+        if out.shape != P_init.shape or not np.all(np.isfinite(out)):
+            return P_init
+        return out
+    except Exception as exc:
+        _LOG.warning(
+            "grip_polish: sp3_h_heal raised (%r); falling back to P_init",
             exc,
         )
         return P_init
@@ -1087,6 +1159,10 @@ def grip_polish(
 
     P_init = _run_pre_polish_topology_healing(P_init, mol, metal, donors_t)
     P_init = _run_pre_polish_grip_healing(P_init, mol, metal, donors_t, library)
+    # sp³-H umbrella heal (2026-06-04): degenerate 90°/180° H-C-H patterns
+    # that survive both heals above (Mahalanobis-tolerant + bond-length-only)
+    # and cannot move under L-BFGS because 180° is a cos(angle) saddle.
+    P_init = _run_pre_polish_sp3_h_heal(P_init, mol, metal, donors_t)
     frozen: FrozenSet[int] = frozenset((metal, *donors_t))
     # Option-B (2026-06-01): adaptive shell-1 protection.  Env-gated so
     # the polish operator can be A/B-tested in equal-n smokes without a
