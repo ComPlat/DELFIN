@@ -276,6 +276,55 @@ def decompose(smiles: str) -> Optional[Dict]:
         else:
             return None
     has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
+    # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich dispatch.
+    # The legacy hapto path collapses the η-ring to a single point-donor on the
+    # generic polyhedron (TBP-5, OC-6, TTP-9 …) which is geometrically wrong:
+    # ferrocene becomes a CN2 dumbbell with M-Cp_centroid ≈ 1.0 Å instead of
+    # 1.65 Å, and (η⁶-arene)Ru(L)₃ becomes a SQAP-8 with M-arene ≈ 1.31 Å
+    # instead of ≈ 1.62 Å (Mission A7 forensik on pool 2792332: 414 half-sand
+    # structures, median M-arene 1.313 Å vs ideal 1.62-1.69 Å).
+    #
+    # Under DELFIN_FFFREE_SANDWICH_DISPATCH=1 (auto-on under PURE_TRACK3=1) we
+    # match three hapto-templates and override the generic geometry with one
+    # of the dedicated sandwich polyhedra:
+    #
+    #   2× η⁵-Cp, nothing else                      → SANDWICH-10 (CN=10)
+    #   1× η⁵-Cp + 3 σ-donors                       → PIANO-STOOL-8 (CN=8)
+    #   1× η⁶-arene + 3 σ-donors                    → HALF-SANDWICH-9 (CN=9)
+    #
+    # Vertex set + Pólya groups for these names are already registered in
+    # ``delfin.fffree.sandwich_piano_polyhedra`` and ``polya_isomer_count``;
+    # ``polyhedra.ref_vectors`` / ``geometries_for_cn`` know how to dispatch
+    # to them under the same env-gate.  Default OFF byte-identical with HEAD.
+    _SANDWICH_DISPATCH = (
+        os.environ.get("DELFIN_FFFREE_SANDWICH_DISPATCH", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    )
+    if _SANDWICH_DISPATCH:
+        hapto_etas = sorted(lg.get("hapto_eta", 0) for lg in ligands
+                            if lg.get("is_hapto"))
+        n_sigma = sum(1 for lg in ligands if not lg.get("is_hapto"))
+        # The assembler counts ONE coordination site per hapto ring (see
+        # ``hapto_modes.m_centroid_distance`` and the piano-stool placement at
+        # ``assemble_complex.assemble_from_config`` lines 838-865), so the
+        # effective ``cn`` exposed to the assembler is the EFFECTIVE site
+        # count, NOT the atom-vertex count of the full polyhedron.  The
+        # corresponding ``ref_vectors`` lookup in ``polyhedra`` returns the
+        # per-site effective vertex array (1 ring axis + N σ vertices); see
+        # ``sandwich_piano_polyhedra.effective_ref_vectors_sandwich``.
+        #
+        # 2× η⁵-Cp + nothing else → SANDWICH-10 (effective cn = 2)
+        if hapto_etas == [5, 5] and n_sigma == 0:
+            cn = 2
+            geometry = "SANDWICH-10 bis-eta5-Cp"
+        # 1× η⁵-Cp + 3 σ-donors → PIANO-STOOL-8 (effective cn = 4)
+        elif hapto_etas == [5] and n_sigma == 3:
+            cn = 4
+            geometry = "PIANO-STOOL-8 eta5-Cp+L3"
+        # 1× η⁶-arene + 3 σ-donors → HALF-SANDWICH-9 (effective cn = 4)
+        elif hapto_etas == [6] and n_sigma == 3:
+            cn = 4
+            geometry = "HALF-SANDWICH-9 eta6+L3"
     # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
     # small/simple ligands place cleanly; very large conjugated ligands need
     # conformer work the rigid placement doesn't do, so bail to None for those.

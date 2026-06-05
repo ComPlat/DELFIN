@@ -723,6 +723,11 @@ def grip_ensemble_enumerate(
         "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
         "SQAP-8 square antiprism": "square_antiprism",
         "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
+        # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich.
+        # ``_eff`` keys = per-site EFFECTIVE Pólya groups (2 / 4 / 4 sites).
+        "SANDWICH-10 bis-eta5-Cp": "sandwich_10_eff",
+        "PIANO-STOOL-8 eta5-Cp+L3": "piano_stool_8_eff",
+        "HALF-SANDWICH-9 eta6+L3": "half_sandwich_9_eff",
     }
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:

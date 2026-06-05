@@ -628,6 +628,15 @@ _GEOM_TO_POLYA_KEY = {
     "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
     "SQAP-8 square antiprism": "square_antiprism",
     "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
+    # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich.
+    # Reachable only when ``DELFIN_FFFREE_SANDWICH_DISPATCH`` (or
+    # ``PURE_TRACK3``) is on — see ``decompose._default_geometry``.  The
+    # ``_eff`` keys point at the per-site EFFECTIVE Pólya groups (2 / 4 / 4
+    # sites) used by the ensemble enumerator — the assembler view, not the
+    # full N-atom polyhedron view.
+    "SANDWICH-10 bis-eta5-Cp": "sandwich_10_eff",
+    "PIANO-STOOL-8 eta5-Cp+L3": "piano_stool_8_eff",
+    "HALF-SANDWICH-9 eta6+L3": "half_sandwich_9_eff",
 }
 
 

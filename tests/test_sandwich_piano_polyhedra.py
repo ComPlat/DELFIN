@@ -199,22 +199,38 @@ def test_module_level_env_on_dispatch(monkeypatch):
     assert "SANDWICH-10 bis-eta5-Cp" in SP.SANDWICH_GEOM_BY_CN[10]
 
 
-def test_legacy_ref_vectors_raises_keyerror_for_sandwich(monkeypatch):
-    """Sandwich geometries are NOT registered in the legacy
-    ``polyhedra.ref_vectors`` catalogue — calling it with a sandwich name
-    raises KeyError.  The dedicated ``sandwich_piano_polyhedra.ref_vectors_sandwich``
-    must be used instead (this is the explicit architecture decision —
-    the legacy ``polyhedra`` module stays metal-agnostic point-donor only)."""
+def test_legacy_ref_vectors_dispatches_to_sandwich(monkeypatch):
+    """Mission B1 (2026-06-05): sandwich geometries dispatch through
+    ``polyhedra.ref_vectors`` to the per-site EFFECTIVE vertex array
+    (1 ring axis + N σ tripod), so the assembler can place a hapto ring
+    as a single coordination site.  The full N-atom array is still
+    accessible via :func:`sandwich_piano_polyhedra.ref_vectors_sandwich`.
+
+    This test supersedes the pre-Mission-B1 contract that the legacy
+    ``polyhedra`` module stays metal-agnostic point-donor only — wiring the
+    sandwich dispatch into the production catalogue is the whole point of
+    Mission B1, and the env-gate that previously hid this dispatch has
+    been removed in favour of a read-only name lookup (callers only reach
+    these geometries when ``decompose._default_geometry`` has selected
+    them under DELFIN_FFFREE_SANDWICH_DISPATCH=1 / PURE_TRACK3=1)."""
     monkeypatch.delenv("DELFIN_FFFREE_SANDWICH_POLYHEDRA", raising=False)
     monkeypatch.delenv("DELFIN_FFFREE_PURE_TRACK3", raising=False)
     from delfin.fffree.polyhedra import ref_vectors
 
-    with pytest.raises(KeyError):
-        ref_vectors("SANDWICH-10 bis-eta5-Cp")
+    # Sandwich names now dispatch to the EFFECTIVE per-site array
+    # (cn_effective = 2 / 4 / 4 — see SANDWICH_HAPTO_LAYOUT).
+    v_sw = ref_vectors("SANDWICH-10 bis-eta5-Cp")
+    assert v_sw.shape == (2, 3)
+    v_ps = ref_vectors("PIANO-STOOL-8 eta5-Cp+L3")
+    assert v_ps.shape == (4, 3)
+    v_hs = ref_vectors("HALF-SANDWICH-9 eta6+L3")
+    assert v_hs.shape == (4, 3)
 
+    # The full N-atom array is still accessible through the dedicated
+    # module function (used by Pólya validation / unit tests).
     from delfin.fffree.sandwich_piano_polyhedra import ref_vectors_sandwich
-    v = ref_vectors_sandwich("SANDWICH-10 bis-eta5-Cp")
-    assert v.shape == (10, 3)
+    full = ref_vectors_sandwich("SANDWICH-10 bis-eta5-Cp")
+    assert full.shape == (10, 3)
 
 
 # ---------------------------------------------------------------------------
