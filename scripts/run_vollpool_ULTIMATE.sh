@@ -46,7 +46,6 @@ export DELFIN_FFFREE_GRIP_WEIGHT_ANGLE=1.5
 
 # F2 fallback mode (FF-free embed when constructive fails)
 export DELFIN_FFFREE_FALLBACK_MODE=grip
-export DELFIN_FFFREE_EMBED_GRIP_MAX_ITER=50
 
 # Forensik log for paper-claim verification
 export DELFIN_FFFREE_FORENSIK_LOG=/tmp/${LABEL}_dispatch_forensik.tsv
@@ -67,7 +66,7 @@ env | grep -E "DELFIN_FFFREE|DELFIN_GRIP|DELFIN_MAX_ISOMERS|DELFIN_INPROC|DELFIN
     /home/qmchem_max/agent_workspace/quality_framework/scripts/pool_evaluator.py \
     /home/qmchem_max/agent_workspace/quality_framework/pools/smiles_master_v3_plus.txt \
     --shadir /home/qmchem_max/ComPlat/DELFIN \
-    --parallel 160 --timeout 300 \
+    --parallel 160 --timeout 600 \
     --no-retry-on-zero \
     --commit-label "$LABEL" \
     --xyz-archive /home/qmchem_max/agent_workspace/quality_framework/xyz_archive \
