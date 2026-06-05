@@ -87,7 +87,386 @@ from .grip_mogul_lookup import (
 __all__ = [
     "detect_fragments",
     "FragmentDetectionResult",
+    "ANGLE_TO_METAL_ENV",
+    "angle_to_metal_active",
+    "build_mdx_angle_terms",
+    "DMD_POLY_ENV",
+    "dmd_polyhedron_active",
+    "build_dmd_polyhedron_terms",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Angle-to-Metal extension (2026-06-05, User direction).
+#
+# The legacy detector skips EVERY angle whose any atom is in the M-D frozen
+# set (metal + donors).  That was deliberate -- M-D bond lengths and the
+# M-position are rigid by construction; CCDC priors for X-Y-Z angles
+# around the metal are dominated by sigma-donor chemistry.
+#
+# But this leaves TWO classes of geometric pressure on the table:
+#
+#   (1) M-D-X angles (centre = donor, neighbours = metal + ligand-X):
+#       these decide WHERE the ligand-X atoms sit around the donor (the
+#       angle the donor cone makes with the M-D axis).  In the legacy
+#       detector this angle gets ZERO pressure.  The donor stays frozen
+#       and the metal stays frozen, so the gradient acts ONLY on X --
+#       which is exactly what the user asked for: optimise the position
+#       of atoms around the donor without touching the M-D bond length
+#       or the M-D-D' polyhedron arrangement.
+#
+#   (2) D-M-D' angles (centre = metal):  these encode the coordination
+#       polyhedron.  Both endpoints (donors) and the centre (metal) are
+#       frozen so gradient is identically zero.  Useful only as a
+#       severity diagnostic; not actionable for L-BFGS without unfreezing
+#       the polyhedron -- which the M-D constraint would then roll back.
+#
+# This module implements class (1) (and exposes class (2) for diagnostic /
+# severity gating).  Default OFF -- when the env-flag is unset the angle
+# stack is byte-identical with the legacy path (no new terms emitted,
+# legacy frozen-skip preserved).
+#
+# Universal: angle classification uses only graph topology + the (metal,
+# donors) tuple; no SMILES patterns, no class-specific weights.
+# ---------------------------------------------------------------------------
+ANGLE_TO_METAL_ENV = "DELFIN_FFFREE_GRIP_ANGLE_TO_METAL"
+DMD_POLY_ENV = "DELFIN_FFFREE_GRIP_DMD_POLYHEDRON"
+ANGLE_TO_METAL_INCLUDE_H_ENV = "DELFIN_FFFREE_GRIP_ANGLE_TO_METAL_INCLUDE_H"
+
+
+def _angle_to_metal_include_h() -> bool:
+    """``True`` iff M-D-H terms should be emitted as well (default OFF).
+
+    The H atoms are 1.0-1.1 Å from the donor so a small angular pull on
+    them translates to a large *relative* bond-length change.  This
+    triggers the topology safety rollback far more often than it helps,
+    so the include-H path is gated by its own env-flag.
+    """
+    raw = os.environ.get(ANGLE_TO_METAL_INCLUDE_H_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+# Per-hybridisation VSEPR fallback when the library has no TM-aware angle
+# entry for the (M, donor, X) triple.  Sigma is generous (10°) so the soft
+# pull does not fight the existing CCDC X-D-X' pressure -- it only adds
+# direction to the otherwise-zero gradient on X.
+#
+# The hybridisation here is the donor's UNDERLYING hyb without the M bond
+# (we count heavy non-metal neighbours + lone pairs to derive sp/sp2/sp3
+# correctly).  This avoids RDKit's tendency to mark donor C/N/O as sp3d
+# just because the metal adds a 5th neighbour.
+_VSEPR_FALLBACK = {
+    "sp":   (180.0, 18.0),
+    "sp2":  (120.0, 15.0),
+    "sp3":  (109.5, 15.0),
+    "sp3d": (90.0,  20.0),
+    "sp3d2":(90.0,  20.0),
+}
+_VSEPR_DEFAULT = (109.5, 18.0)
+
+
+def _donor_underlying_hyb(mol, donor_idx: int, metal_idx: int) -> str:
+    """Infer the donor's underlying hybridisation by counting NON-metal
+    heavy neighbours.
+
+    Rule (graph-only, universal):
+      * deg_no_M = number of bonded heavy atoms minus the metal
+      * sp3 for tetrahedral (deg_no_M >= 3 if z in {N,O,S,P,As,Se,C})
+      * sp2 for trigonal-planar (deg_no_M == 2 with sp2 RDKit hint OR
+        donor in aromatic ring)
+      * sp for linear (deg_no_M == 1 and RDKit says sp, e.g. C of -C#N-M)
+      * default sp3
+    """
+    try:
+        atom = mol.GetAtomWithIdx(int(donor_idx))
+    except Exception:
+        return "sp3"
+    # Underlying RDKit hyb (may be sp3d due to metal bond) — use as a hint.
+    try:
+        rdkit_hyb = atom.GetHybridization().name.upper()
+    except Exception:
+        rdkit_hyb = ""
+    deg_no_M = 0
+    for nb in atom.GetNeighbors():
+        try:
+            if int(nb.GetIdx()) == int(metal_idx):
+                continue
+            deg_no_M += 1
+        except Exception:
+            pass
+    # Aromatic ring centre -> sp2.
+    try:
+        if atom.GetIsAromatic():
+            return "sp2"
+    except Exception:
+        pass
+    z = atom.GetSymbol()
+    if z == "C":
+        # Linear C donor (terminal -C#N coordinated through C is rare; the
+        # cyanide N-coordinated form is more common, this is the C-end).
+        if rdkit_hyb in ("SP",) or deg_no_M == 1:
+            return "sp"
+        if rdkit_hyb in ("SP2",) or deg_no_M == 2:
+            return "sp2"
+        return "sp3"
+    if z in ("N", "P", "As"):
+        if rdkit_hyb in ("SP",) or deg_no_M == 1:
+            return "sp"
+        if rdkit_hyb in ("SP2",) or deg_no_M == 2:
+            return "sp2"
+        return "sp3"
+    if z in ("O", "S", "Se"):
+        # O/S donors are almost always sp3 (water, alkoxide, thiolate).
+        # An aromatic O (furan-O) would have been caught by the aromatic
+        # branch above.
+        return "sp3"
+    # Halides + others: treat as sp3 (single lone pair acceptor).
+    return "sp3"
+
+# Weight multiplier applied to the M-D-X terms.  The default angle weight
+# (0.5 from grip_loss_terms.default_weights) already balances bond/angle
+# pressure; the M-D-X terms are a NEW pressure that did not exist in the
+# legacy operator, so we down-weight them by default (0.1) so the
+# Mahalanobis pull on X is gentle and does not over-stretch X-Y bonds
+# beyond the topology safety multiplier (180 % stretch when the layer is
+# on, see grip_polish._topo_mult_eff override).
+# Override via env var ``DELFIN_FFFREE_GRIP_ANGLE_TO_METAL_WEIGHT``.
+# Calibration: smoke 50 on 2792332-VOLLPOOL @ wt=0.1 gives delta_RMSE
+# (vs OFF) = -0.60° M-D-X with 5/46 polishes accepted; @ wt=0.25 gives
+# -0.14° / 4 accepted; @ wt=0.5 gives -0.07° / 3 accepted.  Lower weight
+# = smaller per-polish pull but higher accept rate -> larger aggregate
+# improvement.  0.1 is the empirical sweet spot.
+_ANGLE_TO_METAL_WEIGHT_ENV = "DELFIN_FFFREE_GRIP_ANGLE_TO_METAL_WEIGHT"
+_DEFAULT_ANGLE_TO_METAL_WEIGHT = 0.1
+
+
+def angle_to_metal_active() -> bool:
+    """``True`` iff the M-D-X angle layer is enabled.
+
+    Pure env-flag check; default OFF preserves byte-identity with the
+    legacy detector.  Read-per-call so subprocess pools inherit the
+    parent's setting.
+    """
+    raw = os.environ.get(ANGLE_TO_METAL_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def dmd_polyhedron_active() -> bool:
+    """``True`` iff the D-M-D polyhedron severity terms are emitted.
+
+    Default OFF.  D-M-D terms have zero gradient (M and donors are both
+    frozen) so they only add to the accept-if-better severity metric --
+    enabling this flag without ``ANGLE_TO_METAL_ENV`` makes the gate
+    polyhedron-aware without changing the L-BFGS trajectory.
+    """
+    raw = os.environ.get(DMD_POLY_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_angle_to_metal_weight() -> float:
+    raw = os.environ.get(_ANGLE_TO_METAL_WEIGHT_ENV, "").strip()
+    if not raw:
+        return float(_DEFAULT_ANGLE_TO_METAL_WEIGHT)
+    try:
+        v = float(raw)
+        if np.isfinite(v) and v >= 0:
+            return float(v)
+    except (TypeError, ValueError):
+        pass
+    return float(_DEFAULT_ANGLE_TO_METAL_WEIGHT)
+
+
+def build_mdx_angle_terms(
+    mol,
+    metal: int,
+    donors: Sequence[int],
+    hapto_atoms: Optional[Iterable[int]] = None,
+    library: Optional[GripLibrary] = None,
+    min_n: int = GRIP_LOOKUP_MIN_N,
+    *,
+    include_hydrogens: bool = False,
+) -> List[AngleTerm]:
+    """Build M-D-X angle terms (centre = donor, neighbours = metal + X).
+
+    For each (donor d, non-metal/donor neighbour x of d) emit an
+    :class:`AngleTerm` with ``a=metal, b=d, c=x``.  Mu/sigma come from
+    the library (TM-aware fallback wins when v4 / pair-resolved data is
+    available), otherwise from the VSEPR-template fallback keyed by the
+    donor's hybridisation.
+
+    Atoms in ``hapto_atoms`` (the π-system carbons of η³-η⁸ coordination)
+    are SKIPPED -- the M-π-X angle is the piano-stool placement axis and
+    has a fundamentally different distribution from σ M-D-X.
+
+    Deterministic: sorted (donor, x) iteration, lex output order.
+
+    Returns
+    -------
+    list of AngleTerm
+        Possibly empty (e.g. when every donor is hapto or no neighbours).
+    """
+    out: List[AngleTerm] = []
+    if metal is None or metal < 0:
+        return out
+    try:
+        mol_metal = mol.GetAtomWithIdx(int(metal))  # noqa: F841 -- existence probe
+    except Exception:
+        return out
+    donor_seq = sorted(int(d) for d in donors)
+    if not donor_seq:
+        return out
+    hapto_set: Set[int] = set(int(i) for i in (hapto_atoms or ()))
+    frozen_or_donor: Set[int] = {int(metal), *donor_seq}
+    weight_scale = _resolve_angle_to_metal_weight()
+
+    # Cache the metal symbol for library lookups.
+    try:
+        zM = str(mol.GetAtomWithIdx(int(metal)).GetSymbol())
+    except Exception:
+        zM = "*"
+
+    lib = library  # may be None -- VSEPR fallback covers that case
+
+    for d in donor_seq:
+        if d in hapto_set:
+            # η-carbons: M-C-C angles within the π-system are placement
+            # geometry, not σ-donor chemistry.
+            continue
+        try:
+            atom_d = mol.GetAtomWithIdx(int(d))
+        except Exception:
+            continue
+        zD = atom_d.GetSymbol()
+        # Underlying donor hyb (without the metal bond) -- used both for
+        # the library lookup AND for the VSEPR fallback.  Avoids the
+        # rdkit-sp3d-from-metal-coordination defect that maps tetrahedral
+        # donor C/N to a 90° prior instead of 109.5°.
+        hyb_d = _donor_underlying_hyb(mol, int(d), int(metal))
+        vsepr_mu, vsepr_sigma = _VSEPR_FALLBACK.get(hyb_d, _VSEPR_DEFAULT)
+
+        # Gather X neighbours (any neighbour of d that is not the metal
+        # and not another donor in the same coordination sphere).
+        neighbours = sorted(int(n.GetIdx()) for n in atom_d.GetNeighbors())
+        for x in neighbours:
+            if x in frozen_or_donor:
+                # M-D-D' = D-M-D' relative to M and is handled by the
+                # polyhedron layer; M-D-M doesn't exist in mono-metal
+                # complexes; skip.
+                continue
+            if x in hapto_set:
+                continue
+            try:
+                atom_x = mol.GetAtomWithIdx(int(x))
+            except Exception:
+                continue
+            zX = atom_x.GetSymbol()
+            hyb_x = _hyb_str(atom_x)
+            # Skip hydrogens by default: H atoms are 1.0-1.1 Å from the
+            # donor, so a small angular pull translates into a large
+            # relative bond-length change.  This caused the topology
+            # constraint to roll back the polish on every smoke-50 frame
+            # in the 2792332 pool (C-H stretched > 1.5×).  Heavy-atom X
+            # carries the bulk of the donor cone geometry; H is then
+            # carried along by the existing C-H bond term.  Caller can
+            # opt back into H via include_hydrogens=True.
+            if not include_hydrogens and zX == "H":
+                continue
+
+            # Try the library first (TM-aware fallback is active per the
+            # env var DELFIN_FFFREE_GRIP_TM_LOOKUP_FALLBACK; when v4 is
+            # loaded this hits the triple_angle pair-resolved table).
+            mu, sigma, n_lib = vsepr_mu, vsepr_sigma, 0
+            source = "vsepr"
+            if lib is not None:
+                try:
+                    hit = lib.lookup_angle(
+                        zM, zD, hyb_d, zX,
+                        ring_size_min=-1, in_aromatic=False,
+                        hyb1="*", hyb3=hyb_x,
+                        min_n=min_n,
+                    )
+                except Exception:
+                    hit = None
+                if hit is not None:
+                    mu, sigma, n_lib = float(hit[0]), float(hit[1]), int(hit[2])
+                    source = "library"
+            # Sanity: angle priors must be in (0°, 180°) with sigma > 0.
+            if not (0.0 < mu < 180.0 and sigma > 0.0):
+                continue
+            # Apply the weight scaling.  Library-sourced terms also get
+            # the legacy sparse_downweight so under-sampled bins stay
+            # gentle; VSEPR-sourced terms get a flat down-weight (n=0
+            # would zero them via sparse_downweight, which is the
+            # opposite of what we want for the VSEPR fallback).
+            if source == "library":
+                w = sparse_downweight(0.5, n_lib, n_floor=min_n) * weight_scale
+            else:
+                w = 0.5 * weight_scale
+            if w <= 0.0:
+                continue
+            out.append(AngleTerm(
+                a=int(metal), b=int(d), c=int(x),
+                mu=mu, sigma=sigma, weight=float(w),
+            ))
+    # Lex-deterministic ordering (atom_indices triple).
+    out.sort(key=lambda t: t.atom_indices)
+    return out
+
+
+def build_dmd_polyhedron_terms(
+    mol,                        # noqa: ARG001 -- API parity (graph not needed)
+    metal: int,
+    donors: Sequence[int],
+    P: np.ndarray,
+    sigma_dmd: float = 5.0,
+    weight: float = 0.25,
+) -> List[AngleTerm]:
+    """Build D-M-D' angle terms keyed off the OBSERVED initial geometry.
+
+    The mu of each (Di, M, Dj) angle is the angle measured in the input
+    coordinates ``P`` -- this freezes the polyhedron arrangement we
+    constructed.  Sigma is a soft tolerance (default 5°) so the term
+    contributes to severity but does not pull the (frozen) donors.
+
+    Returns terms whose gradient acts only on the metal + donor positions,
+    all of which the polish freezes -- so these terms are ZERO-GRADIENT
+    by construction.  They only matter for the accept-if-better severity
+    score: a polished geometry that distorts the polyhedron loses ground
+    to one that preserves it.
+
+    Pure-functional; deterministic ordering (sorted donor index pairs).
+    """
+    out: List[AngleTerm] = []
+    if metal is None or metal < 0:
+        return out
+    P = np.asarray(P, dtype=np.float64)
+    ds = sorted(int(d) for d in donors)
+    if len(ds) < 2:
+        return out
+    rM = P[int(metal)]
+    for i in range(len(ds)):
+        for j in range(i + 1, len(ds)):
+            di, dj = ds[i], ds[j]
+            try:
+                u = P[di] - rM
+                v = P[dj] - rM
+                nu = float(np.linalg.norm(u))
+                nv = float(np.linalg.norm(v))
+                if nu < 1e-9 or nv < 1e-9:
+                    continue
+                cos_t = float(np.dot(u, v) / (nu * nv))
+                cos_t = max(-1.0, min(1.0, cos_t))
+                import math as _math
+                theta_deg = _math.degrees(_math.acos(cos_t))
+            except Exception:
+                continue
+            if not (0.0 < theta_deg < 180.0):
+                continue
+            out.append(AngleTerm(
+                a=int(di), b=int(metal), c=int(dj),
+                mu=theta_deg, sigma=float(sigma_dmd), weight=float(weight),
+            ))
+    out.sort(key=lambda t: t.atom_indices)
+    return out
 
 # RDKit is imported lazily so the module also works in test paths that monkey
 # patch / mock RDKit (and so the module imports even on installations without
@@ -201,6 +580,7 @@ def detect_fragments(
     return_result: bool = False,
     adaptive_shell1: bool = True,
     adaptive_min_n: int = GRIP_LOOKUP_MIN_N,
+    metal: Optional[int] = None,
 ):
     """Enumerate bond/angle/improper fragments in ``mol`` and build GRIP terms.
 
@@ -581,6 +961,47 @@ def detect_fragments(
             )
         )
         result.n_improper_matched += 1
+
+    # ---- 4) Angle-to-Metal extension (2026-06-05, User direction). --------
+    #
+    # Default OFF: when neither ``ANGLE_TO_METAL_ENV`` nor ``DMD_POLY_ENV``
+    # is set the loop is a pure no-op and the term list is byte-identical
+    # with the legacy detector.
+    #
+    # When ANGLE_TO_METAL is ON:  add M-D-X terms (centre = donor) so the
+    #   ligand-X atoms get a Mogul/VSEPR-grounded pull around the M-D axis.
+    #   Gradient on M and D is zeroed by grip_polish; only X moves.
+    #
+    # When DMD_POLY is ON:  add D-M-D' polyhedron-anchored terms (centre =
+    #   metal).  Gradient is identically zero (both endpoints + centre are
+    #   frozen) but the term contributes to the accept-if-better severity
+    #   so polishes that distort the polyhedron lose ground.
+    if metal is not None and metal >= 0 and donor_set:
+        try:
+            if angle_to_metal_active():
+                mdx_terms = build_mdx_angle_terms(
+                    mol, int(metal), tuple(sorted(int(d) for d in donor_set)),
+                    hapto_atoms=hapto_set, library=lib, min_n=min_n,
+                    include_hydrogens=_angle_to_metal_include_h(),
+                )
+                for t in mdx_terms:
+                    result.angle_terms.append(t)
+                    result.n_angle_matched += 1
+                    result.n_angle_candidates += 1
+            if dmd_polyhedron_active():
+                dmd_terms = build_dmd_polyhedron_terms(
+                    mol, int(metal), tuple(sorted(int(d) for d in donor_set)),
+                    P=P,
+                )
+                for t in dmd_terms:
+                    result.angle_terms.append(t)
+                    result.n_angle_matched += 1
+                    result.n_angle_candidates += 1
+        except Exception:
+            # Defence in depth: a misconfigured fffree mol must not crash
+            # the detector.  Both env flags default OFF so any failure
+            # here simply drops the new terms and yields the legacy result.
+            pass
 
     if return_result:
         return result

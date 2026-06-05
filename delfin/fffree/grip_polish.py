@@ -1261,6 +1261,7 @@ def grip_polish(
             hapto_atoms=hapto_atoms,
             library=library, return_result=False,
             adaptive_shell1=_adaptive_shell1,
+            metal=int(metal),
         )
     except Exception:
         terms = []
@@ -1280,8 +1281,25 @@ def grip_polish(
     )
 
     mol_bonds = _mol_bonds(mol)
+    # When the angle-to-metal layer is active the M-D-X angle pressure can
+    # push an X atom into a position that stretches a single X-Y bond
+    # toward the topology multiplier (default 1.5×).  The legacy polish
+    # had no pressure on X relative to the M-D axis, so the 1.5× cap was
+    # designed for bond / angle / improper terms only.  Loosen it modestly
+    # (default 1.8×) when the new layer is on so the constraint stays
+    # protective against catastrophic stretches but does not roll back
+    # every angle-to-metal improvement.  Default-OFF byte-identical:
+    # without DELFIN_FFFREE_GRIP_ANGLE_TO_METAL=1 the multiplier is the
+    # caller-supplied value (default 1.5×).
+    try:
+        from .grip_fragment_detect import angle_to_metal_active as _atm_active
+        _topo_mult_eff = float(topo_max_multiplier)
+        if _atm_active() and _topo_mult_eff < 1.8:
+            _topo_mult_eff = 1.8
+    except Exception:
+        _topo_mult_eff = float(topo_max_multiplier)
     topo_constraint = TopologyConstraint.from_initial(
-        mol_bonds, P_init, max_distance_multiplier=topo_max_multiplier,
+        mol_bonds, P_init, max_distance_multiplier=_topo_mult_eff,
     )
 
     chiral_constraint = ChiralVolumeConstraint.from_initial(
