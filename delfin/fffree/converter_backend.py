@@ -22,6 +22,20 @@ from delfin.fffree import ligand_relax as LR
 import delfin._bond_decollapse as _bd
 
 
+# F1 coverage forensik: post-decompose stage failure recorder. Same TSV sink
+# as ``decompose._F1_REASON_LOG``; instruments the polya / assemble / self-gate
+# failure paths.  Default OFF (byte-identical).
+def _f1_backend_log(smi: str, reason: str, extra: str = "") -> None:
+    _path = os.environ.get("DELFIN_FFFREE_DECOMPOSE_REASON_LOG", "").strip()
+    if not _path:
+        return
+    try:
+        with open(_path, "a") as _fh:
+            _fh.write(f"{smi}\t{reason}\t{extra}\n")
+    except Exception:
+        pass
+
+
 def _maybe_relax(syms, P):
     """#38: env-gated COD-loss torsional/rigid-body ligand relaxer (default OFF).
     Relieves van-der-Waals clashes by rotating distal sub-trees about rotatable bonds —
@@ -697,11 +711,24 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -
     # worst-case poly_max/cshm_max above UFF; legacy is better for that tail).
     # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
     if cn and geom and mi is not None:
+        # MISSION F1 (2026-06-05) coverage heal #3: under
+        # DELFIN_FFFREE_F1_COVERAGE the self-gate CShM threshold is relaxed
+        # significantly so high-cshm rough builds emit as native (not as
+        # silent UFF fallback). Internals are downstream's job (GRIP,
+        # UFF post-relax, post_grip_corrector run after).
+        _F1_COV = (
+            os.environ.get("DELFIN_FFFREE_F1_COVERAGE", "0") == "1"
+        )
         _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX", "20.0"))
+        if _F1_COV:
+            _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_F1", "200.0"))
         # Phase G7: hapto structures have donors at ring-centroid distance,
         # which inflates CShM measured at the σ-donor-shell. Relax to 60 Å.
         if has_hapto:
             _shmax = float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HAPTO", "60.0"))
+            if _F1_COV:
+                _shmax = max(_shmax,
+                             float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HAPTO_F1", "400.0")))
         # High-CN (CN>=7) placement is less reliable than CN4-6, so a build that
         # only passes the loose CN4-6 threshold can still be worse than the legacy
         # fallback there.  A tighter high-CN shape gate (default 5.0) makes the
@@ -709,6 +736,10 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, has_hapto=False) -
         # 20, regressions 10->6).  Deterministic, CN-keyed; env-tunable.
         if cn >= 7 and not has_hapto:
             _shmax = min(_shmax, float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HIGHCN", "5.0")))
+            if _F1_COV:
+                # F1 mission: relax high-CN too -- internals downstream
+                _shmax = max(_shmax,
+                             float(os.environ.get("DELFIN_FFFREE_SHAPE_MAX_HIGHCN_F1", "50.0")))
         if donor_set is not None and len(donor_set) == cn:
             sel = list(donor_set)                       # the KNOWN constructed donors
         else:
@@ -781,7 +812,7 @@ def _g13_ring_scale_polish(syms, P, cn=None, geom=None, donors=None,
         return list(syms), np.asarray(P, dtype=float)
 
 
-def _fffree_chelate_isomers(d, geom_key, max_isomers):
+def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
@@ -794,6 +825,9 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         or os.environ.get("DELFIN_FFFREE_HIGH_DENTICITY", "0") == "1"
     )
     if any(lg["denticity"] >= 4 for lg in ligands) and not _PT3_HIGH_DENT:
+        max_d = max(lg["denticity"] for lg in ligands)
+        _f1_backend_log(smiles, "chelate_denticity_ge4_disabled",
+                        f"max_denticity={max_d}")
         return None        # kappa>=4 (porphyrin/salen/DTPA) not yet supported -> legacy
     # Phase G8 (User 2026-05-31): fundamental + universal → remove the
     # class-specific aromatic-CN5 chelate pre-rejection. Let the universal
@@ -818,12 +852,19 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         })
     try:
         configs = PIC.enumerate_chelate_configs(geom_key, specs)
-    except Exception:
+    except Exception as _e:
+        _f1_backend_log(smiles, "chelate_polya_exception", str(_e)[:80])
         return None
     if not configs:
+        _f1_backend_log(smiles, "chelate_polya_no_configs", geom_key)
         return None
     geom_tag = d["geometry"].split()[0]
     results = []
+    # MISSION F1 (2026-06-05) coverage heal #4a: hold one best-effort
+    # build that PASSED assembly but FAILED the self-gate so we can emit
+    # it as last-resort native when no clean isomer survives.
+    _F1_COV = os.environ.get("DELFIN_FFFREE_F1_COVERAGE", "0") == "1"
+    _f1_holdover = None
     for k, config in enumerate(configs[:max_isomers]):
         # per-config pruning (generate-gate-floor): a geometrically infeasible config
         # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
@@ -840,6 +881,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         _has_hapto = any(lg.get("is_hapto") for lg in ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                donors=donors, has_hapto=_has_hapto):   # donor-aware self-gate -> skip config
+            if _F1_COV and _f1_holdover is None:
+                _f1_holdover = (syms, P, k, geom_tag)
             continue
         # Phase G13b: aromatic ring scaling polish with HAPTO-PI EXPLICIT FREEZE
         # + SUBSTITUENT SUBTREE DRAG. Iter G13 (first variant) regressed
@@ -871,10 +914,18 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 donors=donors, has_hapto=_has_hapto,
             )
         results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
+    # MISSION F1 (2026-06-05) coverage heal #4b: emit last-resort build
+    # when nothing passed the self-gate (env-gated).
+    if _F1_COV and not results and _f1_holdover is not None:
+        _syms, _P, _k, _gt = _f1_holdover
+        results.append((_xyz(_syms, _P), f"{_gt}-chelate-{_k+1}-F1lastresort"))
+        _f1_backend_log(smiles, "f1_chelate_last_resort_emit", geom_key)
     # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.
     results = _conformer_enum_post(results, d)
+    if not results:
+        _f1_backend_log(smiles, "chelate_all_configs_failed", geom_key)
     return results or None
 
 
@@ -910,9 +961,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         return None
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
+        _f1_backend_log(smiles, "geom_not_in_polya_groups", d.get("geometry", "?"))
         return None
     if d.get("has_chelate"):
-        return _fffree_chelate_isomers(d, geom_key, max_isomers)
+        return _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=smiles)
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
@@ -926,18 +978,31 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     spec = dict(Counter(lig_label))
     try:
         colorings = PIC.enumerate_isomers(geom_key, spec)
-    except Exception:
+    except Exception as _e:
+        _f1_backend_log(smiles, "polya_enumerate_exception", str(_e)[:80])
         return None
     if not colorings:
+        _f1_backend_log(smiles, "polya_no_colorings", geom_key)
         return None
     results: List[Tuple[str, str]] = []
+    # MISSION F1 (2026-06-05) coverage heal #4c: same last-resort mechanism
+    # for non-chelate. Under F1_COVERAGE, exceptions / None / self-gate
+    # failures CONTINUE to next coloring instead of bailing the whole SMILES.
+    _F1_COV_NC = os.environ.get("DELFIN_FFFREE_F1_COVERAGE", "0") == "1"
+    _f1_holdover_nc = None
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
-        except Exception:
+        except Exception as _e:
+            _f1_backend_log(smiles, "assemble_exception", str(_e)[:80])
+            if _F1_COV_NC:
+                continue
             return None
         if built is None:
+            _f1_backend_log(smiles, "assemble_returned_none", d.get("geometry", "?"))
+            if _F1_COV_NC:
+                continue
             return None
         syms, P = built
         syms, P = _maybe_relax(syms, P)
@@ -945,6 +1010,12 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         _has_hapto = any(lg.get("is_hapto") for lg in d.get("ligands", []))
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                 has_hapto=_has_hapto):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
+            _f1_backend_log(smiles, "self_gate_failed",
+                            f"cn={d.get('cn')} geom={d.get('geometry')}")
+            if _F1_COV_NC:
+                if _f1_holdover_nc is None:
+                    _f1_holdover_nc = (syms, P, k, coloring)
+                continue
             return None
         # Phase G13b polish (see chelate path above for full rationale).
         # G13b REVERTED (HEAL-FIRST x2): substituent-subtree-drag broke
@@ -971,6 +1042,17 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         geom_tag = d["geometry"].split()[0]
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         results.append((_xyz(syms, P), label))
+    # MISSION F1 (2026-06-05) coverage heal #4d: last-resort emit for
+    # non-chelate when no clean coloring made it through.
+    if _F1_COV_NC and not results and _f1_holdover_nc is not None:
+        _syms, _P, _k, _coloring = _f1_holdover_nc
+        vertex_elems = [lab_elem[lab] for lab in _coloring]
+        name = _classify_coloring(geom_key, vertex_elems)
+        geom_tag = d["geometry"].split()[0]
+        label = (f"{name}-{geom_tag}-{_k+1}-F1lastresort" if name
+                 else f"{geom_tag}-{_k+1}-F1lastresort")
+        results.append((_xyz(_syms, _P), label))
+        _f1_backend_log(smiles, "f1_nonchelate_last_resort_emit", geom_key)
     # CN5 polytopal completeness (#coverage): decompose defaults CN5 -> TBP-5, but SPY-5
     # is the Berry-pseudorotation partner — real CN5 complexes split between the two.
     # Additively enumerate SPY-5 too (best-effort; never bails the TBP-5 result).

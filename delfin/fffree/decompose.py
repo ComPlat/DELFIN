@@ -18,6 +18,25 @@ import delfin._bond_decollapse as bd
 _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
 
+# ===== F1 coverage forensik: fine-grained failure reason recorder =====
+# Default OFF (byte-identical). When DELFIN_FFFREE_DECOMPOSE_REASON_LOG points
+# at a writable path, every decompose() return-None path records a one-line
+# TSV reason for the SMILES.  Format: ``<smi>\t<reason>\t<extra>\n``.
+# Used by the F1 coverage forensik harness to bucket the ~80 % UFF-fallback
+# population by root cause without changing dispatch behaviour.
+
+
+def _f1_log(smi: str, reason: str, extra: str = "") -> None:
+    _path = os.environ.get("DELFIN_FFFREE_DECOMPOSE_REASON_LOG", "").strip()
+    if not _path:
+        return
+    try:
+        with open(_path, "a") as _fh:
+            _fh.write(f"{smi}\t{reason}\t{extra}\n")
+    except Exception:
+        pass
+
+
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
     # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).
     # Env-gated default OFF: only when DELFIN_FFFREE_FBLOCK_CN8_12=1 (or
@@ -80,9 +99,11 @@ def decompose(smiles: str) -> Optional[Dict]:
     if mol is None:
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
     if mol is None:
+        _f1_log(smiles, "smiles_unparseable")
         return None
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
     if len(metals) == 0:
+        _f1_log(smiles, "no_metal")
         return None
     # Phase G4 (2026-05-31): multi-metal extension.
     # Previously: mononuclear only. Now: under PURE_TRACK3 or DELFIN_FFFREE_MULTI_METAL,
@@ -95,6 +116,7 @@ def decompose(smiles: str) -> Optional[Dict]:
                   or os.environ.get("DELFIN_FFFREE_MULTI_METAL", "0") == "1")
     if len(metals) > 1:
         if not _PT3_MULTI:
+            _f1_log(smiles, "multi_metal_disabled", f"n_metals={len(metals)}")
             return None                               # mononuclear only (legacy)
         # Pick primary metal = highest CN (most neighbors)
         m = max(metals, key=lambda mi: mol.GetAtomWithIdx(mi).GetDegree())
@@ -131,10 +153,12 @@ def decompose(smiles: str) -> Optional[Dict]:
     if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1":
         _allowed.add(10)
     if cn not in _allowed:
+        _f1_log(smiles, "cn_out_of_range", f"cn={cn}")
         return None
     metal = matom.GetSymbol()
     geometry = _default_geometry(metal, cn)
     if geometry is None:
+        _f1_log(smiles, "no_geometry_for_cn", f"metal={metal} cn={cn}")
         return None
 
     donor_elem = {d: mol.GetAtomWithIdx(d).GetSymbol() for d in donor_idx}
@@ -161,8 +185,25 @@ def decompose(smiles: str) -> Optional[Dict]:
     try:
         frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
                                  fragsMolAtomMapping=mapping)
-    except Exception:
-        return None
+    except Exception as _e:
+        # MISSION F1 (2026-06-05) coverage heal #1: retry with
+        # sanitizeFrags=False under DELFIN_FFFREE_F1_COVERAGE.  Charged-
+        # aromatic NHC/carbene/iminophosphorane fragments have invalid
+        # valence after M-X cleavage; sanitize-True rejects entirely.
+        # G14-PIVOT pattern was reverted for INTERNALS; F1 is COVERAGE
+        # mission -- internals are downstream's responsibility (GRIP,
+        # UFF post-relax, post_grip_corrector).  Env-gated default OFF.
+        if os.environ.get("DELFIN_FFFREE_F1_COVERAGE", "0") == "1":
+            mapping = []
+            try:
+                frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
+                                         fragsMolAtomMapping=mapping)
+            except Exception as _e2:
+                _f1_log(smiles, "frag_sanitize_failed_twice", str(_e2)[:80])
+                return None
+        else:
+            _f1_log(smiles, "frag_sanitize_failed", str(_e)[:80])
+            return None
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
@@ -178,6 +219,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             if (os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
                 or os.environ.get("DELFIN_FFFREE_DECOMPOSE_EXTENDED", "0") == "1"):
                 continue
+            _f1_log(smiles, "bridging_spectator_fragment")
             return None                               # bridging / spectator -> legacy
         # Phase G3 (User 2026-05-31): Hapto-π detection.
         # If a fragment has ≥3 carbon donors that are all part of the same
@@ -227,6 +269,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             # Phase G: relax from > 3 to > 6 — allows tetra/penta/hexadentate
             # ligands (porphyrin κ4, EDTA κ6, salen κ4).
             # If hapto (η7 cycloheptatrienyl, η8 COT): allow.
+            _f1_log(smiles, "hyperdentate_nonhapto", f"denticity={len(fdonors)}")
             return None                               # >hexadentate (very rare) -> legacy
         local_donors = [orig.index(o) for o in fdonors]
         if is_hapto:
@@ -270,10 +313,16 @@ def decompose(smiles: str) -> Optional[Dict]:
                 # Re-compute geometry for new CN
                 geometry = _default_geometry(metal, cn)
                 if geometry is None:
+                    _f1_log(smiles, "no_geometry_after_hapto_collapse",
+                            f"metal={metal} cn={cn}")
                     return None
             else:
+                _f1_log(smiles, "hapto_collapse_cn_out_of_range",
+                        f"new_cn={new_cn}")
                 return None
         else:
+            _f1_log(smiles, "denticity_mismatch_cn",
+                    f"cn={cn} sum_denticity={n_chelate_bonds}")
             return None
     has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
     # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich dispatch.
@@ -350,10 +399,23 @@ def decompose(smiles: str) -> Optional[Dict]:
     # diagnosis that the 63-axis gap is structural to fffree's construction
     # rougher-than-UFF internals; pure coverage shift cannot close it.
     # Keeping previous cap 20.
-    MAX_HEAVY_PER_DONOR = 20 if _EXTENDED else 8
+    # MISSION F1 (2026-06-05) coverage heal #2: raise cap further under
+    # DELFIN_FFFREE_F1_COVERAGE. PT3 cap=20 already admits porphyrin/salen;
+    # F1 cap=30 admits very large bidentate aryl/phosphine ligands (BINAP,
+    # biphephos, fluorinated arylphosphines) common in catalysis.  Forensik
+    # on smoke500/PT3=1 found 53 SMILES rejected at the cap=20 boundary --
+    # cap=30 rescues most. Downstream relaxers handle the internals.
+    if os.environ.get("DELFIN_FFFREE_F1_COVERAGE", "0") == "1":
+        MAX_HEAVY_PER_DONOR = 30
+    elif _EXTENDED:
+        MAX_HEAVY_PER_DONOR = 20
+    else:
+        MAX_HEAVY_PER_DONOR = 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
+            _f1_log(smiles, "ligand_too_large",
+                    f"nheavy={nheavy} denticity={lg['denticity']} cap={MAX_HEAVY_PER_DONOR}")
             return None
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,
