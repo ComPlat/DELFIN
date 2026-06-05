@@ -122,6 +122,162 @@ def _tm_fallback_enabled() -> bool:
     ).strip() == "1"
 
 
+# ---------------------------------------------------------------------------
+# Class-conditional hapto/carbene library DISABLE (2026-06-05, Mission B3).
+#
+# Defensive heal-first guard for the v4/v5/v6 activation regressions
+# (hapto_count +74 %, hapto_geom +74 %, cshm_mean_max +23 % in the
+# smoke 550 v4-lib + TM-fallback verdict): the wildcard pool used by the
+# pair-resolved lookup (v4 _v4_lookup_bond, v5 block lookup, TM-aware
+# fallback) MIXES carbene + hapto-π + σ-donor distance/angle bins under
+# the same (metal, C) key.  The Mahalanobis pressure from GRIP polish
+# then pulls every metal-C bond toward the σ-donor mean ~2.0 Å, which
+# deforms the hapto-π carbons in the ring (and the carbene C in NHC /
+# Fischer fragments).
+#
+# This env-gated guard runs at the lookup *entry* and returns ``None``
+# for queries whose class is one of (hapto-η²/η³/η⁴/η⁵/η⁶/η⁷/η⁸ π-C or
+# carbene C) -- a pure heuristic on the (Z, hyb) key so no caller
+# plumbing is needed.  When ``None`` is returned the calling
+# :mod:`grip_fragment_detect` silently drops the term, which falls back
+# to the polyhedron / construction defaults -- the same path used when
+# the legacy v3 chain misses.
+#
+# Heuristic (the lookup sees only ``Z_i, hyb_i`` -- no graph info):
+#
+#   bond (z1, hyb1) - (z2, hyb2):
+#       SUPPRESS iff one endpoint is a transition metal AND the other
+#       is C with ``hyb in {sp, sp2}``.
+#       KEEP M-C(sp3) (σ-alkyl Me-, CH3-), M-N, M-O, M-P, M-S, M-X.
+#
+#   angle (z1) - (z2, hyb2) - (z3) centered at z2:
+#       SUPPRESS iff center is a TM AND at least one neighbour is C
+#       (M-C-? wildcard pool mixes carbene + hapto + σ).
+#       SUPPRESS iff center is C with ``hyb in {sp, sp2}`` AND any
+#       neighbour is a TM (the M-C-X angle of a hapto-π / carbene
+#       fragment).
+#       KEEP M-N-X, M-O-X, M-C(sp3)-X (σ-alkyl).
+#
+#   improper at center (z_c, hyb_c) with neighbours:
+#       SUPPRESS iff center is a TM AND any neighbour is C.
+#       SUPPRESS iff center is C with ``hyb in {sp, sp2}`` AND any
+#       neighbour is a TM.
+#
+# Universal: pure (Z, hyb) heuristic, no SMILES-specific gating, no
+# molecular graph required at lookup time.
+#
+# Env contract:
+#   * Unset / empty / "0" / "false" / "no" -> guard OFF, byte-identical
+#     to the pre-fix path (no early returns, no metric drift).
+#   * Set to "1" / "true" / "yes" / "on" -> guard ON, queries matching
+#     the heuristic return ``None`` BEFORE any v3/v4/v5/v6 walk runs.
+#   * Read per-call (``os.environ.get``) so fork-based parallel pools
+#     honour overrides written into the child environment.
+# ---------------------------------------------------------------------------
+DELFIN_FFFREE_GRIP_HAPTO_LIB_DISABLE_ENV = (
+    "DELFIN_FFFREE_GRIP_HAPTO_LIB_DISABLE"
+)
+
+# Hybridisation strings considered π-class at the lookup heuristic
+# (sp and sp2 carbons cover η²-η⁸ hapto-π, NHC carbene, and Fischer
+# carbene cases).  ``sp3`` is intentionally excluded -- σ-alkyl M-CH3
+# is a legitimate σ-donor that the library should still constrain.
+_HAPTO_LIB_DISABLE_PI_HYB = frozenset({"sp", "sp2"})
+
+
+def _hapto_lib_disable_enabled() -> bool:
+    """``True`` when ``DELFIN_FFFREE_GRIP_HAPTO_LIB_DISABLE`` is set to
+    a truthy value (``1``/``true``/``yes``/``on``).  Default OFF --
+    byte-identical to the pre-2026-06-05 lookup path when unset.
+    """
+    raw = os.environ.get(
+        DELFIN_FFFREE_GRIP_HAPTO_LIB_DISABLE_ENV, ""
+    ).strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _is_hapto_or_carbene_bond_query(
+    z1: str, hyb1: str, z2: str, hyb2: str,
+) -> bool:
+    """Heuristic class-detect for bond queries.
+
+    True iff ONE endpoint is a transition metal and the OTHER is C with
+    ``hyb in {sp, sp2}``.  Covers hapto-π C (η²-η⁸) and carbene C (NHC,
+    Fischer) without aggregating σ-alkyl (M-C sp3).
+    """
+    # Defensive normalisation -- accept None / numpy types gracefully.
+    s1 = str(z1) if z1 is not None else ""
+    s2 = str(z2) if z2 is not None else ""
+    h1 = str(hyb1) if hyb1 is not None else ""
+    h2 = str(hyb2) if hyb2 is not None else ""
+    # Case A: z1 = metal, z2 = C with π hyb.
+    if s1 in _TM_SET and s2 == "C" and h2 in _HAPTO_LIB_DISABLE_PI_HYB:
+        return True
+    # Case B: z2 = metal, z1 = C with π hyb.
+    if s2 in _TM_SET and s1 == "C" and h1 in _HAPTO_LIB_DISABLE_PI_HYB:
+        return True
+    return False
+
+
+def _is_hapto_or_carbene_angle_query(
+    z1: str, z2: str, hyb2: str, z3: str,
+    hyb1: str = "*", hyb3: str = "*",
+) -> bool:
+    """Heuristic class-detect for angle queries.
+
+    Suppress iff:
+      * center z2 is a TM AND at least one neighbour (z1, z3) is C,
+        OR
+      * center z2 is C with ``hyb in {sp, sp2}`` AND at least one
+        neighbour is a TM.
+    """
+    sc = str(z2) if z2 is not None else ""
+    hc = str(hyb2) if hyb2 is not None else ""
+    s1 = str(z1) if z1 is not None else ""
+    s3 = str(z3) if z3 is not None else ""
+    h1 = str(hyb1) if hyb1 is not None else ""
+    h3 = str(hyb3) if hyb3 is not None else ""
+    if sc in _TM_SET and (s1 == "C" or s3 == "C"):
+        return True
+    if sc == "C" and hc in _HAPTO_LIB_DISABLE_PI_HYB and (
+        s1 in _TM_SET or s3 in _TM_SET
+    ):
+        return True
+    # Additional safeguard for ring-internal hapto-π angles: angle
+    # centered at sp2-C in a π-system where BOTH neighbours are sp2-C
+    # and one of them touches a metal (M-C=C-C-... in η²-η⁸).  This is
+    # not detectable from (Z,hyb) alone, so we leave it untouched here
+    # -- detect_fragments still uses ``hapto_atoms`` index-based
+    # filtering for that case (see grip_fragment_detect.py docstring).
+    return False
+
+
+def _is_hapto_or_carbene_improper_query(
+    z_center: str, hyb_center: str,
+    neighbor_zs: Iterable[str],
+) -> bool:
+    """Heuristic class-detect for improper queries.
+
+    Suppress iff:
+      * center is a TM AND any neighbour is C,
+        OR
+      * center is C with ``hyb in {sp, sp2}`` AND any neighbour is a
+        TM.
+    """
+    sc = str(z_center) if z_center is not None else ""
+    hc = str(hyb_center) if hyb_center is not None else ""
+    nbrs = [str(z) for z in neighbor_zs]
+    if sc in _TM_SET and any(z == "C" for z in nbrs):
+        return True
+    if sc == "C" and hc in _HAPTO_LIB_DISABLE_PI_HYB and any(
+        z in _TM_SET for z in nbrs
+    ):
+        return True
+    return False
+
+
 def _to_key_str(parsed) -> str:
     """Serialise a parsed fragment to its canonical JSON-string key.
 
@@ -904,6 +1060,14 @@ class GripLibrary:
         the most specific successful match is returned.  When both succeed
         at the same fallback level the larger-``n`` entry wins (more data).
         """
+        # Class-conditional hapto/carbene DISABLE guard (Mission B3,
+        # 2026-06-05): when DELFIN_FFFREE_GRIP_HAPTO_LIB_DISABLE=1 and the
+        # query is a (metal, π-C) pair, return None BEFORE any v3/v4/v5
+        # walk.  Default-OFF: when the env-flag is unset this is a single
+        # function-call check (no behaviour change).
+        if _hapto_lib_disable_enabled() and \
+                _is_hapto_or_carbene_bond_query(z1, hyb1, z2, hyb2):
+            return None
         # Orientation 1: center = z1
         parsed_ab = [
             z1, hyb1,
@@ -962,6 +1126,13 @@ class GripLibrary:
         wildcard ``"*"`` if unknown — the fallback chain will reach the
         corresponding looser level on its first iteration in that case.
         """
+        # Class-conditional hapto/carbene DISABLE guard (Mission B3,
+        # 2026-06-05).  Default-OFF: byte-identical when env-flag unset.
+        if _hapto_lib_disable_enabled() and \
+                _is_hapto_or_carbene_angle_query(
+                    z1, z2, hyb2, z3, hyb1=hyb1, hyb3=hyb3,
+                ):
+            return None
         # Sort the two neighbours canonically so (z1,z3) and (z3,z1) hit the
         # same key — deterministic ordering rule.
         nbrs_pair = sorted(
@@ -1121,7 +1292,16 @@ class GripLibrary:
         element list (deterministic order).  Unknown neighbour hybridisations
         are filled with wildcard ``"*"``.
         """
+        # Materialise neighbours once -- iterable consumed by both the guard
+        # and the legacy key build below.
         nbr_zs = [str(z) for z in neighbor_zs_sorted]
+        # Class-conditional hapto/carbene DISABLE guard (Mission B3,
+        # 2026-06-05).  Default-OFF: byte-identical when env-flag unset.
+        if _hapto_lib_disable_enabled() and \
+                _is_hapto_or_carbene_improper_query(
+                    z_center, hyb_center, nbr_zs,
+                ):
+            return None
         nbr_hybs = (
             [str(h) for h in neighbor_hybs_sorted]
             if neighbor_hybs_sorted is not None
