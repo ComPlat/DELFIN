@@ -26244,7 +26244,30 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     1.2 % below 0.5 A (the latter is the unrecoverable / catastrophic
     sub-population this gate targets).  Default OFF -> byte-identical
     when the flags are unset (the helper returns its input unchanged).
+
+    Mission D2 (2026-06-05): ``DELFIN_MAX_ISOMERS`` env-var lifts the
+    caller-supplied ``max_isomers`` cap to the env value when env > arg.
+    The cap only applies BEFORE the topology gate; the gate then filters
+    out any isomer with broken topology, so the lifted cap can only
+    *retain* more gate-passers (no garbage bloat).  Default-OFF
+    byte-identical: when env unset, the original arg flows through.
     """
+    # Mission D2 cap lift -- only when env > caller arg.
+    try:
+        _env_cap_raw = os.environ.get("DELFIN_MAX_ISOMERS", "").strip()
+        if _env_cap_raw:
+            _env_cap = int(_env_cap_raw)
+            if _env_cap > 0:
+                _user_cap = kwargs.get("max_isomers")
+                if _user_cap is None and len(args) >= 3:
+                    _user_cap = args[2]
+                if _user_cap is None or int(_user_cap) < _env_cap:
+                    kwargs["max_isomers"] = _env_cap
+                    # Drop positional max_isomers if supplied so kwarg wins.
+                    if len(args) >= 3:
+                        args = args[:2] + args[3:]
+    except (TypeError, ValueError):
+        pass
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
     try:
         from delfin.fffree.vertex_uniqueness_gate import drop_collapsed_isomers as _vu_drop

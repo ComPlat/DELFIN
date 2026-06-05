@@ -133,6 +133,46 @@ ANGLE_TO_METAL_ENV = "DELFIN_FFFREE_GRIP_ANGLE_TO_METAL"
 DMD_POLY_ENV = "DELFIN_FFFREE_GRIP_DMD_POLYHEDRON"
 ANGLE_TO_METAL_INCLUDE_H_ENV = "DELFIN_FFFREE_GRIP_ANGLE_TO_METAL_INCLUDE_H"
 
+# ---------------------------------------------------------------------------
+# Mission D2 (2026-06-05): per-class weight env-overrides.
+#
+# The legacy default-weights table is (bond=1.0, angle=0.5, improper=2.0,
+# torsion=0.2).  These overrides bump bond/angle weights so the Mahalanobis
+# pull on the most-actionable internal geometry classes outranks the rest.
+# Default-OFF byte-identical: when env unset, the legacy table is returned
+# unchanged.
+# ---------------------------------------------------------------------------
+WEIGHT_BOND_ENV = "DELFIN_FFFREE_GRIP_WEIGHT_BOND"
+WEIGHT_ANGLE_ENV = "DELFIN_FFFREE_GRIP_WEIGHT_ANGLE"
+WEIGHT_IMPROPER_ENV = "DELFIN_FFFREE_GRIP_WEIGHT_IMPROPER"
+WEIGHT_TORSION_ENV = "DELFIN_FFFREE_GRIP_WEIGHT_TORSION"
+
+
+def _resolve_weight_env(env_name: str, default: float) -> float:
+    """Read a float-valued env-var; return ``default`` when unset / invalid."""
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        v = float(raw)
+        if np.isfinite(v) and v >= 0:
+            return v
+    except (TypeError, ValueError):
+        pass
+    return float(default)
+
+
+def _apply_weight_env_overrides(w: dict) -> dict:
+    """Apply Mission D2 env-flag weight overrides to ``w`` (mutates + returns).
+
+    Default-OFF byte-identical: when no env-flags are set, ``w`` is unchanged.
+    """
+    w["bond"] = _resolve_weight_env(WEIGHT_BOND_ENV, w.get("bond", 1.0))
+    w["angle"] = _resolve_weight_env(WEIGHT_ANGLE_ENV, w.get("angle", 0.5))
+    w["improper"] = _resolve_weight_env(WEIGHT_IMPROPER_ENV, w.get("improper", 2.0))
+    w["torsion"] = _resolve_weight_env(WEIGHT_TORSION_ENV, w.get("torsion", 0.2))
+    return w
+
 
 def _angle_to_metal_include_h() -> bool:
     """``True`` iff M-D-H terms should be emitted as well (default OFF).
@@ -705,6 +745,9 @@ def detect_fragments(
     w = dict(default_weights())
     if weights:
         w.update(weights)
+    # Mission D2 (2026-06-05): env-overrides for bond/angle/improper/torsion
+    # global weights.  Default-OFF byte-identical (env unset -> no change).
+    w = _apply_weight_env_overrides(w)
 
     lib = library if library is not None else get_default_library()
     P = np.asarray(P, dtype=np.float64)
