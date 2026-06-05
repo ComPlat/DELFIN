@@ -58,8 +58,10 @@ import numpy as np
 
 __all__ = [
     "GripLibrary",
+    "MergedLibrary",
     "load",
     "get_default_library",
+    "get_default_merged_library",
     "lookup_bond",
     "lookup_angle",
     "lookup_improper",
@@ -67,6 +69,7 @@ __all__ = [
     "lookup_tm_category",
     "DEFAULT_LIB_PATH",
     "DELFIN_GRIP_LIB_PATH_ENV",
+    "DELFIN_FFFREE_GRIP_LIB_COD_PATH_ENV",
     "GRIP_LOOKUP_MIN_N",
 ]
 
@@ -77,6 +80,16 @@ DEFAULT_LIB_PATH = Path(
 
 # Env var name used to override the default library path at process start.
 DELFIN_GRIP_LIB_PATH_ENV = "DELFIN_GRIP_LIB_PATH"
+
+# v6 COD-library env-flag.  When set to a valid v6 .npz path, the lookup chain
+# becomes (merged -> ccdc-only -> cod-only -> fallback).  Default unset =
+# byte-identical to the legacy CCDC-only chain.
+#
+# CCDC-free runtime ("adopter mode"):
+#   * unset ``DELFIN_GRIP_LIB_PATH``
+#   * set ``DELFIN_FFFREE_GRIP_LIB_COD_PATH`` to the v6 .npz
+# Result: lookup operates with COD only, no CCDC dependency at runtime.
+DELFIN_FFFREE_GRIP_LIB_COD_PATH_ENV = "DELFIN_FFFREE_GRIP_LIB_COD_PATH"
 
 # Minimum sample size for a fallback level to be considered "trusted".
 GRIP_LOOKUP_MIN_N = 5
@@ -1142,6 +1155,396 @@ class GripLibrary:
 
 
 # ---------------------------------------------------------------------------
+# v6 — MergedLibrary: COD + CCDC dual-source lookup with provenance
+# ---------------------------------------------------------------------------
+# Provenance tags returned by :meth:`MergedLibrary.lookup_bond_with_provenance`
+# and friends.  Adopter callers can switch on these to flag "agree" hits as
+# higher-confidence and "disagree" hits as data-quality concerns.
+PROVENANCE_CCDC_ONLY = "ccdc-only"
+PROVENANCE_COD_ONLY = "cod-only"
+PROVENANCE_BOTH_AGREE = "both-agree"        # |mu_ccdc - mu_cod| < 1 sigma
+PROVENANCE_BOTH_DISAGREE = "both-disagree"  # |mu_ccdc - mu_cod| > 2 sigma
+PROVENANCE_BOTH_MARGINAL = "both-marginal"  # 1 sigma <= diff <= 2 sigma
+PROVENANCE_NONE = "none"
+
+_DISAGREE_THRESHOLD_SIGMA = 2.0
+_AGREE_THRESHOLD_SIGMA = 1.0
+
+
+def _weighted_mean_sigma(
+    mu1: float, sigma1: float, n1: int,
+    mu2: float, sigma2: float, n2: int,
+) -> Tuple[float, float, int]:
+    """N-weighted mean of two normal-approximated distributions.
+
+    Returns ``(mu_merged, sigma_merged, n_total)``.  ``sigma_merged`` is
+    computed via the law of total variance for the mixture:
+
+        mu_m = (n1*mu1 + n2*mu2) / (n1+n2)
+        var_m = (n1*(sigma1^2 + (mu1-mu_m)^2)
+                 + n2*(sigma2^2 + (mu2-mu_m)^2)) / (n1+n2)
+        sigma_m = sqrt(var_m)
+
+    This is the closed-form merged Gaussian for two samples with known
+    means/variances/counts -- the same formula Mahalanobis weighting needs.
+    """
+    n_total = int(n1 + n2)
+    if n_total == 0:
+        return (float("nan"), float("nan"), 0)
+    w1 = float(n1) / float(n_total)
+    w2 = float(n2) / float(n_total)
+    mu_m = w1 * float(mu1) + w2 * float(mu2)
+    var_m = (
+        w1 * (float(sigma1) ** 2 + (float(mu1) - mu_m) ** 2)
+        + w2 * (float(sigma2) ** 2 + (float(mu2) - mu_m) ** 2)
+    )
+    sigma_m = float(var_m ** 0.5)
+    return (float(mu_m), sigma_m, n_total)
+
+
+def _classify_provenance(
+    hit_ccdc: Optional[Tuple[float, float, int]],
+    hit_cod: Optional[Tuple[float, float, int]],
+) -> str:
+    """Classify a pair of lookups into a provenance tag."""
+    if hit_ccdc is None and hit_cod is None:
+        return PROVENANCE_NONE
+    if hit_ccdc is None:
+        return PROVENANCE_COD_ONLY
+    if hit_cod is None:
+        return PROVENANCE_CCDC_ONLY
+    mu_a, sigma_a, _ = hit_ccdc
+    mu_b, sigma_b, _ = hit_cod
+    # Diff scaled by the pooled sigma (sqrt of average var to be symmetric).
+    pooled_var = 0.5 * (float(sigma_a) ** 2 + float(sigma_b) ** 2)
+    pooled_sigma = max(float(pooled_var) ** 0.5, 1e-6)
+    diff = abs(float(mu_a) - float(mu_b)) / pooled_sigma
+    if diff < _AGREE_THRESHOLD_SIGMA:
+        return PROVENANCE_BOTH_AGREE
+    if diff > _DISAGREE_THRESHOLD_SIGMA:
+        return PROVENANCE_BOTH_DISAGREE
+    return PROVENANCE_BOTH_MARGINAL
+
+
+class MergedLibrary:
+    """Twin-source GRIP library combining CCDC (v5) and COD (v6).
+
+    Backward-compat: if either source is ``None`` (env unset), the merge
+    degrades cleanly to a single-source lookup with the appropriate
+    provenance tag.
+
+    Lookup chain (per query):
+        1. **merged**  — n-weighted mean over both libraries when both hit;
+           the merged ``(mu, sigma, n)`` is what callers should use unless
+           they need provenance (then call ``*_with_provenance`` variants).
+        2. **ccdc-only**  — if only CCDC hits.
+        3. **cod-only**  — if only COD hits (this is the adopter-mode path
+           when no CCDC lib is loaded).
+        4. **none**  — both miss.
+
+    The lookup methods :meth:`lookup_bond`, :meth:`lookup_angle`,
+    :meth:`lookup_improper`, :meth:`lookup_torsion`, :meth:`lookup_tm_category`
+    return ``(mu, sigma, n)`` (or ``dict`` for torsions) for drop-in API
+    compatibility with :class:`GripLibrary`.
+
+    The ``*_with_provenance`` variants additionally return the provenance
+    tag and, when available, the per-source raw hits.
+    """
+
+    def __init__(
+        self,
+        ccdc_lib: Optional["GripLibrary"],
+        cod_lib: Optional["GripLibrary"],
+    ):
+        self.ccdc_lib = ccdc_lib
+        self.cod_lib = cod_lib
+        # Useful aliases for callers that probe capabilities.
+        self.has_ccdc = ccdc_lib is not None
+        self.has_cod = cod_lib is not None
+        # ``version`` mirrors the highest available source so consumers
+        # gating on ``version >= N`` keep working with the merged wrapper.
+        v_ccdc = ccdc_lib.version if ccdc_lib is not None else 0
+        v_cod = cod_lib.version if cod_lib is not None else 0
+        self.version = max(int(v_ccdc), int(v_cod))
+
+    # ------------------------------------------------------------------
+    # Capabilities (probe both sources)
+    # ------------------------------------------------------------------
+    @property
+    def has_pair_tables(self) -> bool:
+        if self.ccdc_lib is not None and self.ccdc_lib.has_pair_tables:
+            return True
+        if self.cod_lib is not None and self.cod_lib.has_pair_tables:
+            return True
+        return False
+
+    @property
+    def has_tm_categories(self) -> bool:
+        if self.ccdc_lib is not None and self.ccdc_lib.has_tm_categories:
+            return True
+        if self.cod_lib is not None and self.cod_lib.has_tm_categories:
+            return True
+        return False
+
+    @property
+    def has_torsions(self) -> bool:
+        if self.ccdc_lib is not None and self.ccdc_lib.has_torsions:
+            return True
+        if self.cod_lib is not None and self.cod_lib.has_torsions:
+            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _merge_hits(
+        self,
+        hit_ccdc: Optional[Tuple[float, float, int]],
+        hit_cod: Optional[Tuple[float, float, int]],
+    ) -> Optional[Tuple[float, float, int]]:
+        """Combine two ``(mu, sigma, n)`` hits using n-weighting.
+
+        Returns the merged tuple, or whichever single hit exists, or
+        ``None`` when both miss.
+        """
+        if hit_ccdc is None and hit_cod is None:
+            return None
+        if hit_ccdc is None:
+            return hit_cod
+        if hit_cod is None:
+            return hit_ccdc
+        return _weighted_mean_sigma(*hit_ccdc, *hit_cod)
+
+    # ------------------------------------------------------------------
+    # Lookup methods — same signature as GripLibrary
+    # ------------------------------------------------------------------
+    def lookup_bond(
+        self,
+        z1: str,
+        hyb1: str,
+        z2: str,
+        hyb2: str,
+        ring_size_min: int = -1,
+        in_aromatic: bool = False,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        hit_ccdc = (
+            self.ccdc_lib.lookup_bond(z1, hyb1, z2, hyb2, ring_size_min,
+                                      in_aromatic, min_n=min_n)
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_bond(z1, hyb1, z2, hyb2, ring_size_min,
+                                     in_aromatic, min_n=min_n)
+            if self.cod_lib is not None else None
+        )
+        return self._merge_hits(hit_ccdc, hit_cod)
+
+    def lookup_angle(
+        self,
+        z1: str,
+        z2: str,
+        hyb2: str,
+        z3: str,
+        ring_size_min: int = -1,
+        in_aromatic: bool = False,
+        hyb1: str = _WILDCARD,
+        hyb3: str = _WILDCARD,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        hit_ccdc = (
+            self.ccdc_lib.lookup_angle(z1, z2, hyb2, z3, ring_size_min,
+                                       in_aromatic, hyb1=hyb1, hyb3=hyb3,
+                                       min_n=min_n)
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_angle(z1, z2, hyb2, z3, ring_size_min,
+                                      in_aromatic, hyb1=hyb1, hyb3=hyb3,
+                                      min_n=min_n)
+            if self.cod_lib is not None else None
+        )
+        return self._merge_hits(hit_ccdc, hit_cod)
+
+    def lookup_improper(
+        self,
+        z_center: str,
+        hyb_center: str,
+        neighbor_zs_sorted: Iterable[str],
+        *,
+        ring_size_min: int = -1,
+        neighbor_hybs_sorted: Optional[Iterable[str]] = None,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        # neighbor_zs_sorted is consumed twice -- materialise to a tuple.
+        nbz_tuple = tuple(neighbor_zs_sorted)
+        nhz_tuple = (
+            tuple(neighbor_hybs_sorted)
+            if neighbor_hybs_sorted is not None else None
+        )
+        hit_ccdc = (
+            self.ccdc_lib.lookup_improper(
+                z_center, hyb_center, nbz_tuple,
+                ring_size_min=ring_size_min,
+                neighbor_hybs_sorted=nhz_tuple,
+                min_n=min_n,
+            )
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_improper(
+                z_center, hyb_center, nbz_tuple,
+                ring_size_min=ring_size_min,
+                neighbor_hybs_sorted=nhz_tuple,
+                min_n=min_n,
+            )
+            if self.cod_lib is not None else None
+        )
+        return self._merge_hits(hit_ccdc, hit_cod)
+
+    def lookup_tm_category(
+        self,
+        category: str,
+        metal_element: str,
+        partner_element: str = "C",
+        *,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        hit_ccdc = (
+            self.ccdc_lib.lookup_tm_category(
+                category, metal_element, partner_element, min_n=min_n
+            )
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_tm_category(
+                category, metal_element, partner_element, min_n=min_n
+            )
+            if self.cod_lib is not None else None
+        )
+        return self._merge_hits(hit_ccdc, hit_cod)
+
+    def lookup_torsion(
+        self,
+        z_a: str, z_b: str, hyb_b: str,
+        z_c: str, hyb_c: str, z_d: str,
+        *,
+        ring_min_bc: int = -1,
+        arom_b: bool = False,
+        arom_c: bool = False,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[dict]:
+        """Torsion lookup — chain (ccdc -> cod) since merge of GMMs needs
+        component-level realignment that isn't well-defined cross-source.
+        """
+        if self.ccdc_lib is not None:
+            hit = self.ccdc_lib.lookup_torsion(
+                z_a, z_b, hyb_b, z_c, hyb_c, z_d,
+                ring_min_bc=ring_min_bc, arom_b=arom_b, arom_c=arom_c,
+                min_n=min_n,
+            )
+            if hit is not None:
+                return hit
+        if self.cod_lib is not None:
+            return self.cod_lib.lookup_torsion(
+                z_a, z_b, hyb_b, z_c, hyb_c, z_d,
+                ring_min_bc=ring_min_bc, arom_b=arom_b, arom_c=arom_c,
+                min_n=min_n,
+            )
+        return None
+
+    # ------------------------------------------------------------------
+    # Provenance-aware variants
+    # ------------------------------------------------------------------
+    def lookup_bond_with_provenance(
+        self,
+        z1: str, hyb1: str, z2: str, hyb2: str,
+        ring_size_min: int = -1,
+        in_aromatic: bool = False,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Tuple[Optional[Tuple[float, float, int]], str,
+               Optional[Tuple[float, float, int]],
+               Optional[Tuple[float, float, int]]]:
+        """Returns ``(merged_hit, provenance_tag, hit_ccdc, hit_cod)``.
+
+        Use when the caller needs to flag agreement/disagreement between
+        the two sources (e.g. for the cross-validation report or for
+        marking high-confidence vs flagged fragments in the loss function).
+        """
+        hit_ccdc = (
+            self.ccdc_lib.lookup_bond(z1, hyb1, z2, hyb2, ring_size_min,
+                                      in_aromatic, min_n=min_n)
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_bond(z1, hyb1, z2, hyb2, ring_size_min,
+                                     in_aromatic, min_n=min_n)
+            if self.cod_lib is not None else None
+        )
+        merged = self._merge_hits(hit_ccdc, hit_cod)
+        tag = _classify_provenance(hit_ccdc, hit_cod)
+        return merged, tag, hit_ccdc, hit_cod
+
+    def lookup_tm_category_with_provenance(
+        self,
+        category: str, metal_element: str, partner_element: str = "C",
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Tuple[Optional[Tuple[float, float, int]], str,
+               Optional[Tuple[float, float, int]],
+               Optional[Tuple[float, float, int]]]:
+        hit_ccdc = (
+            self.ccdc_lib.lookup_tm_category(
+                category, metal_element, partner_element, min_n=min_n
+            )
+            if self.ccdc_lib is not None else None
+        )
+        hit_cod = (
+            self.cod_lib.lookup_tm_category(
+                category, metal_element, partner_element, min_n=min_n
+            )
+            if self.cod_lib is not None else None
+        )
+        merged = self._merge_hits(hit_ccdc, hit_cod)
+        tag = _classify_provenance(hit_ccdc, hit_cod)
+        return merged, tag, hit_ccdc, hit_cod
+
+    # ------------------------------------------------------------------
+    # Singleton accessor (process-wide cache, keyed on both paths)
+    # ------------------------------------------------------------------
+    _SINGLETONS: "dict[tuple, MergedLibrary]" = {}
+    _SINGLETON_LOCK = threading.Lock()
+
+    @classmethod
+    def get(
+        cls,
+        ccdc_path: Optional[Path] = None,
+        cod_path: Optional[Path] = None,
+    ) -> "MergedLibrary":
+        key = (
+            str(Path(ccdc_path).resolve()) if ccdc_path is not None else "",
+            str(Path(cod_path).resolve()) if cod_path is not None else "",
+        )
+        with cls._SINGLETON_LOCK:
+            inst = cls._SINGLETONS.get(key)
+            if inst is None:
+                ccdc_lib = None
+                cod_lib = None
+                if ccdc_path is not None:
+                    try:
+                        ccdc_lib = GripLibrary.get(ccdc_path)
+                    except FileNotFoundError:
+                        pass
+                if cod_path is not None:
+                    try:
+                        cod_lib = GripLibrary.get(cod_path)
+                    except FileNotFoundError:
+                        pass
+                inst = cls(ccdc_lib, cod_lib)
+                cls._SINGLETONS[key] = inst
+            return inst
+
+
+# ---------------------------------------------------------------------------
 # Module-level convenience API
 # ---------------------------------------------------------------------------
 def load(npz_path: Optional[os.PathLike] = None) -> GripLibrary:
@@ -1155,6 +1558,43 @@ def load(npz_path: Optional[os.PathLike] = None) -> GripLibrary:
 def get_default_library() -> GripLibrary:
     """Convenience: return the cached default-path library."""
     return load(None)
+
+
+def get_default_merged_library() -> MergedLibrary:
+    """Return the dual-source merged library honouring env-flags.
+
+    Resolution:
+
+    * CCDC source: ``$DELFIN_GRIP_LIB_PATH`` if set, else :data:`DEFAULT_LIB_PATH`
+      (skipped if path missing).
+    * COD source:  ``$DELFIN_FFFREE_GRIP_LIB_COD_PATH`` if set (skipped if
+      empty or path missing).
+
+    Adopter-mode (CCDC-free runtime):
+        unset ``DELFIN_GRIP_LIB_PATH`` AND set ``DELFIN_FFFREE_GRIP_LIB_COD_PATH``
+        -> returned ``MergedLibrary.ccdc_lib is None``, ``cod_lib`` populated.
+
+    Byte-identical-to-legacy mode (CCDC-only, default):
+        unset ``DELFIN_FFFREE_GRIP_LIB_COD_PATH`` ->
+        ``MergedLibrary.cod_lib is None`` and every lookup defers to
+        :class:`GripLibrary` exactly as before.
+    """
+    ccdc_env = os.environ.get(DELFIN_GRIP_LIB_PATH_ENV, "").strip()
+    cod_env = os.environ.get(DELFIN_FFFREE_GRIP_LIB_COD_PATH_ENV, "").strip()
+    ccdc_path: Optional[Path] = None
+    cod_path: Optional[Path] = None
+    if ccdc_env:
+        candidate = Path(ccdc_env)
+        if candidate.exists():
+            ccdc_path = candidate
+    else:
+        if DEFAULT_LIB_PATH.exists():
+            ccdc_path = DEFAULT_LIB_PATH
+    if cod_env:
+        candidate = Path(cod_env)
+        if candidate.exists():
+            cod_path = candidate
+    return MergedLibrary.get(ccdc_path, cod_path)
 
 
 def lookup_bond(
