@@ -26342,21 +26342,35 @@ def _smiles_to_xyz_isomers_impl(
         r'\[(?:' + '|'.join(_re_g15b.escape(m) for m in _METALS) + r')',
         smiles
     ))
-    # MISSION A5 / Phase G15-NF (User 2026-06-05 — kill legacy-UFF fallback
-    # under PT3): the no-fallback semantic ("if fffree can't build it, we don't
-    # emit it") MUST hold even when DELFIN_FFFREE_BUILDER is unset.  Without
-    # this, PT3 users who forget the BUILDER flag silently fall through to the
-    # legacy/UFF path and the "FF-free" claim becomes 15-20 % real / 80 %
-    # UFF-in-disguise (per feedback_xemyix_legacy_fallback_collapse).  The
-    # auto-implication is one-way (NO_FALLBACK or PT3 -> dispatch fffree) and
-    # never the reverse, so default-OFF byte-identity holds when neither flag
-    # is set.
-    _no_fallback = (
-        _delfin_env_int("DELFIN_FFFREE_PURE_TRACK3", 0)
-        or _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
-    )
+    # MISSION D1 (User 2026-06-05 — VOLL-POOL HEAL): the A5 auto-implication
+    # (PT3 -> NO_FALLBACK + dispatch) collapsed voll-pool quality.  Per the
+    # iter_gate at n=390 vs 2792332, D1-partial showed 48 severe regressions
+    # because PT3 was still auto-dispatching fffree-native (which is rougher
+    # on Internals than 2792332's UFF-polished legacy structures).
+    #
+    # The pre-A5 (commit 9e96246) byte-equivalent contract is:
+    #   - dispatch fffree ONLY when BUILDER=1 or NO_FALLBACK=1 is explicit
+    #   - PT3 alone keeps its downstream semantic (sort, dedup, conformer
+    #     enum) but does NOT auto-dispatch fffree
+    # Under this contract, the 2792332 22-flag stack (which sets PT3=1 but
+    # NOT BUILDER=1) goes straight to the legacy/UFF pipeline -- exactly the
+    # 99 % emission, UFF-polished Internals path that 2792332 actually used.
+    #
+    # NO_FALLBACK=1 (explicit) is the "honest fffree measurement" mode for
+    # paper measurements; it now requires the user to set it deliberately.
+    # The auto-imply has been removed entirely.
+    #
+    # Behaviour matrix (matches pre-A5 / commit 9e96246):
+    #   (no flag)              -> skip fffree dispatch (default-OFF byte-id)
+    #   PT3=1 alone            -> skip fffree dispatch -> straight to legacy
+    #                             (matches 2792332)
+    #   BUILDER=1              -> dispatch fffree, fall back to legacy on fail
+    #   BUILDER=1+NO_FALLBACK=1 -> dispatch fffree, return [] on fail
+    #   NO_FALLBACK=1 alone    -> dispatch fffree, return [] on fail (paper)
+    _no_fallback = _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
     _fffree_dispatch = (
-        _delfin_env_int("DELFIN_FFFREE_BUILDER", 0) or _no_fallback
+        _delfin_env_int("DELFIN_FFFREE_BUILDER", 0)
+        or _no_fallback
     )
     if (has_metal or _has_any_metal_atom) and _fffree_dispatch:
         try:

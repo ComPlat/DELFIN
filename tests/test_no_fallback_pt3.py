@@ -1,7 +1,9 @@
 """MISSION A5 — NO_FALLBACK + PT3: kill the legacy-UFF fallback for metals.
 
 Covers the dispatch behaviour of ``smiles_to_xyz_isomers`` when the new
-``DELFIN_FFFREE_NO_FALLBACK`` env-flag (auto-on under ``DELFIN_FFFREE_PURE_TRACK3``)
+``DELFIN_FFFREE_NO_FALLBACK`` env-flag (Mission D1 2026-06-05: PT3 no longer
+auto-implies NO_FALLBACK -- legacy 2792332-style fallback is restored under
+PT3 alone; NO_FALLBACK must be set explicitly for the "honest fffree" mode)
 is set.  Verifies:
 
   * default-OFF byte-identity (no env, no behavioural change)
@@ -95,28 +97,37 @@ def test_no_fallback_alone_implicitly_enables_dispatch(monkeypatch, clean_env):
     assert calls == [_METAL_SMI], "NO_FALLBACK=1 must implicitly enable dispatch"
 
 
-def test_pure_track3_alone_implicitly_enables_dispatch(monkeypatch, clean_env):
-    """``DELFIN_FFFREE_PURE_TRACK3=1`` -- the headline PT3 flag -- must do
-    the same auto-implication as NO_FALLBACK=1 alone.
+def test_pure_track3_alone_does_not_dispatch_fffree(monkeypatch, clean_env):
+    """``DELFIN_FFFREE_PURE_TRACK3=1`` alone (without BUILDER or NO_FALLBACK)
+    MUST NOT auto-dispatch fffree.  Mission D1 (2026-06-05): the A5
+    auto-implication broke the voll-pool quality on Internals axes by
+    forcing fffree-native dispatch on PT3-only runs.  The pre-A5 contract
+    is that PT3 is a downstream flag (sort/dedup/conformer) and only
+    BUILDER or NO_FALLBACK actually dispatches the fffree builder.
     """
-    sentinel = [("X 0.0 0.0 0.0", "lab")]
     calls = []
 
     def _spy(smiles, max_isomers=50):
         calls.append(smiles)
-        return list(sentinel)
+        return [("X 0.0 0.0 0.0", "lab")]
 
     monkeypatch.setattr(
         "delfin.fffree.converter_backend._fffree_isomers", _spy,
     )
     monkeypatch.setattr(sc, "RDKIT_AVAILABLE", True)
     monkeypatch.setattr(sc, "contains_metal", lambda _smi: True)
+    monkeypatch.setattr(sc, "_probe_hapto_groups_from_smiles", lambda _smi: [])
+    monkeypatch.setattr(sc, "_prepare_mol_for_embedding", lambda *_a, **_k: None)
     monkeypatch.setenv("DELFIN_FFFREE_PURE_TRACK3", "1")
 
-    res, err = sc.smiles_to_xyz_isomers(_METAL_SMI)
-    assert err is None
-    assert res == sentinel
-    assert calls == [_METAL_SMI]
+    try:
+        sc.smiles_to_xyz_isomers(_METAL_SMI)
+    except Exception:
+        pass
+    assert calls == [], (
+        "PT3=1 alone must NOT dispatch fffree -- legacy pipeline owns "
+        "the metal-SMILES, matching 2792332-style behaviour"
+    )
 
 
 def test_no_fallback_blocks_legacy_on_fffree_failure(monkeypatch, clean_env):
