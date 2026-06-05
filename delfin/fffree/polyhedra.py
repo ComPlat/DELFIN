@@ -74,6 +74,87 @@ def _ref_polyhedra():
 
 REFS = _ref_polyhedra()
 
+
+# --- CN10 polyhedra for NON-f-block metals (Mission A2, 2026-06-05). -------
+# When ``DELFIN_FFFREE_CN10_POLYHEDRA=1`` (or PURE_TRACK3=1) AND CN==10 AND the
+# metal is NOT in the f-block, the assembler picks among three Wells-canonical
+# CN10 polyhedra: BICAP-10 (D4d, bicapped square antiprism), CSAP-10 (C4v,
+# capped square antiprism with an extra cap = monocapped SAP-9 capped twice),
+# and SAP-10 (D5d, pentagonal antiprism, the "true" 10-vertex antiprism).
+# Default OFF, byte-identical to HEAD when unset (non-f-block CN10 still falls
+# back to legacy).  BICAP-10 reuses the f_block_polyhedra builder (one source).
+def _bicap_10_unit() -> np.ndarray:
+    """BICAP-10 vertex unit-vectors — re-exported from f_block_polyhedra so
+    the legacy ``REFS`` table and the non-f-block CN10 path share ONE source.
+    Vertex order: 0,1 = axial caps (+z,-z); 2-5 = upper square; 6-9 = lower
+    square (45°-rotated)."""
+    from delfin.fffree import f_block_polyhedra as _FBP
+    return _FBP.bicap_10_vertices()
+
+
+def _csap_10_unit() -> np.ndarray:
+    """CSAP-10 — Capped Square Antiprism (with an extra cap on a square face).
+
+    A 10-vertex C4v variant: one axial cap (+z) plus the SAP-8 square antiprism
+    plus one EXTRA equatorial-belt vertex.  In the Wells / IUPAC catalogue this
+    is also called the "monocapped square antiprism with a belt cap".  Vertex
+    order: 0 = apical axial cap (+z); 1-4 = upper square (closer to cap);
+    5-8 = lower square (45°-rotated); 9 = equatorial belt cap (φ=22.5°, z=0).
+    """
+    h_top = 0.55
+    h_bot = 0.70
+    r_top = math.sqrt(max(0.0, 1.0 - h_top * h_top))
+    r_bot = math.sqrt(max(0.0, 1.0 - h_bot * h_bot))
+    cap_axial = [(0.0, 0.0, 1.0)]
+    top = [(r_top * math.cos(math.radians(90.0 * k)),
+            r_top * math.sin(math.radians(90.0 * k)), h_top) for k in range(4)]
+    bot = [(r_bot * math.cos(math.radians(45.0 + 90.0 * k)),
+            r_bot * math.sin(math.radians(45.0 + 90.0 * k)), -h_bot)
+           for k in range(4)]
+    belt = [(math.cos(math.radians(22.5)), math.sin(math.radians(22.5)), 0.0)]
+    return _norm_rows(np.asarray(cap_axial + top + bot + belt, dtype=float))
+
+
+def _sap_10_unit() -> np.ndarray:
+    """SAP-10 — Pentagonal Antiprism (D5d).
+
+    The "true" 10-vertex antiprism: two parallel regular pentagons, the lower
+    rotated by 36° relative to the upper.  Vertex order: 0-4 = upper pentagon
+    (φ=0,72,144,216,288 at +z); 5-9 = lower pentagon (φ=36,108,180,252,324 at
+    -z).  For the regular antiprism whose lateral edges equal the pentagon
+    edges, h = sin(π/10) (in units where the in-plane radius is 1).  Vectors
+    are then unit-normalised so all 10 vertices sit on the unit sphere.
+    """
+    h = math.sin(math.pi / 10.0)
+    top = [(math.cos(math.radians(72.0 * k)),
+            math.sin(math.radians(72.0 * k)), h) for k in range(5)]
+    bot = [(math.cos(math.radians(36.0 + 72.0 * k)),
+            math.sin(math.radians(36.0 + 72.0 * k)), -h) for k in range(5)]
+    return _norm_rows(np.asarray(top + bot, dtype=float))
+
+
+# Canonical CN10 geometry name → vertex builder.  Pólya-complete enumeration
+# picks among these three; default is BICAP-10 (most common in CN10 X-ray).
+CN10_VERTICES = {
+    "BICAP-10 bicapped square antiprism": _bicap_10_unit,
+    "CSAP-10 capped square antiprism": _csap_10_unit,
+    "SAP-10 pentagonal antiprism": _sap_10_unit,
+}
+
+CN10_ALIASES = {
+    "BICAP-10": "BICAP-10 bicapped square antiprism",
+    "CSAP-10": "CSAP-10 capped square antiprism",
+    "SAP-10": "SAP-10 pentagonal antiprism",
+}
+
+
+def cn10_polyhedra_enabled() -> bool:
+    """True when the non-f-block CN10 dispatch is enabled (env-gated)."""
+    import os as _os
+    return (_os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1"
+            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
+
+
 GEOM_BY_CN = {
     2: ["L-2 linear"],                              # Phase G: Cu(I)/Ag(I)/Au(I)/Hg(II)
     3: ["SP-3 trigonal planar", "T-3 T-shape"],
@@ -94,12 +175,34 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
     include the dedicated f-block polyhedra (SAP-8, DD-8, TTP-9, CSAP-9,
     BICAP-10, CAP-11, IH-12) from :mod:`delfin.fffree.f_block_polyhedra`.
 
+    Mission A2 (2026-06-05): when ``cn == 10`` AND the metal is NOT f-block
+    AND ``DELFIN_FFFREE_CN10_POLYHEDRA=1`` (or PURE_TRACK3=1), the list also
+    grows to include BICAP-10 / CSAP-10 / SAP-10 (Wells canonical CN10
+    polyhedra) — so non-f-block CN10 (e.g. Y, early-d, large-anion) can build
+    a real polyhedron instead of falling through to legacy.
+
     Default OFF — byte-identical to ``GEOM_BY_CN[cn]`` when unset.
     """
     import os as _os
     base = list(GEOM_BY_CN.get(cn, []))
-    if not (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
-            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+    fb_on = (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
+             or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
+    cn10_on = cn10_polyhedra_enabled()
+    # CN10 non-f-block extension (Mission A2): inject 3 polyhedra here when
+    # metal is non-f-block (or unknown).  F-block CN10 keeps its own dispatch
+    # below, gated by the independent FBLOCK_CN8_12 flag.
+    if cn == 10 and cn10_on:
+        try:
+            from delfin.fffree import f_block_polyhedra as _FBP_check
+            is_fb = bool(metal) and _FBP_check.is_f_block(metal)
+        except ImportError:
+            is_fb = False
+        if not is_fb:
+            for g in CN10_VERTICES.keys():
+                if g not in base:
+                    base.append(g)
+            return base
+    if not fb_on:
         return base
     if not metal:
         return base
@@ -132,6 +235,12 @@ def ref_vectors(geometry: str) -> np.ndarray:
     for (cn, shape), v in REFS.items():
         if shape == geometry:
             return v
+    # Mission A2 (2026-06-05): non-f-block CN10 polyhedra dispatch.  Read-only
+    # name lookup — callers only reach these geometries when env-gated.
+    if geometry in CN10_VERTICES:
+        return CN10_VERTICES[geometry]()
+    if geometry in CN10_ALIASES:
+        return CN10_VERTICES[CN10_ALIASES[geometry]]()
     # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).  Env-gated
     # (``DELFIN_FFFREE_FBLOCK_CN8_12=1`` or ``DELFIN_FFFREE_PURE_TRACK3=1``)
     # — when unset, the new geometries are NEVER reached because callers

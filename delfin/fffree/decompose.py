@@ -56,6 +56,13 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
         return "SQAP-8 square antiprism"
     if cn == 9:
         return "TTP-9 tricapped trigonal prism"
+    # Mission A2 (2026-06-05): non-f-block CN10 polyhedra (BICAP-10 default).
+    # Env-gated DELFIN_FFFREE_CN10_POLYHEDRA=1 (or PURE_TRACK3=1).  When unset
+    # this falls through to ``return None`` so HEAD behaviour is byte-identical.
+    if cn == 10:
+        if (os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1"
+                or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+            return "BICAP-10 bicapped square antiprism"
     return None
 
 
@@ -118,6 +125,11 @@ def decompose(smiles: str) -> Optional[Dict]:
     # for non-f-block at CN10-12, which bails to legacy (None return).
     if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1":
         _allowed.update({10, 11, 12})
+    # Mission A2 (2026-06-05): non-f-block CN10 via BICAP-10/CSAP-10/SAP-10.
+    # Independent env flag so the CN10 path can be exercised without enabling
+    # the full f-block CN8-12 dispatch.
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1":
+        _allowed.add(10)
     if cn not in _allowed:
         return None
     metal = matom.GetSymbol()
