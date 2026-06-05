@@ -46,6 +46,7 @@ export DELFIN_FFFREE_GRIP_WEIGHT_ANGLE=1.5
 
 # F2 fallback mode (FF-free embed when constructive fails)
 export DELFIN_FFFREE_FALLBACK_MODE=grip
+export DELFIN_FFFREE_EMBED_GRIP_MAX_ITER=50
 
 # Forensik log for paper-claim verification
 export DELFIN_FFFREE_FORENSIK_LOG=/tmp/${LABEL}_dispatch_forensik.tsv

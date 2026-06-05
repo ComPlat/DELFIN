@@ -128,6 +128,23 @@ def _maybe_grip_polish(
         from delfin.fffree.grip_polish import grip_polish
     except Exception:
         return coords, "raw"
+    # Mission F2 timeout-fix: embed-fallback polish runs on the bulk of
+    # the pool, so a tight per-call iter budget is essential.  Default 50
+    # iter is enough for ETKDG starting coords to converge to a local min
+    # (the embed is already topology-correct; we only polish bond/angle
+    # internals).  Default-OFF byte-identical when env unset means the
+    # caller-supplied (or grip_polish default) max_iter flows through.
+    _embed_iter_env = os.environ.get(
+        "DELFIN_FFFREE_EMBED_GRIP_MAX_ITER", ""
+    ).strip()
+    _polish_kwargs = {}
+    if _embed_iter_env:
+        try:
+            _embed_iter = int(_embed_iter_env)
+            if _embed_iter > 0:
+                _polish_kwargs["max_iter"] = _embed_iter
+        except (TypeError, ValueError):
+            pass
     try:
         P_polished = grip_polish(
             coords,
@@ -135,6 +152,7 @@ def _maybe_grip_polish(
             metal=int(metal_idx),
             donors=list(donors),
             geom=geom_hint,
+            **_polish_kwargs,
         )
         P_polished = np.asarray(P_polished, dtype=float)
         if P_polished.shape == coords.shape and np.all(np.isfinite(P_polished)):
