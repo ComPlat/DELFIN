@@ -26231,6 +26231,16 @@ def _filter_nonfinite_isomers(results):
     return clean
 
 
+# MISSION F2 (User 2026-06-05): per-thread smuggle channel for the
+# ``mode == "both"`` embed-fallback results.  The impl writes here when it
+# decides to keep the legacy UFF pipeline running alongside ETKDG+GRIP; the
+# wrapper below concatenates and clears.  Using a thread-local keeps it
+# fork-safe (each worker has its own state) and side-effect-free for any
+# caller not on the ``"both"`` path.
+import threading as _f2_threading
+_F2_BOTH_EXTRA: "_f2_threading.local" = _f2_threading.local()
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation; otherwise the
@@ -26251,6 +26261,13 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     out any isomer with broken topology, so the lifted cap can only
     *retain* more gate-passers (no garbage bloat).  Default-OFF
     byte-identical: when env unset, the original arg flows through.
+
+    Mission F2 (2026-06-05): ``mode == "both"`` post-processing: when the
+    impl stashed embed-fallback results (because fffree-native failed and
+    the legacy pipeline still ran to produce the UFF comparison set),
+    prepend them to the legacy output here so the caller sees
+    ``[embed-grip..., UFF...]``.  The stash is read-and-clear so subsequent
+    calls on the same thread don't inherit it.
     """
     # Mission D2 cap lift -- only when env > caller arg.
     try:
@@ -26268,18 +26285,28 @@ def smiles_to_xyz_isomers(*args, **kwargs):
                         args = args[:2] + args[3:]
     except (TypeError, ValueError):
         pass
+    # Mission F2: reset the both-mode stash before each call.
+    setattr(_F2_BOTH_EXTRA, "extra", None)
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+    _both_extra = getattr(_F2_BOTH_EXTRA, "extra", None)
+    setattr(_F2_BOTH_EXTRA, "extra", None)
     try:
         from delfin.fffree.vertex_uniqueness_gate import drop_collapsed_isomers as _vu_drop
     except Exception:
         _vu_drop = None
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        filtered = _filter_nonfinite_isomers(r[0])
+        combined = list(r[0])
+        if _both_extra:
+            combined = list(_both_extra) + combined
+        filtered = _filter_nonfinite_isomers(combined)
         if _vu_drop is not None:
             filtered = _vu_drop(filtered)
         return filtered, r[1]
     if isinstance(r, list):
-        filtered = _filter_nonfinite_isomers(r)
+        combined = list(r)
+        if _both_extra:
+            combined = list(_both_extra) + combined
+        filtered = _filter_nonfinite_isomers(combined)
         if _vu_drop is not None:
             filtered = _vu_drop(filtered)
         return filtered
@@ -26391,27 +26418,73 @@ def _smiles_to_xyz_isomers_impl(
     #   BUILDER=1+NO_FALLBACK=1 -> dispatch fffree, return [] on fail
     #   NO_FALLBACK=1 alone    -> dispatch fffree, return [] on fail (paper)
     _no_fallback = _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
+    # MISSION F2 (User 2026-06-05): Universal Embed Fallback with selectable
+    # polish.  When fffree-native fails (or for ``"none"`` returns []), the
+    # dispatch consults ``DELFIN_FFFREE_FALLBACK_MODE``:
+    #
+    #     unset / "uff"  -> legacy UFF pipeline (byte-identical to pre-F2)
+    #     "grip"         -> ETKDGv3 embed + GRIP polish (FF-free, 100 % cov)
+    #     "none"         -> return [] (paper-grade "no-fallback" measurement)
+    #     "both"         -> emit BOTH GRIP-polished AND UFF outputs (A/B)
+    #
+    # Setting ``FALLBACK_MODE`` to any non-``"uff"`` value also implicitly
+    # enables fffree dispatch so the constructive path gets first refusal
+    # even without ``DELFIN_FFFREE_BUILDER`` -- callers that want the new
+    # behaviour just need to flip the one mode flag.
+    try:
+        from delfin.fffree.embed_fallback import resolve_fallback_mode as _resolve_fb_mode
+        _fallback_mode = _resolve_fb_mode()
+    except Exception:
+        _fallback_mode = "uff"
+    _mode_implies_dispatch = _fallback_mode in ("grip", "none", "both")
     _fffree_dispatch = (
         _delfin_env_int("DELFIN_FFFREE_BUILDER", 0)
         or _no_fallback
+        or _mode_implies_dispatch
     )
+    # Stash embed-fallback results for ``mode == "both"`` so the legacy
+    # pipeline result can be concatenated at the bottom of the function
+    # via the public wrapper (see ``smiles_to_xyz_isomers``).
+    _f2_both_extra = None
     if (has_metal or _has_any_metal_atom) and _fffree_dispatch:
         try:
             from delfin.fffree.converter_backend import _fffree_isomers
             _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
         except Exception:
             _ff = None
-        # Forensik breadcrumb (MISSION A5): when DELFIN_FFFREE_FORENSIK_LOG
+        # Forensik breadcrumb (MISSION A5 + F2): when DELFIN_FFFREE_FORENSIK_LOG
         # points at a writable file, record one line per metal-SMILES call
-        # with the outcome (native / fallback / blocked).  Default OFF, no
-        # filesystem touch.  Sink format: ``<smi>\t<status>\t<n_isomers>\n``.
+        # with the outcome.  F2 adds the new ``embed-grip`` / ``embed-none`` /
+        # ``embed-both`` statuses so the per-mode coverage is auditable.
+        # Default OFF, no filesystem touch.  Sink format:
+        # ``<smi>\t<status>\t<n_isomers>\n``.
         _forensik_log = os.environ.get("DELFIN_FFFREE_FORENSIK_LOG", "").strip()
+        # F2: when fffree-native failed and mode != "uff", run the embed fallback.
+        _f2_results = None
+        if not _ff and _fallback_mode in ("grip", "both"):
+            try:
+                from delfin.fffree.embed_fallback import embed_isomers as _embed_iso
+                _polish = "grip" if _fallback_mode == "grip" else "both"
+                _f2_results = _embed_iso(
+                    smiles, max_isomers=max_isomers, polish=_polish,
+                )
+            except Exception:
+                _f2_results = None
         if _forensik_log:
             try:
                 if _ff:
                     _status, _n = "native", len(_ff)
-                elif _no_fallback:
+                elif _fallback_mode == "grip" and _f2_results:
+                    _status, _n = "embed-grip", len(_f2_results)
+                elif _fallback_mode == "both" and _f2_results:
+                    _status, _n = "embed-both", len(_f2_results)
+                elif _fallback_mode == "none" or _no_fallback:
                     _status, _n = "blocked", 0
+                elif _fallback_mode in ("grip", "both"):
+                    # F2: embed-fallback was attempted but yielded nothing.
+                    # Distinguish from the legacy "would-fall-back-to-UFF"
+                    # status so per-mode forensics tells us where the gap is.
+                    _status, _n = "embed-failed", 0
                 else:
                     _status, _n = "fallback", 0
                 with open(_forensik_log, "a") as _fh:
@@ -26432,9 +26505,26 @@ def _smiles_to_xyz_isomers_impl(
         # fb1ae9a's mix on the SAME SMILES set where fffree succeeded, and
         # the 2.4 x bondlen advantage flows directly into the basket.
         # Default OFF (byte-identical when unset); auto on under PT3 OR
-        # NO_FALLBACK (MISSION A5).
-        if _no_fallback:
+        # NO_FALLBACK (MISSION A5) -- F2 extends this with the explicit
+        # ``"none"`` mode for paper-grade no-fallback measurement.
+        if _no_fallback or _fallback_mode == "none":
             return [], None
+        # F2 mode == "grip": replace the legacy UFF fallthrough with the
+        # ETKDG + GRIP-polish output.  Empty result still degrades to []
+        # (rather than legacy) since the F2 promise is "no UFF anywhere in
+        # mode=grip".
+        if _fallback_mode == "grip":
+            return (_f2_results or []), None
+        # F2 mode == "both": stash for later concat with the legacy pipeline
+        # output (which the impl below still produces).  The wrapper
+        # appends ``_f2_both_extra`` via the ``_F2_BOTH_EXTRA`` smuggle
+        # channel below.
+        if _fallback_mode == "both" and _f2_results:
+            _f2_both_extra = list(_f2_results)
+            try:
+                setattr(_F2_BOTH_EXTRA, "extra", _f2_both_extra)
+            except Exception:
+                pass
 
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
