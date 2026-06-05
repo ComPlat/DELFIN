@@ -358,6 +358,34 @@ def main() -> None:
             fh.write("(no UFF or no DELFIN labels — paired comparison "
                      "not applicable)\n")
 
+        # Paired comparison BETWEEN DELFIN variants
+        if len(delfin_labels) >= 2:
+            fh.write("\n## Paired comparison between DELFIN variants\n\n")
+            for i, lab_a in enumerate(delfin_labels):
+                for lab_b in delfin_labels[i + 1:]:
+                    set_a = set(by_label[lab_a].keys())
+                    set_b = set(by_label[lab_b].keys())
+                    shared = sorted(set_a & set_b)
+                    if not shared:
+                        continue
+                    h_a = [by_label[lab_a][rc]["heavy_rmsd"] for rc in shared]
+                    h_b = [by_label[lab_b][rc]["heavy_rmsd"] for rc in shared]
+                    wins_a = sum(1 for k in range(len(shared))
+                                  if h_a[k] < h_b[k])
+                    wins_b = sum(1 for k in range(len(shared))
+                                  if h_b[k] < h_a[k])
+                    fh.write(f"### {lab_a} vs {lab_b} "
+                             f"(n_shared = {len(shared)})\n\n")
+                    fh.write(f"- {lab_a} mean: "
+                             f"{statistics.fmean(h_a):.3f} Å "
+                             f"(wins: {wins_a})\n")
+                    fh.write(f"- {lab_b} mean: "
+                             f"{statistics.fmean(h_b):.3f} Å "
+                             f"(wins: {wins_b})\n")
+                    diff = statistics.fmean(h_a) - statistics.fmean(h_b)
+                    fh.write(f"- delta: {diff:+.3f} Å "
+                             f"({'A better' if diff < 0 else 'B better'})\n\n")
+
     print(f"[aggregate] wrote {perclass_md}")
 
     # ---- summary.json ----
