@@ -26458,6 +26458,11 @@ def _smiles_to_xyz_isomers_impl(
                     _status, _n = "embed-both", len(_f2_results)
                 elif _fallback_mode == "none" or _no_fallback:
                     _status, _n = "blocked", 0
+                elif _fallback_mode in ("grip", "both"):
+                    # F2: embed-fallback was attempted but yielded nothing.
+                    # Distinguish from the legacy "would-fall-back-to-UFF"
+                    # status so per-mode forensics tells us where the gap is.
+                    _status, _n = "embed-failed", 0
                 else:
                     _status, _n = "fallback", 0
                 with open(_forensik_log, "a") as _fh:

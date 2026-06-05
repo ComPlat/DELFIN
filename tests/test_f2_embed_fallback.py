@@ -345,6 +345,36 @@ def test_forensik_log_records_embed_status(monkeypatch, clean_env, tmp_path):
     assert parts[2] == "1"
 
 
+def test_forensik_logs_embed_failed_when_grip_yields_nothing(
+    monkeypatch, clean_env, tmp_path,
+):
+    """``mode=grip`` + fffree-native fail + embed-fallback returns None
+    -> forensik status must be ``embed-failed`` (distinguish from the
+    legacy ``fallback`` status which means "would fall through to UFF").
+    """
+    def _spy_fail(smiles, max_isomers=50):
+        return None
+
+    def _embed_none(smiles, *, max_isomers=16, polish="grip"):
+        return None
+
+    monkeypatch.setattr(
+        "delfin.fffree.converter_backend._fffree_isomers", _spy_fail,
+    )
+    monkeypatch.setattr(
+        "delfin.fffree.embed_fallback.embed_isomers", _embed_none,
+    )
+    log_path = tmp_path / "forensik.tsv"
+    monkeypatch.setenv("DELFIN_FFFREE_FALLBACK_MODE", "grip")
+    monkeypatch.setenv("DELFIN_FFFREE_FORENSIK_LOG", str(log_path))
+    res, err = sc.smiles_to_xyz_isomers(_METAL_SMI)
+    assert res == [] and err is None
+    text = log_path.read_text().strip().splitlines()
+    assert len(text) == 1
+    parts = text[0].split("\t")
+    assert parts[1] == "embed-failed"
+
+
 def test_non_metal_smiles_unaffected_by_mode(monkeypatch, clean_env):
     """``mode=grip`` MUST NOT touch the dispatch for non-metal SMILES."""
     calls = []
