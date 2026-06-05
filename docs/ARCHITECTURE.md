@@ -3,8 +3,12 @@
 ## Two-Path Construction
 
 DELFIN combines **chemistry-aware constructive build** for known classes with
-**universal embed fallback** for edge cases. Both paths apply the same
-**FF-free Mahalanobis polish** on CCDC/COD crystal statistics.
+**universal embed fallback** for edge cases. Both paths support a
+**user-selectable polish stage** so adopters can choose the quality/speed
+tradeoff that suits their use case.
+
+User-vision (2026-06-06): the constructive path targets ≥ ETKDG/RDKit
+coverage; both paths together = 100 % coverage with paper-grade quality.
 
 ```
 SMILES
@@ -16,7 +20,7 @@ SMILES
   │
   ├─→ Per isomer-label: 3D-Build dispatch
   │
-  │   Constructive Path (chemistry-aware)
+  │   Path 1 — Constructive (chemistry-aware)
   │   ┌─────────────────────────────────────────┐
   │   │ Polyhedron vertex assembly              │
   │   │   (OC-6, TBP-5, SAP-9, sandwich, etc.)  │
@@ -26,21 +30,22 @@ SMILES
   │   │ → GRIP-polish (FF-free)                 │
   │   │ → GRACE conformer ensemble              │
   │   └─────────────────────────────────────────┘
-  │       Coverage: 20% → 70%+ (F1 expansion)
+  │       Coverage target: ≥ ETKDG/RDKit (F1 expansion)
   │
   │   OR (when class unknown)
   │
-  │   Universal Embed Path
+  │   Path 2 — Universal Embed
   │   ┌─────────────────────────────────────────┐
   │   │ RDKit ETKDGv3 distance-geometry embed   │
   │   │   (deterministic seed=42, no random)    │
   │   │                                         │
-  │   │ → GRIP-polish (FF-free, same as above)  │
+  │   │ → Selectable post-process (F3):         │
+  │   │   uff / grip / xtb / none / both / all  │
   │   └─────────────────────────────────────────┘
-  │       Coverage: catches edge cases (F2)
+  │       Coverage: catches every edge case (F2/F3)
   │
   └─→ Output: Pólya-complete isomers, CP-complete conformers,
-              all FF-free, all deterministic
+              FF-free + user-selectable polish, deterministic
 ```
 
 ## FF-free Polish — Mathematics
@@ -75,13 +80,40 @@ MergedLibrary
   - Provenance flags: both-agree / both-marginal / both-disagree / ccdc-only / cod-only
 ```
 
-## Fallback Mode (F2)
+## Fallback Mode (F2 + F3) — 6 user-selectable polish stages
 
 `DELFIN_FFFREE_FALLBACK_MODE` env-flag:
-- `grip` (DEFAULT, FF-free): ETKDG embed + GRIP-polish
-- `uff`: legacy UFF (backward compatible)
-- `none`: return empty (NO_FALLBACK measurement)
-- `both`: emit both grip-polished AND uff outputs (comparison)
+
+| Mode | Pipeline | Story |
+|---|---|---|
+| `uff` (DEFAULT, unset) | RDKit ETKDG + UFF minimise | backward compatibility |
+| `grip` | RDKit ETKDG + FF-free GRIP polish | FF-free production paper claim |
+| `xtb` (F3) | RDKit ETKDG + GFN2-xTB relaxation | semi-empirical reference |
+| `none` | Return `[]` on fffree-native fail | paper-grade "no fallback" measurement |
+| `both` | grip + uff (concatenated) | A/B comparison |
+| `all` (F3) | grip + uff + xtb per conformer | full A/B/C comparison for the paper |
+
+Behaviour notes:
+- Mode-setting (any non-`uff` value) also implicitly enables fffree dispatch,
+  so adopters only need to flip one flag.
+- Default unset = `"uff"` is **byte-identical** to the pre-F2 legacy pipeline.
+- `xtb` mode probes
+  `/home/qmchem_max/micromamba/envs/delfin/bin/xtb`, then
+  `/home/qmchem_max/micromamba/bin/xtb`, then `$PATH`.
+  When no xtb binary is found, the polish is **silently skipped** and the
+  output carries an `-raw` suffix so the caller can detect partial polish.
+- `all` mode emits 3× outputs per conformer (one each grip/uff/xtb branch);
+  the legacy UFF concatenation is **not** added on top of `all` so UFF is
+  not duplicated.
+- xtb runs are pinned single-threaded (`OMP_NUM_THREADS=1`) and
+  `--norestart` so the byte-identity contract holds across parallel
+  workers.
+- Per-call xtb wall-clock cap: `DELFIN_FFFREE_XTB_TIMEOUT` seconds
+  (default 120, clamped to `[5, 1800]`).
+
+Paper claim (F3): *DELFIN supports user-selectable post-processing —
+`uff` / `grip` / `xtb` / `none` — over the same construction path.
+The polish stage is a single env-flag for end-users.*
 
 ## Determinism
 
