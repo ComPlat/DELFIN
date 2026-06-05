@@ -193,3 +193,62 @@ preserved (no regression) and the fffree-native SMILES are improved.
 Heal branch: `mission-D1-heal` (pushed to origin).
 Heal commit: `24849e3` — hmaximilian <hmaximilian496@gmail.com>.
 No Co-Authored-By trailers.
+
+
+## D1.v2 — quality-byte-identity heal (revision after partial-pool iter_gate)
+
+The D1.v1 heal (24849e3) restored emission rate but the partial-pool
+iter_gate at n=390 showed 48 severe regressions vs 2792332.  Root cause:
+PT3=1 alone was still triggering `_fffree_dispatch=True` and calling the
+fffree-native backend, which (when successful) emits structures with
+rougher Internals than 2792332's UFF-polished legacy structures.
+
+D1.v2 (99452e0) matches pre-A5 (commit 9e96246) byte-exact:
+
+```python
+# D1.v2
+_no_fallback = _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
+_fffree_dispatch = (
+    _delfin_env_int("DELFIN_FFFREE_BUILDER", 0)
+    or _no_fallback
+)
+# PT3=1 alone does NOT auto-dispatch fffree
+```
+
+Smoke10 verification at 8654d8f + D1.v2 with exact 2792332 22-flag stack:
+
+```
+File             D1.v2 size  2792332 size  identical?
+01-Fe_CO_3_NHC_2 22265       22265         YES (byte-for-byte)
+042-ARABUR       26395       26395         YES
+044-SIYMEU       3893        3893          YES
+046-BAZSEB       42349       42349         YES
+047-CIRJUK       5146        5146          YES
+048-AMEBIF       6560        6560          YES
+```
+
+6/10 non-empty (matches 2792332).  49 isomers total (matches 2792332).
+
+## D1.v2 voll-pool
+
+`scripts/run_vollpool_D1.sh D1v2-heal-VOLLPOOL` running on the same
+22-flag stack with INPROC=1 fast-path.
+
+Quality should match 2792332 1:1 on Internals (same legacy/UFF path
+chosen by PT3-without-BUILDER).  Net+ should come from the 8654d8f-vs-2792332
+improvements that auto-activate downstream of the (legacy-path) builder:
+
+  * bb44b41 vertex-uniqueness gate -> drops collapsed isomers
+  * 2ee2f45 sandwich-piano dispatch + donor-cone topo
+  * 862070a CN10 polyhedra (BICAP-10 / CSAP-10 / SAP-10)
+  * 0508efc SANDWICH-10 + PIANO-STOOL-8 + HALF-SANDWICH-9 polyhedra
+  * 8bba47f oxalate 5-ring planar projector
+
+iter_gate vs `2792332-aromatic-symmetry-VOLLPOOL` pending pool
+completion (ETA ~3-5 hours per 2792332's own historical wall-time).
+
+## Production launcher
+
+`scripts/run_vollpool_D1.sh` — the 22-flag stack + INPROC + D1.v2 heal.
+Verified byte-equivalent at smoke level.  This is the recommended
+production voll-pool launcher going forward.
