@@ -209,6 +209,20 @@ ENV_INDEX_PATH = "DELFIN_FFFREE_XRD_RECALL_INDEX_PATH"
 ENV_RMSD_A = "DELFIN_FFFREE_XRD_RECALL_RMSD_A"
 ENV_WEIGHTED = "DELFIN_FFFREE_XRD_RECALL_WEIGHTED"
 
+# 2026-06-04 user directive: optional CCDC-cleaned index swap-in
+# When DELFIN_FFFREE_USE_CLEANED_CCDC=1, load_ccdc_tmc_index PREFERS the
+# cleaned index (counter-ions, solvent, Z>1, disorder removed) over the raw
+# one. Default OFF -> byte-identical to legacy behaviour.
+ENV_USE_CLEANED = "DELFIN_FFFREE_USE_CLEANED_CCDC"
+ENV_CLEAN_INDEX_PATH = "DELFIN_FFFREE_XRD_RECALL_CLEAN_INDEX_PATH"
+
+# Discovery default for cleaned index (only consulted when ENV_USE_CLEANED=1
+# AND no explicit path was passed/exported)
+DEFAULT_CLEAN_INDEX_PATH = (
+    "/home/qmchem_max/agent_workspace/quality_framework/reference/"
+    "ccdc_tmc_index_cleaned.jsonl"
+)
+
 DEFAULT_RMSD_A = 0.5
 
 
@@ -217,6 +231,9 @@ __all__ = [
     "ENV_INDEX_PATH",
     "ENV_RMSD_A",
     "ENV_WEIGHTED",
+    "ENV_USE_CLEANED",
+    "ENV_CLEAN_INDEX_PATH",
+    "DEFAULT_CLEAN_INDEX_PATH",
     "DEFAULT_RMSD_A",
     "load_ccdc_family_table",
     "load_ccdc_tmc_index",
@@ -267,9 +284,38 @@ def load_ccdc_family_table(path: Optional[str] = None) -> Dict[str, dict]:
 
 
 def load_ccdc_tmc_index(path: Optional[str] = None) -> Dict[str, dict]:
-    """Load CCDC TMC index JSONL keyed by refcode (positions/symbols available)."""
+    """Load CCDC TMC index JSONL keyed by refcode (positions/symbols available).
+
+    When ``DELFIN_FFFREE_USE_CLEANED_CCDC=1`` is set, the cleaned index path is
+    PREFERRED over the raw path. Resolution order:
+      1) explicit ``path`` argument (highest priority — unchanged behaviour)
+      2) if cleaning ON: ``DELFIN_FFFREE_XRD_RECALL_CLEAN_INDEX_PATH``
+         then ``DEFAULT_CLEAN_INDEX_PATH``
+      3) ``DELFIN_FFFREE_XRD_RECALL_INDEX_PATH`` (legacy raw)
+
+    The cleaned JSONL is schema-compatible (refcode, symbols, positions),
+    with extra audit fields the metric layer simply ignores.
+
+    Default (no flags set) -> byte-identical to legacy behaviour: returns {}
+    unless ``DELFIN_FFFREE_XRD_RECALL_INDEX_PATH`` is exported.
+    """
+    use_cleaned = (
+        os.environ.get(ENV_USE_CLEANED, "0") == "1"
+    )
+    cleaned_path: Optional[str] = None
     if path is None:
-        path = os.environ.get(ENV_INDEX_PATH)
+        if use_cleaned:
+            cleaned_path = (
+                os.environ.get(ENV_CLEAN_INDEX_PATH)
+                or DEFAULT_CLEAN_INDEX_PATH
+            )
+            # Fallback to raw if cleaned not on disk
+            if cleaned_path and Path(cleaned_path).exists():
+                path = cleaned_path
+            else:
+                path = os.environ.get(ENV_INDEX_PATH)
+        else:
+            path = os.environ.get(ENV_INDEX_PATH)
     if not path:
         return {}
     if path in _INDEX_CACHE:
