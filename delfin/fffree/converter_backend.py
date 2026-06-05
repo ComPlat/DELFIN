@@ -107,9 +107,12 @@ _GEOM_TO_POLYA = {
     "SQAP-8 square antiprism": "square_antiprism",
     "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
     # Task #44 / Mission A7 (2026-06-05): sandwich + piano-stool + half-sandwich.
-    "SANDWICH-10 bis-eta5-Cp": "sandwich_10",
-    "PIANO-STOOL-8 eta5-Cp+L3": "piano_stool_8",
-    "HALF-SANDWICH-9 eta6+L3": "half_sandwich_9",
+    # Mission B1 (2026-06-05): use the EFFECTIVE per-site Pólya keys (cn=2/4/4
+    # not 10/8/9), because the assembler treats a hapto ring as one
+    # coordination site.  See ``sandwich_piano_polyhedra.effective_ref_vectors_sandwich``.
+    "SANDWICH-10 bis-eta5-Cp": "sandwich_10_eff",
+    "PIANO-STOOL-8 eta5-Cp+L3": "piano_stool_8_eff",
+    "HALF-SANDWICH-9 eta6+L3": "half_sandwich_9_eff",
 }
 
 

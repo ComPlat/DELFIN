@@ -188,6 +188,20 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
     fb_on = (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
              or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
     cn10_on = cn10_polyhedra_enabled()
+    # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich.  When
+    # the env-gate is on, append the dedicated CN8/9/10 sandwich names to the
+    # candidate list so downstream callers (Pólya isomer counting, ensemble
+    # builders) see them.  Default OFF byte-identical with HEAD.
+    sw_on = (_os.environ.get("DELFIN_FFFREE_SANDWICH_DISPATCH", "0") == "1"
+             or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
+    if sw_on:
+        try:
+            from delfin.fffree.sandwich_piano_polyhedra import SANDWICH_GEOM_BY_CN
+            for g in SANDWICH_GEOM_BY_CN.get(cn, []):
+                if g not in base:
+                    base.append(g)
+        except ImportError:
+            pass
     # CN10 non-f-block extension (Mission A2): inject 3 polyhedra here when
     # metal is non-f-block (or unknown).  F-block CN10 keeps its own dispatch
     # below, gated by the independent FBLOCK_CN8_12 flag.
@@ -241,6 +255,26 @@ def ref_vectors(geometry: str) -> np.ndarray:
         return CN10_VERTICES[geometry]()
     if geometry in CN10_ALIASES:
         return CN10_VERTICES[CN10_ALIASES[geometry]]()
+    # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich dispatch.
+    # Read-only name lookup — callers only reach these geometries when
+    # ``decompose._default_geometry`` has selected them under the
+    # ``DELFIN_FFFREE_SANDWICH_DISPATCH`` (or ``PURE_TRACK3``) env-gate.  The
+    # assembler treats a hapto ring as a SINGLE coordination site, so we
+    # return the EFFECTIVE per-site vertex array (1 axis per ring + the
+    # σ-tripod vertices), not the full N-atom polyhedron.  Shapes:
+    #
+    #   SANDWICH-10:    (2, 3) -- top ring axis, bottom ring axis
+    #   PIANO-STOOL-8:  (4, 3) -- ring axis + 3 σ-tripod
+    #   HALF-SANDWICH-9: (4, 3) -- ring axis + 3 σ-tripod
+    #
+    # The full N-vertex array (with Pólya group / unit tests) is still
+    # available via ``sandwich_piano_polyhedra.ref_vectors_sandwich``.
+    try:
+        from delfin.fffree import sandwich_piano_polyhedra as _SPP
+        if _SPP.is_sandwich_geometry(geometry):
+            return _SPP.effective_ref_vectors_sandwich(geometry)
+    except ImportError:
+        pass
     # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).  Env-gated
     # (``DELFIN_FFFREE_FBLOCK_CN8_12=1`` or ``DELFIN_FFFREE_PURE_TRACK3=1``)
     # — when unset, the new geometries are NEVER reached because callers

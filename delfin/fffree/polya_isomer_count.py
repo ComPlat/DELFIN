@@ -165,6 +165,36 @@ def _half_sandwich_9_group():
     return _close_group([C3], 9)
 
 
+# Mission B1 (2026-06-05): EFFECTIVE (per-coordination-site) Pólya groups.
+# Used by the ensemble enumerators (grace_ensemble / grip_ensemble) which need
+# colorings of LIGAND slots, not raw atom-vertices.  Index 0 = top ring axis
+# (η-Cp/arene-1), index 1 = bottom ring axis (SANDWICH-10 only) OR first σ
+# (PIANO-STOOL-8 / HALF-SANDWICH-9), 2..N = remaining σ-tripod arms.
+# See ``sandwich_piano_polyhedra.effective_ref_vectors_sandwich`` for the
+# matching effective vertex array.
+
+
+def _sandwich_10_effective_group():
+    """SANDWICH-10 effective (2 sites: top ring, bottom ring).  C2 symmetry
+    swaps top<->bottom (D5d → C2 on the effective view).  Order 2."""
+    C2 = (1, 0)
+    return _close_group([C2], 2)
+
+
+def _piano_stool_8_effective_group():
+    """PIANO-STOOL-8 effective (4 sites: ring, σ_a, σ_b, σ_c).  C3 cycles the
+    σ-tripod and fixes the ring axis.  Order 3."""
+    C3 = (0, 2, 3, 1)
+    return _close_group([C3], 4)
+
+
+def _half_sandwich_9_effective_group():
+    """HALF-SANDWICH-9 effective (4 sites: ring, σ_a, σ_b, σ_c).  C3 cycles
+    the σ-tripod and fixes the ring axis.  Order 3."""
+    C3 = (0, 2, 3, 1)
+    return _close_group([C3], 4)
+
+
 _GROUPS = {
     "linear": (_linear_group(), 2),                  # Phase G CN2
     "trigonal_planar": (_trigonal_planar_group(), 3),
@@ -182,6 +212,13 @@ _GROUPS = {
     "sandwich_10": (_sandwich_10_group(), 10),
     "piano_stool_8": (_piano_stool_8_group(), 8),
     "half_sandwich_9": (_half_sandwich_9_group(), 9),
+    # Mission B1 (2026-06-05): EFFECTIVE per-site groups for the same shapes.
+    # Used by the ensemble enumerators when the assembler treats a hapto ring
+    # as one coordination site (cn = cn_effective from
+    # ``sandwich_piano_polyhedra.SANDWICH_HAPTO_LAYOUT``).
+    "sandwich_10_eff": (_sandwich_10_effective_group(), 2),
+    "piano_stool_8_eff": (_piano_stool_8_effective_group(), 4),
+    "half_sandwich_9_eff": (_half_sandwich_9_effective_group(), 4),
 }
 
 
@@ -329,6 +366,10 @@ _GEOM_KEY_TO_SHAPE = {
     "sandwich_10": "SANDWICH-10 bis-eta5-Cp",
     "piano_stool_8": "PIANO-STOOL-8 eta5-Cp+L3",
     "half_sandwich_9": "HALF-SANDWICH-9 eta6+L3",
+    # Mission B1 (2026-06-05): effective per-site mapping (same shape names).
+    "sandwich_10_eff": "SANDWICH-10 bis-eta5-Cp",
+    "piano_stool_8_eff": "PIANO-STOOL-8 eta5-Cp+L3",
+    "half_sandwich_9_eff": "HALF-SANDWICH-9 eta6+L3",
 }
 
 # POLYA-COVERAGE-FIX-v1 (env-gated additions to _GEOM_KEY_TO_SHAPE).

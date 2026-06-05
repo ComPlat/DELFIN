@@ -1291,6 +1291,15 @@ def grip_polish(
     # every angle-to-metal improvement.  Default-OFF byte-identical:
     # without DELFIN_FFFREE_GRIP_ANGLE_TO_METAL=1 the multiplier is the
     # caller-supplied value (default 1.5×).
+    #
+    # Mission B1 (2026-06-05): donor-cone DoF (commit b338003) has the same
+    # property -- per-donor azimuth as a joint L-BFGS variable can push a
+    # downstream X-Y bond past the 1.5× cap when a polish that is good
+    # globally (lower CShM, smaller M-D residuals) implies a longer single
+    # bond at the cone tip.  Apply the same modest 1.8× cap when
+    # ``DELFIN_FFFREE_GRIP_DONOR_CONE=1`` is on.  The bump is the MAX of the
+    # two layers (still 1.8× when both are on), so the combined behaviour is
+    # deterministic and idempotent.  Default-OFF byte-identical with HEAD.
     try:
         from .grip_fragment_detect import angle_to_metal_active as _atm_active
         _topo_mult_eff = float(topo_max_multiplier)
@@ -1298,6 +1307,13 @@ def grip_polish(
             _topo_mult_eff = 1.8
     except Exception:
         _topo_mult_eff = float(topo_max_multiplier)
+    try:
+        from .grip_donor_cone import donor_cone_active as _dc_active
+        if _dc_active() and _topo_mult_eff < 1.8:
+            _topo_mult_eff = 1.8
+    except Exception:
+        # Defence-in-depth: never let an import failure regress topo behaviour.
+        pass
     topo_constraint = TopologyConstraint.from_initial(
         mol_bonds, P_init, max_distance_multiplier=_topo_mult_eff,
     )

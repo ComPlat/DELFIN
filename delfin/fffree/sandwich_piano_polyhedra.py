@@ -247,17 +247,67 @@ def is_sandwich_geometry(geometry: str) -> bool:
 
 
 def ref_vectors_sandwich(geometry: str) -> np.ndarray:
-    """Return the unit-vector array for ``geometry``.  KeyError if the
-    name is not one of the SANDWICH-10 / PIANO-STOOL-8 / HALF-SANDWICH-9
+    """Return the FULL N-vertex unit-vector array for ``geometry``.  KeyError if
+    the name is not one of the SANDWICH-10 / PIANO-STOOL-8 / HALF-SANDWICH-9
     keys — caller is expected to dispatch back to the legacy catalogue.
 
     The vectors are deterministic (no env / no platform dependency); two
     successive calls return byte-identical arrays.
+
+    Mission B1 (2026-06-05): the assembler does NOT call this function for
+    placement -- it calls :func:`effective_ref_vectors_sandwich` instead.  The
+    full array is kept for documentation / Pólya validation / unit tests.
     """
     try:
         return SANDWICH_GEOM_VERTICES[geometry]()
     except KeyError:
         raise KeyError(geometry)
+
+
+def effective_ref_vectors_sandwich(geometry: str) -> np.ndarray:
+    """Return the EFFECTIVE per-coordination-site vertex array for ``geometry``.
+
+    Mission B1 (2026-06-05): the existing assembler placement loop at
+    :func:`delfin.fffree.assemble_complex.assemble_from_config` allocates ONE
+    vertex per ligand (hapto rings counted as a single coordination site via
+    :func:`delfin.fffree.hapto_modes.m_centroid_distance`).  For the sandwich
+    polyhedra we therefore present a REDUCED vertex list:
+
+    * SANDWICH-10:    2 vertices — top ring axis  (+z), bottom ring axis (-z)
+    * PIANO-STOOL-8:  4 vertices — ring axis (+z), 3 σ-tripod
+    * HALF-SANDWICH-9: 4 vertices — ring axis (+z), 3 σ-tripod
+
+    The ring axis is the AVERAGE of the full ring's unit vectors (renormalised
+    to length 1); ``ETA5_CP_RING_HALF_ANGLE`` etc. make the average a unit
+    vector along ±z.  The σ-tripod vertices are the same unit vectors as in
+    the full polyhedron (PIANO-STOOL idx 5-7, HALF-SANDWICH idx 6-8).
+
+    Index ORDER on the effective array (must match the cn-=cn_effective
+    contract in :mod:`decompose` and the Pólya effective groups):
+
+      SANDWICH-10:    0 = top ring axis     (η⁵-Cp top)
+                      1 = bottom ring axis  (η⁵-Cp bottom)
+      PIANO-STOOL-8:  0 = ring axis         (η⁵-Cp)
+                      1, 2, 3 = σ-tripod (0°, 120°, 240°)
+      HALF-SANDWICH-9: 0 = ring axis        (η⁶-arene)
+                       1, 2, 3 = σ-tripod (30°, 150°, 270°)
+    """
+    layout = SANDWICH_HAPTO_LAYOUT.get(geometry)
+    full = ref_vectors_sandwich(geometry)
+    if layout is None:
+        raise KeyError(geometry)
+    eff: list = []
+    # One vertex per hapto ring = ring centroid direction (axis_sign * +z by
+    # construction; we compute it from the actual ring vertices for safety).
+    for ring in layout["rings"]:
+        ring_pts = full[ring["ring_indices"]]
+        axis = ring_pts.mean(axis=0)
+        eff.append(axis)
+    # σ-tripod vertices stay as-is.
+    for ti in layout["tripod_indices"]:
+        eff.append(full[ti])
+    arr = np.asarray(eff, dtype=float)
+    return _norm_rows(arr)
 
 
 def layout_for(geometry: str) -> Optional[dict]:
