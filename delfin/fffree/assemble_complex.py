@@ -935,6 +935,28 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
+                # Iter-32e deeper fix (YILNUF oxalate-5-ring planar projector,
+                # 2026-06-05).  When DELFIN_FFFREE_OXALATE_5RING_PLANAR=1, detect
+                # M-O-C(=O)-C(=O)-O 5-ring oxalate chelates in this block and
+                # project the 5 ring atoms onto a planar ideal (bite ~78°,
+                # C-C ~1.55, C-O endo ~1.27, ring planarity <0.05 A).  Exocyclic
+                # C=O is projected onto the same plane (carboxylate conjugation
+                # preserved).  Universal, geometry-only, deterministic.  Env-gated
+                # default-OFF byte-identical (helper returns input copy).
+                try:
+                    from delfin.fffree.oxalate_5ring_planar import (
+                        flag_active as _ox5_active,
+                        apply as _ox5_apply,
+                    )
+                    if _ox5_active() and dent == 2:
+                        Q, _ox5_applied = _ox5_apply(
+                            lsyms, Q, dons_d,
+                            metal_pos=np.zeros(3), metal_sym=metal,
+                        )
+                except Exception:
+                    # Any failure -> keep the existing Q (legacy path), build
+                    # never regresses on the env-gated projector's import errors.
+                    pass
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
             # CONSTRUCTION-FIX #3 (User 2026-06-03): build-time clash gate.
             # Penalise candidates that internally contain collapsed bonds (X-H
