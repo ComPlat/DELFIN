@@ -5079,12 +5079,34 @@ def _convert_metal_bonds_to_dative(mol, only_elements=None):
 
 
 def contains_metal(smiles: str) -> bool:
-    """Return True if SMILES likely contains a metal atom."""
+    """Return True if SMILES likely contains a metal atom.
+
+    Vertex-uniqueness gate hook (DELFIN_FFFREE_VERTEX_UNIQUENESS=1 or
+    DELFIN_FFFREE_PURE_TRACK3=1): when active, also recognises bracketed
+    metal symbols followed by an explicit ``H`` (charged hydride / charged
+    coordinated organometallic SMILES like ``[FeH2-4]`` / ``[IrH-3]`` /
+    ``[RhH-3]``), which the legacy regex misses.  Mis-classification of
+    these as non-metal drops the SMILES into the ETKDG organic conformer
+    pool and produces catastrophic metal-on-donor overlap — the
+    voll-pool 4.0 % build-collapse population traces to this single
+    detector hole.  Default OFF -> byte-identical to HEAD when unset.
+    """
     for metal in _METALS:
         if re.search(rf'\[{metal}[+\-\d\]@]', smiles, re.IGNORECASE):
             return True
         if re.search(rf'\[{metal}\]', smiles, re.IGNORECASE):
             return True
+    # Vertex-uniqueness extension: charged-hydride / explicit-H metal blocks.
+    try:
+        from delfin.fffree.vertex_uniqueness_gate import (
+            is_active as _vu_active,
+            contains_metal_extended as _vu_extended,
+        )
+        if _vu_active() and _vu_extended(smiles, _METALS):
+            return True
+    except Exception:
+        # Any import or runtime failure leaves the legacy result intact.
+        pass
     return False
 
 
@@ -26212,12 +26234,32 @@ def _filter_nonfinite_isomers(results):
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation; otherwise the
-    (isomers, error) result passes through unchanged."""
+    (isomers, error) result passes through unchanged.
+
+    Vertex-uniqueness gate (DELFIN_FFFREE_VERTEX_UNIQUENESS=1 or
+    DELFIN_FFFREE_PURE_TRACK3=1): additionally drop isomers with
+    catastrophic heavy-heavy collapse (< 0.5 A) BEFORE returning.  Forensik
+    on a 1000-XYZ stratified scan of the 2792332 voll-pool measured 4.8 %
+    of structures with at least one heavy-heavy pair below 1.0 A and
+    1.2 % below 0.5 A (the latter is the unrecoverable / catastrophic
+    sub-population this gate targets).  Default OFF -> byte-identical
+    when the flags are unset (the helper returns its input unchanged).
+    """
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+    try:
+        from delfin.fffree.vertex_uniqueness_gate import drop_collapsed_isomers as _vu_drop
+    except Exception:
+        _vu_drop = None
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _filter_nonfinite_isomers(r[0]), r[1]
+        filtered = _filter_nonfinite_isomers(r[0])
+        if _vu_drop is not None:
+            filtered = _vu_drop(filtered)
+        return filtered, r[1]
     if isinstance(r, list):
-        return _filter_nonfinite_isomers(r)
+        filtered = _filter_nonfinite_isomers(r)
+        if _vu_drop is not None:
+            filtered = _vu_drop(filtered)
+        return filtered
     return r
 
 
