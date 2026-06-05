@@ -106,6 +106,10 @@ _GEOM_TO_POLYA = {
     "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
     "SQAP-8 square antiprism": "square_antiprism",
     "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
+    # Task #44 / Mission A7 (2026-06-05): sandwich + piano-stool + half-sandwich.
+    "SANDWICH-10 bis-eta5-Cp": "sandwich_10",
+    "PIANO-STOOL-8 eta5-Cp+L3": "piano_stool_8",
+    "HALF-SANDWICH-9 eta6+L3": "half_sandwich_9",
 }
 
 

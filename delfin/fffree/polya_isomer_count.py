@@ -126,6 +126,45 @@ def _tricapped_trigonal_prism_group():
     return _close_group([C3, C2], 9)
 
 
+def _sandwich_10_group():
+    """SANDWICH-10 (D5d staggered ferrocene): vertices 0-4 top Cp ring, 5-9 bottom
+    Cp ring (staggered 36°).  Proper rotation group D5 (order 10):
+      C5 about z cycles top 0-1-2-3-4 and bottom 5-6-7-8-9 simultaneously.
+      C2 perpendicular to z swaps top<->bottom (and reverses each ring).
+    """
+    C5 = (1, 2, 3, 4, 0, 6, 7, 8, 9, 5)
+    # C2 through the midpoint of vertex 0 and vertex 5: swap top<->bottom while
+    # keeping the antiprismatic pairing.  Vertex 0 (top, azimuth 0°) maps to
+    # vertex 5 (bottom, azimuth 36°) and so on around the antiprism.
+    C2 = (5, 9, 8, 7, 6, 0, 4, 3, 2, 1)
+    return _close_group([C5, C2], 10)
+
+
+def _piano_stool_8_group():
+    """PIANO-STOOL-8 (C3v) — η⁵-Cp + 3 σ-donors.  The strict proper rotation group
+    is the identity (order 1): C3 (about z) cycles the σ-tripod (5,6,7) and
+    arrests 1/3-rotations of the pentagonal Cp ring (0-4) which is NOT a
+    symmetry of the pentagon → only identity preserves the WHOLE polyhedron.
+
+    Choosing identity-only is the safest default: it slightly over-counts
+    vs the true geometric isomer count (different σ-donor arrangements that
+    are tripod-C3-equivalent stay separate), but the downstream 3D-RMSD
+    dedup gate prunes the duplicates.  Tightening to C3 is a future iter.
+    """
+    return [tuple(range(8))]
+
+
+def _half_sandwich_9_group():
+    """HALF-SANDWICH-9 (C3v) — η⁶-arene + 3 σ-donors.  C3 is a real symmetry
+    (the hexagonal arene IS C3v compatible: rotation by 120° cycles vertices
+    0->2->4 and 1->3->5).
+    Group: C3 (order 3).
+      C3 about z: arene 0-2-4 cycle, 1-3-5 cycle, tripod 6-7-8 cycle.
+    """
+    C3 = (2, 3, 4, 5, 0, 1, 7, 8, 6)
+    return _close_group([C3], 9)
+
+
 _GROUPS = {
     "linear": (_linear_group(), 2),                  # Phase G CN2
     "trigonal_planar": (_trigonal_planar_group(), 3),
@@ -139,6 +178,10 @@ _GROUPS = {
     "pentagonal_bipyramid": (_pentagonal_bipyramid_group(), 7),
     "square_antiprism": (_square_antiprism_group(), 8),
     "tricapped_trigonal_prism": (_tricapped_trigonal_prism_group(), 9),
+    # Task #44 / Mission A7 (2026-06-05): sandwich + piano-stool + half-sandwich.
+    "sandwich_10": (_sandwich_10_group(), 10),
+    "piano_stool_8": (_piano_stool_8_group(), 8),
+    "half_sandwich_9": (_half_sandwich_9_group(), 9),
 }
 
 
@@ -282,6 +325,10 @@ _GEOM_KEY_TO_SHAPE = {
     "csap_9": "CSAP-9 capped square antiprism",
     "bicap_10": "BICAP-10 bicapped square antiprism",
     "ih_12": "IH-12 icosahedron",
+    # Task #44 / Mission A7 (2026-06-05): sandwich + piano-stool + half-sandwich.
+    "sandwich_10": "SANDWICH-10 bis-eta5-Cp",
+    "piano_stool_8": "PIANO-STOOL-8 eta5-Cp+L3",
+    "half_sandwich_9": "HALF-SANDWICH-9 eta6+L3",
 }
 
 # POLYA-COVERAGE-FIX-v1 (env-gated additions to _GEOM_KEY_TO_SHAPE).
@@ -324,6 +371,29 @@ def _chelate_cis_edges(geometry: str, n: int):
                     if float(np.clip(V[i] @ V[j], -1.0, 1.0)) > cos_max]
         except Exception:
             pass
+        # Task #44 / Mission A7 fallback: sandwich/piano-stool/half-sandwich
+        # polyhedra are NOT in the legacy ``polyhedra.ref_vectors`` catalogue
+        # — they live in the standalone module.  Use the standalone vertex
+        # set for the cis-edge geometry derivation.
+        try:
+            import math
+            import numpy as np
+            from delfin.fffree import sandwich_piano_polyhedra as _SP
+            if _SP.is_sandwich_geometry(shape):
+                V = _SP.ref_vectors_sandwich(shape)
+                cos_max = math.cos(math.radians(CHELATE_CIS_MAX_DEG))
+                return [(i, j) for i in range(n) for j in range(i + 1, n)
+                        if float(np.clip(V[i] @ V[j], -1.0, 1.0)) > cos_max]
+        except Exception:
+            pass
+    if geometry not in _ANTIPODE_FULL:
+        # No antipode table for this geometry (Task #44 sandwich/piano-stool/
+        # half-sandwich cases reach here when the standalone-module path also
+        # didn't yield a result, e.g. for higher-denticity hapto rings whose
+        # placement does not flow through cis-edges anyway).  Return an empty
+        # cis-edge list: bidentate-arm enumeration won't fire, hapto-ring
+        # ligands are placed by the assembler's hapto-π branch.
+        return []
     anti = _ANTIPODE_FULL[geometry]
     return [(i, j) for i in range(n) for j in range(i + 1, n) if anti[i] != j]
 
