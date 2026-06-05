@@ -26342,12 +26342,45 @@ def _smiles_to_xyz_isomers_impl(
         r'\[(?:' + '|'.join(_re_g15b.escape(m) for m in _METALS) + r')',
         smiles
     ))
-    if (has_metal or _has_any_metal_atom) and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
+    # MISSION A5 / Phase G15-NF (User 2026-06-05 — kill legacy-UFF fallback
+    # under PT3): the no-fallback semantic ("if fffree can't build it, we don't
+    # emit it") MUST hold even when DELFIN_FFFREE_BUILDER is unset.  Without
+    # this, PT3 users who forget the BUILDER flag silently fall through to the
+    # legacy/UFF path and the "FF-free" claim becomes 15-20 % real / 80 %
+    # UFF-in-disguise (per feedback_xemyix_legacy_fallback_collapse).  The
+    # auto-implication is one-way (NO_FALLBACK or PT3 -> dispatch fffree) and
+    # never the reverse, so default-OFF byte-identity holds when neither flag
+    # is set.
+    _no_fallback = (
+        _delfin_env_int("DELFIN_FFFREE_PURE_TRACK3", 0)
+        or _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
+    )
+    _fffree_dispatch = (
+        _delfin_env_int("DELFIN_FFFREE_BUILDER", 0) or _no_fallback
+    )
+    if (has_metal or _has_any_metal_atom) and _fffree_dispatch:
         try:
             from delfin.fffree.converter_backend import _fffree_isomers
             _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
         except Exception:
             _ff = None
+        # Forensik breadcrumb (MISSION A5): when DELFIN_FFFREE_FORENSIK_LOG
+        # points at a writable file, record one line per metal-SMILES call
+        # with the outcome (native / fallback / blocked).  Default OFF, no
+        # filesystem touch.  Sink format: ``<smi>\t<status>\t<n_isomers>\n``.
+        _forensik_log = os.environ.get("DELFIN_FFFREE_FORENSIK_LOG", "").strip()
+        if _forensik_log:
+            try:
+                if _ff:
+                    _status, _n = "native", len(_ff)
+                elif _no_fallback:
+                    _status, _n = "blocked", 0
+                else:
+                    _status, _n = "fallback", 0
+                with open(_forensik_log, "a") as _fh:
+                    _fh.write(f"{smiles}\t{_status}\t{_n}\n")
+            except Exception:
+                pass
         if _ff:
             return _ff, None
         # G15: strict no-fallback mode (User 2026-06-01 forensik). The
@@ -26361,11 +26394,8 @@ def _smiles_to_xyz_isomers_impl(
         # equal-n iter_gate then compares fffree-native quality against
         # fb1ae9a's mix on the SAME SMILES set where fffree succeeded, and
         # the 2.4 x bondlen advantage flows directly into the basket.
-        # Default OFF (byte-identical when unset); auto on under PT3.
-        _no_fallback = (
-            _delfin_env_int("DELFIN_FFFREE_PURE_TRACK3", 0)
-            or _delfin_env_int("DELFIN_FFFREE_NO_FALLBACK", 0)
-        )
+        # Default OFF (byte-identical when unset); auto on under PT3 OR
+        # NO_FALLBACK (MISSION A5).
         if _no_fallback:
             return [], None
 
