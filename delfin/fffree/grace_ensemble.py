@@ -569,11 +569,18 @@ def _rmsd_dedup(
     candidates: List[GraceCandidate],
     threshold: float,
     max_keep: int,
+    mol=None,
 ) -> List[GraceCandidate]:
     """RMSD-Butina dedup; keep up to ``max_keep`` survivors per isomer.
 
     The score-min survivor is always retained.  Other survivors are
     cluster representatives from non-overlapping Butina clusters.
+
+    When ``DELFIN_FFFREE_GRACE_PARETO=1`` is set, the post-cluster
+    survivor list is re-selected via :func:`grace_pareto.pareto_select`
+    so the ensemble retains the full Pareto frontier across
+    (severity, clash, cshm, arom_plan) before filling with dominated
+    points.  Default OFF → byte-identical legacy behaviour.
     """
     if not candidates:
         return []
@@ -587,7 +594,7 @@ def _rmsd_dedup(
         c_sorted = sorted(candidates,
                           key=lambda c: (c.score, c.isomer_id, c.ring_id,
                                           c.rotamer_id, c.label))
-        return c_sorted[: max(1, int(max_keep))]
+        return _maybe_pareto_reselect(c_sorted, max_keep, mol)
 
     coords_list = [np.asarray(c.P, dtype=float) for c in candidates]
     syms = list(candidates[0].syms) if candidates else None
@@ -598,7 +605,7 @@ def _rmsd_dedup(
         c_sorted = sorted(candidates,
                           key=lambda c: (c.score, c.isomer_id, c.ring_id,
                                           c.rotamer_id, c.label))
-        return c_sorted[: max(1, int(max_keep))]
+        return _maybe_pareto_reselect(c_sorted, max_keep, mol)
 
     # For each cluster, pick the lowest-score representative.
     survivors: List[GraceCandidate] = []
@@ -609,7 +616,38 @@ def _rmsd_dedup(
         survivors.append(candidates[best_idx])
     survivors.sort(key=lambda c: (c.score, c.isomer_id, c.ring_id,
                                    c.rotamer_id, c.label))
-    return survivors[: max(1, int(max_keep))]
+    return _maybe_pareto_reselect(survivors, max_keep, mol)
+
+
+def _maybe_pareto_reselect(
+    survivors: List[GraceCandidate],
+    max_keep: int,
+    mol,
+) -> List[GraceCandidate]:
+    """Optional Pareto re-selection over RMSD-cluster survivors.
+
+    When the env-gate is OFF this is a no-op (legacy truncation).
+    When ON, calls :func:`grace_pareto.pareto_select` which keeps
+    every Pareto-frontier candidate first, then fills with the lowest
+    dominator-count survivors up to ``max_keep``.
+    """
+    if not survivors:
+        return survivors
+    try:
+        from . import grace_pareto as GP
+    except Exception:
+        return survivors[: max(1, int(max_keep))]
+    if not GP.pareto_active():
+        return survivors[: max(1, int(max_keep))]
+    try:
+        sel = GP.pareto_select(
+            survivors, max_keep=int(max_keep), mol=mol,
+        )
+    except Exception:
+        return survivors[: max(1, int(max_keep))]
+    # Final lex-sort for determinism (pareto_select already lex-orders
+    # the frontier; dominated tail is appended in dominator-rank order).
+    return list(sel)
 
 
 # ---------------------------------------------------------------------------
@@ -926,6 +964,18 @@ def grace_enumerate(
 
         # 2e) Combinatorial loop.
         iso_candidates: List[GraceCandidate] = []
+        # Adaptive plateau state (per-isomer); inert when env-flag OFF.
+        _adaptive_state = None
+        try:
+            from . import grace_pareto as _GP_adapt
+            if _GP_adapt.adaptive_active():
+                _adaptive_state = _GP_adapt.AdaptiveState(
+                    patience=_GP_adapt.resolve_adaptive_patience(),
+                    max_ensemble=_GP_adapt.resolve_max_ensemble(),
+                    mol=cm,
+                )
+        except Exception:
+            _adaptive_state = None
         for ring_id, (P_ring, ring_label) in enumerate(ring_combos):
             if (time.monotonic() - t0) > max_time_eff:
                 result.timed_out = True
@@ -992,12 +1042,34 @@ def grace_enumerate(
                 )
                 iso_candidates.append(cand)
 
+                # Adaptive plateau check (default OFF).
+                if _adaptive_state is not None:
+                    try:
+                        _adaptive_state.update(cand)
+                        if _adaptive_state.should_stop():
+                            break
+                    except Exception:
+                        pass
+
             if result.timed_out:
+                break
+            # Propagate adaptive stop one level up.
+            if _adaptive_state is not None and _adaptive_state.should_stop():
                 break
         # 2f) RMSD-dedup per isomer + keep top-K.
         if iso_candidates:
+            # When Pareto re-selection is active, raise the effective
+            # cap so the frontier is preserved (still hard-capped by
+            # MAX_ENSEMBLE).  Legacy path is unaffected (default OFF).
+            cap_eff = max_iso_per
+            try:
+                from . import grace_pareto as _GP
+                if _GP.pareto_active():
+                    cap_eff = max(max_iso_per, _GP.resolve_max_ensemble())
+            except Exception:
+                pass
             survivors = _rmsd_dedup(iso_candidates, threshold=rmsd_eff,
-                                     max_keep=max_iso_per)
+                                     max_keep=cap_eff, mol=cm)
             result.per_isomer[int(iso_id)] = survivors
             n_emitted_total += len(survivors)
 
