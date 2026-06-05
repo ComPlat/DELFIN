@@ -1538,19 +1538,106 @@ def grip_polish(
                 )
             return P_init
 
-        res = minimize(
-            loss_and_grad,
-            P_init.reshape(-1).copy(),
-            method="L-BFGS-B",
-            jac=True,
-            options={
-                "maxiter": int(max_iter),
-                "gtol": float(gtol),
-                "ftol": float(ftol),
-            },
-        )
-        P_refined = np.asarray(res.x, dtype=np.float64).reshape(n_atoms, 3)
-        n_iter = int(getattr(res, "nit", 0))
+        # ------------------------------------------------------------------
+        # 5b. Donor-cone DoF augmentation (2026-06-05, user direction
+        # follow-up to ebb8cc3).
+        #
+        # When DELFIN_FFFREE_GRIP_DONOR_CONE=1, build per-donor cone
+        # objects and augment the L-BFGS variable set with one extra
+        # scalar (theta_d, radians) per donor.  At each loss evaluation
+        # the X-atoms of each donor's cone are rigidly rotated around the
+        # frozen M-D axis by theta_d before computing the position-based
+        # loss.  Default OFF -> the augmentation block is a no-op (the
+        # cone list is empty so x_aug collapses to x_pos and the wrapper
+        # equals the underlying loss).
+        # ------------------------------------------------------------------
+        try:
+            from .grip_donor_cone import (
+                build_donor_cones,
+                augmented_loss_and_grad,
+                donor_cone_active,
+                donor_cone_include_h,
+            )
+        except Exception as exc:  # pragma: no cover -- import guard
+            _LOG.warning(
+                "grip_polish: failed to import grip_donor_cone (%r); "
+                "donor-cone DoF disabled",
+                exc,
+            )
+            donor_cone_active = lambda: False  # type: ignore[assignment]
+            build_donor_cones = None  # type: ignore[assignment]
+            augmented_loss_and_grad = None  # type: ignore[assignment]
+            donor_cone_include_h = lambda: False  # type: ignore[assignment]
+
+        cones = []
+        if donor_cone_active() and build_donor_cones is not None:
+            try:
+                cones = build_donor_cones(
+                    mol, int(metal), donors_t, P_init,
+                    hapto_atoms=hapto_atoms,
+                    include_h=donor_cone_include_h(),
+                    min_x_count=1,
+                )
+            except Exception as exc:
+                _LOG.warning(
+                    "grip_polish: build_donor_cones raised (%r); "
+                    "donor-cone DoF inactive for this structure",
+                    exc,
+                )
+                cones = []
+
+        if cones and augmented_loss_and_grad is not None:
+            K = len(cones)
+            wrapped = augmented_loss_and_grad(
+                loss_and_grad, cones, n_atoms,
+            )
+            x0_pos = P_init.reshape(-1).copy()
+            x0_theta = np.zeros(K, dtype=np.float64)
+            x0_aug = np.concatenate([x0_pos, x0_theta])
+            # L-BFGS-B bounds: positions unbounded (use None), thetas
+            # bounded to +/- pi so a single optimisation cannot wrap the
+            # cone more than once around the M-D axis -- the rotation is
+            # periodic, anything > pi is reachable by the symmetric -pi
+            # path which the optimiser explores via the gradient.  This
+            # prevents catastrophic over-rotation that fails the
+            # topology / chiral validators downstream.
+            bounds = [(None, None)] * (3 * n_atoms) + [
+                (-float(np.pi), float(np.pi)) for _ in range(K)
+            ]
+            res = minimize(
+                wrapped,
+                x0_aug,
+                method="L-BFGS-B",
+                jac=True,
+                bounds=bounds,
+                options={
+                    "maxiter": int(max_iter),
+                    "gtol": float(gtol),
+                    "ftol": float(ftol),
+                },
+            )
+            x_aug_opt = np.asarray(res.x, dtype=np.float64)
+            P_flat_opt = x_aug_opt[: 3 * n_atoms]
+            thetas_opt = x_aug_opt[3 * n_atoms: 3 * n_atoms + K]
+            # Materialise rotated positions for downstream constraint
+            # validators and severity evaluation.
+            from .grip_donor_cone import apply_donor_cone_rotations as _apply
+            P_refined = _apply(P_flat_opt, cones, thetas_opt)
+            n_iter = int(getattr(res, "nit", 0))
+        else:
+            res = minimize(
+                loss_and_grad,
+                P_init.reshape(-1).copy(),
+                method="L-BFGS-B",
+                jac=True,
+                options={
+                    "maxiter": int(max_iter),
+                    "gtol": float(gtol),
+                    "ftol": float(ftol),
+                },
+            )
+            P_refined = np.asarray(res.x, dtype=np.float64).reshape(n_atoms, 3)
+            n_iter = int(getattr(res, "nit", 0))
 
     # ------------------------------------------------------------------
     # 6. Hard-constraint validation.  Any failure -> rollback to P0.
