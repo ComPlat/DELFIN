@@ -318,29 +318,29 @@ def _rotation_matrix_from_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _apply_unit_correction(coords: np.ndarray,
                            metal_pos: np.ndarray,
-                           unit: HaptoUnit) -> np.ndarray:
-    """Return new coords where ``unit.indices`` + ``unit.attached_h`` are
-    rigid-block transformed so that:
+                           unit: HaptoUnit,
+                           block_idx: Optional[Sequence[int]] = None) -> np.ndarray:
+    """Return new coords where the rigid block is rigid-translated so:
 
       * the ring centroid sits at distance ``ideal(metal, η)`` from M, AND
       * the M-centroid axis is parallel to the ring normal.
+
+    ``block_idx`` defaults to ``unit.indices + unit.attached_h`` (the
+    legacy ring-C + ring-H set, byte-identical with HEAD b00f9a0).
+    When the caller passes a larger set (e.g. extended with the
+    substituent subtree under ``DELFIN_FFFREE_HAPTO_RIGID_SUBTREE=1``)
+    every atom in that set is rigid-translated by the SAME delta, so
+    intra-set distances stay invariant by construction.
 
     The metal AND all atoms NOT in the rigid block are byte-invariant.
     """
     ideal_d = _ideal_m_centroid_distance(unit.metal_symbol, unit.eta)
     cen = unit.centroid
     normal = unit.normal
-    # Target centroid: along ring-normal from the metal at the ideal
-    # distance.  We slide along normal (not along M->centroid) so the
-    # FINAL geometry has the ring axis along the M-centroid line.
-    # Equivalently we move the rigid block so its centroid lands at
-    # M + ideal_d * normal_oriented_towards_centroid.  Then we rotate
-    # the block so the ring normal aligns onto (target_centroid - M).
     target_axis = normal  # already oriented towards metal-positive side
     target_centroid = metal_pos + target_axis * ideal_d
-    # Translation: rigidly shift the block centroid from `cen` to
-    # `target_centroid`.
-    block_idx = list(unit.indices) + list(unit.attached_h)
+    if block_idx is None:
+        block_idx = list(unit.indices) + list(unit.attached_h)
     P_new = coords.copy()
     delta = target_centroid - cen
     for k in block_idx:
@@ -420,9 +420,49 @@ def apply_hapto_honest(
             _pre_collapse = int(_bcg.collapse_count(list(symbols), P_orig))
         except Exception:
             _bcg = None
+    # Rigid-subtree extension (2026-06-05, mission A3): when the env-flag
+    # ``DELFIN_FFFREE_HAPTO_RIGID_SUBTREE`` is on, EVERY hapto-unit's rigid
+    # block is extended to include heavy-substituent subtrees attached to
+    # the ring carbons (plus their attached H atoms).  Default OFF →
+    # byte-identical to b00f9a0 (the extension is only built when active).
+    _rigid_subtree_extended = False
+    _all_ring_atoms: Set[int] = set()
+    _frozen_extra: Set[int] = set()
+    _adjacency: Optional[List[Set[int]]] = None
+    try:
+        from delfin.fffree.hapto_rigid_subtree import (
+            rigid_subtree_active as _hrs_active,
+            build_geometric_adjacency as _hrs_adj,
+            collect_rigid_subtree_atoms as _hrs_collect,
+        )
+        if _hrs_active():
+            _rigid_subtree_extended = True
+            _adjacency = _hrs_adj(list(symbols), P_orig)
+            for u in units:
+                _all_ring_atoms.update(int(i) for i in u.indices)
+            if donor_idxs is not None:
+                _frozen_extra = set(int(d) for d in donor_idxs)
+    except Exception:
+        _rigid_subtree_extended = False
     for u in units:
         block_idx = list(u.indices) + list(u.attached_h)
-        P_try = _apply_unit_correction(P_new, M, u)
+        if _rigid_subtree_extended:
+            # Other-ring atoms = ring atoms NOT in this unit (prevents the
+            # BFS from cutting through a fused junction into a neighbour
+            # hapto ring; that ring will get its own rigid block).
+            other_rings = _all_ring_atoms - set(int(i) for i in u.indices)
+            extended = _hrs_collect(
+                list(symbols), P_orig,
+                ring_atom_indices=list(u.indices),
+                metal_idx=metal_idx,
+                other_ring_atoms=other_rings,
+                frozen_extra=_frozen_extra,
+                adjacency=_adjacency,
+            )
+            if extended:
+                # Merge in deterministic order (sorted).
+                block_idx = sorted(set(block_idx) | set(extended))
+        P_try = _apply_unit_correction(P_new, M, u, block_idx=block_idx)
         if not _validate_rigid_block(P_new, P_try, block_idx):
             continue  # rigid invariant broken — skip this unit
         if not _validate_sigma_invariance(P_new, P_try, metal_idx, block_idx):
