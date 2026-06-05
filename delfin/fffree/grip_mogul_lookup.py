@@ -30,6 +30,21 @@ Hierarchical fallback chain (most -> least specific):
 
 A lookup is satisfied at the FIRST level for which the stored sample size
 ``n`` is at least ``GRIP_LOOKUP_MIN_N`` (default 5).
+
+TM-aware fallback (2026-06-05, env-gated, default OFF -- byte-identical when
+disabled).  Setting ``DELFIN_FFFREE_GRIP_LOOKUP_TM_FALLBACK=1`` enables an
+EXTRA pass that runs only AFTER the standard chain returns ``None``.  The
+extra pass addresses the structural mismatch between v3 keys and metal-bonded
+queries: v3 emits fragment keys at every NON-metal center with ITS FULL
+neighbour list (e.g. ``["C","sp3", [["C",..],["Ir",..],["H",..],["H",..]], []]``),
+but :meth:`lookup_bond` builds the single-neighbour key
+``["C","sp3", [["Ir",..]], []]``.  No fallback level in the standard chain
+removes extra neighbours, so every metal-C / metal-N / metal-X bond returns
+``None``.  The TM-aware fallback opens a wider net: it scans pre-indexed
+keys whose centre matches ``(Z_center, hyb_center)`` and whose neighbour
+list contains the queried partner element, and returns the n-weighted
+aggregate of the matching bond/angle/improper distributions.  The pass is
+PURELY ADDITIVE -- it only fires when the standard chain misses.
 """
 from __future__ import annotations
 
@@ -67,6 +82,30 @@ GRIP_LOOKUP_MIN_N = 5
 
 # Wildcard token used in fallback keys (matches the build script).
 _WILDCARD = "*"
+
+# Env flag for the additive TM-aware "neighbour-superset" fallback (off by
+# default -- byte-identical to the legacy chain when unset).
+_DELFIN_FFFREE_GRIP_LOOKUP_TM_FALLBACK_ENV = "DELFIN_FFFREE_GRIP_LOOKUP_TM_FALLBACK"
+
+# Transition-metal set used to gate the TM-aware fallback.  Anything in this
+# set OR Hydrogen will trigger the wider neighbour-superset scan when the
+# legacy chain misses.  Matches the build script's ``_METALS`` set so the
+# build/lookup contract stays in sync.
+_TM_SET = frozenset({
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy",
+    "Ho", "Er", "Tm", "Yb", "Lu",
+    "Ac", "Th", "Pa", "U", "Np", "Pu",
+})
+
+
+def _tm_fallback_enabled() -> bool:
+    """``True`` when ``DELFIN_FFFREE_GRIP_LOOKUP_TM_FALLBACK=1`` in env."""
+    return os.environ.get(
+        _DELFIN_FFFREE_GRIP_LOOKUP_TM_FALLBACK_ENV, ""
+    ).strip() == "1"
 
 
 def _to_key_str(parsed) -> str:
@@ -187,6 +226,81 @@ class GripLibrary:
             self._torsion_sigma = None
             self.n_torsion = 0
 
+        # TM-aware fallback indices, built lazily on first use.  Keep them
+        # ``None`` until ``_ensure_tm_indices`` is called -- the cost (parsing
+        # 1M+ JSON keys) must not be paid by processes that never use the
+        # fallback.
+        self._tm_index_lock = threading.Lock()
+        self._tm_bond_index: Optional[dict] = None
+        self._tm_angle_index: Optional[dict] = None
+
+        # ----- v4 extension: pair/triple bond+angle+improper tables -----
+        # v4 adds element-pair-resolved tables that are populated PER
+        # (Z1,hyb1,Z2,hyb2) bond, not aggregated over the full neighbour
+        # list of a centre.  This is the only correct way to fetch a
+        # specific metal-organic bond distance (e.g. Ir-C, Pt-N).  The
+        # arrays are optional: v1/v2/v3 libraries do not have them, and
+        # ``has_pair_tables`` is False in that case so all callers degrade
+        # gracefully.
+        if self.version >= 4 and "pair_bond_keys" in self._lib.files:
+            pb_keys = self._lib["pair_bond_keys"].tolist()
+            self._pair_bond_key_to_idx: dict[str, int] = {
+                str(k): i for i, k in enumerate(pb_keys)
+            }
+            self._pair_bond_mu = self._lib["pair_bond_mu"]
+            self._pair_bond_sigma = self._lib["pair_bond_sigma"]
+            self._pair_bond_n = self._lib["pair_bond_n"]
+            self.n_pair_bond = len(pb_keys)
+        else:
+            self._pair_bond_key_to_idx = {}
+            self._pair_bond_mu = None
+            self._pair_bond_sigma = None
+            self._pair_bond_n = None
+            self.n_pair_bond = 0
+
+        if self.version >= 4 and "triple_angle_keys" in self._lib.files:
+            ta_keys = self._lib["triple_angle_keys"].tolist()
+            self._triple_angle_key_to_idx: dict[str, int] = {
+                str(k): i for i, k in enumerate(ta_keys)
+            }
+            self._triple_angle_mu = self._lib["triple_angle_mu"]
+            self._triple_angle_sigma = self._lib["triple_angle_sigma"]
+            self._triple_angle_n = self._lib["triple_angle_n"]
+            self.n_triple_angle = len(ta_keys)
+        else:
+            self._triple_angle_key_to_idx = {}
+            self._triple_angle_mu = None
+            self._triple_angle_sigma = None
+            self._triple_angle_n = None
+            self.n_triple_angle = 0
+
+        if self.version >= 4 and "improper_pair_keys" in self._lib.files:
+            ip_keys = self._lib["improper_pair_keys"].tolist()
+            self._improper_pair_key_to_idx: dict[str, int] = {
+                str(k): i for i, k in enumerate(ip_keys)
+            }
+            self._improper_pair_mu = self._lib["improper_pair_mu"]
+            self._improper_pair_sigma = self._lib["improper_pair_sigma"]
+            self._improper_pair_n = self._lib["improper_pair_n"]
+            self.n_improper_pair = len(ip_keys)
+        else:
+            self._improper_pair_key_to_idx = {}
+            self._improper_pair_mu = None
+            self._improper_pair_sigma = None
+            self._improper_pair_n = None
+            self.n_improper_pair = 0
+
+    @property
+    def has_pair_tables(self) -> bool:
+        """``True`` when v4 pair/triple tables are present.
+
+        Pair tables index bond distances by element-hyb pair (rather than
+        full first-shell neighbour list), enabling correct lookups for
+        metal-organic bonds where the metal centre never appears as a
+        full-shell fragment in the library.
+        """
+        return self.n_pair_bond > 0 or self.n_triple_angle > 0
+
     @property
     def has_torsions(self) -> bool:
         """``True`` when the library exposes a torsion (1-4 dihedral) table.
@@ -264,6 +378,264 @@ class GripLibrary:
             return None
 
     # ------------------------------------------------------------------
+    # TM-aware fallback: build lazy indices that map
+    #   (Z_center, Z_partner) -> [(key_idx, n_neighbors_total), ...]
+    # for bonds, and
+    #   (Z_center, Z_left, Z_right) -> [(key_idx, n_neighbors_total), ...]
+    # for angles.  Built ONCE per library instance (process-wide, threadsafe).
+    # ------------------------------------------------------------------
+    def _ensure_tm_indices(self) -> None:
+        """Build the TM-aware neighbour-superset indices on demand.
+
+        This is the only place where we materialise the parsed JSON form of
+        every master key.  Cost: ~3-5 s for 1.1M keys on this hardware.
+        After the build, queries are O(L) where L is the number of indexed
+        ``(Z_c, Z_n)`` candidates (typically << 100).
+        """
+        if self._tm_bond_index is not None and self._tm_angle_index is not None:
+            return
+        with self._tm_index_lock:
+            if self._tm_bond_index is not None and self._tm_angle_index is not None:
+                return
+            bond_idx: dict = {}    # (Z_c, hyb_c, Z_n) -> list of int idx
+            angle_idx: dict = {}   # (Z_c, hyb_c, Z_l, Z_r) -> list of int idx
+            for key_str, idx in self._key_to_idx.items():
+                try:
+                    parsed = json.loads(key_str)
+                except Exception:
+                    continue
+                if not isinstance(parsed, list) or len(parsed) < 4:
+                    continue
+                Zc, hyb_c, nbrs, _second = parsed[0], parsed[1], parsed[2], parsed[3]
+                if not isinstance(nbrs, list) or not nbrs:
+                    continue
+                # Bond pair index: every center, every distinct neighbour Z
+                nbr_zs = sorted({str(n[0]) for n in nbrs if isinstance(n, list) and len(n) >= 1})
+                for zn in nbr_zs:
+                    key_t = (str(Zc), str(hyb_c), zn)
+                    lst = bond_idx.get(key_t)
+                    if lst is None:
+                        bond_idx[key_t] = [idx]
+                    else:
+                        lst.append(idx)
+                # Angle triple index: every unordered pair of neighbour Zs
+                if len(nbrs) >= 2:
+                    for i in range(len(nbrs)):
+                        for j in range(i + 1, len(nbrs)):
+                            za = str(nbrs[i][0]) if isinstance(nbrs[i], list) and nbrs[i] else None
+                            zb = str(nbrs[j][0]) if isinstance(nbrs[j], list) and nbrs[j] else None
+                            if za is None or zb is None:
+                                continue
+                            zl, zr = (za, zb) if za <= zb else (zb, za)
+                            key_a = (str(Zc), str(hyb_c), zl, zr)
+                            lst = angle_idx.get(key_a)
+                            if lst is None:
+                                angle_idx[key_a] = [idx]
+                            else:
+                                lst.append(idx)
+            # Sort indices for determinism
+            for k in bond_idx:
+                bond_idx[k] = sorted(set(bond_idx[k]))
+            for k in angle_idx:
+                angle_idx[k] = sorted(set(angle_idx[k]))
+            self._tm_bond_index = bond_idx
+            self._tm_angle_index = angle_idx
+
+    def _tm_aggregate(
+        self,
+        idx_list: list,
+        mu_arr: np.ndarray,
+        sigma_arr: np.ndarray,
+        n_arr: np.ndarray,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """n-weighted aggregation of (mu, sigma, n) over indexed candidates.
+
+        Returns ``None`` when no candidate has ``n >= min_n`` or all values
+        are non-finite.  Uses a pooled-variance estimator that accounts for
+        per-source mu spread::
+
+            mu_agg    = sum(n_i * mu_i) / sum(n_i)
+            sigma_agg = sqrt(sum(n_i * (sigma_i^2 + (mu_i - mu_agg)^2)) / sum(n_i))
+
+        Determinism: idx_list is sorted at build time, and floats are
+        accumulated in that order.
+        """
+        if not idx_list:
+            return None
+        sum_n = 0
+        sum_n_mu = 0.0
+        kept: list = []
+        for j in idx_list:
+            n = int(n_arr[j])
+            if n < min_n:
+                continue
+            mu = float(mu_arr[j])
+            sigma = float(sigma_arr[j])
+            if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+                continue
+            kept.append((n, mu, sigma))
+            sum_n += n
+            sum_n_mu += n * mu
+        if sum_n == 0 or not kept:
+            return None
+        mu_agg = sum_n_mu / sum_n
+        sum_n_var = 0.0
+        for (n, mu, sigma) in kept:
+            sum_n_var += n * (sigma * sigma + (mu - mu_agg) * (mu - mu_agg))
+        sigma_agg = (sum_n_var / sum_n) ** 0.5
+        if sigma_agg <= 0.0 or not np.isfinite(sigma_agg):
+            return None
+        return (float(mu_agg), float(sigma_agg), int(sum_n))
+
+    # ------------------------------------------------------------------
+    # v4 pair-table lookup -- correct per-element-pair bond distances.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _pair_bond_key(z1: str, hyb1: str, z2: str, hyb2: str) -> str:
+        """Build a canonical pair-bond key.
+
+        The two endpoints are sorted lexicographically so that ``Ir-C`` and
+        ``C-Ir`` produce the same key.  Metals carry ``hyb='*'`` by
+        convention (matches the build script).
+        """
+        a = (str(z1), str(hyb1))
+        b = (str(z2), str(hyb2))
+        lo, hi = (a, b) if a <= b else (b, a)
+        return json.dumps([lo[0], lo[1], hi[0], hi[1]],
+                          separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _triple_angle_key(zc: str, hyb_c: str, z_l: str, z_r: str) -> str:
+        """Build a canonical (centre, sorted-pair) angle key."""
+        lo, hi = (z_l, z_r) if z_l <= z_r else (z_r, z_l)
+        return json.dumps([str(zc), str(hyb_c), str(lo), str(hi)],
+                          separators=(",", ":"), ensure_ascii=False)
+
+    def _v4_lookup_bond(
+        self,
+        z1: str,
+        hyb1: str,
+        z2: str,
+        hyb2: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """v4-only pair-resolved bond lookup.
+
+        Falls back through hyb-wildcards on either side.  Returns ``None``
+        if the library has no pair tables (v1/v2/v3) or no entry with
+        ``n >= min_n`` is found.
+        """
+        if self._pair_bond_mu is None:
+            return None
+        for h1, h2 in ((hyb1, hyb2), (hyb1, "*"), ("*", hyb2), ("*", "*")):
+            key = self._pair_bond_key(z1, h1, z2, h2)
+            idx = self._pair_bond_key_to_idx.get(key)
+            if idx is None:
+                continue
+            n = int(self._pair_bond_n[idx])
+            if n < min_n:
+                continue
+            mu = float(self._pair_bond_mu[idx])
+            sigma = float(self._pair_bond_sigma[idx])
+            if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+                continue
+            return (mu, sigma, n)
+        return None
+
+    def _v4_lookup_angle(
+        self,
+        z1: str,
+        z2: str,
+        hyb2: str,
+        z3: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """v4-only triple-angle lookup centered at z2."""
+        if self._triple_angle_mu is None:
+            return None
+        for hc in (hyb2, "*"):
+            key = self._triple_angle_key(z2, hc, z1, z3)
+            idx = self._triple_angle_key_to_idx.get(key)
+            if idx is None:
+                continue
+            n = int(self._triple_angle_n[idx])
+            if n < min_n:
+                continue
+            mu = float(self._triple_angle_mu[idx])
+            sigma = float(self._triple_angle_sigma[idx])
+            if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+                continue
+            return (mu, sigma, n)
+        return None
+
+    def _v4_lookup_improper(
+        self,
+        z_center: str,
+        hyb_center: str,
+        neighbor_zs_sorted: list,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """v4-only improper lookup keyed by (centre, sorted-neighbour-Z-tuple)."""
+        if self._improper_pair_mu is None or len(neighbor_zs_sorted) < 2:
+            return None
+        nzs = sorted(str(z) for z in neighbor_zs_sorted)
+        for hc in (hyb_center, "*"):
+            key = json.dumps([str(z_center), str(hc), nzs],
+                             separators=(",", ":"), ensure_ascii=False)
+            idx = self._improper_pair_key_to_idx.get(key)
+            if idx is None:
+                continue
+            n = int(self._improper_pair_n[idx])
+            if n < min_n:
+                continue
+            mu = float(self._improper_pair_mu[idx])
+            sigma = float(self._improper_pair_sigma[idx])
+            if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+                continue
+            return (mu, sigma, n)
+        return None
+
+    def _tm_lookup_bond(
+        self,
+        z1: str,
+        hyb1: str,
+        z2: str,
+        hyb2: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """Pair-resolved TM-aware bond lookup.
+
+        Strategy:
+          1. v4 pair table (correct, byte-deterministic).
+          2. (No legacy neighbour-superset fallback -- it pools all bond
+             distances at the centre and produces wrong values for the
+             specific metal-organic pair.)
+        """
+        return self._v4_lookup_bond(z1, hyb1, z2, hyb2, min_n)
+
+    def _tm_lookup_angle(
+        self,
+        z1: str,
+        z2: str,
+        hyb2: str,
+        z3: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """Pair-resolved TM-aware angle lookup."""
+        return self._v4_lookup_angle(z1, z2, hyb2, z3, min_n)
+
+    def _tm_lookup_improper(
+        self,
+        z_center: str,
+        hyb_center: str,
+        neighbor_zs_sorted: list,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """Pair-resolved TM-aware improper lookup."""
+        return self._v4_lookup_improper(z_center, hyb_center, neighbor_zs_sorted, min_n)
+
+    # ------------------------------------------------------------------
     # Internal: walk a fallback chain
     # ------------------------------------------------------------------
     def _walk_chain(
@@ -330,6 +702,16 @@ class GripLibrary:
             chain_ba, self._bond_mu, self._bond_sigma, self._bond_n, min_n
         )
 
+        if hit_ab is None and hit_ba is None:
+            # TM-aware fallback (additive, env-gated, default OFF) -- runs
+            # only when the legacy chain returns no match for either
+            # orientation.  Targets metal-organic bonds where neither
+            # ``[Z_metal, hyb, [[Z_partner, ...]], []]`` nor its reverse
+            # appears in the library, but a non-metal centre with the
+            # partner among its full neighbour list does.
+            if _tm_fallback_enabled():
+                return self._tm_lookup_bond(z1, hyb1, z2, hyb2, min_n)
+            return None
         if hit_ab is None:
             return hit_ba
         if hit_ba is None:
@@ -368,9 +750,15 @@ class GripLibrary:
         neighbors = [[t[0], 1, t[1], t[2]] for t in nbrs_pair]
         parsed = [z2, hyb2, neighbors, []]
         chain = _fallback_levels(parsed)
-        return self._walk_chain(
+        hit = self._walk_chain(
             chain, self._angle_mu, self._angle_sigma, self._angle_n, min_n
         )
+        if hit is None and _tm_fallback_enabled():
+            # Additive TM-aware fallback for angles centered at z2 whose
+            # neighbours include a metal/H that the standard single-neighbour
+            # key path cannot satisfy.
+            return self._tm_lookup_angle(z1, z2, hyb2, z3, min_n)
+        return hit
 
     # ------------------------------------------------------------------
     # v2 torsion lookup helpers
@@ -525,13 +913,21 @@ class GripLibrary:
         ]
         parsed = [z_center, hyb_center, neighbors, []]
         chain = _fallback_levels(parsed)
-        return self._walk_chain(
+        hit = self._walk_chain(
             chain,
             self._improper_mu,
             self._improper_sigma,
             self._improper_n,
             min_n,
         )
+        if hit is None and _tm_fallback_enabled():
+            # Additive TM-aware fallback: intersection of per-neighbour
+            # indices, requiring the centre+all queried neighbour elements
+            # to appear in the candidate key.
+            return self._tm_lookup_improper(
+                z_center, hyb_center, nbr_zs, min_n
+            )
+        return hit
 
 
 # ---------------------------------------------------------------------------
