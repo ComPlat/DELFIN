@@ -64,6 +64,7 @@ __all__ = [
     "lookup_angle",
     "lookup_improper",
     "lookup_torsion",
+    "lookup_tm_category",
     "DEFAULT_LIB_PATH",
     "DELFIN_GRIP_LIB_PATH_ENV",
     "GRIP_LOOKUP_MIN_N",
@@ -289,6 +290,203 @@ class GripLibrary:
             self._improper_pair_sigma = None
             self._improper_pair_n = None
             self.n_improper_pair = 0
+
+        # ---------------------------------------------------------------
+        # v5 extension: TM-category tables + block-disaggregated tables.
+        # v3/v4 libraries do not have these — has_tm_categories is False
+        # in that case and the lookup helpers fall back to v4 silently.
+        # ---------------------------------------------------------------
+        self._tm_cat_tables: dict[str, dict] = {}
+        if self.version >= 5:
+            for cat in ("carbene", "hapto_eta2", "hapto_eta5", "hapto_eta6",
+                        "mu_bridge", "agostic", "ox_addition"):
+                kname = f"tm_{cat}_keys"
+                if kname in self._lib.files:
+                    keys_list = self._lib[kname].tolist()
+                    self._tm_cat_tables[cat] = {
+                        "key_to_idx": {str(k): i for i, k in enumerate(keys_list)},
+                        "mu": self._lib[f"tm_{cat}_mu"],
+                        "sigma": self._lib[f"tm_{cat}_sigma"],
+                        "n": self._lib[f"tm_{cat}_n"],
+                        "n_keys": len(keys_list),
+                    }
+            # Block-disaggregated pair_bond/triple_angle tables
+            if "tm_pair_bond_block_keys" in self._lib.files:
+                k_list = self._lib["tm_pair_bond_block_keys"].tolist()
+                self._tm_pair_bond_block_key_to_idx = {
+                    str(k): i for i, k in enumerate(k_list)
+                }
+                self._tm_pair_bond_block_mu = self._lib["tm_pair_bond_block_mu"]
+                self._tm_pair_bond_block_sigma = self._lib["tm_pair_bond_block_sigma"]
+                self._tm_pair_bond_block_n = self._lib["tm_pair_bond_block_n"]
+                self.n_tm_pair_bond_block = len(k_list)
+            else:
+                self._tm_pair_bond_block_key_to_idx = {}
+                self._tm_pair_bond_block_mu = None
+                self._tm_pair_bond_block_sigma = None
+                self._tm_pair_bond_block_n = None
+                self.n_tm_pair_bond_block = 0
+
+            if "tm_triple_angle_block_keys" in self._lib.files:
+                k_list = self._lib["tm_triple_angle_block_keys"].tolist()
+                self._tm_triple_angle_block_key_to_idx = {
+                    str(k): i for i, k in enumerate(k_list)
+                }
+                self._tm_triple_angle_block_mu = self._lib["tm_triple_angle_block_mu"]
+                self._tm_triple_angle_block_sigma = self._lib["tm_triple_angle_block_sigma"]
+                self._tm_triple_angle_block_n = self._lib["tm_triple_angle_block_n"]
+                self.n_tm_triple_angle_block = len(k_list)
+            else:
+                self._tm_triple_angle_block_key_to_idx = {}
+                self._tm_triple_angle_block_mu = None
+                self._tm_triple_angle_block_sigma = None
+                self._tm_triple_angle_block_n = None
+                self.n_tm_triple_angle_block = 0
+
+            # Audit metadata (informational only — not used in lookups)
+            self.cleaning_applied = bool(int(self._lib["cleaning_applied"])) if "cleaning_applied" in self._lib.files else False
+            self.meta_n_extracted = int(self._lib["meta_n_extracted"]) if "meta_n_extracted" in self._lib.files else 0
+            self.meta_n_total_scanned = int(self._lib["meta_n_total_scanned"]) if "meta_n_total_scanned" in self._lib.files else 0
+        else:
+            self._tm_pair_bond_block_key_to_idx = {}
+            self._tm_pair_bond_block_mu = None
+            self._tm_pair_bond_block_sigma = None
+            self._tm_pair_bond_block_n = None
+            self.n_tm_pair_bond_block = 0
+            self._tm_triple_angle_block_key_to_idx = {}
+            self._tm_triple_angle_block_mu = None
+            self._tm_triple_angle_block_sigma = None
+            self._tm_triple_angle_block_n = None
+            self.n_tm_triple_angle_block = 0
+            self.cleaning_applied = False
+            self.meta_n_extracted = 0
+            self.meta_n_total_scanned = 0
+
+    @property
+    def has_tm_categories(self) -> bool:
+        """``True`` when v5 TM-category tables (carbene/hapto/mu_bridge/...) are loaded."""
+        return bool(self._tm_cat_tables)
+
+    @property
+    def has_block_disagg(self) -> bool:
+        """``True`` when v5 block-disaggregated pair/triple tables are loaded."""
+        return self.n_tm_pair_bond_block > 0 or self.n_tm_triple_angle_block > 0
+
+    # Per-element -> block (3d/4d/5d/f) map.  Matches the build script's
+    # ``_METAL_BLOCK`` dict so byte-identical keys can be reconstructed.
+    _METAL_BLOCK = {
+        # 3d
+        "Sc":"3d","Ti":"3d","V":"3d","Cr":"3d","Mn":"3d","Fe":"3d",
+        "Co":"3d","Ni":"3d","Cu":"3d","Zn":"3d",
+        # 4d
+        "Y":"4d","Zr":"4d","Nb":"4d","Mo":"4d","Tc":"4d","Ru":"4d",
+        "Rh":"4d","Pd":"4d","Ag":"4d","Cd":"4d",
+        # 5d
+        "Hf":"5d","Ta":"5d","W":"5d","Re":"5d","Os":"5d","Ir":"5d",
+        "Pt":"5d","Au":"5d","Hg":"5d",
+        # f-block (lanthanides + actinides)
+        "La":"f","Ce":"f","Pr":"f","Nd":"f","Pm":"f","Sm":"f","Eu":"f",
+        "Gd":"f","Tb":"f","Dy":"f","Ho":"f","Er":"f","Tm":"f","Yb":"f","Lu":"f",
+        "Ac":"f","Th":"f","Pa":"f","U":"f","Np":"f","Pu":"f",
+    }
+
+    def lookup_tm_category(
+        self,
+        category: str,
+        metal_element: str,
+        partner_element: str = "C",
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        """v5 TM-category lookup: e.g. ``lookup_tm_category('carbene', 'Pd')``.
+
+        Returns the CCDC-curated (mu, sigma, n) for the requested coordination
+        mode at the requested metal, or ``None`` when:
+          * library version < 5 (no TM-category tables)
+          * the queried category is unknown
+          * no key with ``n >= min_n`` exists for this (metal, partner)
+
+        Fallback chain:
+          1. exact (metal, block, partner, category)
+          2. wildcard metal -> ("*", block, partner, category)
+          3. wildcard both -> ("*", "*", partner, category)
+
+        ``category`` is one of: 'carbene', 'hapto_eta2', 'hapto_eta5',
+        'hapto_eta6', 'mu_bridge', 'agostic', 'ox_addition'.
+        """
+        tbl = self._tm_cat_tables.get(category)
+        if tbl is None:
+            return None
+        block = self._METAL_BLOCK.get(metal_element, "*")
+        # Try keys at progressively wider levels
+        candidates = [
+            json.dumps([metal_element, block, partner_element, category if category != "ox_addition" else "ax"],
+                       separators=(",", ":"), ensure_ascii=False),
+        ]
+        # category-specific tag stored in build: carbene/eta2/eta5/eta6/mu/agostic/ax
+        tag_map = {
+            "carbene": "carbene", "hapto_eta2": "eta2",
+            "hapto_eta5": "eta5", "hapto_eta6": "eta6",
+            "mu_bridge": "mu", "agostic": "agostic",
+            "ox_addition": "ax",
+        }
+        tag = tag_map.get(category, category)
+        candidates = [
+            json.dumps([metal_element, block, partner_element, tag],
+                       separators=(",", ":"), ensure_ascii=False),
+            json.dumps([metal_element, "*", partner_element, tag],
+                       separators=(",", ":"), ensure_ascii=False),
+        ]
+        for key in candidates:
+            idx = tbl["key_to_idx"].get(key)
+            if idx is None:
+                continue
+            n = int(tbl["n"][idx])
+            if n < min_n:
+                continue
+            mu = float(tbl["mu"][idx])
+            sigma = float(tbl["sigma"][idx])
+            if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+                continue
+            return (mu, sigma, n)
+        return None
+
+    def _v5_lookup_bond_block(
+        self,
+        z1: str, hyb1: str,
+        z2: str, hyb2: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """v5 block-disaggregated bond lookup -- used when v4 wildcard would
+        pool over chemistry-distinct rows (e.g. 3d vs 5d).
+
+        For an M-X bond where M is a metal, the M's hyb in the v5 key is the
+        block tag (3d/4d/5d/f).  The non-metal hyb is preserved.  Falls back
+        to v4 when the block-resolved entry is empty.
+        """
+        if self._tm_pair_bond_block_mu is None:
+            return None
+        # Replace metal hyb with block tag
+        def _h(z, h):
+            return self._METAL_BLOCK.get(z, h) if z in self._METAL_BLOCK else h
+        h1 = _h(z1, hyb1)
+        h2 = _h(z2, hyb2)
+        # Build key with current hyb mapping
+        a = (str(z1), str(h1))
+        b = (str(z2), str(h2))
+        lo, hi = (a, b) if a <= b else (b, a)
+        key = json.dumps([lo[0], lo[1], hi[0], hi[1]],
+                          separators=(",", ":"), ensure_ascii=False)
+        idx = self._tm_pair_bond_block_key_to_idx.get(key)
+        if idx is None:
+            return None
+        n = int(self._tm_pair_bond_block_n[idx])
+        if n < min_n:
+            return None
+        mu = float(self._tm_pair_bond_block_mu[idx])
+        sigma = float(self._tm_pair_bond_block_sigma[idx])
+        if not (np.isfinite(mu) and np.isfinite(sigma) and sigma > 0.0):
+            return None
+        return (mu, sigma, n)
 
     @property
     def has_pair_tables(self) -> bool:
@@ -525,9 +723,22 @@ class GripLibrary:
         Falls back through hyb-wildcards on either side.  Returns ``None``
         if the library has no pair tables (v1/v2/v3) or no entry with
         ``n >= min_n`` is found.
+
+        v5 enhancement: when the queried bond involves a metal AND the
+        library has block-disaggregated tables, try the block-resolved key
+        FIRST (chemistry-correct: e.g. 3d Co-N differs from 5d Ir-N) before
+        falling back to the v4 wildcard pool.  Default-OFF: this only fires
+        when v5 tables are present, so v3/v4 libraries are byte-identical.
         """
         if self._pair_bond_mu is None:
             return None
+        # v5 block-disagg preference (only when both endpoints are present
+        # and at least one is a metal -- otherwise it duplicates v4).
+        if self._tm_pair_bond_block_mu is not None and \
+                (z1 in self._METAL_BLOCK or z2 in self._METAL_BLOCK):
+            hit_block = self._v5_lookup_bond_block(z1, hyb1, z2, hyb2, min_n)
+            if hit_block is not None:
+                return hit_block
         for h1, h2 in ((hyb1, hyb2), (hyb1, "*"), ("*", hyb2), ("*", "*")):
             key = self._pair_bond_key(z1, h1, z2, h2)
             idx = self._pair_bond_key_to_idx.get(key)
@@ -1003,6 +1214,25 @@ def lookup_improper(
         neighbor_hybs_sorted=neighbor_hybs_sorted,
         min_n=min_n,
     )
+
+
+def lookup_tm_category(
+    category: str,
+    metal_element: str,
+    partner_element: str = "C",
+    *,
+    library: Optional[GripLibrary] = None,
+    min_n: int = GRIP_LOOKUP_MIN_N,
+) -> Optional[Tuple[float, float, int]]:
+    """Module-level shortcut for :meth:`GripLibrary.lookup_tm_category`.
+
+    Returns ``None`` for v3/v4 libraries (no TM-category tables) — callers
+    must handle this gracefully (no fallback to wildcards, since the v4
+    wildcard pool already MIXES carbene+hapto+sigma chemistry and would
+    return chemically wrong values).
+    """
+    lib = library if library is not None else get_default_library()
+    return lib.lookup_tm_category(category, metal_element, partner_element, min_n=min_n)
 
 
 def lookup_torsion(
