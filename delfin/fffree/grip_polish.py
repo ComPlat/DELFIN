@@ -347,7 +347,19 @@ from .grip_constraints import (
 )
 from .grip_fragment_detect import detect_fragments
 from .grip_loss_terms import TotalGripLoss
+from .grip_md_terms import (
+    build_md_loss_terms as _build_md_loss_terms,
+    detect_hapto_donor_clusters as _detect_md_hapto_clusters,
+    max_md_drift as _max_md_drift,
+    unfreeze_md_active as _unfreeze_md_active,
+)
 from .grip_mogul_lookup import GripLibrary, get_default_library
+
+# Phase 2 M-D drift safety threshold (Å).  When the polish moves any M-D
+# distance more than ``_MD_DRIFT_SAFETY`` from its initial value we revert
+# to the frozen-sphere result -- preserves the M-D invariant doctrine even
+# when the unfreeze flag is on (fail open).
+_MD_DRIFT_SAFETY: float = 0.5
 
 __all__ = [
     "grip_polish",
@@ -1337,7 +1349,23 @@ def grip_polish(
     # that survive both heals above (Mahalanobis-tolerant + bond-length-only)
     # and cannot move under L-BFGS because 180° is a cos(angle) saddle.
     P_init = _run_pre_polish_sp3_h_heal(P_init, mol, metal, donors_t)
-    frozen: FrozenSet[int] = frozenset((metal, *donors_t))
+    # Phase 2 (2026-06-06): controlled M+D unfreeze.
+    #
+    # Default-OFF byte-identical with HEAD (resolver returns False when
+    # DELFIN_FFFREE_GRIP_UNFREEZE_MD is unset / 0).  When ON:
+    #   - the ``frozen`` sphere shrinks to {} so the metal + donors can
+    #     move under L-BFGS,
+    #   - we generate Phase 2 M-D loss terms (MD bond + M-D-X angle +
+    #     D-M-D angle + hapto centroid) and concatenate them onto the
+    #     Phase 1 fragment list,
+    #   - after the L-BFGS run we measure the M-D drift; if any donor
+    #     has moved more than _MD_DRIFT_SAFETY Å the polish reverts to
+    #     the frozen-sphere result (fail open).
+    _unfreeze_active_flag = _unfreeze_md_active()
+    if _unfreeze_active_flag:
+        frozen: FrozenSet[int] = frozenset()
+    else:
+        frozen = frozenset((metal, *donors_t))
     # Option-B (2026-06-01): adaptive shell-1 protection.  Env-gated so
     # the polish operator can be A/B-tested in equal-n smokes without a
     # code change.  Default ON because Option-B is the current best-known
@@ -1395,6 +1423,23 @@ def grip_polish(
         )
     except Exception:
         terms = []
+
+    # Phase 2 (2026-06-06): inject the M+D unfreeze loss terms.  No-op when
+    # the unfreeze flag is OFF (build returns immediately on the predicate),
+    # so this is byte-identical with HEAD whenever the env-var is unset.
+    if _unfreeze_active_flag:
+        try:
+            md_terms = _build_md_loss_terms(
+                mol, P_init, metal, donors_t, geom=geom,
+                library=library,
+            )
+            if md_terms:
+                terms = list(terms) + list(md_terms)
+        except Exception as _md_exc:
+            _LOG.warning(
+                "grip_polish: build_md_loss_terms raised (%r); skipping Phase 2 terms",
+                _md_exc,
+            )
 
     fragments = TotalGripLoss(terms=list(terms))
 
@@ -1841,7 +1886,27 @@ def grip_polish(
             )
         return P_init
 
-    if not md_constraint.validate(P_refined):
+    # Phase 2 fail-open: when the unfreeze flag is ON the M-D-invariant
+    # validator above uses a SOFTER bound (the init distance ± md_tol),
+    # but the doctrine demands no donor strays more than _MD_DRIFT_SAFETY
+    # Å from its initial distance.  We measure the drift explicitly and
+    # roll back if exceeded -- this is the fail-open guard.
+    if _unfreeze_active_flag:
+        try:
+            md_drift = _max_md_drift(P_init, P_refined, metal, donors_t)
+        except Exception:
+            md_drift = float("inf")
+        if not np.isfinite(md_drift) or md_drift > _MD_DRIFT_SAFETY:
+            if return_diagnostics:
+                return GripPolishResult(
+                    P=P_init, accepted=False,
+                    severity_before=sev_before,
+                    severity_after=mogul_severity(P_refined, fragments),
+                    n_iter=n_iter, n_terms=len(fragments),
+                    rollback_reason=f"phase2 M-D drift {md_drift:.3f} > {_MD_DRIFT_SAFETY}",
+                )
+            return P_init
+    elif not md_constraint.validate(P_refined):
         if return_diagnostics:
             return GripPolishResult(
                 P=P_init, accepted=False,
