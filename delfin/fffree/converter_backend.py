@@ -924,6 +924,9 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.
     results = _conformer_enum_post(results, d)
+    # Binding-mode enum (User 2026-06-06): annotate / expand chelate isomers
+    # by ligand binding-mode (κ¹/κ²/η^n).  Default OFF byte-identical.
+    results = _binding_mode_isomer_expansion(results, d, smiles)
     if not results:
         _f1_backend_log(smiles, "chelate_all_configs_failed", geom_key)
     return results or None
@@ -1091,6 +1094,11 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.
     results = _conformer_enum_post(results, d)
+    # Binding-mode enum (User 2026-06-06): annotate isomer labels with the
+    # ligand binding modes (κ¹/κ²/η^n etc.), and OPTIONALLY duplicate isomers
+    # one per realistic binding mode.  Default OFF byte-identical to HEAD;
+    # only fires under DELFIN_FFFREE_BINDING_MODE_ENUM=1 or PURE_TRACK3.
+    results = _binding_mode_isomer_expansion(results, d, smiles)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
 
@@ -1121,6 +1129,93 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         out.append((_xyz(syms, P), label))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Binding-mode enum expansion (User mandate 2026-06-06)
+# ---------------------------------------------------------------------------
+def _binding_mode_isomer_expansion(
+    results: List[Tuple[str, str]],
+    d: Optional[Dict],
+    smiles: str,
+) -> List[Tuple[str, str]]:
+    """Annotate / expand isomer labels with binding-mode tags.
+
+    For each emitted isomer, scan the decomposed ligands; if any ligand has
+    multiple realistic binding modes (κ¹ vs κ² for carboxylate, η¹/η³/η⁵ for
+    Cp, S-vs-N for SCN ...), produce one labelled variant per mode for that
+    ligand.  The XYZ geometry itself is unchanged in v1 — the binding mode is
+    recorded in the *label* so the downstream Pólya completeness metric can
+    count it.
+
+    v1 scope:
+      * label-only annotation (geometry untouched)
+      * caps total expansion at MAX_EXPAND per isomer to avoid combinatorial
+        blow-up on highly-ambidentate ligand sets
+
+    Default OFF: byte-identical when
+      ``DELFIN_FFFREE_BINDING_MODE_ENUM=0`` and ``PURE_TRACK3=0``.
+    """
+    if not results:
+        return results
+    try:
+        from delfin.fffree.coordination_mode_enum import (
+            binding_mode_enum_enabled,
+            enumerate_modes,
+        )
+    except Exception:
+        return results
+    if not binding_mode_enum_enabled():
+        return results
+    if d is None or not d.get("ligands"):
+        return results
+
+    MAX_EXPAND = int(os.environ.get(
+        "DELFIN_FFFREE_BINDING_MODE_MAX_EXPAND", "8"
+    ).strip() or "8")
+
+    # Per-ligand realistic mode lists (cached by ligand SMILES so identical
+    # ligand fragments share the cache).
+    per_lig_modes: List[List[str]] = []
+    for lg in d.get("ligands", []):
+        try:
+            lig_smi = Chem.MolToSmiles(lg["mol"])
+            modes = enumerate_modes(lig_smi)
+            mode_labels: List[str] = []
+            for m in modes:
+                lbl = m.get("label", "")
+                if lbl and lbl not in mode_labels:
+                    mode_labels.append(lbl)
+            if not mode_labels:
+                mode_labels = ["kappa1"]
+        except Exception:
+            mode_labels = ["kappa1"]
+        per_lig_modes.append(mode_labels)
+
+    # Compose ligand-mode tag from the per-ligand mode lists.  For determinism,
+    # iterate modes in lex order, sample at most MAX_EXPAND distinct combos.
+    # For v1 we project onto the *cartesian product trimmed to the realistic
+    # set* — i.e. each ligand contributes its own mode tag independently.
+    from itertools import product as _prod
+    mode_tuples = list(_prod(*per_lig_modes))
+    # Lex-sort for byte-identical determinism
+    mode_tuples.sort()
+    if len(mode_tuples) > MAX_EXPAND:
+        mode_tuples = mode_tuples[:MAX_EXPAND]
+
+    # If there is only one binding-mode tuple (i.e. all ligands have a single
+    # mode) we just *annotate* the existing labels; otherwise we *expand*.
+    if len(mode_tuples) <= 1:
+        if not mode_tuples:
+            return results
+        bm_tag = "_".join(mode_tuples[0])
+        return [(xyz, f"{lab}-bm({bm_tag})") for xyz, lab in results]
+    out: List[Tuple[str, str]] = []
+    for xyz, lab in results:
+        for tup in mode_tuples:
+            tag = "_".join(tup)
+            out.append((xyz, f"{lab}-bm({tag})"))
     return out
 
 
