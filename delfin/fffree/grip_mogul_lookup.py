@@ -73,11 +73,6 @@ __all__ = [
     "GRIP_LOOKUP_MIN_N",
 ]
 
-# Default release-pinned library produced by scripts/grip_build_mogul_lib.py.
-DEFAULT_LIB_PATH = Path(
-    "/home/qmchem_max/agent_workspace/quality_framework/reports/grip_lib_v1.npz"
-)
-
 # Env var name used to override the default library path at process start.
 DELFIN_GRIP_LIB_PATH_ENV = "DELFIN_GRIP_LIB_PATH"
 
@@ -90,6 +85,115 @@ DELFIN_GRIP_LIB_PATH_ENV = "DELFIN_GRIP_LIB_PATH"
 #   * set ``DELFIN_FFFREE_GRIP_LIB_COD_PATH`` to the v6 .npz
 # Result: lookup operates with COD only, no CCDC dependency at runtime.
 DELFIN_FFFREE_GRIP_LIB_COD_PATH_ENV = "DELFIN_FFFREE_GRIP_LIB_COD_PATH"
+
+
+def _discover_default_library_path() -> Optional[Path]:
+    """Search for a library .npz file in adopter-safe standard locations.
+
+    Search order (first existing file wins):
+
+    1. ``$DELFIN_FFFREE_GRIP_LIB_COD_PATH`` — v6 COD-derived, public-domain
+       (CC0).  PREFERRED for adopters: no CCDC license required.
+    2. ``$DELFIN_GRIP_LIB_PATH`` — explicit override, may be v5 CCDC if the
+       user holds an institutional CCDC license.
+    3. Package data dir: ``<delfin_root>/data/grip_lib_v6_cod.npz``
+       (shipped via wheel; adopter-default when installed).
+    4. XDG data dir: ``$XDG_DATA_HOME/delfin/grip_lib_v6_cod.npz``
+    5. User config: ``~/.local/share/delfin/grip_lib_v6_cod.npz``
+    6. ``$DELFIN_GRIP_LIB_PATH`` CCDC variants (v5, v4, v3, v1) — only if
+       the explicit COD path was unset and the env var still points
+       somewhere readable (back-compat with academic CCDC users).
+
+    Returns ``None`` when no readable library is found.  Callers are
+    responsible for emitting a clear error message to the user.
+
+    LEGAL NOTE: this discovery order is designed to prefer the
+    CC0-licensed COD-derived library so adopters who install DELFIN via
+    ``pip`` get a fully open runtime by default.  The CCDC-derived v5
+    library is supported only when the user explicitly opts in via the
+    ``DELFIN_GRIP_LIB_PATH`` environment variable.  No CCDC-derived data
+    is shipped in this package.
+    """
+    # 1. Adopter-preferred: explicit COD path
+    cod_env = os.environ.get(DELFIN_FFFREE_GRIP_LIB_COD_PATH_ENV, "").strip()
+    if cod_env:
+        cod_path = Path(cod_env).expanduser()
+        if cod_path.exists():
+            return cod_path
+
+    # 2. Explicit override (could be COD or CCDC, user's choice)
+    user_env = os.environ.get(DELFIN_GRIP_LIB_PATH_ENV, "").strip()
+    if user_env:
+        user_path = Path(user_env).expanduser()
+        if user_path.exists():
+            return user_path
+
+    # 3. Package data dir — shipped with wheel install
+    try:
+        package_data = (
+            Path(__file__).resolve().parent.parent / "data" / "grip_lib_v6_cod.npz"
+        )
+        if package_data.exists():
+            return package_data
+    except Exception:
+        pass
+
+    # 4. XDG standard data dir
+    xdg_home = os.environ.get("XDG_DATA_HOME", "").strip()
+    if xdg_home:
+        candidate = Path(xdg_home).expanduser() / "delfin" / "grip_lib_v6_cod.npz"
+        if candidate.exists():
+            return candidate
+
+    # 5. User-local fallback
+    user_local = Path.home() / ".local" / "share" / "delfin" / "grip_lib_v6_cod.npz"
+    if user_local.exists():
+        return user_local
+
+    # 6. System data dir
+    system_data = Path("/usr/share/delfin/grip_lib_v6_cod.npz")
+    if system_data.exists():
+        return system_data
+
+    return None
+
+
+# Backwards-compatible alias: existing callers that imported ``DEFAULT_LIB_PATH``
+# now get a lazy property that performs runtime discovery.  Importing this
+# module no longer requires a hard-coded path on disk.
+class _LazyDefaultLibPath:
+    """Lazy property that resolves the default library path at access time."""
+
+    def __fspath__(self) -> str:
+        path = _discover_default_library_path()
+        if path is None:
+            # Return a non-existent path so existence checks fail cleanly
+            # rather than raising an ImportError at module import time.
+            return str(Path("/dev/null/delfin-grip-lib-not-found"))
+        return str(path)
+
+    def __str__(self) -> str:
+        return self.__fspath__()
+
+    def __repr__(self) -> str:
+        return f"<LazyDefaultLibPath -> {self.__fspath__()}>"
+
+    def resolve(self) -> Path:
+        """Return the discovered path as a resolved Path object."""
+        path = _discover_default_library_path()
+        if path is None:
+            return Path("/dev/null/delfin-grip-lib-not-found")
+        return path.resolve()
+
+    def exists(self) -> bool:
+        path = _discover_default_library_path()
+        return path is not None and path.exists()
+
+
+# Module-level singleton.  Backwards-compatible with existing import sites
+# (``from grip_mogul_lookup import DEFAULT_LIB_PATH``) — they still get a
+# Path-like object, but the lookup happens at use, not at import.
+DEFAULT_LIB_PATH = _LazyDefaultLibPath()
 
 # Minimum sample size for a fallback level to be considered "trusted".
 GRIP_LOOKUP_MIN_N = 5
