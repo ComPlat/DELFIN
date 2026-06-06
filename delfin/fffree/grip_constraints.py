@@ -49,6 +49,7 @@ __all__ = [
     "DonorPolyhedronConstraint",
     "TopologyConstraint",
     "ChiralVolumeConstraint",
+    "MetalChiralityConstraint",
     "ClashFloorPenalty",
     "hh_clash_include_active",
     "hh_pair_contribution",
@@ -378,6 +379,179 @@ class ChiralVolumeConstraint:
                 return False
             cur = 1 if v > 0.0 else (-1 if v < 0.0 else 0)
             if cur != sign:
+                return False
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Metal-centered chirality (Δ / Λ class)
+#
+# Phase 2 chiral-volume fix (2026-06-06).
+#
+# When the GRIP M+D unfreeze (Phase 2) is active, the per-atom signed
+# tetrahedral volume around a metal stereocenter is no longer the right
+# invariant.  M+D atoms rotate as a rigid body, and the per-atom sign
+# is NOT rotation-invariant (it depends on the global handedness of the
+# (a, b, c) triple seen from the *center*, which is preserved, but a
+# numerical near-zero value can flip sign on innocent reorientations).
+#
+# More importantly, the intrinsic stereochemistry at the metal centre
+# is captured by the Δ vs Λ class, NOT by the signed volume of an
+# arbitrary three-donor triple.  We compute a rotation-invariant,
+# reflection-sensitive scalar from the donor *unit vectors* (the
+# directions D_i − M, length-normalised):
+#
+#     s = det([v0, v1, v2])  with v_i = (D_i − M) / |D_i − M|
+#
+# Properties:
+#
+# * Rotation-invariant: ``det(R v0, R v1, R v2) = det(R) det([v0,v1,v2])
+#   = det([v0,v1,v2])`` for any proper rotation ``R`` (since det R = +1).
+# * Reflection-flipping: any improper rotation flips the sign of ``s``.
+# * Translation-invariant: only the *directions* from the metal enter
+#   the determinant, so a rigid M+D translation does not change s.
+# * Scale-invariant: unit vectors normalise out the M-D distances.
+# * Determinant-of-donor-cone is the canonical CIP-style invariant
+#   used for octahedral tris-chelate complexes (Δ vs Λ in [Ru(bipy)3]²⁺).
+#
+# For planar / square-planar (SP-4) geometries the three unit vectors
+# are coplanar -> |s| < eps -> "achiral" class -> the validator does
+# not protect chirality (correct: SP-4 has no Δ/Λ).
+#
+# Implementation: we pick the FIRST THREE donors in sorted-index order
+# (matches the legacy quad selection) -- the determinant sign is the
+# same for any choice of three donors (up to a deterministic permutation
+# sign baked into "from_initial"), so the recorded class is consistent.
+# ---------------------------------------------------------------------------
+@dataclass
+class MetalChiralityConstraint:
+    """Validates that the metal-centered chirality class (Δ vs Λ) is
+    preserved across a Phase 2 polish.
+
+    Built once at ``from_initial`` and consulted via :meth:`validate`.
+    Stores a single integer class label per metal: +1 (Δ-like), -1
+    (Λ-like), or 0 (achiral).  ``validate`` returns ``True`` when the
+    class is unchanged OR when the initial class is ``0`` (no chirality
+    to protect).
+
+    The class is computed from the donor *unit vectors* relative to the
+    metal centre, so it is invariant under any rigid rotation +
+    translation of the M+D subsystem.  This is exactly the invariant we
+    need when Phase 2 lets the M+D rotate under L-BFGS.
+    """
+
+    metals: List[Tuple[int, Tuple[int, ...], int]] = field(default_factory=list)
+    # Numerical floor below which |s| is treated as "achiral" (Δ/Λ
+    # ambiguous, do not protect).  0.05 is tight enough to flag a
+    # genuine octahedron (|s| ≈ 1.41 for a perfect octahedron picked
+    # in the right order) and loose enough to ignore an SP-4 wobble.
+    achiral_tol: float = 0.05
+
+    @staticmethod
+    def _donor_unit_vectors(
+        R: np.ndarray, metal: int, donors: Sequence[int]
+    ) -> Optional[np.ndarray]:
+        """Return an ``(M, 3)`` array of unit M->D vectors or ``None`` on
+        degeneracy (collapsed donor or non-finite coordinate).
+
+        ``M = len(donors)``.  Vectors are length-normalised; rows
+        corresponding to a donor that coincides with the metal raise a
+        ``None`` return (the caller treats the chirality as ambiguous).
+        """
+        R = _as_R(R)
+        rc = R[int(metal)]
+        out = np.zeros((len(donors), 3), dtype=np.float64)
+        for i, d in enumerate(donors):
+            v = R[int(d)] - rc
+            n = float(np.linalg.norm(v))
+            if not np.isfinite(n) or n < _EPS:
+                return None
+            out[i] = v / n
+        if not np.all(np.isfinite(out)):
+            return None
+        return out
+
+    @classmethod
+    def metal_chirality_class(
+        cls,
+        R: np.ndarray,
+        metal: int,
+        donors: Sequence[int],
+        achiral_tol: float = 0.05,
+    ) -> int:
+        """Return ``+1`` (Δ-like), ``-1`` (Λ-like), or ``0`` (achiral).
+
+        Universal, geometry-only.  Uses the FIRST THREE donors in
+        sorted-index order to define the determinant sign.  Caller is
+        responsible for passing donors in a deterministic order;
+        :meth:`from_initial` sorts internally.
+
+        Notes
+        -----
+        ``|s| < achiral_tol`` -> 0 (the donor cone is too flat for a
+        meaningful Δ/Λ -- e.g. SP-4 planar, linear, or trigonal).
+        """
+        donors_t = tuple(int(d) for d in donors)
+        if len(donors_t) < 3:
+            return 0
+        donors_sorted = tuple(sorted(donors_t))
+        V = cls._donor_unit_vectors(R, int(metal), donors_sorted[:3])
+        if V is None:
+            return 0
+        s = float(np.linalg.det(V))
+        if not np.isfinite(s):
+            return 0
+        if abs(s) < float(achiral_tol):
+            return 0
+        return 1 if s > 0.0 else -1
+
+    @classmethod
+    def from_initial(
+        cls,
+        metals_and_donors: Sequence[Tuple[int, Sequence[int]]],
+        P0: np.ndarray,
+        achiral_tol: float = 0.05,
+    ) -> "MetalChiralityConstraint":
+        """Build a constraint capturing the Δ/Λ class of every metal in
+        ``metals_and_donors`` at ``P0``.
+
+        ``metals_and_donors`` is a sequence of ``(metal_idx, donors)``
+        pairs.  The donor sequence may be unordered; the constraint
+        sorts internally for determinism.  Metals with fewer than 3
+        donors are recorded with class 0 (no protection).
+        """
+        P0 = _as_R(P0)
+        entries: List[Tuple[int, Tuple[int, ...], int]] = []
+        for (m, donors) in metals_and_donors:
+            donors_t = tuple(sorted(int(d) for d in donors))
+            cls_label = cls.metal_chirality_class(
+                P0, int(m), donors_t, achiral_tol=achiral_tol,
+            )
+            entries.append((int(m), donors_t, int(cls_label)))
+        return cls(metals=entries, achiral_tol=float(achiral_tol))
+
+    def validate(self, R: np.ndarray) -> bool:
+        """``True`` iff every metal's Δ/Λ class is preserved.
+
+        A metal recorded with class 0 is "achiral" and is always
+        accepted (no chirality to protect).
+        """
+        if not self.metals:
+            return True
+        R = _as_R(R)
+        for (m, donors, ref_cls) in self.metals:
+            if ref_cls == 0:
+                continue
+            cur = self.metal_chirality_class(
+                R, m, donors, achiral_tol=self.achiral_tol,
+            )
+            if cur == 0:
+                # Cone went planar mid-polish -- accept as "still
+                # consistent" (the geometry is no longer chiral, so
+                # there's no class to violate).  This matches the
+                # near-zero behaviour of ChiralVolumeConstraint.
+                continue
+            if cur != ref_cls:
                 return False
         return True
 

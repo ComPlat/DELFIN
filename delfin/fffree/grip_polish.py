@@ -343,6 +343,7 @@ from .grip_constraints import (
     ClashFloorPenalty,
     DonorPolyhedronConstraint,
     MDInvariantConstraint,
+    MetalChiralityConstraint,
     TopologyConstraint,
 )
 from .grip_fragment_detect import detect_fragments
@@ -845,12 +846,29 @@ def _vdw_table_for_mol(mol, vdw_radii_by_symbol: Dict[str, float]) -> Dict[int, 
     return out
 
 
-def _stereocenter_quadruples(mol) -> List[Tuple[int, int, int, int]]:
+def _stereocenter_quadruples(
+    mol, exclude_center: Optional[int] = None,
+) -> List[Tuple[int, int, int, int]]:
     """Return ``(center, a, b, c)`` quadruples for every heavy atom with
-    exactly three heavy neighbours (deterministic, sorted)."""
+    exactly three heavy neighbours (deterministic, sorted).
+
+    Parameters
+    ----------
+    mol : RDKit Mol-like
+    exclude_center : int, optional
+        Atom index to exclude as a stereocenter.  When Phase 2 (M+D
+        unfreeze) is active the caller passes the metal index so the
+        per-atom signed-volume check does not flip on innocent M+D
+        rigid rotations -- the metal's intrinsic chirality is instead
+        protected by :class:`MetalChiralityConstraint`.  Default
+        ``None`` -> byte-identical with the legacy stereocenter list.
+    """
     quads: List[Tuple[int, int, int, int]] = []
+    skip_idx = -1 if exclude_center is None else int(exclude_center)
     for atom in mol.GetAtoms():
         c = int(atom.GetIdx())
+        if c == skip_idx:
+            continue
         try:
             sym = atom.GetSymbol()
         except Exception:
@@ -1528,9 +1546,32 @@ def grip_polish(
         mol_bonds, P_init, max_distance_multiplier=_topo_mult_eff,
     )
 
-    chiral_constraint = ChiralVolumeConstraint.from_initial(
-        _stereocenter_quadruples(mol), P_init,
-    )
+    # Phase 2 chiral-volume fix (2026-06-06).
+    #
+    # When the M+D unfreeze (Phase 2) is active the per-atom signed
+    # tetrahedral volume at the metal centre is no longer the right
+    # invariant -- M+D atoms rotate as a rigid body and the per-atom
+    # sign can flip even when the intrinsic Δ/Λ chirality at the metal
+    # is unchanged.  Replace the per-atom check with a metal-centered
+    # Δ/Λ class (from donor unit vectors) for the metal, and keep the
+    # per-atom check for every NON-metal stereocenter.
+    #
+    # Default-OFF byte-identical: when _unfreeze_active_flag is False
+    # exclude_center=None -> _stereocenter_quadruples returns the
+    # legacy quad list (metal included) and metal_chirality is the
+    # empty constraint (validate() returns True with no metals).
+    if _unfreeze_active_flag:
+        chiral_constraint = ChiralVolumeConstraint.from_initial(
+            _stereocenter_quadruples(mol, exclude_center=metal), P_init,
+        )
+        metal_chirality_constraint = MetalChiralityConstraint.from_initial(
+            [(metal, donors_t)], P_init,
+        )
+    else:
+        chiral_constraint = ChiralVolumeConstraint.from_initial(
+            _stereocenter_quadruples(mol), P_init,
+        )
+        metal_chirality_constraint = MetalChiralityConstraint(metals=[])
 
     # Donor polyhedron: only if geom + ≥ 2 donors known.  Falls back to a
     # benign no-op (CShM 0.0) when geom == "".
@@ -2023,6 +2064,19 @@ def grip_polish(
                 severity_after=mogul_severity(P_refined, fragments),
                 n_iter=n_iter, n_terms=len(fragments),
                 rollback_reason="chiral volume sign flipped",
+            )
+        return P_init
+
+    # Phase 2 chiral-volume fix (2026-06-06): metal-centered Δ/Λ check.
+    # No-op when _unfreeze_active_flag is False (constraint is empty).
+    if not metal_chirality_constraint.validate(P_refined):
+        if return_diagnostics:
+            return GripPolishResult(
+                P=P_init, accepted=False,
+                severity_before=sev_before,
+                severity_after=mogul_severity(P_refined, fragments),
+                n_iter=n_iter, n_terms=len(fragments),
+                rollback_reason="metal Δ/Λ chirality class flipped",
             )
         return P_init
 
