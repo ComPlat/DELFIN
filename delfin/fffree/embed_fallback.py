@@ -410,6 +410,68 @@ def embed_isomers(
     except Exception:
         return None
 
+    # Mogul-DG Phase D (2026-06-06): env-gated REPLACE of ETKDG embed.
+    # When DELFIN_FFFREE_MOGUL_DG_REPLACE_ETKDG=1, generate the embed via
+    # whole-complex distance-geometry instead of RDKit ETKDGv3.  The
+    # downstream polish (grip / uff / xtb / all) still runs on the mogul
+    # output so the polish-mode comparison stays intact.  Fail-open: on
+    # any failure (None return, NaN cloud, missing CCDC library) we drop
+    # back to ETKDG below — default OFF byte-identical when env unset.
+    if os.environ.get("DELFIN_FFFREE_MOGUL_DG_REPLACE_ETKDG", "").strip() in (
+        "1", "true", "yes", "on",
+    ):
+        try:
+            from delfin.fffree.mogul_dg import mogul_embed, xyz_block as _mxyz
+            _mres = mogul_embed(smiles)
+        except Exception:
+            _mres = None
+        if _mres is not None:
+            _msyms, _mP, _minfo = _mres
+            _polish_mode = polish if polish in (
+                "grip", "raw", "xtb", "uff", "both", "all",
+            ) else "raw"
+            # Build a synthetic mol the polish helpers can use (same
+            # AddHs-ed mol the ETKDG path would produce).
+            try:
+                _pol_mol = Chem.MolFromSmiles(smiles)
+                if _pol_mol is not None:
+                    _pol_mol = Chem.AddHs(_pol_mol)
+            except Exception:
+                _pol_mol = None
+            _out_mogul: List[Tuple[str, str]] = []
+            if _polish_mode == "raw" or _pol_mol is None:
+                _out_mogul.append((_mxyz(_msyms, _mP), "embed-mogul-raw"))
+            elif _polish_mode == "grip":
+                _Pp, _st = _maybe_grip_polish(_mP, _pol_mol)
+                _sfx = "grip" if _st == "grip" else "raw"
+                _out_mogul.append((_mxyz(_msyms, _Pp), f"embed-mogul-{_sfx}"))
+            elif _polish_mode == "xtb":
+                _Pp, _st = _maybe_xtb_polish(_mP, _pol_mol)
+                _sfx = "xtb" if _st == "xtb" else "raw"
+                _out_mogul.append((_mxyz(_msyms, _Pp), f"embed-mogul-{_sfx}"))
+            elif _polish_mode == "uff":
+                _Pp, _st = _maybe_uff_polish(_mP, _pol_mol)
+                _sfx = "uff" if _st == "uff" else "raw"
+                _out_mogul.append((_mxyz(_msyms, _Pp), f"embed-mogul-{_sfx}"))
+            elif _polish_mode == "both":
+                _out_mogul.append((_mxyz(_msyms, _mP), "embed-mogul-raw"))
+                _Pp, _st = _maybe_grip_polish(_mP, _pol_mol)
+                _sfx = "grip" if _st == "grip" else "raw"
+                _out_mogul.append((_mxyz(_msyms, _Pp), f"embed-mogul-{_sfx}"))
+            elif _polish_mode == "all":
+                _Pg, _sg = _maybe_grip_polish(_mP, _pol_mol)
+                _out_mogul.append(
+                    (_mxyz(_msyms, _Pg), f"embed-mogul-{'grip' if _sg=='grip' else 'raw'}"))
+                _Pu, _su = _maybe_uff_polish(_mP, _pol_mol)
+                _out_mogul.append(
+                    (_mxyz(_msyms, _Pu), f"embed-mogul-{'uff' if _su=='uff' else 'raw'}"))
+                _Px, _sx = _maybe_xtb_polish(_mP, _pol_mol)
+                _out_mogul.append(
+                    (_mxyz(_msyms, _Px), f"embed-mogul-{'xtb' if _sx=='xtb' else 'raw'}"))
+            if _out_mogul:
+                return _out_mogul
+        # else: silent fall-through to ETKDG below
+
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         return None
