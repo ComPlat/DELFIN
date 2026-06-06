@@ -348,9 +348,17 @@ from .grip_constraints import (
 from .grip_fragment_detect import detect_fragments
 from .grip_loss_terms import TotalGripLoss
 from .grip_md_terms import (
+    DEFAULT_MD_WARMUP_FRACTION as _MD_WARMUP_FRACTION,
+    anneal_md_term_weights as _anneal_md_term_weights,
     build_md_loss_terms as _build_md_loss_terms,
+    compute_total_severity as _phase2_total_severity,
     detect_hapto_donor_clusters as _detect_md_hapto_clusters,
+    detect_hapto_present as _detect_md_hapto_present,
+    detect_multi_metal as _detect_md_multi_metal,
     max_md_drift as _max_md_drift,
+    md_hapto_skip_active as _md_hapto_skip_active,
+    md_warmup_active as _md_warmup_active,
+    resolve_md_accept_weight as _resolve_md_accept_weight,
     unfreeze_md_active as _unfreeze_md_active,
 )
 from .grip_mogul_lookup import GripLibrary, get_default_library
@@ -1361,7 +1369,26 @@ def grip_polish(
     #   - after the L-BFGS run we measure the M-D drift; if any donor
     #     has moved more than _MD_DRIFT_SAFETY Å the polish reverts to
     #     the frozen-sphere result (fail open).
+    #
+    # Phase 2 acceptance-gate fix (2026-06-06): per-SMILES skip when the
+    # molecule has a hapto-π cluster or multiple metals.  The smoke 100
+    # paired verdict showed Phase 2 regressing those classes (the M-D
+    # Gaussians + HaptoCentroidTerm fight the construction priors).  The
+    # skip is on by default; set ``DELFIN_FFFREE_GRIP_MD_HAPTO_SKIP=0`` to
+    # force Phase 2 on hapto/multi-metal SMILES for forensics.
     _unfreeze_active_flag = _unfreeze_md_active()
+    if _unfreeze_active_flag and _md_hapto_skip_active():
+        try:
+            if _detect_md_multi_metal(mol):
+                _unfreeze_active_flag = False
+        except Exception:
+            pass
+        if _unfreeze_active_flag:
+            try:
+                if _detect_md_hapto_present(mol, metal, donors_t, P_init):
+                    _unfreeze_active_flag = False
+            except Exception:
+                pass
     if _unfreeze_active_flag:
         frozen: FrozenSet[int] = frozenset()
     else:
@@ -1427,12 +1454,19 @@ def grip_polish(
     # Phase 2 (2026-06-06): inject the M+D unfreeze loss terms.  No-op when
     # the unfreeze flag is OFF (build returns immediately on the predicate),
     # so this is byte-identical with HEAD whenever the env-var is unset.
+    #
+    # Phase 2 acceptance-gate fix: keep a separate handle on the md_terms
+    # list so the gate (below) can score Phase 2 severity independently of
+    # the Phase 1 fragment severity.  ``md_terms`` is the empty list when
+    # the unfreeze flag is OFF or the build returns nothing -- both code
+    # paths score Phase 2 = 0.0 and the gate degrades to legacy behaviour.
+    md_terms: List[object] = []
     if _unfreeze_active_flag:
         try:
-            md_terms = _build_md_loss_terms(
+            md_terms = list(_build_md_loss_terms(
                 mol, P_init, metal, donors_t, geom=geom,
                 library=library,
-            )
+            ))
             if md_terms:
                 terms = list(terms) + list(md_terms)
         except Exception as _md_exc:
@@ -1440,6 +1474,7 @@ def grip_polish(
                 "grip_polish: build_md_loss_terms raised (%r); skipping Phase 2 terms",
                 _md_exc,
             )
+            md_terms = []
 
     fragments = TotalGripLoss(terms=list(terms))
 
@@ -1840,15 +1875,67 @@ def grip_polish(
                 int(getattr(res, "nit", 0)),
             )
 
-        # Restart 0 is always P_init verbatim (legacy byte-identity gate).
-        P_refined, n_iter = _single_lbfgs_call(P_init)
+        # Phase 2 acceptance-gate fix (2026-06-06): 2-pass MD weight anneal.
+        #
+        # When the unfreeze flag is on AND Phase 2 emitted terms AND the warmup
+        # flag is on (default ON), run an extra L-BFGS pass first with the
+        # Phase 2 weights scaled by DEFAULT_MD_WARMUP_FRACTION (0.1) so the
+        # metal + donors can find an initial position without being pinned
+        # by the M-D Gaussians; then run the regular full-weight pass
+        # starting from the warmed-up coords.  Phase 1 terms are untouched
+        # so the warmup never makes the geometry worse on the legacy axes.
+        #
+        # The wrapper mutates ``fragments.terms`` in-place between passes;
+        # because ``loss_and_grad`` reads ``fragments`` from the enclosing
+        # scope at call time, the new term list is honoured automatically.
+        run_anneal = (
+            _unfreeze_active_flag
+            and bool(md_terms)
+            and _md_warmup_active()
+        )
+        if run_anneal:
+            # Save full-weight Phase 1+2 list (in canonical sort order) so
+            # we can restore it for the final pass.
+            _full_terms_list = list(fragments.terms)
+            try:
+                _warmup_md_terms = _anneal_md_term_weights(
+                    md_terms, _MD_WARMUP_FRACTION,
+                )
+                # Replace md_terms in-place by their warmup variants.
+                _md_ids = {id(t) for t in md_terms}
+                _phase1_terms = [t for t in _full_terms_list if id(t) not in _md_ids]
+                _warmup_total = TotalGripLoss(
+                    terms=list(_phase1_terms) + list(_warmup_md_terms)
+                )
+                fragments.terms = list(_warmup_total.terms)
+                try:
+                    P_warmup, _ = _single_lbfgs_call(P_init)
+                except Exception as _warm_exc:
+                    _LOG.debug(
+                        "grip_polish: warmup pass raised (%r); skipping anneal",
+                        _warm_exc,
+                    )
+                    P_warmup = P_init
+                if not np.all(np.isfinite(P_warmup)):
+                    P_warmup = P_init
+            finally:
+                # Always restore the full-weight term list before the next
+                # pass / the gate so severity comparisons stay consistent.
+                fragments.terms = _full_terms_list
+            P_start_for_final = P_warmup
+        else:
+            P_start_for_final = P_init
+
+        # Restart 0 is always P_init verbatim (legacy byte-identity gate)
+        # when anneal is OFF; otherwise we start from the warmed-up coords.
+        P_refined, n_iter = _single_lbfgs_call(P_start_for_final)
         if n_restarts > 1:
             best_P = P_refined
             best_sev = mogul_severity(best_P, fragments)
             best_n_iter = n_iter
             for rk in range(1, n_restarts):
                 P_perturb = _deterministic_perturbation(
-                    P_init, rk, restart_perturb, frozen_indices,
+                    P_start_for_final, rk, restart_perturb, frozen_indices,
                 )
                 try:
                     P_try, n_iter_try = _single_lbfgs_call(P_perturb)
@@ -1962,6 +2049,31 @@ def grip_polish(
     use_clash_gate = _accept_with_clash_active()
     score_before = float(sev_before)
     score_after = float(sev_after)
+
+    # Phase 2 acceptance-gate fix (2026-06-06):
+    #   Replace the legacy "total severity" with
+    #       score = (Phase 1 severity) + α × (Phase 2 severity)
+    #   so the M+D Gaussians can actually drive the acceptance decision
+    #   without being washed out by the (typically larger) Phase 1 sum.
+    #   ``mogul_severity(R, fragments)`` already returns Phase 1 + Phase 2 at
+    #   α = 1.0, so we subtract the Phase 2 piece, then re-add it at α.
+    #   When α = 1.0 this is byte-identical with the legacy total severity.
+    #   When the unfreeze flag is OFF (md_terms is empty) the Phase 2 piece
+    #   is 0.0 and the gate stays in legacy mode.
+    if _unfreeze_active_flag and md_terms:
+        try:
+            md_sev_before = _phase2_total_severity(P_init, md_terms)
+            md_sev_after = _phase2_total_severity(P_refined, md_terms)
+            alpha_md = _resolve_md_accept_weight()
+            ph1_before = float(sev_before) - float(md_sev_before)
+            ph1_after = float(sev_after) - float(md_sev_after)
+            score_before = ph1_before + float(alpha_md) * float(md_sev_before)
+            score_after = ph1_after + float(alpha_md) * float(md_sev_after)
+        except Exception:
+            # Phase 2 augmented gate failed -> degrade to legacy severity-only.
+            score_before = float(sev_before)
+            score_after = float(sev_after)
+
     if use_clash_gate:
         try:
             from .grip_ensemble import count_inter_ligand_clashes
@@ -1972,12 +2084,12 @@ def grip_polish(
                 P_refined, mol, metal_idx=metal, donors=donors_t,
             ))
             alpha = _accept_with_clash_alpha()
-            score_before = float(sev_before) + alpha * float(n_before)
-            score_after = float(sev_after) + alpha * float(n_after)
+            score_before = float(score_before) + alpha * float(n_before)
+            score_after = float(score_after) + alpha * float(n_after)
         except Exception:
             # Clash-augmented gate failed -> fall back to severity-only.
-            score_before = float(sev_before)
-            score_after = float(sev_after)
+            # We deliberately retain any Phase 2 augmentation already applied.
+            pass
     if not np.isfinite(score_after) or score_after >= score_before:
         if return_diagnostics:
             return GripPolishResult(
