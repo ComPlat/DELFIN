@@ -79,6 +79,33 @@ _MD_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_MD_WEIGHT"
 _MDX_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_MDX_WEIGHT"
 _DMD_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_DMD_WEIGHT"
 
+# ---------------------------------------------------------------------------
+# Phase 2 acceptance-gate fix (2026-06-06).
+#
+# Phase 2 Mahalanobis terms steer the L-BFGS but the upstream accept-if-better
+# gate uses ONLY Phase 1 fragment severity, so most polishes get rolled back
+# the moment they tighten a Phase 1 term less than they tighten the M-D /
+# D-M-D angle terms (which the gate ignores).  These three env-flags expose
+# the three corrective levers documented in the mission brief:
+#
+#   * DELFIN_FFFREE_GRIP_MD_ACCEPT_WEIGHT  -> α coefficient on Phase 2 severity
+#                                              in the acceptance score
+#                                              (default 1.0; 0.0 = legacy)
+#   * DELFIN_FFFREE_GRIP_MD_HAPTO_SKIP     -> auto-disable Phase 2 when the
+#                                              molecule has a hapto-π cluster
+#                                              or ≥2 metals (default ON)
+#   * DELFIN_FFFREE_GRIP_MD_WARMUP         -> 2-pass weight anneal: first
+#                                              pass uses 0.1× w_max, second
+#                                              pass uses 1.0× w_max; final
+#                                              accept-score keeps the best
+#                                              (default ON when unfreeze ON)
+# ---------------------------------------------------------------------------
+_MD_ACCEPT_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_MD_ACCEPT_WEIGHT"
+DEFAULT_MD_ACCEPT_WEIGHT: float = 1.0
+_MD_HAPTO_SKIP_ENV: str = "DELFIN_FFFREE_GRIP_MD_HAPTO_SKIP"
+_MD_WARMUP_ENV: str = "DELFIN_FFFREE_GRIP_MD_WARMUP"
+DEFAULT_MD_WARMUP_FRACTION: float = 0.1   # first-pass weight = 0.1 × w_max
+
 # Hapto-cluster detection: a donor counts as hapto when the metal has
 # 3+ same-element heavy neighbours of that element within HAPTO_RADIUS.
 HAPTO_RADIUS: float = 3.0   # Å (matches the spec)
@@ -128,6 +155,214 @@ def _resolve_mdx_weight() -> float:
 
 def _resolve_dmd_weight() -> float:
     return _resolve_pos_float(_DMD_WEIGHT_ENV, DEFAULT_DMD_WEIGHT)
+
+
+def resolve_md_accept_weight() -> float:
+    """α coefficient on Phase 2 severity in the accept-if-better gate.
+
+    Read ``DELFIN_FFFREE_GRIP_MD_ACCEPT_WEIGHT``; default 1.0.  Setting
+    the var to 0.0 disables the Phase 2 contribution and restores the
+    legacy severity-only gate.  Negative values are clamped to 0.0.
+    """
+    raw = os.environ.get(_MD_ACCEPT_WEIGHT_ENV, "").strip()
+    if not raw:
+        return float(DEFAULT_MD_ACCEPT_WEIGHT)
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_MD_ACCEPT_WEIGHT)
+    if not math.isfinite(v):
+        return float(DEFAULT_MD_ACCEPT_WEIGHT)
+    if v < 0.0:
+        return 0.0
+    return float(v)
+
+
+def md_hapto_skip_active() -> bool:
+    """``True`` iff the per-SMILES Phase 2 skip is enabled (default ON).
+
+    Reads ``DELFIN_FFFREE_GRIP_MD_HAPTO_SKIP``.  Defaults to ON because
+    the prior smoke 100 paired test showed Phase 2 regressing hapto cases
+    (the HaptoCentroidTerm tugs the metal-to-ring-centroid distance under
+    L-BFGS but the upstream coverage / shape detectors penalise the same
+    moves).  Set to ``0`` to force Phase 2 on hapto/multi-metal molecules
+    (forensic only).
+    """
+    raw = os.environ.get(_MD_HAPTO_SKIP_ENV, "1").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+def md_warmup_active() -> bool:
+    """``True`` iff the 2-pass MD-weight anneal is enabled (default ON).
+
+    Reads ``DELFIN_FFFREE_GRIP_MD_WARMUP``.  ON means: run an extra L-BFGS
+    pass with the Phase 2 weights scaled by :data:`DEFAULT_MD_WARMUP_FRACTION`
+    (so the metal + donors find an early minimum without being pinned by
+    the M-D Gaussians), then re-run with full weights starting from the
+    pre-anneal coords; the better-scoring of the two is kept.  Default ON
+    when Phase 2 is enabled; the var is independent of the master
+    ``DELFIN_FFFREE_GRIP_UNFREEZE_MD`` flag.
+    """
+    raw = os.environ.get(_MD_WARMUP_ENV, "1").strip().lower()
+    if not raw:
+        return True
+    return raw in ("1", "true", "yes", "on")
+
+
+def detect_multi_metal(mol) -> bool:
+    """``True`` iff the molecule contains ≥ 2 transition-metal atoms.
+
+    Uses the covalent-radii table's TM block as the "metal" definition --
+    keeps the lookup self-contained (no polyhedra import).  Robust: returns
+    False on any RDKit / iteration failure (default-safe).
+    """
+    try:
+        syms = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+    except Exception:
+        return False
+    # Transition-metal set; matches the metals used in the polyhedron / build
+    # paths.  We deliberately do NOT count main-group "metals" (Sn, Pb, Bi)
+    # because their coordination chemistry uses Phase 2 reliably.
+    tm_set = {
+        "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+        "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+        "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+        "La", "Lu",
+    }
+    count = sum(1 for s in syms if s in tm_set)
+    return count >= 2
+
+
+def detect_hapto_present(
+    mol,
+    metal_idx: int,
+    donors: Sequence[int],
+    P_init: np.ndarray,
+    radius: float = HAPTO_RADIUS,
+    min_count: int = HAPTO_MIN_COUNT,
+) -> bool:
+    """``True`` iff at least one TRUE hapto-π cluster sits at the metal.
+
+    Hapto requires BOTH the geometric criterion (≥ ``min_count`` same-element
+    heavy donors within ``radius`` of the metal) AND ring connectivity --
+    the donors must form a chain of bonds with each other in the molecular
+    graph.  This avoids misclassifying σ-tris-donor complexes (tris-pyridine,
+    terpy, tris-amine, ...) as hapto.
+
+    Concretely, for each candidate cluster ``C`` we require: the subgraph
+    induced on ``C`` (using ``mol`` bonds) has at least ``min_count - 1``
+    edges, i.e. the donors are connected to each other (a Cp ring has 5 such
+    bonds; three pyridine N-donors have 0).
+
+    Used by the Phase 2 acceptance-gate fix to skip Phase 2 entirely on
+    genuine hapto SMILES (per subagent verdict 2026-06-06).
+
+    Robust: any exception -> ``False`` (default-safe; Phase 2 then runs).
+    """
+    try:
+        clusters = detect_hapto_donor_clusters(
+            mol, int(metal_idx), donors, P_init,
+            radius=float(radius), min_count=int(min_count),
+        )
+    except Exception:
+        return False
+    if not clusters:
+        return False
+    # Filter: require donor-donor bond connectivity.  A genuine η-cluster
+    # has the donors bonded into a ring (Cp: 5 C-C edges; allyl η³: 2 C-C
+    # edges); a tris-σ-donor complex has zero donor-donor edges.
+    for _elem, ring in clusters:
+        ring_set = set(int(a) for a in ring)
+        n_edges = 0
+        for a in ring_set:
+            try:
+                atom = mol.GetAtomWithIdx(int(a))
+                for nb in atom.GetNeighbors():
+                    if int(nb.GetIdx()) in ring_set:
+                        n_edges += 1
+            except Exception:
+                continue
+        # Each bond is double-counted (a->b and b->a).
+        n_edges //= 2
+        if n_edges >= max(1, int(min_count) - 1):
+            return True
+    return False
+
+
+def phase2_severity(R: np.ndarray, md_terms: Sequence) -> float:
+    """Return the summed Mahalanobis severity of the Phase 2 M+D terms.
+
+    Mirrors :func:`grip_polish.mogul_severity` but operates ONLY on the
+    Phase 2 sub-list (MDBondTerm / MDXAngleTerm / DMDAngleTerm /
+    HaptoCentroidTerm).  Robust to empty input; returns 0.0 when
+    ``md_terms`` is empty (so the gate degrades cleanly to Phase 1 only).
+
+    The function is pure: same R + same term list -> same value.
+    """
+    if not md_terms:
+        return 0.0
+    R_arr = np.asarray(R, dtype=np.float64)
+    if R_arr.ndim == 1:
+        if R_arr.size % 3 != 0:
+            return 0.0
+        R_arr = R_arr.reshape(-1, 3)
+    total = 0.0
+    for t in md_terms:
+        try:
+            val, _ = t.value_and_grad(R_arr)
+        except Exception:
+            continue
+        if math.isfinite(float(val)):
+            total += float(val)
+    return float(total)
+
+
+def compute_total_severity(
+    R: np.ndarray,
+    md_terms: Sequence,
+) -> float:
+    """Public alias for :func:`phase2_severity` (mission-brief name).
+
+    The brief mentions ``grip_md_terms.compute_total_severity()`` -- this is
+    the same numeric quantity exposed under a friendly name so external
+    callers (tests, ensembling) can refer to it without coupling to the
+    private helper name.
+    """
+    return phase2_severity(R, md_terms)
+
+
+def anneal_md_term_weights(md_terms: Sequence, scale: float) -> List:
+    """Return a new list of Phase 2 terms with their weights scaled.
+
+    Used by the 2-pass weight anneal in :func:`grip_polish.grip_polish`:
+    the first L-BFGS pass calls this with ``scale = DEFAULT_MD_WARMUP_FRACTION``
+    (0.1) so the M+D Gaussians act as a soft prior; the second pass uses the
+    full weights.  Original terms are not mutated (defensive copy).
+
+    Robustness:
+      * Non-finite / non-positive ``scale`` -> returns ``md_terms`` unchanged.
+      * Each term is shallow-copied via :func:`dataclasses.replace` when
+        possible; falls back to constructor when ``replace`` is unavailable.
+    """
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        return list(md_terms)
+    if not math.isfinite(s) or s <= 0.0:
+        return list(md_terms)
+    from dataclasses import replace as _dc_replace
+    out: List = []
+    for t in md_terms:
+        try:
+            new_w = float(t.weight) * s
+            out.append(_dc_replace(t, weight=new_w))
+        except Exception:
+            # Fall back to original term -- preserves correctness even
+            # though anneal is disabled for that term.
+            out.append(t)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -927,6 +1162,8 @@ __all__ = [
     "DEFAULT_MD_WEIGHT",
     "DEFAULT_MDX_WEIGHT",
     "DEFAULT_DMD_WEIGHT",
+    "DEFAULT_MD_ACCEPT_WEIGHT",
+    "DEFAULT_MD_WARMUP_FRACTION",
     "HAPTO_RADIUS",
     "HAPTO_MIN_COUNT",
     "MDBondTerm",
@@ -936,4 +1173,13 @@ __all__ = [
     "build_md_loss_terms",
     "detect_hapto_donor_clusters",
     "max_md_drift",
+    # Phase 2 acceptance-gate fix (2026-06-06)
+    "resolve_md_accept_weight",
+    "md_hapto_skip_active",
+    "md_warmup_active",
+    "detect_multi_metal",
+    "detect_hapto_present",
+    "phase2_severity",
+    "compute_total_severity",
+    "anneal_md_term_weights",
 ]
