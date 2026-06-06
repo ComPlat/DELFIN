@@ -76,3 +76,11 @@ censo.log
 iters/
 =======
 >>>>>>> worktree-agent-a346f443631c52e3a
+
+# Non-production directories — belong to agent_workspace/quality_framework/
+# (separation enforced 2026-06-06)
+/paper_data/
+/results/
+/staged_patches/
+/.last_acceptance_verdict.json
+*.last_acceptance_verdict.json
