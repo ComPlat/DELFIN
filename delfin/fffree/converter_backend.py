@@ -107,6 +107,80 @@ def _maybe_relax(syms, P):
     except Exception:
         return out_syms, P_curr
 
+# Mogul-DG Phase D (2026-06-06): env-gated refinement of rigid-fit P_init.
+# When DELFIN_FFFREE_MOGUL_DG_REPLACE_RIGID=1, we call the whole-complex
+# distance-geometry solver on each (syms, P) emerging from assemble_from_config.
+# Default OFF byte-identical: every flag unset = same XYZ bytes as pre-Phase-D.
+# Fail-open: any exception or solver failure returns the input untouched so
+# production stays safe.  Universality: the helper itself contains NO element
+# branches — every chemistry decision flows through mogul_bounds + mogul_severity.
+def _maybe_mogul_dg_refine(syms, P, mol=None, metal_idx=None, donors=None,
+                            geometry=None, smiles=None):
+    """Optionally refine ``(syms, P)`` via whole-complex DG (Phase D).
+
+    Returns ``(syms_new, P_new)``.  When the env flag is unset, or when the
+    refine fails for any reason, returns the input verbatim (fail-open).
+
+    The mol/metal_idx/donors arguments are best-effort: when omitted we try
+    to derive them from ``smiles`` via the standard preparation pipeline.
+    When neither ``mol`` nor ``smiles`` is available we cannot build a
+    bounds matrix → return input unchanged.
+    """
+    if not os.environ.get("DELFIN_FFFREE_MOGUL_DG_REPLACE_RIGID", "").strip():
+        return syms, P
+    try:
+        from delfin.fffree.mogul_dg import mogul_embed_from_assembled
+    except Exception:
+        return syms, P
+    # If mol was not supplied, try to reconstruct it from the SMILES so the
+    # bounds construction has graph context.  Best-effort: SMILES that
+    # produce a different atom count than ``syms`` are rejected (different
+    # ligand decomposition — refining would scramble indices).
+    if mol is None and smiles:
+        try:
+            from delfin.smiles_converter import _prepare_mol_for_embedding
+            _trial_mol = _prepare_mol_for_embedding(smiles, hapto_approx=False)
+            if (_trial_mol is not None
+                    and _trial_mol.GetNumAtoms() == len(syms)):
+                mol = _trial_mol
+        except Exception:
+            mol = None
+    if mol is None:
+        return syms, P
+    # Derive metal/donors if not supplied
+    if metal_idx is None:
+        for _i, _s in enumerate(syms):
+            if _bd._is_metal(_s):
+                metal_idx = int(_i)
+                break
+        if metal_idx is None:
+            return syms, P
+    if donors is None or not list(donors):
+        try:
+            donors = sorted(
+                int(nb.GetIdx())
+                for nb in mol.GetAtomWithIdx(int(metal_idx)).GetNeighbors()
+                if not _bd._is_metal(nb.GetSymbol())
+            )
+        except Exception:
+            donors = []
+        if not donors:
+            return syms, P
+    try:
+        res = mogul_embed_from_assembled(
+            syms, P, mol, int(metal_idx), list(donors), geometry=geometry,
+        )
+    except Exception:
+        res = None
+    if res is None:
+        return syms, P
+    new_syms, new_P, _info = res
+    if (new_P is None or new_P.shape != np.asarray(P).shape
+            or not np.all(np.isfinite(new_P))):
+        return syms, P
+    return list(new_syms), np.asarray(new_P, dtype=float)
+
+
 _GEOM_TO_POLYA = {
     "L-2 linear": "linear",                         # Phase G (2026-05-31): CN2 Cu(I)/Ag(I)/Au(I)
     "SP-3 trigonal planar": "trigonal_planar",     # iter-32c (User 2026-05-28 ADUMOD): CN3
@@ -877,6 +951,23 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
             continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
+        # Mogul-DG Phase D (2026-06-06): env-gated whole-complex DG refine.
+        # Default OFF byte-identical; activates only under
+        # DELFIN_FFFREE_MOGUL_DG_REPLACE_RIGID=1.  Fail-open: returns
+        # (syms, P) unchanged on any failure.  We let the helper
+        # reconstruct the parent mol from the SMILES; mismatched atom
+        # counts short-circuit safely.
+        _mm_parent = None
+        try:
+            for _lg in ligands:
+                if isinstance(_lg, dict):
+                    _mm_parent = _lg.get("__parent_mol__") or _mm_parent
+        except Exception:
+            _mm_parent = None
+        syms, P = _maybe_mogul_dg_refine(
+            syms, P, mol=_mm_parent, geometry=d.get("geometry"),
+            smiles=smiles,
+        )
         # Phase G7: propagate hapto status to self-gate (relaxes CShM threshold).
         _has_hapto = any(lg.get("is_hapto") for lg in ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
@@ -1006,6 +1097,15 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         syms, P = built
         syms, P = _maybe_relax(syms, P)
+        # Mogul-DG Phase D (2026-06-06): env-gated whole-complex DG refine.
+        # Default OFF byte-identical; activates only under
+        # DELFIN_FFFREE_MOGUL_DG_REPLACE_RIGID=1.  For the non-chelate
+        # heteroleptic path we let the helper reconstruct the parent mol
+        # from the original SMILES (best-effort; mismatched atom counts
+        # short-circuit safely).
+        syms, P = _maybe_mogul_dg_refine(
+            syms, P, mol=None, geometry=d.get("geometry"), smiles=smiles,
+        )
         # Phase G7: propagate hapto status to self-gate
         _has_hapto = any(lg.get("is_hapto") for lg in d.get("ligands", []))
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
