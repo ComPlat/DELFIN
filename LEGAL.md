@@ -9,6 +9,32 @@ CC0). Optional integration with the Cambridge Structural Database (CSD) is suppo
 for users who hold an academic or commercial CCDC license, but is **not required**
 for any runtime path.
 
+## Distribution policy (verbindlich)
+
+**We do NOT ship CCDC-derived data products with DELFIN, ever, regardless of how
+they were built or whether statistical aggregation could be legally defensible.**
+
+Rationale:
+* Conservative academic + open-source ethos
+* No grey-area shipping that could compromise the project's reputation
+* CCDC-derived libraries (`grip_lib_v1` ... `grip_lib_v5`) are built by us
+  internally under our institutional academic CSD license, used only for our
+  own validation experiments, and **never published or redistributed**
+* If/when CCDC grants explicit written permission, the policy may be
+  revisited — until then, **NO shipping**
+
+What we DO ship publicly:
+* DELFIN source code (academic open-source license, TBD)
+* COD-derived library `grip_lib_v6_cod.npz` (CC0 / Public Domain)
+* Build scripts that let adopters who hold their own CCDC license construct
+  v5-equivalent libraries from their CSD subscription
+
+This is a strict no-grey-area policy. Reviewers, adopters, and the community
+can trust that the public artefacts contain only:
+1. Our own source code
+2. CC0-licensed COD-derived data
+3. Methodology descriptions citing published references
+
 ## Data sources
 
 DELFIN can consume two parallel fragment libraries (`.npz` files):
