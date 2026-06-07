@@ -765,6 +765,7 @@ def _enumerate_rotamer_variants(
     P: np.ndarray,
     *,
     max_configs: int = 12,
+    syms: Optional[Sequence[str]] = None,
 ) -> List[Tuple[np.ndarray, str]]:
     """Enumerate single-bond rotamer variants of ``P``.
 
@@ -772,6 +773,11 @@ def _enumerate_rotamer_variants(
     which is gate-free at the helper level (the env flag is honoured by the
     converter caller, this module owns its own gate).  Returns a list of
     ``(P_variant, label)`` tuples with the first (identity) entry dropped.
+
+    ``syms`` is forwarded to the topology-preservation hard gate inside
+    :func:`enumerate_single_bond_rotamers` so rotations that break the
+    SMILES bond graph are skipped at the source (default OFF via env
+    flag; auto-ON under MOGUL_PRIMARY).
     """
     try:
         from .single_bond_rotamers import enumerate_single_bond_rotamers
@@ -783,7 +789,9 @@ def _enumerate_rotamer_variants(
     try:
         for vk, (Pv, rot_lab) in enumerate(
             enumerate_single_bond_rotamers(
-                mol_g, np.asarray(P, dtype=float), max_configs=max_configs + 1
+                mol_g, np.asarray(P, dtype=float),
+                max_configs=max_configs + 1,
+                syms=syms,
             )
         ):
             if vk == 0:
@@ -1045,10 +1053,53 @@ def enumerate_orbit_conformers(
         mol_g, P0, max_per_ring=max_ring_states,
         aromatic_atom_set=aromatic_atom_set,
     )
-    # 3) Rotamer variants.
+    # 3) Rotamer variants -- the rotamer enumerator now applies the
+    #    rotamer-topology hard gate at the source when the env flag is on
+    #    (default OFF -> byte-identical with HEAD; auto-ON under
+    #    DELFIN_FFFREE_MOGUL_PRIMARY=1).  Pucker variants are gated
+    #    separately below so a single API path covers ALL rotation-derived
+    #    conformers.
     rotamer_variants = _enumerate_rotamer_variants(
-        mol_g, P0, max_configs=max_rotamer_states,
+        mol_g, P0, max_configs=max_rotamer_states, syms=syms_list,
     )
+
+    # 3b) Topology hard-gate on ring-pucker variants.  When the gate is
+    #     active, derive (expected_bonds, expected_cn) ONCE on the source
+    #     mol and filter every pucker before it reaches the combined list.
+    #     This makes the conformer pipeline universal -- ANY rotation that
+    #     breaks topology is rejected, regardless of which enumerator
+    #     produced it.  Default OFF -> byte-identical with HEAD.
+    try:
+        from .rotamer_topology_gate import (
+            _env_on as _topology_gate_on,
+            extract_expected_bonds as _topology_expected_bonds,
+            expected_metal_cn as _topology_expected_cn,
+            rotation_preserves_topology as _topology_preserves,
+        )
+        _gate_on = bool(_topology_gate_on())
+    except Exception:
+        _gate_on = False
+        _topology_preserves = None
+        _topology_expected_bonds = None
+        _topology_expected_cn = None
+
+    if _gate_on and _topology_preserves is not None and pucker_variants:
+        try:
+            _exp_b = _topology_expected_bonds(mol_g)
+            _exp_cn = _topology_expected_cn(mol_g, syms_list)
+        except Exception:
+            _exp_b, _exp_cn = None, None
+        kept_puckers: List[Tuple[np.ndarray, str]] = []
+        for Pv, lab in pucker_variants:
+            try:
+                if _topology_preserves(
+                    syms_list, Pv, mol=mol_g,
+                    expected_bonds=_exp_b, expected_cn=_exp_cn,
+                ):
+                    kept_puckers.append((Pv, lab))
+            except Exception:
+                kept_puckers.append((Pv, lab))
+        pucker_variants = kept_puckers
 
     # 4) Combine (base + puckers + rotamers).  Cap at max_total candidates.
     combined: List[Tuple[List[str], np.ndarray, str]] = list(base_variant)

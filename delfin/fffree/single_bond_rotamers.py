@@ -479,6 +479,7 @@ def enumerate_single_bond_rotamers(
     n_states: Optional[int] = None,
     step_degrees: Optional[float] = None,
     atomic_numbers: Optional[Sequence] = None,
+    syms: Optional[Sequence[str]] = None,
 ) -> Iterator[Tuple[np.ndarray, str]]:
     """Yield ``(coords_variant, label)`` for each enumerated rotamer config.
 
@@ -531,7 +532,59 @@ def enumerate_single_bond_rotamers(
         yield P0.copy(), "rot_identity"
         return
 
+    # Optional topology-gate (universal hard-gate against rotations that
+    # break SMILES topology / form spurious bonds / overfill the M-shell).
+    # The gate is env-gated (default OFF -> byte-identical with HEAD; auto
+    # ON under DELFIN_FFFREE_MOGUL_PRIMARY=1).
+    try:
+        from .rotamer_topology_gate import (
+            _env_on as _topology_gate_on,
+            extract_expected_bonds as _topology_expected_bonds,
+            expected_metal_cn as _topology_expected_cn,
+            rotation_preserves_topology as _topology_preserves,
+        )
+    except Exception:
+        _topology_gate_on = lambda: False  # noqa: E731
+        _topology_preserves = None
+        _topology_expected_bonds = None
+        _topology_expected_cn = None
+
+    _gate_active = bool(_topology_gate_on()) and _topology_preserves is not None
+    if _gate_active:
+        # Pre-derive once per molecule -- both lookups are O(N).
+        try:
+            _exp_bonds = (
+                _topology_expected_bonds(mol)
+                if _topology_expected_bonds is not None else None
+            )
+        except Exception:
+            _exp_bonds = None
+        # Element symbols: prefer caller-supplied; else derive from mol.
+        if syms is not None:
+            _syms_l = [str(s) for s in syms]
+        else:
+            try:
+                _syms_l = [
+                    str(mol.GetAtomWithIdx(i).GetSymbol())
+                    for i in range(mol.GetNumAtoms())
+                ]
+            except Exception:
+                _syms_l = None
+        try:
+            _exp_cn = (
+                _topology_expected_cn(mol, _syms_l)
+                if (_topology_expected_cn is not None and _syms_l is not None)
+                else None
+            )
+        except Exception:
+            _exp_cn = None
+    else:
+        _exp_bonds = None
+        _exp_cn = None
+        _syms_l = None
+
     def _stream():
+        identity_yielded = False
         for combo in enumerate_rotamer_configs(
             len(rotors),
             n_states=n_states,
@@ -548,7 +601,31 @@ def enumerate_single_bond_rotamers(
                     lab_parts.append(f"{int(round(offset))}")
             label = "rot_" + "_".join(lab_parts)
             Pv = apply_rotamer_config(mol, P0, rotors, combo)
+            # Topology hard-gate: skip rotations that break the SMILES bond
+            # graph, form spurious bonds, overfill the M-shell, or create
+            # H-H / X-H collisions.  The IDENTITY (all-zero offset) is
+            # always emitted -- it is the input geometry, must not be
+            # filtered, and downstream code relies on it being first.
+            is_identity = all(abs(o) < 1e-9 for o in combo)
+            if _gate_active and not is_identity and _syms_l is not None:
+                try:
+                    keep = _topology_preserves(
+                        _syms_l, Pv, mol=mol,
+                        expected_bonds=_exp_bonds,
+                        expected_cn=_exp_cn,
+                    )
+                except Exception:
+                    keep = True
+                if not keep:
+                    continue
+            if is_identity:
+                identity_yielded = True
             yield Pv, label
+        # Defensive: if the identity was somehow filtered (max_configs=0
+        # path), still emit the input so downstream callers always see at
+        # least one variant.
+        if not identity_yielded:
+            yield P0.copy(), "rot_identity"
 
     # Phase 2 hook: when the symmetry-priority env flag is on AND we have
     # atomic-number information, materialise the stream and re-rank by
