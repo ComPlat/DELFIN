@@ -1011,6 +1011,31 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
         _syms, _P, _k, _gt = _f1_holdover
         results.append((_xyz(_syms, _P), f"{_gt}-chelate-{_k+1}-F1lastresort"))
         _f1_backend_log(smiles, "f1_chelate_last_resort_emit", geom_key)
+    # Task #93 (2026-06-07): Polyhedron-CHOICE table-driven enumeration for
+    # ambivalent (metal, CN) combinations on the CHELATE path.  Same contract
+    # as the non-chelate wiring in ``_fffree_isomers`` — env-gated default OFF
+    # byte-identical, never bails the primary results on failure.
+    try:
+        from delfin.fffree.polyhedron_choice import (
+            polyhedron_choice_active as _pc_active,
+            additional_polyhedra as _pc_extra,
+        )
+        if _pc_active():
+            _metal_sym = d.get("metal", "")
+            _cn_val = d.get("cn", 0)
+            _primary = d.get("geometry", "")
+            for _extra_geom in _pc_extra(_metal_sym, int(_cn_val) if _cn_val else 0, _primary):
+                _extra_key = _GEOM_TO_POLYA.get(_extra_geom)
+                if _extra_key is None or _extra_key not in PIC._GROUPS:
+                    continue
+                _extra_tag = _extra_geom.split()[0]
+                results += _enumerate_chelate_geometry(
+                    d, _extra_key, _extra_geom, ligands, max_isomers,
+                    smiles=smiles,
+                    label_prefix=f"poly{_extra_tag}-",
+                )
+    except Exception:
+        pass
     # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.
@@ -1190,6 +1215,34 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         elif d["geometry"] == "T-3 T-shape":
             results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
+    # Task #93 (2026-06-07): Polyhedron-CHOICE table-driven enumeration for
+    # ambivalent (metal, CN) combinations (CETUCT-class bug — Co(II) CN4 emits
+    # ONLY T-4; SP-4 never enumerated).  Replaces hard-coded per-flag dual
+    # wiring with a per-(metal, CN) lookup table.  Env-gated default OFF
+    # byte-identical via ``polyhedron_choice_active()``.
+    try:
+        from delfin.fffree.polyhedron_choice import (
+            polyhedron_choice_active as _pc_active,
+            additional_polyhedra as _pc_extra,
+        )
+        if _pc_active():
+            _metal_sym = d.get("metal", "")
+            _cn = d.get("cn", 0)
+            _primary = d.get("geometry", "")
+            for _extra_geom in _pc_extra(_metal_sym, int(_cn) if _cn else 0, _primary):
+                _extra_key = _GEOM_TO_POLYA.get(_extra_geom)
+                if _extra_key is None or _extra_key not in PIC._GROUPS:
+                    continue
+                _extra_tag = _extra_geom.split()[0]
+                results += _enumerate_geometry(
+                    d, _extra_key, _extra_geom,
+                    lig_ref, lab_elem, spec, max_isomers,
+                    label_prefix=f"poly{_extra_tag}-",
+                )
+    except Exception:
+        # Polyhedron-CHOICE is a coverage extension; any failure must not bail
+        # the primary results (production-safety contract).
+        pass
     # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.
@@ -1203,10 +1256,16 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     return results or None
 
 
-def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
+def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers,
+                        label_prefix: str = ""):
     """Build all clean isomers of `d`'s ligand set on a SPECIFIC polyhedron (geom_name).
     Best-effort: skips isomers that fail to build / fail the self-gate, returns [] on any
-    enumeration error.  Used to add SPY-5 alongside TBP-5 for CN5 (polytopal completeness)."""
+    enumeration error.  Used to add SPY-5 alongside TBP-5 for CN5 (polytopal completeness).
+
+    ``label_prefix`` (Task #93, 2026-06-07): optional prefix prepended to every emitted
+    label (e.g. ``"polyT-4-"``).  Used by the polyhedron-CHOICE wiring so SP-4 vs T-4
+    variants are visually distinct in the output XYZ archive.
+    """
     out: List[Tuple[str, str]] = []
     try:
         colorings = PIC.enumerate_isomers(geom_key, spec)
@@ -1228,6 +1287,85 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
+        if label_prefix:
+            label = f"{label_prefix}{label}"
+        out.append((_xyz(syms, P), label))
+    return out
+
+
+def _enumerate_chelate_geometry(d, geom_key, geom_name, ligands, max_isomers,
+                                smiles: str = "", label_prefix: str = ""):
+    """Chelate-path analog of :func:`_enumerate_geometry` (Task #93, 2026-06-07).
+
+    Builds all clean chelate isomers of ``d``'s ligand set on a SPECIFIC polyhedron
+    ``geom_name``.  Mirrors the main ``_fffree_chelate_isomers`` loop (Pólya configs
+    → ``AC.assemble_from_config`` → ``_maybe_relax`` → optional Mogul-DG refine →
+    self-gate → optional polish).  Returns ``[]`` on any enumeration error.
+
+    Used by the polyhedron-CHOICE wiring to additively emit e.g. SP-4 chelate
+    isomers alongside the legacy T-4 default (and vice-versa).
+    """
+    out: List[Tuple[str, str]] = []
+    # specs / configs are identical to the main chelate loop -- the only thing
+    # that changes is the polyhedron the configs are realised on.
+    specs = []
+    try:
+        for lg in ligands:
+            specs.append({
+                "type": Chem.MolToSmiles(lg["mol"]),
+                "denticity": lg["denticity"],
+                "asym": len(set(lg.get("donor_elems", []))) > 1,
+            })
+    except Exception:
+        return out
+    try:
+        configs = PIC.enumerate_chelate_configs(geom_key, specs)
+    except Exception:
+        return out
+    if not configs:
+        return out
+    geom_tag = geom_name.split()[0]
+    _mm_parent = None
+    try:
+        for _lg in ligands:
+            if isinstance(_lg, dict):
+                _mm_parent = _lg.get("__parent_mol__") or _mm_parent
+    except Exception:
+        _mm_parent = None
+    _has_hapto = any(lg.get("is_hapto") for lg in ligands)
+    _polish_on = (os.environ.get("DELFIN_FFFREE_RING_SCALE_FORCE", "0") == "1")
+    _soft_poly_on = (
+        os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_SOFT_POLY", "0") == "1"
+    )
+    for k, config in enumerate(configs[:max_isomers]):
+        try:
+            built = AC.assemble_from_config(d["metal"], geom_name, config, ligands)
+        except Exception:
+            continue
+        if built is None:
+            continue
+        syms, P, donors = built
+        syms, P = _maybe_relax(syms, P)
+        syms, P = _maybe_mogul_dg_refine(
+            syms, P, mol=_mm_parent, geometry=geom_name, smiles=smiles,
+        )
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name,
+                               donors=donors, has_hapto=_has_hapto):
+            continue
+        if _polish_on:
+            syms, P = _g13_ring_scale_polish(
+                syms, P, cn=d.get("cn"), geom=geom_name,
+                donors=donors, has_hapto=_has_hapto,
+            )
+        if _soft_poly_on:
+            syms, P = _g16_soft_polyhedron_polish(
+                syms, P, cn=d.get("cn"), geom=geom_name,
+                donors=donors, has_hapto=_has_hapto,
+            )
+        label = f"{geom_tag}-chelate-{k+1}"
+        if label_prefix:
+            label = f"{label_prefix}{label}"
         out.append((_xyz(syms, P), label))
     return out
 
