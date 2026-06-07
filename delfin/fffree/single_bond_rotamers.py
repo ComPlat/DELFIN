@@ -310,16 +310,45 @@ def enumerate_rotamer_configs(
 # ------------------------------------------------------------------
 
 
-def _atoms_on_side(mol, src: int, dst: int) -> List[int]:
+def _atoms_on_side(
+    mol,
+    src: int,
+    dst: int,
+    *,
+    frozen_idxs: Optional[Sequence[int]] = None,
+) -> List[int]:
     """BFS the molecular graph starting at ``dst`` while forbidding the
     ``src``-``dst`` bond.  Returns the list of atom indices reachable from
     ``dst`` (the rotating subtree).  If the bond is in a ring the BFS
     reaches ``src`` too; we exclude ``src`` from the result and the caller
     refuses to rotate ring bonds anyway.
+
+    ``frozen_idxs`` (Bug #2 fix, 2026-06-07): atom indices that act as
+    BFS barriers — the metal atom (and any other frozen sites) is added
+    to ``seen`` before the BFS starts so the rotating subtree can NEVER
+    include the metal.  This catches the metallacycle case: when a
+    chelate ring is closed through the metal, RDKit's dative bonds may
+    not be recognised as ring-forming, ``find_rotatable_bonds`` returns
+    the bond as rotatable, and the BFS from ``dst`` reaches the metal
+    through the other donor.  Without the barrier the metal gets
+    rotated with the subtree and ends up off-origin in the conformer
+    frame.  With the barrier the subtree truncates at the metal, the
+    BFS still reaches a valid (but partial) subtree on the rotor side;
+    the caller's topology gate then sees an inconsistent geometry and
+    rejects the rotamer entirely — both outcomes preserve the metal-at-
+    origin invariant.
     """
     n = mol.GetNumAtoms()
     seen = [False] * n
     seen[src] = True
+    if frozen_idxs is not None:
+        for fi in frozen_idxs:
+            try:
+                fii = int(fi)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= fii < n:
+                seen[fii] = True
     stack = [int(dst)]
     seen[int(dst)] = True
     out: List[int] = []
@@ -354,6 +383,20 @@ def _rotation_matrix(axis: np.ndarray, theta_rad: float) -> np.ndarray:
     ], dtype=float)
 
 
+def _collect_metal_indices(mol) -> List[int]:
+    """Return the list of atom indices that are metals (universal —
+    delegates to :func:`_is_metal_atom` for the atomic-number check).
+    """
+    out: List[int] = []
+    try:
+        for a in mol.GetAtoms():
+            if _is_metal_atom(a):
+                out.append(int(a.GetIdx()))
+    except Exception:
+        pass
+    return out
+
+
 def apply_rotamer_config(
     mol,
     coords: np.ndarray,
@@ -364,20 +407,30 @@ def apply_rotamer_config(
     ``offsets_deg[k]`` around the axis of ``rotors[k] = (b1, b2)``.
 
     Subtree = atoms reachable from ``b2`` via BFS that does NOT traverse
-    the ``(b1, b2)`` bond.  Each rotation is applied IN ORDER over the
-    rotors list; the result of one rotation is the input of the next.
-    Atoms not in any subtree are left untouched.
+    the ``(b1, b2)`` bond AND DOES NOT TRAVERSE THE METAL (Bug #2 fix,
+    2026-06-07).  Each rotation is applied IN ORDER over the rotors list;
+    the result of one rotation is the input of the next.  Atoms not in
+    any subtree are left untouched.
 
-    Robust to ring bonds: if the rotor accidentally points at a ring bond
-    (caller should have filtered) the BFS returns the whole ring and the
-    rotation distorts the ring -- the caller is expected to honor
-    :func:`find_rotatable_bonds`.
+    Metal-as-BFS-barrier:
+      RDKit dative bonds (``[Fe-]`` style) sometimes are not perceived as
+      ring-forming, so a chelate-ring single bond can pass the
+      :func:`find_rotatable_bonds` filter (no `IsInRing()`).  Without a
+      metal barrier the BFS from ``b2`` would walk the chelate ring and
+      reach the metal, then keep walking through the other donor of the
+      chelate back to the rotor side — the metal would be rotated WITH
+      the subtree and land off-origin.  Adding the metal indices to the
+      BFS frozen set truncates the subtree at the metal and the rotation
+      acts only on the genuine rotor side.  The downstream
+      ``rotamer_topology_gate`` then rejects any rotation that left the
+      structure inconsistent.
 
     Deterministic: identical inputs -> identical outputs.
     """
     P = np.asarray(coords, dtype=float).copy()
     if not rotors or not list(offsets_deg):
         return P
+    metal_idxs = _collect_metal_indices(mol)
     n_rot = min(len(rotors), len(list(offsets_deg)))
     offs = list(offsets_deg)
     for k in range(n_rot):
@@ -388,9 +441,18 @@ def apply_rotamer_config(
         axis = P[b2] - P[b1]
         if float(np.linalg.norm(axis)) < 1e-6:
             continue
-        sub = _atoms_on_side(mol, b1, b2)
+        sub = _atoms_on_side(mol, b1, b2, frozen_idxs=metal_idxs)
         if not sub:
             continue
+        # Defensive: even if a metal somehow ended up in the subset
+        # (e.g. the rotor itself touches the metal — should not happen
+        # because find_rotatable_bonds filters metal-incident bonds, but
+        # we guard against future regressions), drop it.
+        if metal_idxs:
+            metal_set = set(int(mi) for mi in metal_idxs)
+            sub = [int(ai) for ai in sub if int(ai) not in metal_set]
+            if not sub:
+                continue
         R = _rotation_matrix(axis, np.radians(offset))
         pivot = P[b1].copy()
         for ai in sub:
