@@ -526,6 +526,287 @@ def _vdw_floor_value_and_grad(
     return float(total), grad
 
 
+# ---------------------------------------------------------------------------
+# Universal ligand-internal angle floor (2026-06-07) — VSEPR ideal pull.
+#
+# Auto-Diagnostic finding: angle_compress + angle_stretch failure classes
+# show ligand-internal 3-atom angles (i—j—k, j NOT metal) drifting far from
+# the VSEPR ideal of the central atom j.  The existing Mahalanobis
+# bond/angle terms in :mod:`grip_loss_terms` only fire for atoms with a
+# fragment in the Mogul library — atoms with no Mogul coverage (rare
+# substructures, novel ligands) keep arbitrary angles that the L-BFGS pass
+# cannot heal.
+#
+# This block adds a UNIVERSAL angle penalty driven by graph-derived
+# hybridisation (RDKit ``GetHybridization`` + ``GetIsAromatic``):
+#
+#     SP        -> 180°
+#     SP2       -> 120°
+#     SP3       -> 109.5°
+#     aromatic  -> 120°
+#     other     -> skip (no penalty)
+#
+# For every 3-atom path i—j—k where j is NOT the metal and BOTH bonds
+# (i, j) and (j, k) exist in the molecular graph, if
+# ``|theta_actual - theta_ideal| > tol_deg`` we add
+#
+#     L     += w * (theta_deg - theta_ideal_deg)^2
+#     grad  += w * 2 * (theta_deg - theta_ideal_deg) * (180/pi) * dtheta/dp
+#
+# using the standard analytic angle gradient (cos θ = a·b / (|a||b|)).
+#
+# Default-OFF (env unset) -> byte-identical with HEAD; opt in via
+# ``DELFIN_FFFREE_LIGAND_ANGLE_FLOOR=1``.  Weight + tolerance also
+# env-tunable.  Universal: NO SMILES patterns, NO per-class branches; the
+# only chemistry input is RDKit's graph hybridisation.
+# ---------------------------------------------------------------------------
+_LIGAND_ANGLE_FLOOR_ENV: str = "DELFIN_FFFREE_LIGAND_ANGLE_FLOOR"
+_LIGAND_ANGLE_FLOOR_WEIGHT_ENV: str = "DELFIN_FFFREE_LIGAND_ANGLE_FLOOR_WEIGHT"
+_LIGAND_ANGLE_FLOOR_TOL_ENV: str = "DELFIN_FFFREE_LIGAND_ANGLE_FLOOR_TOL"
+DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT: float = 3.0
+DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG: float = 25.0
+_LIGAND_ANGLE_FLOOR_EPS: float = 1e-12
+
+# Ideal VSEPR angles per hybridisation (degrees).  Universal — driven by
+# graph+electron-count via RDKit hybridisation, no SMILES patterns.
+_LIGAND_ANGLE_IDEAL_DEG: Dict[str, float] = {
+    "SP": 180.0,
+    "SP2": 120.0,
+    "SP3": 109.5,
+    "AROMATIC": 120.0,
+}
+
+
+def _ligand_angle_floor_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_LIGAND_ANGLE_FLOOR`` is on (default OFF).
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other value
+    (including unset / empty) keeps the term OFF, preserving byte-identity
+    with HEAD.
+    """
+    raw = os.environ.get(_LIGAND_ANGLE_FLOOR_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_ligand_angle_floor_weight() -> float:
+    """Effective weight for the universal angle-floor penalty.
+
+    env > :data:`DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT` (3.0).  Non-finite /
+    non-numeric values fall through to the default with a single warning
+    so the polish never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_LIGAND_ANGLE_FLOOR_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _LIGAND_ANGLE_FLOOR_WEIGHT_ENV, raw, DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _LIGAND_ANGLE_FLOOR_WEIGHT_ENV, raw, DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT,
+            )
+    return DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT
+
+
+def _resolve_ligand_angle_floor_tol() -> float:
+    """Effective deviation tolerance (degrees) for the angle-floor penalty.
+
+    env > :data:`DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG` (25.0).  Values are
+    clamped to ``(0, 90]`` (a tolerance >= 90° would suppress every angle).
+    """
+    raw = os.environ.get(_LIGAND_ANGLE_FLOOR_TOL_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and 0.0 < v <= 90.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r out of (0, 90] deg; using default %.3f",
+                _LIGAND_ANGLE_FLOOR_TOL_ENV, raw, DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _LIGAND_ANGLE_FLOOR_TOL_ENV, raw, DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG,
+            )
+    return DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG
+
+
+def _atom_ideal_angle_deg(atom) -> Optional[float]:
+    """VSEPR ideal angle (deg) for the central atom or ``None`` if unknown.
+
+    Driven by RDKit hybridisation + aromatic flag.  Universal: no
+    per-element fallback, no SMILES inspection.  Returns ``None`` for any
+    hybridisation not in the table (SP3D, SP3D2, S, OTHER, UNSPECIFIED) so
+    the caller skips those triples cleanly.
+    """
+    try:
+        if bool(atom.GetIsAromatic()):
+            return _LIGAND_ANGLE_IDEAL_DEG["AROMATIC"]
+    except Exception:
+        pass
+    try:
+        name = str(atom.GetHybridization().name).upper()
+    except Exception:
+        return None
+    return _LIGAND_ANGLE_IDEAL_DEG.get(name)
+
+
+def _collect_ligand_angle_triples(
+    mol,
+    metal_idx: int,
+    n_atoms: int,
+) -> List[Tuple[int, int, int, float]]:
+    """Enumerate every (i, j, k, theta_ideal_deg) where j is NOT the metal.
+
+    The triple list is deterministic: sorted by (j, i, k) with i < k.  For
+    each non-metal atom j with a recognised hybridisation we walk every
+    ordered pair of its bonded neighbours (i, k) and append the triple
+    once.  Atoms with no recognised hybridisation (no entry in
+    :data:`_LIGAND_ANGLE_IDEAL_DEG`) are skipped silently — universal
+    coverage is the goal but byte-identity OFF must hold.
+    """
+    out: List[Tuple[int, int, int, float]] = []
+    if mol is None or n_atoms < 3:
+        return out
+    try:
+        atoms = list(mol.GetAtoms())
+    except Exception:
+        return out
+    metal = int(metal_idx)
+    for atom_j in atoms:
+        try:
+            j = int(atom_j.GetIdx())
+        except Exception:
+            continue
+        if j == metal:
+            continue
+        if not (0 <= j < n_atoms):
+            continue
+        theta_ideal = _atom_ideal_angle_deg(atom_j)
+        if theta_ideal is None:
+            continue
+        # Collect heavy + H neighbours EXCLUDING the metal.  The angle floor
+        # is universal across H, heavy, donor and non-donor neighbours —
+        # the only excluded centre-atom is the metal itself.
+        try:
+            nbrs = sorted(
+                int(nb.GetIdx())
+                for nb in atom_j.GetNeighbors()
+                if int(nb.GetIdx()) != metal
+                and 0 <= int(nb.GetIdx()) < n_atoms
+            )
+        except Exception:
+            continue
+        for ai in range(len(nbrs)):
+            for bk in range(ai + 1, len(nbrs)):
+                i = nbrs[ai]
+                k = nbrs[bk]
+                if i == j or k == j or i == k:
+                    continue
+                out.append((i, j, k, float(theta_ideal)))
+    return out
+
+
+def _ligand_angle_floor_value_and_grad(
+    R: np.ndarray,
+    *,
+    triples: Sequence[Tuple[int, int, int, float]],
+    weight: float,
+    tol_deg: float,
+) -> Tuple[float, np.ndarray]:
+    """Universal angle-floor penalty + analytic gradient.
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.
+    triples : sequence of ``(i, j, k, theta_ideal_deg)``
+        From :func:`_collect_ligand_angle_triples`.  ``j`` is the central
+        atom (NOT the metal); ``theta_ideal_deg`` is VSEPR-derived.
+    weight : float
+        Quadratic penalty multiplier.  Loss = ``w * (theta - theta_ideal)^2``
+        in degrees-squared (matches CCDC convention used elsewhere in the
+        operator).
+    tol_deg : float
+        No penalty when ``|theta_actual - theta_ideal| <= tol_deg``.
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  Both zero when no triple violates the
+        tolerance, so the call is a no-op for well-behaved geometries.
+
+    Notes
+    -----
+    Gradient follows the standard angle formula (radians intermediate,
+    deg-convention loss; the ``180/pi`` conversion is folded into the
+    chain rule):
+
+        cos θ = a·b / (|a||b|),  a = p_i - p_j,  b = p_k - p_j
+        ∂θ/∂p_i = (cos θ · â − b̂) / (|a| sin θ)
+        ∂θ/∂p_k = (cos θ · b̂ − â) / (|b| sin θ)
+        ∂θ/∂p_j = -(∂θ/∂p_i + ∂θ/∂p_k)
+
+    L = w * (θ_deg − θ_ideal_deg)^2  with θ_deg = θ_rad * (180/π)
+    dL/dθ_rad = 2 w (θ_deg − θ_ideal_deg) * (180/π)
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if not triples or weight <= 0.0 or tol_deg < 0.0 or n < 3:
+        return 0.0, grad
+    deg_per_rad = 180.0 / np.pi
+    total = 0.0
+    w = float(weight)
+    tol = float(tol_deg)
+    for (i, j, k, theta_ideal_deg) in triples:
+        ii = int(i); jj = int(j); kk = int(k)
+        if (ii == jj or jj == kk or ii == kk
+                or min(ii, jj, kk) < 0 or max(ii, jj, kk) >= n):
+            continue
+        a = R[ii] - R[jj]
+        b = R[kk] - R[jj]
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < _LIGAND_ANGLE_FLOOR_EPS or nb < _LIGAND_ANGLE_FLOOR_EPS:
+            continue
+        cos_theta = float(np.dot(a, b) / (na * nb))
+        # Clamp into open interval so acos + sin θ stay well-defined.
+        cos_theta = max(-1.0 + 1e-12, min(1.0 - 1e-12, cos_theta))
+        theta_rad = float(np.arccos(cos_theta))
+        sin_theta = float(np.sin(theta_rad))
+        if sin_theta < 1e-9:
+            # Linear / degenerate triple — gradient ill-defined; skip.
+            # (Penalty would diverge as 1/sin θ; the L-BFGS path tolerates
+            # a zero contribution here and lets clash / Mahalanobis terms
+            # push the geometry out of the degeneracy.)
+            continue
+        theta_deg = theta_rad * deg_per_rad
+        dev_deg = theta_deg - float(theta_ideal_deg)
+        if abs(dev_deg) <= tol:
+            continue
+        # Quadratic penalty in degrees.
+        total += w * dev_deg * dev_deg
+        # dL/dθ_rad = 2 w dev_deg * deg_per_rad
+        dloss_dtheta_rad = 2.0 * w * dev_deg * deg_per_rad
+        a_hat = a / na
+        b_hat = b / nb
+        dtheta_di = (cos_theta * a_hat - b_hat) / (na * sin_theta)
+        dtheta_dk = (cos_theta * b_hat - a_hat) / (nb * sin_theta)
+        dtheta_dj = -(dtheta_di + dtheta_dk)
+        grad[ii] += dloss_dtheta_rad * dtheta_di
+        grad[jj] += dloss_dtheta_rad * dtheta_dj
+        grad[kk] += dloss_dtheta_rad * dtheta_dk
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -574,6 +855,15 @@ __all__ = [
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
     "_heavy_atom_indices",
+    # Universal ligand-internal angle floor (2026-06-07, env-gated default OFF).
+    "DEFAULT_LIGAND_ANGLE_FLOOR_WEIGHT",
+    "DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG",
+    "_ligand_angle_floor_active",
+    "_resolve_ligand_angle_floor_weight",
+    "_resolve_ligand_angle_floor_tol",
+    "_atom_ideal_angle_deg",
+    "_collect_ligand_angle_triples",
+    "_ligand_angle_floor_value_and_grad",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -2103,6 +2393,39 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3c. Universal ligand-internal angle floor (2026-06-07).
+    #
+    # Env-gated VSEPR-ideal pull on every 3-atom angle i—j—k where j is
+    # NOT the metal.  Default OFF -> byte-identical with HEAD.  Triples
+    # are enumerated once from the molecular graph + RDKit hybridisation
+    # and stored in the closure so the inner loss_and_grad call pays a
+    # single bool branch when the term is OFF.  Universal across H, heavy,
+    # donor and non-donor atoms — addresses angle_compress + angle_stretch
+    # bug classes on atoms with no Mogul-library coverage.
+    # ------------------------------------------------------------------
+    _ligand_angle_floor_on = _ligand_angle_floor_active()
+    _ligand_angle_floor_weight: float = 0.0
+    _ligand_angle_floor_tol: float = DEFAULT_LIGAND_ANGLE_FLOOR_TOL_DEG
+    _ligand_angle_floor_triples: List[Tuple[int, int, int, float]] = []
+    if _ligand_angle_floor_on:
+        try:
+            _ligand_angle_floor_weight = _resolve_ligand_angle_floor_weight()
+            _ligand_angle_floor_tol = _resolve_ligand_angle_floor_tol()
+            _ligand_angle_floor_triples = _collect_ligand_angle_triples(
+                mol, int(metal), int(n_atoms),
+            )
+            if (not _ligand_angle_floor_triples
+                    or _ligand_angle_floor_weight <= 0.0):
+                # Nothing to do -- demote to OFF so the inner call is a no-op.
+                _ligand_angle_floor_on = False
+        except Exception as _angle_floor_exc:
+            _LOG.warning(
+                "grip_polish: ligand angle-floor setup failed (%r); disabling term",
+                _angle_floor_exc,
+            )
+            _ligand_angle_floor_on = False
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2196,6 +2519,22 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Universal ligand-internal angle floor (2026-06-07).  Default-OFF
+        # byte-identical: when ``DELFIN_FFFREE_LIGAND_ANGLE_FLOOR`` is unset
+        # ``_ligand_angle_floor_on`` is False and the inner call is skipped.
+        # Composes additively on top of the Mahalanobis fragment terms +
+        # clash + vdW-floor -- no double-counting (Mahalanobis fragments
+        # have their own learned σ, this term only fires outside the
+        # ``tol_deg`` band around the VSEPR ideal).
+        if _ligand_angle_floor_on:
+            L_ang, G_ang = _ligand_angle_floor_value_and_grad(
+                R,
+                triples=_ligand_angle_floor_triples,
+                weight=_ligand_angle_floor_weight,
+                tol_deg=_ligand_angle_floor_tol,
+            )
+            L += float(L_ang)
+            G = G + G_ang
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
