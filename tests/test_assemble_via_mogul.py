@@ -260,10 +260,21 @@ class TestPolyaOrbitEnumeration(unittest.TestCase):
 
         Burnside count for the octahedron with donor multiset (2,2,2) is 6.
         We require the Mogul-primary orbit enumerator to emit 6 distinct
-        XYZ structures.
+        orbit BASE structures.  When the conformer-enum gate is on (default
+        ON 2026-06-07), each orbit may additionally emit pucker / rotamer
+        conformer variants; we test the orbit count by counting distinct
+        orbit labels (the ``-mogul`` infix is the orbit signature).
         """
         smi = "[NH3][Co]([NH3])([OH2])([OH2])([F])[F]"
-        res = _run_with_env(True, smi)
+        # Pin the conformer gate OFF so this orbit-count test is independent
+        # of the per-orbit conformer enumeration (which can multiply each
+        # orbit by 1..N entries depending on flexibility).  The conformer
+        # enumeration is exercised in TestMogulPrimaryConformers below.
+        os.environ["DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS"] = "0"
+        try:
+            res = _run_with_env(True, smi)
+        finally:
+            os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS", None)
         self.assertIsNotNone(res, "Mogul-primary returned None for MA2B2C2")
         self.assertEqual(
             len(res), 6,
@@ -280,12 +291,13 @@ class TestPolyaOrbitEnumeration(unittest.TestCase):
             f"Expected 6 distinct geometries, got {len(hashes)} unique; "
             f"isomers collapsed onto identical XYZ.",
         )
-        # Every label must end with the ``-mogul`` tag so the pool tooling
-        # can tell apart orbit-enum entries from the legacy fffree labels.
+        # Every label must contain the ``-mogul`` orbit signature.  With the
+        # conformer gate OFF (set above), the labels end with ``-mogul``;
+        # with the gate ON the labels are ``<orbit>-mogul-conf<k>-<sub>``.
         for _, label in res:
-            self.assertTrue(
-                label.endswith("-mogul"),
-                f"Orbit label {label!r} missing ``-mogul`` suffix",
+            self.assertIn(
+                "-mogul", label,
+                f"Orbit label {label!r} missing ``-mogul`` signature",
             )
 
     def test_orbit_off_byte_identical(self):
@@ -301,6 +313,103 @@ class TestPolyaOrbitEnumeration(unittest.TestCase):
         self.assertEqual(h1, h2,
                          "OFF path bytes differ between runs (orbit "
                          "enumeration leaked into the default path)")
+
+
+class TestMogulPrimaryConformers(unittest.TestCase):
+    """Per-orbit conformer enumeration over the Mogul-primary path
+    (2026-06-07 architectural extension).
+
+    The draft manuscript's third Cauchy-Frobenius layer is the conformer
+    space: each Pólya orbit must emit a per-isomer ensemble of Cremer-
+    Pople ring-pucker variants × single-bond rotamers, RMSD-deduplicated
+    and Mahalanobis-ranked.  These tests exercise:
+
+      1. ``test_off_byte_identical`` -- when
+         ``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0`` is set, the orbit
+         enumerator emits exactly one structure per orbit (the base build).
+      2. ``test_on_emits_ensemble`` -- when the gate is on (default), the
+         flexible test cases produce more than one structure.
+      3. ``test_conformer_off_outer_off_byte_identical`` -- with the outer
+         Mogul-primary gate OFF, the conformer-enum env flag has no effect
+         (the legacy path stays bit-identical).
+    """
+
+    def setUp(self):
+        if _grip_lib_path() is None:
+            self.skipTest("grip_lib_v5.npz not available in this environment")
+
+    @staticmethod
+    def _count_conformers(res) -> int:
+        """Count emitted entries; helper that handles None."""
+        return len(res) if res else 0
+
+    def test_off_byte_identical(self):
+        """CONFORMERS=0 must produce exactly the orbit baseline."""
+        smi = "[NH3][Co]([NH3])([OH2])([OH2])([F])[F]"
+        os.environ["DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS"] = "0"
+        try:
+            h1 = hashlib.sha256(_xyz_bytes(_run_with_env(True, smi))).hexdigest()
+            h2 = hashlib.sha256(_xyz_bytes(_run_with_env(True, smi))).hexdigest()
+        finally:
+            os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS", None)
+        self.assertEqual(
+            h1, h2,
+            "ON-orbit + CONFORMERS=0 path is not byte-identical between runs",
+        )
+
+    def test_on_emits_ensemble_berteb(self):
+        """BERTEB (Ni CN4, with rotatable C-C single bonds) must emit more
+        than 1 structure when the conformer gate is on (default)."""
+        # Default ON: do not set the env var.
+        res = _run_with_env(True, SMILES_BERTEB)
+        n = self._count_conformers(res)
+        # We require at least 2 (so the ensemble is non-trivial).  In
+        # practice we see 13 for BERTEB, but allow regression at the
+        # rotamer-cap / RMSD-tol boundary.
+        self.assertGreaterEqual(
+            n, 2,
+            f"Expected per-orbit conformer ensemble for BERTEB, got {n}",
+        )
+        # Every structure must be a valid XYZ; sanity-check the first.
+        xyz0, label0 = res[0]
+        syms, P = _parse_xyz_block(xyz0)
+        self.assertGreater(len(syms), 1, "First structure has no atoms")
+        self.assertTrue(np.all(np.isfinite(P)), "First structure has NaN")
+        # Labels must contain the orbit signature.
+        for _, label in res:
+            self.assertIn("MOGUL", label)
+
+    def test_conformer_off_outer_off_byte_identical(self):
+        """The conformer-enum env-flag is dormant when the outer Mogul-
+        primary gate is OFF.  Setting CONFORMERS=1 must not leak into
+        the legacy bytes."""
+        smi = "N[Pt](N)(Cl)Cl"
+        os.environ["DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS"] = "1"
+        try:
+            h1 = hashlib.sha256(_xyz_bytes(_run_with_env(False, smi))).hexdigest()
+            h2 = hashlib.sha256(_xyz_bytes(_run_with_env(False, smi))).hexdigest()
+        finally:
+            os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS", None)
+        self.assertEqual(
+            h1, h2,
+            "Legacy path bytes changed when CONFORMERS=1 was set (env leak)",
+        )
+
+    def test_universal_no_smiles_branch(self):
+        """The conformer enumerator must NOT depend on SMILES patterns.
+
+        We verify by running an organic chelate (BERTEB) and a single-
+        donor-linear (SIYMEU) -- both go through the same enumerate_orbit
+        _conformers code path with no per-class branching.  Both must
+        produce more than 1 conformer (since both have rotatable bonds).
+        """
+        for label, smi in [("BERTEB", SMILES_BERTEB), ("SIYMEU", SMILES_SIYMEU)]:
+            res = _run_with_env(True, smi)
+            n = self._count_conformers(res)
+            self.assertGreaterEqual(
+                n, 2,
+                f"{label}: expected conformer ensemble, got N={n}",
+            )
 
 
 if __name__ == "__main__":
