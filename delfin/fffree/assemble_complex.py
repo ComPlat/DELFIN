@@ -1394,6 +1394,52 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         except Exception:
             pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
+    # CONSTRUCTION-SANITY GATE (2026-06-07, Bug-class 2+3):
+    # Post-embedding sanity check rejects builds that contain Pauli-floor
+    # violations, severely stretched/compressed bonds, drifted M-D distances
+    # or a catastrophic coordination-polyhedron CShM.  When the check fires we
+    # return ``None`` so the upstream caller (smiles_converter) can retry with
+    # a different config / fall back to the legacy path.  Env-gated default
+    # OFF byte-identical (``DELFIN_FFFREE_CONSTRUCTION_SANITY=1``).
+    try:
+        from delfin.fffree.construction_sanity import (
+            sanity_active as _cs_active,
+            assert_construction_sane as _cs_assert,
+        )
+        if _cs_active():
+            # Derive bond list from the (placed) ligand mols + M-D bonds.
+            # When the relax block built ``cm`` we re-use it; otherwise we
+            # infer bonds from the per-ligand mols and the (metal, donor)
+            # pairs in ``fixed``.
+            _bonds_for_sanity = []
+            try:
+                # Per-ligand internal bonds (offset by lig_offset in the
+                # global frame).
+                for _frag_mol, _off in relax_frags:
+                    for _b in _frag_mol.GetBonds():
+                        _i = _b.GetBeginAtomIdx() + _off + 1
+                        _j = _b.GetEndAtomIdx() + _off + 1
+                        _bonds_for_sanity.append((_i, _j))
+            except Exception:
+                # relax_frags may not exist when an early return path is taken;
+                # the sanity check still works without bond-stretch detection.
+                _bonds_for_sanity = []
+            # Metal-donor bonds
+            for _dg in donors:
+                _bonds_for_sanity.append((0, _dg))
+            _ok, _viols = _cs_assert(
+                P, out_syms, _bonds_for_sanity,
+                metal_idx=0,
+                donor_idxs=donors,
+                geometry=str(geometry or ""),
+            )
+            if not _ok:
+                # Reject the build -- caller falls back to the legacy path.
+                return None
+    except Exception:
+        # Any error in the sanity gate is non-fatal: keep the build (the
+        # gate is opt-in, byte-identical when disabled).
+        pass
     return out_syms, P, donors
 
 

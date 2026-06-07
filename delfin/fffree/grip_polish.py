@@ -2044,6 +2044,28 @@ def grip_polish(
     _vdw_floor_fraction: float = DEFAULT_VDW_FLOOR_FRACTION
     _vdw_floor_heavy_indices: np.ndarray = np.empty(0, dtype=np.int64)
     _vdw_floor_radii_arr: np.ndarray = np.empty(0, dtype=np.float64)
+    _vdw_floor_symbols: List[str] = []
+    # Extended vdW-floor (Bug-class 2+3 fix, 2026-06-07): apply the floor to
+    # ALL non-bonded heavy pairs INCLUDING those inside the hapto-π rigid
+    # body, but route the gradient through the rigid body's translation so
+    # the body cannot internally distort.  Env-gated default OFF byte-
+    # identical: when ``DELFIN_FFFREE_GRIP_VDW_FLOOR_ALL_PAIRS`` is unset the
+    # legacy ``_vdw_floor_value_and_grad`` path is used unchanged.
+    _vdw_floor_all_pairs = False
+    try:
+        from delfin.fffree.construction_sanity import (
+            vdw_floor_all_pairs_active as _cs_vdw_all_active,
+            vdw_floor_all_pairs_value_and_grad as _cs_vdw_all_grad,
+        )
+        _vdw_floor_all_pairs = bool(_cs_vdw_all_active())
+    except Exception:
+        _vdw_floor_all_pairs = False
+        _cs_vdw_all_grad = None  # type: ignore[assignment]
+    # When the all-pairs extension is requested, also require the legacy
+    # vdW-floor to be on -- the extension reuses its weight, fraction and
+    # symbol list so we keep one configuration path.
+    if _vdw_floor_all_pairs and not _vdw_floor_on:
+        _vdw_floor_on = True
     if _vdw_floor_on:
         try:
             _vdw_floor_weight = _resolve_vdw_floor_weight()
@@ -2134,14 +2156,44 @@ def grip_polish(
         # byte-identical with HEAD when ``DELFIN_FFFREE_GRIP_VDW_FLOOR``
         # is unset -- the predicate short-circuits before any new arithmetic.
         if _vdw_floor_on:
-            L_vdw, G_vdw = _vdw_floor_value_and_grad(
-                R,
-                heavy_indices=_vdw_floor_heavy_indices,
-                radii=_vdw_floor_radii_arr,
-                excluded_pairs=excl_13,
-                weight=_vdw_floor_weight,
-                fraction=_vdw_floor_fraction,
-            )
+            if _vdw_floor_all_pairs and _cs_vdw_all_grad is not None:
+                # Extended floor: penalise ALL non-bonded heavy pairs INCLUDING
+                # those inside the hapto-π rigid body, but route their
+                # gradient through the rigid body's metal-translation slot so
+                # the body cannot deform internally.  Bug-class 2+3 fix.
+                if len(_vdw_floor_symbols) == n_atoms:
+                    L_vdw, G_vdw = _cs_vdw_all_grad(
+                        R,
+                        symbols=_vdw_floor_symbols,
+                        excluded_pairs=excl_13,
+                        weight=_vdw_floor_weight,
+                        fraction=_vdw_floor_fraction,
+                        rigid_body_atoms=(
+                            _rigid_body_indices.tolist()
+                            if _hapto_rigid_on else None
+                        ),
+                        rigid_translation_metal=(
+                            int(metal) if _hapto_rigid_on else None
+                        ),
+                    )
+                else:
+                    L_vdw, G_vdw = _vdw_floor_value_and_grad(
+                        R,
+                        heavy_indices=_vdw_floor_heavy_indices,
+                        radii=_vdw_floor_radii_arr,
+                        excluded_pairs=excl_13,
+                        weight=_vdw_floor_weight,
+                        fraction=_vdw_floor_fraction,
+                    )
+            else:
+                L_vdw, G_vdw = _vdw_floor_value_and_grad(
+                    R,
+                    heavy_indices=_vdw_floor_heavy_indices,
+                    radii=_vdw_floor_radii_arr,
+                    excluded_pairs=excl_13,
+                    weight=_vdw_floor_weight,
+                    fraction=_vdw_floor_fraction,
+                )
             L += float(L_vdw)
             G = G + G_vdw
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
