@@ -538,37 +538,45 @@ def _emit_orbit_ensemble(
             # polyhedra in the list still get their chance.
             iso_global += len(orbits)
             continue
-        for orbit_local, orbit in enumerate(orbits):
-            iso_id = iso_global
-            iso_global += 1
-            # Determine donor-slot -> vertex assignment for THIS orbit.  The
-            # detect_from_smiles pass produced ``donor_types`` (length CN) in
-            # the SAME order as donor_atoms (one entry per donor); ``orbit``
-            # is a length-CN tuple of donor-type labels per VERTEX.  We need:
-            # for each donor slot (index into donor_atoms), find the orbit's
-            # vertex whose label matches the donor's type.  Multiple matches
-            # are possible (identical-label donors are interchangeable), so
-            # we use a greedy type-bucket assignment (deterministic: lex on
-            # donor index).
-            donor_to_vertex: Dict[int, int] = {}
-            # Build per-label queues of vertex indices (in orbit order).
-            vert_queue: Dict[str, List[int]] = {}
-            for v_idx, lab in enumerate(orbit):
-                vert_queue.setdefault(str(lab), []).append(int(v_idx))
-            # Assign in donor-slot order.  Chelate constraints are already
-            # baked into the orbit (cis-filter passed); greedy is safe.
-            ok = True
-            for d_slot, lab in enumerate(donor_types_list):
-                q = vert_queue.get(str(lab), [])
-                if not q:
-                    ok = False
-                    break
-                v_idx = q.pop(0)
-                donor_to_vertex[d_slot] = v_idx
-            if not ok:
-                continue
-            # Build the coordMap (metal at origin + each donor at its
-            # assigned vertex coordinate).
+        # Per-orbit ETKDGv3 parameter block.  Donor + metal positions are
+        # pinned by the coordMap; we offset the random seed by the orbit
+        # index so different orbits get different starting positions for
+        # the unconstrained atoms.  ``useRandomCoords=True`` is required
+        # when coordMap pins coordinates (deterministic seeding).
+        try:
+            params = AllChem.ETKDGv3()
+            params.randomSeed = ETKDG_SEED + int(iso_id)
+            params.useRandomCoords = True
+            params.numThreads = 1
+            params.SetCoordMap(cmap)
+            # Universal SMILES stereo respect: when the env-gate is on, flip
+            # ``enforceChirality`` + ``useBasicKnowledge`` so the embed
+            # respects the canonical stereo assigned in ``enforce_stereo``
+            # above.  Default OFF -> no effect on byte-identity.
+            try:
+                from delfin.fffree.smiles_stereo_respect import (
+                    flag_active as _stereo_active,
+                    configure_etkdg_for_stereo as _stereo_etkdg,
+                )
+                if _stereo_active():
+                    _stereo_etkdg(params)
+            except Exception:
+                pass
+        except Exception:
+            continue
+        # Re-use the same molecule but request a fresh conformer batch.
+        # EmbedMultipleConfs appends new conformers (doesn't reset), so we
+        # capture the cid set returned by this call and only emit those.
+        try:
+            cids = AllChem.EmbedMultipleConfs(
+                mol, numConfs=int(n_embed_per_orbit), params=params,
+            )
+        except Exception:
+            cids = []
+        cids = list(cids)
+        if not cids:
+            continue
+        for k, cid in enumerate(cids):
             try:
                 cmap = {int(metal_idx): Point3D(0.0, 0.0, 0.0)}
                 for d_slot, v_idx in donor_to_vertex.items():
@@ -735,6 +743,23 @@ def embed_isomers(
     except Exception:
         return None
 
+    # Universal SMILES stereo respect (GENFUB fix, 2026-06-07).  When env
+    # ``DELFIN_FFFREE_SMILES_STEREO_RESPECT`` is truthy, pin every
+    # unspecified double-bond / chiral-center to a deterministic canonical
+    # value (E / R) so the multi-conf ETKDG embed produces a single
+    # stereoisomer instead of mixing E and Z (or R and S) across frames.
+    # Default OFF -> byte-identical.  See
+    # :mod:`delfin.fffree.smiles_stereo_respect` for the universal contract.
+    try:
+        from delfin.fffree.smiles_stereo_respect import (
+            flag_active as _stereo_active,
+            enforce_stereo as _enforce_stereo,
+        )
+        if _stereo_active():
+            _enforce_stereo(mol)
+    except Exception:
+        pass
+
     n_embed = max(1, min(int(max_isomers), 16))
 
     # Polyhedron-Vertex Pólya Enumeration (2026-06-07): when the env-gate is
@@ -837,6 +862,19 @@ def embed_isomers(
     params.randomSeed = ETKDG_SEED
     params.useRandomCoords = False
     params.numThreads = 1
+    # Universal SMILES stereo respect (GENFUB fix, 2026-06-07): when the
+    # env-gate is on, flip enforceChirality + useBasicKnowledge so the
+    # ETKDG embed respects the stereo descriptors assigned (or pre-existing)
+    # on ``mol``.  Default OFF -> byte-identical.
+    try:
+        from delfin.fffree.smiles_stereo_respect import (
+            flag_active as _stereo_active,
+            configure_etkdg_for_stereo as _stereo_etkdg,
+        )
+        if _stereo_active():
+            _stereo_etkdg(params)
+    except Exception:
+        pass
     try:
         cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_embed, params=params)
     except Exception:
