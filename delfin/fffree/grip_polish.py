@@ -38,6 +38,7 @@ RNG, sorted iteration order, float64 throughout, PYTHONHASHSEED-respecting).
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
@@ -526,6 +527,267 @@ def _vdw_floor_value_and_grad(
     return float(total), grad
 
 
+# ---------------------------------------------------------------------------
+# Donor-Donor 1-3 Pauli-floor (2026-06-07) -- geometric vertex-vertex floor.
+#
+# The legacy heavy-atom vdW-floor (above) and the soft ``ClashFloorPenalty``
+# both EXCLUDE 1-3 atom pairs (atoms bonded to a common neighbour) because in
+# typical organic chemistry such pairs are angle-governed, NOT Pauli-governed.
+#
+# That exclusion is WRONG for donors bonded to a common METAL: those pairs
+# are vertices of a coordination polyhedron and their minimum separation is
+# fixed by the polyhedron geometry, NOT by the M-D-M angle.  Observed
+# pathological cases (OKACOU = Ru(N-carbene)(Cl)4(CO)):
+#
+#   Cl11 - Cl12 = 0.99 A    (ideal OC-6 cis edge ~ 3.25 A for r_M-Cl = 2.30 A)
+#   Cl13 - Cl14 = 1.41 A
+#
+# Both pairs are 1-3 through Ru -> the existing vdW-floor never fires.
+#
+# Math (per polyhedron):
+#
+#   For metal-donor distance r_MD and the polyhedron's minimum vertex-vertex
+#   angle theta_min, the minimum donor-donor distance is
+#
+#       d_min = 2 * r_MD * sin(theta_min / 2)
+#
+#   OC-6:      theta_min = 90.0    -> d_min = sqrt(2) * r_MD ~ 1.414 * r_MD
+#   T-4:       theta_min = 109.47  -> d_min ~ 1.633 * r_MD
+#   SP-4:      theta_min = 90.0    -> d_min ~ 1.414 * r_MD (cis)
+#   TBP-5:     theta_min = 90.0    -> d_min ~ 1.414 * r_MD (ax-eq)
+#   SPY-5:     theta_min = 88.0    -> d_min ~ 1.385 * r_MD (basal-apical)
+#   TPR-6:     theta_min = 76.0    -> d_min ~ 1.230 * r_MD (trigonal prism)
+#   PB-7:      theta_min = 72.0    -> d_min ~ 1.176 * r_MD (eq-eq pentagon)
+#
+# Penalty per donor pair (i, j) with both bonded to metal (1-3 through metal):
+#
+#   d_ij  = ||x_i - x_j||
+#   floor = d_min  (polyhedron + observed M-D)
+#   if d_ij < floor and d_ij > eps:
+#       L          += w * (floor - d_ij)^2
+#       grad_x_i   += -2 w (floor - d_ij) * (x_i - x_j) / d_ij
+#       grad_x_j   += +2 w (floor - d_ij) * (x_i - x_j) / d_ij
+#
+# Env-gated default OFF -> byte-identical with HEAD when
+# ``DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR`` is unset.
+# ---------------------------------------------------------------------------
+_DD13_ENV: str = "DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR"
+_DD13_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR_WEIGHT"
+DEFAULT_DD13_WEIGHT: float = 50.0
+_DD13_EPS: float = 1e-9
+
+# Polyhedron minimum vertex-vertex angle (degrees).  Keys are the canonical
+# geometry-name strings produced by
+# ``delfin.fffree.polyhedra.geometries_for_cn`` and
+# ``delfin.fffree.sandwich_piano_polyhedra``; aliases (without the trailing
+# descriptive token, e.g. "OC-6") map to the same value so the env-gated term
+# fires whether the caller passes the long or short form.  Determined by
+# inspection of the unit-vector tables in ``polyhedra._ref_polyhedra``
+# (smallest pairwise angle among the polyhedron's vertices).
+_POLYHEDRON_THETA_MIN: Dict[str, float] = {
+    # CN2
+    "L-2 linear": 180.0,
+    "L-2": 180.0,
+    # CN3
+    "SP-3 trigonal planar": 120.0,
+    "SP-3": 120.0,
+    "T-3 T-shape": 90.0,
+    "T-3": 90.0,
+    # CN4
+    "T-4 tetrahedron": 109.47,
+    "T-4": 109.47,
+    "SP-4 square planar": 90.0,
+    "SP-4": 90.0,
+    # CN5
+    "TBP-5 trigonal bipyramid": 90.0,    # ax-eq
+    "TBP-5": 90.0,
+    "SPY-5 square pyramid": 88.0,        # basal-apical
+    "SPY-5": 88.0,
+    # CN6
+    "OC-6 octahedron": 90.0,
+    "OC-6": 90.0,
+    "TPR-6 trigonal prism": 76.0,        # adjacent vertices
+    "TPR-6": 76.0,
+    # CN7
+    "PB-7 pentagonal bipyramid": 72.0,   # eq-eq pentagon edge
+    "PB-7": 72.0,
+    "PBP-7": 72.0,
+    # CN8
+    "SQAP-8 square antiprism": 74.86,    # nearest staggered pair
+    "SQAP-8": 74.86,
+    # CN9
+    "TTP-9 tricapped trigonal prism": 70.0,
+    "TTP-9": 70.0,
+    # CN10 (Wells-canonical, non-f-block)
+    "BICAP-10 bicapped square antiprism": 60.0,
+    "BICAP-10": 60.0,
+    "CSAP-10 capped square antiprism": 60.0,
+    "CSAP-10": 60.0,
+    "SAP-10 pentagonal antiprism": 60.0,
+    "SAP-10": 60.0,
+}
+
+
+def _dd13_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR`` is on.
+
+    Default OFF -> byte-identical with HEAD.  Accepts the canonical
+    ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive) idiom shared by
+    every other env-gated grip_polish term.
+    """
+    raw = os.environ.get(_DD13_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_dd13_weight() -> float:
+    """Effective weight for the donor-donor 1-3 floor penalty.
+
+    env > :data:`DEFAULT_DD13_WEIGHT` (50.0 -- strong because the floor is
+    geometry-mandatory, not chemistry-soft).  Non-finite / non-numeric values
+    fall through to the default with a single warning.
+    """
+    raw = os.environ.get(_DD13_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _DD13_WEIGHT_ENV, raw, DEFAULT_DD13_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _DD13_WEIGHT_ENV, raw, DEFAULT_DD13_WEIGHT,
+            )
+    return DEFAULT_DD13_WEIGHT
+
+
+def _resolve_theta_min(geometry: str) -> Optional[float]:
+    """Return the polyhedron minimum vertex-vertex angle in DEGREES.
+
+    Looks up ``geometry`` in :data:`_POLYHEDRON_THETA_MIN` with both the
+    full descriptive form (``"OC-6 octahedron"``) and the short prefix
+    (``"OC-6"``).  Returns ``None`` when the geometry is unknown (caller
+    treats this as "term disabled for this complex" -- fail-open, never
+    crash the polish).
+    """
+    if not isinstance(geometry, str):
+        return None
+    g = geometry.strip()
+    if not g:
+        return None
+    if g in _POLYHEDRON_THETA_MIN:
+        return float(_POLYHEDRON_THETA_MIN[g])
+    # Try the short prefix (everything before the first whitespace).
+    short = g.split()[0]
+    if short in _POLYHEDRON_THETA_MIN:
+        return float(_POLYHEDRON_THETA_MIN[short])
+    return None
+
+
+def donor_donor_1_3_floor_value_and_grad(
+    R: np.ndarray,
+    *,
+    donor_indices: Sequence[int],
+    metal_index: int,
+    geometry: str,
+    md_target: float,
+    weight: float = DEFAULT_DD13_WEIGHT,
+) -> Tuple[float, np.ndarray]:
+    """Donor-donor 1-3 Pauli-floor penalty + analytic gradient.
+
+    For every unordered pair of distinct donors (i, j) (both bonded to
+    ``metal_index``), enforce
+    ``||R[i] - R[j]|| >= 2 * md_target * sin(theta_min(geometry) / 2)``
+    via a one-sided quadratic.  Pairs with ``d_ij >= floor`` contribute zero.
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.  Not mutated.
+    donor_indices : sequence of int
+        Atom indices of donors bonded to the metal.  Duplicates and the
+        metal index itself are silently filtered.
+    metal_index : int
+        Atom index of the metal centre.  Used only to filter
+        ``donor_indices`` (the penalty itself is donor-donor, not M-D).
+    geometry : str
+        Polyhedron name (``"OC-6"``, ``"T-4"``, ``"OC-6 octahedron"`` etc).
+        Unknown geometry -> no-op (zero loss, zero grad).
+    md_target : float
+        Target metal-donor distance in A (typically the ideal covalent /
+        Shannon-radii sum from :func:`polyhedra.md_distance`).
+    weight : float
+        Penalty multiplier.
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  When no pair violates the floor both are
+        zero, so the call is a no-op for well-separated geometries.
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if weight <= 0.0:
+        return 0.0, grad
+    if not np.isfinite(md_target) or md_target <= 0.0:
+        return 0.0, grad
+    theta_min = _resolve_theta_min(geometry)
+    if theta_min is None:
+        return 0.0, grad
+    # Floor = 2 r sin(theta/2).  Convert theta to radians for sin.
+    floor_dd = 2.0 * float(md_target) * math.sin(
+        math.radians(float(theta_min)) / 2.0
+    )
+    if not np.isfinite(floor_dd) or floor_dd <= 0.0:
+        return 0.0, grad
+
+    # Deduplicate + drop metal + sort for determinism.
+    metal_i = int(metal_index)
+    donors_clean: List[int] = []
+    seen: Set[int] = set()
+    for d in donor_indices:
+        di = int(d)
+        if di == metal_i:
+            continue
+        if di < 0 or di >= n:
+            continue
+        if di in seen:
+            continue
+        seen.add(di)
+        donors_clean.append(di)
+    donors_clean.sort()
+    if len(donors_clean) < 2:
+        return 0.0, grad
+
+    total = 0.0
+    for ii in range(len(donors_clean)):
+        i = donors_clean[ii]
+        Pi = R[i]
+        for jj in range(ii + 1, len(donors_clean)):
+            j = donors_clean[jj]
+            d_vec = Pi - R[j]
+            d = float(np.linalg.norm(d_vec))
+            if d >= floor_dd:
+                continue
+            if d < _DD13_EPS:
+                # Exactly coincident -- skip rather than emit NaN.
+                continue
+            gap = floor_dd - d
+            total += weight * gap * gap
+            # dL/dx_i = -2 w (floor - d) * (x_i - x_j) / d
+            coef = -2.0 * weight * gap / d
+            gi = coef * d_vec
+            grad[i] += gi
+            grad[j] -= gi
+
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -574,6 +836,12 @@ __all__ = [
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
     "_heavy_atom_indices",
+    # Donor-donor 1-3 Pauli-floor (2026-06-07, env-gated default OFF).
+    "DEFAULT_DD13_WEIGHT",
+    "_dd13_active",
+    "_resolve_dd13_weight",
+    "_resolve_theta_min",
+    "donor_donor_1_3_floor_value_and_grad",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -2103,6 +2371,89 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3c. Donor-Donor 1-3 Pauli-floor (2026-06-07, OKACOU-class fix).
+    #
+    # Heavy-atom vdW-floor (3b) excludes 1-3 atom pairs because in organic
+    # chemistry those are angle-governed.  But donors bonded to the SAME
+    # METAL are vertices of a coordination polyhedron -- their minimum
+    # separation IS geometric, not angle-soft.  This block adds a stricter
+    # polyhedron-derived floor specifically for donor-donor pairs through
+    # the metal.
+    #
+    # Env-gated default OFF -> byte-identical with HEAD when
+    # ``DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR`` is unset.
+    # ------------------------------------------------------------------
+    _dd13_on = _dd13_active()
+    _dd13_weight: float = 0.0
+    _dd13_md_target: float = 0.0
+    _dd13_donor_list: List[int] = []
+    if _dd13_on:
+        try:
+            # Resolve the polyhedron theta_min FIRST -- if unknown geometry
+            # we demote to OFF without paying for donor-list construction.
+            _dd13_theta = _resolve_theta_min(geom)
+            if _dd13_theta is None:
+                _dd13_on = False
+            else:
+                _dd13_weight = _resolve_dd13_weight()
+                # md_target: prefer the polyhedra.md_distance covalent sum
+                # using the metal element + the DOMINANT donor element.
+                # For heterogeneous donors we use the MEAN of per-donor
+                # covalent M-D sums so the floor stays in the right ballpark
+                # even for mixed-donor complexes; the value-and-grad call
+                # treats every donor pair with this single floor (universal
+                # polyhedron geometry, not per-pair).
+                _dd13_md_target = 0.0
+                _cnt = 0
+                try:
+                    from delfin.fffree.polyhedra import md_distance as _poly_md
+                    try:
+                        _metal_sym = str(mol.GetAtomWithIdx(int(metal)).GetSymbol())
+                    except Exception:
+                        _metal_sym = ""
+                    for _d in donors_t:
+                        try:
+                            _donor_sym = str(mol.GetAtomWithIdx(int(_d)).GetSymbol())
+                        except Exception:
+                            continue
+                        try:
+                            _val = float(_poly_md(_metal_sym, _donor_sym))
+                        except Exception:
+                            continue
+                        if np.isfinite(_val) and _val > 0.0:
+                            _dd13_md_target += _val
+                            _cnt += 1
+                except Exception:
+                    _cnt = 0
+                if _cnt > 0:
+                    _dd13_md_target = _dd13_md_target / float(_cnt)
+                else:
+                    # Fall back to the OBSERVED initial M-D mean so the
+                    # term still has a sensible scale even if the polyhedra
+                    # table is missing an element.
+                    try:
+                        _ds = [
+                            float(np.linalg.norm(P_init[int(_d)] - P_init[int(metal)]))
+                            for _d in donors_t
+                        ]
+                        _ds_finite = [v for v in _ds if np.isfinite(v) and v > 0.0]
+                        if _ds_finite:
+                            _dd13_md_target = float(np.mean(_ds_finite))
+                    except Exception:
+                        _dd13_md_target = 0.0
+                _dd13_donor_list = [int(d) for d in donors_t]
+                if (len(_dd13_donor_list) < 2
+                        or _dd13_weight <= 0.0
+                        or _dd13_md_target <= 0.0):
+                    _dd13_on = False
+        except Exception as _dd13_exc:
+            _LOG.warning(
+                "grip_polish: donor-donor 1-3 floor setup failed (%r); disabling term",
+                _dd13_exc,
+            )
+            _dd13_on = False
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2196,6 +2547,24 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Optional donor-donor 1-3 Pauli-floor (geometric vertex-vertex floor).
+        # Default-OFF byte-identical with HEAD when
+        # ``DELFIN_FFFREE_GRIP_DONOR_DONOR_1_3_FLOOR`` is unset.  Composes
+        # ADDITIVELY with the heavy-atom vdW-floor above -- both fire on
+        # collapsed donor-donor pairs that pass through the metal (OKACOU
+        # Cl-Cl 0.99 A class), but the polyhedron floor is much tighter
+        # (~ 1.4 r_M-D vs ~ 0.85 * (r_vdw_i + r_vdw_j)).
+        if _dd13_on:
+            L_dd, G_dd = donor_donor_1_3_floor_value_and_grad(
+                R,
+                donor_indices=_dd13_donor_list,
+                metal_index=int(metal),
+                geometry=geom,
+                md_target=_dd13_md_target,
+                weight=_dd13_weight,
+            )
+            L += float(L_dd)
+            G = G + G_dd
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
