@@ -277,6 +277,327 @@ def assemble_complex_mogul_primary(
 
 
 # ---------------------------------------------------------------------------
+# Pólya orbit enumeration over the Mogul-primary bounds matrix (2026-06-07)
+# ---------------------------------------------------------------------------
+# Decompose-geometry-name → Pólya-group key.  Local copy of
+# ``converter_backend._GEOM_TO_POLYA`` (subset that the bounds-matrix path
+# supports out of the box -- monodentate sigma plus chelate via the
+# graph-detected D-D pairings).  Whenever ``_default_geometry`` returns a
+# new shape, add the matching Pólya key here too.
+_GEOM_NAME_TO_POLYA_KEY = {
+    "L-2 linear": "linear",
+    "SP-3 trigonal planar": "trigonal_planar",
+    "T-3 T-shape": "tshape",
+    "OC-6 octahedron": "octahedron",
+    "SP-4 square planar": "square_planar",
+    "T-4 tetrahedron": "tetrahedron",
+    "TBP-5 trigonal bipyramid": "trigonal_bipyramid",
+    "SPY-5 square pyramid": "square_pyramid",
+    "TPR-6 trigonal prism": "trigonal_prism",
+    "PB-7 pentagonal bipyramid": "pentagonal_bipyramid",
+    "SQAP-8 square antiprism": "square_antiprism",
+    "TTP-9 tricapped trigonal prism": "tricapped_trigonal_prism",
+}
+
+
+def _override_dd_bounds_for_orbit(
+    *,
+    metal_sym: str,
+    metal_idx: int,
+    donor_idxs: Sequence[int],
+    donor_at_vertex: Sequence[int],
+    geometry_key: Optional[str],
+    lower: np.ndarray,
+    upper: np.ndarray,
+    sigma_band: float = 0.30,
+) -> None:
+    """Re-write donor-donor distance bounds to encode a specific Pólya orbit.
+
+    Mutates ``lower`` / ``upper`` in place.
+
+    For each pair ``(va, vb)`` of polyhedron vertex indices, the donor atom
+    indices that sit at those vertices in this orbit are
+    ``donor_at_vertex[va]`` and ``donor_at_vertex[vb]``.  Their target
+    distance is ``|V[va] - V[vb]| * r_md`` where ``V`` are the unit
+    polyhedron vectors and ``r_md`` is the mean M-D distance already
+    encoded in the matrix.  We open a soft ±``sigma_band`` Å window.
+
+    Universal: works for any registered polyhedron (via
+    ``polyhedra.ref_vectors``).  No SMILES pattern, no per-class branch.
+    """
+    try:
+        from delfin.fffree import polyhedra as _polyhedra
+    except ImportError:
+        return
+    donor_list = [int(d) for d in donor_idxs]
+    cn = len(donor_list)
+    if cn < 2 or len(donor_at_vertex) != cn:
+        return
+    ref_vecs = None
+    if geometry_key:
+        try:
+            ref_vecs = _polyhedra.ref_vectors(str(geometry_key))
+        except Exception:
+            ref_vecs = None
+    if ref_vecs is None:
+        try:
+            cands = _polyhedra.geometries_for_cn(int(cn), metal_sym)
+        except Exception:
+            cands = []
+        for g in cands:
+            try:
+                ref_vecs = _polyhedra.ref_vectors(str(g))
+                break
+            except Exception:
+                continue
+    if ref_vecs is None or ref_vecs.shape[0] < cn:
+        return
+    V = np.asarray(ref_vecs[:cn], dtype=float)
+    norms = np.linalg.norm(V, axis=1, keepdims=True)
+    norms = np.where(norms < 1e-9, 1.0, norms)
+    Vu = V / norms
+
+    # Estimate the mean M-D distance from the existing M-D bounds (midpoints).
+    md_means: List[float] = []
+    for d in donor_list:
+        lo_md = float(lower[metal_idx, d])
+        hi_md = float(upper[metal_idx, d])
+        if hi_md > 100.0 or hi_md <= lo_md:
+            continue
+        md_means.append(0.5 * (lo_md + hi_md))
+    if not md_means:
+        return
+    r_md = float(np.mean(md_means))
+
+    for va in range(cn):
+        for vb in range(va + 1, cn):
+            da = int(donor_at_vertex[va])
+            db = int(donor_at_vertex[vb])
+            if da == db:
+                continue
+            d_ideal = float(np.linalg.norm(Vu[va] - Vu[vb])) * r_md
+            if d_ideal <= 0.0:
+                continue
+            lo = max(0.5, d_ideal - sigma_band)
+            hi = d_ideal + sigma_band
+            i, j = (da, db) if da < db else (db, da)
+            lower[i, j] = lower[j, i] = lo
+            upper[i, j] = upper[j, i] = hi
+
+
+def _coloring_to_donor_assignment(
+    coloring: Sequence[str],
+    donor_labels: Sequence[str],
+    donor_idxs: Sequence[int],
+) -> Optional[List[int]]:
+    """Map a Pólya coloring (label-per-vertex) → donor-atom-index-per-vertex.
+
+    For coloring ``("F", "N", "F", "O", "O", "N")`` and donor_labels
+    ``["N", "N", "O", "O", "F", "F"]`` indexed by ``donor_idxs``, returns
+    a list ``donor_at_vertex`` of donor atom indices (one per polyhedron
+    vertex) such that the label multiset at each vertex matches the
+    coloring.
+
+    Returns ``None`` if the multisets disagree (defensive — orbit
+    enumeration is best-effort, never raises on shape mismatch).
+    """
+    from collections import Counter as _Counter
+    if _Counter(coloring) != _Counter(donor_labels):
+        return None
+    buckets: Dict[str, List[int]] = {}
+    for lab, idx in zip(donor_labels, donor_idxs):
+        buckets.setdefault(str(lab), []).append(int(idx))
+    for k in buckets:
+        buckets[k].sort()  # deterministic pop order
+    assignment: List[int] = []
+    for lab in coloring:
+        bucket = buckets.get(str(lab))
+        if not bucket:
+            return None
+        assignment.append(bucket.pop(0))
+    return assignment
+
+
+def _classify_orbit_label(geom_polya_key: str, coloring: Sequence[str]) -> str:
+    """Universal isomer name from coloring + polyhedron antipode structure
+    (cis/trans, fac/mer, all-cis/all-trans).  Local copy of
+    ``converter_backend._classify_coloring`` so the orbit path has no
+    converter dependency.
+    """
+    from collections import Counter as _Counter
+    _ANTI = {
+        "octahedron": {0: 1, 1: 0, 2: 3, 3: 2, 4: 5, 5: 4},
+        "square_planar": {0: 2, 1: 3, 2: 0, 3: 1},
+        "trigonal_bipyramid": {0: 1, 1: 0},
+        "square_pyramid": {1: 3, 3: 1, 2: 4, 4: 2},
+        "tshape": {0: 1, 1: 0},
+    }
+    anti = _ANTI.get(geom_polya_key)
+    if anti is None:
+        return ""
+    cnt = _Counter(coloring)
+    n = len(coloring)
+
+    def is_trans(el):
+        v = [i for i, e in enumerate(coloring) if e == el]
+        return any(anti.get(v[a]) == v[b]
+                   for a in range(len(v)) for b in range(a + 1, len(v)))
+
+    pairs2 = [el for el, c in cnt.items() if c == 2]
+    threes = [el for el, c in cnt.items() if c == 3]
+    if n == 6:
+        if threes:
+            return "mer" if is_trans(threes[0]) else "fac"
+        if len(pairs2) == 3:
+            trans_els = sorted(el for el in pairs2 if is_trans(el))
+            if not trans_els:
+                return "all-cis"
+            if len(trans_els) == 3:
+                return "all-trans"
+            return "-".join(f"{e}trans" for e in trans_els)
+        if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 4:
+        if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 5:
+        if threes:
+            return "mer" if is_trans(threes[0]) else "fac"
+        if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    elif n == 3:
+        if len(pairs2) == 1:
+            return "trans" if is_trans(pairs2[0]) else "cis"
+    return ""
+
+
+def enumerate_and_embed_mogul_primary(
+    smiles: str,
+    *,
+    max_isomers: int = 50,
+    max_attempts: int = 5,
+) -> Optional[List[Tuple[List[str], np.ndarray, str]]]:
+    """Enumerate ALL Pólya orbits and embed each one through the Mogul-primary
+    bounds matrix.
+
+    The draft manuscript's contract is:
+
+        SMILES → discrete configuration set (Burnside-closed enumeration)
+              → realise EVERY member with one DG embed each
+              → return the ensemble.
+
+    Step 1 (per-orbit embed) was wired in
+    :func:`assemble_complex_mogul_primary`; this function adds step 2
+    (orbit enumeration → embed each → label):
+
+      1.  decompose SMILES → metal + geometry + donor atoms + donor labels.
+      2.  look up the Pólya group key for the geometry.
+      3.  Burnside-enumerate every distinct vertex-coloring of the donor
+          label multiset.
+      4.  for each coloring, compute the donor-atom-index → polyhedron
+          vertex permutation and call
+          ``assemble_complex_mogul_primary(..., donor_at_vertex=perm)``
+          so the bounds matrix encodes that orbit.  Each orbit is a
+          separate DG embed.
+      5.  return the list of ``(syms, P, label)`` triples.  Labels follow
+          the legacy naming convention
+          ``"<orbit-name>-<geom-tag>-<k>-mogul"``
+          (e.g. ``"cis-OC-6-1-mogul"``) when the polyhedron has a
+          registered antipode table; otherwise
+          ``"MOGUL-PRIMARY-<geom-tag>-<k>"``.
+
+    Universal: pure graph topology + element labels.  No SMILES pattern,
+    no per-class branch.
+
+    Returns
+    -------
+    list of (syms, P, label) or None
+        ``None`` ⇒ orbit enumeration failed at a level where the caller
+        should fall through to the single-structure path.  Otherwise the
+        list contains at least one entry (the canonical orbit).
+    """
+    # 1) decompose
+    try:
+        from delfin.fffree import decompose as _DEC
+    except ImportError:
+        return None
+    try:
+        d = _DEC.decompose(smiles)
+    except Exception:
+        d = None
+    if d is None:
+        return None
+
+    geom_name = d.get("geometry")
+    geom_polya_key = _GEOM_NAME_TO_POLYA_KEY.get(str(geom_name))
+    if geom_polya_key is None:
+        return None
+
+    # 2) load the donor label multiset from the FULL-COMPLEX mol (so the
+    #    atom indices match the bounds-matrix path).  We use the donor
+    #    ELEMENT as the label for the same reason converter_backend's
+    #    legacy ``_fffree_isomers`` uses it for monodentate ligands:
+    #    cis/trans/fac/mer isomerism is defined by donor element identity,
+    #    not by the full ligand SMILES.
+    mol = _full_complex_mol(smiles)
+    if mol is None:
+        return None
+    metal_idx, donor_idxs = _locate_metal_and_donors(mol)
+    if metal_idx is None or not donor_idxs:
+        return None
+    donor_labels = [str(mol.GetAtomWithIdx(int(d)).GetSymbol())
+                    for d in donor_idxs]
+    if not donor_labels:
+        return None
+
+    # 3) Pólya enumeration
+    try:
+        from delfin.fffree import polya_isomer_count as _PIC
+    except ImportError:
+        return None
+    spec: Dict[str, int] = {}
+    for lab in donor_labels:
+        spec[lab] = spec.get(lab, 0) + 1
+    try:
+        colorings = _PIC.enumerate_isomers(geom_polya_key, spec)
+    except Exception:
+        return None
+    if not colorings:
+        return None
+
+    # 4) embed each orbit
+    geom_tag = str(geom_name).split()[0]
+    results: List[Tuple[List[str], np.ndarray, str]] = []
+    for k, coloring in enumerate(colorings[:max_isomers]):
+        donor_at_vertex = _coloring_to_donor_assignment(
+            coloring, donor_labels, donor_idxs,
+        )
+        if donor_at_vertex is None:
+            continue
+        try:
+            built = assemble_complex_mogul_primary(
+                smiles,
+                max_attempts=max_attempts,
+                donor_at_vertex=donor_at_vertex,
+                geometry_key=str(geom_name),
+            )
+        except Exception:
+            built = None
+        if built is None:
+            continue
+        out_syms, P = built
+        iso_name = _classify_orbit_label(geom_polya_key, coloring)
+        if iso_name:
+            label = f"{iso_name}-{geom_tag}-{k+1}-mogul"
+        else:
+            label = f"MOGUL-PRIMARY-{geom_tag}-{k+1}"
+        results.append((out_syms, P, label))
+    if not results:
+        return None
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Internal building blocks
 # ---------------------------------------------------------------------------
 def _full_complex_mol(smiles: str):
@@ -777,6 +1098,7 @@ def _project_donors_to_ccdc_geometry(
     lower: np.ndarray,
     upper: np.ndarray,
     P: np.ndarray,
+    donor_at_vertex: Optional[Sequence[int]] = None,
 ) -> np.ndarray:
     """Rigid-body project each ligand subtree onto the CCDC ideal.
 
@@ -797,6 +1119,18 @@ def _project_donors_to_ccdc_geometry(
     SMILES patterns, no per-class branches.  When the polyhedron lookup
     fails (rare CNs without a vertex set) the projection is skipped
     and ``P`` is returned unchanged.
+
+    Parameters
+    ----------
+    donor_at_vertex : sequence of int, optional
+        Pólya orbit override (2026-06-07): permutation mapping vertex k
+        → atom index of the donor placed at vertex k.  When supplied,
+        the projection assigns ``donor_at_vertex[k]`` to polyhedron
+        vertex ``k`` rather than the canonical ``donor_idxs[k]`` mapping.
+        This preserves the stereoisomer encoded in the bounds-matrix
+        donor-donor block.  When ``None`` (default) the canonical
+        sort-by-atom-idx mapping is used (byte-identical to the
+        pre-orbit-enumeration code path).
     """
     P = np.asarray(P, dtype=float).copy()
     metal_pos = P[int(metal_idx)].copy()
@@ -809,9 +1143,19 @@ def _project_donors_to_ccdc_geometry(
     if ref_unit is None:
         return P
 
-    # Embed-derived donor directions.
+    # Decide which donor sits at which polyhedron vertex.  Default =
+    # sorted-canonical (matches the bounds-matrix donor_list); orbit
+    # override replaces it with the Pólya-derived permutation.
+    if (donor_at_vertex is not None
+            and len(donor_at_vertex) == n_d):
+        donors_per_vertex = [int(d) for d in donor_at_vertex]
+    else:
+        donors_per_vertex = [int(d) for d in donor_idxs]
+
+    # Embed-derived donor directions, in vertex order (so cur_dirs[k] is
+    # the embed direction of the donor we have decided sits at vertex k).
     cur_dirs = np.zeros((n_d, 3), dtype=float)
-    for k, d in enumerate(donor_idxs):
+    for k, d in enumerate(donors_per_vertex):
         v = P[int(d)] - metal_pos
         nv = float(np.linalg.norm(v))
         cur_dirs[k] = v / nv if nv > 1e-9 else np.array([1.0, 0.0, 0.0])
@@ -834,18 +1178,25 @@ def _project_donors_to_ccdc_geometry(
     # the SINGLE projection that minimises the sum of |donor - target|².
     # For monodentate ligands this reduces to "place donor exactly on
     # target", which is what the simple case wants.
+    #
+    # NOTE (2026-06-07 orbit-enum): the vertex index ``k`` indexes
+    # ``donors_per_vertex`` (the orbit-permuted donor-to-vertex mapping),
+    # not ``donor_idxs``.  Under the canonical-orbit default they are
+    # identical; under a Pólya orbit override they differ and the
+    # projection MUST use ``donors_per_vertex`` so the right donor lands
+    # at the right polyhedron vertex.
     visited: set[int] = {int(metal_idx)}
-    # Build per-donor subtree mapping (atom set reachable from donor
-    # without crossing the metal).
-    subtree_by_donor: List[List[int]] = [
-        _ligand_subtree(mol, int(metal_idx), int(d)) for d in donor_idxs
+    # Build per-vertex subtree mapping (atom set reachable from the donor
+    # at vertex k without crossing the metal).
+    subtree_by_vertex: List[List[int]] = [
+        _ligand_subtree(mol, int(metal_idx), int(d)) for d in donors_per_vertex
     ]
-    # Group donors by shared subtree component (chelate detection).
-    n_d_local = len(donor_idxs)
+    # Group vertices by shared subtree component (chelate detection).
+    n_d_local = n_d
     component: List[int] = list(range(n_d_local))
     for a in range(n_d_local):
         for b in range(a + 1, n_d_local):
-            if set(subtree_by_donor[a]) & set(subtree_by_donor[b]):
+            if set(subtree_by_vertex[a]) & set(subtree_by_vertex[b]):
                 # Merge components a and b
                 ra = a
                 while component[ra] != ra:
@@ -854,7 +1205,7 @@ def _project_donors_to_ccdc_geometry(
                 while component[rb] != rb:
                     rb = component[rb]
                 component[max(ra, rb)] = min(ra, rb)
-    # Resolve final root per donor.
+    # Resolve final root per vertex.
     roots = []
     for a in range(n_d_local):
         r = a
@@ -870,7 +1221,7 @@ def _project_donors_to_ccdc_geometry(
         # Union subtree for this component.
         atoms_in_group: set[int] = set()
         for k in donor_positions:
-            atoms_in_group.update(subtree_by_donor[k])
+            atoms_in_group.update(subtree_by_vertex[k])
         # Atoms not yet visited (avoid double-move of shared atoms in a
         # pathological multi-metal case).
         movable = sorted(a for a in atoms_in_group if a not in visited)
@@ -880,7 +1231,7 @@ def _project_donors_to_ccdc_geometry(
         target_positions = []
         donor_indices_in_group = []
         for k in donor_positions:
-            d = int(donor_idxs[k])
+            d = int(donors_per_vertex[k])
             i, j = (int(metal_idx), d) if int(metal_idx) < d else (d, int(metal_idx))
             lo = float(lower[i, j])
             hi = float(upper[i, j])
