@@ -66,6 +66,20 @@ def mogul_primary_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY", "0") == "1"
 
 
+def mogul_primary_conformers_enabled() -> bool:
+    """Return True iff the per-orbit conformer enumeration is active.
+
+    Default ON when ``DELFIN_FFFREE_MOGUL_PRIMARY`` is on (since a single
+    structure per stereoisomer is demonstrably incomplete -- NHC rings flex,
+    aryl substituents rotate, single bonds adopt gauche/anti).  Set
+    ``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0`` to compare bytes against
+    the orbit-only path (single output per orbit).
+    """
+    return os.environ.get(
+        "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS", "1"
+    ) == "1"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -76,6 +90,8 @@ def assemble_complex_mogul_primary(
     return_mol: bool = False,
     donor_at_vertex: Optional[Sequence[int]] = None,
     geometry_key: Optional[str] = None,
+    mol_override=None,
+    donor_idxs_override: Optional[Sequence[int]] = None,
 ) -> Optional[Tuple[List[str], np.ndarray]]:
     """Construct a 3D complex by embedding the CCDC-populated bounds matrix.
 
@@ -115,13 +131,27 @@ def assemble_complex_mogul_primary(
         failure) so the caller can fall through to legacy.
     """
     # 1) Full mol with metal + ligands as one connected graph + explicit H.
-    mol = _full_complex_mol(smiles)
+    #    The κⁿ enumeration path passes ``mol_override`` (the SAME mol
+    #    after graph-rewiring to insert/remove dative bonds for the chosen
+    #    donor set) so this assemble call sees the variant's topology.
+    if mol_override is not None:
+        mol = mol_override
+    else:
+        mol = _full_complex_mol(smiles)
     if mol is None:
         return None
 
     # 2) Locate metal + donors from the graph topology.
-    metal_idx, donor_idxs = _locate_metal_and_donors(mol)
-    if metal_idx is None or not donor_idxs:
+    #    Under κⁿ override the donor set is provided explicitly; the
+    #    metal index is still taken from the graph topology.
+    metal_idx, auto_donor_idxs = _locate_metal_and_donors(mol)
+    if metal_idx is None:
+        return None
+    if donor_idxs_override is not None:
+        donor_idxs = sorted(int(d) for d in donor_idxs_override)
+    else:
+        donor_idxs = auto_donor_idxs
+    if not donor_idxs:
         return None
 
     # 3) Build the CCDC-empirical bounds matrix.
@@ -471,11 +501,585 @@ def _classify_orbit_label(geom_polya_key: str, coloring: Sequence[str]) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Per-orbit conformer enumeration (Cremer-Pople ring pucker + single-bond
+# rotamers).  Composes the third Cauchy-Frobenius layer of the draft
+# manuscript: Pólya orbit × binding-mode × CONFORMER -> ensemble per SMILES.
+# ---------------------------------------------------------------------------
+def _build_mol_for_conformer_enum(syms: Sequence[str], P: np.ndarray):
+    """Build an RDKit Mol with a heavy-atom bond graph + metal-donor edges
+    for ring detection and rotamer enumeration.
+
+    Mirrors the geometric-bond construction inside
+    ``converter_backend._conformer_enum_post`` so the same conformer
+    enumeration semantics apply to the Mogul-primary path.  Universal:
+    bonds are derived from geometry + element radii, never from SMILES.
+
+    Returns ``None`` on any failure -- caller falls through to single
+    orbit output.
+    """
+    try:
+        rw = Chem.RWMol()
+        for s in syms:
+            rw.AddAtom(Chem.Atom(str(s)))
+        bonds = _bd._geometric_bonds(list(syms), np.asarray(P, dtype=float))
+        added = set()
+        for ii, jj in bonds:
+            key = (min(int(ii), int(jj)), max(int(ii), int(jj)))
+            if key in added:
+                continue
+            try:
+                rw.AddBond(int(ii), int(jj), Chem.BondType.SINGLE)
+                added.add(key)
+            except Exception:
+                pass
+        # Add metal->donor bonds (geometric_bonds skips them).
+        nm = len(syms)
+        for im in range(nm):
+            if not _bd._is_metal(str(syms[im])):
+                continue
+            for jm in range(nm):
+                if jm == im or str(syms[jm]) == "H":
+                    continue
+                if _bd._is_metal(str(syms[jm])):
+                    continue
+                try:
+                    ideal = _bd._ideal_bond(str(syms[im]), str(syms[jm]))
+                    dij = float(np.linalg.norm(
+                        np.asarray(P[jm]) - np.asarray(P[im])
+                    ))
+                    if dij < 1.30 * ideal:
+                        key = (min(im, jm), max(im, jm))
+                        if key not in added:
+                            try:
+                                rw.AddBond(int(im), int(jm),
+                                           Chem.BondType.SINGLE)
+                                added.add(key)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        mol_g = rw.GetMol()
+        try:
+            Chem.SanitizeMol(mol_g, catchErrors=True)
+        except Exception:
+            pass
+        try:
+            Chem.GetSSSR(mol_g)
+        except Exception:
+            pass
+        try:
+            Chem.FastFindRings(mol_g)
+        except Exception:
+            pass
+        return mol_g
+    except Exception:
+        return None
+
+
+def _enumerate_ring_pucker_variants(
+    mol_g,
+    P: np.ndarray,
+    *,
+    max_per_ring: int = 4,
+    skip_aromatic: bool = True,
+    aromatic_atom_set: Optional[Sequence[int]] = None,
+) -> List[Tuple[np.ndarray, str]]:
+    """Enumerate Cremer-Pople ring-pucker variants of ``P`` against ``mol_g``.
+
+    Direct call into ``ring_pucker`` primitives -- bypasses the
+    ``DELFIN_FFFREE_RING_PUCKER`` env gate inside
+    ``ring_pucker_integration``, since this module owns its own env flag
+    (``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS``).  Each puckerable
+    non-aromatic 5/6/7 ring (also avoids chelate metallacycles by skipping
+    rings containing a metal atom) contributes ``min(max_per_ring,
+    len(canonical_pucker_states(N)))`` variants; the Cartesian product
+    across rings is taken and bond lengths restored after each pucker.
+
+    Returns
+    -------
+    list of (P_variant, label) tuples.  ``label`` is e.g. ``"pucker3"``.
+    The first entry equals ``P`` (identity, sub-label ``"base"``) only
+    if no puckerable ring is found; otherwise the identity is omitted
+    so the caller can re-attach it explicitly.
+    """
+    try:
+        from .ring_pucker import (
+            canonical_pucker_states,
+            set_pucker,
+            _restore_ring_bonds,
+        )
+    except Exception:
+        return []
+    if mol_g is None:
+        return []
+
+    # Detect rings to pucker: 5/6/7 ring size, non-aromatic, no metal.
+    # The bond graph used here is geometric (all single bonds, no aromatic
+    # flags), so ``RDKit.GetIsAromatic`` always returns False on these
+    # mols.  We therefore use a UNIVERSAL geometric aromaticity heuristic:
+    # a ring is aromatic when (a) all heavy atoms are sp²-eligible
+    # (C/N/O/S/P/B), (b) the ring is planar (max out-of-plane deviation
+    # below 0.20 Å), (c) every ring bond sits in the aromatic length band
+    # 1.30-1.45 Å.  Catches benzene, pyridine, pyrrole, NHC π-systems
+    # without relying on bond-order / aromaticity perception.
+    try:
+        ri = mol_g.GetRingInfo()
+        all_rings = [tuple(int(a) for a in r) for r in ri.AtomRings()]
+    except Exception:
+        return []
+
+    _SP2_ELIGIBLE = {"C", "N", "O", "S", "P", "B"}
+    _AROM_BOND_MIN = 1.30
+    _AROM_BOND_MAX = 1.45
+    _AROM_PLANAR_TOL = 0.20  # Å
+
+    # When the caller supplies an aromatic-atom-set (typically derived
+    # from RDKit aromaticity perception on the SOURCE mol — the SMILES
+    # parser preserves aromatic-bond flags that survive the embed-mol
+    # roundtrip), we mark a ring aromatic whenever ALL of its atoms are
+    # in that set.  This is robust even when the post-embed geometry has
+    # the aromatic ring distorted (the embedder treats aromatic bonds as
+    # SINGLE, which inflates ring bond lengths to ~1.50 Å).
+    arom_idx_set: Optional[set] = None
+    if aromatic_atom_set is not None:
+        try:
+            arom_idx_set = {int(i) for i in aromatic_atom_set}
+        except Exception:
+            arom_idx_set = None
+
+    def _ring_is_aromatic_supplied(ring_atoms: Tuple[int, ...]) -> bool:
+        """Aromatic if every ring atom is in the caller-supplied set."""
+        if arom_idx_set is None:
+            return False
+        try:
+            return all(int(i) in arom_idx_set for i in ring_atoms)
+        except Exception:
+            return False
+
+    def _ring_is_aromatic_geom(ring_atoms: Tuple[int, ...]) -> bool:
+        """Universal aromatic-ring detection from geometry alone."""
+        try:
+            syms_r = [
+                str(mol_g.GetAtomWithIdx(int(i)).GetSymbol())
+                for i in ring_atoms
+            ]
+            if not all(s in _SP2_ELIGIBLE for s in syms_r):
+                return False
+            coords_r = np.array(
+                [P[int(i)] for i in ring_atoms], dtype=float
+            )
+            centroid = coords_r.mean(axis=0)
+            M = coords_r - centroid
+            _, _, Vt = np.linalg.svd(M, full_matrices=False)
+            normal = Vt[-1]
+            dev = float(np.max(np.abs(M @ normal)))
+            if dev > _AROM_PLANAR_TOL:
+                return False
+            n_r = len(ring_atoms)
+            for k in range(n_r):
+                a = int(ring_atoms[k])
+                b = int(ring_atoms[(k + 1) % n_r])
+                d = float(np.linalg.norm(P[a] - P[b]))
+                if not (_AROM_BOND_MIN <= d <= _AROM_BOND_MAX):
+                    return False
+            return True
+        except Exception:
+            return False
+
+    rings: List[Tuple[int, ...]] = []
+    for r in all_rings:
+        if not (5 <= len(r) <= 7):
+            continue
+        if skip_aromatic and (
+            _ring_is_aromatic_supplied(r) or _ring_is_aromatic_geom(r)
+        ):
+            continue
+        # Skip metallacycle rings (chelate -- pucker would clash with
+        # the empirical M-D / D-D bound the embed already satisfies).
+        try:
+            if any(
+                _bd._is_metal(mol_g.GetAtomWithIdx(int(i)).GetSymbol())
+                for i in r
+            ):
+                continue
+        except Exception:
+            pass
+        rings.append(r)
+    if not rings:
+        return []
+
+    # Per-ring canonical states (capped).
+    per_ring_states: List[List[Tuple[List[float], List[float], str]]] = []
+    h_map_per_ring: List[Dict[int, List[int]]] = []
+    for r in rings:
+        states = canonical_pucker_states(len(r))
+        if max_per_ring is not None and 0 < max_per_ring < len(states):
+            states = states[:max_per_ring]
+        per_ring_states.append(states)
+        # Hydrogens bonded to each ring atom -- carried rigidly during pucker.
+        h_map: Dict[int, List[int]] = {}
+        for ai in r:
+            try:
+                a = mol_g.GetAtomWithIdx(int(ai))
+                h_map[int(ai)] = [
+                    int(n.GetIdx()) for n in a.GetNeighbors()
+                    if n.GetAtomicNum() == 1
+                ]
+            except Exception:
+                h_map[int(ai)] = []
+        h_map_per_ring.append(h_map)
+
+    # Cartesian product across rings.
+    from itertools import product as _prod
+    variants: List[Tuple[np.ndarray, str]] = []
+    for combo_idx, combo in enumerate(_prod(*per_ring_states)):
+        Pv = np.asarray(P, dtype=float).copy()
+        ok = True
+        for ring_atoms, h_map, (Q_t, phi_t, label) in zip(
+            rings, h_map_per_ring, combo
+        ):
+            try:
+                ring_arr = np.array(
+                    [Pv[int(i)] for i in ring_atoms], dtype=float
+                )
+                new_ring = set_pucker(ring_arr, Q_t, phi_t)
+                new_ring = _restore_ring_bonds(new_ring)
+                for k, i in enumerate(ring_atoms):
+                    delta = new_ring[k] - Pv[int(i)]
+                    Pv[int(i)] = new_ring[k]
+                    # Drag H rigidly with the ring atom.
+                    for hi in h_map.get(int(i), []):
+                        Pv[int(hi)] = Pv[int(hi)] + delta
+            except Exception:
+                ok = False
+                break
+        if not ok or not np.all(np.isfinite(Pv)):
+            continue
+        variants.append((Pv, f"pucker{combo_idx}"))
+    return variants
+
+
+def _enumerate_rotamer_variants(
+    mol_g,
+    P: np.ndarray,
+    *,
+    max_configs: int = 12,
+) -> List[Tuple[np.ndarray, str]]:
+    """Enumerate single-bond rotamer variants of ``P``.
+
+    Direct call into ``single_bond_rotamers.enumerate_single_bond_rotamers``
+    which is gate-free at the helper level (the env flag is honoured by the
+    converter caller, this module owns its own gate).  Returns a list of
+    ``(P_variant, label)`` tuples with the first (identity) entry dropped.
+    """
+    try:
+        from .single_bond_rotamers import enumerate_single_bond_rotamers
+    except Exception:
+        return []
+    if mol_g is None:
+        return []
+    out: List[Tuple[np.ndarray, str]] = []
+    try:
+        for vk, (Pv, rot_lab) in enumerate(
+            enumerate_single_bond_rotamers(
+                mol_g, np.asarray(P, dtype=float), max_configs=max_configs + 1
+            )
+        ):
+            if vk == 0:
+                # Identity = original; skip so the caller can attach the
+                # base variant explicitly.
+                continue
+            if not np.all(np.isfinite(Pv)):
+                continue
+            out.append((np.asarray(Pv, dtype=float), str(rot_lab)))
+            if len(out) >= max_configs:
+                break
+    except Exception:
+        return []
+    return out
+
+
+def _mahalanobis_severity(
+    syms: Sequence[str], P: np.ndarray, mol_g, metal_idx: int,
+    donor_idxs: Sequence[int],
+) -> float:
+    """Compute the Mogul-Mahalanobis severity for ranking.  ``inf`` on any
+    detection failure so failing conformers rank last.  Mirrors
+    ``grip_ensemble._compute_severity`` -- pulled out as a local helper so
+    the dependency stays in one place.
+    """
+    try:
+        from .grip_fragment_detect import detect_fragments
+        from .grip_loss_terms import TotalGripLoss
+        from .grip_mogul_lookup import get_default_library
+        try:
+            library = get_default_library()
+        except Exception:
+            library = None
+        frozen = frozenset(
+            (int(metal_idx), *[int(d) for d in donor_idxs])
+        )
+        terms = detect_fragments(
+            mol_g, np.asarray(P, dtype=np.float64),
+            frozen_atoms=frozen,
+            donors=tuple(int(d) for d in donor_idxs),
+            library=library, return_result=False,
+        )
+        agg = TotalGripLoss(terms=list(terms))
+        if len(agg) == 0:
+            return 0.0
+        sev, _ = agg.evaluate(np.asarray(P, dtype=np.float64))
+        sev = float(sev)
+        if not np.isfinite(sev):
+            return float("inf")
+        return sev
+    except Exception:
+        return float("inf")
+
+
+def _aromatic_atom_set_from_smiles(
+    smiles: str, n_atoms_expected: int,
+) -> List[int]:
+    """Build the aromatic-atom-index set for a Mogul-primary output.
+
+    Parses the SMILES via :func:`_full_complex_mol`, runs RDKit
+    aromaticity perception, locates the primary metal, then applies the
+    SAME index re-ordering ``assemble_complex_mogul_primary`` applies
+    (metal moved to index 0).  Returns the list of indices (in the
+    output frame) that are flagged aromatic in the source mol.
+
+    Universal: depends only on the source SMILES and RDKit aromaticity
+    perception; no per-class branch.  Returns ``[]`` on any failure --
+    the caller falls back to the geometric aromaticity heuristic, which
+    catches benzene-style rings still in their aromatic geometric
+    signature.
+    """
+    try:
+        src = _full_complex_mol(smiles)
+        if src is None:
+            return []
+        # Aromaticity perception (lazy / forgiving -- this is best-effort).
+        try:
+            Chem.SetAromaticity(src)
+        except Exception:
+            try:
+                Chem.SanitizeMol(src, catchErrors=True)
+            except Exception:
+                pass
+        # Locate the primary metal index in the source mol (degree-max).
+        metals = [a.GetIdx() for a in src.GetAtoms()
+                  if _bd._is_metal(a.GetSymbol())]
+        if not metals:
+            return []
+        if len(metals) == 1:
+            metal_idx_src = metals[0]
+        else:
+            metal_idx_src = max(
+                metals,
+                key=lambda mi: src.GetAtomWithIdx(mi).GetDegree(),
+            )
+        # Apply the assemble_complex_mogul_primary re-order: metal moves
+        # to index 0; all other atoms keep their original ordering with
+        # gaps closed.
+        n_src = src.GetNumAtoms()
+        if n_src != n_atoms_expected:
+            # Atom-count mismatch (post-build re-orderings differ); skip
+            # the supplied-set and fall through to the geometric heuristic.
+            return []
+        if metal_idx_src == 0:
+            order = list(range(n_src))
+        else:
+            order = ([metal_idx_src]
+                     + [i for i in range(n_src) if i != metal_idx_src])
+        # Build map src_idx -> output_idx.
+        src_to_out = {src_i: out_i for out_i, src_i in enumerate(order)}
+        aromatic_out: List[int] = []
+        for a in src.GetAtoms():
+            if a.GetIsAromatic():
+                src_i = int(a.GetIdx())
+                if src_i in src_to_out:
+                    aromatic_out.append(int(src_to_out[src_i]))
+        return aromatic_out
+    except Exception:
+        return []
+
+
+def _donors_from_geometry(
+    syms: Sequence[str], P: np.ndarray, metal_idx: int = 0,
+) -> List[int]:
+    """Identify donor atom indices in an assembled (syms, P) tuple from
+    geometric proximity to the metal.  Heavy atoms within 1.45 * ideal-bond
+    distance of the metal count as donors.  Universal across CN / donor
+    element / chelate; mirrors the donor-detection heuristic inside
+    ``converter_backend._conformer_enum_post``.
+    """
+    P = np.asarray(P, dtype=float)
+    m = int(metal_idx)
+    if m < 0 or m >= len(syms):
+        return []
+    metal_sym = str(syms[m])
+    donors: List[int] = []
+    for j in range(len(syms)):
+        if j == m:
+            continue
+        sj = str(syms[j])
+        if sj == "H":
+            continue
+        if _bd._is_metal(sj):
+            continue
+        try:
+            ideal = _bd._ideal_bond(metal_sym, sj)
+            dij = float(np.linalg.norm(P[j] - P[m]))
+            if dij < 1.45 * ideal:
+                donors.append(int(j))
+        except Exception:
+            continue
+    return donors
+
+
+def enumerate_orbit_conformers(
+    syms: Sequence[str],
+    P: np.ndarray,
+    *,
+    metal_idx: int = 0,
+    donor_idxs: Optional[Sequence[int]] = None,
+    aromatic_atom_set: Optional[Sequence[int]] = None,
+    max_ring_states: int = 4,
+    max_rotamer_states: int = 12,
+    max_total: int = 50,
+    rmsd_dedup_tol: float = 0.30,
+) -> List[Tuple[List[str], np.ndarray, str, float]]:
+    """Build the per-orbit conformer ensemble for one assembled structure.
+
+    Pipeline:
+
+      1. Build a heavy-atom bond graph (geometric bonds + metal-donor edges)
+         on top of ``(syms, P)``.
+      2. Enumerate Cremer-Pople ring puckers (5/6/7-ring, non-aromatic,
+         skip metallacycle).
+      3. Enumerate single-bond rotamers (non-ring, non-metal-incident).
+      4. Cartesian-cap the union at ``max_total`` candidates (base always
+         kept first).
+      5. RMSD-dedup via :func:`conformer_dedup.dedup_by_rmsd` to remove
+         near-duplicates that come from H-only or aromatic-ring rotations.
+      6. Rank by Mogul-Mahalanobis severity ascending (best first).
+
+    Returns
+    -------
+    list of (syms, P, sub_label, severity)
+        ``sub_label`` is e.g. ``"base"``, ``"pucker0"``, ``"rot_+60_0_0"``.
+        Sorted ascending by severity; the lowest-severity conformer is
+        first.  Length <= ``max_total``.
+
+    Universal: pure graph topology + geometry-derived bonds + Cremer-Pople
+    formalism + dihedral rotation. No SMILES patterns, no per-class
+    branches.  Deterministic: stable iteration order from
+    ``itertools.product`` + ``dedup_by_rmsd``'s deterministic tiebreak.
+    """
+    P0 = np.asarray(P, dtype=float)
+    syms_list = [str(s) for s in syms]
+    base_variant: List[Tuple[List[str], np.ndarray, str]] = [
+        (syms_list, P0.copy(), "base"),
+    ]
+
+    # If donors not supplied, derive them from geometric proximity to the
+    # metal (heavy atoms within 1.45 * ideal-bond).  Required so the Mogul
+    # severity calculation can identify the M-D coordination block and
+    # rank conformers by Mahalanobis distance.
+    if donor_idxs is None:
+        donor_idxs = _donors_from_geometry(syms_list, P0, int(metal_idx))
+
+    # 1) Build bond-graph mol.
+    mol_g = _build_mol_for_conformer_enum(syms_list, P0)
+    if mol_g is None or mol_g.GetNumAtoms() != len(syms_list):
+        # Cannot enumerate without a graph -- return base only.
+        sev = _mahalanobis_severity(
+            syms_list, P0, mol_g, int(metal_idx),
+            list(donor_idxs) if donor_idxs is not None else [],
+        ) if mol_g is not None else float("inf")
+        return [(syms_list, P0, "base", sev)]
+
+    # 2) Ring-pucker variants.
+    pucker_variants = _enumerate_ring_pucker_variants(
+        mol_g, P0, max_per_ring=max_ring_states,
+        aromatic_atom_set=aromatic_atom_set,
+    )
+    # 3) Rotamer variants.
+    rotamer_variants = _enumerate_rotamer_variants(
+        mol_g, P0, max_configs=max_rotamer_states,
+    )
+
+    # 4) Combine (base + puckers + rotamers).  Cap at max_total candidates.
+    combined: List[Tuple[List[str], np.ndarray, str]] = list(base_variant)
+    for Pv, lab in pucker_variants:
+        if len(combined) >= max_total:
+            break
+        combined.append((syms_list, np.asarray(Pv, dtype=float), str(lab)))
+    for Pv, lab in rotamer_variants:
+        if len(combined) >= max_total:
+            break
+        combined.append((syms_list, np.asarray(Pv, dtype=float), str(lab)))
+
+    # 5) RMSD-dedup.  Pass severity = position-in-list so the base wins ties.
+    try:
+        from .conformer_dedup import dedup_by_rmsd
+        frames = [
+            (lab, P_v, float(k)) for k, (_s, P_v, lab) in enumerate(combined)
+        ]
+        deduped = dedup_by_rmsd(
+            frames, threshold=rmsd_dedup_tol, max_keep=max_total,
+            syms=syms_list,
+        )
+        # Map back to (syms, P, sub_label).
+        kept: List[Tuple[List[str], np.ndarray, str]] = []
+        for lab, P_v, _pos in deduped:
+            kept.append((syms_list, np.asarray(P_v, dtype=float), str(lab)))
+        if not kept:
+            kept = combined
+    except Exception:
+        kept = combined
+
+    # 6) Mogul-Mahalanobis severity per conformer -> rank ascending.
+    donors_for_sev = list(donor_idxs) if donor_idxs is not None else []
+    scored: List[Tuple[List[str], np.ndarray, str, float]] = []
+    for s_list, P_v, lab in kept:
+        sev = _mahalanobis_severity(
+            s_list, P_v, mol_g, int(metal_idx), donors_for_sev,
+        )
+        scored.append((s_list, P_v, lab, float(sev)))
+    # Sort: severity ascending; ties broken by deterministic label order.
+    scored.sort(key=lambda t: (t[3], t[2]))
+    return scored
+
+
+def _default_geom_for_cn(metal_sym: str, cn: int) -> Optional[str]:
+    """Return the canonical polyhedron name for ``(metal_sym, cn)``.
+
+    Mirrors ``decompose._default_geometry`` but does not require a full
+    SMILES decomposition pass -- the κⁿ enumerator needs to recompute
+    the geometry for a rewired complex whose CN changed (κ¹-O → κ²-OO
+    increments CN by +1).  Universal: pure CN + d8-metal lookup.
+    """
+    try:
+        from delfin.fffree.decompose import _default_geometry
+    except ImportError:
+        return None
+    try:
+        return _default_geometry(metal_sym, int(cn))
+    except Exception:
+        return None
+
+
 def enumerate_and_embed_mogul_primary(
     smiles: str,
     *,
     max_isomers: int = 50,
     max_attempts: int = 5,
+    mol_override=None,
+    donor_idxs_override: Optional[Sequence[int]] = None,
+    geom_name_override: Optional[str] = None,
+    label_prefix: str = "",
 ) -> Optional[List[Tuple[List[str], np.ndarray, str]]]:
     """Enumerate ALL Pólya orbits and embed each one through the Mogul-primary
     bounds matrix.
@@ -509,6 +1113,21 @@ def enumerate_and_embed_mogul_primary(
     Universal: pure graph topology + element labels.  No SMILES pattern,
     no per-class branch.
 
+    Parameters
+    ----------
+    mol_override, donor_idxs_override, geom_name_override : κⁿ-variant
+        hook.  When the caller has already rewired the complex graph to
+        encode a non-default κⁿ binding mode (e.g. κ²-OO promotion of an
+        acetate), it passes the rewired mol + the new donor index list +
+        the new polyhedron name here.  The orbit enumeration then operates
+        on the κⁿ-promoted topology rather than re-deriving from the
+        SMILES.  When all three are ``None`` (default), the SMILES is
+        decomposed as before -- byte-identical with the pre-κⁿ path.
+    label_prefix : str
+        String prefix added to every orbit label, used to mark which κⁿ
+        variant produced each XYZ (e.g. ``"k2-OO-"``).  Empty by default
+        so seed-κⁿ orbit labels are unchanged.
+
     Returns
     -------
     list of (syms, P, label) or None
@@ -516,35 +1135,45 @@ def enumerate_and_embed_mogul_primary(
         should fall through to the single-structure path.  Otherwise the
         list contains at least one entry (the canonical orbit).
     """
-    # 1) decompose
-    try:
-        from delfin.fffree import decompose as _DEC
-    except ImportError:
-        return None
-    try:
-        d = _DEC.decompose(smiles)
-    except Exception:
-        d = None
-    if d is None:
-        return None
+    # 1) Source the mol / donor / geometry, either from override or from
+    #    a fresh SMILES decomposition.
+    if mol_override is not None and donor_idxs_override is not None:
+        mol = mol_override
+        metal_idx, _ = _locate_metal_and_donors(mol)
+        if metal_idx is None:
+            return None
+        donor_idxs = sorted(int(d) for d in donor_idxs_override)
+        if not donor_idxs:
+            return None
+        metal_sym = str(mol.GetAtomWithIdx(int(metal_idx)).GetSymbol())
+        geom_name = geom_name_override or _default_geom_for_cn(
+            metal_sym, len(donor_idxs),
+        )
+        if geom_name is None:
+            return None
+    else:
+        try:
+            from delfin.fffree import decompose as _DEC
+        except ImportError:
+            return None
+        try:
+            d = _DEC.decompose(smiles)
+        except Exception:
+            d = None
+        if d is None:
+            return None
+        geom_name = d.get("geometry")
+        mol = _full_complex_mol(smiles)
+        if mol is None:
+            return None
+        metal_idx, donor_idxs = _locate_metal_and_donors(mol)
+        if metal_idx is None or not donor_idxs:
+            return None
 
-    geom_name = d.get("geometry")
     geom_polya_key = _GEOM_NAME_TO_POLYA_KEY.get(str(geom_name))
     if geom_polya_key is None:
         return None
 
-    # 2) load the donor label multiset from the FULL-COMPLEX mol (so the
-    #    atom indices match the bounds-matrix path).  We use the donor
-    #    ELEMENT as the label for the same reason converter_backend's
-    #    legacy ``_fffree_isomers`` uses it for monodentate ligands:
-    #    cis/trans/fac/mer isomerism is defined by donor element identity,
-    #    not by the full ligand SMILES.
-    mol = _full_complex_mol(smiles)
-    if mol is None:
-        return None
-    metal_idx, donor_idxs = _locate_metal_and_donors(mol)
-    if metal_idx is None or not donor_idxs:
-        return None
     donor_labels = [str(mol.GetAtomWithIdx(int(d)).GetSymbol())
                     for d in donor_idxs]
     if not donor_labels:
@@ -565,10 +1194,52 @@ def enumerate_and_embed_mogul_primary(
     if not colorings:
         return None
 
-    # 4) embed each orbit
+    # 4) embed each orbit (+ optional per-orbit conformer enumeration)
     geom_tag = str(geom_name).split()[0]
     results: List[Tuple[List[str], np.ndarray, str]] = []
+
+    # Conformer-enumeration knobs (env-tunable; default ON).  The total cap
+    # protects against combinatorial explosion on large rings + many rotors;
+    # the per-orbit cap keeps the ensemble balanced across orbits.  When
+    # the gate is OFF (DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0), every
+    # orbit emits exactly one structure (the base build) and the path is
+    # byte-identical to the pre-2026-06-07 orbit-only behaviour.
+    conformers_on = mogul_primary_conformers_enabled()
+    try:
+        conf_max_total = int(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS_MAX_TOTAL", "300"
+        ))
+    except (TypeError, ValueError):
+        conf_max_total = 300
+    try:
+        conf_per_orbit = int(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS_PER_ORBIT", "30"
+        ))
+    except (TypeError, ValueError):
+        conf_per_orbit = 30
+    try:
+        conf_ring_states = int(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS_RING_STATES", "4"
+        ))
+    except (TypeError, ValueError):
+        conf_ring_states = 4
+    try:
+        conf_rot_states = int(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS_ROT_STATES", "12"
+        ))
+    except (TypeError, ValueError):
+        conf_rot_states = 12
+    try:
+        conf_rmsd_tol = float(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS_RMSD_TOL", "0.30"
+        ))
+    except (TypeError, ValueError):
+        conf_rmsd_tol = 0.30
+
+    n_total_emitted = 0
     for k, coloring in enumerate(colorings[:max_isomers]):
+        if conformers_on and n_total_emitted >= conf_max_total:
+            break
         donor_at_vertex = _coloring_to_donor_assignment(
             coloring, donor_labels, donor_idxs,
         )
@@ -580,6 +1251,10 @@ def enumerate_and_embed_mogul_primary(
                 max_attempts=max_attempts,
                 donor_at_vertex=donor_at_vertex,
                 geometry_key=str(geom_name),
+                mol_override=mol_override,
+                donor_idxs_override=(
+                    donor_idxs if mol_override is not None else None
+                ),
             )
         except Exception:
             built = None
@@ -588,13 +1263,319 @@ def enumerate_and_embed_mogul_primary(
         out_syms, P = built
         iso_name = _classify_orbit_label(geom_polya_key, coloring)
         if iso_name:
-            label = f"{iso_name}-{geom_tag}-{k+1}-mogul"
+            orbit_label = f"{iso_name}-{geom_tag}-{k+1}-mogul"
         else:
-            label = f"MOGUL-PRIMARY-{geom_tag}-{k+1}"
-        results.append((out_syms, P, label))
+            orbit_label = f"MOGUL-PRIMARY-{geom_tag}-{k+1}"
+        if label_prefix:
+            orbit_label = f"{label_prefix}{orbit_label}"
+
+        # Conformer enumeration: Cremer-Pople ring puckers × single-bond
+        # rotamers × RMSD-dedup × Mahalanobis-rank.  The base structure is
+        # always conf0; any additional puckers/rotamers are appended in
+        # severity-ascending order.  When the conformer gate is OFF, only
+        # the base structure is emitted (byte-identical orbit-only path).
+        if not conformers_on:
+            results.append((out_syms, P, orbit_label))
+            n_total_emitted += 1
+            continue
+
+        # Budget remaining = how many conformers we can still emit before
+        # the total cap.  Always at least 1 (the base structure) so each
+        # orbit appears at least once even at the cap edge.
+        budget = max(1, min(conf_per_orbit, conf_max_total - n_total_emitted))
+        # Aromatic-atom-set from the source SMILES so the pucker enum
+        # skips benzene/pyridine/NHC π-systems whose post-embed geometry
+        # has lost the aromatic bond-length / planarity signature
+        # (RDKit's embed routes aromatic bonds as SINGLE).  Computed once
+        # per SMILES outside the orbit loop -- but the post-build re-order
+        # maps source -> output identically across orbits so the same set
+        # applies.
+        arom_set = _aromatic_atom_set_from_smiles(smiles, len(out_syms))
+        try:
+            ensemble = enumerate_orbit_conformers(
+                out_syms, P,
+                metal_idx=0,           # assemble_complex_mogul_primary puts metal at 0
+                donor_idxs=None,       # auto-derive from geometry
+                aromatic_atom_set=arom_set or None,
+                max_ring_states=conf_ring_states,
+                max_rotamer_states=conf_rot_states,
+                max_total=budget,
+                rmsd_dedup_tol=conf_rmsd_tol,
+            )
+        except Exception:
+            ensemble = []
+        if not ensemble:
+            # Fallback: at least emit the base structure when conformer
+            # enumeration fails (defensive -- in practice always succeeds).
+            results.append((out_syms, P, orbit_label))
+            n_total_emitted += 1
+            continue
+        for ci, (s_list, P_v, sub_label, _sev) in enumerate(ensemble):
+            if n_total_emitted >= conf_max_total:
+                break
+            label = f"{orbit_label}-conf{ci}-{sub_label}"
+            results.append((list(s_list), np.asarray(P_v, dtype=float), label))
+            n_total_emitted += 1
+
     if not results:
         return None
     return results
+
+
+# ---------------------------------------------------------------------------
+# Top-level κⁿ binding-mode enumeration
+# (2026-06-07, branch feat-mogul-primary-2026-06-07)
+# ---------------------------------------------------------------------------
+def enumerate_kappa_variants_mogul_primary(
+    smiles: str,
+    *,
+    max_isomers: int = 50,
+    max_attempts: int = 5,
+) -> Optional[List[Tuple[List[str], np.ndarray, str]]]:
+    """Top-level entry: enumerate κⁿ binding-mode variants × Pólya orbits
+    × bounds-matrix embed for ``smiles``.
+
+    Algorithm:
+
+      1. Parse + decompose ``smiles`` -> base mol, primary metal, seed donor
+         indices (one per current M-X bond).
+      2. For each ligand fragment (identified via its seed donor), call
+         ``ambidentate_kappa_enum.enumerate_kappa_modes_for_ligand`` to
+         generate the κⁿ options for that ligand.
+      3. Take the Cartesian product across ligands ->
+         per-complex κⁿ variant donor sets.  De-duplicate by donor
+         multiset.
+      4. For each variant:
+           a. Rewire the mol -> insert/remove dative bonds so the
+              metal is bonded exactly to the variant's donor set.
+           b. Re-derive the polyhedron name from the new CN.
+           c. Call ``enumerate_and_embed_mogul_primary`` on the rewired
+              mol with ``label_prefix`` set to the κⁿ tag.
+      5. Concatenate the per-variant results into one ensemble.
+
+    Universal: ambidentate detection is graph + element + Lewis-octet,
+    no SMARTS.  Bite-compatibility is a graph-distance test plus a
+    universal chord-length estimate.  No per-anion table.
+
+    Env-gate: ``DELFIN_FFFREE_MOGUL_PRIMARY_KAPPA_ENUM``.  Default ON
+    when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is also set; off otherwise
+    (returns ``None`` and the caller falls through to the κ¹-seed
+    orbit-only path).
+
+    Returns
+    -------
+    list of (syms, P, label) or None
+        ``None`` ⇒ κⁿ enumeration unavailable for this SMILES (e.g.
+        decompose failure, no ambidentate ligand detected so the result
+        would equal the orbit-only path).  Caller falls through to the
+        orbit-only path on ``None``.
+    """
+    # Env-gate check (the ambidentate module is the single source of truth).
+    try:
+        from delfin.fffree.ambidentate_kappa_enum import (
+            _env_on as _kappa_env_on,
+            enumerate_complex_kappa_variants,
+            make_variant_mol,
+        )
+    except ImportError:
+        return None
+    if not _kappa_env_on():
+        return None
+
+    # Base mol from the full-complex graph.  We do NOT require the
+    # heavier ``decompose`` path -- it rejects large NHC ligands and
+    # other edge cases where the κⁿ enumeration still has work to do.
+    # This mirrors ``assemble_complex_mogul_primary`` so any SMILES
+    # that yields a single-structure embed also yields a κⁿ enumeration.
+    mol_base = _full_complex_mol(smiles)
+    if mol_base is None:
+        return None
+    metal_idx, base_donors = _locate_metal_and_donors(mol_base)
+    if metal_idx is None or not base_donors:
+        return None
+
+    # κⁿ enumeration over the WHOLE complex.
+    try:
+        variants = enumerate_complex_kappa_variants(
+            mol_base, int(metal_idx), base_donors,
+        )
+    except Exception:
+        return None
+    if not variants:
+        return None
+
+    metal_sym = str(mol_base.GetAtomWithIdx(int(metal_idx)).GetSymbol())
+
+    # If the only variant is the default κ¹-seed, no κⁿ work to do -- let
+    # the caller use the cheaper orbit-only path (returns None here so the
+    # dispatcher falls through).
+    non_default = [v for v in variants if not v.get("is_seed_default")]
+    if not non_default:
+        return None
+
+    # Build per-variant ensemble.  The DEFAULT (seed-κ¹) variant
+    # delegates to the unmodified orbit path so its bytes are byte-
+    # identical with the pre-κⁿ output.  Non-default variants get a
+    # rewired mol + a label prefix.
+    #
+    # Global cap: when κⁿ × orbits × conformers combinatorially explodes
+    # (e.g. 6 κⁿ × 2 orbits × 13 conformers = 156 structures), we cap
+    # the ensemble to keep pool sizes bounded.  Env-tunable.
+    try:
+        MAX_ENSEMBLE_TOTAL = int(os.environ.get(
+            "DELFIN_FFFREE_MOGUL_PRIMARY_KAPPA_ENUM_ENSEMBLE_MAX", "200",
+        ))
+    except (TypeError, ValueError):
+        MAX_ENSEMBLE_TOTAL = 200
+    ensemble: List[Tuple[List[str], np.ndarray, str]] = []
+    seen_xyz_hashes = set()  # de-dup variants whose mol rewiring collapsed
+    for v in variants:
+        if len(ensemble) >= MAX_ENSEMBLE_TOTAL:
+            break
+        v_donors = sorted(int(d) for d in v["all_donors"])
+        if v.get("is_seed_default"):
+            sub = enumerate_and_embed_mogul_primary(
+                smiles,
+                max_isomers=max_isomers,
+                max_attempts=max_attempts,
+                label_prefix="",
+            )
+            # Fallback: if orbit-only path fails (e.g. decompose rejects
+            # a large NHC ligand but the single-structure embed still
+            # works), emit the canonical single structure so the κⁿ
+            # ensemble always has the κ¹-seed reference structure.  The
+            # conformer-enum extension applies here too -- the single
+            # structure becomes a per-isomer conformer ensemble when the
+            # gate is on.
+            if not sub:
+                try:
+                    base_built = assemble_complex_mogul_primary(
+                        smiles, max_attempts=max_attempts,
+                    )
+                except Exception:
+                    base_built = None
+                if base_built is not None:
+                    syms_b, P_b = base_built
+                    if mogul_primary_conformers_enabled():
+                        try:
+                            arom_b = _aromatic_atom_set_from_smiles(
+                                smiles, len(syms_b),
+                            )
+                        except Exception:
+                            arom_b = []
+                        try:
+                            ens_b = enumerate_orbit_conformers(
+                                syms_b, P_b,
+                                metal_idx=0,
+                                donor_idxs=None,
+                                aromatic_atom_set=arom_b or None,
+                            )
+                        except Exception:
+                            ens_b = []
+                        if ens_b:
+                            sub = [
+                                (s_l, P_v,
+                                 f"MOGUL-PRIMARY-1-conf{ci}-{sub_lab}")
+                                for ci, (s_l, P_v, sub_lab, _sev)
+                                in enumerate(ens_b)
+                            ]
+                        else:
+                            sub = [(syms_b, P_b, "MOGUL-PRIMARY-1")]
+                    else:
+                        sub = [(syms_b, P_b, "MOGUL-PRIMARY-1")]
+        else:
+            try:
+                new_mol = make_variant_mol(
+                    mol_base, int(metal_idx), base_donors, v_donors,
+                )
+            except Exception:
+                new_mol = None
+            if new_mol is None:
+                continue
+            new_geom = _default_geom_for_cn(metal_sym, len(v_donors))
+            if new_geom is None:
+                continue
+            tag = v.get("label_suffix") or "kappa"
+            tag = tag.replace("+", "_")
+            sub = enumerate_and_embed_mogul_primary(
+                smiles,
+                max_isomers=max_isomers,
+                max_attempts=max_attempts,
+                mol_override=new_mol,
+                donor_idxs_override=v_donors,
+                geom_name_override=new_geom,
+                label_prefix=f"{tag}-",
+            )
+            # Fallback: when orbit enumeration fails for the variant
+            # (e.g. polyhedron without a registered Pólya group, or
+            # GRIP-lib lookup misses), still emit the single rewired
+            # κⁿ structure so the user sees the κⁿ topology choice.
+            # When the conformer gate is on, the single structure becomes
+            # a per-variant conformer ensemble.
+            if not sub:
+                try:
+                    v_built = assemble_complex_mogul_primary(
+                        smiles,
+                        max_attempts=max_attempts,
+                        geometry_key=new_geom,
+                        mol_override=new_mol,
+                        donor_idxs_override=v_donors,
+                    )
+                except Exception:
+                    v_built = None
+                if v_built is not None:
+                    syms_v, P_v = v_built
+                    if mogul_primary_conformers_enabled():
+                        try:
+                            arom_v = _aromatic_atom_set_from_smiles(
+                                smiles, len(syms_v),
+                            )
+                        except Exception:
+                            arom_v = []
+                        try:
+                            ens_v = enumerate_orbit_conformers(
+                                syms_v, P_v,
+                                metal_idx=0,
+                                donor_idxs=None,
+                                aromatic_atom_set=arom_v or None,
+                            )
+                        except Exception:
+                            ens_v = []
+                        if ens_v:
+                            sub = [
+                                (s_l, P_q,
+                                 f"{tag}-MOGUL-PRIMARY-1-conf{ci}-{sub_lab}")
+                                for ci, (s_l, P_q, sub_lab, _sev)
+                                in enumerate(ens_v)
+                            ]
+                        else:
+                            sub = [(syms_v, P_v, f"{tag}-MOGUL-PRIMARY-1")]
+                    else:
+                        sub = [(syms_v, P_v, f"{tag}-MOGUL-PRIMARY-1")]
+        if not sub:
+            continue
+        for syms, P, lab in sub:
+            if len(ensemble) >= MAX_ENSEMBLE_TOTAL:
+                break
+            # Dedup by content hash of (sorted atom array) -- two
+            # different κⁿ variants on geometrically-equivalent donors
+            # may collapse to the same XYZ after the embed.
+            try:
+                key = (
+                    tuple(syms),
+                    tuple(round(float(x), 4) for row in np.asarray(P) for x in row),
+                )
+            except Exception:
+                key = None
+            if key is not None and key in seen_xyz_hashes:
+                continue
+            if key is not None:
+                seen_xyz_hashes.add(key)
+            ensemble.append((syms, P, lab))
+
+    if not ensemble:
+        return None
+    return ensemble
 
 
 # ---------------------------------------------------------------------------

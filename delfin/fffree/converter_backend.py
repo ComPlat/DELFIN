@@ -951,29 +951,95 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY", "0") == "1":
         try:
             from delfin.fffree import assemble_via_mogul as _MP
-            # 2026-06-07 — Pólya orbit enumeration over the Mogul-primary
-            # bounds matrix.  Per draft "Closed-form coverage of the
-            # configuration space": SMILES → Burnside-distinct orbits →
-            # embed EACH orbit through ONE DG embed with the per-orbit
-            # donor-donor bound override → return the ensemble.  Universal:
-            # pure graph topology + element labels, no SMILES pattern, no
-            # per-class branch.  Falls through to the single-structure
-            # path when orbit enumeration yields nothing (e.g. geometry
-            # without a registered Pólya group, multi-metal, high
-            # denticity chelate that the orbit machinery does not yet
-            # support).
-            _ens = _MP.enumerate_and_embed_mogul_primary(
-                smiles, max_isomers=max_isomers,
-            )
+            # 2026-06-07 — κⁿ × Pólya orbit × Mogul-primary embed.
+            #
+            # Composition (per draft "Closed-form coverage of the
+            # configuration space"):
+            #   SMILES
+            #     → κⁿ binding-mode variants per ligand
+            #        (κ¹-O / κ²-OO / κ¹-N / κ¹-S etc., universal Lewis-
+            #         octet + graph-bite-compatibility detection)
+            #     → Burnside-distinct Pólya orbits per κⁿ variant
+            #     → ONE DG embed per (variant, orbit) with the bounds
+            #       matrix populated from the CCDC manifold + the per-
+            #       orbit donor-donor bound override
+            #     → return the ensemble.
+            #
+            # The κⁿ enumerator returns None when no ambidentate ligand
+            # is detected (so the path is equivalent to orbit-only); we
+            # then fall through to the cheaper orbit-only enumerator
+            # (byte-identical with the pre-κⁿ path).  Default ON when
+            # DELFIN_FFFREE_MOGUL_PRIMARY=1; explicit
+            # DELFIN_FFFREE_MOGUL_PRIMARY_KAPPA_ENUM=0 disables.
+            _ens = None
+            if os.environ.get(
+                "DELFIN_FFFREE_MOGUL_PRIMARY_KAPPA_ENUM", "1"
+            ) != "0":
+                try:
+                    _ens = _MP.enumerate_kappa_variants_mogul_primary(
+                        smiles, max_isomers=max_isomers,
+                    )
+                except Exception:
+                    _ens = None
+            if _ens is None:
+                # Orbit-only path -- no ambidentate ligand or κⁿ disabled.
+                # Pólya orbit enumeration over the Mogul-primary bounds
+                # matrix.  Per draft "Closed-form coverage of the
+                # configuration space": SMILES → Burnside-distinct orbits →
+                # embed EACH orbit through ONE DG embed with the per-orbit
+                # donor-donor bound override → return the ensemble.
+                # Universal: pure graph topology + element labels, no
+                # SMILES pattern, no per-class branch.  Falls through to
+                # the single-structure path when orbit enumeration yields
+                # nothing.
+                _ens = _MP.enumerate_and_embed_mogul_primary(
+                    smiles, max_isomers=max_isomers,
+                )
             if _ens:
                 return [(_xyz(_syms, _P), _lab) for (_syms, _P, _lab) in _ens]
             # Orbit enumeration unavailable for this SMILES — emit the
             # canonical single structure so the Mogul-primary path still
             # owns the build.  Only on full failure do we fall through
             # to legacy.
+            #
+            # 2026-06-07 conformer-enum extension: when no Pólya orbit
+            # decomposition is available (CN<3 linear, chelate without a
+            # registered Pólya key, etc.) the single-structure path still
+            # benefits from per-isomer conformer enumeration (Cremer-Pople
+            # ring pucker + single-bond rotamers + Mahalanobis-rank).
+            # Default-ON; setting DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0
+            # restores the single-structure orbit-only behaviour.
             _res = _MP.assemble_complex_mogul_primary(smiles)
             if _res is not None:
                 _syms, _P = _res
+                if _MP.mogul_primary_conformers_enabled():
+                    # Aromatic-atom-set from the source SMILES; aromaticity
+                    # perception on the embed-output mol is unreliable because
+                    # RDKit's embed treats aromatic bonds as SINGLE, so the
+                    # post-embed geometry has lost the 1.39 Å / planar
+                    # signature of the aromatic π-system.
+                    try:
+                        _arom_set = _MP._aromatic_atom_set_from_smiles(
+                            smiles, len(_syms),
+                        )
+                    except Exception:
+                        _arom_set = []
+                    try:
+                        _ensemble = _MP.enumerate_orbit_conformers(
+                            _syms, _P,
+                            metal_idx=0,
+                            donor_idxs=None,
+                            aromatic_atom_set=_arom_set or None,
+                        )
+                    except Exception:
+                        _ensemble = []
+                    if _ensemble:
+                        return [
+                            (_xyz(_s_list, _P_v),
+                             f"MOGUL-PRIMARY-1-conf{_ci}-{_sub_label}")
+                            for _ci, (_s_list, _P_v, _sub_label, _sev)
+                            in enumerate(_ensemble)
+                        ]
                 return [(_xyz(_syms, _P), "MOGUL-PRIMARY-1")]
         except Exception:
             # silent fall-through to legacy on primary failure
