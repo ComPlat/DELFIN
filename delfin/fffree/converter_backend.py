@@ -1190,6 +1190,36 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         elif d["geometry"] == "T-3 T-shape":
             results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
+    # High-CN multi-polyhedron dispatch (2026-06-07).  Same pattern as the
+    # CN5 SPY-5 / CN6 TPR-6 dual-isomer enumeration above, but extended to
+    # CN 8/9/10/11/12 — closing the dispatch hole behind the 41/63 missing
+    # CCDC outputs (PAYQIS Ru CN10, FEZQUY Ru CN10, BUNWUF Ru CN9, GEYJAX Ru
+    # CN10, etc.).  Best-effort: skips polyhedra whose Pólya group or vertex
+    # builder is missing; never bails the primary geometry's result.
+    #
+    # Default OFF byte-identical when ``DELFIN_FFFREE_HIGH_CN_COVERAGE``
+    # (and ``DELFIN_FFFREE_PURE_TRACK3``) are both unset.
+    _cn = d.get("cn")
+    if _cn in (8, 9, 10, 11, 12) and (
+        os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+    ):
+        try:
+            from delfin.fffree.high_cn_coverage import HIGH_CN_EXTRA_BY_CN, HIGH_CN_POLYA_KEY_MAP
+        except ImportError:
+            HIGH_CN_EXTRA_BY_CN, HIGH_CN_POLYA_KEY_MAP = {}, {}
+        # Reverse map: canonical name → Pólya key.
+        _canon_to_key = {v: k for k, v in HIGH_CN_POLYA_KEY_MAP.items()}
+        for _extra_geom in HIGH_CN_EXTRA_BY_CN.get(_cn, []):
+            if _extra_geom == d.get("geometry"):
+                continue                                 # primary already done
+            _extra_key = _canon_to_key.get(_extra_geom)
+            if not _extra_key:
+                continue
+            results += _enumerate_geometry(
+                d, _extra_key, _extra_geom,
+                lig_ref, lab_elem, spec, max_isomers,
+            )
     # Hebel #101 (2026-06-02): optional rotamer + ring-pucker enumeration
     # post-processed by Kabsch-RMSD dedup.  All three env-flags default OFF
     # -> this call is a no-op byte-identical to HEAD when none are set.

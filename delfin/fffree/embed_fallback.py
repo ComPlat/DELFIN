@@ -125,6 +125,27 @@ def _detect_metal_donors(mol) -> Tuple[Optional[int], List[int]]:
     return metal_idx, donors
 
 
+def _mol_has_high_cn_metal(mol) -> bool:
+    """True when ``mol`` contains a metal whose graph CN is >= 8.
+
+    Used by the legacy ETKDG fallback to decide whether the relaxed
+    bounds-matrix retry is warranted (high-CN builds often fail the strict
+    default bounds tolerance even though their geometry is feasible).
+    Safe-default ``False`` on any RDKit / import failure.
+    """
+    try:
+        from delfin._bond_decollapse import _is_metal
+    except Exception:
+        return False
+    try:
+        for atom in mol.GetAtoms():
+            if _is_metal(atom.GetSymbol()) and atom.GetDegree() >= 8:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _maybe_grip_polish(
     coords: np.ndarray,
     mol,
@@ -779,8 +800,46 @@ def embed_isomers(
     try:
         cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_embed, params=params)
     except Exception:
-        return None
+        cids = []
     cids = list(cids)
+    # High-CN bounds-tolerance retry (2026-06-07).  When the strict default
+    # ETKDG embed produces ZERO conformers AND the molecule contains a metal
+    # with CN >= 8, retry once with a relaxed bounds-matrix tolerance (env-
+    # configurable via DELFIN_FFFREE_HIGH_CN_BOUNDS_TOL_FACTOR, default 2.0).
+    # Catastrophic high-CN build failures (PAYQIS Ru CN10, FEZQUY Ru CN10,
+    # BUNWUF Ru CN9, GEYJAX Ru CN10) tend to fail this strict gate.  Default
+    # OFF byte-identical: only activates under DELFIN_FFFREE_HIGH_CN_COVERAGE
+    # (or PURE_TRACK3) when strict ETKDG ALREADY failed.
+    if not cids:
+        try:
+            from delfin.fffree.high_cn_coverage import (
+                high_cn_coverage_enabled, high_cn_bounds_tol_factor,
+            )
+        except ImportError:
+            high_cn_coverage_enabled = lambda: False  # noqa: E731
+            high_cn_bounds_tol_factor = lambda: 2.0  # noqa: E731
+        if high_cn_coverage_enabled() and _mol_has_high_cn_metal(mol):
+            try:
+                relaxed = AllChem.ETKDGv3()
+                relaxed.randomSeed = ETKDG_SEED
+                # ``useRandomCoords=True`` is REQUIRED when the strict embed
+                # has already failed once with the same seed — otherwise the
+                # retry hits the same singular starting point.
+                relaxed.useRandomCoords = True
+                relaxed.numThreads = 1
+                _factor = high_cn_bounds_tol_factor()
+                # ETKDGv3 exposes ``boundsMatForceScaling`` (RDKit >= 2022.03)
+                # and the older ``boundsMatTol`` attribute — try the modern
+                # name first and fall back to the legacy one.
+                if hasattr(relaxed, "boundsMatForceScaling"):
+                    relaxed.boundsMatForceScaling = float(_factor)
+                if hasattr(relaxed, "boundsMatTol"):
+                    relaxed.boundsMatTol = float(_factor) * 0.05
+                cids = list(AllChem.EmbedMultipleConfs(
+                    mol, numConfs=n_embed, params=relaxed,
+                ))
+            except Exception:
+                cids = []
     if not cids:
         return None
 

@@ -271,11 +271,23 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
         return "TTP-9 tricapped trigonal prism"
     # Mission A2 (2026-06-05): non-f-block CN10 polyhedra (BICAP-10 default).
     # Env-gated DELFIN_FFFREE_CN10_POLYHEDRA=1 (or PURE_TRACK3=1).  When unset
-    # this falls through to ``return None`` so HEAD behaviour is byte-identical.
+    # this falls through to the high-CN coverage check below.
     if cn == 10:
         if (os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1"
                 or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
             return "BICAP-10 bicapped square antiprism"
+    # High-CN coverage extension (2026-06-07): non-f-block CN 10/11/12 default
+    # geometries (BICAP-10 / CAP-11 / ICO-12).  Universal: works for any
+    # metal — same canonical names f-block dispatch uses but no metal-class
+    # filter.  Env-gated DELFIN_FFFREE_HIGH_CN_COVERAGE=1 (or PURE_TRACK3=1).
+    if (os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1"
+            or os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
+        if cn == 10:
+            return "BICAP-10 bicapped square antiprism"
+        if cn == 11:
+            return "CAP-11 monocapped pentagonal antiprism"
+        if cn == 12:
+            return "ICO-12 icosahedron"
     return None
 
 
@@ -374,6 +386,13 @@ def decompose(smiles: str) -> Optional[Dict]:
     # the full f-block CN8-12 dispatch.
     if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_CN10_POLYHEDRA", "0") == "1":
         _allowed.add(10)
+    # High-CN coverage extension (2026-06-07): universal non-f-block CN 8-12
+    # via DD-8 / TPR-8 / CSAP-9 / MFF-9 / SPHENO-10 / CAP-11 / OCD-11 /
+    # ICO-12 / CUOH-12 / ACUOH-12.  Independent env flag so the CN 8-12 path
+    # can be exercised for Ru / Mo / Os / W / Re without enabling the full
+    # f-block dispatch.
+    if _PT3_AUTO or os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1":
+        _allowed.update({8, 9, 10, 11, 12})
     if cn not in _allowed:
         _f1_log(smiles, "cn_out_of_range", f"cn={cn}")
         return None
