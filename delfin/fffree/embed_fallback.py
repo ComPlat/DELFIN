@@ -48,7 +48,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -373,6 +373,207 @@ def _maybe_xtb_polish(
     return polished, "xtb"
 
 
+def _emit_one_conformer(
+    *,
+    coords: np.ndarray,
+    syms: Sequence[str],
+    mol,
+    label_prefix: str,
+    polish_mode: str,
+    xtb_charge: int,
+    xtb_uhf: int,
+) -> List[Tuple[str, str]]:
+    """Apply the per-polish-mode emit logic to a single (coords, mol) pair.
+
+    Factor-out of the per-conformer body in :func:`embed_isomers` so the
+    orbit-dispatch path can re-use the same branches.  ``label_prefix`` is
+    pre-formatted (e.g. ``"iso2-conf3"``) and the polish suffix is appended
+    deterministically by the matching branch.
+    """
+    out: List[Tuple[str, str]] = []
+    if polish_mode == "raw":
+        out.append((_xyz_block(syms, coords), f"{label_prefix}-raw"))
+        return out
+    if polish_mode == "grip":
+        P_out, status = _maybe_grip_polish(coords, mol)
+        suffix = "grip" if status == "grip" else "raw"
+        out.append((_xyz_block(syms, P_out), f"{label_prefix}-{suffix}"))
+        return out
+    if polish_mode == "xtb":
+        P_out, status = _maybe_xtb_polish(
+            coords, mol, charge=xtb_charge, uhf=xtb_uhf,
+        )
+        suffix = "xtb" if status == "xtb" else "raw"
+        out.append((_xyz_block(syms, P_out), f"{label_prefix}-{suffix}"))
+        return out
+    if polish_mode == "uff":
+        P_out, status = _maybe_uff_polish(coords, mol)
+        suffix = "uff" if status == "uff" else "raw"
+        out.append((_xyz_block(syms, P_out), f"{label_prefix}-{suffix}"))
+        return out
+    if polish_mode == "both":
+        out.append((_xyz_block(syms, coords), f"{label_prefix}-raw"))
+        P_out, status = _maybe_grip_polish(coords, mol)
+        suffix = "grip" if status == "grip" else "raw"
+        out.append((_xyz_block(syms, P_out), f"{label_prefix}-{suffix}"))
+        return out
+    if polish_mode == "all":
+        P_grip, st_grip = _maybe_grip_polish(coords, mol)
+        sx_grip = "grip" if st_grip == "grip" else "raw"
+        out.append((_xyz_block(syms, P_grip), f"{label_prefix}-{sx_grip}"))
+        P_uff, st_uff = _maybe_uff_polish(coords, mol)
+        sx_uff = "uff" if st_uff == "uff" else "raw"
+        out.append((_xyz_block(syms, P_uff), f"{label_prefix}-{sx_uff}"))
+        P_xtb, st_xtb = _maybe_xtb_polish(
+            coords, mol, charge=xtb_charge, uhf=xtb_uhf,
+        )
+        sx_xtb = "xtb" if st_xtb == "xtb" else "raw"
+        out.append((_xyz_block(syms, P_xtb), f"{label_prefix}-{sx_xtb}"))
+        return out
+    return out
+
+
+def _emit_orbit_ensemble(
+    *,
+    mol,
+    syms: Sequence[str],
+    pvp_result: dict,
+    n_embed_per_orbit: int,
+    polish_mode: str,
+    xtb_charge: int,
+    xtb_uhf: int,
+) -> List[Tuple[str, str]]:
+    """Run one ETKDG embed per polyhedron-vertex Pólya orbit.
+
+    For each orbit:
+      1. Build a ``coordMap`` pinning the metal at the origin and each donor
+         atom at its assigned polyhedron vertex (scaled to a typical M-D
+         distance via :func:`polyhedron_vertex_polya.vertex_coords`).
+      2. Run a deterministic ETKDGv3 multi-conf embed with that coordMap.
+         The seed is offset per orbit so different orbits get different
+         starting random-coordinate seeds, which (combined with the pinned
+         metal + donors) yields distinct conformer ensembles per orbit.
+      3. Emit ``polish_mode``-specific outputs per conformer, labelled
+         ``isoN-confK-<suffix>`` (N = orbit index, K = ETKDG conformer id).
+
+    Returns ``[]`` when no orbit produces a valid embed; the caller silently
+    falls back to the legacy single-pattern ETKDG path.
+    """
+    try:
+        from rdkit.Chem import AllChem
+        from rdkit.Geometry import Point3D
+    except Exception:
+        return []
+    try:
+        from delfin.fffree.polyhedron_vertex_polya import vertex_coords as _vc
+    except Exception:
+        return []
+    polyhedron = str(pvp_result["polyhedron"])
+    metal_idx = int(pvp_result["metal_idx"])
+    donor_atoms = [int(x) for x in pvp_result["donor_atoms"]]
+    orbits = list(pvp_result["orbits"])
+    if not donor_atoms or not orbits:
+        return []
+    # Determine the metal element for vertex_coords scaling.
+    try:
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    except Exception:
+        metal_sym = "Cu"
+    V = _vc(polyhedron, metal=metal_sym)
+    if V is None or len(V) < len(donor_atoms):
+        return []
+
+    out_all: List[Tuple[str, str]] = []
+    # The orbit label is its index in the canonical (lex-sorted) orbit list,
+    # so two runs with the same SMILES emit identical labels.
+    for iso_id, orbit in enumerate(orbits):
+        # Determine donor-slot -> vertex assignment for THIS orbit.  The
+        # detect_from_smiles pass produced ``donor_types`` (length CN) in the
+        # SAME order as donor_atoms (one entry per donor); ``orbit`` is a
+        # length-CN tuple of donor-type labels per VERTEX.  We need: for each
+        # donor slot (index into donor_atoms), find the orbit's vertex whose
+        # label matches the donor's type.  Multiple matches are possible
+        # (identical-label donors are interchangeable), so we use a greedy
+        # type-bucket assignment (deterministic: lex on donor index).
+        donor_types_list = list(pvp_result["donor_types"])
+        vertex_to_donor: Dict[int, int] = {}
+        donor_to_vertex: Dict[int, int] = {}
+        # Build per-label queues of vertex indices (in orbit order).
+        vert_queue: Dict[str, List[int]] = {}
+        for v_idx, lab in enumerate(orbit):
+            vert_queue.setdefault(str(lab), []).append(int(v_idx))
+        # Assign in donor-slot order.  Chelate constraints are already
+        # baked into the orbit (cis-filter passed); greedy is safe.
+        ok = True
+        for d_slot, lab in enumerate(donor_types_list):
+            q = vert_queue.get(str(lab), [])
+            if not q:
+                ok = False
+                break
+            v_idx = q.pop(0)
+            vertex_to_donor[v_idx] = d_slot
+            donor_to_vertex[d_slot] = v_idx
+        if not ok:
+            continue
+        # Build the coordMap (metal at origin + each donor at its assigned
+        # vertex coordinate).
+        try:
+            cmap = {int(metal_idx): Point3D(0.0, 0.0, 0.0)}
+            for d_slot, v_idx in donor_to_vertex.items():
+                p = V[int(v_idx)]
+                cmap[int(donor_atoms[d_slot])] = Point3D(
+                    float(p[0]), float(p[1]), float(p[2])
+                )
+        except Exception:
+            continue
+        # Per-orbit ETKDGv3 parameter block.  Donor + metal positions are
+        # pinned by the coordMap; we offset the random seed by the orbit
+        # index so different orbits get different starting positions for
+        # the unconstrained atoms.  ``useRandomCoords=True`` is required
+        # when coordMap pins coordinates (deterministic seeding).
+        try:
+            params = AllChem.ETKDGv3()
+            params.randomSeed = ETKDG_SEED + int(iso_id)
+            params.useRandomCoords = True
+            params.numThreads = 1
+            params.SetCoordMap(cmap)
+        except Exception:
+            continue
+        # Re-use the same molecule but request a fresh conformer batch.
+        # EmbedMultipleConfs appends new conformers (doesn't reset), so we
+        # capture the cid set returned by this call and only emit those.
+        try:
+            cids = AllChem.EmbedMultipleConfs(
+                mol, numConfs=int(n_embed_per_orbit), params=params,
+            )
+        except Exception:
+            cids = []
+        cids = list(cids)
+        if not cids:
+            continue
+        for k, cid in enumerate(cids):
+            try:
+                conf = mol.GetConformer(int(cid))
+                coords = np.asarray(conf.GetPositions(), dtype=float)
+            except Exception:
+                continue
+            if coords.size == 0 or not np.all(np.isfinite(coords)):
+                continue
+            label_prefix = f"iso{int(iso_id)}-conf{int(k)}"
+            out_all.extend(
+                _emit_one_conformer(
+                    coords=coords,
+                    syms=syms,
+                    mol=mol,
+                    label_prefix=label_prefix,
+                    polish_mode=polish_mode,
+                    xtb_charge=xtb_charge,
+                    xtb_uhf=xtb_uhf,
+                )
+            )
+    return out_all
+
+
 def embed_isomers(
     smiles: str,
     *,
@@ -481,6 +682,59 @@ def embed_isomers(
         return None
 
     n_embed = max(1, min(int(max_isomers), 16))
+
+    # Polyhedron-Vertex Pólya Enumeration (2026-06-07): when the env-gate is
+    # on AND the SMILES carries a recognised coordination polyhedron, run
+    # ONE ETKDG embed PER orbit (each with a CoordMap pinning donor atoms
+    # to the orbit-specific vertex assignment), so the conformer ensemble
+    # covers all distinct cis / trans / fac / mer / Δ-Λ isomers — not just
+    # a single donor-arrangement pattern.  Default OFF, byte-identical when
+    # unset (the helper returns ``None`` and we fall through to the legacy
+    # single-embed block below).  See
+    # :mod:`delfin.fffree.polyhedron_vertex_polya` for the maths.
+    try:
+        from delfin.fffree.polyhedron_vertex_polya import (
+            flag_active as _pvp_active,
+            enumerate_orbits_for_smiles as _pvp_orbits,
+        )
+    except Exception:
+        _pvp_active = lambda: False  # noqa: E731
+        _pvp_orbits = lambda *a, **k: None  # noqa: E731
+    _pvp_result = None
+    if _pvp_active():
+        try:
+            _pvp_result = _pvp_orbits(smiles)
+        except Exception:
+            _pvp_result = None
+    if _pvp_result is not None:
+        # Per-orbit ETKDG dispatch.  We re-use ``mol`` (already AddHs'ed) and
+        # build one CoordMap per orbit; each orbit gets up to ``n_embed`` ETKDG
+        # conformers.  The donor RDKit atom indices come from the AddHs'ed
+        # mol; ``_pvp_result["donor_atoms"]`` are indices into the un-AddHs'ed
+        # parse, but AddHs preserves heavy-atom ordering so the indices are
+        # unchanged for the donor atoms (heavy atoms only).
+        _polish_mode = polish if polish in (
+            "grip", "raw", "xtb", "uff", "both", "all",
+        ) else "raw"
+        try:
+            _xtb_charge = int(Chem.GetFormalCharge(mol))
+        except Exception:
+            _xtb_charge = 0
+        _xtb_uhf = 0
+        _syms_pvp = [a.GetSymbol() for a in mol.GetAtoms()]
+        _out_pvp: List[Tuple[str, str]] = _emit_orbit_ensemble(
+            mol=mol,
+            syms=_syms_pvp,
+            pvp_result=_pvp_result,
+            n_embed_per_orbit=n_embed,
+            polish_mode=_polish_mode,
+            xtb_charge=_xtb_charge,
+            xtb_uhf=_xtb_uhf,
+        )
+        if _out_pvp:
+            return _out_pvp
+        # else: silent fall-through to legacy ETKDG below (orbit path
+        # failed; treat as if the env-gate were off for this SMILES).
 
     # Deterministic ETKDGv3 parameter block.  ``useRandomCoords = False`` is
     # essential for the byte-identity contract; ``numThreads = 1`` prevents
