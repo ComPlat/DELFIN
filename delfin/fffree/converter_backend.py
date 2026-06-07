@@ -931,6 +931,42 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
 
 def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
+    # MOGUL-PRIMARY hook (2026-06-07, feat-mogul-primary-2026-06-07):
+    # when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set we delegate to the
+    # CCDC-bounds-matrix-driven construction described in the project
+    # draft manuscript (sections "Closed-form coverage of the
+    # configuration space" and "Empirical bounds from a 2.45M-key
+    # crystallographic manifold").
+    #
+    # This path REPLACES the idealised polyhedron + Pyykkö + VSEPR
+    # cascade with ONE constrained DG embed using the CCDC empirical
+    # distributions for every 1-2 / 1-3 / 1-4 / M-D / D-D / ring pair
+    # AND the seven dedicated TM categories (NHC carbene, hapto-η²/⁵/⁶,
+    # μ-bridge, agostic, oxidative-addition) detected universally from
+    # the molecular graph.
+    #
+    # On ANY failure inside the primary path we fall through to the
+    # legacy V16 cascade so production stays safe.  Default OFF -> the
+    # entire block is skipped and HEAD bytes are unchanged.
+    if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY", "0") == "1":
+        try:
+            from delfin.fffree import assemble_via_mogul as _MP
+            _res = _MP.assemble_complex_mogul_primary(smiles)
+            if _res is not None:
+                _syms, _P = _res
+                # The Pólya enumeration over isomers can be layered on
+                # top later; for the architectural pivot we emit ONE
+                # primary structure (the CCDC-bounds-matrix-driven
+                # embed) which matches the draft's "single constrained
+                # DG embed" contract.  Label tag matches the legacy
+                # naming convention so the pool tooling treats this
+                # entry as a normal fffree result.
+                _label = "MOGUL-PRIMARY-1"
+                return [(_xyz(_syms, _P), _label)]
+        except Exception:
+            # silent fall-through to legacy on primary failure
+            pass
+
     # GRIP-Ensemble hook (Hebel #101, 2026-06-02).  When the env flag
     # ``DELFIN_FFFREE_GRIP_ENSEMBLE=1`` is set we delegate to the
     # deterministic-completeness enumerator (Pólya × Cremer-Pople ×
