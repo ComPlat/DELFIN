@@ -526,6 +526,218 @@ def _vdw_floor_value_and_grad(
     return float(total), grad
 
 
+# ---------------------------------------------------------------------------
+# M-D too-short floor (2026-06-07) — one-sided donor-metal distance floor.
+#
+# Forensik of the V3 voll-pool surfaced ~5.9 % of structures where a declared
+# donor sits well INSIDE its ideal M-D bond (d_M-D < 0.85 × md_target).  Worst
+# cases (auto-diagnostic): NAKSEB Ru @ 0.78 Å, FOHYOQ Re @ 0.80 Å, ZEVNAP W @
+# 0.81 Å.  At those distances Pauli repulsion + nuclear shielding break long
+# before any FF / Mahalanobis term can recover -- the structure is over-bonded
+# and downstream xtb/DFT either blows up or relaxes to a chemically wrong
+# basin.
+#
+# Root cause: the existing M-D loss terms (Phase 2, ``grip_md_terms``) are
+# CENTERED on ``md_target`` -- a Gaussian or harmonic well that pulls the
+# donor toward the target from BOTH sides.  When the embed/clash phase happens
+# to start the donor below 0.85 × md_target the well's left-side gradient is
+# small (because the loss is quadratic and the gradient at d ≈ 0.78 × md is
+# already comparable to the right-side gradient at d ≈ 1.22 × md), and the
+# severity loss can pull the donor IN further if the rest of the polyhedron
+# is also collapsed.
+#
+# This block adds a STRICT one-sided floor: penalise ONLY when the donor sits
+# below ``fraction × md_target`` and ONLY along the M-D axis (the gradient
+# direction is the unit vector ``(D - M) / ||D - M||``).  Default-OFF -> byte
+# identical with HEAD when ``DELFIN_FFFREE_FFFREE_MD_TOO_SHORT_FLOOR`` is unset.
+# Opt in via ``DELFIN_FFFREE_MD_TOO_SHORT_FLOOR=1``.  Weight default 100.0
+# (strong because the floor is geometry-critical -- below it the structure is
+# nuclear-shielded nonsense).
+#
+# Math (per donor d, metal M, target distance md_target_d):
+#
+#     vec       = R[d] - R[M]            (3-vector)
+#     dist      = ||vec||                (Å)
+#     floor     = fraction × md_target_d (Å)
+#     if dist < floor and dist > 0:
+#         gap          = floor - dist
+#         L_md_short  += weight × gap²
+#         grad_R[d]   += -2 × weight × gap × vec / dist
+#         grad_R[M]   += +2 × weight × gap × vec / dist
+#
+# The gradient on the metal pushes it AWAY from the donor (negative-gradient
+# step moves M against vec, i.e. backward along the M-D axis), and the
+# gradient on the donor pushes it AWAY from the metal (along +vec).  When M
+# or D is in the frozen sphere their gradient is later zeroed by the
+# frozen-projection step inside ``loss_and_grad``; the floor still records a
+# loss value -- which surfaces the violation to the accept-if-better gate
+# and to the post-polish severity diagnostics, even in the frozen regime.
+#
+# Coincident M and D (``dist < _MD_TOO_SHORT_EPS``) are skipped to avoid the
+# 0/0 gradient direction.  Donors with a non-positive ``md_target`` are
+# skipped too (defensive: empty target table is a benign no-op).
+# ---------------------------------------------------------------------------
+_MD_TOO_SHORT_FLOOR_ENV: str = "DELFIN_FFFREE_MD_TOO_SHORT_FLOOR"
+_MD_TOO_SHORT_FLOOR_WEIGHT_ENV: str = "DELFIN_FFFREE_MD_TOO_SHORT_FLOOR_WEIGHT"
+_MD_TOO_SHORT_FLOOR_FRACTION_ENV: str = "DELFIN_FFFREE_MD_TOO_SHORT_FLOOR_FRACTION"
+DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT: float = 100.0
+DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION: float = 0.85
+_MD_TOO_SHORT_EPS: float = 1e-9
+
+
+def _md_too_short_floor_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_MD_TOO_SHORT_FLOOR`` is on (default OFF).
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other value
+    (including unset / empty) keeps the term OFF, preserving byte-identity
+    with the legacy polish.
+    """
+    raw = os.environ.get(_MD_TOO_SHORT_FLOOR_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_md_too_short_floor_weight() -> float:
+    """Effective weight for the one-sided M-D too-short floor penalty.
+
+    env > :data:`DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT` (100.0).  Non-finite /
+    non-numeric values fall through to the default with a single warning so
+    the polish never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_MD_TOO_SHORT_FLOOR_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _MD_TOO_SHORT_FLOOR_WEIGHT_ENV, raw, DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _MD_TOO_SHORT_FLOOR_WEIGHT_ENV, raw, DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT,
+            )
+    return DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT
+
+
+def _resolve_md_too_short_floor_fraction() -> float:
+    """Effective floor fraction for the one-sided M-D too-short penalty.
+
+    env > :data:`DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION` (0.85).  Values are
+    clamped to ``(0, 1]`` (a fraction > 1.0 would be a TWO-sided well, not a
+    one-sided floor); pathological values fall through to the default.
+    """
+    raw = os.environ.get(_MD_TOO_SHORT_FLOOR_FRACTION_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and 0.0 < v <= 1.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r out of (0, 1]; using default %.3f",
+                _MD_TOO_SHORT_FLOOR_FRACTION_ENV, raw, DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _MD_TOO_SHORT_FLOOR_FRACTION_ENV, raw, DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION,
+            )
+    return DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION
+
+
+def _md_too_short_value_and_grad(
+    R: np.ndarray,
+    *,
+    metal_idx: int,
+    donor_idxs: Sequence[int],
+    md_targets: Sequence[float],
+    weight: float,
+    fraction: float,
+) -> Tuple[float, np.ndarray]:
+    """One-sided M-D distance floor penalty + analytic gradient.
+
+    For every declared donor whose current M-D distance is BELOW
+    ``fraction * md_target`` the helper accumulates a quadratic penalty and
+    its analytic gradient along the M-D axis.  The gradient pushes M and D
+    APART (negative-gradient step → increased distance).
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.
+    metal_idx : int
+        Atom index of the metal centre.
+    donor_idxs : sequence of int
+        Atom indices of the declared donors (order matches ``md_targets``).
+    md_targets : sequence of float
+        Per-donor ideal M-D distance (Å).  ``len(md_targets) == len(donor_idxs)``
+        is required; the helper iterates over ``zip(donor_idxs, md_targets)``
+        and silently skips entries with non-positive / non-finite targets.
+    weight, fraction : float
+        Penalty multiplier and floor fraction.  ``weight <= 0`` or
+        ``fraction <= 0`` short-circuits to ``(0.0, zero_grad)``.
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  When no donor violates the floor both are
+        zero so the call is a no-op for healthy geometries.
+
+    Notes
+    -----
+    Pure geometry / pure graph: no SMILES patterns, no element-specific
+    branches.  Universal across σ, π, hapto and bridging donors -- the
+    detector is agnostic to bond type and only consults the declared
+    donor list + the corresponding ``md_target`` table.
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if weight <= 0.0 or fraction <= 0.0:
+        return 0.0, grad
+    if not donor_idxs:
+        return 0.0, grad
+    if not (0 <= int(metal_idx) < n):
+        return 0.0, grad
+
+    M = R[int(metal_idx)]
+    total = 0.0
+    # Iterate in donor-input order; the per-donor contributions are summed
+    # commutatively so the result is independent of iteration order.
+    for d_idx, md_t in zip(donor_idxs, md_targets):
+        di = int(d_idx)
+        if not (0 <= di < n):
+            continue
+        if di == int(metal_idx):
+            continue
+        try:
+            md_target = float(md_t)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(md_target) or md_target <= 0.0:
+            continue
+        vec = R[di] - M  # 3-vector D - M
+        dist = float(np.linalg.norm(vec))
+        floor_d = fraction * md_target
+        if dist >= floor_d:
+            continue
+        if dist < _MD_TOO_SHORT_EPS:
+            # Coincident atoms -- skip rather than emit NaN.  The unit vector
+            # is undefined so we cannot pick a deterministic push direction.
+            continue
+        gap = floor_d - dist
+        total += weight * gap * gap
+        # dL/dR[d] = -2 w (floor - d) * (R[d] - R[M]) / d  -> pushes D away.
+        coef = -2.0 * weight * gap / dist
+        gd = coef * vec
+        grad[di] += gd
+        grad[int(metal_idx)] -= gd
+
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -574,6 +786,13 @@ __all__ = [
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
     "_heavy_atom_indices",
+    # One-sided M-D too-short floor (2026-06-07, env-gated default OFF).
+    "DEFAULT_MD_TOO_SHORT_FLOOR_WEIGHT",
+    "DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION",
+    "_md_too_short_floor_active",
+    "_resolve_md_too_short_floor_weight",
+    "_resolve_md_too_short_floor_fraction",
+    "_md_too_short_value_and_grad",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -2103,6 +2322,59 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3c. One-sided M-D too-short floor (2026-06-07, md_too_short fix).
+    #
+    # Env-gated strict floor that penalises declared donors whose current
+    # M-D distance is BELOW ``fraction * md_target``.  Default OFF -> byte
+    # identical with HEAD.  Reads the per-donor ``md_target`` table off
+    # ``md_constraint.target_distances`` so it is fully consistent with the
+    # rest of the polish (those are the targets the M-D invariant validates
+    # against).  Setup cost is paid once outside the loss closure so the
+    # inner ``loss_and_grad`` call pays nothing when the term is OFF.
+    # ------------------------------------------------------------------
+    _md_too_short_on = _md_too_short_floor_active()
+    _md_too_short_weight: float = 0.0
+    _md_too_short_fraction: float = DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION
+    _md_too_short_donor_idxs: Tuple[int, ...] = ()
+    _md_too_short_targets: Tuple[float, ...] = ()
+    if _md_too_short_on:
+        try:
+            _md_too_short_weight = _resolve_md_too_short_floor_weight()
+            _md_too_short_fraction = _resolve_md_too_short_floor_fraction()
+            # Pull the per-donor targets straight off the M-D invariant
+            # constraint: those are the SAME numbers the validator checks
+            # against, so the floor is internally consistent.
+            _md_too_short_donor_idxs = tuple(int(d) for d in donors_t)
+            _md_too_short_targets = tuple(
+                float(t) for t in md_constraint.target_distances
+            )
+            # Pre-filter: drop entries with non-finite / non-positive targets
+            # so the inner loop stays tight.  Length-mismatch is a defensive
+            # short-circuit -- the helper would skip the same entries anyway.
+            if len(_md_too_short_donor_idxs) != len(_md_too_short_targets):
+                _md_too_short_donor_idxs = ()
+                _md_too_short_targets = ()
+            else:
+                _keep_pairs = [
+                    (d, t)
+                    for d, t in zip(_md_too_short_donor_idxs, _md_too_short_targets)
+                    if np.isfinite(t) and float(t) > 0.0
+                ]
+                _md_too_short_donor_idxs = tuple(int(d) for d, _ in _keep_pairs)
+                _md_too_short_targets = tuple(float(t) for _, t in _keep_pairs)
+            if (not _md_too_short_donor_idxs
+                    or _md_too_short_weight <= 0.0
+                    or _md_too_short_fraction <= 0.0):
+                # Nothing to do -- demote to OFF so the inner call is a no-op.
+                _md_too_short_on = False
+        except Exception as _md_short_exc:
+            _LOG.warning(
+                "grip_polish: M-D too-short floor setup failed (%r); disabling term",
+                _md_short_exc,
+            )
+            _md_too_short_on = False
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2196,6 +2468,22 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Optional one-sided M-D too-short floor (md_too_short fix).
+        # Default-OFF byte-identical with HEAD when
+        # ``DELFIN_FFFREE_MD_TOO_SHORT_FLOOR`` is unset -- the predicate
+        # short-circuits before any new arithmetic.  Composes additively
+        # with the donor-donor floor and the heavy-atom vdW-floor.
+        if _md_too_short_on:
+            L_md_short, G_md_short = _md_too_short_value_and_grad(
+                R,
+                metal_idx=int(metal),
+                donor_idxs=_md_too_short_donor_idxs,
+                md_targets=_md_too_short_targets,
+                weight=_md_too_short_weight,
+                fraction=_md_too_short_fraction,
+            )
+            L += float(L_md_short)
+            G = G + G_md_short
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
