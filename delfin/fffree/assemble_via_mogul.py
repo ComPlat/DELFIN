@@ -171,6 +171,7 @@ def assemble_complex_mogul_primary(
     #     chelate ligand is detected.  Author: hmaximilian.
     effective_geometry_key: Optional[str] = geometry_key
     if effective_geometry_key is None and mol_override is None:
+        _d_dec = None
         try:
             from delfin.fffree.chelate_aware_picker import (
                 chelate_aware_picker_enabled as _cap_on,
@@ -195,6 +196,56 @@ def assemble_complex_mogul_primary(
             pass
         except Exception:
             pass
+
+        # f-block-aware singleshot pick (2026-06-07, hmaximilian).  Mirrors
+        # the orbit-enumerator wiring further down: when the chelate-aware
+        # picker did NOT fire AND the metal is in the f-block / high-CN
+        # picker scope, score candidates by CCDC D-D distribution match.
+        # Defaults to OFF byte-identical when ``DELFIN_FFFREE_F_BLOCK_PICK=0``.
+        if effective_geometry_key is None:
+            try:
+                from delfin.fffree.f_block_picker import (
+                    f_block_picker_enabled as _fbp_on,
+                    f_block_polyhedron_picker as _pick_fbp,
+                )
+                from delfin.fffree import decompose as _DEC3
+                if _fbp_on():
+                    if _d_dec is None:
+                        try:
+                            _d_dec = _DEC3.decompose(smiles)
+                        except Exception:
+                            _d_dec = None
+                    if _d_dec is not None and not _d_dec.get("has_chelate"):
+                        _cn_int = int(_d_dec.get("cn", 0) or 0)
+                        _metal = str(_d_dec.get("metal", ""))
+                        _donor_syms: List[str] = []
+                        for _lg in (_d_dec.get("ligands") or []):
+                            _de_list = _lg.get("donor_elems")
+                            _de = _lg.get("donor_elem")
+                            _dk = int(_lg.get("denticity", 1) or 1)
+                            if isinstance(_de_list, (list, tuple)) and _de_list:
+                                for _s in _de_list:
+                                    _donor_syms.append(str(_s))
+                            elif _de is not None:
+                                for _ in range(max(1, _dk)):
+                                    _donor_syms.append(str(_de))
+                        _donor_syms = [
+                            "C" if s == "C_hapto" else s for s in _donor_syms
+                        ]
+                        if (_metal and _cn_int >= 7
+                                and len(_donor_syms) == _cn_int):
+                            _picked_fb = _pick_fbp(
+                                metal_sym=_metal,
+                                cn=_cn_int,
+                                donors=_donor_syms,
+                                force=True,
+                            )
+                            if _picked_fb:
+                                effective_geometry_key = _picked_fb
+            except ImportError:
+                pass
+            except Exception:
+                pass
     try:
         from delfin.fffree.mogul_bounds import build_bounds_matrix
     except ImportError:
@@ -1404,6 +1455,57 @@ def enumerate_and_embed_mogul_primary(
                     )
                     if _picked and _picked != geom_name:
                         geom_name = _picked
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
+        # f-block-aware polyhedron pick (2026-06-07, hmaximilian).
+        # When no chelate constraint applied AND the metal is in the
+        # f-block / high-CN picker scope (Ln/An at CN 8-12 or group-3 /
+        # 4d-late / 5d / Cd at CN 7-12), score the candidates by their
+        # CCDC donor-donor distance distribution match + symmetry
+        # preference for ionic bonding.  Universal — pure CCDC-empirical
+        # ranking, no SMILES patterns, no per-metal hardcodes.
+        # Default-OFF byte-identical when ``DELFIN_FFFREE_F_BLOCK_PICK=0``
+        # (or when MOGUL_PRIMARY is off).  Fires only when the picker
+        # finds a different geometry than the legacy first-candidate.
+        try:
+            from delfin.fffree.f_block_picker import (
+                f_block_picker_enabled as _fbp_on,
+                f_block_polyhedron_picker as _pick_fbp,
+            )
+            if _fbp_on() and not d.get("has_chelate"):
+                _cn_int = int(d.get("cn", 0) or 0)
+                _metal = str(d.get("metal", ""))
+                # Expand per-ligand donor_elems to per-vertex donor symbols:
+                # a denticity-k ligand contributes k donor sites of the same
+                # element symbol (donor_elem field is a single string).
+                _donor_syms: List[str] = []
+                for _lg in (d.get("ligands") or []):
+                    _de = _lg.get("donor_elem")
+                    _de_list = _lg.get("donor_elems")
+                    _dk = int(_lg.get("denticity", 1) or 1)
+                    if isinstance(_de_list, (list, tuple)) and _de_list:
+                        for _s in _de_list:
+                            _donor_syms.append(str(_s))
+                    elif _de is not None:
+                        for _ in range(max(1, _dk)):
+                            _donor_syms.append(str(_de))
+                # Hapto donors are encoded as ``"C_hapto"``; the CCDC lookup
+                # is keyed on element symbols, so collapse the marker to "C".
+                _donor_syms = [
+                    "C" if s == "C_hapto" else s for s in _donor_syms
+                ]
+                if _metal and _cn_int >= 7 and len(_donor_syms) == _cn_int:
+                    _picked_fb = _pick_fbp(
+                        metal_sym=_metal,
+                        cn=_cn_int,
+                        donors=_donor_syms,
+                        force=True,
+                    )
+                    if _picked_fb and _picked_fb != geom_name:
+                        geom_name = _picked_fb
         except ImportError:
             pass
         except Exception:

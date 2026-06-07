@@ -238,6 +238,31 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
                 if g not in base:
                     base.append(g)
             return base
+    # f-block-picker extension (2026-06-07, hmaximilian).  Independent of
+    # the legacy ``FBLOCK_CN8_12`` gate: when ``DELFIN_FFFREE_F_BLOCK_PICK=1``
+    # AND the metal is in the picker scope (any f-block metal at CN 7-12,
+    # or group-3 / 4d-late / 5d / Cd at CN 7-12), append the high-CN
+    # f-block-style polyhedra (SAP-8, DD-8, TTP-9, CSAP-9, BICAP-10, ...).
+    # Pure universal — atomic-number gate.  Default-OFF byte-identical
+    # when ``DELFIN_FFFREE_F_BLOCK_PICK`` is unset.
+    fbp_on = _os.environ.get("DELFIN_FFFREE_F_BLOCK_PICK", "0") == "1"
+    if fbp_on and metal:
+        try:
+            from delfin.fffree.f_block_picker import (
+                HIGH_CN_NON_FBLOCK_CANDIDATES as _HIGH_CN,
+                is_high_cn_non_fblock_target as _hcn_target,
+            )
+            from delfin.fffree import f_block_polyhedra as _FBP_chk2
+            in_scope = (
+                _hcn_target(metal, int(cn))
+                or (_FBP_chk2.is_f_block(metal) and 7 <= int(cn) <= 12)
+            )
+            if in_scope:
+                for g in _HIGH_CN.get(int(cn), []):
+                    if g not in base:
+                        base.append(g)
+        except ImportError:
+            pass
     if not fb_on:
         return base
     if not metal:

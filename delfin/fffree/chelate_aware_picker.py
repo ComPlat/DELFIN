@@ -470,8 +470,54 @@ def pick_polyhedron_chelate_aware(
                 bites.append(float(ci.get("bite_deg")))
             except (TypeError, ValueError, AttributeError):
                 continue
+
+    # f-block-aware delegation (2026-06-07, hmaximilian).  When the metal
+    # is in the f-block / high-CN picker scope (Ln/An at CN 8-12 or
+    # group-3 / 4d-late / 5d / Cd at CN 7-12) AND no chelate constraint
+    # applies, hand off to ``f_block_polyhedron_picker`` — it ranks
+    # candidates by CCDC donor-donor distance distribution match (plus a
+    # symmetry preference for ionic bonding), which is the chemically
+    # correct selector for these large weakly-directional cations.  When
+    # BOTH a chelate constraint AND f-block scope apply (rare — Ln-EDTA
+    # CN8 or U-acac CN8) we still use the chelate-bite scorer because
+    # the bite angle constraint is the harder geometric requirement.
     if not bites:
-        # No chelate constraints — legacy behaviour.
+        try:
+            from delfin.fffree import f_block_picker as _FBP_PICK
+            if _FBP_PICK.f_block_picker_enabled() and _FBP_PICK.is_high_cn_non_fblock_target(
+                str(metal_sym), int(cn)
+            ):
+                picked = _FBP_PICK.f_block_polyhedron_picker(
+                    metal_sym=str(metal_sym),
+                    cn=int(cn),
+                    donors=[],  # caller didn't supply donor identities here
+                    candidates=cand_list,
+                    force=True,
+                )
+                if picked:
+                    return picked
+            # Also delegate when the metal is true f-block (Ln/An) at any CN —
+            # f-block picker reserves the right to reorder candidates by
+            # CCDC distribution even outside CN 7-12.
+            try:
+                from delfin.fffree import f_block_polyhedra as _FBP_CHK
+                if (_FBP_PICK.f_block_picker_enabled()
+                        and _FBP_CHK.is_f_block(str(metal_sym))
+                        and 7 <= int(cn) <= 12):
+                    picked = _FBP_PICK.f_block_polyhedron_picker(
+                        metal_sym=str(metal_sym),
+                        cn=int(cn),
+                        donors=[],
+                        candidates=cand_list,
+                        force=True,
+                    )
+                    if picked:
+                        return picked
+            except ImportError:
+                pass
+        except ImportError:
+            pass
+        # No chelate constraints AND f-block picker did not fire — legacy.
         return cand_list[0]
 
     if not chelate_aware_picker_enabled():
