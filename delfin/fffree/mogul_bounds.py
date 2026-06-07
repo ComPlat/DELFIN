@@ -565,6 +565,65 @@ def _set_bound(
 # ---------------------------------------------------------------------------
 # §2.2 Library lookup helpers
 # ---------------------------------------------------------------------------
+def _detect_md_bond_order_tag(mol, metal_idx: int, donor_idx: int) -> Optional[str]:
+    """Return the bond-order tag for the (metal_idx, donor_idx) bond.
+
+    Mirrors the CCDC bond_type → tag mapping used by the supplement build:
+        Single -> '1', Double -> '2', Triple -> '3', Quadruple -> '4',
+        Aromatic -> 'a', anything else -> '?'.
+
+    The supplement extraction labels the M-D bond aromatic when CCDC marks
+    the bond itself ``Aromatic`` -- which happens when the donor sits in an
+    aromatic ring (pyridine N, pyrrolyl N, cyclopentadienyl C, ...) and
+    coordinates through the ring system.  We mirror that here by checking
+    whether the donor atom is aromatic; when so, the M-D bond is tagged
+    ``'a'`` even though RDKit normally encodes the dative M-N as Single.
+
+    Returns ``None`` when the bond does not exist in the RDKit mol (in which
+    case the supplement lookup is skipped and the cascade falls through to
+    the legacy hyb-only lookup unchanged).
+    """
+    try:
+        b = mol.GetBondBetweenAtoms(int(metal_idx), int(donor_idx))
+    except Exception:
+        return None
+    if b is None:
+        return None
+    # The M-D bond itself encoded as aromatic by RDKit (rare but possible).
+    try:
+        if bool(b.GetIsAromatic()):
+            return "a"
+    except Exception:
+        pass
+    # Donor-context aromaticity: ring-N or ring-C donor coordinating from an
+    # aromatic ring is what CCDC stores as Aromatic.  This is the chemistry
+    # that distinguishes pyridine-κ¹ (≈2.2 Å for W-N) from imine W-N (1.83 Å)
+    # and from W=N imido (1.76 Å).
+    try:
+        donor_atom = mol.GetAtomWithIdx(int(donor_idx))
+        if bool(donor_atom.GetIsAromatic()):
+            return "a"
+    except Exception:
+        pass
+    try:
+        bt_dbl = float(b.GetBondTypeAsDouble())
+    except Exception:
+        bt_dbl = 1.0
+    # RDKit ``GetBondTypeAsDouble``: SINGLE=1.0, DOUBLE=2.0, TRIPLE=3.0,
+    # QUADRUPLE=4.0, AROMATIC=1.5, DATIVE=1.0 (treated as single).
+    if bt_dbl >= 3.5:
+        return "4"
+    if bt_dbl >= 2.5:
+        return "3"
+    if 1.4 <= bt_dbl < 1.7:
+        return "a"
+    if bt_dbl >= 1.7:
+        return "2"
+    if bt_dbl >= 0.5:
+        return "1"
+    return "?"
+
+
 def _lookup_bond_md(
     grip_lib: Optional[GripLibrary],
     metal: str,
@@ -573,14 +632,20 @@ def _lookup_bond_md(
     donor_hyb: str,
     cod_lib: Optional[GripLibrary],
     min_n: int,
+    bond_order_tag: Optional[str] = None,
 ) -> Optional[Tuple[float, float, int]]:
     """Look up a metal-donor bond distribution.
 
     Cascade:
+        0. Bond-order-aware M-D supplement (when loaded AND
+           ``bond_order_tag`` is provided)
         1. v5 TM-pair-block lookup (if available)
         2. CCDC ``lookup_bond`` (with TM-aware fallback if enabled by env)
         3. COD library if provided
         4. None
+
+    ``bond_order_tag`` is one of ``'1'``, ``'2'``, ``'3'``, ``'4'``, ``'a'``
+    (aromatic), ``'?'`` (unknown) or ``None`` (skip the supplement).
     """
     # IMPORTANT: the legacy `GripLibrary.lookup_bond` cov-cascade is unsound
     # for metal-donor bonds — it pools any "N with any neighbour" entry into
@@ -591,6 +656,16 @@ def _lookup_bond_md(
     def _try(lib: Optional[GripLibrary]) -> Optional[Tuple[float, float, int]]:
         if lib is None:
             return None
+        # Step 0: bond-order-aware supplement — chemistry-correct disagg.
+        # Empty when env-flag is unset, so byte-identical with HEAD when off.
+        if bond_order_tag is not None:
+            try:
+                hit_bo = lib._md_bo_lookup(metal, donor, donor_hyb,
+                                           bond_order_tag, min_n=min_n)
+            except Exception:
+                hit_bo = None
+            if hit_bo is not None:
+                return hit_bo
         if getattr(lib, "has_pair_tables", False):
             try:
                 hit = lib._v5_lookup_bond_block(metal, metal_hyb, donor, donor_hyb, min_n)
@@ -1056,9 +1131,14 @@ def build_bounds_matrix(
             sigma = max(_SIGMA_FLOOR_BOND, float(sigma))
             info.n_md_lib_hit += 1
         else:
+            # Detect M-D bond-order tag from the RDKit graph (for the
+            # bond-order-aware supplement lookup -- byte-identical when the
+            # supplement is not loaded).
+            md_bo_tag = _detect_md_bond_order_tag(mol, metal_idx, int(d))
             md_hit = _lookup_bond_md(
                 grip_lib, metal_sym, metal_hyb, donor_sym, donor_hyb,
                 cod_lib, min_n,
+                bond_order_tag=md_bo_tag,
             )
             if md_hit is None:
                 # Fallback: polyhedra.md_distance (covalent-sum or Shannon

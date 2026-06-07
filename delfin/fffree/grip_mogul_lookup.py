@@ -640,6 +640,57 @@ class GripLibrary:
             self.meta_n_extracted = 0
             self.meta_n_total_scanned = 0
 
+        # ---------------------------------------------------------------
+        # Bond-order-aware M-D supplement (additive, env-gated; default OFF
+        # byte-identical when the env-flag is unset OR the supplement file
+        # is absent).  Built by ``scripts/grip_build_md_bond_order_supplement.py``
+        # to disaggregate M-D bonds whose pair_bond_key collapses chemically
+        # distinct populations (e.g. W=N imido vs W-pyridine, W=O oxo vs
+        # W-alkoxide).  The supplement key format is
+        # ``[Z_donor, hyb_donor, "@bo<X>", Z_metal, "*"]`` where ``<X>`` is
+        # ``'1'``, ``'2'``, ``'3'``, ``'4'`` or ``'a'``.
+        # ---------------------------------------------------------------
+        self._md_bo_key_to_idx: dict[str, int] = {}
+        self._md_bo_mu = None
+        self._md_bo_sigma = None
+        self._md_bo_p5 = None
+        self._md_bo_p95 = None
+        self._md_bo_n = None
+        self.n_md_bo = 0
+        self._md_bo_metals: frozenset = frozenset()
+        sup_path = os.environ.get("DELFIN_GRIP_MD_BO_SUPPLEMENT", "").strip()
+        if sup_path:
+            try:
+                sup_p = Path(sup_path).expanduser().resolve()
+                if sup_p.exists():
+                    sup = np.load(sup_p, allow_pickle=True, mmap_mode="r")
+                    if "md_bo_pair_keys" in sup.files:
+                        keys_list = sup["md_bo_pair_keys"].tolist()
+                        self._md_bo_key_to_idx = {
+                            str(k): i for i, k in enumerate(keys_list)
+                        }
+                        self._md_bo_mu = sup["md_bo_pair_mu"]
+                        self._md_bo_sigma = sup["md_bo_pair_sigma"]
+                        if "md_bo_pair_p5" in sup.files:
+                            self._md_bo_p5 = sup["md_bo_pair_p5"]
+                            self._md_bo_p95 = sup["md_bo_pair_p95"]
+                        self._md_bo_n = sup["md_bo_pair_n"]
+                        self.n_md_bo = len(keys_list)
+                        if "metals" in sup.files:
+                            self._md_bo_metals = frozenset(
+                                str(s) for s in sup["metals"].tolist()
+                            )
+            except Exception:
+                # Defensive: any load issue silently disables the supplement.
+                self._md_bo_key_to_idx = {}
+                self._md_bo_mu = None
+                self._md_bo_sigma = None
+                self._md_bo_p5 = None
+                self._md_bo_p95 = None
+                self._md_bo_n = None
+                self.n_md_bo = 0
+                self._md_bo_metals = frozenset()
+
     @property
     def has_tm_categories(self) -> bool:
         """``True`` when v5 TM-category tables (carbene/hapto/mu_bridge/...) are loaded."""
@@ -987,6 +1038,61 @@ class GripLibrary:
         lo, hi = (z_l, z_r) if z_l <= z_r else (z_r, z_l)
         return json.dumps([str(zc), str(hyb_c), str(lo), str(hi)],
                           separators=(",", ":"), ensure_ascii=False)
+
+    def _md_bo_lookup(
+        self,
+        metal: str,
+        donor: str,
+        donor_hyb: str,
+        bond_order_tag: str,
+        min_n: int = GRIP_LOOKUP_MIN_N,
+    ) -> Optional[Tuple[float, float, int]]:
+        """Bond-order-aware M-D supplement lookup.
+
+        Returns ``(mu, sigma, n)`` or ``None`` when:
+
+          * the supplement is not loaded (``DELFIN_GRIP_MD_BO_SUPPLEMENT`` unset
+            or file missing);
+          * the metal is not in the supplement's target set;
+          * no entry exists with ``n >= min_n`` after the small hyb-wildcard
+            fallback (``donor_hyb -> '*'``).
+
+        ``bond_order_tag`` is one of ``'1'``, ``'2'``, ``'3'``, ``'4'``, ``'a'``
+        (aromatic) or ``'?'`` (unknown).  When ``'?'`` is requested we try
+        ``'1'`` first then ``'a'`` -- single-bond is the chemistry default
+        for κⁿ-donor coordination.
+        """
+        if self._md_bo_mu is None or self.n_md_bo == 0:
+            return None
+        if metal not in self._md_bo_metals:
+            return None
+        # Build per-tag candidate ordering: requested tag first, then a sane
+        # default chain for '?' (unknown).
+        if bond_order_tag == "?":
+            tag_chain = ("1", "a", "2")
+        else:
+            tag_chain = (bond_order_tag,)
+        for tag in tag_chain:
+            for dh in (donor_hyb, "*"):
+                key = json.dumps(
+                    [str(donor), str(dh), f"@bo{tag}", str(metal), "*"],
+                    separators=(",", ":"), ensure_ascii=False,
+                )
+                idx = self._md_bo_key_to_idx.get(key)
+                if idx is None:
+                    continue
+                n = int(self._md_bo_n[idx])
+                if n < min_n:
+                    continue
+                mu = float(self._md_bo_mu[idx])
+                sigma = float(self._md_bo_sigma[idx])
+                if not (np.isfinite(mu) and np.isfinite(sigma)):
+                    continue
+                # Sigma floor so a single sample (sigma=0) doesn't degenerate
+                # the downstream bound.
+                sigma = max(0.03, sigma)
+                return (mu, sigma, n)
+        return None
 
     def _v4_lookup_bond(
         self,
