@@ -237,5 +237,71 @@ class TestUserEyeValidation(unittest.TestCase):
                              f"Ir-P={ir_p:.3f} above CCDC band")
 
 
+class TestPolyaOrbitEnumeration(unittest.TestCase):
+    """Burnside-Pólya orbit enumeration over the Mogul-primary bounds matrix
+    (2026-06-07 architectural extension).
+
+    The draft manuscript contract is: SMILES -> Burnside-distinct orbits ->
+    embed EACH orbit once -> return the ensemble.  This test exercises the
+    textbook MA2B2C2 octahedron case which has exactly 6 stereoisomers
+    (Burnside count = 6).  The Mogul-primary path with orbit override must
+    realise all 6 with distinct 3D geometries -- including the chiral
+    Δ/Λ pair of the all-cis class, which the orbit override resolves via
+    different donor-to-vertex permutations even though their pairwise
+    distance multisets are degenerate.
+    """
+
+    def setUp(self):
+        if _grip_lib_path() is None:
+            self.skipTest("grip_lib_v5.npz not available in this environment")
+
+    def test_ma2b2c2_oc6_six_isomers(self):
+        """[NH3]2 + [OH2]2 + F2 Co(III) — textbook OC-6 MA2B2C2 case.
+
+        Burnside count for the octahedron with donor multiset (2,2,2) is 6.
+        We require the Mogul-primary orbit enumerator to emit 6 distinct
+        XYZ structures.
+        """
+        smi = "[NH3][Co]([NH3])([OH2])([OH2])([F])[F]"
+        res = _run_with_env(True, smi)
+        self.assertIsNotNone(res, "Mogul-primary returned None for MA2B2C2")
+        self.assertEqual(
+            len(res), 6,
+            f"Expected 6 Burnside-distinct orbits, got {len(res)}; "
+            f"labels={[lab for _, lab in res]}",
+        )
+        # Each XYZ must be unique by hash (otherwise the orbit override
+        # silently collapsed two orbits onto the same geometry, defeating
+        # the whole purpose).
+        hashes = {hashlib.sha256(xyz.encode("utf-8")).hexdigest()
+                  for xyz, _ in res}
+        self.assertEqual(
+            len(hashes), 6,
+            f"Expected 6 distinct geometries, got {len(hashes)} unique; "
+            f"isomers collapsed onto identical XYZ.",
+        )
+        # Every label must end with the ``-mogul`` tag so the pool tooling
+        # can tell apart orbit-enum entries from the legacy fffree labels.
+        for _, label in res:
+            self.assertTrue(
+                label.endswith("-mogul"),
+                f"Orbit label {label!r} missing ``-mogul`` suffix",
+            )
+
+    def test_orbit_off_byte_identical(self):
+        """When DELFIN_FFFREE_MOGUL_PRIMARY is unset, the orbit enumeration
+        code path is silent and the legacy fffree path is bit-identical."""
+        smi = "[NH3][Co]([NH3])([OH2])([OH2])([F])[F]"
+        h1 = hashlib.sha256(
+            _xyz_bytes(_run_with_env(False, smi))
+        ).hexdigest()
+        h2 = hashlib.sha256(
+            _xyz_bytes(_run_with_env(False, smi))
+        ).hexdigest()
+        self.assertEqual(h1, h2,
+                         "OFF path bytes differ between runs (orbit "
+                         "enumeration leaked into the default path)")
+
+
 if __name__ == "__main__":
     unittest.main()

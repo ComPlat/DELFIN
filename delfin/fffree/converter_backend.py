@@ -951,18 +951,30 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY", "0") == "1":
         try:
             from delfin.fffree import assemble_via_mogul as _MP
+            # 2026-06-07 — Pólya orbit enumeration over the Mogul-primary
+            # bounds matrix.  Per draft "Closed-form coverage of the
+            # configuration space": SMILES → Burnside-distinct orbits →
+            # embed EACH orbit through ONE DG embed with the per-orbit
+            # donor-donor bound override → return the ensemble.  Universal:
+            # pure graph topology + element labels, no SMILES pattern, no
+            # per-class branch.  Falls through to the single-structure
+            # path when orbit enumeration yields nothing (e.g. geometry
+            # without a registered Pólya group, multi-metal, high
+            # denticity chelate that the orbit machinery does not yet
+            # support).
+            _ens = _MP.enumerate_and_embed_mogul_primary(
+                smiles, max_isomers=max_isomers,
+            )
+            if _ens:
+                return [(_xyz(_syms, _P), _lab) for (_syms, _P, _lab) in _ens]
+            # Orbit enumeration unavailable for this SMILES — emit the
+            # canonical single structure so the Mogul-primary path still
+            # owns the build.  Only on full failure do we fall through
+            # to legacy.
             _res = _MP.assemble_complex_mogul_primary(smiles)
             if _res is not None:
                 _syms, _P = _res
-                # The Pólya enumeration over isomers can be layered on
-                # top later; for the architectural pivot we emit ONE
-                # primary structure (the CCDC-bounds-matrix-driven
-                # embed) which matches the draft's "single constrained
-                # DG embed" contract.  Label tag matches the legacy
-                # naming convention so the pool tooling treats this
-                # entry as a normal fffree result.
-                _label = "MOGUL-PRIMARY-1"
-                return [(_xyz(_syms, _P), _label)]
+                return [(_xyz(_syms, _P), "MOGUL-PRIMARY-1")]
         except Exception:
             # silent fall-through to legacy on primary failure
             pass
