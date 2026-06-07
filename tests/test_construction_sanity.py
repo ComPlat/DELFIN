@@ -27,6 +27,8 @@ def _reset_env():
         "DELFIN_FFFREE_GRIP_VDW_FLOOR_ALL_PAIRS",
         "DELFIN_FFFREE_PIANO_STOOL_TEMPLATE",
         "DELFIN_FFFREE_FISCHER_CARBENE_TEMPLATE",
+        "DELFIN_FFFREE_FRAGMENT_CHECK",
+        "DELFIN_FFFREE_FRAGMENT_CHECK_STRICT",
     ):
         os.environ.pop(k, None)
 
@@ -630,3 +632,253 @@ def test_byte_identity_no_env_flag_no_activation():
     assert CS.vdw_floor_all_pairs_active() is False
     assert CS.piano_stool_template_active() is False
     assert CS.fischer_carbene_template_active() is False
+    assert CS.fragment_check_active() is False
+    assert CS.fragment_check_strict_active() is False
+
+
+# ---------------------------------------------------------------------------
+# Build-time graph-fragmentation check (extra_fragments bug class)
+# ---------------------------------------------------------------------------
+
+
+def test_fragment_check_env_flags_default_off():
+    """Both fragment-check predicates are False when nothing is set."""
+    from delfin.fffree.construction_sanity import (
+        fragment_check_active,
+        fragment_check_strict_active,
+    )
+    assert fragment_check_active() is False
+    assert fragment_check_strict_active() is False
+
+
+def test_fragment_check_env_flag_activation():
+    from delfin.fffree.construction_sanity import (
+        fragment_check_active,
+        fragment_check_strict_active,
+    )
+    os.environ["DELFIN_FFFREE_FRAGMENT_CHECK"] = "1"
+    os.environ["DELFIN_FFFREE_FRAGMENT_CHECK_STRICT"] = "yes"
+    assert fragment_check_active() is True
+    assert fragment_check_strict_active() is True
+
+
+def test_fragment_check_healthy_complex_passes():
+    """A connected complex (metal + chelate + monodentate) passes the check.
+
+    Topology: M ── O ── C ── N (chelate ring closed back to M) + auxiliary
+    CO axially.  Every atom is reachable from every other atom.
+    """
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["Cr", "O", "C", "N", "C", "O"]
+    P = np.array([
+        [0.0, 0.0, 0.0],     # 0  Cr
+        [2.0, 0.0, 0.0],     # 1  O donor (chelate arm 1)
+        [2.5, 1.3, 0.0],     # 2  C backbone
+        [1.3, 2.0, 0.0],     # 3  N donor (chelate arm 2)
+        [-2.0, 0.0, 0.0],    # 4  C of axial CO
+        [-3.15, 0.0, 0.0],   # 5  O of axial CO
+    ], dtype=float)
+    bonds = [
+        (0, 1), (0, 3),   # M-D
+        (1, 2), (2, 3),   # chelate ring
+        (0, 4), (4, 5),   # CO ligand
+    ]
+    is_intact, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert is_intact is True
+    assert viols == []
+
+
+def test_fragment_check_detached_atom_detected():
+    """A single detached atom is reported as an extra fragment.
+
+    Geometry of the main body is irrelevant — the check is graph-only.
+    """
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["Cr", "C", "O", "H"]
+    P = np.array([
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [3.15, 0.0, 0.0],
+        [10.0, 10.0, 10.0],   # H pulled away by GRIP; bond list omits it
+    ], dtype=float)
+    # H (index 3) has no bond -> 2 components: {0,1,2} and {3}
+    bonds = [(0, 1), (1, 2)]
+    is_intact, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert is_intact is False
+    assert len(viols) == 1
+    v = viols[0]
+    assert v["mode"] == "extra_fragment"
+    assert v["n_components"] == 2
+    assert v["main_size"] == 3
+    assert v["fragment_size"] == 1
+    assert v["fragment_atoms"] == [3]
+    assert v["fragment_syms"] == ["H"]
+
+
+def test_fragment_check_multimetal_bridged_passes():
+    """Two metals connected via a bridging donor still form one component.
+
+    Topology: M1 ── μ-O ── M2 with each metal also carrying a terminal CO.
+    """
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["Fe", "O", "Fe", "C", "O", "C", "O"]
+    P = np.array([
+        [-1.8, 0.0, 0.0],    # 0  Fe1
+        [0.0, 0.0, 0.0],     # 1  bridging O
+        [1.8, 0.0, 0.0],     # 2  Fe2
+        [-1.8, 2.0, 0.0],    # 3  C of CO on Fe1
+        [-1.8, 3.15, 0.0],   # 4  O of CO on Fe1
+        [1.8, -2.0, 0.0],    # 5  C of CO on Fe2
+        [1.8, -3.15, 0.0],   # 6  O of CO on Fe2
+    ], dtype=float)
+    bonds = [
+        (0, 1), (1, 2),  # M-μO-M bridge
+        (0, 3), (3, 4),  # Fe1 CO
+        (2, 5), (5, 6),  # Fe2 CO
+    ]
+    is_intact, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert is_intact is True
+    assert viols == []
+
+
+def test_fragment_check_multiple_fragments_reported_smallest_first():
+    """When several extra fragments exist, they are listed smallest-first."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    # Main: {0,1,2,3} (4 atoms).  Extra1: {4,5} (2 atoms).  Extra2: {6} (1 atom).
+    syms = ["Cr", "C", "C", "C", "C", "O", "H"]
+    P = np.zeros((7, 3))
+    bonds = [
+        (0, 1), (1, 2), (2, 3),   # main chain
+        (4, 5),                   # CO fragment
+        # 6 is isolated
+    ]
+    is_intact, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert is_intact is False
+    assert len(viols) == 2
+    # smallest-first
+    assert viols[0]["fragment_size"] == 1
+    assert viols[0]["fragment_atoms"] == [6]
+    assert viols[1]["fragment_size"] == 2
+    assert viols[1]["fragment_atoms"] == [4, 5]
+    # All entries see the same n_components and main_size.
+    for v in viols:
+        assert v["n_components"] == 3
+        assert v["main_size"] == 4
+
+
+def test_fragment_check_empty_input_is_intact():
+    """Zero atoms is trivially intact (no fragments to report)."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+    is_intact, viols = verify_no_extra_fragments(
+        np.zeros((0, 3)), [], [],
+    )
+    assert is_intact is True
+    assert viols == []
+
+
+def test_fragment_check_size_mismatch_reported():
+    """|P| != |syms| produces a dedicated violation rather than raising."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+    P = np.zeros((3, 3))
+    syms = ["C", "C"]   # length mismatch
+    is_intact, viols = verify_no_extra_fragments(P, syms, [(0, 1)])
+    assert is_intact is False
+    assert viols[0]["mode"] == "fragment_check_size_mismatch"
+
+
+def test_fragment_check_deterministic():
+    """Same input -> identical (is_intact, violations).  No RNG involved."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["C", "C", "C", "C", "H"]
+    P = np.zeros((5, 5))[:, :3]
+    bonds = [(0, 1), (1, 2), (2, 3)]   # H @ idx 4 is detached
+    out1 = verify_no_extra_fragments(P, syms, bonds)
+    out2 = verify_no_extra_fragments(P, syms, bonds)
+    assert out1[0] == out2[0]
+    assert out1[1] == out2[1]
+    # Bond reordering must not change the verdict (frozen-set bond accounting).
+    out3 = verify_no_extra_fragments(P, syms, [(2, 3), (0, 1), (1, 2)])
+    assert out3 == out1
+
+
+def test_fragment_check_bond_orientation_irrelevant():
+    """(i, j) and (j, i) describe the same edge."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["C", "C", "C"]
+    P = np.zeros((3, 3))
+    is1 = verify_no_extra_fragments(P, syms, [(0, 1), (1, 2)])
+    is2 = verify_no_extra_fragments(P, syms, [(1, 0), (2, 1)])
+    assert is1 == is2 == (True, [])
+
+
+def test_fragment_check_self_loops_and_out_of_range_ignored():
+    """Malformed bond entries do not crash and do not fake-connect atoms."""
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    syms = ["C", "C"]
+    P = np.zeros((2, 3))
+    # Self-loop on 0, out-of-range bond, plus the real bond.
+    bonds = [(0, 0), (0, 999), (0, 1)]
+    is_intact, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert is_intact is True
+    assert viols == []
+
+
+def test_fragment_check_strict_demo_lenient_logs_strict_rejects():
+    """Demonstration of the env-flag policy:
+
+      * lenient (CHECK=1, STRICT=0)  -> logs the violation, build is kept
+      * strict  (CHECK=1, STRICT=1)  -> caller should reject the build
+
+    Here we only exercise the predicates + the verify function; the
+    assemble_from_config integration is covered by its own end-to-end gate.
+    """
+    from delfin.fffree.construction_sanity import (
+        fragment_check_active,
+        fragment_check_strict_active,
+        verify_no_extra_fragments,
+        _log_fragment_violations,
+    )
+
+    syms = ["Cr", "C", "H"]
+    P = np.zeros((3, 3))
+    bonds = [(0, 1)]   # H detached
+
+    # Lenient.
+    os.environ["DELFIN_FFFREE_FRAGMENT_CHECK"] = "1"
+    assert fragment_check_active() is True
+    assert fragment_check_strict_active() is False
+    ok, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert ok is False and len(viols) == 1
+    # Logging must not raise.
+    _log_fragment_violations(viols, context="unit_test_lenient")
+
+    # Strict.
+    os.environ["DELFIN_FFFREE_FRAGMENT_CHECK_STRICT"] = "1"
+    assert fragment_check_strict_active() is True
+    ok, viols = verify_no_extra_fragments(P, syms, bonds)
+    assert ok is False and len(viols) == 1
+
+
+def test_fragment_check_does_not_inspect_env():
+    """``verify_no_extra_fragments`` itself ignores env flags.
+
+    Callers decide whether to act on the result, just like
+    :func:`assert_construction_sane`.
+    """
+    from delfin.fffree.construction_sanity import verify_no_extra_fragments
+
+    # Env is reset by the autouse fixture.  The result must come from the
+    # graph alone, not the env state.
+    syms = ["Cr", "C"]
+    P = np.zeros((2, 3))
+    ok_no_bond, _ = verify_no_extra_fragments(P, syms, [])
+    ok_with_bond, _ = verify_no_extra_fragments(P, syms, [(0, 1)])
+    assert ok_no_bond is False
+    assert ok_with_bond is True

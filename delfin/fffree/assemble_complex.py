@@ -1479,16 +1479,30 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     # return ``None`` so the upstream caller (smiles_converter) can retry with
     # a different config / fall back to the legacy path.  Env-gated default
     # OFF byte-identical (``DELFIN_FFFREE_CONSTRUCTION_SANITY=1``).
+    #
+    # FRAGMENT-INTEGRITY GATE (2026-06-07, extra_fragments bug class):
+    # Universal graph-only post-build check that the atom-bond graph is a
+    # single connected component.  Addresses a separate failure mode where
+    # GRIP polish pulls an atom far from its parent and the resulting
+    # geometry/graph fragments.  Env-gated:
+    #   DELFIN_FFFREE_FRAGMENT_CHECK=1         enable check (logs only)
+    #   DELFIN_FFFREE_FRAGMENT_CHECK_STRICT=1  reject builds with fragments
+    # Default OFF byte-identical when both unset.
     try:
         from delfin.fffree.construction_sanity import (
             sanity_active as _cs_active,
             assert_construction_sane as _cs_assert,
+            fragment_check_active as _fc_active,
+            fragment_check_strict_active as _fc_strict,
+            verify_no_extra_fragments as _fc_verify,
+            _log_fragment_violations as _fc_log,
         )
-        if _cs_active():
-            # Derive bond list from the (placed) ligand mols + M-D bonds.
-            # When the relax block built ``cm`` we re-use it; otherwise we
-            # infer bonds from the per-ligand mols and the (metal, donor)
-            # pairs in ``fixed``.
+        # Derive bond list ONCE; shared between sanity gate and fragment gate.
+        # When the relax block built ``cm`` we re-use it; otherwise we infer
+        # bonds from the per-ligand mols and the (metal, donor) pairs in
+        # ``fixed``.  Lazy-built only when at least one gate is active.
+        _bonds_for_sanity = None
+        if _cs_active() or _fc_active():
             _bonds_for_sanity = []
             try:
                 # Per-ligand internal bonds (offset by lig_offset in the
@@ -1505,6 +1519,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             # Metal-donor bonds
             for _dg in donors:
                 _bonds_for_sanity.append((0, _dg))
+        if _cs_active():
             _ok, _viols = _cs_assert(
                 P, out_syms, _bonds_for_sanity,
                 metal_idx=0,
@@ -1514,9 +1529,16 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             if not _ok:
                 # Reject the build -- caller falls back to the legacy path.
                 return None
+        if _fc_active():
+            _f_ok, _f_viols = _fc_verify(P, out_syms, _bonds_for_sanity)
+            if not _f_ok:
+                _fc_log(_f_viols, context="assemble_from_config")
+                if _fc_strict():
+                    # Strict: reject the build -- caller falls back.
+                    return None
     except Exception:
-        # Any error in the sanity gate is non-fatal: keep the build (the
-        # gate is opt-in, byte-identical when disabled).
+        # Any error in the sanity gates is non-fatal: keep the build (gates
+        # are opt-in, byte-identical when disabled).
         pass
     return out_syms, P, donors
 
