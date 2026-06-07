@@ -341,9 +341,38 @@ def _detect_functional_modes(mol) -> List[Dict]:
 
 def _detect_hapto_modes(mol) -> List[Dict]:
     """Recognise Cp / arene / allyl / butadiene / COT etc. and emit canonical
-    η-modes.  Returns a list of mode-dicts with `eta` key set."""
+    η-modes.  Returns a list of mode-dicts with `eta` key set.
+
+    When ``DELFIN_FFFREE_HAPTO_STRICT_DETECTION=1`` and ``mol`` contains a
+    metal, applies the strict graph-topology filter from
+    :mod:`delfin.fffree.hapto_strict_detection` — a ring is only emitted
+    as a hapto candidate if at least one of its atoms is within
+    ``DELFIN_FFFREE_HAPTO_STRICT_MAX_DIST`` (default 1) bonds of a
+    metal-coordinated atom in the metal-removed graph.  This prevents
+    false-positive η²/η⁴/η⁶ enumeration for σ-bound chelates with phenyl
+    or pyridyl substituents (YUHRUP-class).  Default OFF = byte-identical.
+    """
     out: List[Dict] = []
     seen_centroids: Set[Tuple[int, ...]] = set()
+    # Strict-detection filter (env-gated, default OFF byte-identical).
+    try:
+        from delfin.fffree.hapto_strict_detection import (
+            is_legitimate_hapto_candidate,
+            strict_detection_enabled,
+        )
+        _strict_on = strict_detection_enabled()
+    except Exception:
+        is_legitimate_hapto_candidate = None
+        _strict_on = False
+    # Pre-compute metal indices ONCE per mol for the strict path.
+    _metal_idxs: List[int] = []
+    if _strict_on:
+        try:
+            from delfin._bond_decollapse import _is_metal as _im
+            _metal_idxs = sorted(int(a.GetIdx()) for a in mol.GetAtoms()
+                                 if _im(a.GetSymbol()))
+        except Exception:
+            _metal_idxs = []
     for smarts, modes in HAPTO_PI_FRAGMENTS.items():
         try:
             patt = Chem.MolFromSmarts(smarts)
@@ -353,6 +382,20 @@ def _detect_hapto_modes(mol) -> List[Dict]:
             continue
         for match in mol.GetSubstructMatches(patt):
             ring_atoms = tuple(sorted(set(match)))
+            # Strict-detection filter: skip rings that aren't plausibly
+            # hapto-bonded to any metal in the graph.  Graph-only,
+            # universal, no SMILES patterns.  Default OFF = byte-identical.
+            if _strict_on and is_legitimate_hapto_candidate is not None:
+                try:
+                    legit = is_legitimate_hapto_candidate(
+                        mol, ring_atoms,
+                        metal_idxs=_metal_idxs,
+                        strict=True,
+                    )
+                except Exception:
+                    legit = True
+                if not legit:
+                    continue
             # collapse duplicate ring detections (Cp/arene SMARTS overlap)
             for spec in modes:
                 try:
