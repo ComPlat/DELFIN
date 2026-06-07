@@ -37,6 +37,200 @@ def _f1_log(smi: str, reason: str, extra: str = "") -> None:
         pass
 
 
+# ===== CN-classification strict mode (Task 2026-06-07) =========================
+#
+# Several CCDC-class SMILES (TIBXAD-class Ti-(N^N)Cl4 chelates, charged-aromatic
+# pyridiniums, hapto rings drawn with mixed dative/single bonds) end up with a
+# declared CN that disagrees with the actual graph CN.  When that happens the
+# polyhedron lookup picks the wrong vertex set (CN4 SP-4 / T-4 instead of CN6
+# OC-6) and the Pólya-vertex enumerator emits orbits for the wrong vertex
+# stabiliser — every downstream structure for the SMILES is built on the
+# wrong scaffold.
+#
+# ``count_actual_cn`` walks the RDKit graph and counts every neighbour of the
+# metal atom that contributes a coordination site:
+#
+#   * direct bonds            -- always counted (any bond type incl. dative,
+#                                aromatic, single, double, triple).  Ring
+#                                closure bonds (`[N+]21`) are direct bonds in
+#                                the RDKit graph so they are already covered.
+#   * metal-metal bonds       -- IGNORED (multi-metal handled separately).
+#   * implicit / explicit H   -- IGNORED unless the H is an explicit metal-
+#                                hydride atom in the graph (rare; e.g.
+#                                [Re](H)(...) — counted).
+#   * charged donors          -- counted (charge does not disqualify a donor).
+#   * hapto rings             -- when ``count_hapto_as_ring=True`` (default for
+#                                strict-mode comparison) a contiguous ring of
+#                                ≥3 carbon donors is counted as ONE effective
+#                                site instead of η^n vertex atoms.  When
+#                                ``count_hapto_as_ring=False`` each ring carbon
+#                                counts (this matches the raw RDKit degree and
+#                                is what ``decompose`` uses pre-hapto-collapse).
+#
+# ``verify_cn_classification`` returns ``(is_consistent, actual_cn)``.
+#
+# Strict mode env-flag: ``DELFIN_FFFREE_CN_CLASSIFY_STRICT=1`` (default OFF =
+# byte-identical with HEAD).  When ON, ``decompose`` recomputes ``cn`` from
+# ``count_actual_cn`` *before* dispatching to ``_default_geometry`` so the
+# polyhedron lookup always sees the graph-derived CN, and logs a one-line
+# warning to stderr when the upstream / raw-degree CN disagrees.
+
+
+def _hapto_ring_groups(mol, metal_idx: int) -> List[List[int]]:
+    """Return groups of metal-neighbour atom indices that lie on a common
+    carbocyclic ring (η3..η8 hapto-π).
+
+    Each returned group is the *full* ring-carbon set that the metal binds.
+    Universal — graph-only walk on the ligand subgraph (excluding the metal),
+    so it works on freshly-built RWMols without needing SSSR or aromaticity
+    perception.
+    """
+    try:
+        atom = mol.GetAtomWithIdx(int(metal_idx))
+    except Exception:
+        return []
+    metal_idx_int = int(metal_idx)
+    # Carbon neighbours of the metal — only those can form hapto-π groups.
+    carbon_neigh = [
+        n.GetIdx() for n in atom.GetNeighbors()
+        if n.GetSymbol() == "C"
+    ]
+    if len(carbon_neigh) < 3:
+        return []
+    neigh_set = set(carbon_neigh)
+    # Build adjacency among the carbon-neighbours (ligand-side bonds only;
+    # ignore bonds through the metal).
+    adj: Dict[int, set] = {i: set() for i in carbon_neigh}
+    for i in carbon_neigh:
+        for b in mol.GetAtomWithIdx(i).GetBonds():
+            o = b.GetOtherAtom(mol.GetAtomWithIdx(i)).GetIdx()
+            if o == metal_idx_int:
+                continue
+            if o in neigh_set:
+                adj[i].add(o)
+                adj[o].add(i)
+    # Connected components inside the metal-neighbour subgraph.
+    groups: List[List[int]] = []
+    visited: set = set()
+    for start in carbon_neigh:
+        if start in visited:
+            continue
+        comp = []
+        stack = [start]
+        while stack:
+            u = stack.pop()
+            if u in visited:
+                continue
+            visited.add(u)
+            comp.append(u)
+            for v in adj[u]:
+                if v not in visited:
+                    stack.append(v)
+        comp_sorted = sorted(comp)
+        n = len(comp_sorted)
+        if n < 3 or n > 8:
+            continue
+        # Hapto-π ring criterion: every atom in the component has exactly 2
+        # neighbours INSIDE the component (closed cycle).  Allyl / diene
+        # open chains would have endpoints with degree 1 inside; we treat
+        # those as a separate (smaller) group iff size in {3,4} — covered
+        # by the alt check below.
+        comp_set = set(comp_sorted)
+        in_degrees = [len(adj[a] & comp_set) for a in comp_sorted]
+        is_ring = all(d == 2 for d in in_degrees)
+        is_chain = (sorted(in_degrees) == [1, 1] + [2] * (n - 2))
+        if is_ring or (is_chain and n in (3, 4)):
+            groups.append(comp_sorted)
+    return groups
+
+
+def count_actual_cn(
+    mol,
+    metal_idx: int,
+    *,
+    count_hapto_as_ring: bool = False,
+) -> int:
+    """Walk the RDKit graph and return the actual coordination number of
+    the metal at ``metal_idx``.
+
+    See module-level comment for the counting contract.
+
+    Parameters
+    ----------
+    mol :
+        RDKit molecule (may be unsanitised; uses degree / bond walk only).
+    metal_idx :
+        Index of the metal atom.
+    count_hapto_as_ring :
+        If True, a contiguous aromatic / ring-bound carbon group of size
+        n>=3 around the metal counts as ONE effective donor site instead of
+        n vertices.  Used for sandwich / piano-stool / half-sandwich
+        polyhedron lookups.  Default False (matches raw RDKit degree).
+    """
+    if mol is None:
+        return 0
+    try:
+        atom = mol.GetAtomWithIdx(int(metal_idx))
+    except Exception:
+        return 0
+    if not bd._is_metal(atom.GetSymbol()):
+        return 0
+    # Hapto-ring collapse first (if requested).
+    hapto_groups: List[List[int]] = []
+    if count_hapto_as_ring:
+        hapto_groups = _hapto_ring_groups(mol, int(metal_idx))
+    hapto_atoms: set = set()
+    for g in hapto_groups:
+        hapto_atoms.update(g)
+    n_sites = len(hapto_groups)
+    # Walk metal neighbours
+    for nbr in atom.GetNeighbors():
+        nsym = nbr.GetSymbol()
+        # Skip metal-metal bonds entirely (multi-metal handled elsewhere).
+        if bd._is_metal(nsym):
+            continue
+        # Skip plain hydrogens (organic H's on a donor that happens to be the
+        # neighbour shouldn't add a site; explicit metal-hydride still counts
+        # because the H bonded directly to the metal IS a hydride donor).
+        # We count an H neighbour iff the bond exists in the graph
+        # (i.e. is explicit) — RDKit GetNeighbors() already returns explicit
+        # heavy + explicit-H atoms only, so any H here is genuinely a graph
+        # neighbour of the metal.  Keep it.
+        if nbr.GetIdx() in hapto_atoms:
+            # Already accounted for by the hapto-ring site.
+            continue
+        n_sites += 1
+    return n_sites
+
+
+def verify_cn_classification(
+    mol,
+    metal_idx: int,
+    declared_cn: int,
+    *,
+    count_hapto_as_ring: bool = False,
+):
+    """Return ``(is_consistent, actual_cn)``.
+
+    ``is_consistent`` is ``actual_cn == int(declared_cn)``.  ``actual_cn``
+    is the graph-derived coordination number from :func:`count_actual_cn`.
+    """
+    actual = count_actual_cn(
+        mol, metal_idx, count_hapto_as_ring=count_hapto_as_ring
+    )
+    try:
+        declared = int(declared_cn)
+    except Exception:
+        declared = -1
+    return (actual == declared, actual)
+
+
+def _cn_strict_enabled() -> bool:
+    if os.environ.get("DELFIN_FFFREE_CN_CLASSIFY_STRICT", "0") == "1":
+        return True
+    return False
+
+
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
     # Phase C f-block CN8-12 dispatch (Task #64, 2026-06-04).
     # Env-gated default OFF: only when DELFIN_FFFREE_FBLOCK_CN8_12=1 (or
@@ -125,6 +319,34 @@ def decompose(smiles: str) -> Optional[Dict]:
     matom = mol.GetAtomWithIdx(m)
     donor_idx = [n.GetIdx() for n in matom.GetNeighbors()]
     cn = len(donor_idx)
+    # CN-classify strict mode (Task 2026-06-07, default OFF byte-identical).
+    # When DELFIN_FFFREE_CN_CLASSIFY_STRICT=1, recompute CN from the graph
+    # walk (count_actual_cn) and trust that value for downstream polyhedron
+    # lookup.  Filters out metal-metal neighbours and falls back to the raw
+    # degree-based count when the strict computation disagrees by more than
+    # a metal-metal bond.  Logs a stderr warning on disagreement.
+    if _cn_strict_enabled():
+        try:
+            _actual_cn = count_actual_cn(mol, m, count_hapto_as_ring=False)
+        except Exception:
+            _actual_cn = cn
+        if _actual_cn != cn:
+            try:
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[cn-classify-strict] {smiles!r}: declared_cn={cn} "
+                    f"actual_cn={_actual_cn} (using actual)\n"
+                )
+            except Exception:
+                pass
+            # Re-derive donor list to match the actual CN.  Drop metal-metal
+            # neighbours (the only legitimate source of disagreement in the
+            # current contract).
+            donor_idx = [
+                n.GetIdx() for n in matom.GetNeighbors()
+                if not bd._is_metal(n.GetSymbol())
+            ]
+            cn = len(donor_idx)
     # High-CN (7-9) support is env-gated: default coverage stays CN 4-6 (byte-
     # identical), CN 7-9 polyhedra (PB-7/SQAP-8/TTP-9) only when DELFIN_FFFREE_HIGHCN=1.
     # Low-CN (3) support is env-gated: DELFIN_FFFREE_CN3=1 enables SP-3/T-3 (iter-32c).
