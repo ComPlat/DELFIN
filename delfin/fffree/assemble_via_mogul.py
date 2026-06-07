@@ -838,6 +838,45 @@ def _mahalanobis_severity(
         return float("inf")
 
 
+def _reordered_source_mol(smiles: str, n_atoms_expected: int):
+    """Return the source mol reordered to match ``assemble_complex_mogul_primary``
+    output (metal at index 0).  Atom bond orders + aromaticity flags survive
+    the reorder, so the GRIP fragment detector can run on the same atom
+    indices as the (syms, P) coordinate frame.
+
+    Returns ``None`` on any failure -- caller falls back to the geometric
+    bond-graph mol (severity collapses to 0 but the RMSD dedup ranking
+    still works).
+    """
+    try:
+        src = _full_complex_mol(smiles)
+        if src is None:
+            return None
+        metals = [a.GetIdx() for a in src.GetAtoms()
+                  if _bd._is_metal(a.GetSymbol())]
+        if not metals:
+            return None
+        if len(metals) == 1:
+            metal_idx_src = metals[0]
+        else:
+            metal_idx_src = max(
+                metals,
+                key=lambda mi: src.GetAtomWithIdx(mi).GetDegree(),
+            )
+        n_src = src.GetNumAtoms()
+        if n_src != n_atoms_expected:
+            return None
+        if metal_idx_src == 0:
+            order = list(range(n_src))
+        else:
+            order = ([metal_idx_src]
+                     + [i for i in range(n_src) if i != metal_idx_src])
+        # RDKit RenumberAtoms preserves bond orders + aromaticity flags.
+        return Chem.RenumberAtoms(src, order)
+    except Exception:
+        return None
+
+
 def _aromatic_atom_set_from_smiles(
     smiles: str, n_atoms_expected: int,
 ) -> List[int]:
@@ -945,6 +984,7 @@ def enumerate_orbit_conformers(
     metal_idx: int = 0,
     donor_idxs: Optional[Sequence[int]] = None,
     aromatic_atom_set: Optional[Sequence[int]] = None,
+    source_mol=None,
     max_ring_states: int = 4,
     max_rotamer_states: int = 12,
     max_total: int = 50,
@@ -1042,13 +1082,26 @@ def enumerate_orbit_conformers(
 
     # 6) Mogul-Mahalanobis severity per conformer -> rank ascending.
     donors_for_sev = list(donor_idxs) if donor_idxs is not None else []
+    # For the Mahalanobis severity we prefer the SOURCE mol (with proper
+    # bond orders + aromaticity perception) when the caller supplied one;
+    # the geometric-bond mol_g misses bond-order information so the GRIP
+    # fragment detector returns zero terms and the severity collapses to 0
+    # for every conformer (defeating the ranking).  When ``source_mol`` is
+    # not supplied the geometric mol is the best available -- severity may
+    # still be 0 but the RMSD-dedup still gives a meaningful (insertion-
+    # order) ordering, and the base structure remains first.
+    mol_for_sev = source_mol if source_mol is not None else mol_g
     scored: List[Tuple[List[str], np.ndarray, str, float]] = []
     for s_list, P_v, lab in kept:
         sev = _mahalanobis_severity(
-            s_list, P_v, mol_g, int(metal_idx), donors_for_sev,
+            s_list, P_v, mol_for_sev, int(metal_idx), donors_for_sev,
         )
         scored.append((s_list, P_v, lab, float(sev)))
     # Sort: severity ascending; ties broken by deterministic label order.
+    # Ties on zero severity (when fragment detection returns no terms) are
+    # broken by insertion order via the label suffix -- "base" sorts
+    # before "pucker*" / "rot_*" lexicographically by chance, but more
+    # importantly the dedup_by_rmsd step has already promoted the base.
     scored.sort(key=lambda t: (t[3], t[2]))
     return scored
 
@@ -1291,12 +1344,19 @@ def enumerate_and_embed_mogul_primary(
         # maps source -> output identically across orbits so the same set
         # applies.
         arom_set = _aromatic_atom_set_from_smiles(smiles, len(out_syms))
+        # Source mol with proper bond orders + aromaticity -- the GRIP
+        # fragment detector needs bond-order information to enumerate the
+        # angle / improper terms whose Mahalanobis distance drives the
+        # severity-ranking of conformers.  Without it, every conformer's
+        # severity collapses to 0 and the ranking degenerates.
+        src_mol = _reordered_source_mol(smiles, len(out_syms))
         try:
             ensemble = enumerate_orbit_conformers(
                 out_syms, P,
                 metal_idx=0,           # assemble_complex_mogul_primary puts metal at 0
                 donor_idxs=None,       # auto-derive from geometry
                 aromatic_atom_set=arom_set or None,
+                source_mol=src_mol,
                 max_ring_states=conf_ring_states,
                 max_rotamer_states=conf_rot_states,
                 max_total=budget,
@@ -1464,11 +1524,18 @@ def enumerate_kappa_variants_mogul_primary(
                         except Exception:
                             arom_b = []
                         try:
+                            src_b = _reordered_source_mol(
+                                smiles, len(syms_b),
+                            )
+                        except Exception:
+                            src_b = None
+                        try:
                             ens_b = enumerate_orbit_conformers(
                                 syms_b, P_b,
                                 metal_idx=0,
                                 donor_idxs=None,
                                 aromatic_atom_set=arom_b or None,
+                                source_mol=src_b,
                             )
                         except Exception:
                             ens_b = []
@@ -1533,11 +1600,18 @@ def enumerate_kappa_variants_mogul_primary(
                         except Exception:
                             arom_v = []
                         try:
+                            src_v = _reordered_source_mol(
+                                smiles, len(syms_v),
+                            )
+                        except Exception:
+                            src_v = None
+                        try:
                             ens_v = enumerate_orbit_conformers(
                                 syms_v, P_v,
                                 metal_idx=0,
                                 donor_idxs=None,
                                 aromatic_atom_set=arom_v or None,
+                                source_mol=src_v,
                             )
                         except Exception:
                             ens_v = []

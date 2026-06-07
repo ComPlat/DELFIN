@@ -1025,11 +1025,18 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     except Exception:
                         _arom_set = []
                     try:
+                        _src_mol = _MP._reordered_source_mol(
+                            smiles, len(_syms),
+                        )
+                    except Exception:
+                        _src_mol = None
+                    try:
                         _ensemble = _MP.enumerate_orbit_conformers(
                             _syms, _P,
                             metal_idx=0,
                             donor_idxs=None,
                             aromatic_atom_set=_arom_set or None,
+                            source_mol=_src_mol,
                         )
                     except Exception:
                         _ensemble = []
