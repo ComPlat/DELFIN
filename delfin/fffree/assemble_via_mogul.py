@@ -41,7 +41,7 @@ Branch: feat-mogul-primary-2026-06-07
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -74,6 +74,8 @@ def assemble_complex_mogul_primary(
     *,
     max_attempts: int = 5,
     return_mol: bool = False,
+    donor_at_vertex: Optional[Sequence[int]] = None,
+    geometry_key: Optional[str] = None,
 ) -> Optional[Tuple[List[str], np.ndarray]]:
     """Construct a 3D complex by embedding the CCDC-populated bounds matrix.
 
@@ -87,6 +89,21 @@ def assemble_complex_mogul_primary(
         back to ``None`` (caller falls through to legacy).
     return_mol : bool
         Reserved for future use; the public contract returns ``(syms, P)``.
+    donor_at_vertex : sequence of int, optional
+        Pólya orbit enumeration hook (2026-06-07): permutation mapping
+        polyhedron vertex ``k`` → atom index of the donor placed at that
+        vertex.  When ``None`` (default) the canonical sort-by-atom-idx
+        ordering is used (byte-identical with the pre-orbit-enumeration
+        path).  When supplied, the donor-donor distance bounds are
+        re-injected so the donor at vertex ``k`` sees the ideal polyhedron
+        distance to every other vertex; the DG embed therefore lands on
+        the stereoisomer encoded by the permutation.  Pure graph-structural
+        logic — no SMILES pattern, no per-class branch.
+    geometry_key : str, optional
+        Polyhedron name (e.g. ``"OC-6 octahedron"``) used to resolve the
+        canonical vertex set when ``donor_at_vertex`` is supplied.  When
+        ``None``, the per-CN default polyhedron from
+        ``polyhedra.geometries_for_cn`` is used (matches build_bounds_matrix).
 
     Returns
     -------
@@ -121,7 +138,7 @@ def assemble_complex_mogul_primary(
             donor_idxs=donor_idxs,
             grip_lib=None,         # default: release-pinned grip_lib_v5/v6
             cod_lib=None,
-            geometry=None,         # auto-derive from CN
+            geometry=geometry_key, # explicit (orbit-enum) or auto-derive
             min_n=5,
             use_automorphism=True,
         )
@@ -146,6 +163,24 @@ def assemble_complex_mogul_primary(
         info=info,
     )
 
+    # 3c) Pólya-orbit override (2026-06-07): when a donor-to-vertex
+    #     permutation is supplied, re-write the donor-donor distance
+    #     bounds so they encode that specific stereoisomer.  The BOUNDS
+    #     MATRIX is the orbit representation — each Burnside-distinct
+    #     coloring becomes its own injection.  Universal: works for any
+    #     registered polyhedron.  See `enumerate_and_embed_mogul_primary`
+    #     for the orbit-enumerating wrapper.
+    if donor_at_vertex is not None:
+        _override_dd_bounds_for_orbit(
+            metal_sym=str(syms[int(metal_idx)]),
+            metal_idx=int(metal_idx),
+            donor_idxs=donor_idxs,
+            donor_at_vertex=[int(d) for d in donor_at_vertex],
+            geometry_key=geometry_key,
+            lower=lower,
+            upper=upper,
+        )
+
     # 4) Triangle-smooth + DG embed via RDKit using the populated bounds.
     P = _embed_with_bounds(
         mol, lower, upper,
@@ -163,6 +198,13 @@ def assemble_complex_mogul_primary(
     #     applies the CCDC mean as a rigid-body translation of the
     #     ligand subtree along the M->D ray so the M-D distance is exact
     #     and the D-M-D angle relaxes onto its polyhedron-ideal value.
+    #
+    #     IMPORTANT for orbit enumeration: the projection homogenises the
+    #     donor-to-vertex assignment back to the polyhedron's canonical
+    #     order (donor #k of the sorted list → vertex #k).  When a Pólya
+    #     orbit override is in effect we must pass the orbit permutation
+    #     through so the right donor lands at the right vertex.  Without
+    #     this the orbit choice would be silently overwritten.
     P = _project_donors_to_ccdc_geometry(
         mol=mol,
         syms=syms,
@@ -171,7 +213,57 @@ def assemble_complex_mogul_primary(
         lower=lower,
         upper=upper,
         P=P,
+        donor_at_vertex=donor_at_vertex,
     )
+
+    # 4c) GRIP-polish (2026-06-07): Mahalanobis L-BFGS pull against the
+    #     CCDC fragment manifold.  The DG embed + rigid-body projection
+    #     satisfy the bounds matrix but settle at the geometric centre of
+    #     the (lower, upper) window, not at the empirical CCDC mean.  In
+    #     particular soft-constrained pairs (chelate D-D, NHC ring
+    #     internals) drift +0.2-0.4 Å above the CCDC mean and NHC rings
+    #     come out asymmetric.  ``grip_polish`` pulls the geometry
+    #     toward the manifold mean using the per-fragment covariance,
+    #     under M-D / topology / chirality / CShM hard validators.
+    #
+    #     Env-flag: DELFIN_FFFREE_MOGUL_PRIMARY_GRIP, default ON.  Set
+    #     to 0 explicitly when comparing pre/post polish bytes.
+    #
+    #     Defence-in-depth M-D check (±0.05 Å) mirrors the legacy
+    #     assemble_complex GRIP wiring -- any unexpected drift rolls
+    #     back to the pre-polish P silently.
+    if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY_GRIP", "1") == "1":
+        try:
+            from delfin.fffree.grip_polish import grip_polish
+            from delfin.fffree.grip_mogul_lookup import GripLibrary
+            _grip_lib = GripLibrary.get_default()
+            _md_targets = [
+                float(np.linalg.norm(P[int(d)] - P[int(metal_idx)]))
+                for d in donor_idxs
+            ]
+            Pg = grip_polish(
+                P, mol, metal=int(metal_idx),
+                donors=[int(d) for d in donor_idxs],
+                geom="", mogul_lib=_grip_lib,
+            )
+            if (
+                Pg is not None
+                and isinstance(Pg, np.ndarray)
+                and Pg.shape == P.shape
+                and np.all(np.isfinite(Pg))
+            ):
+                _md_ok = True
+                for _di, _d in enumerate(donor_idxs):
+                    _d_now = float(np.linalg.norm(
+                        Pg[int(_d)] - Pg[int(metal_idx)]
+                    ))
+                    if abs(_d_now - _md_targets[_di]) > 0.05:
+                        _md_ok = False
+                        break
+                if _md_ok:
+                    P = Pg
+        except Exception:
+            pass  # silent rollback to pre-polish P
 
     # 5) Centre on metal so M is at origin (downstream convention).
     P = P - P[metal_idx]
