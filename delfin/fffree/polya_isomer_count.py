@@ -251,14 +251,33 @@ def _fblock_group_for(key: str) -> Optional[Tuple[Tuple[Tuple[int, ...], ...], i
     return res
 
 
+def _high_cn_group_for(key: str) -> Optional[Tuple[List[Tuple[int, ...]], int]]:
+    """Return ``(group, n)`` for a high-CN coverage polyhedron key or None.
+
+    Lazy import to avoid the circular ``polya_isomer_count → high_cn_coverage
+    → polyhedra → polya_isomer_count`` loop.
+    """
+    try:
+        from delfin.fffree import high_cn_coverage as _HCN
+    except ImportError:
+        return None
+    canonical = _HCN.HIGH_CN_POLYA_KEY_MAP.get(key)
+    if canonical is None:
+        return None
+    return _HCN.high_cn_group(canonical)
+
+
 def _get_group(geometry_key: str) -> Tuple[List[Tuple[int, ...]], int]:
-    """Look up a Pólya group, falling back to the f-block table."""
+    """Look up a Pólya group, falling back to the f-block + high-CN tables."""
     if geometry_key in _GROUPS:
         return _GROUPS[geometry_key]
     fb = _fblock_group_for(geometry_key)
-    if fb is None:
+    if fb is not None:
+        return fb
+    hcn = _high_cn_group_for(geometry_key)
+    if hcn is None:
         raise KeyError(geometry_key)
-    return fb
+    return hcn
 
 
 def _multiset_from_spec(spec: Dict[str, int], n: int) -> List[str]:
@@ -370,6 +389,18 @@ _GEOM_KEY_TO_SHAPE = {
     "sandwich_10_eff": "SANDWICH-10 bis-eta5-Cp",
     "piano_stool_8_eff": "PIANO-STOOL-8 eta5-Cp+L3",
     "half_sandwich_9_eff": "HALF-SANDWICH-9 eta6+L3",
+    # High-CN coverage extension (2026-06-07).  Each key resolves to the
+    # canonical name registered in :data:`high_cn_coverage.HIGH_CN_VERTICES`.
+    "dd_8_hicn": "DD-8 dodecahedron",
+    "tpr_8": "TPR-8 bicapped trigonal prism",
+    "csap_9_hicn": "CSAP-9 capped square antiprism",
+    "mff_9": "MFF-9 muffin",
+    "spheno_10": "SPHENO-10 sphenocorona",
+    "cap_11_hicn": "CAP-11 monocapped pentagonal antiprism",
+    "ocd_11": "OCD-11 octadecahedron",
+    "ico_12_hicn": "ICO-12 icosahedron",
+    "cuoh_12": "CUOH-12 cuboctahedron",
+    "acuoh_12": "ACUOH-12 anticuboctahedron",
 }
 
 # POLYA-COVERAGE-FIX-v1 (env-gated additions to _GEOM_KEY_TO_SHAPE).

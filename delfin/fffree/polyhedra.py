@@ -181,6 +181,14 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
     polyhedra) — so non-f-block CN10 (e.g. Y, early-d, large-anion) can build
     a real polyhedron instead of falling through to legacy.
 
+    High-CN coverage extension (2026-06-07): when CN is in 8-12 AND
+    ``DELFIN_FFFREE_HIGH_CN_COVERAGE=1`` (or PURE_TRACK3=1), the list grows
+    by the extra non-f-block polyhedra catalogued in
+    :mod:`delfin.fffree.high_cn_coverage` (DD-8, TPR-8, CSAP-9, MFF-9,
+    SPHENO-10, CAP-11, OCD-11, ICO-12, CUOH-12, ACUOH-12) — closing the
+    CN 8-12 coverage hole for non-f-block metals like Ru, Os, Mo, W, Re.
+    Universal: no metal-specific tables, pure geometry.
+
     Default OFF — byte-identical to ``GEOM_BY_CN[cn]`` when unset.
     """
     import os as _os
@@ -188,6 +196,9 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
     fb_on = (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
              or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
     cn10_on = cn10_polyhedra_enabled()
+    # High-CN coverage gate (2026-06-07) — non-f-block CN 8-12 extras.
+    hicn_on = (_os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1"
+               or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
     # Mission B1 (2026-06-05): sandwich / piano-stool / half-sandwich.  When
     # the env-gate is on, append the dedicated CN8/9/10 sandwich names to the
     # candidate list so downstream callers (Pólya isomer counting, ensemble
@@ -204,8 +215,11 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
             pass
     # CN10 non-f-block extension (Mission A2): inject 3 polyhedra here when
     # metal is non-f-block (or unknown).  F-block CN10 keeps its own dispatch
-    # below, gated by the independent FBLOCK_CN8_12 flag.
-    if cn == 10 and cn10_on:
+    # below, gated by the independent FBLOCK_CN8_12 flag.  The
+    # ``DELFIN_FFFREE_HIGH_CN_COVERAGE`` gate ALSO admits these (they are the
+    # CN10 Wells-canonical set), so a single flag enables the full CN 8-12
+    # coverage without requiring both flags to be set.
+    if cn == 10 and (cn10_on or hicn_on):
         try:
             from delfin.fffree import f_block_polyhedra as _FBP_check
             is_fb = bool(metal) and _FBP_check.is_f_block(metal)
@@ -215,7 +229,25 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
             for g in CN10_VERTICES.keys():
                 if g not in base:
                     base.append(g)
-            return base
+            # Fall through to high-CN coverage below (adds SPHENO-10).
+    # High-CN coverage (2026-06-07): inject the universal CN 8-12 extras when
+    # the env-gate is on.  Skipped when the metal is f-block AND the f-block
+    # dispatch is on (the f-block table takes precedence below).
+    is_fb_metal = False
+    if metal:
+        try:
+            from delfin.fffree import f_block_polyhedra as _FBP_check
+            is_fb_metal = _FBP_check.is_f_block(metal)
+        except ImportError:
+            is_fb_metal = False
+    if hicn_on and cn in (8, 9, 10, 11, 12) and not (is_fb_metal and fb_on):
+        try:
+            from delfin.fffree.high_cn_coverage import HIGH_CN_EXTRA_BY_CN
+            for g in HIGH_CN_EXTRA_BY_CN.get(cn, []):
+                if g not in base:
+                    base.append(g)
+        except ImportError:
+            pass
     if not fb_on:
         return base
     if not metal:
@@ -287,6 +319,15 @@ def ref_vectors(geometry: str) -> np.ndarray:
         return _FBP.ref_vectors_fblock(geometry)
     except (KeyError, ImportError):
         pass
+    # High-CN coverage dispatch (2026-06-07).  Read-only name lookup —
+    # callers only reach these geometries when env-gated.  Universal:
+    # works for any metal at CN 8-12 (DD-8, TPR-8, CSAP-9, MFF-9,
+    # SPHENO-10, CAP-11, OCD-11, ICO-12, CUOH-12, ACUOH-12).
+    try:
+        from delfin.fffree.high_cn_coverage import ref_vectors_high_cn
+        return ref_vectors_high_cn(geometry)
+    except (KeyError, ImportError):
+        pass
     raise KeyError(geometry)
 
 
@@ -307,10 +348,24 @@ def _get_fblock_fallback():
     return _FBLOCK_FALLBACK if _FBLOCK_FALLBACK is not False else None
 
 
-def md_distance(metal: str, donor: str) -> float:
-    # Phase C: f-block metals get Shannon-radii distances (env-gated; default
-    # path is byte-identical because the gate also controls whether f-block
-    # CN8-12 geometries are reached at all).
+def md_distance(metal: str, donor: str, cn: int = 0) -> float:
+    """Metal-donor distance for the FF-free builder.
+
+    The default path is the covalent-radii sum (legacy behaviour, byte-
+    identical when no env gate is on).  Two env-gated extensions:
+
+    * Phase C f-block (Shannon-radii) — when the metal is Ln/An and the
+      ``DELFIN_FFFREE_FBLOCK_CN8_12`` (or ``PURE_TRACK3``) gate is on.
+    * High-CN coverage extension (2026-06-07) — when the gate
+      ``DELFIN_FFFREE_HIGH_CN_COVERAGE`` (or ``PURE_TRACK3``) is on AND the
+      legacy ``COV`` table is missing the metal, fall back to the extended
+      covalent-radii table in :mod:`delfin.fffree.high_cn_coverage`.  Adds a
+      deterministic +0.10 Å correction for ``cn >= 8`` (empirical high-CN
+      bond elongation across the 4d/5d/Ln series).
+
+    The optional ``cn`` argument is purely informational — when omitted (0),
+    the high-CN bond elongation is NOT applied (caller may not know the CN).
+    """
     import os as _os
     if (_os.environ.get("DELFIN_FFFREE_FBLOCK_CN8_12", "0") == "1"
             or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"):
@@ -319,6 +374,20 @@ def md_distance(metal: str, donor: str) -> float:
             r = _FBP.md_distance_fblock(metal, donor)
             if r is not None:
                 return r
+    # High-CN coverage M-D fallback (universal, no metal-specific tables).
+    # Only fires when the legacy COV table is missing the metal so the
+    # default-OFF byte-identity contract is preserved (when the metal IS in
+    # COV the legacy sum is returned unchanged).
+    hicn_on = (_os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1"
+               or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
+    if hicn_on and metal not in COV:
+        try:
+            from delfin.fffree.high_cn_coverage import md_distance_high_cn
+            r = md_distance_high_cn(metal, donor, cn=int(cn))
+            if r is not None:
+                return r
+        except ImportError:
+            pass
     return COV.get(metal, 1.5) + COV.get(donor, 0.75)
 
 
