@@ -773,6 +773,33 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         # legacy single-metal path. Production safety contract.
         pass
 
+    # ---- TEMPLATE DISPATCH (2026-06-07, follow-up to construction_sanity) ----
+    # Auto-dispatch per-class robust construction templates BEFORE the generic
+    # ETKDG-per-ligand path.  Catches the 4 coordination classes the legacy
+    # path silently breaks on (AFOFIL SP-4 chelate+2mono, ODUXAN Fischer-
+    # carbene, WICROP piano-stool, BEYRAY OC-6 2chel+2mono).  Default OFF
+    # byte-identical -- the entire block is dormant when
+    # ``DELFIN_FFFREE_TEMPLATE_DISPATCH`` is not set.  The classifier returns
+    # ``generic`` for anything outside the 4 implemented classes, so the
+    # template path silently falls through to the legacy embed.  See
+    # :mod:`delfin.fffree.template_dispatcher` for the per-class builders.
+    try:
+        from delfin.fffree import template_dispatcher as _TD
+        if _TD.dispatch_active():
+            _tpl_result = _TD.try_template_dispatch(metal, geometry, ligands)
+            if _tpl_result is not None:
+                _tpl_P, _tpl_syms, _tpl_donors = _tpl_result
+                if (isinstance(_tpl_P, np.ndarray)
+                        and _tpl_P.shape[1] == 3
+                        and len(_tpl_syms) == _tpl_P.shape[0]
+                        and _tpl_donors):
+                    return _tpl_syms, _tpl_P, sorted(set(int(d) for d in _tpl_donors))
+    except Exception:
+        # Any error in the template dispatch is non-fatal: silently continue
+        # into the legacy path so the build never regresses on dispatcher
+        # import / signature errors.  Production safety contract.
+        pass
+
     ref = MSB._ref_vectors(geometry)
     # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
     by_lig = {}
