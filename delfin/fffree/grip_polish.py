@@ -562,6 +562,294 @@ def _vdw_floor_value_and_grad(
     return float(total), grad
 
 
+# ---------------------------------------------------------------------------
+# Inter-shell Pauli-floor (2026-06-07) — donor / 2nd-shell clash anti-collapse.
+#
+# Auto-Diagnostic on the V3 voll-pool flagged 27.4% (1816 / 6627) of structures
+# as having *inter-shell donor clashes* — a donor atom of one ligand sitting
+# inside the Pauli radius of a 2nd-shell atom (a NON-donor that is bonded to
+# a donor of a DIFFERENT ligand, e.g. an N-CH₃ methyl carbon eclipsing an
+# adjacent Cl donor).  These pairs are 1-4 or further in the molecular graph
+# (so the legacy excl_13 lets them through) yet they are physically forced
+# close together because both atoms live in the metal's first / second
+# coordination sphere.
+#
+# Universal definition — graph + geometry only, no per-class heuristics:
+#
+#   * First shell  = {donors}                  (atoms bonded to the metal)
+#   * Second shell = {a | a NOT bonded to M
+#                       AND ∃ d ∈ donors : (d, a) is a bond
+#                       AND ||x_a - x_M|| ≤ d_max}   (d_max default 3.5 Å)
+#
+# For every pair (donor_i, second_shell_j) that is NOT bonded and NOT inside
+# the existing 1-3 exclusion set (so (donor_i, donor_j) via-metal pairs are
+# already skipped), apply a quadratic Pauli floor identical in form to the
+# heavy-atom vdW-floor above:
+#
+#     d_ij    = ||x_i - x_j||
+#     floor   = fraction * (r_vdw_i + r_vdw_j)
+#     if d_ij < floor and d_ij > 0:
+#         L         += w * (floor - d_ij)^2
+#         grad_x_i  += -2 w (floor - d_ij) * (x_i - x_j) / d_ij
+#         grad_x_j  += +2 w (floor - d_ij) * (x_i - x_j) / d_ij
+#
+# Composes ADDITIVELY with the existing ``ClashFloorPenalty`` (intra-ligand
+# weight 5.0) and the heavy-atom ``_vdw_floor_value_and_grad`` term (heavy-
+# all-pair weight 20.0).  The default weight here is ``15.0`` — chosen to
+# match the existing inter-ligand clash boost so well-formed structures stay
+# untouched (zero violation -> zero loss + zero gradient) while real
+# inter-shell clashes feel a strong push.
+#
+# Env-gated default OFF -> byte-identical with HEAD when the flag is unset:
+#
+#     DELFIN_FFFREE_INTER_SHELL_FLOOR=1            # turn it on
+#     DELFIN_FFFREE_INTER_SHELL_FLOOR_WEIGHT=15.0  # tune the multiplier
+#     DELFIN_FFFREE_INTER_SHELL_FLOOR_FRACTION=0.85
+#     DELFIN_FFFREE_INTER_SHELL_FLOOR_RADIUS=3.5   # 2nd-shell M-X cutoff (Å)
+# ---------------------------------------------------------------------------
+_INTER_SHELL_FLOOR_ENV: str = "DELFIN_FFFREE_INTER_SHELL_FLOOR"
+_INTER_SHELL_FLOOR_WEIGHT_ENV: str = "DELFIN_FFFREE_INTER_SHELL_FLOOR_WEIGHT"
+_INTER_SHELL_FLOOR_FRACTION_ENV: str = "DELFIN_FFFREE_INTER_SHELL_FLOOR_FRACTION"
+_INTER_SHELL_FLOOR_RADIUS_ENV: str = "DELFIN_FFFREE_INTER_SHELL_FLOOR_RADIUS"
+DEFAULT_INTER_SHELL_FLOOR_WEIGHT: float = 15.0
+DEFAULT_INTER_SHELL_FLOOR_FRACTION: float = 0.85
+DEFAULT_INTER_SHELL_FLOOR_RADIUS: float = 3.5  # Å; 2nd-shell cutoff vs metal
+_INTER_SHELL_FLOOR_EPS: float = 1e-9
+
+
+def _inter_shell_floor_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_INTER_SHELL_FLOOR`` is on (default OFF).
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other
+    value (including unset / empty) keeps the term OFF, preserving
+    byte-identity with HEAD.
+    """
+    raw = os.environ.get(_INTER_SHELL_FLOOR_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_inter_shell_floor_weight() -> float:
+    """Effective weight for the inter-shell Pauli-floor penalty.
+
+    env > :data:`DEFAULT_INTER_SHELL_FLOOR_WEIGHT` (15.0).  Non-finite /
+    non-numeric values fall through to the default with a single warning so
+    the polish never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_INTER_SHELL_FLOOR_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _INTER_SHELL_FLOOR_WEIGHT_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _INTER_SHELL_FLOOR_WEIGHT_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_WEIGHT,
+            )
+    return DEFAULT_INTER_SHELL_FLOOR_WEIGHT
+
+
+def _resolve_inter_shell_floor_fraction() -> float:
+    """Effective Pauli-floor fraction for the inter-shell penalty.
+
+    env > :data:`DEFAULT_INTER_SHELL_FLOOR_FRACTION` (0.85).  Values are
+    clamped to ``(0, 2]``; pathological values fall through to the default.
+    """
+    raw = os.environ.get(_INTER_SHELL_FLOOR_FRACTION_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and 0.0 < v <= 2.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r out of (0, 2]; using default %.3f",
+                _INTER_SHELL_FLOOR_FRACTION_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_FRACTION,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _INTER_SHELL_FLOOR_FRACTION_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_FRACTION,
+            )
+    return DEFAULT_INTER_SHELL_FLOOR_FRACTION
+
+
+def _resolve_inter_shell_floor_radius() -> float:
+    """Effective 2nd-shell selection radius (Å) vs the metal.
+
+    env > :data:`DEFAULT_INTER_SHELL_FLOOR_RADIUS` (3.5 Å).  Values are
+    clamped to ``(0, 10]``; pathological values fall through to the default.
+    """
+    raw = os.environ.get(_INTER_SHELL_FLOOR_RADIUS_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and 0.0 < v <= 10.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r out of (0, 10]; using default %.3f",
+                _INTER_SHELL_FLOOR_RADIUS_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_RADIUS,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _INTER_SHELL_FLOOR_RADIUS_ENV, raw, DEFAULT_INTER_SHELL_FLOOR_RADIUS,
+            )
+    return DEFAULT_INTER_SHELL_FLOOR_RADIUS
+
+
+def _build_inter_shell_pairs(
+    mol_bonds: Sequence[Tuple[int, int]],
+    metal: int,
+    donors: Sequence[int],
+    P: np.ndarray,
+    excluded_pairs: Set[FrozenSet[int]],
+    radius: float,
+    n_atoms: int,
+) -> List[Tuple[int, int]]:
+    """Enumerate the inter-shell ``(donor_i, second_shell_j)`` pairs.
+
+    A pair ``(i, j)`` is returned iff:
+
+      * ``i`` is in the donor set (first shell, bonded to ``metal``).
+      * ``j`` is NOT bonded to ``metal`` (not first shell), AND ``j`` is
+        bonded to AT LEAST ONE donor ``d ∈ donors`` (second shell), AND
+        ``||x_j - x_M|| <= radius``.
+      * ``(i, j)`` is NOT in ``excluded_pairs`` (bonded + 1-3 through any
+        atom, INCLUDING through-metal 1-3).
+      * ``j`` is NOT the metal itself.
+      * ``i != j``.
+
+    Sorted, deterministic, graph-only construction.  Geometry is consulted
+    ONLY for the 2nd-shell radius cutoff (a soft geometric gate, not a
+    classification).
+    """
+    n = int(n_atoms)
+    metal_i = int(metal)
+    donor_set: Set[int] = {int(d) for d in donors if 0 <= int(d) < n and int(d) != metal_i}
+    if not donor_set:
+        return []
+
+    # Build adjacency.
+    adj: List[Set[int]] = [set() for _ in range(n)]
+    for (a, b) in mol_bonds:
+        if 0 <= a < n and 0 <= b < n and a != b:
+            adj[a].add(b)
+            adj[b].add(a)
+
+    # First-shell membership = atoms bonded to the metal.
+    first_shell: Set[int] = set(adj[metal_i]) if 0 <= metal_i < n else set()
+    # In normal operation first_shell == donor_set; we tolerate divergence
+    # by using ``donor_set`` for the donor endpoint (authoritative caller
+    # data) and ``first_shell`` for the "NOT bonded to metal" exclusion.
+
+    # Second-shell candidates: atoms bonded to any donor but NOT to metal,
+    # within ``radius`` of the metal.
+    second_shell: Set[int] = set()
+    if 0 <= metal_i < n:
+        metal_pos = P[metal_i]
+        for d in donor_set:
+            if not (0 <= d < n):
+                continue
+            for nb in adj[d]:
+                if nb == metal_i:
+                    continue
+                if nb in first_shell:
+                    # Skip atoms that are themselves first-shell (donors).
+                    continue
+                if nb in donor_set:
+                    continue
+                # Geometric 2nd-shell gate.
+                d_M = float(np.linalg.norm(P[nb] - metal_pos))
+                if d_M <= radius:
+                    second_shell.add(int(nb))
+
+    if not second_shell:
+        return []
+
+    # Enumerate candidate (donor, 2nd-shell) pairs, skipping bonded / 1-3.
+    pairs: Set[Tuple[int, int]] = set()
+    for i in donor_set:
+        if not (0 <= i < n):
+            continue
+        for j in second_shell:
+            if i == j:
+                continue
+            key = frozenset((int(i), int(j)))
+            if key in excluded_pairs:
+                continue
+            a, b = (int(i), int(j)) if int(i) < int(j) else (int(j), int(i))
+            pairs.add((a, b))
+
+    return sorted(pairs)
+
+
+def _inter_shell_floor_value_and_grad(
+    R: np.ndarray,
+    *,
+    pairs: Sequence[Tuple[int, int]],
+    radii: np.ndarray,
+    weight: float,
+    fraction: float,
+) -> Tuple[float, np.ndarray]:
+    """Inter-shell Pauli-floor penalty + analytic gradient.
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.
+    pairs : sequence of (int, int)
+        Sorted (i, j) pairs to penalize -- pre-built by
+        :func:`_build_inter_shell_pairs`.
+    radii : ndarray of float64, shape (N,)
+        vdW radii indexed by atom; ``NaN`` for unknown elements (pair is
+        silently skipped).
+    weight, fraction : float
+        Penalty multiplier and floor fraction.
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  When no pair violates the floor both are
+        zero, so the call is a no-op for well-separated geometries.
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if not pairs or weight <= 0.0 or fraction <= 0.0:
+        return 0.0, grad
+
+    total = 0.0
+    for (i, j) in pairs:
+        if not (0 <= i < n and 0 <= j < n):
+            continue
+        ri = radii[i] if 0 <= i < radii.shape[0] else np.nan
+        rj = radii[j] if 0 <= j < radii.shape[0] else np.nan
+        if not (np.isfinite(ri) and np.isfinite(rj)):
+            continue
+        d_vec = R[i] - R[j]
+        d = float(np.linalg.norm(d_vec))
+        floor_ij = fraction * (float(ri) + float(rj))
+        if d >= floor_ij:
+            continue
+        if d < _INTER_SHELL_FLOOR_EPS:
+            # Coincident atoms -- skip to avoid 0/0 gradient.
+            continue
+        gap = floor_ij - d
+        total += weight * gap * gap
+        # dL/dx_i = -2 w (floor - d) * (x_i - x_j) / d
+        coef = -2.0 * weight * gap / d
+        gi = coef * d_vec
+        grad[i] += gi
+        grad[j] -= gi
+
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -611,6 +899,16 @@ __all__ = [
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
     "_heavy_atom_indices",
+    # Inter-shell Pauli-floor (2026-06-07, env-gated default OFF, donor / 2nd-shell).
+    "DEFAULT_INTER_SHELL_FLOOR_WEIGHT",
+    "DEFAULT_INTER_SHELL_FLOOR_FRACTION",
+    "DEFAULT_INTER_SHELL_FLOOR_RADIUS",
+    "_inter_shell_floor_active",
+    "_resolve_inter_shell_floor_weight",
+    "_resolve_inter_shell_floor_fraction",
+    "_resolve_inter_shell_floor_radius",
+    "_build_inter_shell_pairs",
+    "_inter_shell_floor_value_and_grad",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -2146,6 +2444,63 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3c. Inter-shell Pauli-floor (2026-06-07, donor / 2nd-shell anti-clash).
+    #
+    # Auto-Diagnostic on the V3 voll-pool showed 27.4 % of files with a donor
+    # atom clashing inside the Pauli radius of a 2nd-shell atom on a DIFFERENT
+    # ligand (e.g. Ru-N and adjacent N-CH₃ where the methyl C overlaps an
+    # adjacent Cl donor).  These pairs are 1-4+ in the graph so the existing
+    # ``ClashFloorPenalty`` / heavy-atom vdW-floor still miss them in tight
+    # first/second-shell geometries.  Wire a stricter, purely geometric +
+    # graph-derived Pauli term ON TOP of the existing penalties.
+    #
+    # The donor / 2nd-shell pair list is constructed once from the INITIAL
+    # geometry (the topology is frozen during the polish — TopologyConstraint
+    # would roll back any bond break), so the cost per loss_and_grad call is
+    # O(|pairs|) with |pairs| ≤ |donors| * |second_shell| which is small.
+    #
+    # Default OFF -> byte-identical with HEAD when the env-flag is unset.
+    # ------------------------------------------------------------------
+    _inter_shell_floor_on = _inter_shell_floor_active()
+    _inter_shell_floor_weight: float = 0.0
+    _inter_shell_floor_fraction: float = DEFAULT_INTER_SHELL_FLOOR_FRACTION
+    _inter_shell_floor_radius: float = DEFAULT_INTER_SHELL_FLOOR_RADIUS
+    _inter_shell_pairs: List[Tuple[int, int]] = []
+    _inter_shell_radii_arr: np.ndarray = np.empty(0, dtype=np.float64)
+    if _inter_shell_floor_on:
+        try:
+            _inter_shell_floor_weight = _resolve_inter_shell_floor_weight()
+            _inter_shell_floor_fraction = _resolve_inter_shell_floor_fraction()
+            _inter_shell_floor_radius = _resolve_inter_shell_floor_radius()
+            # Build the per-atom vdW radii ndarray once (reused on every call).
+            _inter_shell_radii_arr = np.full(n_atoms, np.nan, dtype=np.float64)
+            for _idx, _r in vdw_idx_table.items():
+                if 0 <= int(_idx) < n_atoms:
+                    _inter_shell_radii_arr[int(_idx)] = float(_r)
+            # Enumerate the (donor, 2nd-shell) pairs from the INITIAL geometry.
+            _inter_shell_pairs = _build_inter_shell_pairs(
+                mol_bonds=mol_bonds,
+                metal=int(metal),
+                donors=donors_t,
+                P=P_init,
+                excluded_pairs=excl_13,
+                radius=_inter_shell_floor_radius,
+                n_atoms=n_atoms,
+            )
+            if (not _inter_shell_pairs
+                    or _inter_shell_floor_weight <= 0.0
+                    or _inter_shell_floor_fraction <= 0.0):
+                # Nothing to do -- demote to OFF so the inner call is a no-op.
+                _inter_shell_floor_on = False
+        except Exception as _inter_shell_exc:
+            _LOG.warning(
+                "grip_polish: inter-shell-floor setup failed (%r); disabling term",
+                _inter_shell_exc,
+            )
+            _inter_shell_floor_on = False
+            _inter_shell_pairs = []
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2261,6 +2616,20 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Optional inter-shell Pauli-floor (donor / 2nd-shell anti-clash).
+        # Default-OFF byte-identical with HEAD when ``DELFIN_FFFREE_INTER_SHELL_FLOOR``
+        # is unset -- the predicate short-circuits before any new arithmetic.
+        # Composes additively with the existing clash + vdW-floor penalties.
+        if _inter_shell_floor_on:
+            L_is, G_is = _inter_shell_floor_value_and_grad(
+                R,
+                pairs=_inter_shell_pairs,
+                radii=_inter_shell_radii_arr,
+                weight=_inter_shell_floor_weight,
+                fraction=_inter_shell_floor_fraction,
+            )
+            L += float(L_is)
+            G = G + G_is
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
