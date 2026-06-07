@@ -526,6 +526,270 @@ def _vdw_floor_value_and_grad(
     return float(total), grad
 
 
+# ---------------------------------------------------------------------------
+# Ligand-internal bond-length floor (2026-06-07) — two-sided compress / stretch
+# floor on bonded heavy-atom pairs NOT involving the metal.
+#
+# Auto-diagnostic of the V3 voll-pool surfaced two large bug classes:
+#
+#   * ``bond_compress`` -- ligand-internal bonds at ``d < 0.7 * (r_a + r_b)``
+#     (e.g. C-C at 0.7 Å, P-C at 0.9 Å) -- chemistry-impossible compression
+#     that nukes downstream xtb / DFT.
+#   * ``bond_stretch``  -- ligand-internal bonds at ``d > 1.5 * (r_a + r_b)``
+#     (e.g. C=O at 2.5 Å) -- broken / over-extended bonds whose Mahalanobis
+#     well has no gradient to drag them back.
+#
+# Neither bug class is healed by the existing terms:
+#
+#   * the Mahalanobis bond well (Phase 2) is centred on a quality-gated mean
+#     and can be FLAT past ~3 sigma -- a 0.7 Å compress or 2.5 Å stretch on a
+#     C-C bond sits in the tail where the gradient is microscopic;
+#   * the heavy-atom vdW floor (3b) EXCLUDES bonded pairs -- bonded compress
+#     never enters its loss;
+#   * the soft :class:`ClashFloorPenalty` ALSO excludes bonded + 1-3 pairs;
+#   * the M-D too-short floor (3c) only acts on the declared M-D pairs.
+#
+# This block fills the gap with a STRICT covalent-radii-bounded two-sided
+# floor on every BONDED non-metal heavy pair (i, j):
+#
+#     ideal_ij  = r_cov(symbol_i) + r_cov(symbol_j)
+#     d_ij      = ||x_i - x_j||
+#     if d_ij < 0.7 * ideal_ij and d_ij > 0:
+#         L_compress  += w_compress * (0.7 * ideal_ij - d_ij)^2
+#         grad pushes i,j APART (toward ideal_ij)
+#     if d_ij > 1.5 * ideal_ij:
+#         L_stretch   += w_stretch  * (d_ij - 1.5 * ideal_ij)^2
+#         grad pulls i,j TOGETHER (toward ideal_ij)
+#
+# Two separate weights because the compress class is chemistry-critical
+# (atoms cannot overlap) while the stretch class is sometimes legitimate
+# (e.g. agostic stretches, η-bond formal "stretched bonds").  Defaults:
+# ``DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT = 50.0`` (strong) and
+# ``DEFAULT_LIGAND_BOND_STRETCH_WEIGHT = 10.0`` (weaker).
+#
+# Universal: graph-only (RDKit ``mol.GetBonds()`` + covalent radii table),
+# no SMILES patterns, no per-class branches.  H atoms ARE allowed (a C-H at
+# 0.4 Å is still pathological); only pairs that touch the metal are excluded
+# (M-D distance is governed by the M-D invariant + the M-D too-short floor).
+#
+# Default-OFF byte-identical with HEAD c1e0fde when
+# ``DELFIN_FFFREE_LIGAND_BOND_FLOOR`` is unset.
+# Coincident atoms (``d_ij < _LIGAND_BOND_FLOOR_EPS``) are skipped to avoid
+# the 0/0 gradient direction.
+# ---------------------------------------------------------------------------
+_LIGAND_BOND_FLOOR_ENV: str = "DELFIN_FFFREE_LIGAND_BOND_FLOOR"
+_LIGAND_BOND_COMPRESS_WEIGHT_ENV: str = "DELFIN_FFFREE_LIGAND_BOND_COMPRESS_WEIGHT"
+_LIGAND_BOND_STRETCH_WEIGHT_ENV: str = "DELFIN_FFFREE_LIGAND_BOND_STRETCH_WEIGHT"
+DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT: float = 50.0
+DEFAULT_LIGAND_BOND_STRETCH_WEIGHT: float = 10.0
+# Fractional bounds: bonds below 0.7 * ideal fire the compress term; bonds
+# above 1.5 * ideal fire the stretch term.  Bounds are deliberately
+# permissive so the floor only acts on pathological cases -- the
+# Mahalanobis well still governs the band around the mean.
+DEFAULT_LIGAND_BOND_COMPRESS_FRACTION: float = 0.7
+DEFAULT_LIGAND_BOND_STRETCH_FRACTION: float = 1.5
+_LIGAND_BOND_FLOOR_EPS: float = 1e-9
+
+# Cordero (2008) single-bond covalent radii (Å) -- matches the table used
+# by :mod:`delfin._bond_decollapse` so the floor is internally consistent
+# with the bond-decollapse corrector.  Missing elements fall back to
+# ``_LIGAND_BOND_COV_DEFAULT`` so the term degrades gracefully on exotic
+# atoms without crashing.
+_LIGAND_BOND_COV: Dict[str, float] = {
+    'H': 0.31, 'B': 0.84, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57,
+    'Si': 1.11, 'P': 1.07, 'S': 1.05, 'Cl': 1.02,
+    'Ge': 1.20, 'As': 1.19, 'Se': 1.20, 'Br': 1.20,
+    'Sn': 1.39, 'Sb': 1.39, 'Te': 1.38, 'I': 1.39,
+}
+_LIGAND_BOND_COV_DEFAULT: float = 0.9
+
+
+def _ligand_bond_floor_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_LIGAND_BOND_FLOOR`` is on (default OFF).
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other value
+    (including unset / empty) keeps the term OFF, preserving byte-identity
+    with the legacy polish.
+    """
+    raw = os.environ.get(_LIGAND_BOND_FLOOR_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_ligand_bond_compress_weight() -> float:
+    """Effective weight for the bond-compress (d < 0.7 × ideal) penalty.
+
+    env > :data:`DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT` (50.0).  Non-finite /
+    non-numeric values fall through to the default with a single warning so
+    the polish never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_LIGAND_BOND_COMPRESS_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _LIGAND_BOND_COMPRESS_WEIGHT_ENV, raw,
+                DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _LIGAND_BOND_COMPRESS_WEIGHT_ENV, raw,
+                DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT,
+            )
+    return DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT
+
+
+def _resolve_ligand_bond_stretch_weight() -> float:
+    """Effective weight for the bond-stretch (d > 1.5 × ideal) penalty.
+
+    env > :data:`DEFAULT_LIGAND_BOND_STRETCH_WEIGHT` (10.0).  Non-finite /
+    non-numeric values fall through to the default with a single warning so
+    the polish never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_LIGAND_BOND_STRETCH_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _LIGAND_BOND_STRETCH_WEIGHT_ENV, raw,
+                DEFAULT_LIGAND_BOND_STRETCH_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _LIGAND_BOND_STRETCH_WEIGHT_ENV, raw,
+                DEFAULT_LIGAND_BOND_STRETCH_WEIGHT,
+            )
+    return DEFAULT_LIGAND_BOND_STRETCH_WEIGHT
+
+
+def _ligand_bond_floor_value_and_grad(
+    R: np.ndarray,
+    *,
+    bonds: Sequence[Tuple[int, int]],
+    symbols: Sequence[str],
+    metal_idx: int,
+    compress_weight: float,
+    stretch_weight: float,
+    compress_fraction: float = DEFAULT_LIGAND_BOND_COMPRESS_FRACTION,
+    stretch_fraction: float = DEFAULT_LIGAND_BOND_STRETCH_FRACTION,
+) -> Tuple[float, np.ndarray]:
+    """Two-sided ligand-internal bond-length floor + analytic gradient.
+
+    For every bonded pair (i, j) with neither endpoint == ``metal_idx``:
+
+      * if ``d_ij < compress_fraction * (r_cov_i + r_cov_j)`` -> quadratic
+        compress penalty pushing the pair APART toward ``ideal_ij``;
+      * if ``d_ij > stretch_fraction  * (r_cov_i + r_cov_j)`` -> quadratic
+        stretch penalty pulling the pair TOGETHER toward ``ideal_ij``;
+      * otherwise -> no contribution.
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.
+    bonds : sequence of (int, int)
+        Sorted ``(a, b)`` pairs from ``mol.GetBonds()`` (see
+        :func:`_mol_bonds`).  Pairs that touch ``metal_idx`` are skipped.
+    symbols : sequence of str
+        Atom symbol per index (length ``N``).
+    metal_idx : int
+        Atom index of the metal centre.  Bonds with either endpoint equal
+        to this index are excluded (those are M-D bonds governed by the
+        M-D invariant + the M-D too-short floor).
+    compress_weight, stretch_weight : float
+        Per-class penalty multipliers.  ``<= 0`` short-circuits that side.
+    compress_fraction, stretch_fraction : float
+        Multiplicative bounds on the covalent-radii sum.  Defaults are
+        ``0.7`` (compress) and ``1.5`` (stretch).
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  When no bond violates either bound both
+        are zero so the call is a no-op for healthy geometries.
+
+    Notes
+    -----
+    Pure geometry / pure graph: no SMILES patterns, no element-specific
+    branches beyond the covalent-radii lookup.  Composes additively with
+    the heavy-atom vdW-floor, the donor-donor 1-3 floor and the M-D
+    too-short floor.
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if not bonds:
+        return 0.0, grad
+    if compress_weight <= 0.0 and stretch_weight <= 0.0:
+        return 0.0, grad
+    if compress_fraction <= 0.0 or stretch_fraction <= 0.0:
+        return 0.0, grad
+
+    n_sym = len(symbols)
+    mi = int(metal_idx)
+    total = 0.0
+    for (a, b) in bonds:
+        i = int(a); j = int(b)
+        if i == j:
+            continue
+        if not (0 <= i < n) or not (0 <= j < n):
+            continue
+        if i == mi or j == mi:
+            # M-D bond -- governed by the M-D invariant + the M-D too-short
+            # floor.  Excluding it here avoids double-counting and avoids
+            # accidentally driving M-D into the wrong band.
+            continue
+        sa = symbols[i] if 0 <= i < n_sym else None
+        sb = symbols[j] if 0 <= j < n_sym else None
+        if not isinstance(sa, str) or not isinstance(sb, str):
+            continue
+        ra = _LIGAND_BOND_COV.get(sa, _LIGAND_BOND_COV_DEFAULT)
+        rb = _LIGAND_BOND_COV.get(sb, _LIGAND_BOND_COV_DEFAULT)
+        ideal_ij = float(ra) + float(rb)
+        if not np.isfinite(ideal_ij) or ideal_ij <= 0.0:
+            continue
+        d_vec = R[i] - R[j]
+        d = float(np.linalg.norm(d_vec))
+        if d < _LIGAND_BOND_FLOOR_EPS:
+            # Exactly coincident -- skip rather than emit NaN.  The unit
+            # vector is undefined so we cannot pick a deterministic push
+            # direction.
+            continue
+        floor_lo = compress_fraction * ideal_ij
+        floor_hi = stretch_fraction * ideal_ij
+        if d < floor_lo and compress_weight > 0.0:
+            # Compress branch -- push apart toward ideal_ij.
+            gap = floor_lo - d
+            total += compress_weight * gap * gap
+            # dL/dx_i = 2 w (floor_lo - d) * d(floor_lo - d)/dx_i
+            #        = 2 w gap * (-d(d)/dx_i)
+            #        = -2 w gap * (x_i - x_j) / d
+            coef = -2.0 * compress_weight * gap / d
+            gi = coef * d_vec
+            grad[i] += gi
+            grad[j] -= gi
+        elif d > floor_hi and stretch_weight > 0.0:
+            # Stretch branch -- pull together toward ideal_ij.
+            gap = d - floor_hi
+            total += stretch_weight * gap * gap
+            # dL/dx_i = 2 w (d - floor_hi) * d(d)/dx_i
+            #        = +2 w gap * (x_i - x_j) / d
+            coef = 2.0 * stretch_weight * gap / d
+            gi = coef * d_vec
+            grad[i] += gi
+            grad[j] -= gi
+
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -574,6 +838,15 @@ __all__ = [
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
     "_heavy_atom_indices",
+    # Ligand-internal bond-length floor (2026-06-07, env-gated default OFF).
+    "DEFAULT_LIGAND_BOND_COMPRESS_WEIGHT",
+    "DEFAULT_LIGAND_BOND_STRETCH_WEIGHT",
+    "DEFAULT_LIGAND_BOND_COMPRESS_FRACTION",
+    "DEFAULT_LIGAND_BOND_STRETCH_FRACTION",
+    "_ligand_bond_floor_active",
+    "_resolve_ligand_bond_compress_weight",
+    "_resolve_ligand_bond_stretch_weight",
+    "_ligand_bond_floor_value_and_grad",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -2103,6 +2376,58 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3d. Ligand-internal bond-length floor (2026-06-07).
+    #
+    # Two-sided bond floor on every BONDED non-metal heavy pair:
+    #   * d < 0.7 * (r_cov_i + r_cov_j) -> compress penalty (push apart);
+    #   * d > 1.5 * (r_cov_i + r_cov_j) -> stretch  penalty (pull together).
+    # Healthy bonds (between the two bounds) -> zero contribution.
+    # Default OFF -> byte-identical with HEAD when
+    # ``DELFIN_FFFREE_LIGAND_BOND_FLOOR`` is unset.  Setup cost is paid
+    # once outside the loss closure so the inner ``loss_and_grad`` call
+    # pays nothing when the term is OFF (single bool branch) and only the
+    # O(|bonds|) walk when the term is ON.
+    # ------------------------------------------------------------------
+    _ligand_bond_on = _ligand_bond_floor_active()
+    _ligand_bond_compress_weight: float = 0.0
+    _ligand_bond_stretch_weight: float = 0.0
+    _ligand_bond_symbols: List[str] = []
+    _ligand_bond_pairs: Tuple[Tuple[int, int], ...] = ()
+    if _ligand_bond_on:
+        try:
+            _ligand_bond_compress_weight = _resolve_ligand_bond_compress_weight()
+            _ligand_bond_stretch_weight = _resolve_ligand_bond_stretch_weight()
+            try:
+                _ligand_bond_symbols = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+            except Exception:
+                _ligand_bond_symbols = []
+            # Pre-filter bonds: drop those touching the metal (M-D pairs
+            # are governed by the M-D invariant + the M-D too-short floor)
+            # and any with an out-of-range endpoint.  The remaining list
+            # is the set the helper walks every loss call.
+            if len(_ligand_bond_symbols) == n_atoms and mol_bonds:
+                _ligand_bond_pairs = tuple(
+                    (int(a), int(b))
+                    for (a, b) in mol_bonds
+                    if (0 <= int(a) < n_atoms
+                        and 0 <= int(b) < n_atoms
+                        and int(a) != int(metal)
+                        and int(b) != int(metal)
+                        and int(a) != int(b))
+                )
+            if (not _ligand_bond_pairs
+                    or (_ligand_bond_compress_weight <= 0.0
+                        and _ligand_bond_stretch_weight <= 0.0)):
+                # Nothing to do -- demote to OFF so the inner call is a no-op.
+                _ligand_bond_on = False
+        except Exception as _ligand_bond_exc:
+            _LOG.warning(
+                "grip_polish: ligand-bond floor setup failed (%r); disabling term",
+                _ligand_bond_exc,
+            )
+            _ligand_bond_on = False
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2196,6 +2521,23 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Optional ligand-internal bond-length floor (bond_compress + bond_stretch).
+        # Default-OFF byte-identical with HEAD when
+        # ``DELFIN_FFFREE_LIGAND_BOND_FLOOR`` is unset -- the predicate
+        # short-circuits before any new arithmetic.  Composes additively
+        # with the heavy-atom vdW-floor, the donor-donor 1-3 floor and
+        # the M-D too-short floor.
+        if _ligand_bond_on:
+            L_lb, G_lb = _ligand_bond_floor_value_and_grad(
+                R,
+                bonds=_ligand_bond_pairs,
+                symbols=_ligand_bond_symbols,
+                metal_idx=int(metal),
+                compress_weight=_ligand_bond_compress_weight,
+                stretch_weight=_ligand_bond_stretch_weight,
+            )
+            L += float(L_lb)
+            G = G + G_lb
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
