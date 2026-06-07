@@ -88,6 +88,17 @@ _SHAPE_TO_GROUP: Dict[str, str] = {
     "L-2 linear": "linear",
     "SP-3 trigonal planar": "trigonal_planar",
     "T-3 T-shape": "tshape",
+    # Y-3 (Y-shape, 2026-06-07 CN3/CN5 completeness extension): C2v point group,
+    # same proper-rotation group (C2, order 2) as T-shape, so the *orbit*
+    # structure is identical — Burnside counts are equal for any donor
+    # multi-set.  Y-shape differs from T-shape only in the angular geometry
+    # (~150°/150°/60° vs 90°/90°/180° at the metal); placement uses the same
+    # T-3 vertex array (the ETKDG/relaxation phase reshapes geometry from
+    # the proper-rotation skeleton).  This keeps :mod:`polyhedra` as the
+    # single source of truth for vertex coordinates while still allowing
+    # Y-3 to be enumerated as a distinct polyhedron name when callers
+    # request it.
+    "Y-3 Y-shape": "tshape",
     "T-4 tetrahedron": "tetrahedron",
     "SP-4 square planar": "square_planar",
     "TBP-5 trigonal bipyramid": "trigonal_bipyramid",
@@ -103,7 +114,9 @@ _SHAPE_TO_GROUP: Dict[str, str] = {
 _ALIAS_TO_SHAPE: Dict[str, str] = {
     "L-2": "L-2 linear",
     "SP-3": "SP-3 trigonal planar",
+    "TP-3": "SP-3 trigonal planar",       # textbook "TP-3" alias for trigonal-planar
     "T-3": "T-3 T-shape",
+    "Y-3": "Y-3 Y-shape",                 # Y-shape CN3 (2026-06-07 extension)
     "T-4": "T-4 tetrahedron",
     "SP-4": "SP-4 square planar",
     "TBP-5": "TBP-5 trigonal bipyramid",
@@ -171,7 +184,15 @@ def cis_edges_for(polyhedron: str) -> List[Tuple[int, int]]:
     try:
         V = _PLY.ref_vectors(shape)
     except KeyError:
-        return []
+        # Y-3 fallback: same geometric skeleton as T-3 for cis-edge
+        # derivation (angular relaxation is downstream of orbit selection).
+        if shape == "Y-3 Y-shape":
+            try:
+                V = _PLY.ref_vectors("T-3 T-shape")
+            except KeyError:
+                return []
+        else:
+            return []
     cos_max = math.cos(math.radians(_CHELATE_CIS_MAX_DEG))
     n = len(V)
     out: List[Tuple[int, int]] = []
@@ -349,6 +370,126 @@ def enumerate_orbits_with_chelates(
         ]
     cap = int(max_orbits) if max_orbits is not None else _max_orbits_cap()
     return out[:cap]
+
+
+# ---------------------------------------------------------------------------
+# Multi-polyhedron orbit enumeration (CN3 + CN5 completeness, 2026-06-07).
+#
+# Motivation (ALESUH-class bug):
+# Cu(II) CN5 with donor multiset {4N, 1Br} is ambivalent between TBP-5 and
+# SPY-5 — both are real Berry-pseudorotation-related minima.  Picking only
+# the FIRST polyhedron from :data:`delfin.fffree.polyhedra.GEOM_BY_CN`
+# (as :func:`_default_polyhedron` does) silently drops half the geometric-
+# isomer ensemble.  This block enumerates orbits across *every* polyhedron
+# registered for the CN and returns a list of (polyhedron, orbit) tuples so
+# downstream embedding can dispatch one ETKDG seed per (polyhedron, orbit).
+#
+# Same Burnside engine, same chelate-cis filter, same determinism contract.
+# Scope: CN3 ({SP-3, T-3} ± Y-3) and CN5 ({TBP-5, SPY-5}) -- the two CNs
+# where ambivalent geometric minima are textbook chemistry.  For other CNs
+# the single-polyhedron path is preserved bit-exact (the multi-polyhedron
+# helper is a strict addition).
+# ---------------------------------------------------------------------------
+
+# CNs for which multi-polyhedron orbit enumeration is enabled.  Conservative
+# scope: CN3 and CN5 only.  Extending to CN4 (T-4 vs SP-4) and CN6 (OC-6 vs
+# TPR-6) is a future iter and would expand the ensemble for d8 Pd/Pt CN4 and
+# early-TM Mo/W CN6.
+_MULTI_POLY_CNS: Tuple[int, ...] = (3, 5)
+
+
+def polyhedra_for_cn(cn: int) -> List[str]:
+    """Return canonical polyhedron strings for ``cn``.
+
+    Pulls from :data:`delfin.fffree.polyhedra.GEOM_BY_CN` and intersects with
+    the polyhedra registered in :data:`_SHAPE_TO_GROUP` (so callers don't get
+    polyhedra without a Pólya group attached).  Y-3 (Y-shape) is appended to
+    the CN3 list when the env-flag is on -- it's not in ``GEOM_BY_CN`` but
+    shares the C2 proper-rotation group with T-3 and is a real coordination
+    geometry for d8 / d10 CN3 (e.g. Au(I) CN3 with one wide donor angle).
+
+    Deterministic: returns the polyhedra in the order they're registered in
+    ``GEOM_BY_CN``, with Y-3 appended last for CN3 (so the existing CN3
+    behavior is preserved when the caller iterates in order).
+    """
+    try:
+        from delfin.fffree.polyhedra import GEOM_BY_CN
+    except Exception:
+        return []
+    cands = list(GEOM_BY_CN.get(int(cn), []))
+    # Keep only polyhedra with a registered Pólya group.
+    out: List[str] = [p for p in cands if p in _SHAPE_TO_GROUP]
+    # CN3: also expose Y-3 (Y-shape), which shares the T-3 proper-rotation
+    # group but is geometrically distinct.  Append last so existing single-
+    # polyhedron callers get the textbook behavior unchanged.
+    if int(cn) == 3 and "Y-3 Y-shape" in _SHAPE_TO_GROUP:
+        out.append("Y-3 Y-shape")
+    return out
+
+
+def enumerate_multi_polyhedron_orbits(
+    cn: int,
+    donor_types: Sequence[str],
+    chelate_pairs: Sequence[Tuple[int, int]] = (),
+    *,
+    polyhedra: Optional[Sequence[str]] = None,
+    max_orbits_per_polyhedron: Optional[int] = None,
+) -> List[Tuple[str, Tuple[str, ...]]]:
+    """Enumerate (polyhedron, orbit) pairs across every polyhedron for ``cn``.
+
+    Parameters
+    ----------
+    cn : int
+        Coordination number (= length of ``donor_types``).
+    donor_types : sequence of str
+        Length-CN donor-type label list (one per donor slot).
+    chelate_pairs : sequence of (i, j) int pairs
+        Donor-list-index pairs that must sit on a cis-edge of every
+        polyhedron under consideration.  Empty by default.
+    polyhedra : sequence of str, optional
+        Explicit polyhedron list to enumerate over.  When ``None`` (default),
+        :func:`polyhedra_for_cn` provides the list.  Each entry must be a
+        canonical string in :data:`_SHAPE_TO_GROUP`.
+    max_orbits_per_polyhedron : int, optional
+        Cap on the number of orbit representatives per polyhedron.  Defaults
+        to ``DELFIN_FFFREE_POLYHEDRON_VERTEX_POLYA_MAX_ORBITS`` (10 if unset).
+
+    Returns
+    -------
+    list of (polyhedron, orbit)
+        One tuple per (polyhedron, orbit) pair.  Sorted lex by
+        (polyhedron, orbit) for determinism.  Each ``orbit`` is a length-CN
+        tuple of donor-type labels per vertex.
+
+    Notes
+    -----
+    * Orbit representatives are LOCAL to each polyhedron's vertex set
+      (i.e. an orbit for TBP-5 and an orbit for SPY-5 are NOT directly
+      comparable as vertex-label tuples even when they look identical --
+      the vertex INDEX has a polyhedron-specific meaning, encoded in
+      :data:`polyhedra.ref_vectors`).  The polyhedron string in the
+      returned tuple disambiguates this.
+    * Polyhedra without a Pólya group registration, or with an invalid
+      donor-count match, are silently skipped (the function never raises).
+    """
+    if int(cn) != len(donor_types):
+        raise ValueError(
+            f"donor_types length {len(donor_types)} != CN {int(cn)}"
+        )
+    cand_polys = list(polyhedra) if polyhedra is not None else polyhedra_for_cn(int(cn))
+    out: List[Tuple[str, Tuple[str, ...]]] = []
+    for poly in cand_polys:
+        try:
+            orbits = enumerate_orbits_with_chelates(
+                poly, list(donor_types), list(chelate_pairs),
+                max_orbits=max_orbits_per_polyhedron,
+            )
+        except (KeyError, ValueError):
+            continue
+        for orbit in orbits:
+            out.append((poly, tuple(orbit)))
+    # Deterministic ordering: (polyhedron, orbit) lex sort.
+    return sorted(out)
 
 
 # ---------------------------------------------------------------------------
@@ -588,18 +729,34 @@ def enumerate_orbits_for_smiles(
     parse failure).  On success returns a dict ::
 
         {
-            "polyhedron":     str,                  # canonical geometry string
-            "metal_idx":      int,                  # RDKit atom index of metal
-            "donor_atoms":    List[int],            # RDKit atom indices, in order
-            "donor_types":    List[str],            # length CN, type label per donor
-            "chelate_pairs":  List[Tuple[int,int]], # indices INTO donor_atoms
-            "orbits":         List[Tuple[str,...]], # canonical reps, capped
+            "polyhedron":          str,                  # canonical geometry string (primary)
+            "metal_idx":           int,                  # RDKit atom index of metal
+            "donor_atoms":         List[int],            # RDKit atom indices, in order
+            "donor_types":         List[str],            # length CN, type label per donor
+            "chelate_pairs":       List[Tuple[int,int]], # indices INTO donor_atoms
+            "orbits":              List[Tuple[str,...]], # canonical reps for ``polyhedron`` only
+            "polyhedron_orbits":   List[{"polyhedron": str, "orbits": List[...]}],
+                                                        # multi-polyhedron breakdown (CN3/CN5)
         }
 
     The caller dispatches one ETKDG embed (with the corresponding CoordMap)
-    per orbit.  Default-OFF: callers must check :func:`flag_active` before
-    invoking this — the function itself does NOT consult the env-flag, so
-    it remains test-callable without side-effects.
+    per (polyhedron, orbit) pair.  Default-OFF: callers must check
+    :func:`flag_active` before invoking this — the function itself does NOT
+    consult the env-flag, so it remains test-callable without side-effects.
+
+    CN3 / CN5 multi-polyhedron behaviour (2026-06-07 extension)
+    -----------------------------------------------------------
+    For CN3 and CN5, ``polyhedron_orbits`` enumerates EVERY polyhedron
+    registered in :func:`polyhedra_for_cn` (e.g. TBP-5 AND SPY-5 for CN5,
+    SP-3 + T-3 + Y-3 for CN3), so callers can dispatch one ETKDG seed per
+    (polyhedron, orbit) and cover the textbook geometric-isomer count for
+    ambivalent metals (Cu(II) CN5, Au(I) CN3, ...).  The legacy ``orbits``
+    field stays populated for the *primary* polyhedron only -- back-compat
+    for callers that don't yet consume ``polyhedron_orbits``.
+
+    For other CNs (2, 4, 6+), ``polyhedron_orbits`` carries a single-entry
+    list containing exactly the primary polyhedron's orbits -- behaviour is
+    bit-exact to the pre-extension code.
     """
     det = detect_from_smiles(smiles)
     if det is None:
@@ -630,6 +787,35 @@ def enumerate_orbits_for_smiles(
         return None
     if not orbits:
         return None
+
+    # Multi-polyhedron orbit breakdown for CN3 / CN5 (ambivalent metals).
+    # For other CNs the breakdown carries a single entry = the primary
+    # polyhedron, preserving bit-exact pre-extension output.
+    cn = len(donor_types)
+    polyhedron_orbits: List[Dict[str, object]] = []
+    if cn in _MULTI_POLY_CNS:
+        for poly in polyhedra_for_cn(cn):
+            try:
+                poly_orbits = enumerate_orbits_with_chelates(
+                    poly, donor_types, chelate_pairs, max_orbits=max_orbits,
+                )
+            except (KeyError, ValueError):
+                continue
+            if not poly_orbits:
+                continue
+            polyhedron_orbits.append({
+                "polyhedron": poly,
+                "orbits": poly_orbits,
+            })
+    if not polyhedron_orbits:
+        # Single-polyhedron fallback (preserves pre-extension behaviour for
+        # every CN not in _MULTI_POLY_CNS, AND for CN3/CN5 cases where the
+        # multi-polyhedron pass yielded nothing extra).
+        polyhedron_orbits = [{
+            "polyhedron": polyhedron,
+            "orbits": orbits,
+        }]
+
     return {
         "polyhedron": polyhedron,
         "metal_idx": int(metal_idx),
@@ -637,6 +823,7 @@ def enumerate_orbits_for_smiles(
         "donor_types": list(donor_types),
         "chelate_pairs": list(chelate_pairs),
         "orbits": orbits,
+        "polyhedron_orbits": polyhedron_orbits,
     }
 
 
@@ -652,6 +839,12 @@ def vertex_coords(polyhedron: str, metal: str = "Cu") -> Optional["np.ndarray"]:
     cis / trans pattern.  Scaling uses :func:`md_distance` with a generic
     ``"O"`` donor as the reference (≈ 1.9 Å for first-row TM); the absolute
     scale doesn't affect orbit topology.
+
+    Y-3 fallback: when ``polyhedron`` is ``"Y-3 Y-shape"``, fall back to the
+    T-3 vertex array — Y-3 shares the same proper-rotation group (C2) and is
+    a continuous deformation of T-3 around the metal; the ETKDG / relaxation
+    phase refines the angular geometry from the placed skeleton.  This keeps
+    :mod:`polyhedra` as the single source of truth for vertex tables.
     """
     try:
         import numpy as np
@@ -659,9 +852,21 @@ def vertex_coords(polyhedron: str, metal: str = "Cu") -> Optional["np.ndarray"]:
     except Exception:
         return None
     try:
-        V = _PLY.ref_vectors(_canonical_shape(polyhedron))
+        shape = _canonical_shape(polyhedron)
     except KeyError:
         return None
+    try:
+        V = _PLY.ref_vectors(shape)
+    except KeyError:
+        # Y-3 graceful fallback: reuse T-3 placement skeleton (same group,
+        # same orbit structure; angular relaxation is downstream).
+        if shape == "Y-3 Y-shape":
+            try:
+                V = _PLY.ref_vectors("T-3 T-shape")
+            except KeyError:
+                return None
+        else:
+            return None
     try:
         # Reference M-D ≈ 1.9 Å (Cu-O typical); used uniformly across all
         # vertices because orbit topology doesn't depend on exact distance.
@@ -678,6 +883,8 @@ __all__ = [
     "enumerate_orbits",
     "enumerate_orbits_with_chelates",
     "enumerate_orbits_for_smiles",
+    "enumerate_multi_polyhedron_orbits",
+    "polyhedra_for_cn",
     "detect_from_smiles",
     "cis_edges_for",
     "cn_for",
