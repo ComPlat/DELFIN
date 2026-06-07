@@ -631,7 +631,20 @@ def _lookup_bond_organic(
     cod_lib: Optional[GripLibrary],
     min_n: int,
 ) -> Optional[Tuple[float, float, int]]:
-    """Look up an organic bond distribution.  CCDC then COD then None."""
+    """Look up an organic bond distribution.  CCDC then COD then None.
+
+    The env-flag :data:`MOGUL_BOND_FALLBACK_ENV_FLAG`
+    (``DELFIN_FFFREE_MOGUL_BOND_FALLBACK``) enables the multi-tier fallback
+    chain (Tiers 1-5) — see :func:`_lookup_bond_organic_with_tier`.
+    Default-OFF: byte-identical to the pre-fix path (Tier 1 only) when the
+    env-flag is unset.
+    """
+    if _bond_fallback_enabled():
+        hit, _tier = _lookup_bond_organic_with_tier(
+            grip_lib, z1, hyb1, z2, hyb2, cod_lib, min_n
+        )
+        return hit
+    # Legacy path -- byte-identical to the pre-fix behaviour.
     hit = grip_lib.lookup_bond(z1, hyb1, z2, hyb2, min_n=min_n)
     if hit is not None:
         return hit
@@ -640,6 +653,144 @@ def _lookup_bond_organic(
         if hit is not None:
             return hit
     return None
+
+
+# ---------------------------------------------------------------------------
+# Multi-tier bond-key fallback chain (env-gated, default-OFF).
+#
+# Motivation: the CCDC v5 library indexes bonds by *centred-fragment* keys
+# (one centre atom + its FULL neighbour-list).  ``GripLibrary.lookup_bond``
+# only walks single-neighbour centred fragments, which match approximately
+# 0-10 % of typical organic bonds (most real centres have >= 2 neighbours).
+#
+# This caused mogul-primary builds to fall back to Pauling covalent-radii
+# sums for ~90 % of ligand 1-2 bonds, eliminating CCDC-derived planarity
+# and terminal-angle constraints for organic-internal geometry.
+#
+# The fallback chain queries:
+#   * Tier 1 -- centred-fragment ``lookup_bond`` (legacy).
+#   * Tier 2 -- v4 pair table with FULL hyb pair (z1, hyb1, z2, hyb2).
+#   * Tier 3 -- v4 pair table, one hyb wildcarded.
+#   * Tier 4 -- v4 pair table, both hyb wildcarded.
+#   * Tier 5 -- element-pair aggregate over ALL hyb variants
+#     (:meth:`GripLibrary._lookup_bond_element_pair_aggregate`).
+#   * Tier 6 -- caller covalent-radii fallback (NOT done here; returned as
+#     ``(None, 6)`` so the caller can fall back universally).
+#
+# Determinism: each tier is deterministic; the chain stops at the first
+# hit, so the returned (mu, sigma, n) and tier are reproducible.
+# Universality: all keys are (element, hyb) tuples — no SMILES, no class,
+# no element ``if``-branches.
+# ---------------------------------------------------------------------------
+MOGUL_BOND_FALLBACK_ENV_FLAG = "DELFIN_FFFREE_MOGUL_BOND_FALLBACK"
+
+
+def _bond_fallback_enabled() -> bool:
+    """``True`` when :data:`MOGUL_BOND_FALLBACK_ENV_FLAG` is set to ``1``."""
+    return os.environ.get(MOGUL_BOND_FALLBACK_ENV_FLAG, "").strip() == "1"
+
+
+def _lookup_bond_organic_with_tier(
+    grip_lib: GripLibrary,
+    z1: str,
+    hyb1: str,
+    z2: str,
+    hyb2: str,
+    cod_lib: Optional[GripLibrary],
+    min_n: int,
+) -> Tuple[Optional[Tuple[float, float, int]], int]:
+    """Multi-tier organic bond lookup; returns ``((mu, sigma, n), tier)``.
+
+    Tier number is 1..5 when a library hit is returned, or 6 when the
+    entire chain misses (caller must apply the covalent-radii fallback).
+    The COD library is consulted at every tier in parallel with the
+    CCDC library: a Tier-N CCDC hit wins over a Tier-N COD hit, but COD
+    Tier-N is preferred over CCDC Tier-(N+1) (CCDC pair-table is far
+    larger than COD so this rarely fires in practice).
+
+    Universal: keyed purely on (element, hyb).  No class/SMILES branches.
+    """
+    # ---- Tier 1: centred-fragment lookup_bond (legacy chain) ----
+    hit = grip_lib.lookup_bond(z1, hyb1, z2, hyb2, min_n=min_n)
+    if hit is not None:
+        return (hit, 1)
+    if cod_lib is not None:
+        hit = cod_lib.lookup_bond(z1, hyb1, z2, hyb2, min_n=min_n)
+        if hit is not None:
+            return (hit, 1)
+
+    # ---- Tier 2: pair-table, full hyb (z1, hyb1, z2, hyb2) ----
+    if getattr(grip_lib, "has_pair_tables", False):
+        try:
+            hit = grip_lib._v4_lookup_bond(z1, hyb1, z2, hyb2, min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 2)
+    if cod_lib is not None and getattr(cod_lib, "has_pair_tables", False):
+        try:
+            hit = cod_lib._v4_lookup_bond(z1, hyb1, z2, hyb2, min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 2)
+
+    # ---- Tier 3: pair-table, one hyb wildcarded ----
+    # Already tried inside ``_v4_lookup_bond`` -- but only when the FULL key
+    # missed, so a separate tier counter is informative.  The library walks
+    # (hyb1, hyb2), (hyb1, '*'), ('*', hyb2), ('*', '*') in order; the
+    # one-wildcard cases are tiers 3, both-wildcard is tier 4.
+    if getattr(grip_lib, "has_pair_tables", False):
+        for h1, h2 in ((hyb1, "*"), ("*", hyb2)):
+            try:
+                hit = grip_lib._v4_lookup_bond(z1, h1, z2, h2, min_n)
+            except Exception:
+                hit = None
+            if hit is not None:
+                return (hit, 3)
+    if cod_lib is not None and getattr(cod_lib, "has_pair_tables", False):
+        for h1, h2 in ((hyb1, "*"), ("*", hyb2)):
+            try:
+                hit = cod_lib._v4_lookup_bond(z1, h1, z2, h2, min_n)
+            except Exception:
+                hit = None
+            if hit is not None:
+                return (hit, 3)
+
+    # ---- Tier 4: pair-table, both hyb wildcarded ----
+    if getattr(grip_lib, "has_pair_tables", False):
+        try:
+            hit = grip_lib._v4_lookup_bond(z1, "*", z2, "*", min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 4)
+    if cod_lib is not None and getattr(cod_lib, "has_pair_tables", False):
+        try:
+            hit = cod_lib._v4_lookup_bond(z1, "*", z2, "*", min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 4)
+
+    # ---- Tier 5: element-pair aggregate (NEW) ----
+    if hasattr(grip_lib, "_lookup_bond_element_pair_aggregate"):
+        try:
+            hit = grip_lib._lookup_bond_element_pair_aggregate(z1, z2, min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 5)
+    if cod_lib is not None and hasattr(cod_lib, "_lookup_bond_element_pair_aggregate"):
+        try:
+            hit = cod_lib._lookup_bond_element_pair_aggregate(z1, z2, min_n)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return (hit, 5)
+
+    # All tiers missed — caller must fall back to covalent radii (Tier 6).
+    return (None, 6)
 
 
 def _lookup_angle(
