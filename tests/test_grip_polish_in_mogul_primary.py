@@ -101,7 +101,17 @@ def _parse(xyz: str) -> Tuple[List[str], np.ndarray]:
 
 def _md_distances(syms: List[str], P: np.ndarray, metal_sym: str
                   ) -> List[Tuple[str, float]]:
-    """Sorted (symbol, distance) for every atom within 3.2 A of the metal."""
+    """Sorted (symbol, distance) for the COORDINATED donors only.
+
+    A donor is identified by being within 2.50 A of the metal (the
+    upper end of any reasonable M-D bond) -- this excludes non-donor
+    atoms in the ligand backbone that happen to sit close to the metal
+    by chance (e.g. NHC ring N atoms at ~2.7 A in SIYMEU).  The
+    Mogul-PRIMARY M-D guard inside the wire only checks ACTUAL donors,
+    so the test must mirror that scope to be a meaningful check on the
+    polish's M-D rigidity (rather than on the freedom of non-donor
+    backbone atoms to relax under the L-BFGS polish, which is OK).
+    """
     metal_idxs = [i for i, s in enumerate(syms) if s == metal_sym]
     if not metal_idxs:
         return []
@@ -111,7 +121,7 @@ def _md_distances(syms: List[str], P: np.ndarray, metal_sym: str
         if i == m or s == "H":
             continue
         d = float(np.linalg.norm(P[i] - P[m]))
-        if d <= 3.2:
+        if d <= 2.50:
             out.append((s, d))
     out.sort(key=lambda x: x[1])
     return out
