@@ -369,6 +369,12 @@ def _deterministic_perturbation(P_init: np.ndarray, restart_idx: int,
 _VDW_FLOOR_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR"
 _VDW_FLOOR_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR_WEIGHT"
 _VDW_FLOOR_FRACTION_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR_FRACTION"
+# ``DELFIN_FFFREE_GRIP_VDW_FLOOR_INCLUDE_H=1`` (default OFF) extends the
+# heavy-atom vdW-floor pair iteration to ALSO include hydrogen atoms
+# (BERTEB-class C-H/H-H collapse fix, 2026-06-07).  Byte-identical OFF and
+# even when ``DELFIN_FFFREE_GRIP_VDW_FLOOR=1`` is on but ``INCLUDE_H`` is
+# unset -- the H atoms only enter the pair walk when BOTH flags are truthy.
+_VDW_FLOOR_INCLUDE_H_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR_INCLUDE_H"
 DEFAULT_VDW_FLOOR_WEIGHT: float = 20.0
 DEFAULT_VDW_FLOOR_FRACTION: float = 0.85
 _VDW_FLOOR_EPS: float = 1e-9
@@ -412,6 +418,24 @@ def _resolve_vdw_floor_weight() -> float:
     return DEFAULT_VDW_FLOOR_WEIGHT
 
 
+def _vdw_floor_include_h() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_VDW_FLOOR_INCLUDE_H`` is on (default OFF).
+
+    When ON AND the legacy heavy-atom floor (``DELFIN_FFFREE_GRIP_VDW_FLOOR``)
+    is ALSO ON, hydrogen atoms are included in the vdW-floor pair walk with
+    a standard Bondi radius of 1.20 Å (already present in
+    :data:`DEFAULT_VDW_RADII`).  When OFF (default) the pair walk is
+    byte-identical with the heavy-atom-only HEAD behaviour.
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other
+    value (including unset / empty) keeps H out of the pair walk.
+    """
+    raw = os.environ.get(_VDW_FLOOR_INCLUDE_H_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
 def _resolve_vdw_floor_fraction() -> float:
     """Effective Pauli-floor fraction for the heavy-atom vdW-floor penalty.
 
@@ -436,20 +460,32 @@ def _resolve_vdw_floor_fraction() -> float:
     return DEFAULT_VDW_FLOOR_FRACTION
 
 
-def _heavy_atom_indices(symbols: Sequence[str], n_atoms: int) -> np.ndarray:
-    """Return a sorted ``int64`` ndarray of indices whose symbol is NOT ``H``.
+def _heavy_atom_indices(
+    symbols: Sequence[str],
+    n_atoms: int,
+    *,
+    include_h: bool = False,
+) -> np.ndarray:
+    """Return a sorted ``int64`` ndarray of indices for vdW-floor pair walks.
 
     Symbols are matched case-sensitively against ``"H"`` -- mirrors the
     rest of :mod:`grip_polish` (which uses ``str(a.GetSymbol())`` directly).
     Atoms with an out-of-range index or non-string symbol are silently
     skipped (defensive: same policy as ``_vdw_table_for_mol``).
+
+    When ``include_h`` is ``False`` (default) hydrogen atoms are excluded
+    -- preserves byte-identity with the legacy heavy-atom floor.  When
+    ``include_h`` is ``True`` hydrogen atoms are also returned, so the
+    BERTEB-class C-H / H-H collapses can be penalised by the same Pauli
+    floor.  The flag is keyword-only to keep all existing positional
+    callers byte-identical.
     """
     out: List[int] = []
     for i in range(min(int(n_atoms), len(symbols))):
         s = symbols[i]
         if not isinstance(s, str):
             continue
-        if s == "H":
+        if s == "H" and not include_h:
             continue
         out.append(int(i))
     return np.asarray(sorted(set(out)), dtype=np.int64)
@@ -570,6 +606,7 @@ __all__ = [
     "DEFAULT_VDW_FLOOR_WEIGHT",
     "DEFAULT_VDW_FLOOR_FRACTION",
     "_vdw_floor_active",
+    "_vdw_floor_include_h",
     "_resolve_vdw_floor_weight",
     "_resolve_vdw_floor_fraction",
     "_vdw_floor_value_and_grad",
@@ -2040,6 +2077,11 @@ def grip_polish(
     # branch) and only the O(N_heavy^2) walk when the term is ON.
     # ------------------------------------------------------------------
     _vdw_floor_on = _vdw_floor_active()
+    # Hydrogen-inclusion sub-flag (BERTEB-class C-H/H-H collapse fix,
+    # 2026-06-07): byte-identical OFF (default), and even when the legacy
+    # ``DELFIN_FFFREE_GRIP_VDW_FLOOR`` is ON but ``INCLUDE_H`` is unset the
+    # H atoms stay out of the pair walk -- preserves HEAD behaviour.
+    _vdw_floor_inc_h: bool = _vdw_floor_include_h()
     _vdw_floor_weight: float = 0.0
     _vdw_floor_fraction: float = DEFAULT_VDW_FLOOR_FRACTION
     _vdw_floor_heavy_indices: np.ndarray = np.empty(0, dtype=np.int64)
@@ -2077,6 +2119,7 @@ def grip_polish(
             if len(_vdw_floor_symbols) == n_atoms:
                 _vdw_floor_heavy_indices = _heavy_atom_indices(
                     _vdw_floor_symbols, n_atoms,
+                    include_h=_vdw_floor_inc_h,
                 )
             # Drop heavy indices that have no vdW radius -- the inner walk
             # already guards on NaN but pre-filtering keeps the loop tight.
@@ -2162,20 +2205,42 @@ def grip_polish(
                 # gradient through the rigid body's metal-translation slot so
                 # the body cannot deform internally.  Bug-class 2+3 fix.
                 if len(_vdw_floor_symbols) == n_atoms:
-                    L_vdw, G_vdw = _cs_vdw_all_grad(
-                        R,
-                        symbols=_vdw_floor_symbols,
-                        excluded_pairs=excl_13,
-                        weight=_vdw_floor_weight,
-                        fraction=_vdw_floor_fraction,
-                        rigid_body_atoms=(
-                            _rigid_body_indices.tolist()
-                            if _hapto_rigid_on else None
-                        ),
-                        rigid_translation_metal=(
-                            int(metal) if _hapto_rigid_on else None
-                        ),
-                    )
+                    # ``_cs_vdw_all_grad`` accepts an optional ``include_h``
+                    # kw-only argument (added 2026-06-07, BERTEB fix).  We
+                    # pass it positionally-by-name with a try/except shim so
+                    # an older construction_sanity (no kw) still works --
+                    # in that case the all-pairs floor stays heavy-only.
+                    try:
+                        L_vdw, G_vdw = _cs_vdw_all_grad(
+                            R,
+                            symbols=_vdw_floor_symbols,
+                            excluded_pairs=excl_13,
+                            weight=_vdw_floor_weight,
+                            fraction=_vdw_floor_fraction,
+                            rigid_body_atoms=(
+                                _rigid_body_indices.tolist()
+                                if _hapto_rigid_on else None
+                            ),
+                            rigid_translation_metal=(
+                                int(metal) if _hapto_rigid_on else None
+                            ),
+                            include_h=_vdw_floor_inc_h,
+                        )
+                    except TypeError:
+                        L_vdw, G_vdw = _cs_vdw_all_grad(
+                            R,
+                            symbols=_vdw_floor_symbols,
+                            excluded_pairs=excl_13,
+                            weight=_vdw_floor_weight,
+                            fraction=_vdw_floor_fraction,
+                            rigid_body_atoms=(
+                                _rigid_body_indices.tolist()
+                                if _hapto_rigid_on else None
+                            ),
+                            rigid_translation_metal=(
+                                int(metal) if _hapto_rigid_on else None
+                            ),
+                        )
                 else:
                     L_vdw, G_vdw = _vdw_floor_value_and_grad(
                         R,

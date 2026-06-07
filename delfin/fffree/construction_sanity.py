@@ -551,6 +551,7 @@ def vdw_floor_all_pairs_value_and_grad(
     rigid_body_atoms: Optional[Sequence[int]] = None,
     rigid_translation_metal: Optional[int] = None,
     eps: float = 1e-9,
+    include_h: bool = False,
 ) -> Tuple[float, np.ndarray]:
     """Heavy-atom Pauli-floor penalty + gradient, applied to **all**
     non-bonded heavy pairs.
@@ -587,6 +588,13 @@ def vdw_floor_all_pairs_value_and_grad(
         Index of the rigid-body translation anchor (typically the metal).
     eps : float
         Floor on inter-atomic distance for numerical safety.
+    include_h : bool, optional
+        When ``False`` (default) hydrogen atoms are excluded from the pair
+        walk -- byte-identical with the original heavy-atom-only behaviour.
+        When ``True`` (BERTEB-class C-H / H-H collapse fix, 2026-06-07)
+        hydrogen atoms are included with a Bondi radius of 1.20 Å, so
+        bonded pairs are still excluded but non-bonded C-H / H-H contacts
+        below ``fraction * (r_C + r_H)`` get the same Pauli penalty.
 
     Returns
     -------
@@ -612,14 +620,16 @@ def vdw_floor_all_pairs_value_and_grad(
         else None
     )
 
-    # Precompute heavy indices + radii.
+    # Precompute heavy indices + radii.  When ``include_h`` is True,
+    # hydrogens are also added (BERTEB-class C-H/H-H collapse fix); byte-
+    # identical OFF (default) -> heavy-atom-only as before.
     heavy: List[int] = []
     radii: List[float] = [float("nan")] * n
     for i in range(min(n, len(symbols))):
         s = symbols[i]
         if not isinstance(s, str):
             continue
-        if s == "H":
+        if s == "H" and not include_h:
             continue
         r = _VDW.get(s)
         if r is None:
