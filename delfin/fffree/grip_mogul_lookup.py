@@ -508,6 +508,11 @@ class GripLibrary:
         self._tm_bond_index: Optional[dict] = None
         self._tm_angle_index: Optional[dict] = None
 
+        # Element-pair aggregate index (Tier 5 in the bond-key fallback
+        # chain used by mogul_bounds).  Built lazily on first use.
+        self._element_pair_index_lock = threading.Lock()
+        self._element_pair_index: Optional[dict] = None
+
         # ----- v4 extension: pair/triple bond+angle+improper tables -----
         # v4 adds element-pair-resolved tables that are populated PER
         # (Z1,hyb1,Z2,hyb2) bond, not aggregated over the full neighbour
@@ -1118,6 +1123,83 @@ class GripLibrary:
     ) -> Optional[Tuple[float, float, int]]:
         """Pair-resolved TM-aware improper lookup."""
         return self._v4_lookup_improper(z_center, hyb_center, neighbor_zs_sorted, min_n)
+
+    # ------------------------------------------------------------------
+    # Element-pair aggregate fallback (Tier 5 of the bond-key fallback
+    # chain consumed by :mod:`delfin.fffree.mogul_bounds`).
+    #
+    # Builds a lazy index ``(Z_sorted_pair) -> [pair_bond_idx, ...]`` and
+    # aggregates ``(mu, sigma, n)`` over all hybridisation variants for
+    # the queried element pair using the same n-weighted pooled-variance
+    # estimator as :meth:`_tm_aggregate`.
+    #
+    # Universal: keyed only on the unordered element pair (no SMILES, no
+    # element ``if``-branches).  Empty when ``has_pair_tables`` is False.
+    # ------------------------------------------------------------------
+    def _ensure_element_pair_index(self) -> None:
+        """Materialise the element-pair -> [pair_bond_idx] index once."""
+        if self._element_pair_index is not None:
+            return
+        with self._element_pair_index_lock:
+            if self._element_pair_index is not None:
+                return
+            index: dict = {}
+            if self._pair_bond_mu is None:
+                self._element_pair_index = index
+                return
+            for key_str, idx in self._pair_bond_key_to_idx.items():
+                try:
+                    parsed = json.loads(key_str)
+                except Exception:
+                    continue
+                if not isinstance(parsed, list) or len(parsed) < 4:
+                    continue
+                zA, _hA, zB, _hB = parsed[0], parsed[1], parsed[2], parsed[3]
+                lo, hi = (str(zA), str(zB)) if str(zA) <= str(zB) else (str(zB), str(zA))
+                pair_key = (lo, hi)
+                lst = index.get(pair_key)
+                if lst is None:
+                    index[pair_key] = [int(idx)]
+                else:
+                    lst.append(int(idx))
+            # Sort indices for determinism
+            for k in index:
+                index[k] = sorted(set(index[k]))
+            self._element_pair_index = index
+
+    def _lookup_bond_element_pair_aggregate(
+        self,
+        z1: str,
+        z2: str,
+        min_n: int,
+    ) -> Optional[Tuple[float, float, int]]:
+        """Aggregate over ALL hyb variants for the element pair (z1, z2).
+
+        Tier 5 fallback for :func:`mogul_bounds._lookup_bond_organic_with_tier`
+        — when the centred-fragment chain (Tier 1) and the hyb-resolved
+        pair table (Tier 2) both miss, this pools every ``(zA, hA, zB, hB)``
+        entry that involves the requested element pair into one
+        n-weighted distribution.  Returns ``None`` only when the library
+        has no entries for the pair (extremely rare for organic + main
+        group elements).
+
+        Determinism: ``_ensure_element_pair_index`` sorts indices at
+        build time; aggregation iterates in that order.
+        """
+        if self._pair_bond_mu is None:
+            return None
+        self._ensure_element_pair_index()
+        lo, hi = (str(z1), str(z2)) if str(z1) <= str(z2) else (str(z2), str(z1))
+        idx_list = self._element_pair_index.get((lo, hi)) if self._element_pair_index else None
+        if not idx_list:
+            return None
+        return self._tm_aggregate(
+            idx_list,
+            self._pair_bond_mu,
+            self._pair_bond_sigma,
+            self._pair_bond_n,
+            min_n,
+        )
 
     # ------------------------------------------------------------------
     # Internal: walk a fallback chain
