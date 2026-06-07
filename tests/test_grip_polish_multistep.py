@@ -61,6 +61,38 @@ def _grip_lib_path() -> Optional[Path]:
     return None
 
 
+# Env-vars touched by this test module — listed centrally so the per-test
+# tearDown can restore the pre-test process state.  Cross-module env-leak
+# was the root cause of the conformer-ensemble-cardinality test flakiness
+# observed on 2026-06-07: my tests left MULTISTEP=1 / MOGUL_PRIMARY=1 set
+# and the subsequent ``test_assemble_via_mogul.py::TestMogulPrimaryConformers``
+# tests observed a smaller ensemble than they expected.
+_ENV_KEYS = (
+    "DELFIN_FFFREE_MOGUL_PRIMARY",
+    "DELFIN_FFFREE_MOGUL_PRIMARY_GRIP",
+    "DELFIN_FFFREE_MOGUL_PRIMARY_KAPPA_ENUM",
+    "DELFIN_FFFREE_MOGUL_BOND_FALLBACK",
+    "DELFIN_FFFREE_GRIP_POLISH_MULTISTEP",
+    "DELFIN_FFFREE_GRIP_POLISH_STRICT_STEREO",
+    "DELFIN_FFFREE_GRIP_POLISH_SOFT_CHIRAL",
+    "DELFIN_GRIP_LIB_PATH",
+)
+
+
+def _snapshot_env():
+    """Capture current values for the env-keys this module touches."""
+    return {k: os.environ.get(k) for k in _ENV_KEYS}
+
+
+def _restore_env(snapshot):
+    """Restore env-keys to their captured values (None -> unset)."""
+    for k, v in snapshot.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def _run_with_env(flag: bool, multistep: bool, smi: str):
     os.environ["PYTHONHASHSEED"] = "0"
     if flag:
@@ -98,6 +130,12 @@ class TestPolishOffByteIdentical(unittest.TestCase):
         "N[Pt](N)(Cl)Cl",
         "[NH3][Co]([NH3])([NH3])([NH3])([NH3])[NH3]",
     ]
+
+    def setUp(self):
+        self._env_snapshot = _snapshot_env()
+
+    def tearDown(self):
+        _restore_env(self._env_snapshot)
 
     def test_off_two_runs_same_bytes(self):
         for smi in self.SAMPLES:
@@ -308,6 +346,10 @@ class TestUserEyePolishApplies(unittest.TestCase):
     def setUp(self):
         if _grip_lib_path() is None:
             self.skipTest("grip_lib_v5*.npz not available in this environment")
+        self._env_snapshot = _snapshot_env()
+
+    def tearDown(self):
+        _restore_env(self._env_snapshot)
 
     @staticmethod
     def _polish_diagnostics(smi: str):
@@ -407,6 +449,10 @@ class TestPolishInvariants(unittest.TestCase):
     def setUp(self):
         if _grip_lib_path() is None:
             self.skipTest("grip_lib_v5*.npz not available in this environment")
+        self._env_snapshot = _snapshot_env()
+
+    def tearDown(self):
+        _restore_env(self._env_snapshot)
 
     @staticmethod
     def _run_and_capture(smi: str):
