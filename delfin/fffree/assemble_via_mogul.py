@@ -353,6 +353,67 @@ def assemble_complex_mogul_primary(
         order = [metal_idx] + [i for i in range(len(out_syms)) if i != metal_idx]
         out_syms = [out_syms[i] for i in order]
         P = P[order]
+        # Re-map donor indices to the output frame so the M-shell gate
+        # below counts heavy atoms inside the canonical (output-frame)
+        # geometry.  Donor permutation: idx i -> i if i < metal_idx,
+        # else i+1 stays where it is (the metal was removed and
+        # prepended).  Equivalently: idx maps to its position in
+        # ``order``.
+        idx_map = {old: new for new, old in enumerate(order)}
+        out_metal_idx = 0
+        out_donor_idxs = sorted(int(idx_map.get(int(d), int(d))) for d in donor_idxs)
+    else:
+        out_metal_idx = 0
+        out_donor_idxs = sorted(int(d) for d in donor_idxs)
+
+    # 6) M-shell overfill hard-gate (Bug #3 fix, 2026-06-07).
+    #
+    #    The bounds-matrix embed satisfies the per-pair (lower, upper)
+    #    window but the polished geometry may still leave a non-donor
+    #    heavy atom inside the M-shell radius (e.g. the bridging carbon
+    #    of an η²-arene, or a counter-ion that got pulled close by the
+    #    centroid translation).  We gate the BASE structure with the
+    #    same universal threshold the conformer pipeline uses
+    #    (``M_SHELL_FACTOR * ideal_bond``) so a downstream conformer
+    #    enumerator never starts from an over-filled shell.
+    #
+    #    Under DELFIN_FFFREE_ROTAMER_TOPOLOGY_GATE=1 (auto-ON when
+    #    DELFIN_FFFREE_MOGUL_PRIMARY=1) we reject the embed and return
+    #    None — the caller (κⁿ enumerator / orbit enumerator) then
+    #    falls through to the next variant or the legacy path.  When
+    #    the gate flag is off explicitly (``=0``) the check is skipped
+    #    so byte-identity with the pre-gate path is preserved.
+    try:
+        from .rotamer_topology_gate import (
+            _env_on as _topology_gate_on,
+            M_SHELL_FACTOR as _MSF,
+        )
+        if _topology_gate_on():
+            cn_expected = len(out_donor_idxs)
+            metal_sym = out_syms[out_metal_idx]
+            shell = 0
+            for j in range(len(out_syms)):
+                if j == out_metal_idx:
+                    continue
+                sj = out_syms[j]
+                if sj == "H":
+                    continue
+                if _bd._is_metal(sj):
+                    continue
+                try:
+                    ideal = float(_bd._ideal_bond(metal_sym, sj))
+                except Exception:
+                    ideal = 0.0
+                if ideal <= 0.0:
+                    continue
+                d_mj = float(np.linalg.norm(P[j] - P[out_metal_idx]))
+                if d_mj < float(_MSF) * ideal:
+                    shell += 1
+                    if shell > cn_expected:
+                        return None
+    except Exception:
+        pass  # defensive: never crash on the gate import / lookup
+
     return out_syms, P
 
 
@@ -910,17 +971,15 @@ def _reordered_source_mol(smiles: str, n_atoms_expected: int):
         src = _full_complex_mol(smiles)
         if src is None:
             return None
-        metals = [a.GetIdx() for a in src.GetAtoms()
-                  if _bd._is_metal(a.GetSymbol())]
-        if not metals:
+        # CRITICAL (Bug #1 fix, 2026-06-07): re-parsing the SMILES here
+        # MUST select the same primary metal as
+        # ``assemble_complex_mogul_primary``.  We delegate to
+        # ``_locate_metal_and_donors`` so the priority-based tie-break
+        # (d/f-block > s-block > p-block "metals" like Sb / Sn / Pb) is
+        # consistent across both code paths.
+        metal_idx_src, _ = _locate_metal_and_donors(src)
+        if metal_idx_src is None:
             return None
-        if len(metals) == 1:
-            metal_idx_src = metals[0]
-        else:
-            metal_idx_src = max(
-                metals,
-                key=lambda mi: src.GetAtomWithIdx(mi).GetDegree(),
-            )
         n_src = src.GetNumAtoms()
         if n_src != n_atoms_expected:
             return None
@@ -964,18 +1023,12 @@ def _aromatic_atom_set_from_smiles(
                 Chem.SanitizeMol(src, catchErrors=True)
             except Exception:
                 pass
-        # Locate the primary metal index in the source mol (degree-max).
-        metals = [a.GetIdx() for a in src.GetAtoms()
-                  if _bd._is_metal(a.GetSymbol())]
-        if not metals:
+        # Locate the primary metal index in the source mol.  Delegate to
+        # the priority-based selector so Sb / Sn / Pb donors cannot
+        # outrank a d/f-block centre (Bug #1 fix, 2026-06-07).
+        metal_idx_src, _ = _locate_metal_and_donors(src)
+        if metal_idx_src is None:
             return []
-        if len(metals) == 1:
-            metal_idx_src = metals[0]
-        else:
-            metal_idx_src = max(
-                metals,
-                key=lambda mi: src.GetAtomWithIdx(mi).GetDegree(),
-            )
         # Apply the assemble_complex_mogul_primary re-order: metal moves
         # to index 0; all other atoms keep their original ordering with
         # gaps closed.
@@ -1831,11 +1884,79 @@ def _full_complex_mol(smiles: str):
     return mol
 
 
+def _metal_priority(symbol: str) -> int:
+    """Universal primary-metal priority for tie-break.
+
+    Lower value = higher priority.  Used to disambiguate the "primary"
+    metal when several atoms in the SMILES are flagged as metals by
+    :func:`delfin._bond_decollapse._is_metal` (e.g. a Pt complex with
+    Sb-donor ligands).  Without a stable priority the multi-metal
+    tie-break is the SMILES atom order, so an Sb ligand-donor can
+    overrule the Pt centre and end up at output index 0 — this is the
+    Bug #1 root cause documented in the 2026-06-07 invariant audit.
+
+    Priority (ascending = higher) follows the chemical convention used
+    throughout DELFIN:
+
+      0: d-block + f-block transition metals (the "actual" metals)
+      1: alkali / alkaline earth (Group 1/2)
+      2: post-transition / p-block "metals" classified as metals by
+         ``_is_metal`` (Al, Ga, In, Tl, Sn, Pb, Bi, Sb, Ge, Po).  These
+         are routinely donors in TMC ligands and should NEVER outrank a
+         d/f metal as the coordination centre.
+
+    Universal: atomic-number ranges only, no SMILES patterns.
+    """
+    try:
+        from rdkit.Chem import GetPeriodicTable  # type: ignore
+        z = int(GetPeriodicTable().GetAtomicNumber(str(symbol)))
+    except Exception:
+        # Element-symbol fallback table for the most common metals.  The
+        # priority is conservative — the alternative is a hard crash, and
+        # the legacy max-degree behaviour is what we get back here.
+        _Z = {
+            "Sc": 21, "Ti": 22, "V": 23, "Cr": 24, "Mn": 25, "Fe": 26,
+            "Co": 27, "Ni": 28, "Cu": 29, "Zn": 30,
+            "Y": 39, "Zr": 40, "Nb": 41, "Mo": 42, "Tc": 43, "Ru": 44,
+            "Rh": 45, "Pd": 46, "Ag": 47, "Cd": 48,
+            "Hf": 72, "Ta": 73, "W": 74, "Re": 75, "Os": 76, "Ir": 77,
+            "Pt": 78, "Au": 79, "Hg": 80,
+            "La": 57, "Ce": 58, "Lu": 71,
+            "Li": 3, "Na": 11, "K": 19, "Rb": 37, "Cs": 55,
+            "Be": 4, "Mg": 12, "Ca": 20, "Sr": 38, "Ba": 56,
+            "Al": 13, "Ga": 31, "In": 49, "Tl": 81,
+            "Ge": 32, "Sn": 50, "Pb": 82, "Sb": 51, "Bi": 83, "Po": 84,
+        }
+        z = int(_Z.get(str(symbol), 0))
+    # d-block (21-30, 39-48, 72-80, 104-112) + f-block (57-71, 89-103)
+    if (21 <= z <= 30) or (39 <= z <= 48) or (72 <= z <= 80) or (104 <= z <= 112):
+        return 0
+    if (57 <= z <= 71) or (89 <= z <= 103):
+        return 0
+    # Alkali / alkaline earth
+    if z in (3, 11, 19, 37, 55, 87, 4, 12, 20, 38, 56, 88):
+        return 1
+    # Everything else (p-block "metals": Al, Ga, In, Tl, Sn, Pb, Bi, Sb, Ge, Po, ...)
+    return 2
+
+
 def _locate_metal_and_donors(mol) -> Tuple[Optional[int], List[int]]:
     """Identify the primary metal index + list of donor atom indices.
 
-    Primary metal = metal with highest graph degree (matches decompose).
-    Donors = neighbours of the primary metal in the molecular graph.
+    Primary metal selection (universal — no SMILES patterns):
+
+      1. Lowest ``_metal_priority`` symbol wins (d/f-block > s-block >
+         p-block "metals" like Sb / Sn / Pb).  This guarantees that a
+         d-block centre is never overruled by a p-block donor in a
+         multi-metal SMILES.  Fixes the 2026-06-07 invariant Bug #1
+         (D-ATOQOP: Pt outranks Sb).
+      2. Among same-priority metals, highest graph degree wins (matches
+         the legacy ``decompose`` selector for the genuine multi-metal
+         case, e.g. Mn₂(CO)₁₀ where both Mn are d-block).
+      3. Final tie-break: lowest atom index (deterministic).
+
+    Donors = heavy-atom neighbours of the primary metal in the molecular
+    graph (sorted by index).
     """
     metals = [a.GetIdx() for a in mol.GetAtoms() if _bd._is_metal(a.GetSymbol())]
     if not metals:
@@ -1843,7 +1964,15 @@ def _locate_metal_and_donors(mol) -> Tuple[Optional[int], List[int]]:
     if len(metals) == 1:
         m = metals[0]
     else:
-        m = max(metals, key=lambda mi: mol.GetAtomWithIdx(mi).GetDegree())
+        def _sort_key(mi: int):
+            sym = mol.GetAtomWithIdx(mi).GetSymbol()
+            # Sort ascending: low priority + high degree + low idx wins.
+            return (
+                int(_metal_priority(sym)),
+                -int(mol.GetAtomWithIdx(mi).GetDegree()),
+                int(mi),
+            )
+        m = min(metals, key=_sort_key)
     donors = sorted(int(n.GetIdx()) for n in mol.GetAtomWithIdx(m).GetNeighbors())
     return int(m), donors
 
