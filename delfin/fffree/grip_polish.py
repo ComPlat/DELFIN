@@ -338,6 +338,194 @@ def _deterministic_perturbation(P_init: np.ndarray, restart_idx: int,
     return P_init + delta
 
 
+# ---------------------------------------------------------------------------
+# Heavy-atom vdW-floor (2026-06-07) — anti-collapse penalty.
+#
+# The existing :class:`ClashFloorPenalty` already implements a soft Pauli floor
+# at ``0.85 * (r_i + r_j)`` with default weight 5.0 over EVERY non-bonded,
+# non-1,3 atom pair (including H).  In production we observe the Mahalanobis-
+# severity loss can still over-pull heavy atoms together (V3 voll-pool:
+# ``structqual_heavy_collapse_pct_frames_viol +537 %`` vs UFF baseline).
+#
+# This block adds a STRICTER additional vdW-floor term that fires ONLY between
+# heavy (non-H) atoms with a higher default weight (20.0) and the same Pauli
+# fraction (0.85).  Default-OFF (env unset) -> byte-identical with HEAD; opt
+# in via ``DELFIN_FFFREE_GRIP_VDW_FLOOR=1``.
+#
+# The math (per heavy-atom pair (i,j) NOT bonded, NOT 1-3):
+#
+#     d_ij    = ||x_i - x_j||
+#     floor   = fraction * (r_vdw_i + r_vdw_j)
+#     if d_ij < floor and d_ij > 0:
+#         L_vdw       += w_vdw * (floor - d_ij)^2
+#         grad_x_i    += -2 * w_vdw * (floor - d_ij) * (x_i - x_j) / d_ij
+#         grad_x_j    += +2 * w_vdw * (floor - d_ij) * (x_i - x_j) / d_ij
+#
+# Pairs whose endpoints are both frozen (M-D rigid sphere) still receive the
+# gradient but it is later zeroed by the frozen-projection step inside
+# ``loss_and_grad`` -- no double-bookkeeping needed here.  Coincident atoms
+# (``d_ij < _VDW_FLOOR_EPS``) are skipped to avoid 0/0 gradient.
+# ---------------------------------------------------------------------------
+_VDW_FLOOR_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR"
+_VDW_FLOOR_WEIGHT_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR_WEIGHT"
+_VDW_FLOOR_FRACTION_ENV: str = "DELFIN_FFFREE_GRIP_VDW_FLOOR_FRACTION"
+DEFAULT_VDW_FLOOR_WEIGHT: float = 20.0
+DEFAULT_VDW_FLOOR_FRACTION: float = 0.85
+_VDW_FLOOR_EPS: float = 1e-9
+
+
+def _vdw_floor_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_VDW_FLOOR`` is on (default OFF).
+
+    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive).  Any other value
+    (including unset / empty) keeps the term OFF, preserving byte-identity
+    with the legacy clash floor only.
+    """
+    raw = os.environ.get(_VDW_FLOOR_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _resolve_vdw_floor_weight() -> float:
+    """Effective weight for the heavy-atom vdW-floor penalty.
+
+    env > :data:`DEFAULT_VDW_FLOOR_WEIGHT` (20.0).  Non-finite / non-numeric
+    values fall through to the default with a single warning so the polish
+    never crashes on a misconfigured env-flag.
+    """
+    raw = os.environ.get(_VDW_FLOOR_WEIGHT_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r not a non-negative finite float; using default %.3f",
+                _VDW_FLOOR_WEIGHT_ENV, raw, DEFAULT_VDW_FLOOR_WEIGHT,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _VDW_FLOOR_WEIGHT_ENV, raw, DEFAULT_VDW_FLOOR_WEIGHT,
+            )
+    return DEFAULT_VDW_FLOOR_WEIGHT
+
+
+def _resolve_vdw_floor_fraction() -> float:
+    """Effective Pauli-floor fraction for the heavy-atom vdW-floor penalty.
+
+    env > :data:`DEFAULT_VDW_FLOOR_FRACTION` (0.85).  Values are clamped to
+    ``(0, 2]``; pathological values fall through to the default.
+    """
+    raw = os.environ.get(_VDW_FLOOR_FRACTION_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and 0.0 < v <= 2.0:
+                return v
+            _LOG.warning(
+                "grip_polish: %s=%r out of (0, 2]; using default %.3f",
+                _VDW_FLOOR_FRACTION_ENV, raw, DEFAULT_VDW_FLOOR_FRACTION,
+            )
+        except (TypeError, ValueError):
+            _LOG.warning(
+                "grip_polish: %s=%r not numeric; using default %.3f",
+                _VDW_FLOOR_FRACTION_ENV, raw, DEFAULT_VDW_FLOOR_FRACTION,
+            )
+    return DEFAULT_VDW_FLOOR_FRACTION
+
+
+def _heavy_atom_indices(symbols: Sequence[str], n_atoms: int) -> np.ndarray:
+    """Return a sorted ``int64`` ndarray of indices whose symbol is NOT ``H``.
+
+    Symbols are matched case-sensitively against ``"H"`` -- mirrors the
+    rest of :mod:`grip_polish` (which uses ``str(a.GetSymbol())`` directly).
+    Atoms with an out-of-range index or non-string symbol are silently
+    skipped (defensive: same policy as ``_vdw_table_for_mol``).
+    """
+    out: List[int] = []
+    for i in range(min(int(n_atoms), len(symbols))):
+        s = symbols[i]
+        if not isinstance(s, str):
+            continue
+        if s == "H":
+            continue
+        out.append(int(i))
+    return np.asarray(sorted(set(out)), dtype=np.int64)
+
+
+def _vdw_floor_value_and_grad(
+    R: np.ndarray,
+    *,
+    heavy_indices: np.ndarray,
+    radii: np.ndarray,
+    excluded_pairs: Set[FrozenSet[int]],
+    weight: float,
+    fraction: float,
+) -> Tuple[float, np.ndarray]:
+    """Heavy-atom-only Pauli-floor penalty + analytic gradient.
+
+    Parameters
+    ----------
+    R : ndarray (N, 3)
+        Current coordinates.
+    heavy_indices : ndarray of int64
+        Sorted indices of heavy (non-H) atoms with a known vdW radius.
+    radii : ndarray of float64, shape (N,)
+        vdW radii indexed by atom; ``NaN`` for unknown elements.  Only
+        ``radii[heavy_indices]`` is consulted.
+    excluded_pairs : set of frozenset({i, j})
+        Bonded + 1,3 pairs to skip (typically the same set the legacy
+        :class:`ClashFloorPenalty` already uses).
+    weight, fraction : float
+        Penalty multiplier and floor fraction.
+
+    Returns
+    -------
+    (L, G) : float, ndarray (N, 3)
+        Loss value and gradient.  When no pair violates the floor both are
+        zero, so the call is a no-op for well-separated geometries.
+    """
+    n = int(R.shape[0])
+    grad = np.zeros_like(R)
+    if heavy_indices.size < 2 or weight <= 0.0 or fraction <= 0.0:
+        return 0.0, grad
+
+    total = 0.0
+    H = heavy_indices.tolist()
+    for ii in range(len(H)):
+        i = H[ii]
+        ri = radii[i] if 0 <= i < n else np.nan
+        if not np.isfinite(ri):
+            continue
+        Pi = R[i]
+        for jj in range(ii + 1, len(H)):
+            j = H[jj]
+            rj = radii[j] if 0 <= j < n else np.nan
+            if not np.isfinite(rj):
+                continue
+            if frozenset((i, j)) in excluded_pairs:
+                continue
+            d_vec = Pi - R[j]
+            d = float(np.linalg.norm(d_vec))
+            floor_ij = fraction * (ri + rj)
+            if d >= floor_ij:
+                continue
+            if d < _VDW_FLOOR_EPS:
+                # Exactly coincident -- skip rather than emit NaN.
+                continue
+            gap = floor_ij - d
+            total += weight * gap * gap
+            # dL/dx_i = -2 w (floor - d) * (x_i - x_j) / d
+            coef = -2.0 * weight * gap / d
+            gi = coef * d_vec
+            grad[i] += gi
+            grad[j] -= gi
+
+    return float(total), grad
+
+
 from .grip_constraints import (
     ChiralVolumeConstraint,
     ClashFloorPenalty,
@@ -378,6 +566,14 @@ __all__ = [
     "DEFAULT_CLASH_WEIGHT",
     "DEFAULT_INTER_LIGAND_CLASH_WEIGHT",
     "DEFAULT_ACCEPT_CLASH_ALPHA",
+    # Heavy-atom vdW-floor anti-collapse term (2026-06-07, env-gated default OFF).
+    "DEFAULT_VDW_FLOOR_WEIGHT",
+    "DEFAULT_VDW_FLOOR_FRACTION",
+    "_vdw_floor_active",
+    "_resolve_vdw_floor_weight",
+    "_resolve_vdw_floor_fraction",
+    "_vdw_floor_value_and_grad",
+    "_heavy_atom_indices",
     "detect_hapto_atoms",
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
@@ -1653,6 +1849,57 @@ def grip_polish(
         w_inter=float(w_inter_resolved),
     )
 
+    # ------------------------------------------------------------------
+    # 3b. Heavy-atom vdW-floor (2026-06-07, anti-collapse).
+    #
+    # Env-gated stricter Pauli-floor that fires ONLY between heavy (non-H)
+    # atom pairs.  Default OFF -> byte-identical with HEAD.  Pre-computed
+    # heavy index list + radii ndarray live in the closure so the inner
+    # loss_and_grad call pays nothing when the term is OFF (a single bool
+    # branch) and only the O(N_heavy^2) walk when the term is ON.
+    # ------------------------------------------------------------------
+    _vdw_floor_on = _vdw_floor_active()
+    _vdw_floor_weight: float = 0.0
+    _vdw_floor_fraction: float = DEFAULT_VDW_FLOOR_FRACTION
+    _vdw_floor_heavy_indices: np.ndarray = np.empty(0, dtype=np.int64)
+    _vdw_floor_radii_arr: np.ndarray = np.empty(0, dtype=np.float64)
+    if _vdw_floor_on:
+        try:
+            _vdw_floor_weight = _resolve_vdw_floor_weight()
+            _vdw_floor_fraction = _resolve_vdw_floor_fraction()
+            try:
+                _vdw_floor_symbols = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+            except Exception:
+                _vdw_floor_symbols = []
+            if len(_vdw_floor_symbols) == n_atoms:
+                _vdw_floor_heavy_indices = _heavy_atom_indices(
+                    _vdw_floor_symbols, n_atoms,
+                )
+            # Drop heavy indices that have no vdW radius -- the inner walk
+            # already guards on NaN but pre-filtering keeps the loop tight.
+            if _vdw_floor_heavy_indices.size:
+                _vdw_floor_radii_arr = np.full(n_atoms, np.nan, dtype=np.float64)
+                for _idx, _r in vdw_idx_table.items():
+                    if 0 <= int(_idx) < n_atoms:
+                        _vdw_floor_radii_arr[int(_idx)] = float(_r)
+                _keep = np.array(
+                    [bool(np.isfinite(_vdw_floor_radii_arr[int(k)]))
+                     for k in _vdw_floor_heavy_indices.tolist()],
+                    dtype=bool,
+                )
+                _vdw_floor_heavy_indices = _vdw_floor_heavy_indices[_keep]
+            if (_vdw_floor_heavy_indices.size < 2
+                    or _vdw_floor_weight <= 0.0
+                    or _vdw_floor_fraction <= 0.0):
+                # Nothing to do -- demote to OFF so the inner call is a no-op.
+                _vdw_floor_on = False
+        except Exception as _vdw_floor_exc:
+            _LOG.warning(
+                "grip_polish: vdW-floor setup failed (%r); disabling term",
+                _vdw_floor_exc,
+            )
+            _vdw_floor_on = False
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -1666,6 +1913,20 @@ def grip_polish(
         L_clash, G_clash = clash.value_and_grad(R)
         L = float(L_grip) + float(L_clash)
         G = G_grip + G_clash
+        # Optional heavy-atom vdW-floor (anti-collapse).  Default-OFF
+        # byte-identical with HEAD when ``DELFIN_FFFREE_GRIP_VDW_FLOOR``
+        # is unset -- the predicate short-circuits before any new arithmetic.
+        if _vdw_floor_on:
+            L_vdw, G_vdw = _vdw_floor_value_and_grad(
+                R,
+                heavy_indices=_vdw_floor_heavy_indices,
+                radii=_vdw_floor_radii_arr,
+                excluded_pairs=excl_13,
+                weight=_vdw_floor_weight,
+                fraction=_vdw_floor_fraction,
+            )
+            L += float(L_vdw)
+            G = G + G_vdw
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
