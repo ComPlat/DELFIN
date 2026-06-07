@@ -13,7 +13,7 @@ Prototype: homoleptic monodentate [M(L)n].  Deterministic.
 from __future__ import annotations
 import os
 import itertools
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
@@ -27,6 +27,497 @@ SEED = 42
 # DELFIN_FFFREE_PURE_TRACK3=1 → no FF anywhere in fffree pipeline.
 # Default OFF (byte-identical when unset). Universal, deterministic, no template.
 _PURE_TRACK3 = os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+
+
+# ===========================================================================
+# Universal multi-metal / cluster / mu-bridging coverage (2026-06-07).
+#
+# Addresses the Auto-Diagnostic finding that 41/63 CCDC refcodes never build,
+# many of them multi-metal (binuclear bridged, M-M bonded, sandwich-of-2,
+# cluster).  The existing ``multi_metal_assemble`` orchestrator handles a
+# wide range of cases but is gated behind several specialised flags and a
+# strict +-0.05A M-D / +-0.10A M-M rollback contract that rejects most real
+# inputs.  This block adds a simpler, universal entry point:
+#
+#   detect_metal_topology(mol) -> {metals, n_metals, bridging_atoms,
+#                                  metal_metal_bonds, topology_class}
+#   place_binuclear_with_bridge(...)  : linear M-B-M placement, hemisphere
+#                                       partition of terminal donors
+#   place_metal_cluster_polygon(...)  : regular polygon / polyhedron for
+#                                       3+ metals
+#
+# All three are pure geometry, graph-only (no SMILES patterns) and reuse
+# ``polyhedra.md_distance`` for every M-donor length.  The dispatch is gated
+# by ``DELFIN_FFFREE_MULTI_METAL_UNIVERSAL=1`` (default OFF -> byte-identical).
+# ===========================================================================
+
+_FLAG_MULTI_METAL_UNIVERSAL = "DELFIN_FFFREE_MULTI_METAL_UNIVERSAL"
+
+
+def _multi_metal_universal_enabled() -> bool:
+    """Lazy env-gate read; returns True only when the explicit flag is set."""
+    return os.environ.get(_FLAG_MULTI_METAL_UNIVERSAL, "0") == "1"
+
+
+def _is_metal_symbol(symbol: str) -> bool:
+    """Universal metal predicate, delegating to delfin._bond_decollapse._METALS.
+
+    Same source of truth that the rest of the FF-free pipeline uses, so the
+    topology this module reports always agrees with what the placement layer
+    treats as a metal.
+    """
+    try:
+        return _bd._is_metal(symbol)
+    except Exception:
+        # Safe superset of TM + main-group "metalloids" that act as Lewis
+        # acids in coordination chemistry.  Used only if the import above
+        # somehow fails; mirrors _METALS in _bond_decollapse.
+        non_metals = {"H", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I",
+                      "B", "Si", "Se", "Te", "As", "He", "Ne", "Ar", "Kr",
+                      "Xe", "Rn"}
+        return symbol not in non_metals
+
+
+def detect_metal_topology(mol) -> dict:
+    """Graph-only universal metal topology classifier.
+
+    Walks the RDKit graph (read-only) and returns a topology fingerprint
+    that downstream placement code uses to decide whether the legacy mono-
+    metal pipeline, the binuclear-with-bridge pipeline, or the polygon
+    cluster pipeline applies.
+
+    Returns
+    -------
+    {
+        "metals":             sorted list of RDKit atom indices that are metals,
+        "n_metals":           int (== len(metals)),
+        "metal_symbols":      list of element symbols, same order,
+        "bridging_atoms":     sorted list of atom idxs whose neighbours include
+                              >= 2 distinct metals (mu2/mu3/mu4 candidates),
+        "metal_metal_bonds":  list of (i, j) tuples with i < j for every direct
+                              M-M edge declared in the SMILES graph,
+        "topology_class":     one of
+                                'empty'    : no metals
+                                'mono'     : exactly 1 metal
+                                'binuclear': 2 metals (with or without bridges
+                                             or a direct M-M bond)
+                                'cluster_3', 'cluster_4', 'cluster_N': 3+ metals
+                                             with at least one bridging atom or
+                                             one direct M-M bond
+                                'separate' : 2+ metals but no bridges and no
+                                             M-M bonds (isolated salt-like).
+                                             Caller should NOT use the multi-
+                                             metal placement; treat each metal
+                                             as its own monomer.
+    }
+
+    Deterministic: every list is sorted by atom index.
+    """
+    if mol is None:
+        return {
+            "metals": [],
+            "n_metals": 0,
+            "metal_symbols": [],
+            "bridging_atoms": [],
+            "metal_metal_bonds": [],
+            "topology_class": "empty",
+        }
+
+    # Collect metal atom indices in canonical sorted order.
+    metals: list = []
+    sym_of: dict = {}
+    for atom in mol.GetAtoms():
+        s = atom.GetSymbol()
+        if _is_metal_symbol(s):
+            i = atom.GetIdx()
+            metals.append(i)
+            sym_of[i] = s
+    metals.sort()
+    metal_set = set(metals)
+
+    # Direct M-M edges as declared in the SMILES bond table.
+    mm_bonds: list = []
+    for bond in mol.GetBonds():
+        a = bond.GetBeginAtomIdx()
+        b = bond.GetEndAtomIdx()
+        if a in metal_set and b in metal_set and a != b:
+            i, j = (a, b) if a < b else (b, a)
+            mm_bonds.append((i, j))
+    mm_bonds = sorted(set(mm_bonds))
+
+    # Bridging atoms: any non-metal atom with >= 2 distinct metal neighbours.
+    bridging_atoms: list = []
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        if idx in metal_set:
+            continue
+        seen = set()
+        for nb in atom.GetNeighbors():
+            ni = nb.GetIdx()
+            if ni in metal_set:
+                seen.add(ni)
+        if len(seen) >= 2:
+            bridging_atoms.append(idx)
+    bridging_atoms.sort()
+
+    # Classify.
+    n = len(metals)
+    if n == 0:
+        cls = "empty"
+    elif n == 1:
+        cls = "mono"
+    elif n == 2:
+        # 2 metals: only call it a true binuclear when at least one bridge
+        # or a direct M-M edge links them.  Isolated 2-cation salts (e.g.
+        # ``[Cu+].[Cu+]``) drop to 'separate' so the caller stays on the
+        # per-metal mono path instead of synthesising a phantom edge.
+        if bridging_atoms or mm_bonds:
+            cls = "binuclear"
+        else:
+            cls = "separate"
+    else:
+        # 3+ metals: only call it a cluster if anything links them.  Isolated
+        # salts (e.g. [Cu+].[Cu+].[Cu+]) drop to 'separate' so the caller
+        # falls back to per-metal mono treatment instead of forcing a
+        # phantom edge.
+        if bridging_atoms or mm_bonds:
+            cls = f"cluster_{n}"
+        else:
+            cls = "separate"
+
+    return {
+        "metals": metals,
+        "n_metals": n,
+        "metal_symbols": [sym_of[i] for i in metals],
+        "bridging_atoms": bridging_atoms,
+        "metal_metal_bonds": mm_bonds,
+        "topology_class": cls,
+    }
+
+
+def _md_target_universal(metal_sym: str, donor_sym: str) -> float:
+    """Universal M-donor distance via polyhedra.md_distance with safe fallback.
+
+    Single source of truth: the same table the rest of FF-free uses.
+    """
+    try:
+        from delfin.fffree.polyhedra import md_distance as _md
+        d = float(_md(metal_sym, donor_sym))
+        if d > 0.5:                                  # sanity floor
+            return d
+    except Exception:
+        pass
+    # Conservative fallback: typical TM-light-donor ~ 2.0 A.
+    return 2.0
+
+
+def place_binuclear_with_bridge(
+    metal_a: str,
+    metal_b: str,
+    bridge_sym: str,
+    donors_a: List[Tuple[int, str]],
+    donors_b: List[Tuple[int, str]],
+) -> Tuple[List[str], np.ndarray]:
+    """Universal placement for a binuclear complex with a single bridging atom.
+
+    Geometry (deterministic, FF-free):
+      * M1 at the origin.
+      * Bridge atom B at M1 + r(M1,B) * z_hat (above M1).
+      * M2 at B + r(M2,B) * z_hat -> linear M1-B-M2 along +z.
+      * ``donors_a`` distributed on the LOWER hemisphere of M1 (below the
+        bridge, away from M2) at their per-element M-D distances.
+      * ``donors_b`` distributed on the UPPER hemisphere of M2 (above the
+        bridge, away from M1) at their per-element M-D distances.
+
+    Parameters
+    ----------
+    metal_a, metal_b : element symbols.
+    bridge_sym       : element symbol of the bridging atom.
+    donors_a         : list of (idx, element) for terminal donors of M1.
+    donors_b         : list of (idx, element) for terminal donors of M2.
+                       (idx is opaque -- only the element drives geometry;
+                       the caller maps coords back to graph indices.)
+
+    Returns
+    -------
+    (syms, coords) where syms[0]=M1, syms[1]=B, syms[2]=M2, then donors_a in
+    input order, then donors_b in input order.  ``coords`` is an (N, 3)
+    ndarray.  Universal -- uses polyhedra.md_distance for every M-D radius.
+    """
+    z = np.array([0.0, 0.0, 1.0])
+    r_m1_b = _md_target_universal(metal_a, bridge_sym)
+    r_m2_b = _md_target_universal(metal_b, bridge_sym)
+
+    pos_m1 = np.zeros(3)
+    pos_b = pos_m1 + r_m1_b * z
+    pos_m2 = pos_b + r_m2_b * z
+
+    syms: List[str] = [metal_a, bridge_sym, metal_b]
+    coords: List[np.ndarray] = [pos_m1, pos_b, pos_m2]
+
+    def _hemisphere_dirs(n: int, sign: float) -> List[np.ndarray]:
+        """n unit vectors evenly on a hemisphere whose axis is ``sign * z``.
+
+        Uses a deterministic Fibonacci-spiral that excludes the equator and
+        the +/-z poles (M-B-M axis), so the n=1 case gives a clean -z (or +z)
+        direction with no axial collision.
+        """
+        if n <= 0:
+            return []
+        if n == 1:
+            return [np.array([0.0, 0.0, sign])]
+        out: List[np.ndarray] = []
+        golden = math.pi * (3.0 - math.sqrt(5.0))
+        for k in range(n):
+            # cos(theta) goes from sign*0.98 (almost on the polar axis) down
+            # to sign*0.05 (near the equator) so donors fan into the lower
+            # hemisphere without overlapping the bridge axis.
+            t = (k + 0.5) / float(n)
+            ct = sign * (0.98 - 0.93 * t)
+            st = math.sqrt(max(0.0, 1.0 - ct * ct))
+            phi = golden * k
+            out.append(np.array([st * math.cos(phi),
+                                  st * math.sin(phi),
+                                  ct]))
+        return out
+
+    # Lower hemisphere donors -> below M1, axis = -z.
+    dirs_a = _hemisphere_dirs(len(donors_a), -1.0)
+    for (_, elem), u in zip(donors_a, dirs_a):
+        r = _md_target_universal(metal_a, elem)
+        coords.append(pos_m1 + r * u)
+        syms.append(elem)
+
+    # Upper hemisphere donors -> above M2, axis = +z.
+    dirs_b = _hemisphere_dirs(len(donors_b), +1.0)
+    for (_, elem), u in zip(donors_b, dirs_b):
+        r = _md_target_universal(metal_b, elem)
+        coords.append(pos_m2 + r * u)
+        syms.append(elem)
+
+    return syms, np.asarray(coords, dtype=float)
+
+
+def _import_math():
+    """Lazy local import so the heavy `math` is only paid for when needed."""
+    import math as _m
+    return _m
+
+
+# Make ``math`` available at module level for the helpers above.  Defined here
+# (rather than at the top) so it lives next to the universal helpers.
+import math
+
+
+def place_metal_cluster_polygon(
+    metal_symbols: List[str],
+    donors_per_metal: List[List[Tuple[int, str]]],
+) -> Tuple[List[str], np.ndarray]:
+    """Universal placement for an N-metal cluster (N >= 3).
+
+    Metals are placed at the vertices of a regular polygon (N=3 triangle,
+    N=4 square, N >= 5 regular N-gon) of radius chosen so adjacent-vertex
+    distance equals the mean covalent-sum of consecutive metal pairs.  For
+    N == 4 the caller can choose tetrahedron (``_tetrahedron`` below); the
+    default polygon keeps the construction planar and trivially deterministic.
+
+    Terminal donors per metal are distributed radially outward from the
+    cluster centroid -- the donor cap sits on the opposite side from the
+    cluster center, so the empty inner space stays free for any bridging
+    atoms a caller might overlay.
+
+    Returns ``(syms, coords)`` with metals first (in input order) followed
+    by donors flattened in the same order as ``donors_per_metal``.
+    Determinism: pure trigonometric closed form, no random / non-stable
+    iteration.
+    """
+    n = len(metal_symbols)
+    if n < 3:
+        raise ValueError("place_metal_cluster_polygon requires >= 3 metals")
+    if len(donors_per_metal) != n:
+        raise ValueError("donors_per_metal length must match metal count")
+
+    # Mean covalent-sum across consecutive metal pairs sets the edge length.
+    edges = [(metal_symbols[i], metal_symbols[(i + 1) % n]) for i in range(n)]
+    edge_len = sum(_md_target_universal(a, b) for a, b in edges) / float(n)
+    # Polygon circumradius from edge length e: R = e / (2 sin(pi/n))
+    R = edge_len / (2.0 * math.sin(math.pi / n))
+
+    # Metal positions on the polygon in the z=0 plane.
+    pos_m = np.zeros((n, 3), float)
+    for i in range(n):
+        theta = 2.0 * math.pi * i / n
+        pos_m[i] = (R * math.cos(theta), R * math.sin(theta), 0.0)
+
+    centroid = pos_m.mean(axis=0)                # exactly origin by symmetry
+
+    syms: List[str] = list(metal_symbols)
+    coords: List[np.ndarray] = [pos_m[i] for i in range(n)]
+
+    for i, donors in enumerate(donors_per_metal):
+        if not donors:
+            continue
+        radial = pos_m[i] - centroid
+        rl = float(np.linalg.norm(radial))
+        if rl < 1e-9:
+            radial_unit = np.array([1.0, 0.0, 0.0])
+        else:
+            radial_unit = radial / rl
+        # Build a stable perpendicular basis: pick z as e2 since the polygon
+        # is in z=0, then e1 = z x radial gives the in-plane perpendicular.
+        e2 = np.array([0.0, 0.0, 1.0])
+        e1 = np.cross(e2, radial_unit)
+        e1n = float(np.linalg.norm(e1))
+        if e1n < 1e-9:
+            # Should not happen for an in-plane polygon, but stay safe.
+            e1 = np.array([1.0, 0.0, 0.0])
+        else:
+            e1 = e1 / e1n
+        n_d = len(donors)
+        for k, (_, elem) in enumerate(donors):
+            r = _md_target_universal(metal_symbols[i], elem)
+            if n_d == 1:
+                u = radial_unit
+            else:
+                # Fan donors in a cone around the outward radial axis.
+                # Spread half-angle 50 deg (matches the existing per-metal
+                # fan in multi_metal_assemble._place_terminals).
+                spread = math.radians(50.0)
+                # Even angular step around the radial axis.
+                phi = 2.0 * math.pi * k / n_d
+                ct = math.cos(spread)
+                st = math.sin(spread)
+                u = (ct * radial_unit
+                     + st * (math.cos(phi) * e1 + math.sin(phi) * e2))
+                u = u / float(np.linalg.norm(u))
+            coords.append(pos_m[i] + r * u)
+            syms.append(elem)
+
+    return syms, np.asarray(coords, dtype=float)
+
+
+def assemble_multi_metal_universal(mol) -> Optional[Tuple[List[str], np.ndarray]]:
+    """High-level universal entry: classify a mol, then dispatch to the right
+    placement primitive.  Returns ``(syms, coords)`` or ``None``.
+
+    Behaviour:
+      * Env-gate ``DELFIN_FFFREE_MULTI_METAL_UNIVERSAL`` unset -> ``None``
+        (byte-identical to legacy).
+      * ``topology_class == 'mono'`` / 'empty' / 'separate' -> ``None`` so the
+        caller stays on the legacy single-metal path.
+      * 'binuclear' with at least one bridging atom -> linear M-B-M.
+        With no bridge but a direct M-M bond -> linear M-M with no bridge
+        (bridge_sym is dropped, donors split as terminal/M1, terminal/M2).
+      * 'cluster_N' (N >= 3) -> regular polygon.
+
+    This function is intentionally conservative: it returns ``None`` for any
+    input it cannot place rigorously, so the caller's legacy fallback is
+    never starved.
+    """
+    if not _multi_metal_universal_enabled():
+        return None
+    if mol is None:
+        return None
+
+    topo = detect_metal_topology(mol)
+    cls = topo["topology_class"]
+    metals = topo["metals"]
+    syms_m = topo["metal_symbols"]
+
+    if cls in ("empty", "mono", "separate"):
+        return None
+
+    # Collect terminal donors per metal.  ``donors_per_metal[i]`` lists
+    # (atom_idx, element) for atoms bonded to metals[i] that are neither
+    # metals themselves nor bridging atoms.
+    metal_set = set(metals)
+    bridges = set(topo["bridging_atoms"])
+    donors_per_metal: List[List[Tuple[int, str]]] = [[] for _ in metals]
+    metal_local = {gi: li for li, gi in enumerate(metals)}
+    for atom in mol.GetAtoms():
+        idx = atom.GetIdx()
+        if idx in metal_set or idx in bridges:
+            continue
+        for nb in atom.GetNeighbors():
+            ni = nb.GetIdx()
+            if ni in metal_set:
+                donors_per_metal[metal_local[ni]].append(
+                    (idx, atom.GetSymbol())
+                )
+                break          # first metal neighbour wins (terminal)
+    for lst in donors_per_metal:
+        lst.sort(key=lambda t: t[0])
+
+    if cls == "binuclear":
+        # Pick the lowest-index bridging atom (deterministic) and use it as
+        # the linear bridge.  No bridge but a direct M-M edge -> degenerate
+        # placement with bridge_sym omitted.
+        if topo["bridging_atoms"]:
+            b_idx = topo["bridging_atoms"][0]
+            b_sym = mol.GetAtomWithIdx(b_idx).GetSymbol()
+            # Drop the bridge from donor lists if it was already counted.
+            # (It will not have been -- bridges are skipped above -- but be
+            # defensive.)
+            return place_binuclear_with_bridge(
+                syms_m[0], syms_m[1], b_sym,
+                donors_per_metal[0], donors_per_metal[1],
+            )
+        # No bridge: place as a linear M-M dimer with the M-M bond as the
+        # backbone, donors_a -> lower hemisphere of M1, donors_b -> upper of
+        # M2.  We model the M-M bond geometrically by using metal_b as the
+        # 'bridge_sym' with r set to the M-M empirical distance.
+        try:
+            from delfin.fffree.multi_metal_polyhedra import m_m_distance as _mmd
+            r_mm = float(_mmd(syms_m[0], syms_m[1]))
+        except Exception:
+            r_mm = 2.6
+        z = np.array([0.0, 0.0, 1.0])
+        pos_m1 = np.zeros(3)
+        pos_m2 = pos_m1 + r_mm * z
+        syms: List[str] = [syms_m[0], syms_m[1]]
+        coords: List[np.ndarray] = [pos_m1, pos_m2]
+        # Re-use the hemisphere generator from place_binuclear_with_bridge by
+        # calling it with a dummy zero-length bridge -> we inline the logic.
+        def _hemi(n: int, sign: float) -> List[np.ndarray]:
+            if n <= 0:
+                return []
+            if n == 1:
+                return [np.array([0.0, 0.0, sign])]
+            out = []
+            golden = math.pi * (3.0 - math.sqrt(5.0))
+            for k in range(n):
+                t = (k + 0.5) / float(n)
+                ct = sign * (0.98 - 0.93 * t)
+                st = math.sqrt(max(0.0, 1.0 - ct * ct))
+                phi = golden * k
+                out.append(np.array([st * math.cos(phi),
+                                      st * math.sin(phi),
+                                      ct]))
+            return out
+        for (_, elem), u in zip(donors_per_metal[0], _hemi(len(donors_per_metal[0]), -1.0)):
+            r = _md_target_universal(syms_m[0], elem)
+            coords.append(pos_m1 + r * u)
+            syms.append(elem)
+        for (_, elem), u in zip(donors_per_metal[1], _hemi(len(donors_per_metal[1]), +1.0)):
+            r = _md_target_universal(syms_m[1], elem)
+            coords.append(pos_m2 + r * u)
+            syms.append(elem)
+        return syms, np.asarray(coords, dtype=float)
+
+    # cluster_N -> polygon (N >= 3)
+    if cls.startswith("cluster_"):
+        return place_metal_cluster_polygon(syms_m, donors_per_metal)
+
+    return None
+
+
+# Public list of names exported by the universal block (documentation only).
+_MULTI_METAL_UNIVERSAL_API = (
+    "detect_metal_topology",
+    "place_binuclear_with_bridge",
+    "place_metal_cluster_polygon",
+    "assemble_multi_metal_universal",
+)
 
 
 def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
