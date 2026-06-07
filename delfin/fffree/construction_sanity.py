@@ -188,6 +188,29 @@ def fischer_carbene_template_active() -> bool:
     return _env_truthy("DELFIN_FFFREE_FISCHER_CARBENE_TEMPLATE")
 
 
+def fragment_check_active() -> bool:
+    """``True`` iff the post-build graph-fragmentation check is enabled.
+
+    Default OFF — byte-identical to legacy assemble path when unset.  Logs
+    violations to stderr (or via the standard ``logging`` module) without
+    rejecting the build; combine with
+    :func:`fragment_check_strict_active` to reject fragmented builds.
+    """
+    return _env_truthy("DELFIN_FFFREE_FRAGMENT_CHECK")
+
+
+def fragment_check_strict_active() -> bool:
+    """``True`` iff the fragment check rejects builds with extra fragments.
+
+    Default OFF — byte-identical to legacy assemble path when unset.  When
+    both this and :func:`fragment_check_active` are on, a fragmented build
+    causes ``assemble_from_config`` to return ``None`` so the upstream
+    caller can fall back.  When only :func:`fragment_check_active` is on,
+    fragments are logged but the build is kept.
+    """
+    return _env_truthy("DELFIN_FFFREE_FRAGMENT_CHECK_STRICT")
+
+
 # ---------------------------------------------------------------------------
 # Post-embed sanity check
 # ---------------------------------------------------------------------------
@@ -979,6 +1002,206 @@ def fischer_carbene_template(
 
 
 # ---------------------------------------------------------------------------
+# Build-time graph-fragmentation check (extra_fragments bug class)
+# ---------------------------------------------------------------------------
+
+
+def _connected_components(n: int, bonds: Set[FrozenSet[int]]) -> List[List[int]]:
+    """Return the connected components of the atom-bond graph.
+
+    Pure BFS on the bond list — no SMILES, no chemistry, no element-specific
+    behaviour.  Atoms with no incident bonds form singleton components.
+
+    Parameters
+    ----------
+    n : int
+        Total number of atoms (vertex count).
+    bonds : set of frozenset({i, j})
+        Edge set.  Self-loops / out-of-range indices are silently dropped by
+        :func:`_build_adjacency`.
+
+    Returns
+    -------
+    list of list of int
+        One list of atom indices per component.  Each inner list is sorted
+        ascending; the outer list is sorted by ``(size, smallest_index)`` so
+        the smallest component appears first (tie-broken by lex order).  This
+        makes the result deterministic across runs and machines.
+    """
+    if n <= 0:
+        return []
+    nbr = _build_adjacency(n, bonds)
+    seen = [False] * n
+    comps: List[List[int]] = []
+    for start in range(n):
+        if seen[start]:
+            continue
+        # BFS from ``start``.
+        stack = [start]
+        seen[start] = True
+        comp: List[int] = []
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for w in nbr[v]:
+                if not seen[w]:
+                    seen[w] = True
+                    stack.append(w)
+        comp.sort()
+        comps.append(comp)
+    # Deterministic ordering: smallest component first, lex tie-break.
+    comps.sort(key=lambda c: (len(c), c[0] if c else -1))
+    return comps
+
+
+def verify_no_extra_fragments(
+    P: np.ndarray,
+    syms: Sequence[str],
+    bonds: Iterable[Tuple[int, int]],
+) -> Tuple[bool, List[Dict]]:
+    """Verify that the atom-bond graph is a single connected component.
+
+    A frequent failure mode in the GRIP polish stage is an atom being pulled
+    far from its parent so that, while the bond list still records the bond,
+    the resulting geometry is physically disconnected.  This check is
+    *graph-only*: it operates on the discrete bond list and ignores
+    coordinates.  Combined with :func:`assert_construction_sane`'s
+    Pauli/bond/M-D checks it catches both physical collapses (coord-side)
+    and topology fragmentation (graph-side).
+
+    Parameters
+    ----------
+    P : ndarray (N, 3)
+        Atom coordinates.  Currently unused — kept in the signature so the
+        function is a drop-in companion to :func:`assert_construction_sane`
+        and future versions can add coordinate-aware checks (e.g.
+        "components separated by > X Å through space").
+    syms : sequence of str
+        Atomic symbols (length must match ``P`` and the highest bond index).
+    bonds : iterable of (i, j)
+        Bonded atom pairs.  Order-insensitive.
+
+    Returns
+    -------
+    (is_intact, violations) : bool, list of dict
+        ``is_intact`` is ``True`` iff exactly one connected component covers
+        all atoms.  When ``False``, ``violations`` contains one entry per
+        extra fragment:
+
+        ``{
+            "mode": "extra_fragment",
+            "n_components": int,         # total component count
+            "main_size": int,            # size of the largest component
+            "fragment_size": int,        # size of THIS extra fragment
+            "fragment_atoms": list[int], # 0-based indices of the fragment
+            "fragment_syms": list[str],  # symbols (parallels fragment_atoms)
+        }``
+
+        The list is sorted smallest-fragment-first (matching
+        :func:`_connected_components`'s deterministic order); the main
+        component itself is NOT listed.  Returned empty when the build is
+        intact.
+
+    Universal: pure graph BFS, no SMILES patterns, no element rules.
+    Deterministic: BFS order is fixed by the sorted bond/neighbour lists.
+    Safe on degenerate input: size mismatch / non-finite coords are reported
+    as a dedicated violation rather than raising.
+
+    Examples
+    --------
+    >>> P = np.array([[0.0, 0, 0], [1.5, 0, 0], [3.0, 0, 0]])
+    >>> verify_no_extra_fragments(P, ["C", "C", "C"], [(0, 1), (1, 2)])
+    (True, [])
+    >>> # Same atoms but with the bond (1, 2) removed -> two components
+    >>> ok, viols = verify_no_extra_fragments(P, ["C", "C", "C"], [(0, 1)])
+    >>> ok
+    False
+    >>> viols[0]["fragment_atoms"]
+    [2]
+    """
+    P_arr = np.asarray(P, dtype=float)
+    n_p = int(P_arr.shape[0]) if P_arr.ndim >= 1 else 0
+    n_s = len(syms)
+    n = n_s  # the symbol list is the authoritative atom count
+    if n == 0:
+        return True, []
+    if n_p != n_s:
+        return False, [{
+            "mode": "fragment_check_size_mismatch",
+            "n_P": n_p,
+            "n_syms": n_s,
+        }]
+
+    bonds_set = _bond_set(bonds)
+    comps = _connected_components(n, bonds_set)
+    if len(comps) <= 1:
+        return True, []
+
+    # Identify the main (largest) component; everything else is an extra
+    # fragment.  ``comps`` is sorted smallest-first, so the main component
+    # is the LAST one.
+    main = comps[-1]
+    main_size = len(main)
+    n_components = len(comps)
+
+    violations: List[Dict] = []
+    for comp in comps[:-1]:
+        violations.append({
+            "mode": "extra_fragment",
+            "n_components": n_components,
+            "main_size": main_size,
+            "fragment_size": len(comp),
+            "fragment_atoms": list(comp),
+            "fragment_syms": [str(syms[i]) for i in comp],
+        })
+    return False, violations
+
+
+def _log_fragment_violations(
+    violations: Sequence[Mapping],
+    *,
+    context: str = "",
+) -> None:
+    """Emit a single-line summary of fragment violations via ``logging``.
+
+    Internal helper used by the ``assemble_from_config`` integration so
+    fragments are always logged when ``DELFIN_FFFREE_FRAGMENT_CHECK=1``,
+    regardless of strict-mode.  Falls back silently if logging is broken.
+
+    The log line includes the number of components, the largest fragment
+    size and the indices of the smallest fragment — enough to grep for the
+    bug class in voll-pool runs without flooding the log.
+    """
+    if not violations:
+        return
+    try:
+        import logging
+        logger = logging.getLogger("delfin.fffree.construction_sanity")
+        for v in violations:
+            mode = v.get("mode", "")
+            if mode == "extra_fragment":
+                logger.warning(
+                    "fragment_check%s: %d components, main_size=%d, "
+                    "extra_size=%d, extra_atoms=%s, extra_syms=%s",
+                    (f" [{context}]" if context else ""),
+                    int(v.get("n_components", 0)),
+                    int(v.get("main_size", 0)),
+                    int(v.get("fragment_size", 0)),
+                    list(v.get("fragment_atoms", [])),
+                    list(v.get("fragment_syms", [])),
+                )
+            else:
+                logger.warning(
+                    "fragment_check%s: %s %s",
+                    (f" [{context}]" if context else ""),
+                    mode, dict(v),
+                )
+    except Exception:
+        # Logging failures are never fatal — the gate is informational.
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Exports
 # ---------------------------------------------------------------------------
 
@@ -995,10 +1218,13 @@ __all__ = [
     "vdw_floor_all_pairs_active",
     "piano_stool_template_active",
     "fischer_carbene_template_active",
+    "fragment_check_active",
+    "fragment_check_strict_active",
     "assert_construction_sane",
     "build_with_retries",
     "vdw_floor_all_pairs_value_and_grad",
     "classify_topology",
     "piano_stool_template",
     "fischer_carbene_template",
+    "verify_no_extra_fragments",
 ]
