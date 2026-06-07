@@ -376,6 +376,37 @@ def _default_polyhedron(cn: int, metal: str) -> Optional[str]:
     return cands[0]
 
 
+def _all_polyhedra(cn: int, metal: str) -> List[str]:
+    """Return ALL registered polyhedra for ``cn`` (multi-poly dispatch).
+
+    For ``cn in polyhedra._MULTI_POLY_CNS`` (currently 3, 4, 5, 8, 9, 10,
+    11, 12): returns every geometry in ``GEOM_BY_CN[cn]`` whose Pólya
+    group is registered in :data:`_SHAPE_TO_GROUP` (so orbit enumeration
+    can actually run on it).  For other CNs returns the single default.
+
+    Used by the multi-poly path in :func:`enumerate_orbits_for_smiles`
+    to emit one ETKDG embed per (polyhedron, orbit) pair, rather than
+    a single polyhedron's orbits only.
+
+    Universal, no per-metal lookups.  Deterministic order
+    = ``GEOM_BY_CN[cn]`` order.
+    """
+    try:
+        from delfin.fffree.polyhedra import (
+            GEOM_BY_CN, is_multi_poly_cn,
+        )
+    except Exception:
+        return []
+    cands = list(GEOM_BY_CN.get(int(cn), []))
+    if not cands:
+        return []
+    if not is_multi_poly_cn(int(cn)):
+        return cands[:1]
+    # Keep only polyhedra whose Pólya group is implemented (so orbit
+    # enumeration can run); drop any unimplemented variants silently.
+    return [g for g in cands if g in _SHAPE_TO_GROUP] or cands[:1]
+
+
 def _donor_label(symbol: str) -> str:
     """Canonical donor-type label (element-only).  Kept for callers that
     don't have a graph context handy.  When a graph is available, prefer
@@ -640,6 +671,81 @@ def enumerate_orbits_for_smiles(
     }
 
 
+def enumerate_orbits_for_smiles_multi(
+    smiles: str,
+    *,
+    max_orbits: Optional[int] = None,
+) -> Optional[List[Dict[str, object]]]:
+    """Multi-polyhedron variant of :func:`enumerate_orbits_for_smiles`.
+
+    Returns a LIST of result dicts (one per polyhedron) when the detected
+    CN is in :data:`polyhedra._MULTI_POLY_CNS` (3, 4, 5, 8, 9, 10, 11, 12).
+    For other CNs returns a single-element list (the legacy behaviour
+    wrapped in a list, so the caller's loop body is uniform).
+
+    Each dict has the same shape as the single-polyhedron result:
+    ``polyhedron``, ``metal_idx``, ``donor_atoms``, ``donor_types``,
+    ``chelate_pairs``, ``orbits``.
+
+    ZURMAA universal fix (2026-06-07): the ETKDG-embed-orbit dispatcher
+    can now emit BOTH T-4 and SP-4 frames for a CN4 SMILES like
+    ``O=C(O)c1ccc(N(C)C(=S)[Au]2(Nc1cccs1)c1ccccc1)cc1``, instead of
+    only the metal-table-default geometry.  Mogul-DG severity ranks the
+    polyhedra downstream.
+
+    Returns ``None`` on parse / detection failure (same contract as the
+    single-polyhedron function).  Never raises.
+    """
+    det = detect_from_smiles(smiles)
+    if det is None:
+        return None
+    _, donor_types, chelate_pairs, metal_idx = det
+    cn = len(donor_types)
+    try:
+        from rdkit import Chem
+        from delfin._bond_decollapse import _is_metal
+    except Exception:
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    try:
+        metal_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+    except Exception:
+        metal_sym = ""
+    donor_atoms = [
+        int(nbr.GetIdx())
+        for nbr in mol.GetAtomWithIdx(metal_idx).GetNeighbors()
+        if not _is_metal(nbr.GetSymbol())
+    ]
+    if len(donor_atoms) != len(donor_types):
+        return None
+    polyhedra_list = _all_polyhedra(cn, metal_sym)
+    if not polyhedra_list:
+        return None
+    out: List[Dict[str, object]] = []
+    for polyhedron in polyhedra_list:
+        try:
+            orbits = enumerate_orbits_with_chelates(
+                polyhedron, donor_types, chelate_pairs, max_orbits=max_orbits,
+            )
+        except (KeyError, ValueError):
+            continue
+        if not orbits:
+            continue
+        out.append({
+            "polyhedron": polyhedron,
+            "metal_idx": int(metal_idx),
+            "donor_atoms": list(donor_atoms),
+            "donor_types": list(donor_types),
+            "chelate_pairs": list(chelate_pairs),
+            "orbits": orbits,
+        })
+    if not out:
+        return None
+    return out
+
+
 def vertex_coords(polyhedron: str, metal: str = "Cu") -> Optional["np.ndarray"]:
     """Ideal vertex coordinates for ``polyhedron``, scaled to ~ Cu-O distance.
 
@@ -678,6 +784,7 @@ __all__ = [
     "enumerate_orbits",
     "enumerate_orbits_with_chelates",
     "enumerate_orbits_for_smiles",
+    "enumerate_orbits_for_smiles_multi",
     "detect_from_smiles",
     "cis_edges_for",
     "cn_for",
