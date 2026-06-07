@@ -1170,20 +1170,26 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             and d["geometry"] != "TPR-6 trigonal prism":
         results += _enumerate_geometry(d, "trigonal_prism", "TPR-6 trigonal prism",
                                        lig_ref, lab_elem, spec, max_isomers)
-    # Iter-31 (User 2026-05-28): CN4 dual SP-4 / T-4.  decompose picks ONE per metal via
-    # _PREFERRED_CN4_GEOMETRY ('SQ' or 'TH') but real CN4 complexes can be either — esp.
-    # Cu²⁺ where both T-4 (Cu(I)-like) and SP-4 (Cu(II) Jahn-Teller) exist.  Additive,
-    # env-gated default OFF.  Adds the OPPOSITE of whichever the primary picked.
-    if d.get("cn") == 4 and os.environ.get("DELFIN_FFFREE_DUAL_CN4", "0") == "1":
+    # ZURMAA universal CN4 multi-poly fix (2026-06-07): emit BOTH T-4 and
+    # SP-4 isomers for every CN4 metal (no per-metal lookup, no env flag).
+    # The d⁸-table `_D8` in :mod:`decompose` is incomplete (e.g. Au(III) is
+    # missing), so a Au(III) CN4 with mixed donors {N, C, O, S} was picking
+    # T-4 only.  Now CN4 is part of :data:`polyhedra._MULTI_POLY_CNS` and the
+    # OPPOSITE polyhedron is always additively enumerated.  Mogul-DG
+    # severity downstream picks the chemistry-correct winner per case.
+    #
+    # Same universal pattern for CN3 (SP-3 vs T-3): both isomers are
+    # enumerated unconditionally; the d⁸-vs-not branching in
+    # ``_default_geometry`` only sets the FIRST emit, not the only one.
+    # Mirrors the always-on CN5 (TBP-5 + SPY-5) multi-poly block above.
+    if d.get("cn") == 4 and PLY.is_multi_poly_cn(4):
         if d["geometry"] == "SP-4 square planar":
             results += _enumerate_geometry(d, "tetrahedron", "T-4 tetrahedron",
                                            lig_ref, lab_elem, spec, max_isomers)
         elif d["geometry"] == "T-4 tetrahedron":
             results += _enumerate_geometry(d, "square_planar", "SP-4 square planar",
                                            lig_ref, lab_elem, spec, max_isomers)
-    # Iter-32c: CN3 dual SP-3 trigonal-planar / T-3 T-shape (mirror of dual-CN4).
-    # decompose picks ONE (d⁸ → T-shape, else SP-3); dual flag adds the other.
-    if d.get("cn") == 3 and os.environ.get("DELFIN_FFFREE_DUAL_CN3", "0") == "1":
+    if d.get("cn") == 3 and PLY.is_multi_poly_cn(3):
         if d["geometry"] == "SP-3 trigonal planar":
             results += _enumerate_geometry(d, "tshape", "T-3 T-shape",
                                            lig_ref, lab_elem, spec, max_isomers)

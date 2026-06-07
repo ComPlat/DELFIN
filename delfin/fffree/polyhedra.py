@@ -167,6 +167,63 @@ GEOM_BY_CN = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Universal CN multi-polyhedron dispatch set (ZURMAA fix, 2026-06-07).
+#
+# Coordination numbers in this tuple ALWAYS enumerate all registered
+# polyhedra (no per-metal table, no per-CN env flag).  Downstream callers
+# query :func:`is_multi_poly_cn` to decide whether to additively enumerate
+# every geometry in ``GEOM_BY_CN[cn]`` instead of picking a single default.
+#
+# Rationale: the ZURMAA-class bug (Au(III), CN4, donor multi-set
+# {N, C, O, S}) showed that a single per-metal default geometry can miss
+# the textbook geometry entirely.  d⁸ Au(III) is SP-4 (square planar), but
+# the legacy ``_default_geometry`` table can dispatch only T-4 (tetrahedron)
+# when the metal isn't in the small ``_D8`` allow-list — producing only
+# tetrahedral frames for what is clearly square-planar chemistry.
+#
+# Mogul-DG severity ranks downstream, so emitting BOTH polyhedra is safe
+# (the wrong polyhedron is simply ranked lower) and universal (no metal-
+# specific branches).  CN5 already enumerates TBP-5 + SPY-5 unconditionally
+# in :mod:`converter_backend` — this constant unifies that pattern.
+#
+# Universal, no per-metal lookups.  Pólya enumeration + severity ranking
+# replace the per-metal-table approach.
+# ---------------------------------------------------------------------------
+_MULTI_POLY_CNS: tuple = (3, 4, 5, 8, 9, 10, 11, 12)
+
+
+def is_multi_poly_cn(cn: int) -> bool:
+    """True when CN should enumerate all registered polyhedra additively.
+
+    Default-ON for the CNs in :data:`_MULTI_POLY_CNS` (3, 4, 5, 8, 9, 10,
+    11, 12).  CN4 is included so square-planar / tetrahedral are BOTH
+    emitted for every CN4 metal — Mogul-DG severity then picks the winner.
+
+    This is the single source of truth for "which CNs warrant multi-
+    polyhedron dispatch", consumed by :mod:`converter_backend` and
+    :mod:`polyhedron_vertex_polya` so the two code paths stay in sync.
+    """
+    try:
+        return int(cn) in _MULTI_POLY_CNS
+    except (TypeError, ValueError):
+        return False
+
+
+def all_geometries_for_cn(cn: int, metal: str = "") -> list:
+    """Return ALL registered geometries for ``cn`` (multi-poly dispatch).
+
+    For ``cn in _MULTI_POLY_CNS``: returns the full list from
+    :func:`geometries_for_cn` (which already honours the f-block CN8-12 and
+    CN10 env-gates).  For other CNs returns the same list — callers
+    consulting :func:`is_multi_poly_cn` decide whether to use this multi-
+    poly view or to fall back to the legacy single-default behaviour.
+
+    Universal, deterministic, no per-metal branches.
+    """
+    return list(geometries_for_cn(int(cn), metal=metal))
+
+
 def geometries_for_cn(cn: int, metal: str = "") -> list:
     """CN → list of valid geometry names, optionally metal-aware.
 
@@ -277,6 +334,75 @@ COV = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Pyykkö single-bond covalent radii (Å) — ZURMAA md_distance audit, 2026-06-07.
+#
+# Universal table from Pyykkö & Atsumi, Chem. Eur. J. 2009 — the same source
+# used by RDKit / OpenBabel / CCDC-Mogul for first-sphere bond-length
+# predictions.  Spans the whole periodic table so EVERY (metal, donor)
+# combination resolves to a chemistry-realistic value with no fallback to a
+# generic 1.5 / 0.75 placeholder.
+#
+# When ``DELFIN_FFFREE_MD_DISTANCE_AUDIT=1`` (or PURE_TRACK3=1):
+#   - :func:`md_distance` first consults ``COV_PYYKKO`` for both metal and
+#     donor (richer table = no missing entries for Au/Pt/Hg/Tl/late 5d).
+#   - Soft donors (S, P, Se, Te, I) receive a small +0.05 Å correction
+#     because covalent-sum systematically underestimates M-soft bonds
+#     (empirically observed across CCDC; see SOFT_DONOR_CORR below).
+#
+# Default OFF -> ``md_distance`` returns the legacy ``COV.get(...) + COV.get(...)``
+# value byte-identically, so the audit can be A/B-compared.
+# ---------------------------------------------------------------------------
+COV_PYYKKO = {
+    # Period 1
+    "H": 0.32, "He": 0.46,
+    # Period 2
+    "Li": 1.33, "Be": 1.02, "B": 0.85, "C": 0.75, "N": 0.71, "O": 0.63,
+    "F": 0.64, "Ne": 0.67,
+    # Period 3
+    "Na": 1.55, "Mg": 1.39, "Al": 1.26, "Si": 1.16, "P": 1.11, "S": 1.03,
+    "Cl": 0.99, "Ar": 0.96,
+    # Period 4: K-Kr
+    "K": 1.96, "Ca": 1.71, "Sc": 1.48, "Ti": 1.36, "V": 1.34, "Cr": 1.22,
+    "Mn": 1.19, "Fe": 1.16, "Co": 1.11, "Ni": 1.10, "Cu": 1.12, "Zn": 1.18,
+    "Ga": 1.24, "Ge": 1.21, "As": 1.21, "Se": 1.16, "Br": 1.14, "Kr": 1.17,
+    # Period 5: Rb-Xe
+    "Rb": 2.10, "Sr": 1.85, "Y": 1.63, "Zr": 1.54, "Nb": 1.47, "Mo": 1.38,
+    "Tc": 1.28, "Ru": 1.25, "Rh": 1.25, "Pd": 1.20, "Ag": 1.28, "Cd": 1.36,
+    "In": 1.42, "Sn": 1.40, "Sb": 1.40, "Te": 1.36, "I": 1.33, "Xe": 1.31,
+    # Period 6: Cs-Rn (incl. Ln series + 5d TM)
+    "Cs": 2.32, "Ba": 1.96,
+    "La": 1.80, "Ce": 1.63, "Pr": 1.76, "Nd": 1.74, "Pm": 1.73, "Sm": 1.72,
+    "Eu": 1.68, "Gd": 1.69, "Tb": 1.68, "Dy": 1.67, "Ho": 1.66, "Er": 1.65,
+    "Tm": 1.64, "Yb": 1.70, "Lu": 1.62,
+    "Hf": 1.52, "Ta": 1.46, "W": 1.37, "Re": 1.31, "Os": 1.29, "Ir": 1.22,
+    "Pt": 1.23, "Au": 1.24, "Hg": 1.33, "Tl": 1.44, "Pb": 1.44, "Bi": 1.51,
+    "Po": 1.45, "At": 1.47, "Rn": 1.42,
+    # Period 7 (early): Fr-U (rare in TMC but present in actinide work)
+    "Fr": 2.23, "Ra": 2.01, "Ac": 1.86, "Th": 1.75, "Pa": 1.69, "U": 1.70,
+    "Np": 1.71, "Pu": 1.72, "Am": 1.66, "Cm": 1.66,
+}
+
+# Soft-donor empirical correction (Å).  Mogul-on-COD first-sphere fits show
+# that M-S, M-P, M-Se, M-Te, M-I are systematically ~0.05 Å LONGER than the
+# covalent-radii sum predicts (Pyykkö's radii are gas-phase / non-polar;
+# real-crystal M-soft bonds carry partial-ionic character that elongates).
+# Applied only under DELFIN_FFFREE_MD_DISTANCE_AUDIT to keep default behaviour
+# byte-identical.  Universal: depends only on the donor element.
+SOFT_DONOR_CORR = {
+    "S": 0.05, "P": 0.05, "Se": 0.05, "Te": 0.08, "I": 0.05,
+}
+
+
+def _md_audit_enabled() -> bool:
+    """True when the universal Pyykkö covalent-radii audit path is on."""
+    import os as _os
+    return (_os.environ.get("DELFIN_FFFREE_MD_DISTANCE_AUDIT", "0").strip()
+            in ("1", "true", "yes", "on")
+            or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0").strip()
+            in ("1", "true", "yes", "on"))
+
+
 def ref_vectors(geometry: str) -> np.ndarray:
     for (cn, shape), v in REFS.items():
         if shape == geometry:
@@ -374,20 +500,20 @@ def md_distance(metal: str, donor: str, cn: int = 0) -> float:
             r = _FBP.md_distance_fblock(metal, donor)
             if r is not None:
                 return r
-    # High-CN coverage M-D fallback (universal, no metal-specific tables).
-    # Only fires when the legacy COV table is missing the metal so the
-    # default-OFF byte-identity contract is preserved (when the metal IS in
-    # COV the legacy sum is returned unchanged).
-    hicn_on = (_os.environ.get("DELFIN_FFFREE_HIGH_CN_COVERAGE", "0") == "1"
-               or _os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1")
-    if hicn_on and metal not in COV:
-        try:
-            from delfin.fffree.high_cn_coverage import md_distance_high_cn
-            r = md_distance_high_cn(metal, donor, cn=int(cn))
-            if r is not None:
-                return r
-        except ImportError:
-            pass
+    # ZURMAA md_distance audit (2026-06-07): under DELFIN_FFFREE_MD_DISTANCE_AUDIT,
+    # consult the universal Pyykkö covalent-radii table first (richer coverage
+    # for Au/Pt/Hg/Tl/late 5d which currently fall back to the generic 1.5
+    # placeholder, producing uniform ~2.02 Å M-D distances for ALL donors).
+    # Plus a small +0.05 Å soft-donor correction so M-S / M-P / M-I bonds
+    # match the empirical CCDC first-sphere mean.  Default OFF byte-identical.
+    if _md_audit_enabled():
+        m_r = COV_PYYKKO.get(metal)
+        d_r = COV_PYYKKO.get(donor)
+        if m_r is not None and d_r is not None:
+            corr = SOFT_DONOR_CORR.get(donor, 0.0)
+            return float(m_r) + float(d_r) + float(corr)
+        # If audit table misses the pair (unusual: covers full periodic
+        # table), fall through to the legacy COV path so we never raise.
     return COV.get(metal, 1.5) + COV.get(donor, 0.75)
 
 

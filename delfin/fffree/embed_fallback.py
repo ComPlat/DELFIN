@@ -750,16 +750,37 @@ def embed_isomers(
         from delfin.fffree.polyhedron_vertex_polya import (
             flag_active as _pvp_active,
             enumerate_orbits_for_smiles as _pvp_orbits,
+            enumerate_orbits_for_smiles_multi as _pvp_orbits_multi,
         )
     except Exception:
         _pvp_active = lambda: False  # noqa: E731
         _pvp_orbits = lambda *a, **k: None  # noqa: E731
+        _pvp_orbits_multi = lambda *a, **k: None  # noqa: E731
     _pvp_result = None
+    # ZURMAA universal CN4 multi-poly fix (2026-06-07): when the orbit gate
+    # is active AND the CN is in :data:`polyhedra._MULTI_POLY_CNS` (3/4/5/
+    # 8/9/10/11/12), emit ETKDG orbits for EVERY registered polyhedron at
+    # that CN — not just the metal-table default.  Mogul-DG severity then
+    # picks the chemistry-correct winner.  For other CNs (and when the
+    # multi-poly enumerator finds only a single polyhedron) this collapses
+    # to the legacy single-polyhedron behaviour.
+    _pvp_results_multi: List[dict] = []
     if _pvp_active():
         try:
-            _pvp_result = _pvp_orbits(smiles)
+            _multi = _pvp_orbits_multi(smiles)
+            if _multi:
+                _pvp_results_multi = list(_multi)
         except Exception:
-            _pvp_result = None
+            _pvp_results_multi = []
+        if _pvp_results_multi:
+            _pvp_result = _pvp_results_multi[0]  # back-compat: first poly
+        else:
+            try:
+                _pvp_result = _pvp_orbits(smiles)
+            except Exception:
+                _pvp_result = None
+            if _pvp_result is not None:
+                _pvp_results_multi = [_pvp_result]
     if _pvp_result is not None:
         # Per-orbit ETKDG dispatch.  We re-use ``mol`` (already AddHs'ed) and
         # build one CoordMap per orbit; each orbit gets up to ``n_embed`` ETKDG
@@ -776,15 +797,34 @@ def embed_isomers(
             _xtb_charge = 0
         _xtb_uhf = 0
         _syms_pvp = [a.GetSymbol() for a in mol.GetAtoms()]
-        _out_pvp: List[Tuple[str, str]] = _emit_orbit_ensemble(
-            mol=mol,
-            syms=_syms_pvp,
-            pvp_result=_pvp_result,
-            n_embed_per_orbit=n_embed,
-            polish_mode=_polish_mode,
-            xtb_charge=_xtb_charge,
-            xtb_uhf=_xtb_uhf,
-        )
+        # ZURMAA multi-poly dispatch loop: iterate over every detected
+        # polyhedron (one for CN not in MULTI_POLY_CNS, several for
+        # CN3/4/5/8/9/10/11/12).  Each polyhedron contributes its own
+        # orbit ensemble; the label suffix encodes the polyhedron tag so
+        # downstream consumers (Mogul-DG severity) can distinguish T-4
+        # from SP-4 frames in the same SMILES.
+        _out_pvp: List[Tuple[str, str]] = []
+        _multi_active = len(_pvp_results_multi) > 1
+        for _poly_result in _pvp_results_multi:
+            _poly_out = _emit_orbit_ensemble(
+                mol=mol,
+                syms=_syms_pvp,
+                pvp_result=_poly_result,
+                n_embed_per_orbit=n_embed,
+                polish_mode=_polish_mode,
+                xtb_charge=_xtb_charge,
+                xtb_uhf=_xtb_uhf,
+            )
+            if not _poly_out:
+                continue
+            if _multi_active:
+                # Tag each label with the polyhedron token (first word of
+                # the canonical geometry string, e.g. "T-4" / "SP-4").
+                _poly_tag = str(_poly_result.get("polyhedron", "")).split()[:1]
+                _tag = _poly_tag[0] if _poly_tag else ""
+                if _tag:
+                    _poly_out = [(xyz, f"{lab}-{_tag}") for (xyz, lab) in _poly_out]
+            _out_pvp.extend(_poly_out)
         if _out_pvp:
             return _out_pvp
         # else: silent fall-through to legacy ETKDG below (orbit path
