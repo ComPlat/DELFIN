@@ -2366,57 +2366,49 @@ def grip_polish(
             _vdw_floor_on = False
 
     # ------------------------------------------------------------------
-    # 3c. One-sided M-D too-short floor (2026-06-07, md_too_short fix).
+    # 3c. Donor-angle polyhedron floor (2026-06-07).
     #
-    # Env-gated strict floor that penalises declared donors whose current
-    # M-D distance is BELOW ``fraction * md_target``.  Default OFF -> byte
-    # identical with HEAD.  Reads the per-donor ``md_target`` table off
-    # ``md_constraint.target_distances`` so it is fully consistent with the
-    # rest of the polish (those are the targets the M-D invariant validates
-    # against).  Setup cost is paid once outside the loss closure so the
-    # inner ``loss_and_grad`` call pays nothing when the term is OFF.
+    # Auto-diagnostic finding: 13.4 % of V3 voll-pool files showed the
+    # ``metal_axis_linearisation`` anomaly -- 3-4 donors on a Pd(SP-4) or
+    # Pt(SP-4) centre drifting toward 180 deg instead of 90/180.  The
+    # mogul severity loss only sees bonded fragments, so donor-M-donor
+    # angles are never penalised.  This term adds a smooth quadratic
+    # penalty on |theta_donor_M_donor - theta_nearest_template| once the
+    # deviation exceeds a threshold (15 deg by default).
+    #
+    # Env-gated default OFF byte-identical with HEAD when unset.  ON
+    # path: pre-resolve the expected-angle list ONCE (memoised per
+    # geometry string).  The L-BFGS inner loop then pays only an
+    # O(n_donors^2) angle evaluation.
     # ------------------------------------------------------------------
-    _md_too_short_on = _md_too_short_floor_active()
-    _md_too_short_weight: float = 0.0
-    _md_too_short_fraction: float = DEFAULT_MD_TOO_SHORT_FLOOR_FRACTION
-    _md_too_short_donor_idxs: Tuple[int, ...] = ()
-    _md_too_short_targets: Tuple[float, ...] = ()
-    if _md_too_short_on:
-        try:
-            _md_too_short_weight = _resolve_md_too_short_floor_weight()
-            _md_too_short_fraction = _resolve_md_too_short_floor_fraction()
-            # Pull the per-donor targets straight off the M-D invariant
-            # constraint: those are the SAME numbers the validator checks
-            # against, so the floor is internally consistent.
-            _md_too_short_donor_idxs = tuple(int(d) for d in donors_t)
-            _md_too_short_targets = tuple(
-                float(t) for t in md_constraint.target_distances
-            )
-            # Pre-filter: drop entries with non-finite / non-positive targets
-            # so the inner loop stays tight.  Length-mismatch is a defensive
-            # short-circuit -- the helper would skip the same entries anyway.
-            if len(_md_too_short_donor_idxs) != len(_md_too_short_targets):
-                _md_too_short_donor_idxs = ()
-                _md_too_short_targets = ()
-            else:
-                _keep_pairs = [
-                    (d, t)
-                    for d, t in zip(_md_too_short_donor_idxs, _md_too_short_targets)
-                    if np.isfinite(t) and float(t) > 0.0
-                ]
-                _md_too_short_donor_idxs = tuple(int(d) for d, _ in _keep_pairs)
-                _md_too_short_targets = tuple(float(t) for _, t in _keep_pairs)
-            if (not _md_too_short_donor_idxs
-                    or _md_too_short_weight <= 0.0
-                    or _md_too_short_fraction <= 0.0):
-                # Nothing to do -- demote to OFF so the inner call is a no-op.
-                _md_too_short_on = False
-        except Exception as _md_short_exc:
-            _LOG.warning(
-                "grip_polish: M-D too-short floor setup failed (%r); disabling term",
-                _md_short_exc,
-            )
-            _md_too_short_on = False
+    _donor_angle_floor_on = False
+    _donor_angle_weight: float = 0.0
+    _donor_angle_threshold_deg: float = 0.0
+    _donor_angle_expected: Tuple[float, ...] = ()
+    try:
+        from delfin.fffree.donor_angle_polyhedron import (
+            donor_angle_polyhedron_active as _dap_active,
+            _resolve_donor_angle_polyhedron_weight as _dap_weight,
+            _resolve_donor_angle_polyhedron_threshold_deg as _dap_thresh,
+            get_expected_angles as _dap_get_expected,
+            donor_angle_polyhedron_value_and_grad as _dap_value_and_grad,
+        )
+        if _dap_active() and geom and len(donors_t) >= 2:
+            _w = _dap_weight()
+            _t = _dap_thresh()
+            _exp = _dap_get_expected(geom)
+            if _w > 0.0 and _exp:
+                _donor_angle_floor_on = True
+                _donor_angle_weight = float(_w)
+                _donor_angle_threshold_deg = float(_t)
+                _donor_angle_expected = _exp
+    except Exception as _dap_exc:
+        _LOG.warning(
+            "grip_polish: donor-angle-polyhedron setup failed (%r); disabling term",
+            _dap_exc,
+        )
+        _donor_angle_floor_on = False
+        _dap_value_and_grad = None  # type: ignore[assignment]
 
     sev_before = mogul_severity(P_init, fragments)
 
@@ -2533,22 +2525,20 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
-        # Optional one-sided M-D too-short floor (md_too_short fix).
-        # Default-OFF byte-identical with HEAD when
-        # ``DELFIN_FFFREE_MD_TOO_SHORT_FLOOR`` is unset -- the predicate
-        # short-circuits before any new arithmetic.  Composes additively
-        # with the donor-donor floor and the heavy-atom vdW-floor.
-        if _md_too_short_on:
-            L_md_short, G_md_short = _md_too_short_value_and_grad(
+        # Optional donor-angle-polyhedron floor (anti-linearisation).
+        # Default-OFF byte-identical with HEAD when the env-flag is unset --
+        # the predicate short-circuits before any new arithmetic.
+        if _donor_angle_floor_on and _dap_value_and_grad is not None:
+            L_ang, G_ang = _dap_value_and_grad(
                 R,
-                metal_idx=int(metal),
-                donor_idxs=_md_too_short_donor_idxs,
-                md_targets=_md_too_short_targets,
-                weight=_md_too_short_weight,
-                fraction=_md_too_short_fraction,
+                metal=int(metal),
+                donors=donors_t,
+                expected_angles_deg=_donor_angle_expected,
+                weight=_donor_angle_weight,
+                threshold_deg=_donor_angle_threshold_deg,
             )
-            L += float(L_md_short)
-            G = G + G_md_short
+            L += float(L_ang)
+            G = G + G_ang
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
