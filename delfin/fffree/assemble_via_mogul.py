@@ -156,6 +156,45 @@ def assemble_complex_mogul_primary(
 
     # 3) Build the CCDC-empirical bounds matrix.
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
+    # 3a) Chelate-aware polyhedron pick (2026-06-07) when the caller did
+    #     NOT pass an explicit ``geometry_key``.  The orbit enumerator
+    #     :func:`enumerate_and_embed_mogul_primary` already resolves
+    #     ``geometry_key`` chelate-aware before calling us, so this branch
+    #     fires on the single-shot path (e.g. converter_backend's fallback
+    #     when no Pólya orbit decomposition is available) and on direct
+    #     library callers.
+    #
+    #     Universal: pure geometric matching between graph-derived chelate
+    #     ring sizes and polyhedron vertex-vertex angles.  No SMILES
+    #     patterns, no per-class branches.  Default-OFF byte-identical
+    #     when ``DELFIN_FFFREE_CHELATE_AWARE_POLY_PICK=0`` or when no
+    #     chelate ligand is detected.  Author: hmaximilian.
+    effective_geometry_key: Optional[str] = geometry_key
+    if effective_geometry_key is None and mol_override is None:
+        try:
+            from delfin.fffree.chelate_aware_picker import (
+                chelate_aware_picker_enabled as _cap_on,
+                chelate_info_from_decompose as _ci_from,
+                pick_polyhedron_chelate_aware as _pick_cap,
+            )
+            from delfin.fffree import decompose as _DEC2
+            if _cap_on():
+                _d_dec = _DEC2.decompose(smiles)
+                if (_d_dec is not None
+                        and _d_dec.get("has_chelate")):
+                    _chelate_info = _ci_from(_d_dec)
+                    if _chelate_info:
+                        _picked = _pick_cap(
+                            cn=int(_d_dec.get("cn", 0) or 0),
+                            chelate_info=_chelate_info,
+                            metal_sym=str(_d_dec.get("metal", "")),
+                        )
+                        if _picked:
+                            effective_geometry_key = _picked
+        except ImportError:
+            pass
+        except Exception:
+            pass
     try:
         from delfin.fffree.mogul_bounds import build_bounds_matrix
     except ImportError:
@@ -168,7 +207,7 @@ def assemble_complex_mogul_primary(
             donor_idxs=donor_idxs,
             grip_lib=None,         # default: release-pinned grip_lib_v5/v6
             cod_lib=None,
-            geometry=geometry_key, # explicit (orbit-enum) or auto-derive
+            geometry=effective_geometry_key,
             min_n=5,
             use_automorphism=True,
         )
@@ -206,7 +245,7 @@ def assemble_complex_mogul_primary(
             metal_idx=int(metal_idx),
             donor_idxs=donor_idxs,
             donor_at_vertex=[int(d) for d in donor_at_vertex],
-            geometry_key=geometry_key,
+            geometry_key=effective_geometry_key,
             lower=lower,
             upper=upper,
         )
@@ -244,6 +283,7 @@ def assemble_complex_mogul_primary(
         upper=upper,
         P=P,
         donor_at_vertex=donor_at_vertex,
+        geometry_key=effective_geometry_key,
     )
 
     # 4c) GRIP-polish (2026-06-07): Mahalanobis L-BFGS pull against the
@@ -1273,6 +1313,38 @@ def enumerate_and_embed_mogul_primary(
         metal_idx, donor_idxs = _locate_metal_and_donors(mol)
         if metal_idx is None or not donor_idxs:
             return None
+        # Chelate-aware polyhedron pick (2026-06-07, hmaximilian).
+        # When the decomposition reports a chelate-bearing complex,
+        # override the naive ``decompose._default_geometry`` first-
+        # candidate rule with the geometry whose vertex-vertex angles
+        # best match the chelate's intrinsic bite (bite_deg derived
+        # geometrically from the chelate ring size).  Universal — pure
+        # geometric matching, no SMILES patterns, no per-class branches.
+        # Default-OFF byte-identical when
+        # ``DELFIN_FFFREE_CHELATE_AWARE_POLY_PICK=0`` (or when
+        # MOGUL_PRIMARY is off).  Only chelate cases where the picker
+        # finds a better polyhedron (e.g. AXOKAZ NNN-mer terpy → SPY-5,
+        # en-Ni → SP-4 even for non-d8 metals) see a geometry switch.
+        try:
+            from delfin.fffree.chelate_aware_picker import (
+                chelate_aware_picker_enabled as _cap_on,
+                chelate_info_from_decompose as _ci_from,
+                pick_polyhedron_chelate_aware as _pick_cap,
+            )
+            if _cap_on() and d.get("has_chelate"):
+                _chelate_info = _ci_from(d)
+                if _chelate_info:
+                    _picked = _pick_cap(
+                        cn=int(d.get("cn", 0) or 0),
+                        chelate_info=_chelate_info,
+                        metal_sym=str(d.get("metal", "")),
+                    )
+                    if _picked and _picked != geom_name:
+                        geom_name = _picked
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
     geom_polya_key = _GEOM_NAME_TO_POLYA_KEY.get(str(geom_name))
     if geom_polya_key is None:
@@ -2171,16 +2243,36 @@ def _ligand_subtree(mol, metal_idx: int, donor_idx: int) -> List[int]:
     return sorted(seen)
 
 
-def _polyhedron_for_donors(metal_sym: str, n_donors: int) -> Optional[np.ndarray]:
+def _polyhedron_for_donors(
+    metal_sym: str,
+    n_donors: int,
+    geometry_key: Optional[str] = None,
+) -> Optional[np.ndarray]:
     """Return the canonical polyhedron unit vectors for ``n_donors``.
 
     Uses the same dispatcher ``mogul_bounds`` does, so the choice agrees
     with the donor-donor bounds already populated in the matrix.
+
+    ``geometry_key`` (2026-06-07, hmaximilian) lets the caller pin the
+    polyhedron explicitly — used by the chelate-aware picker wiring so
+    the post-embed projection uses the SAME geometry the bounds matrix
+    and the orbit enumerator selected.  When unset, the legacy
+    first-candidate rule from ``geometries_for_cn[0]`` is preserved.
     """
     try:
         from delfin.fffree import polyhedra as _polyhedra
     except ImportError:
         return None
+    if geometry_key:
+        try:
+            v = _polyhedra.ref_vectors(str(geometry_key))
+            if v is not None and v.shape[0] >= n_donors:
+                vecs = np.asarray(v[:n_donors], dtype=float)
+                norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                norms = np.where(norms < 1e-9, 1.0, norms)
+                return vecs / norms
+        except Exception:
+            pass
     cands = _polyhedra.geometries_for_cn(int(n_donors), metal_sym)
     for g in cands:
         try:
@@ -2205,6 +2297,7 @@ def _project_donors_to_ccdc_geometry(
     upper: np.ndarray,
     P: np.ndarray,
     donor_at_vertex: Optional[Sequence[int]] = None,
+    geometry_key: Optional[str] = None,
 ) -> np.ndarray:
     """Rigid-body project each ligand subtree onto the CCDC ideal.
 
@@ -2245,7 +2338,8 @@ def _project_donors_to_ccdc_geometry(
         return P
 
     metal_sym = str(syms[int(metal_idx)])
-    ref_unit = _polyhedron_for_donors(metal_sym, n_d)
+    ref_unit = _polyhedron_for_donors(metal_sym, n_d,
+                                      geometry_key=geometry_key)
     if ref_unit is None:
         return P
 
