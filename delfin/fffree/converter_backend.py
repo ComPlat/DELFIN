@@ -886,6 +886,145 @@ def _g13_ring_scale_polish(syms, P, cn=None, geom=None, donors=None,
         return list(syms), np.asarray(P, dtype=float)
 
 
+# ---------------------------------------------------------------------------
+# Native-path GRIP-canonicalisation (User 2026-06-07)
+# ---------------------------------------------------------------------------
+def _native_grip_canonicalize(
+    results: List[Tuple[str, str]],
+    smiles: str,
+    max_isomers: int,
+) -> List[Tuple[str, str]]:
+    """Canonicalise native-path output so every emitted frame shares the
+    *same* atom-to-atom connectivity.
+
+    Background
+    ----------
+    The constructive native path emits one frame per (κ-mode, isomer) tuple.
+    Each tuple can have a different ligand–metal connectivity (e.g. κ¹-N vs
+    κ²-NN vs η²-arene), so the resulting multi-frame XYZ has *per-frame*
+    topology variations.  Viewers like Avogadro infer bonds from frame 0 and
+    render every subsequent frame with that single inferred connectivity,
+    which makes any topology-divergent frame look broken.
+
+    Fix
+    ---
+    When the env flag ``DELFIN_FFFREE_NATIVE_GRIP_CANONICAL=1`` is set, the
+    native result list is *replaced* by an ETKDGv3 + GRIP-polished
+    conformer ensemble of the parent SMILES.  The ensemble is produced by
+    the same helper the F2 embed-fallback uses (:func:`embed_isomers`), so
+    every frame in the resulting XYZ has *identical* atom-to-atom
+    connectivity (the RDKit-canonicalised parse of the SMILES) — Avogadro
+    can render all frames from a single inferred bond set.
+
+    Universality
+    ------------
+    The helper does **not** inspect the SMILES, ligand class, or metal
+    identity; it routes every native result through the same graph-only
+    ETKDG + GRIP pipeline.  No templates, no per-class branching, no
+    SMILES-specific shortcuts (per the long-term research mandate).
+
+    Safety contract
+    ---------------
+    * Default OFF byte-identical:  when the env flag is unset, the helper
+      returns its input unchanged.
+    * M-D invariant ±0.05 Å hard-rollback (internal self-consistency):
+      the canonical ensemble REPLACES the native build, so frame-N M-D
+      can legitimately differ from native-M-D (a Re-N donor at 2.12 Å is
+      physical, native put all donors at 2.50 Å).  The invariant we DO
+      enforce is *internal*: every frame's median donor M-D must sit
+      within 0.05 Å of frame-0's median, so the multi-frame ensemble is
+      self-consistent.  We additionally clamp the median to a plausible
+      physical range (1.5–3.5 Å) so degenerate embeds don't slip through.
+    * Embed failure rollback:  if the ETKDG embed produces no frames (or
+      raises), the helper silently returns the original native ``results``.
+    * Cap:  output ensemble is capped at ``max_isomers`` frames to match
+      the native dispatch cap.
+
+    Determinism
+    -----------
+    The underlying ETKDGv3 embed is seeded (ETKDG_SEED=42), single-threaded,
+    and uses ``useRandomCoords=False``; the GRIP polish is deterministic by
+    construction.  Two calls with the same SMILES + same env return the
+    same XYZ byte-for-byte.
+    """
+    if not results:
+        return results
+    if os.environ.get("DELFIN_FFFREE_NATIVE_GRIP_CANONICAL", "0") != "1":
+        return results
+    # Cap conformer count; the embed helper clamps to [1, 16] internally
+    # so caps above 16 are silently truncated.
+    try:
+        cap = max(1, min(int(max_isomers), 16))
+    except (TypeError, ValueError):
+        cap = 16
+    # Lazy import: _is_metal proxy for the donor-vs-non-donor split.
+    try:
+        from delfin._bond_decollapse import _is_metal
+    except Exception:
+        _is_metal = None
+    # Invoke the universal ETKDG + GRIP polish helper.  We import lazily so
+    # the converter module stays import-light when the env flag is unset.
+    try:
+        from delfin.fffree.embed_fallback import embed_isomers
+        emb = embed_isomers(smiles, max_isomers=cap, polish="grip")
+    except Exception:
+        emb = None
+    if not emb:
+        return results
+
+    def _median_md(xyz_block: str) -> Optional[float]:
+        """Median heavy-atom donor distance (atoms within 3.5 Å of the
+        metal centre).  Returns ``None`` on any parse failure."""
+        if _is_metal is None:
+            return None
+        try:
+            syms_e, P_e = _parse_xyz_block(xyz_block)
+            if syms_e is None or P_e is None or len(syms_e) == 0:
+                return None
+            metal_e = next(
+                (i for i, s in enumerate(syms_e) if _is_metal(s)), None
+            )
+            if metal_e is None:
+                return None
+            Pm_e = P_e[metal_e]
+            d_list_e = []
+            for i, s in enumerate(syms_e):
+                if i == metal_e or s == "H":
+                    continue
+                d = float(np.linalg.norm(P_e[i] - Pm_e))
+                if d <= 3.5:
+                    d_list_e.append(d)
+            if not d_list_e:
+                return None
+            return float(np.median(d_list_e))
+        except Exception:
+            return None
+
+    # Internal self-consistency invariant: every frame's median M-D must
+    # sit within 0.05 Å of frame-0's median (the multi-frame ensemble is
+    # supposed to share topology + share a coordination shell).  The
+    # absolute median must also live in a plausible 1.5–3.5 Å window so
+    # degenerate embeds don't slip through.
+    md_ref = _median_md(emb[0][0])
+    if md_ref is None or not (1.5 <= md_ref <= 3.5):
+        return results
+    for xyz_block, _label in emb:
+        md_i = _median_md(xyz_block)
+        if md_i is None or not (1.5 <= md_i <= 3.5):
+            return results
+        if abs(md_i - md_ref) > 0.05:
+            # Hard-rollback: ensemble self-consistency invariant violated.
+            return results
+    # Rewrite labels with the canonical-grip suffix so the bug-fix is
+    # auditable in the manifest / downstream forensik logs.
+    out: List[Tuple[str, str]] = []
+    for idx, (xyz_block, label) in enumerate(emb):
+        # Preserve the embed-helper's conformer index but pin our suffix so
+        # downstream tools can detect the canonicalised frames.
+        out.append((xyz_block, f"embed-conf{idx}-canonical-grip"))
+    return out
+
+
 def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
@@ -1018,6 +1157,13 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, smiles=""):
     # Binding-mode enum (User 2026-06-06): annotate / expand chelate isomers
     # by ligand binding-mode (κ¹/κ²/η^n).  Default OFF byte-identical.
     results = _binding_mode_isomer_expansion(results, d, smiles)
+    # Native-path GRIP-canonicalisation (User 2026-06-07): when env-gated,
+    # replace the per-isomer native results with an ETKDG + GRIP-polished
+    # conformer ensemble of the parent SMILES so every frame in the
+    # resulting multi-frame XYZ shares the same atom-to-atom connectivity
+    # (Avogadro renders all frames from frame-0 inferred bonds).  Default
+    # OFF byte-identical when DELFIN_FFFREE_NATIVE_GRIP_CANONICAL is unset.
+    results = _native_grip_canonicalize(results, smiles, max_isomers)
     if not results:
         _f1_backend_log(smiles, "chelate_all_configs_failed", geom_key)
     return results or None
@@ -1235,6 +1381,13 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # one per realistic binding mode.  Default OFF byte-identical to HEAD;
     # only fires under DELFIN_FFFREE_BINDING_MODE_ENUM=1 or PURE_TRACK3.
     results = _binding_mode_isomer_expansion(results, d, smiles)
+    # Native-path GRIP-canonicalisation (User 2026-06-07): when env-gated,
+    # replace the per-isomer native results with an ETKDG + GRIP-polished
+    # conformer ensemble of the parent SMILES so every frame in the
+    # resulting multi-frame XYZ shares the same atom-to-atom connectivity
+    # (Avogadro renders all frames from frame-0 inferred bonds).  Default
+    # OFF byte-identical when DELFIN_FFFREE_NATIVE_GRIP_CANONICAL is unset.
+    results = _native_grip_canonicalize(results, smiles, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return results or None
 
