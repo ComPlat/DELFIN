@@ -468,6 +468,26 @@ def _emit_orbit_ensemble(
         from delfin.fffree.polyhedron_vertex_polya import vertex_coords as _vc
     except Exception:
         return []
+    # Universal polyhedron-vertex coord-map (2026-06-07).  When the env-gate
+    # ``DELFIN_FFFREE_UNIVERSAL_POLY_EMBED=1`` is set, we override the uniform
+    # M-D scale (which uses a generic Cu-O ≈ 1.9 Å) with per-donor empirical
+    # distances and pin hapto-ring atoms onto a perpendicular circle.  ALL
+    # logic stays universal: graph-only, no per-class branches.  Default OFF
+    # = byte-identical to HEAD (the legacy uniform-scale path).
+    try:
+        from delfin.fffree.universal_polyhedron_embed import (
+            flag_active as _upe_active,
+            _scaled_vertices as _upe_scaled,
+            _is_hapto_donor as _upe_is_hapto,
+            _hapto_ring_carbon_positions as _upe_hapto_pos,
+        )
+        from delfin.fffree.polyhedra import md_distance as _md_distance
+    except Exception:
+        _upe_active = lambda: False  # noqa: E731
+        _upe_scaled = None
+        _upe_is_hapto = None
+        _upe_hapto_pos = None
+        _md_distance = None
     polyhedron = str(pvp_result["polyhedron"])
     metal_idx = int(pvp_result["metal_idx"])
     donor_atoms = [int(x) for x in pvp_result["donor_atoms"]]
@@ -482,6 +502,27 @@ def _emit_orbit_ensemble(
     V = _vc(polyhedron, metal=metal_sym)
     if V is None or len(V) < len(donor_atoms):
         return []
+    # Universal mode: replace the uniform-scale V with per-donor scaled
+    # vertices.  Each donor's vertex is its unit-vector × md_distance(metal,
+    # donor_elem).  This is the CCDC-empirical covalent-radius-sum distance,
+    # same source-of-truth the rigid-fit path uses — no class-specific lookup.
+    _universal_on = False
+    V_scaled_universal = None
+    if _upe_active() and _md_distance is not None and _upe_scaled is not None:
+        try:
+            _donor_elems_for_md = [
+                str(mol.GetAtomWithIdx(int(d)).GetSymbol())
+                for d in donor_atoms
+            ]
+            _per_donor_md = [
+                float(_md_distance(metal_sym, e)) for e in _donor_elems_for_md
+            ]
+            _V_universal = _upe_scaled(polyhedron, metal_sym, _per_donor_md)
+            if _V_universal is not None and len(_V_universal) >= len(donor_atoms):
+                V_scaled_universal = np.asarray(_V_universal, dtype=float)
+                _universal_on = True
+        except Exception:
+            _universal_on = False
 
     out_all: List[Tuple[str, str]] = []
     # The orbit label is its index in the canonical (lex-sorted) orbit list,
@@ -516,14 +557,39 @@ def _emit_orbit_ensemble(
         if not ok:
             continue
         # Build the coordMap (metal at origin + each donor at its assigned
-        # vertex coordinate).
+        # vertex coordinate).  Under the universal env-gate, the vertex array
+        # is per-donor M-D scaled and hapto-ring atoms get pinned onto a
+        # perpendicular circle (single universal formula, no class lookup).
         try:
             cmap = {int(metal_idx): Point3D(0.0, 0.0, 0.0)}
+            _V_use = V_scaled_universal if _universal_on else V
+            _metal_pos = np.array([0.0, 0.0, 0.0], dtype=float)
             for d_slot, v_idx in donor_to_vertex.items():
-                p = V[int(v_idx)]
-                cmap[int(donor_atoms[d_slot])] = Point3D(
+                p = _V_use[int(v_idx)]
+                d_atom_idx = int(donor_atoms[d_slot])
+                cmap[d_atom_idx] = Point3D(
                     float(p[0]), float(p[1]), float(p[2])
                 )
+                # Universal hapto-ring placement: same code path for ANY
+                # η^n donor; no per-class branching.
+                if _universal_on and _upe_is_hapto is not None and _upe_hapto_pos is not None:
+                    try:
+                        _is_h, _ring_atoms = _upe_is_hapto(mol, d_atom_idx)
+                    except Exception:
+                        _is_h, _ring_atoms = False, []
+                    if _is_h and len(_ring_atoms) >= 2:
+                        try:
+                            _ring_xyz = _upe_hapto_pos(
+                                np.asarray(p, dtype=float),
+                                _metal_pos,
+                                len(_ring_atoms),
+                            )
+                            for _ra, _rp in zip(_ring_atoms, _ring_xyz):
+                                cmap[int(_ra)] = Point3D(
+                                    float(_rp[0]), float(_rp[1]), float(_rp[2]),
+                                )
+                        except Exception:
+                            pass
         except Exception:
             continue
         # Per-orbit ETKDGv3 parameter block.  Donor + metal positions are
