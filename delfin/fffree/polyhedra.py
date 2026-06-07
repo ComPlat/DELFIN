@@ -202,6 +202,28 @@ def geometries_for_cn(cn: int, metal: str = "") -> list:
                     base.append(g)
         except ImportError:
             pass
+    # Main-group LP-aware extension (2026-06-07, hmaximilian).  When the
+    # metal carries a stereo-active lone pair (Sn²⁺ / Pb²⁺ / Sb³⁺ / Bi³⁺ /
+    # In⁺ / Tl⁺ / Ge²⁺ / As³⁺ / Po⁴⁺) AND the observed CN is in the
+    # LP-aware table (CN 1-5), inject the dedicated LP-aware polyhedra
+    # (LP1-1 / LP2-2 / LP3-3 / LP4-4 / LP5-5) as additional candidates.
+    # Default ON under MOGUL_PRIMARY=1 (auto), default OFF otherwise.  The
+    # ox state is not known at this point (the caller may not have parsed
+    # SMILES yet), so we use the conservative single-LP-active rule from
+    # ``main_group_polyhedron.main_group_polyhedron_for`` with
+    # ``oxidation_state=None`` — which fires only when the metal has a
+    # unique LP-active ox state (all entries currently do).
+    try:
+        from delfin.fffree import main_group_polyhedron as _MGP
+        if metal and _MGP.main_group_lp_enabled():
+            _mg_geom = _MGP.main_group_polyhedron_for(metal, cn, None)
+            if _mg_geom and _mg_geom not in base:
+                # Prepend so the LP-aware polyhedron is the first candidate
+                # for affected (metal, CN) pairs — that's how the
+                # ``geometries_for_cn[0]`` first-candidate rule selects it.
+                base.insert(0, _mg_geom)
+    except ImportError:
+        pass
     # CN10 non-f-block extension (Mission A2): inject 3 polyhedra here when
     # metal is non-f-block (or unknown).  F-block CN10 keeps its own dispatch
     # below, gated by the independent FBLOCK_CN8_12 flag.
@@ -249,6 +271,18 @@ def ref_vectors(geometry: str) -> np.ndarray:
     for (cn, shape), v in REFS.items():
         if shape == geometry:
             return v
+    # Main-group LP-aware dispatch (2026-06-07, hmaximilian).  Read-only
+    # name lookup — callers only reach these LP-aware geometries when
+    # ``geometries_for_cn`` has prepended them under MAIN_GROUP_LP=1 (or
+    # MOGUL_PRIMARY=1).  Returns the donor-only sub-set of the parent
+    # polyhedron with the LP vertex removed (so the caller still places
+    # exactly ``observed_cn`` donors).
+    try:
+        from delfin.fffree import main_group_polyhedron as _MGP
+        if _MGP.is_main_group_lp_geometry(geometry):
+            return _MGP.effective_ref_vectors_main_group(geometry)
+    except (KeyError, ImportError):
+        pass
     # Mission A2 (2026-06-05): non-f-block CN10 polyhedra dispatch.  Read-only
     # name lookup — callers only reach these geometries when env-gated.
     if geometry in CN10_VERTICES:

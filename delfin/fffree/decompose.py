@@ -53,6 +53,20 @@ def _default_geometry(metal: str, cn: int) -> Optional[str]:
                     return g
         except ImportError:
             pass
+    # Main-group LP-aware dispatch (2026-06-07, hmaximilian).  When the
+    # metal carries a stereo-active lone pair (Sn²⁺, Pb²⁺, Sb³⁺, Bi³⁺,
+    # In⁺, Tl⁺, Ge²⁺, As³⁺, Po⁴⁺) AND the observed CN is in the LP-aware
+    # table (CN 1-5), the LP-aware polyhedron replaces the legacy choice.
+    # Default ON under DELFIN_FFFREE_MAIN_GROUP_LP=1 (auto-on under
+    # MOGUL_PRIMARY=1); byte-identical to legacy when unset.
+    try:
+        from delfin.fffree import main_group_polyhedron as _MGP
+        if _MGP.main_group_lp_enabled():
+            _mg = _MGP.main_group_polyhedron_for(metal, cn, None)
+            if _mg is not None:
+                return _mg
+    except ImportError:
+        pass
     if cn == 2:
         # Phase G: linear coordination (Cu(I), Ag(I), Au(I), Hg(II)).
         # Simple D∞h: 2 donors 180° apart on metal axis.
