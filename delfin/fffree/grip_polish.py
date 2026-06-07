@@ -2103,6 +2103,51 @@ def grip_polish(
             )
             _vdw_floor_on = False
 
+    # ------------------------------------------------------------------
+    # 3c. Donor-angle polyhedron floor (2026-06-07).
+    #
+    # Auto-diagnostic finding: 13.4 % of V3 voll-pool files showed the
+    # ``metal_axis_linearisation`` anomaly -- 3-4 donors on a Pd(SP-4) or
+    # Pt(SP-4) centre drifting toward 180 deg instead of 90/180.  The
+    # mogul severity loss only sees bonded fragments, so donor-M-donor
+    # angles are never penalised.  This term adds a smooth quadratic
+    # penalty on |theta_donor_M_donor - theta_nearest_template| once the
+    # deviation exceeds a threshold (15 deg by default).
+    #
+    # Env-gated default OFF byte-identical with HEAD when unset.  ON
+    # path: pre-resolve the expected-angle list ONCE (memoised per
+    # geometry string).  The L-BFGS inner loop then pays only an
+    # O(n_donors^2) angle evaluation.
+    # ------------------------------------------------------------------
+    _donor_angle_floor_on = False
+    _donor_angle_weight: float = 0.0
+    _donor_angle_threshold_deg: float = 0.0
+    _donor_angle_expected: Tuple[float, ...] = ()
+    try:
+        from delfin.fffree.donor_angle_polyhedron import (
+            donor_angle_polyhedron_active as _dap_active,
+            _resolve_donor_angle_polyhedron_weight as _dap_weight,
+            _resolve_donor_angle_polyhedron_threshold_deg as _dap_thresh,
+            get_expected_angles as _dap_get_expected,
+            donor_angle_polyhedron_value_and_grad as _dap_value_and_grad,
+        )
+        if _dap_active() and geom and len(donors_t) >= 2:
+            _w = _dap_weight()
+            _t = _dap_thresh()
+            _exp = _dap_get_expected(geom)
+            if _w > 0.0 and _exp:
+                _donor_angle_floor_on = True
+                _donor_angle_weight = float(_w)
+                _donor_angle_threshold_deg = float(_t)
+                _donor_angle_expected = _exp
+    except Exception as _dap_exc:
+        _LOG.warning(
+            "grip_polish: donor-angle-polyhedron setup failed (%r); disabling term",
+            _dap_exc,
+        )
+        _donor_angle_floor_on = False
+        _dap_value_and_grad = None  # type: ignore[assignment]
+
     sev_before = mogul_severity(P_init, fragments)
 
     # ------------------------------------------------------------------
@@ -2196,6 +2241,20 @@ def grip_polish(
                 )
             L += float(L_vdw)
             G = G + G_vdw
+        # Optional donor-angle-polyhedron floor (anti-linearisation).
+        # Default-OFF byte-identical with HEAD when the env-flag is unset --
+        # the predicate short-circuits before any new arithmetic.
+        if _donor_angle_floor_on and _dap_value_and_grad is not None:
+            L_ang, G_ang = _dap_value_and_grad(
+                R,
+                metal=int(metal),
+                donors=donors_t,
+                expected_angles_deg=_donor_angle_expected,
+                weight=_donor_angle_weight,
+                threshold_deg=_donor_angle_threshold_deg,
+            )
+            L += float(L_ang)
+            G = G + G_ang
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
