@@ -303,6 +303,16 @@ def assemble_complex_mogul_primary(
     #     assemble_complex GRIP wiring -- any unexpected drift rolls
     #     back to the pre-polish P silently.
     if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY_GRIP", "1") == "1":
+        # Multi-step polish (2026-06-07, validator-tuning).  Default ON
+        # when MOGUL_PRIMARY_GRIP is active so the polish actually applies
+        # its 99.3-99.6% severity reductions (the legacy single-shot path
+        # rolls back on spurious sp2-pseudo-stereocenter sign flips and on
+        # late-iteration topology overstretch).  Explicit env-flag wins.
+        _ms_raw = os.environ.get(
+            "DELFIN_FFFREE_GRIP_POLISH_MULTISTEP", ""
+        ).strip().lower()
+        if not _ms_raw:
+            os.environ["DELFIN_FFFREE_GRIP_POLISH_MULTISTEP"] = "1"
         try:
             from delfin.fffree.grip_polish import grip_polish
             from delfin.fffree.grip_mogul_lookup import GripLibrary
