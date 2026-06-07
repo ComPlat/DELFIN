@@ -29,6 +29,13 @@ Env-gate
     Default OFF for backwards / byte-identical behaviour with HEAD.  When
     ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set the gate is auto-ON unless the
     user explicitly disables it (``=0``).
+``DELFIN_FFFREE_M_SHELL_CLASSIFY``
+    Default ON when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set.  When ON,
+    geometric m-shell overfills are routed through the lone-pair +
+    bite-compatibility classifier before being rejected: extras that look
+    like emergent κⁿ donors (chelate extension, hemilabile arm closing)
+    are kept; only spurious drift extras (sp3-C backbone in shell,
+    far-out atoms) trigger ``m_shell_overfill``.
 
 Universality
 ------------
@@ -390,15 +397,47 @@ def rotation_preserves_topology(
     #    exceeds its expected CN.  expected_cn[i] == -1 means "unknown"
     #    (non-metal or graph unavailable) and skips the check for that
     #    metal -- defensive against missing input.
+    #
+    #    When the m-shell-classifier (DELFIN_FFFREE_M_SHELL_CLASSIFY) is
+    #    on, an overfill is only fatal when at least one of the extras
+    #    is "spurious" (no lone pair OR outside any chelate bite envelope
+    #    on its ligand fragment).  Extras that are all valid alternatives
+    #    are accepted as emergent κⁿ states (chelate extension, hemilabile
+    #    arm closing, agostic α/β CH) — this is real chemistry the SMILES
+    #    under-described.
     # ------------------------------------------------------------------
+    # Lazy import to avoid a hard module-level dependency cycle.
+    classify_extras = None
+    try:
+        from delfin.fffree.m_shell_classify import (
+            _env_on as _classify_env_on,
+            classify_m_shell_extras as _classify_m_shell_extras,
+            designated_donors_for_metal as _designated_donors_for_metal,
+        )
+        if _classify_env_on():
+            classify_extras = _classify_m_shell_extras
+    except Exception:
+        classify_extras = None
+
     for i in range(n):
         if not _is_metal(syms_l[i]):
             continue
         exp = int(expected_cn[i]) if expected_cn is not None else -1
         if exp < 0:
             continue
-        if metal_shell_counts[i] > exp:
+        if metal_shell_counts[i] <= exp:
+            continue
+        # Geometric overfill — classify before rejecting.
+        if classify_extras is None or mol is None:
             return (False, "m_shell_overfill") if return_reason else False
+        try:
+            dds = _designated_donors_for_metal(mol, int(i))
+            cls = classify_extras(syms_l, P, int(i), dds, mol=mol)
+        except Exception:
+            return (False, "m_shell_overfill") if return_reason else False
+        if cls.get("spurious"):
+            return (False, "m_shell_overfill") if return_reason else False
+        # All extras are valid κⁿ-emergence candidates -> keep.
 
     return (True, "ok") if return_reason else True
 
