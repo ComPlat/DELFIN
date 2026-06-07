@@ -83,6 +83,23 @@ def binding_mode_strict_enabled() -> bool:
     )
 
 
+def alkyl_donor_strict_enabled() -> bool:
+    """Live-evaluated env-gate for the universal alkyl-carbon-donor rule.
+
+    When ON, the donor-candidate list is filtered to exclude atoms that are
+    terminal substituents of a heavier branching atom (the OCANIT-class fix:
+    F atoms of CF3 are NOT separate donors; the central carbanion C is the
+    real σ-C donor).  Universal graph-only predicate — applies to ANY
+    substituent-of-donor pattern, not just CF3.
+
+    Default OFF = byte-identical output.
+    """
+    return (
+        os.environ.get("DELFIN_FFFREE_PURE_TRACK3", "0") == "1"
+        or os.environ.get("DELFIN_FFFREE_ALKYL_DONOR_STRICT", "0") == "1"
+    )
+
+
 # ===== chemistry tables ===================================================
 DONOR_ELEMENTS = {"N", "O", "P", "S", "F", "Cl", "Br", "I", "Se", "As", "C"}
 # Note: C donors only count when part of a carbanion / NHC / hapto-π fragment;
@@ -221,13 +238,142 @@ HAPTO_PI_FRAGMENTS: Dict[str, List[Dict]] = {
 
 
 # ===== helpers ============================================================
+def _heavy_degree(atom) -> int:
+    """Count non-hydrogen neighbours of `atom`."""
+    return sum(1 for n in atom.GetNeighbors() if n.GetAtomicNum() != 1)
+
+
+def _is_carbon_sigma_donor_candidate(atom) -> bool:
+    """Universal test for a C atom that can σ-bond a metal.
+
+    Conditions (graph-only, no SMARTS, no element-table):
+      * symbol is C
+      * has open valence (totalValence < 4) OR formal charge < 0
+      * not part of an aromatic ring (those are handled by hapto-π)
+
+    Covers carbanions (CF3⁻, CCl3⁻), NHC carbenes (open valence on sp²-C),
+    alkyl carbanions, sp³ R3C-M attachment points.  Excludes aromatic ring
+    carbons (the η-mode machinery handles those).
+    """
+    if atom.GetSymbol() != "C":
+        return False
+    if atom.GetIsAromatic():
+        return False
+    open_valence = atom.GetTotalValence() < 4
+    anionic = atom.GetFormalCharge() < 0
+    return open_valence or anionic
+
+
+def _is_substituent_not_donor(atom_idx: int, mol,
+                              metal_idx: Optional[int] = None,
+                              donor_set: Optional[Set[int]] = None) -> bool:
+    """Universal graph predicate: ``atom_idx`` is a substituent of a donor /
+    metal-bound atom (and therefore NOT itself a separate donor).
+
+    Two evaluation modes:
+
+    (A) Metal-aware (``metal_idx`` given): if `atom_idx` is directly bonded to
+        the metal, it IS a donor → return False.  Otherwise, if a heavy
+        neighbour Y of ``atom_idx`` is itself bonded to the metal, then
+        ``atom_idx`` is a substituent of the M-bound atom → return True.
+
+    (B) Ligand-only (no metal in the graph): use a graph heuristic — an atom X
+        is a substituent of Y when X is a heavy-terminal of Y (only one heavy
+        neighbour Y) AND Y is a *branching* heavy atom (heavy-degree ≥ 2).  In
+        the OCANIT CF3 case: each F has one heavy neighbour (the central C)
+        and that C has heavy-degree 3 → F is a substituent, not a donor.
+        For an OMe ligand the O has one heavy neighbour C which has
+        heavy-degree 1 (just bonded to O) — the predicate does NOT fire, so
+        the O remains a donor.
+
+    When ``donor_set`` is provided, the predicate additionally requires that
+    the branching neighbour Y is itself a donor candidate (carbanion C, NHC,
+    O/N/P/S with lone pair).  This is the strictest, most-universal form and
+    matches the spec text "neighbour Y is closer to metal (bonded to M)".
+
+    Universal: no element-specific table, no SMILES, no SMARTS.
+    """
+    try:
+        atom = mol.GetAtomWithIdx(atom_idx)
+    except Exception:
+        return False
+
+    if metal_idx is not None:
+        # (A) Metal-aware path.
+        for n in atom.GetNeighbors():
+            if n.GetIdx() == metal_idx:
+                # Directly bonded to metal → genuine donor.
+                return False
+        for n in atom.GetNeighbors():
+            if n.GetAtomicNum() == 1:
+                continue
+            for n2 in n.GetNeighbors():
+                if n2.GetIdx() == metal_idx:
+                    # Substituent of an M-bound atom.
+                    return True
+        return False
+
+    # (B) Ligand-only path.
+    heavy_neighbours = [n for n in atom.GetNeighbors() if n.GetAtomicNum() != 1]
+    if len(heavy_neighbours) != 1:
+        return False
+    y = heavy_neighbours[0]
+    # Only fire when Y is a branching heavy atom (substituent of a real
+    # connection-point atom).  Y must have heavy-degree ≥ 2 so that it is
+    # *itself* a multi-substituent atom (e.g. central C of CF3 with 3 heavy
+    # neighbours).
+    if _heavy_degree(y) < 2:
+        return False
+    # If a candidate donor_set is given, additionally require that Y is a
+    # plausible donor (carbanion / NHC C, or one of the standard donor
+    # heteroatoms).  This makes the predicate conservative: we only filter
+    # X away if Y is itself donor-capable.
+    if donor_set is not None and y.GetIdx() not in donor_set:
+        return False
+    return True
+
+
 def _donor_atoms(mol) -> List[int]:
-    out = []
+    """Donor-candidate atom indices.
+
+    Default branch keeps the legacy hetero-donor list (byte-identical).
+    Under ``DELFIN_FFFREE_ALKYL_DONOR_STRICT=1`` (or PURE_TRACK3) the list
+    additionally:
+      * INCLUDES universal carbanion / NHC C atoms (the σ-C donor that has
+        been missing from the OCANIT-class CF3 case),
+      * EXCLUDES atoms that are terminal substituents of a heavier branching
+        donor (the F atoms of CF3 / CHF2 / CCl3 ... no longer enumerated as
+        spurious κ²-FF / κ³-FFF multi-fluoride donors).
+    """
+    strict = alkyl_donor_strict_enabled()
+
+    # Step 1: classical hetero-donor list (degree<4, FC<=0, lone-pair element).
+    base: List[int] = []
     for a in mol.GetAtoms():
         if a.GetSymbol() in DONOR_ELEMENTS - {"C"} and \
                 a.GetFormalCharge() <= 0 and a.GetDegree() < 4:
-            out.append(a.GetIdx())
-    return out
+            base.append(a.GetIdx())
+
+    if not strict:
+        return base
+
+    # Step 2: add carbon σ-donor candidates (universal: open valence / anion).
+    c_donors: List[int] = []
+    for a in mol.GetAtoms():
+        if _is_carbon_sigma_donor_candidate(a):
+            c_donors.append(a.GetIdx())
+
+    # Compose the candidate set that will be used by the substituent filter.
+    candidate_set: Set[int] = set(base) | set(c_donors)
+
+    # Step 3: filter substituent atoms (F's of CF3, halides of CCl3, …).
+    filtered: List[int] = []
+    for idx in sorted(candidate_set):
+        if _is_substituent_not_donor(idx, mol, metal_idx=None,
+                                     donor_set=candidate_set):
+            continue
+        filtered.append(idx)
+    return filtered
 
 
 def _ring_size(mol, i: int, j: int) -> int:
