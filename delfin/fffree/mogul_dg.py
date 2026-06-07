@@ -47,6 +47,10 @@ Public env flags (default unset = OFF, byte-identical to current pipeline)
 ``DELFIN_FFFREE_MOGUL_DG_SEED``                determinism seed (default 42)
 ``DELFIN_FFFREE_MOGUL_DG_N_RESTARTS``          multi-restart count (default 3)
 ``DELFIN_FFFREE_MOGUL_DG_MD_DRIFT_TOL``        M-D drift guard Å (default 0.5)
+``DELFIN_FFFREE_MOGUL_DG_DONOR_SHELL_VERIFY``  enable first-shell integrity verification
+``DELFIN_FFFREE_MOGUL_DG_REJECT_H_FIRST_SHELL`` push spurious first-shell H atoms outward
+``DELFIN_FFFREE_MOGUL_DG_DONOR_REPAIR_RETRIES`` repair retries for missing donors (default 3)
+``DELFIN_FFFREE_MOGUL_DG_MD_TOL``              Å tolerance vs ideal M-D target (default 0.4)
 
 All env flags are read on every call (no module-level caching) so the
 tests can flip them dynamically without import-side side effects.
@@ -87,6 +91,7 @@ __all__ = [
     "is_active",
     "should_replace_etkdg",
     "should_replace_rigid",
+    "verify_donor_shell_integrity",
     "DEFAULT_MD_DRIFT_TOL",
 ]
 
@@ -411,6 +416,245 @@ def _md_drift_acceptable(
 
 
 # ---------------------------------------------------------------------------
+# Donor-shell integrity helpers (Task: TUMQAT Cl-drift / spurious-H first-shell)
+# ---------------------------------------------------------------------------
+# First-shell physical window (Å).  These are universal lower/upper guards
+# only — the per-donor μ from the bounds matrix supplies the precise target.
+_MD_SHELL_LOWER_A = 1.6
+_MD_SHELL_UPPER_A = 2.6
+
+
+def _md_target_from_bounds(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    metal_idx: int,
+    donor_idx: int,
+) -> Optional[float]:
+    """Return the empirical M-D midpoint encoded by the bounds matrix.
+
+    Returns ``None`` if the bounds entry is unbounded (sentinel ≥ 5e5).
+    """
+    lo = float(lower[int(metal_idx), int(donor_idx)])
+    hi = float(upper[int(metal_idx), int(donor_idx)])
+    if hi >= 5e5:
+        return None
+    return 0.5 * (lo + hi)
+
+
+def verify_donor_shell_integrity(
+    P: np.ndarray,
+    syms: Sequence[str],
+    metal_idx: int,
+    declared_donors: Sequence[int],
+    md_targets: Optional[Dict[int, float]] = None,
+    md_tol: float = 0.4,
+    shell_lower: float = _MD_SHELL_LOWER_A,
+    shell_upper: float = _MD_SHELL_UPPER_A,
+) -> Tuple[bool, List[str]]:
+    """Verify post-embed first-shell integrity for declared donors.
+
+    Universal (geometry + graph only — no SMILES patterns).  Checks:
+
+    1.  Every declared donor sits in the physical M-D window
+        ``[shell_lower, shell_upper]`` Å.
+    2.  For each declared donor with an empirical μ in ``md_targets``, the
+        actual M-D distance is within ``md_tol`` of μ.
+    3.  No spurious H atom (not declared as a donor) is in the first shell
+        — defined as closer to the metal than the worst declared heavy
+        donor (or ``shell_upper`` Å when no declared donor exists).
+    4.  Realised CN equals the declared donor count when only the
+        physical shell window is considered.
+
+    Returns ``(is_intact, violations)`` where ``violations`` is a list of
+    human-readable strings (empty when intact).
+    """
+    violations: List[str] = []
+    P_arr = np.asarray(P, dtype=np.float64)
+    m = int(metal_idx)
+    declared = sorted(set(int(d) for d in declared_donors if int(d) != m))
+    if not declared:
+        return True, []
+
+    # 1 + 2: declared donor windows
+    worst_md = float(shell_upper)
+    for d in declared:
+        dist = float(np.linalg.norm(P_arr[m] - P_arr[d]))
+        if not (shell_lower <= dist <= shell_upper):
+            violations.append(
+                f"declared donor idx={d} sym={syms[d]} out of shell window: "
+                f"d(M-D)={dist:.3f} Å not in [{shell_lower:.2f}, {shell_upper:.2f}]"
+            )
+        worst_md = max(worst_md, dist)
+        if md_targets and d in md_targets and md_targets[d] is not None:
+            mu = float(md_targets[d])
+            if abs(dist - mu) > md_tol:
+                violations.append(
+                    f"declared donor idx={d} sym={syms[d]} far from target: "
+                    f"d(M-D)={dist:.3f} Å, μ={mu:.3f} Å, |Δ|>{md_tol:.2f}"
+                )
+
+    # 3: spurious H atoms in first shell
+    declared_set = set(declared)
+    # Define "first shell" geometrically: closer than max(worst_md, shell_upper).
+    shell_cut = max(worst_md, float(shell_upper))
+    for i, s in enumerate(syms):
+        if i == m or i in declared_set:
+            continue
+        if str(s).strip() != "H":
+            continue
+        dist = float(np.linalg.norm(P_arr[m] - P_arr[i]))
+        if dist <= shell_cut:
+            violations.append(
+                f"spurious H idx={i} in first shell at d={dist:.3f} Å "
+                f"(shell_cut={shell_cut:.3f} Å)"
+            )
+
+    # 4: realised CN matches declared count
+    heavy_in_shell = sum(
+        1
+        for i, s in enumerate(syms)
+        if i != m
+        and str(s).strip() != "H"
+        and float(np.linalg.norm(P_arr[m] - P_arr[i])) <= shell_upper
+    )
+    if heavy_in_shell != len(declared):
+        violations.append(
+            f"realised heavy CN={heavy_in_shell} != declared donor count="
+            f"{len(declared)}"
+        )
+
+    return (len(violations) == 0), violations
+
+
+def _bonded_heavy_parent(
+    mol,
+    h_idx: int,
+    metal_idx: int,
+) -> Optional[int]:
+    """Return the bonded heavy parent atom index of an H, or None.
+
+    Universal — uses the molecular graph only.  Excludes the metal even
+    if the H is bonded to it (which would be unusual).
+    """
+    try:
+        atom = mol.GetAtomWithIdx(int(h_idx))
+    except Exception:
+        return None
+    for nb in atom.GetNeighbors():
+        nbi = int(nb.GetIdx())
+        if nbi == int(metal_idx):
+            continue
+        if str(nb.GetSymbol()).strip() == "H":
+            continue
+        return nbi
+    return None
+
+
+def _push_h_out_of_first_shell(
+    P: np.ndarray,
+    syms: Sequence[str],
+    mol,
+    metal_idx: int,
+    declared_donors: Sequence[int],
+    shell_upper: float = _MD_SHELL_UPPER_A,
+    ch_length: float = 1.09,
+) -> Tuple[np.ndarray, int]:
+    """Repair spurious first-shell H atoms by moving them to their parent's C-H sphere.
+
+    For every H atom that (a) is not a declared donor and (b) sits inside
+    the first shell, relocate it to ``P[parent] + ch_length * dir(parent → H_original)``,
+    a deterministic graph-only operation.  H atoms with no heavy parent
+    are pushed radially outward to ``2 * shell_upper`` Å along the
+    current ``metal → H`` direction.
+
+    Returns ``(P_repaired, n_pushed)``.
+    """
+    P_new = np.asarray(P, dtype=np.float64).copy()
+    m = int(metal_idx)
+    declared_set = set(int(d) for d in declared_donors if int(d) != m)
+    metal_pos = P_new[m]
+    n_pushed = 0
+    # Deterministic iteration order (sorted indices).
+    for i in sorted(range(len(syms))):
+        if i == m or i in declared_set:
+            continue
+        if str(syms[i]).strip() != "H":
+            continue
+        dist = float(np.linalg.norm(P_new[i] - metal_pos))
+        if dist > float(shell_upper):
+            continue
+        parent = _bonded_heavy_parent(mol, i, m) if mol is not None else None
+        if parent is not None:
+            parent_pos = P_new[parent]
+            # Direction priority:
+            #   (1) current parent → H vector if it already points AWAY from
+            #       the metal (cos(parent→H, parent→metal) < 0).
+            #   (2) otherwise, the parent → away-from-metal direction
+            #       (reflect H to the far side of the parent).
+            #   (3) fallback unit vector when the parent sits on the metal.
+            ph_vec = P_new[i] - parent_pos
+            ph_norm = float(np.linalg.norm(ph_vec))
+            pm_vec = metal_pos - parent_pos
+            pm_norm = float(np.linalg.norm(pm_vec))
+            direction: Optional[np.ndarray] = None
+            if ph_norm > 1e-6 and pm_norm > 1e-6:
+                cos_pm = float(np.dot(ph_vec, pm_vec) / (ph_norm * pm_norm))
+                if cos_pm < 0.0:
+                    direction = ph_vec / ph_norm
+            if direction is None:
+                if pm_norm > 1e-6:
+                    # away-from-metal direction
+                    direction = -pm_vec / pm_norm
+                elif ph_norm > 1e-6:
+                    direction = ph_vec / ph_norm
+                else:
+                    direction = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            P_new[i] = parent_pos + float(ch_length) * direction
+        else:
+            # No parent — radial push outward.
+            d_vec = P_new[i] - metal_pos
+            d_norm = float(np.linalg.norm(d_vec))
+            if d_norm > 1e-6:
+                direction = d_vec / d_norm
+            else:
+                direction = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+            P_new[i] = metal_pos + 2.0 * float(shell_upper) * direction
+        n_pushed += 1
+    return P_new, n_pushed
+
+
+def _tighten_bounds_for_missing_donor(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    metal_idx: int,
+    donor_idx: int,
+    half_width_factor: float = 0.5,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Halve the M-D bounds half-width around its current midpoint.
+
+    Tightens the M-D window for one donor that drifted out of the first
+    shell.  Returns NEW arrays (does not mutate inputs).  When the
+    current bound is unbounded (sentinel ≥ 5e5) the bounds are returned
+    unchanged.
+    """
+    lo = float(lower[int(metal_idx), int(donor_idx)])
+    hi = float(upper[int(metal_idx), int(donor_idx)])
+    if hi >= 5e5 or hi <= lo:
+        return lower, upper
+    mu = 0.5 * (lo + hi)
+    half = max(0.01, 0.5 * (hi - lo) * float(half_width_factor))
+    new_lo = mu - half
+    new_hi = mu + half
+    L = lower.copy()
+    U = upper.copy()
+    L[int(metal_idx), int(donor_idx)] = new_lo
+    L[int(donor_idx), int(metal_idx)] = new_lo
+    U[int(metal_idx), int(donor_idx)] = new_hi
+    U[int(donor_idx), int(metal_idx)] = new_hi
+    return L, U
+
+
+# ---------------------------------------------------------------------------
 # Public driver — from already-assembled topology
 # ---------------------------------------------------------------------------
 def mogul_embed_from_assembled(
@@ -513,27 +757,133 @@ def mogul_embed_from_assembled(
             "DELFIN_FFFREE_MOGUL_DG_MD_DRIFT_TOL", DEFAULT_MD_DRIFT_TOL,
         )
 
-        # Run the projected L-BFGS solver
-        P_solved, solver_info = solve_dg(
-            P_init_arr,
-            lower,
-            upper,
-            severity_fn,
-            max_iter=int(_max_iter),
-            tol=float(tol),
-            n_restarts=int(_n_restarts),
-            seed=int(_seed),
-            md_pairs=md_pairs_list,
-            frozen_indices=frozen_indices,
-            md_drift_tol=float(_md_drift_tol),
+        # Donor-shell integrity / repair env flags (default-OFF byte-identical).
+        _verify_on = _env_truthy("DELFIN_FFFREE_MOGUL_DG_DONOR_SHELL_VERIFY")
+        _reject_h_on = _env_truthy("DELFIN_FFFREE_MOGUL_DG_REJECT_H_FIRST_SHELL")
+        _repair_retries = _env_int(
+            "DELFIN_FFFREE_MOGUL_DG_DONOR_REPAIR_RETRIES", 3,
         )
+        _md_tol_a = _env_float("DELFIN_FFFREE_MOGUL_DG_MD_TOL", 0.4)
+        # Pre-compute per-donor empirical μ targets from the bounds matrix
+        # (single source of truth — Phase A already encoded the (μ, σ) here).
+        declared_donor_list = [
+            int(d) for d in donor_idxs if int(d) != int(metal_idx)
+        ]
+        md_target_map: Dict[int, float] = {}
+        for d in declared_donor_list:
+            mu = _md_target_from_bounds(lower, upper, int(metal_idx), d)
+            if mu is not None:
+                md_target_map[d] = float(mu)
 
-        # Validate
-        if solver_info.get("failed", False):
-            return None
-        if not np.all(np.isfinite(P_solved)):
-            return None
-        if P_solved.shape != P_init_arr.shape:
+        # Repair loop — solver + verify + tighten bounds.  When verification
+        # is disabled the loop runs exactly once (preserving byte-identical
+        # default-OFF behaviour).
+        max_attempts = max(1, int(_repair_retries) + 1) if _verify_on else 1
+        L_cur = lower
+        U_cur = upper
+        P_solved: Optional[np.ndarray] = None
+        solver_info: Dict[str, Any] = {}
+        repair_history: List[Dict[str, Any]] = []
+        for attempt in range(max_attempts):
+            # Re-derive the severity callable when bounds were tightened so
+            # the priors stay in sync.  First attempt uses the originals.
+            if attempt == 0:
+                _sev_fn = severity_fn
+            else:
+                _priors_iter = _collect_priors(
+                    list(syms), mol, int(metal_idx), list(donor_idxs),
+                    grip_lib, cod_lib, L_cur, U_cur,
+                )
+                _sev_fn = _build_severity_callable(_priors_iter)
+
+            P_solved, solver_info = solve_dg(
+                P_init_arr,
+                L_cur,
+                U_cur,
+                _sev_fn,
+                max_iter=int(_max_iter),
+                tol=float(tol),
+                n_restarts=int(_n_restarts),
+                seed=int(_seed),
+                md_pairs=md_pairs_list,
+                frozen_indices=frozen_indices,
+                md_drift_tol=float(_md_drift_tol),
+            )
+
+            # Validate basic solver outcome
+            if solver_info.get("failed", False):
+                return None
+            if not np.all(np.isfinite(P_solved)):
+                return None
+            if P_solved.shape != P_init_arr.shape:
+                return None
+
+            if not _verify_on:
+                break  # legacy single-pass behaviour
+
+            ok, violations = verify_donor_shell_integrity(
+                P_solved, list(syms), int(metal_idx),
+                declared_donor_list,
+                md_targets=md_target_map,
+                md_tol=float(_md_tol_a),
+            )
+            repair_history.append(
+                {"attempt": attempt, "ok": ok, "violations": list(violations)}
+            )
+            if ok:
+                break
+
+            # Identify donors that drifted out of the physical window (or far
+            # from μ) and tighten their bounds for the next attempt.
+            tightened = False
+            for d in declared_donor_list:
+                dist = float(
+                    np.linalg.norm(P_solved[int(metal_idx)] - P_solved[d])
+                )
+                out_of_shell = not (_MD_SHELL_LOWER_A <= dist <= _MD_SHELL_UPPER_A)
+                mu = md_target_map.get(d)
+                far_from_mu = mu is not None and abs(dist - mu) > float(_md_tol_a)
+                if out_of_shell or far_from_mu:
+                    L_cur, U_cur = _tighten_bounds_for_missing_donor(
+                        L_cur, U_cur, int(metal_idx), d,
+                        half_width_factor=0.5,
+                    )
+                    tightened = True
+            if not tightened:
+                # Bounds already exhausted — fall through.
+                break
+
+        # Final integrity verification + spurious-H rejection (optional).
+        n_h_pushed = 0
+        final_violations: List[str] = []
+        final_ok = True
+        if _verify_on:
+            final_ok, final_violations = verify_donor_shell_integrity(
+                P_solved, list(syms), int(metal_idx),
+                declared_donor_list,
+                md_targets=md_target_map,
+                md_tol=float(_md_tol_a),
+            )
+        if _reject_h_on:
+            P_solved, n_h_pushed = _push_h_out_of_first_shell(
+                P_solved, list(syms), mol, int(metal_idx),
+                declared_donor_list,
+                shell_upper=_MD_SHELL_UPPER_A,
+            )
+            # Re-verify after H rejection (informational only).
+            if _verify_on:
+                final_ok, final_violations = verify_donor_shell_integrity(
+                    P_solved, list(syms), int(metal_idx),
+                    declared_donor_list,
+                    md_targets=md_target_map,
+                    md_tol=float(_md_tol_a),
+                )
+
+        # When verification is ON and STILL fails after all retries, treat
+        # this as infeasibility and fall back to the caller's legacy path.
+        # When OFF, downstream behaviour is unchanged.
+        if _verify_on and not final_ok:
+            # Repair retries exhausted — signal infeasibility.
             return None
 
         # Final M-D drift guard against the ORIGINAL P_init (the solver
@@ -557,6 +907,14 @@ def mogul_embed_from_assembled(
             "converged": solver_info.get("converged", False),
             "source": "mogul_dg",
         }
+        if _verify_on or _reject_h_on:
+            info["donor_shell_verify"] = bool(_verify_on)
+            info["donor_shell_reject_h"] = bool(_reject_h_on)
+            info["donor_shell_ok"] = bool(final_ok)
+            info["donor_shell_violations"] = list(final_violations)
+            info["donor_shell_repair_attempts"] = len(repair_history)
+            info["donor_shell_repair_history"] = repair_history
+            info["donor_shell_h_pushed"] = int(n_h_pushed)
         return list(syms), np.asarray(P_solved, dtype=np.float64), info
     except Exception:
         # Fail-open
