@@ -349,6 +349,165 @@ from .grip_fragment_detect import detect_fragments
 from .grip_loss_terms import TotalGripLoss
 from .grip_mogul_lookup import GripLibrary, get_default_library
 
+
+# ---------------------------------------------------------------------------
+# Multi-step polish wrapper (2026-06-07, validator-tuning mandate)
+# ---------------------------------------------------------------------------
+# The legacy single-shot L-BFGS finds 99.3-99.6% severity reductions on the
+# user-eye cases (SIYMEU / BERTEB / ALAHEB) but ALL three roll back because
+# spurious "stereocenters" (sp2 carbons with 3 heavy neighbours: NHC carbenes,
+# phenyl ipso, vinyls) end up planar-near-zero at the optimum, and the
+# determinant naturally crosses zero -> ChiralVolumeConstraint reports a
+# sign flip -> hard rollback.
+#
+# Three coordinated fixes, all env-gated.  Default-OFF byte-identical with
+# HEAD 841e0f5 when ``DELFIN_FFFREE_GRIP_POLISH_MULTISTEP`` is unset.
+#
+#   1. ``_stereocenter_quadruples_filtered`` -- a STRICT detector that only
+#      protects TRUE stereocenters (sp3 with 4 distinct heavy neighbours OR
+#      sp3 with 3 heavy + ≥1 H AND tetrahedral RDKit chirality tag), and
+#      additionally skips centers whose INITIAL signed-volume magnitude is
+#      below a chemical floor (default 1.0 Å^3) -- a center with |V| < 1
+#      is sp2/aromatic-flat and was placed there by accident, not by stereo
+#      design.  This eliminates the false-positive flip rejections on every
+#      flat-but-not-perfectly-planar sp2 carbon.
+#
+#   2. Multi-step polish (Option A): instead of a single L-BFGS call with
+#      max_iter=200 followed by all-or-nothing validation, run K sub-steps
+#      (default K=10) with max_iter_per_step=20 each.  After each sub-step
+#      validate against M-D / topology / chirality.  On violation, the
+#      multi-step controller keeps the LAST validator-passing state as the
+#      best-so-far and aborts further steps.  Severity is monotonically
+#      decreasing across kept steps (accept-if-better per step).
+#
+#   3. Soft chirality penalty (Option B): an optional smooth barrier term
+#      that pushes the L-BFGS gradient AWAY from the volume=0 hyperplane
+#      for every protected stereocenter, instead of letting it find the
+#      flipped global optimum and then bouncing.  Default OFF; turns ON
+#      automatically inside the multi-step controller so the per-substep
+#      L-BFGS is biased to stay on the correct chirality manifold.
+# ---------------------------------------------------------------------------
+_POLISH_MULTISTEP_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_MULTISTEP"
+_POLISH_MULTISTEP_K_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_MULTISTEP_K"
+_POLISH_MULTISTEP_ITERS_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_MULTISTEP_ITERS"
+_POLISH_STRICT_STEREO_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_STRICT_STEREO"
+_POLISH_STEREO_VOL_FLOOR_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_STEREO_VOL_FLOOR"
+_POLISH_SOFT_CHIRAL_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_SOFT_CHIRAL"
+_POLISH_SOFT_CHIRAL_W_ENV: str = "DELFIN_FFFREE_GRIP_POLISH_SOFT_CHIRAL_W"
+
+DEFAULT_MULTISTEP_K: int = 10
+DEFAULT_MULTISTEP_ITERS: int = 20
+DEFAULT_STEREO_VOL_FLOOR: float = 1.0   # Å^3; below this an initial center is
+                                        # considered sp2-flat and not protected.
+DEFAULT_SOFT_CHIRAL_WEIGHT: float = 50.0
+
+
+def _polish_multistep_active() -> bool:
+    """``True`` iff multi-step polish + strict-stereo filter is enabled.
+
+    Default OFF (byte-identical with HEAD 841e0f5).  Recommended ON when
+    Mogul-PRIMARY is active -- the L-BFGS routinely finds 99.3-99.6%
+    severity reductions that the legacy single-shot validator rejects.
+    """
+    raw = os.environ.get(_POLISH_MULTISTEP_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _polish_strict_stereo_active() -> bool:
+    """``True`` iff the strict-stereocenter filter is enabled.
+
+    Defaults to ON when ``DELFIN_FFFREE_GRIP_POLISH_MULTISTEP=1`` (the strict
+    filter is the *fundamental* fix; multi-step is the safety net).  Can be
+    independently toggled via ``DELFIN_FFFREE_GRIP_POLISH_STRICT_STEREO``.
+    """
+    raw = os.environ.get(_POLISH_STRICT_STEREO_ENV, "").strip().lower()
+    if not raw:
+        # Implicit ON when the master multi-step flag is set.
+        return _polish_multistep_active()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _polish_soft_chiral_active() -> bool:
+    """``True`` iff the soft-chirality penalty is added to the L-BFGS loss.
+
+    Implicit ON when ``DELFIN_FFFREE_GRIP_POLISH_MULTISTEP=1`` -- the soft
+    barrier biases each L-BFGS sub-step away from the sign-flip region so
+    multi-step actually converges instead of bouncing every iteration.
+    """
+    raw = os.environ.get(_POLISH_SOFT_CHIRAL_ENV, "").strip().lower()
+    if not raw:
+        return _polish_multistep_active()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _polish_multistep_k() -> int:
+    """Number of sub-steps in the multi-step polish (default 10)."""
+    raw = os.environ.get(_POLISH_MULTISTEP_K_ENV, "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v >= 1:
+                return v
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_MULTISTEP_K
+
+
+def _polish_multistep_iters() -> int:
+    """L-BFGS max_iter per sub-step (default 20)."""
+    raw = os.environ.get(_POLISH_MULTISTEP_ITERS_ENV, "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v >= 1:
+                return v
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_MULTISTEP_ITERS
+
+
+def _polish_stereo_vol_floor() -> float:
+    """Initial signed-volume magnitude (Å^3) below which a center is treated
+    as sp2-flat (no chirality to protect).  Default 1.0 Å^3.
+
+    Reference: a perfect tetrahedral sp3 C-X4 center with bonds 1.5 Å gives
+    |V| ≈ 2.6 Å^3.  Real sp3 stereocenters cluster in 2-7 Å^3.  Anything
+    below 1.0 Å^3 is mechanistically sp2/aromatic/allene-like and the
+    pseudo-stereocenter is an artefact of the DG embed.
+    """
+    raw = os.environ.get(_POLISH_STEREO_VOL_FLOOR_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_STEREO_VOL_FLOOR
+
+
+def _polish_soft_chiral_weight() -> float:
+    """L-BFGS weight on the soft-chirality barrier term (default 50.0).
+
+    Tuning: needs to be large enough to dominate the Mahalanobis pull as
+    |V| -> 0, small enough not to over-constrain at |V| = floor.  The
+    barrier is a per-center quadratic in max(0, vol_floor - sign*V), so
+    at V = sign*vol_floor the contribution is zero and at V = 0 it is
+    ``weight * vol_floor^2``.
+    """
+    raw = os.environ.get(_POLISH_SOFT_CHIRAL_W_ENV, "").strip()
+    if raw:
+        try:
+            v = float(raw)
+            if np.isfinite(v) and v >= 0.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_SOFT_CHIRAL_WEIGHT
+
+
 __all__ = [
     "grip_polish",
     "mogul_severity",
@@ -365,6 +524,22 @@ __all__ = [
     "_GRIP_METHOD_ENV",
     "_GRIP_METHOD_LBFGS",
     "_GRIP_METHOD_LM",
+    # Multi-step polish (2026-06-07, validator-tuning) — env-gated default-OFF
+    # byte-identical with HEAD 841e0f5.  Implicit ON when MOGUL_PRIMARY active.
+    "_polish_multistep_active",
+    "_polish_strict_stereo_active",
+    "_polish_soft_chiral_active",
+    "_polish_multistep_k",
+    "_polish_multistep_iters",
+    "_polish_stereo_vol_floor",
+    "_polish_soft_chiral_weight",
+    "DEFAULT_MULTISTEP_K",
+    "DEFAULT_MULTISTEP_ITERS",
+    "DEFAULT_STEREO_VOL_FLOOR",
+    "DEFAULT_SOFT_CHIRAL_WEIGHT",
+    "_stereocenter_quadruples_filtered",
+    "_soft_chiral_value_and_grad",
+    "_polish_multistep_loop",
     # Healing-wiring (2026-06-04) — pre-polish heal hooks, env-gated default-OFF.
     "_topology_healing_active",
     "_grip_healing_active",
@@ -847,6 +1022,307 @@ def _stereocenter_quadruples(mol) -> List[Tuple[int, int, int, int]]:
             continue
         quads.append((c, nbrs[0], nbrs[1], nbrs[2]))
     return sorted(set(quads))
+
+
+def _stereocenter_quadruples_filtered(
+    mol,
+    P_init: np.ndarray,
+    metal_idx: int,
+    *,
+    vol_floor: float = DEFAULT_STEREO_VOL_FLOOR,
+) -> List[Tuple[int, int, int, int]]:
+    """Strict TRUE-stereocenter detector (validator-tuning, 2026-06-07).
+
+    The legacy :func:`_stereocenter_quadruples` marks EVERY heavy atom with
+    ≥ 3 heavy neighbours as a stereocenter.  That includes:
+
+      * sp2 carbons (NHC carbene, phenyl ipso, vinyl, allyl, carbonyl C)
+      * aromatic / planar heteroatoms (pyridine N with 3 bonds, etc.)
+      * the metal centre itself (already frozen but counted)
+      * planar amides / sulfonamides
+
+    None of those carry true chirality — they are flat by construction and
+    the L-BFGS polish naturally drives any small deviation back to planar
+    geometry, crossing volume = 0 and flipping the sign.  The legacy
+    constraint then triggers an unwanted rollback.
+
+    This strict detector keeps a quadruple iff ALL of the following hold
+    (universal graph + geometry criteria, no SMILES patterns):
+
+      1. center is NOT the metal,
+      2. center is NOT an aromatic / sp2 atom (RDKit hybridization),
+      3. center has 4+ total neighbours (counting H), OR (3 heavy + sp3 by
+         RDKit hybridization),
+      4. center has 4 distinct neighbours when counted by index, OR has a
+         non-trivial RDKit chirality tag (``ChiralType != UNSPECIFIED``),
+      5. the INITIAL signed-volume magnitude is at least ``vol_floor`` --
+         a true tetrahedral sp3 C-X4 with bond length 1.5 Å yields
+         |V| ≈ 2.6 Å^3; below 1 Å^3 the center is mechanistically planar
+         even if RDKit calls it sp3 (the placement just happens to give a
+         pseudo-stereocenter that the polish will and SHOULD flatten).
+
+    Pure-functional, deterministic; same ``(mol, P_init, metal_idx,
+    vol_floor)`` -> same quadruple list every call.
+    """
+    P_init = np.asarray(P_init, dtype=np.float64)
+    if P_init.ndim == 1:
+        P_init = P_init.reshape(-1, 3)
+    metal_idx = int(metal_idx)
+
+    quads: List[Tuple[int, int, int, int]] = []
+    try:
+        from rdkit.Chem import rdchem
+        _HYB_SP3 = rdchem.HybridizationType.SP3
+        _HYB_SP3D = rdchem.HybridizationType.SP3D
+        _HYB_SP3D2 = rdchem.HybridizationType.SP3D2
+        _CT_UNSPEC = rdchem.ChiralType.CHI_UNSPECIFIED
+    except Exception:
+        # No RDKit — fall back to the legacy detector behaviour but still
+        # apply the metal + volume-floor filters (universal geometry only).
+        _HYB_SP3 = None
+        _CT_UNSPEC = None
+
+    for atom in mol.GetAtoms():
+        c = int(atom.GetIdx())
+        if c == metal_idx:
+            continue
+        try:
+            sym = atom.GetSymbol()
+        except Exception:
+            continue
+        if sym == "H":
+            continue
+
+        # Criterion 2: skip aromatic / sp2 — they are planar by Hund's rule
+        # and any 'stereocenter' on them is an embedding artefact.
+        try:
+            if atom.GetIsAromatic():
+                continue
+            hyb = atom.GetHybridization()
+            # Accept sp3 / sp3d / sp3d2 (octahedral non-metal centres).
+            # Reject sp / sp2 / unspecified.
+            if _HYB_SP3 is not None and hyb not in (_HYB_SP3, _HYB_SP3D, _HYB_SP3D2):
+                continue
+        except Exception:
+            pass
+
+        nbrs_all = sorted(int(n.GetIdx()) for n in atom.GetNeighbors())
+        if len(nbrs_all) < 3:
+            continue
+
+        # Criterion 3 + 4: need 4 neighbour bonds total (H counts) OR a real
+        # chirality tag from RDKit.  This admits standard sp3 C-X4 (with H)
+        # and rejects sp2 C-X3 (no H, planar geometry).
+        try:
+            n_total = atom.GetDegree() + atom.GetTotalNumHs()
+        except Exception:
+            n_total = len(nbrs_all)
+        try:
+            tag = atom.GetChiralTag()
+        except Exception:
+            tag = None
+        has_chiral_tag = (
+            _CT_UNSPEC is not None and tag is not None and tag != _CT_UNSPEC
+        )
+        if n_total < 4 and not has_chiral_tag:
+            continue
+
+        # Criterion 5: initial volume must be above the chemical floor.
+        # Use the first 3 sorted heavy neighbours (matches the legacy
+        # determinant convention so the resulting quadruples are
+        # comparable / replaceable with the legacy ones).
+        nbrs3 = nbrs_all[:3]
+        try:
+            rc = P_init[c]
+            mat = np.array(
+                [P_init[nbrs3[0]] - rc,
+                 P_init[nbrs3[1]] - rc,
+                 P_init[nbrs3[2]] - rc],
+                dtype=np.float64,
+            )
+            vol = float(np.linalg.det(mat))
+        except Exception:
+            continue
+        if not np.isfinite(vol):
+            continue
+        if abs(vol) < float(vol_floor):
+            continue
+
+        quads.append((c, nbrs3[0], nbrs3[1], nbrs3[2]))
+
+    return sorted(set(quads))
+
+
+def _soft_chiral_value_and_grad(
+    R: np.ndarray,
+    stereo_centers: Sequence[Tuple[int, int, int, int, int]],
+    *,
+    vol_floor: float,
+    weight: float,
+) -> Tuple[float, np.ndarray]:
+    """Soft barrier penalising approach to the sign-flip hyperplane.
+
+    For each protected stereocenter ``(center, a, b, c, sign)`` define the
+    signed volume ``V = det([r_a-r_c, r_b-r_c, r_c'-r_c])``.  The barrier is
+
+        L_i = weight * max(0, vol_floor - sign * V) ** 2
+
+    which is zero whenever ``sign * V >= vol_floor`` (still well inside the
+    correct chirality manifold) and grows as ``V`` approaches zero from
+    the protected side, repelling the L-BFGS gradient.  Smooth and C1.
+
+    The penalty is one-sided: it never pulls a center past ``sign *
+    vol_floor`` (no over-shoot).  Analytic gradient is computed via the
+    closed-form derivative of ``det`` w.r.t. each column.
+
+    Returns
+    -------
+    (value, grad)
+        ``value`` is a scalar ``float``; ``grad`` has the same shape as
+        ``R`` (N, 3) and contains the analytic d L / d r_i contributions.
+    """
+    R = np.asarray(R, dtype=np.float64)
+    if R.ndim == 1:
+        R = R.reshape(-1, 3)
+    grad = np.zeros_like(R)
+    if not stereo_centers or weight <= 0.0 or vol_floor <= 0.0:
+        return 0.0, grad
+    total = 0.0
+    for (center, a, b, cc, sign) in stereo_centers:
+        rc = R[center]
+        u = R[a] - rc
+        v = R[b] - rc
+        w = R[cc] - rc
+        V = float(np.linalg.det(np.array([u, v, w], dtype=np.float64)))
+        if not np.isfinite(V):
+            continue
+        sV = float(sign) * V
+        margin = float(vol_floor) - sV
+        if margin <= 0.0:
+            continue
+        # Barrier value.
+        total += float(weight) * margin * margin
+        # d V / d r terms: V = u . (v x w).  Gradient of V with respect to
+        # the three column vectors:
+        # dV/du = v x w
+        # dV/dv = w x u
+        # dV/dw = u x v
+        # And u = R[a] - R[center], etc., so the center receives -(sum of all).
+        dV_du = np.cross(v, w)
+        dV_dv = np.cross(w, u)
+        dV_dw = np.cross(u, v)
+        # Common scalar prefactor: dL/dV = -2 * weight * margin * sign.
+        coef = -2.0 * float(weight) * margin * float(sign)
+        ga = coef * dV_du
+        gb = coef * dV_dv
+        gc = coef * dV_dw
+        grad[a] += ga
+        grad[b] += gb
+        grad[cc] += gc
+        grad[center] -= (ga + gb + gc)
+    return float(total), grad
+
+
+def _polish_multistep_loop(
+    P_init: np.ndarray,
+    loss_and_grad,
+    *,
+    n_atoms: int,
+    md_constraint,
+    topo_constraint,
+    chiral_constraint,
+    poly_constraint,
+    fragments,
+    K: int,
+    iters_per_step: int,
+    gtol: float,
+    ftol: float,
+) -> Tuple[np.ndarray, int, str]:
+    """Run K small L-BFGS sub-steps with per-step validation.
+
+    Each sub-step runs scipy's L-BFGS-B for at most ``iters_per_step``
+    iterations starting from the LAST validator-passing geometry.  After
+    each sub-step the validators (M-D, topology, chirality, polyhedron)
+    are checked.  On failure the previous validator-passing state is
+    returned as the best-so-far; on accept-if-better failure (severity
+    not strictly decreased) the loop stops early.
+
+    Returns
+    -------
+    (P_best, total_iters, reason)
+        ``P_best`` is the last validator-passing geometry that ALSO
+        strictly decreased severity vs ``P_init``.  ``total_iters`` is
+        the sum of nit across all sub-steps actually run.  ``reason``
+        is an empty string on full convergence or a short tag on early
+        stop (``"chiral"``, ``"topo"``, ``"md"``, ``"poly"``,
+        ``"no_improve"``, ``"non_finite"``).
+    """
+    try:
+        from scipy.optimize import minimize
+    except Exception as exc:  # pragma: no cover
+        return P_init.copy(), 0, f"scipy: {exc!r}"
+
+    P_best = P_init.copy()
+    sev_best = mogul_severity(P_best, fragments)
+    total_iters = 0
+    reason = ""
+    for step in range(int(K)):
+        P_start = P_best
+        try:
+            res = minimize(
+                loss_and_grad,
+                P_start.reshape(-1).copy(),
+                method="L-BFGS-B",
+                jac=True,
+                options={
+                    "maxiter": int(iters_per_step),
+                    "gtol": float(gtol),
+                    "ftol": float(ftol),
+                },
+            )
+            P_try = np.asarray(res.x, dtype=np.float64).reshape(n_atoms, 3)
+            total_iters += int(getattr(res, "nit", 0))
+        except Exception:
+            reason = "scipy_raise"
+            break
+        if not np.all(np.isfinite(P_try)):
+            reason = "non_finite"
+            break
+        # Validate sequentially -- record the first failing validator so
+        # the rollback diagnostic is informative.
+        if not md_constraint.validate(P_try):
+            reason = "md"
+            break
+        if not topo_constraint.validate(P_try):
+            reason = "topo"
+            break
+        if not chiral_constraint.validate(P_try):
+            reason = "chiral"
+            break
+        if poly_constraint is not None and not poly_constraint.validate(P_try):
+            reason = "poly"
+            break
+        # Accept-if-better gate -- stop early when L-BFGS has reached a
+        # severity floor (further sub-steps would only churn).
+        try:
+            sev_try = mogul_severity(P_try, fragments)
+        except Exception:
+            reason = "severity_eval"
+            break
+        if not np.isfinite(sev_try):
+            reason = "non_finite_severity"
+            break
+        if sev_try >= sev_best - 1e-12:
+            # Converged in severity -- keep the current step (still better
+            # than P_init by ``sev_best < initial sev_init`` invariant of
+            # the loop) and stop.
+            P_best = P_try
+            sev_best = sev_try
+            reason = "no_improve"
+            break
+        P_best = P_try
+        sev_best = sev_try
+    return P_best, total_iters, reason
 
 
 # ---------------------------------------------------------------------------
@@ -1448,8 +1924,27 @@ def grip_polish(
         mol_bonds, P_init, max_distance_multiplier=_topo_mult_eff,
     )
 
+    # Strict-stereo filter (2026-06-07, validator-tuning).  When
+    # ``DELFIN_FFFREE_GRIP_POLISH_STRICT_STEREO=1`` (implicit ON whenever
+    # multi-step is ON) the legacy "every heavy atom with 3+ neighbours"
+    # detector is replaced by a TRUE-stereocenter filter (sp3 + 4 distinct
+    # neighbours + initial |V| above the chemical floor).  This eliminates
+    # the false-positive flip rejections on every sp2 carbon (NHC carbene,
+    # phenyl ipso, vinyl, allyl) and recovers the 99.3-99.6% severity
+    # reductions the L-BFGS already finds.  Default-OFF byte-identical
+    # with HEAD 841e0f5.
+    if _polish_strict_stereo_active():
+        try:
+            _stereo_quads = _stereocenter_quadruples_filtered(
+                mol, P_init, metal,
+                vol_floor=_polish_stereo_vol_floor(),
+            )
+        except Exception:
+            _stereo_quads = _stereocenter_quadruples(mol)
+    else:
+        _stereo_quads = _stereocenter_quadruples(mol)
     chiral_constraint = ChiralVolumeConstraint.from_initial(
-        _stereocenter_quadruples(mol), P_init,
+        _stereo_quads, P_init,
     )
 
     # Donor polyhedron: only if geom + ≥ 2 donors known.  Falls back to a
@@ -1539,12 +2034,32 @@ def grip_polish(
     # ------------------------------------------------------------------
     frozen_indices = np.array(sorted(frozen), dtype=np.int64)
 
+    # Soft chirality barrier (2026-06-07, validator-tuning).  When active,
+    # the L-BFGS gradient is biased AWAY from the chirality sign-flip
+    # hyperplane (V = 0) for every protected stereocenter, instead of
+    # letting it find a flipped global optimum and then rolling back.
+    # Default OFF byte-identical; implicit ON when ``MULTISTEP=1``.
+    _soft_chiral_on = _polish_soft_chiral_active()
+    _soft_chiral_weight = _polish_soft_chiral_weight() if _soft_chiral_on else 0.0
+    _soft_chiral_floor = _polish_stereo_vol_floor() if _soft_chiral_on else 0.0
+    _soft_chiral_centers = (
+        tuple(chiral_constraint.stereo_centers) if _soft_chiral_on else ()
+    )
+
     def loss_and_grad(x_flat: np.ndarray) -> Tuple[float, np.ndarray]:
         R = np.asarray(x_flat, dtype=np.float64).reshape(n_atoms, 3)
         L_grip, G_grip = fragments.evaluate(R) if len(fragments) > 0 else (0.0, np.zeros_like(R))
         L_clash, G_clash = clash.value_and_grad(R)
         L = float(L_grip) + float(L_clash)
         G = G_grip + G_clash
+        if _soft_chiral_on and _soft_chiral_centers:
+            L_chi, G_chi = _soft_chiral_value_and_grad(
+                R, _soft_chiral_centers,
+                vol_floor=_soft_chiral_floor,
+                weight=_soft_chiral_weight,
+            )
+            L += float(L_chi)
+            G = G + G_chi
         # Zero the gradient on the frozen sphere -- L-BFGS-B will then leave
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
@@ -1795,8 +2310,49 @@ def grip_polish(
                 int(getattr(res, "nit", 0)),
             )
 
+        # ------------------------------------------------------------------
+        # 5c. Multi-step polish branch (2026-06-07, validator-tuning).
+        #
+        # When ``DELFIN_FFFREE_GRIP_POLISH_MULTISTEP=1`` is set, the
+        # single-shot L-BFGS-B is replaced by ``_polish_multistep_loop``:
+        # K small sub-steps with per-step validation.  This ensures the
+        # final P_refined is GUARANTEED to satisfy every hard validator
+        # (M-D / topology / chirality / polyhedron) because we never
+        # accept a sub-step that violates any of them.  Severity is
+        # monotonically decreasing across kept sub-steps.
+        #
+        # The donor-cone DoF augmentation is incompatible with multi-step
+        # because it changes the variable count; when both flags are on
+        # we fall through to the single-shot legacy branch (multi-step is
+        # also OFF in that case).  Default-OFF byte-identical otherwise.
+        # ------------------------------------------------------------------
+        _use_multistep = (
+            _polish_multistep_active()
+            and not (cones and augmented_loss_and_grad is not None)
+        )
+        if _use_multistep:
+            P_refined, n_iter, _ms_reason = _polish_multistep_loop(
+                P_init,
+                loss_and_grad,
+                n_atoms=n_atoms,
+                md_constraint=md_constraint,
+                topo_constraint=topo_constraint,
+                chiral_constraint=chiral_constraint,
+                poly_constraint=poly_constraint,
+                fragments=fragments,
+                K=_polish_multistep_k(),
+                iters_per_step=_polish_multistep_iters(),
+                gtol=gtol,
+                ftol=ftol,
+            )
+            # Skip the multi-restart loop: multi-step IS the restart
+            # strategy (each sub-step starts from the previous accepted
+            # state, which is functionally a guided restart).
+            n_restarts = 1
+
         # Restart 0 is always P_init verbatim (legacy byte-identity gate).
-        P_refined, n_iter = _single_lbfgs_call(P_init)
+        if not _use_multistep:
+            P_refined, n_iter = _single_lbfgs_call(P_init)
         if n_restarts > 1:
             best_P = P_refined
             best_sev = mogul_severity(best_P, fragments)
