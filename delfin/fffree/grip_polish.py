@@ -578,6 +578,10 @@ __all__ = [
     "build_ligand_atom_id_map",
     "expand_hapto_for_sigma_only",
     "_sigma_only_mode_active",
+    # Hapto-π explicit freeze + substituent subtree drag (2026-06-07, Task #91).
+    "_hapto_pi_freeze_active",
+    "_build_hapto_rigid_body",
+    "_project_rigid_body",
     "_resolve_grip_method",
     "_GRIP_METHOD_ENV",
     "_GRIP_METHOD_LBFGS",
@@ -1454,6 +1458,176 @@ class GripPolishResult:
 
 
 # ---------------------------------------------------------------------------
+# Hapto-π rigid-body freeze (2026-06-07, Task #91 explicit freeze + drag).
+#
+# When DELFIN_FFFREE_GRIP_UNFREEZE_MD=1 is active the metal + donors gain DoF
+# under L-BFGS.  For hapto-π binding modes (η^n, n>=2) this can break the
+# η^n geometry: the metal drifts relative to the ring carbons (donors) and
+# the ring atoms drift relative to the metal, even with MD_HAPTO_SKIP=1
+# (which only skips loss TERMS, not the position updates).
+#
+# Fix: when DELFIN_FFFREE_GRIP_HAPTO_PI_FREEZE=1 (default OFF byte-identical),
+# build a per-hapto-cluster "rigid body" = ring atoms + every H + every
+# heavy-atom substituent subtree attached to a ring atom.  Then during the
+# L-BFGS loss/grad evaluation:
+#   - take the metal's displacement delta_M = R[metal] - P_init[metal];
+#   - apply delta_M to every rigid-body atom (they ride with the metal);
+#   - evaluate loss + grad on the effective coords;
+#   - chain-rule: sum gradient contributions on the rigid-body atoms onto
+#     the metal's gradient; zero the rigid-body atoms' own gradients (they
+#     are determined by the metal's position).
+#
+# After convergence, project the final positions: rigid-body atoms are
+# translated by the metal's net displacement.
+#
+# Reuses :mod:`hapto_rigid_subtree` (already shipped, deterministic, graph-
+# only, no SMILES patterns).  Default-OFF byte-identical: when the env-flag
+# is unset the predicate short-circuits, the rigid-body set is empty, and
+# the wrapper falls through to the original loss_and_grad call.
+# ---------------------------------------------------------------------------
+_HAPTO_PI_FREEZE_ENV: str = "DELFIN_FFFREE_GRIP_HAPTO_PI_FREEZE"
+
+
+def _hapto_pi_freeze_active() -> bool:
+    """``True`` iff ``DELFIN_FFFREE_GRIP_HAPTO_PI_FREEZE`` is on (default OFF).
+
+    Live-read so the env-flag can flip between subprocesses.  Defaults
+    to OFF -> byte-identical with HEAD when unset.
+    """
+    raw = os.environ.get(_HAPTO_PI_FREEZE_ENV, "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on")
+
+
+def _build_hapto_rigid_body(
+    mol,
+    metal_idx: int,
+    donors: Sequence[int],
+    P_init: np.ndarray,
+    hapto_atoms: Set[int],
+) -> List[int]:
+    """Return the sorted list of atom indices that must ride rigidly with
+    the metal during the M+D unfreeze L-BFGS pass.
+
+    The set contains:
+      * Every detected hapto-π ring atom (from ``hapto_atoms``);
+      * Every H bonded to a ring atom;
+      * Every non-ring heavy-atom substituent attached to a ring atom +
+        its entire connected subtree (BFS, never crossing the metal or
+        another hapto ring).
+
+    The metal index is EXCLUDED from the returned list (the metal is the
+    "leader" of the rigid block; its position drives the rigid translation).
+
+    Pure / deterministic / graph-only (delegated to
+    :func:`hapto_rigid_subtree.collect_rigid_subtree_atoms`).  Returns
+    the empty list when ``hapto_atoms`` is empty or the helper raises --
+    fail-open so the polish never crashes on this guard.
+    """
+    if not hapto_atoms:
+        return []
+    metal_idx = int(metal_idx)
+    try:
+        from .hapto_rigid_subtree import collect_rigid_subtree_atoms
+    except Exception:
+        return []
+    try:
+        symbols = [str(a.GetSymbol()) for a in mol.GetAtoms()]
+    except Exception:
+        return []
+    if len(symbols) != int(P_init.shape[0]):
+        return []
+    # Cluster the ring atoms by connectivity so multi-hapto complexes
+    # (ferrocene = 2 Cp rings) get TWO rigid bodies, not one merged blob.
+    # Two hapto atoms belong to the same cluster iff they share a bond
+    # in the molecular graph (graph-only, deterministic).
+    cluster_of: Dict[int, int] = {}
+    next_cid = 0
+    hapto_list = sorted(int(a) for a in hapto_atoms)
+    for a in hapto_list:
+        if a in cluster_of:
+            continue
+        # BFS over hapto subgraph.
+        comp = [a]
+        cluster_of[a] = next_cid
+        head = 0
+        while head < len(comp):
+            cur = comp[head]
+            head += 1
+            try:
+                atom = mol.GetAtomWithIdx(int(cur))
+            except Exception:
+                continue
+            for nb in atom.GetNeighbors():
+                ni = int(nb.GetIdx())
+                if ni in hapto_atoms and ni not in cluster_of:
+                    cluster_of[ni] = next_cid
+                    comp.append(ni)
+        next_cid += 1
+
+    # Inverse map cid -> ring atoms.
+    clusters: Dict[int, List[int]] = {}
+    for a, cid in cluster_of.items():
+        clusters.setdefault(cid, []).append(int(a))
+
+    # For each cluster, run collect_rigid_subtree_atoms with the OTHER
+    # clusters' atoms as a boundary ("other_ring_atoms") so the BFS
+    # never crosses through a different hapto block.  Frozen extras =
+    # the σ donors (M-D rigid, never absorbed into a hapto block).
+    sigma_donors = set(int(d) for d in donors) - set(hapto_atoms)
+    rigid_union: Set[int] = set()
+    for cid, ring in clusters.items():
+        other = set()
+        for cid2, ring2 in clusters.items():
+            if cid2 == cid:
+                continue
+            other.update(ring2)
+        try:
+            block = collect_rigid_subtree_atoms(
+                symbols, P_init, ring,
+                metal_idx=metal_idx,
+                other_ring_atoms=other,
+                frozen_extra=sigma_donors,
+            )
+        except Exception:
+            continue
+        for idx in block:
+            i = int(idx)
+            if i == metal_idx:
+                continue
+            rigid_union.add(i)
+    return sorted(rigid_union)
+
+
+def _project_rigid_body(
+    R: np.ndarray,
+    metal_idx: int,
+    rigid_body_indices: np.ndarray,
+    P_init: np.ndarray,
+) -> np.ndarray:
+    """Return a coords array where every atom in ``rigid_body_indices``
+    is set to ``P_init[i] + (R[metal_idx] - P_init[metal_idx])``.
+
+    The metal position is taken from ``R`` (unchanged from the L-BFGS
+    iterate).  Pure / deterministic.  Out-of-range / empty input is a
+    no-op (returns ``R`` copy).
+    """
+    R = np.asarray(R, dtype=np.float64)
+    if rigid_body_indices.size == 0:
+        return R.copy()
+    if R.ndim == 1:
+        R_mat = R.reshape(-1, 3).copy()
+    else:
+        R_mat = R.copy()
+    delta = R_mat[int(metal_idx)] - np.asarray(P_init, dtype=np.float64)[int(metal_idx)]
+    R_mat[rigid_body_indices] = (
+        np.asarray(P_init, dtype=np.float64)[rigid_body_indices] + delta
+    )
+    return R_mat
+
+
+# ---------------------------------------------------------------------------
 # Main polish
 # ---------------------------------------------------------------------------
 def grip_polish(
@@ -1591,13 +1765,20 @@ def grip_polish(
     # skip is on by default; set ``DELFIN_FFFREE_GRIP_MD_HAPTO_SKIP=0`` to
     # force Phase 2 on hapto/multi-metal SMILES for forensics.
     _unfreeze_active_flag = _unfreeze_md_active()
+    # Hapto-π rigid-body freeze + drag (Task #91, 2026-06-07).  When
+    # ``DELFIN_FFFREE_GRIP_HAPTO_PI_FREEZE=1`` is on, the unfreeze pass
+    # is allowed to PROCEED on hapto SMILES, but the ring + substituent
+    # subtrees are tied to the metal as a rigid block (see the wrapper
+    # around loss_and_grad below).  Default OFF preserves the legacy
+    # "skip Phase 2 on hapto" behaviour byte-identically.
+    _hapto_pi_freeze_flag = _hapto_pi_freeze_active()
     if _unfreeze_active_flag and _md_hapto_skip_active():
         try:
             if _detect_md_multi_metal(mol):
                 _unfreeze_active_flag = False
         except Exception:
             pass
-        if _unfreeze_active_flag:
+        if _unfreeze_active_flag and not _hapto_pi_freeze_flag:
             try:
                 if _detect_md_hapto_present(mol, metal, donors_t, P_init):
                     _unfreeze_active_flag = False
@@ -1907,8 +2088,44 @@ def grip_polish(
     # ------------------------------------------------------------------
     frozen_indices = np.array(sorted(frozen), dtype=np.int64)
 
+    # ------------------------------------------------------------------
+    # Hapto-π rigid-body freeze + drag (Task #91, 2026-06-07).
+    #
+    # When DELFIN_FFFREE_GRIP_HAPTO_PI_FREEZE=1 AND the unfreeze flag is
+    # ON AND a hapto cluster is present, build the rigid-body atom set
+    # (ring atoms + ring-H + substituent subtrees, EXCLUDING the metal).
+    # The loss_and_grad wrapper below then ties these atoms to the metal
+    # so any M update moves the whole rigid block; the gradient onto the
+    # metal accumulates the rigid-body atoms' contributions.
+    #
+    # Default-OFF byte-identical: when the env-flag is unset
+    # ``_rigid_body_indices`` stays empty -> the loss_and_grad wrapper
+    # is a no-op and the gradient/positions are byte-identical with
+    # the legacy path.
+    # ------------------------------------------------------------------
+    _rigid_body_atoms: List[int] = []
+    if _hapto_pi_freeze_flag and _unfreeze_active_flag and hapto_atoms:
+        try:
+            _rigid_body_atoms = _build_hapto_rigid_body(
+                mol, metal, donors_t, P_init, hapto_atoms,
+            )
+        except Exception:
+            _rigid_body_atoms = []
+    _rigid_body_indices = np.array(
+        sorted(int(i) for i in _rigid_body_atoms if int(i) != int(metal)),
+        dtype=np.int64,
+    )
+    _hapto_rigid_on = bool(_rigid_body_indices.size > 0)
+
     def loss_and_grad(x_flat: np.ndarray) -> Tuple[float, np.ndarray]:
         R = np.asarray(x_flat, dtype=np.float64).reshape(n_atoms, 3)
+        # Hapto-π rigid-body projection (default OFF byte-identical).
+        # Tie the rigid-body atoms to the metal's current displacement
+        # from its initial position BEFORE evaluating loss / grad.
+        if _hapto_rigid_on:
+            R = _project_rigid_body(
+                R, int(metal), _rigid_body_indices, P_init,
+            )
         L_grip, G_grip = fragments.evaluate(R) if len(fragments) > 0 else (0.0, np.zeros_like(R))
         L_clash, G_clash = clash.value_and_grad(R)
         L = float(L_grip) + float(L_clash)
@@ -1931,6 +2148,17 @@ def grip_polish(
         # those atoms in place (the metal + donors stay locked).
         if frozen_indices.size:
             G[frozen_indices] = 0.0
+        # Hapto-π rigid-body chain rule (default OFF byte-identical).
+        # The rigid-body atoms are determined by R[metal] (translation-
+        # locked), so their gradient flows entirely onto the metal's
+        # gradient slot; their own gradient is zeroed.  This makes
+        # L-BFGS-B leave the rigid-body atoms in place at each step --
+        # the post-step projection at the end of the polish re-applies
+        # the metal's net displacement to the rigid body.
+        if _hapto_rigid_on:
+            # Sum gradient contributions from rigid-body atoms onto metal.
+            G[int(metal)] = G[int(metal)] + G[_rigid_body_indices].sum(axis=0)
+            G[_rigid_body_indices] = 0.0
         # Guard against NaNs creeping in (e.g. coincident atoms in a step).
         if not np.isfinite(L):
             L = 0.0
@@ -2261,6 +2489,24 @@ def grip_polish(
                     best_n_iter = n_iter_try
             P_refined = best_P
             n_iter = best_n_iter
+
+    # Hapto-π rigid-body final projection (Task #91, 2026-06-07).
+    # The L-BFGS pass zeroed the rigid-body atoms' gradients so they
+    # stayed at P_init positions throughout the optimisation -- the
+    # gradient on those atoms was accumulated onto the metal's slot.
+    # Now apply the metal's net displacement to the rigid body so the
+    # output coordinates form a valid (translation-projected) rigid block.
+    # Default-OFF byte-identical: when ``_hapto_rigid_on`` is False the
+    # call is a pure ``P_refined.copy()`` (no displacement applied).
+    if _hapto_rigid_on and np.all(np.isfinite(P_refined)):
+        try:
+            P_refined = _project_rigid_body(
+                P_refined, int(metal), _rigid_body_indices, P_init,
+            )
+        except Exception:
+            # Fail-open: if projection raises, keep the L-BFGS result so
+            # downstream validators can still decide.  Should never trigger.
+            pass
 
     # ------------------------------------------------------------------
     # 6. Hard-constraint validation.  Any failure -> rollback to P0.
