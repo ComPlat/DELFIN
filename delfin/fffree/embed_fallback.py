@@ -537,6 +537,19 @@ def _emit_orbit_ensemble(
             params.useRandomCoords = True
             params.numThreads = 1
             params.SetCoordMap(cmap)
+            # Universal SMILES stereo respect: when the env-gate is on, flip
+            # ``enforceChirality`` + ``useBasicKnowledge`` so the embed
+            # respects the canonical stereo assigned in ``enforce_stereo``
+            # above.  Default OFF -> no effect on byte-identity.
+            try:
+                from delfin.fffree.smiles_stereo_respect import (
+                    flag_active as _stereo_active,
+                    configure_etkdg_for_stereo as _stereo_etkdg,
+                )
+                if _stereo_active():
+                    _stereo_etkdg(params)
+            except Exception:
+                pass
         except Exception:
             continue
         # Re-use the same molecule but request a fresh conformer batch.
@@ -681,6 +694,23 @@ def embed_isomers(
     except Exception:
         return None
 
+    # Universal SMILES stereo respect (GENFUB fix, 2026-06-07).  When env
+    # ``DELFIN_FFFREE_SMILES_STEREO_RESPECT`` is truthy, pin every
+    # unspecified double-bond / chiral-center to a deterministic canonical
+    # value (E / R) so the multi-conf ETKDG embed produces a single
+    # stereoisomer instead of mixing E and Z (or R and S) across frames.
+    # Default OFF -> byte-identical.  See
+    # :mod:`delfin.fffree.smiles_stereo_respect` for the universal contract.
+    try:
+        from delfin.fffree.smiles_stereo_respect import (
+            flag_active as _stereo_active,
+            enforce_stereo as _enforce_stereo,
+        )
+        if _stereo_active():
+            _enforce_stereo(mol)
+    except Exception:
+        pass
+
     n_embed = max(1, min(int(max_isomers), 16))
 
     # Polyhedron-Vertex Pólya Enumeration (2026-06-07): when the env-gate is
@@ -743,6 +773,19 @@ def embed_isomers(
     params.randomSeed = ETKDG_SEED
     params.useRandomCoords = False
     params.numThreads = 1
+    # Universal SMILES stereo respect (GENFUB fix, 2026-06-07): when the
+    # env-gate is on, flip enforceChirality + useBasicKnowledge so the
+    # ETKDG embed respects the stereo descriptors assigned (or pre-existing)
+    # on ``mol``.  Default OFF -> byte-identical.
+    try:
+        from delfin.fffree.smiles_stereo_respect import (
+            flag_active as _stereo_active,
+            configure_etkdg_for_stereo as _stereo_etkdg,
+        )
+        if _stereo_active():
+            _stereo_etkdg(params)
+    except Exception:
+        pass
     try:
         cids = AllChem.EmbedMultipleConfs(mol, numConfs=n_embed, params=params)
     except Exception:
