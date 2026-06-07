@@ -781,6 +781,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}; pos = 1
     relax_frags = []          # (AddHs(lg.mol), ligands-only offset) for the internal relax
+    # donor-drift enforcement bookkeeping (Bug-class #1, 2026-06-07):
+    # for every constructed σ-donor we record which polyhedron vertex hosts it,
+    # so the post-build enforcer can project drifted donors back to the IDEAL
+    # vertex direction (and not only along the current M-D direction).  Hapto-π
+    # donors are tracked separately so the enforcer skips them.
+    _donor_to_vertex: dict = {}
+    _hapto_donor_globals: set = set()
     for li, va in by_lig.items():
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
@@ -1007,6 +1014,31 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         # freeze the donor atoms at their vertices
         for d in dons:
             fixed.add(pos + d)
+        # donor-drift bookkeeping (post-build enforcer, Bug-class #1, 2026-06-07).
+        # Map every CONSTRUCTED σ-donor to its assigned polyhedron vertex index so
+        # the enforcer can project drifted donors back to the IDEAL vertex
+        # direction.  Hapto-π ligands are collected separately and skipped by the
+        # enforcer because they are governed by M-centroid, not per-atom M-D.
+        try:
+            _dent_now = int(lg.get("denticity", 1))
+            _is_hapto_now = bool(lg.get("is_hapto", False))
+            if _is_hapto_now:
+                for _d in dons:
+                    _hapto_donor_globals.add(pos + int(_d))
+            elif _dent_now == 1:
+                # monodentate: one vertex (va[0][0]), one canonical donor dons[0]
+                if va and len(dons) >= 1:
+                    _donor_to_vertex[pos + int(dons[0])] = int(va[0][0])
+            else:
+                # chelate: dons_d[i] <-> verts[i] where verts = [v sorted by arm]
+                _verts_now = [v for v, arm in sorted(va, key=lambda x: x[1])]
+                _dons_d_now = dons[:_dent_now]
+                for _i in range(min(len(_verts_now), len(_dons_d_now))):
+                    _donor_to_vertex[pos + int(_dons_d_now[_i])] = int(_verts_now[_i])
+        except Exception:
+            # Bookkeeping is best-effort: a missing vertex map just falls back to
+            # the current-direction projection in the enforcer.
+            pass
         pos += len(lsyms)
     P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
     if refine:
@@ -1394,6 +1426,52 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         except Exception:
             pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
+    # DONOR-DRIFT ENFORCEMENT (2026-06-07, Bug-class #1: 38.9 % of V3 voll-pool).
+    # For every declared σ-donor we hard-enforce r(M-D) <= md_target * MAX_FACTOR
+    # (default 1.15).  Drifted donors are projected back to M + v_ideal * md_target
+    # (vertex direction when known, else current direction) and the bonded ligand
+    # subtree is translated by the same delta so ligand-internal geometry is
+    # preserved.  Defence-in-depth: the post-repair P is only accepted when it is
+    # finite-valued and the repair did not move the metal at index 0.  Env-gated
+    # default OFF (DELFIN_FFFREE_DONOR_DRIFT_ENFORCE=1), byte-identical to HEAD
+    # when unset.
+    try:
+        from delfin.fffree.donor_drift_enforce import (
+            enforce_active as _dde_active,
+            enforce_donor_shell as _dde_enforce,
+        )
+        if _dde_active() and donors:
+            # Build heavy-bond list (same shape as the construction_sanity gate):
+            # per-ligand internal bonds + metal-donor bonds.
+            _bonds_for_dde: list = []
+            try:
+                for _frag_mol, _off in relax_frags:
+                    for _b in _frag_mol.GetBonds():
+                        _i = _b.GetBeginAtomIdx() + _off + 1
+                        _j = _b.GetEndAtomIdx() + _off + 1
+                        _bonds_for_dde.append((_i, _j))
+            except Exception:
+                _bonds_for_dde = []
+            for _dg in donors:
+                _bonds_for_dde.append((0, _dg))
+            P_pre_dde = P.copy()
+            P_dde, _repairs = _dde_enforce(
+                out_syms, P, metal_idx=0, donor_idxs=donors,
+                bonds=_bonds_for_dde,
+                geometry=str(geometry or ""),
+                donor_to_vertex=_donor_to_vertex,
+                hapto_donors=_hapto_donor_globals,
+            )
+            if (P_dde is not None and isinstance(P_dde, np.ndarray)
+                    and P_dde.shape == P.shape
+                    and np.all(np.isfinite(P_dde))
+                    # Metal never moves under the enforcer; verify defence-in-depth.
+                    and float(np.linalg.norm(P_dde[0] - P_pre_dde[0])) < 1e-6):
+                P = P_dde
+    except Exception:
+        # Any failure -> keep the pre-enforcer P (build never regresses on the
+        # env-gated repair's import errors).
+        pass
     # CONSTRUCTION-SANITY GATE (2026-06-07, Bug-class 2+3):
     # Post-embedding sanity check rejects builds that contain Pauli-floor
     # violations, severely stretched/compressed bonds, drifted M-D distances
