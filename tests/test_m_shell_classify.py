@@ -111,14 +111,25 @@ def _build_main_group_overfill():
 # Required tests
 # ---------------------------------------------------------------------------
 def test_emerging_kappa_kept():
-    """κ²-acetate emergence on a κ¹ SMILES: classifier must report the
-    second carboxylate-O as a valid alternative (emergent_kappa)."""
+    """κ²-acetate emergence on a κ¹ SMILES: under the opt-in research
+    flag ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1`` the second
+    carboxylate-O must be reported as a valid alternative.  In STRICT
+    default mode it would be rolled back instead (covered by
+    ``test_strict_default_rejects_emergent`` below)."""
     from delfin.fffree.m_shell_classify import classify_m_shell_extras
 
     mol, syms, P, m_idx, designated, emergent = _build_cu_oac_kappa2()
-    res = classify_m_shell_extras(
-        syms, P, m_idx, designated_donors=designated, mol=mol,
-    )
+    saved_e = os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")
+    try:
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
+        res = classify_m_shell_extras(
+            syms, P, m_idx, designated_donors=designated, mol=mol,
+        )
+    finally:
+        if saved_e is None:
+            os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        else:
+            os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = saved_e
     assert emergent in res["shell"], (
         f"Emergent O should be inside the geometric shell, got shell={res['shell']}"
     )
@@ -290,16 +301,21 @@ def test_classifier_env_explicit_off_overrides_mogul():
 # Integration with the rotamer-topology gate
 # ---------------------------------------------------------------------------
 def test_gate_keeps_emergent_kappa_when_classifier_on():
-    """Under DELFIN_FFFREE_MOGUL_PRIMARY=1 (auto-on for classifier), a
-    Cu-OAc geometry with κ² emergence must NOT be rejected as
-    m_shell_overfill."""
+    """Under ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` (auto-on for classifier)
+    PLUS the opt-in ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1`` research
+    flag, a Cu-OAc geometry with κ² emergence must NOT be rejected as
+    ``m_shell_overfill``.  Without the opt-in flag the STRICT default
+    rolls the emergence back -- that is the user-mandated behaviour
+    (see ``test_strict_default_rejects_emergent``)."""
     from delfin.fffree.rotamer_topology_gate import rotation_preserves_topology
     mol, syms, P, m_idx, designated, emergent = _build_cu_oac_kappa2()
     saved = os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY")
     saved_g = os.environ.get("DELFIN_FFFREE_ROTAMER_TOPOLOGY_GATE")
     saved_c = os.environ.get("DELFIN_FFFREE_M_SHELL_CLASSIFY")
+    saved_e = os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")
     try:
         os.environ["DELFIN_FFFREE_MOGUL_PRIMARY"] = "1"
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
         os.environ.pop("DELFIN_FFFREE_M_SHELL_CLASSIFY", None)
         ok, reason = rotation_preserves_topology(
             syms, P, mol=mol, return_reason=True,
@@ -315,6 +331,7 @@ def test_gate_keeps_emergent_kappa_when_classifier_on():
             ("DELFIN_FFFREE_MOGUL_PRIMARY", saved),
             ("DELFIN_FFFREE_ROTAMER_TOPOLOGY_GATE", saved_g),
             ("DELFIN_FFFREE_M_SHELL_CLASSIFY", saved_c),
+            ("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", saved_e),
         ):
             if v is None:
                 os.environ.pop(k, None)
@@ -365,3 +382,180 @@ def test_classifier_is_deterministic():
     ]
     for r in results[1:]:
         assert r == results[0]
+
+
+# ---------------------------------------------------------------------------
+# Strict-default tests (user mandate 2026-06-08)
+# ---------------------------------------------------------------------------
+def test_strict_default_rejects_emergent():
+    """Default mode (no env flag set) rolls back the κ²-acetate
+    emergence: SMILES topology = ground truth, the second carboxylate-O
+    is NOT a SMILES-designated donor, therefore it lands in ``spurious``
+    and ``valid_alternatives`` is empty."""
+    from delfin.fffree.m_shell_classify import classify_m_shell_extras
+
+    mol, syms, P, m_idx, designated, emergent = _build_cu_oac_kappa2()
+    saved_e = os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+    saved_s = os.environ.pop("DELFIN_FFFREE_M_SHELL_STRICT", None)
+    try:
+        res = classify_m_shell_extras(
+            syms, P, m_idx, designated_donors=designated, mol=mol,
+        )
+        assert emergent in res["shell"], (
+            f"Emergent O should still be inside the geometric shell, "
+            f"got shell={res['shell']}"
+        )
+        assert emergent in res["spurious"], (
+            f"STRICT default must reject emergent extra, got {res}"
+        )
+        assert res["valid_alternatives"] == [], (
+            f"STRICT default must produce no valid alternatives, got {res}"
+        )
+    finally:
+        if saved_e is not None:
+            os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = saved_e
+        if saved_s is not None:
+            os.environ["DELFIN_FFFREE_M_SHELL_STRICT"] = saved_s
+
+
+def test_emergent_opt_in_works():
+    """``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1`` opts back into the
+    legacy emergent-friendly research path: the κ²-acetate emergence
+    must then land in ``valid_alternatives``."""
+    from delfin.fffree.m_shell_classify import classify_m_shell_extras
+
+    mol, syms, P, m_idx, designated, emergent = _build_cu_oac_kappa2()
+    saved_e = os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")
+    try:
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
+        res = classify_m_shell_extras(
+            syms, P, m_idx, designated_donors=designated, mol=mol,
+        )
+        assert emergent in res["valid_alternatives"], (
+            f"Opt-in research mode must keep κ²-OAc emergent O, got {res}"
+        )
+        assert emergent not in res["spurious"]
+    finally:
+        if saved_e is None:
+            os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        else:
+            os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = saved_e
+
+
+def test_designated_donors_always_kept():
+    """A designated donor that sits inside the geometric shell is never
+    classified as ``spurious`` -- regardless of mode or env flags."""
+    from delfin.fffree.m_shell_classify import classify_m_shell_extras
+
+    # STRICT default
+    mol, syms, P, m_idx, designated, emergent = _build_cu_oac_kappa2()
+    saved_e = os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+    try:
+        res = classify_m_shell_extras(
+            syms, P, m_idx, designated_donors=designated, mol=mol,
+        )
+        for dd in designated:
+            assert dd in res["shell"], (
+                f"Designated donor {dd} should be in shell, got {res['shell']}"
+            )
+            assert dd not in res["spurious"], (
+                f"Designated donor {dd} must never be spurious, got {res}"
+            )
+            assert dd not in res["valid_alternatives"], (
+                f"Designated donor {dd} is not 'extra', should not appear in "
+                f"valid_alternatives, got {res}"
+            )
+
+        # EMERGENT-KAPPA opt-in
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
+        res = classify_m_shell_extras(
+            syms, P, m_idx, designated_donors=designated, mol=mol,
+        )
+        for dd in designated:
+            assert dd in res["shell"]
+            assert dd not in res["spurious"]
+            assert dd not in res["valid_alternatives"]
+    finally:
+        if saved_e is None:
+            os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        else:
+            os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = saved_e
+
+
+def test_off_byte_identical():
+    """When the classifier is OFF (``DELFIN_FFFREE_M_SHELL_CLASSIFY=0``
+    and ``DELFIN_FFFREE_MOGUL_PRIMARY`` unset), neither the strict-mode
+    flag nor the emergent-kappa flag has any effect on the gate -- this
+    keeps the HEAD-OFF code path byte-identical."""
+    from delfin.fffree.m_shell_classify import _env_on, _strict_mode_on
+
+    saved_c = os.environ.get("DELFIN_FFFREE_M_SHELL_CLASSIFY")
+    saved_mp = os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY")
+    saved_s = os.environ.get("DELFIN_FFFREE_M_SHELL_STRICT")
+    saved_e = os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")
+    try:
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_CLASSIFY", None)
+        os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY", None)
+        # No strict / no emergent flag
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_STRICT", None)
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        assert _env_on() is False
+        # Flipping the strict flag does NOT auto-enable the classifier
+        os.environ["DELFIN_FFFREE_M_SHELL_STRICT"] = "1"
+        assert _env_on() is False
+        # Setting the emergent-kappa flag also does NOT auto-enable it
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_STRICT", None)
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
+        assert _env_on() is False
+        # _strict_mode_on still reports the correct intent for the
+        # downstream classifier in isolation.
+        assert _strict_mode_on() is False  # because EMERGENT_KAPPA=1 wins
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        assert _strict_mode_on() is True   # default
+    finally:
+        for k, v in (
+            ("DELFIN_FFFREE_M_SHELL_CLASSIFY", saved_c),
+            ("DELFIN_FFFREE_MOGUL_PRIMARY", saved_mp),
+            ("DELFIN_FFFREE_M_SHELL_STRICT", saved_s),
+            ("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", saved_e),
+        ):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_strict_mode_env_resolution():
+    """Cover the precedence ladder in ``_strict_mode_on``:
+        (1) EMERGENT_KAPPA=1 ALWAYS turns strict OFF
+        (2) STRICT=0 turns strict OFF
+        (3) default = strict ON
+    """
+    from delfin.fffree.m_shell_classify import _strict_mode_on
+
+    saved_s = os.environ.get("DELFIN_FFFREE_M_SHELL_STRICT")
+    saved_e = os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")
+    try:
+        # default
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_STRICT", None)
+        os.environ.pop("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", None)
+        assert _strict_mode_on() is True
+        # explicit ON
+        os.environ["DELFIN_FFFREE_M_SHELL_STRICT"] = "1"
+        assert _strict_mode_on() is True
+        # explicit OFF
+        os.environ["DELFIN_FFFREE_M_SHELL_STRICT"] = "0"
+        assert _strict_mode_on() is False
+        # EMERGENT_KAPPA wins over STRICT=1
+        os.environ["DELFIN_FFFREE_M_SHELL_STRICT"] = "1"
+        os.environ["DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"] = "1"
+        assert _strict_mode_on() is False
+    finally:
+        for k, v in (
+            ("DELFIN_FFFREE_M_SHELL_STRICT", saved_s),
+            ("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA", saved_e),
+        ):
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v

@@ -1,32 +1,38 @@
 """delfin.fffree.m_shell_classify — Universal classifier for extra atoms
 inside a metal's geometric coordination shell.
 
-When the rotamer-topology gate flags a metal atom whose geometric shell
-contains MORE heavy atoms than the SMILES-graph CN (``m_shell_overfill``),
-that excess is one of two things:
+User-mandate (2026-06-08):
 
-  A) Genuine alternative donor (CHEMICALLY VALID, KEEP)
-     -- a heteroatom (or carbene-C) carrying at least one lone pair that
-        sits within bite-compatible range of an already-designated donor
-        on the same ligand fragment.  These are emergent κⁿ states:
-        κ²-acetate emerging from a κ¹ SMILES, hemilabile donor closing,
-        agostic α/β CH brushing the shell, etc.  These MUST NOT be
-        rejected — they are real chemistry that the SMILES under-described.
+    "meist nur koordinationen zulassen die durch topologie gegeben sind"
 
-  B) Spurious overfill (BUG, REJECT)
-     -- an atom WITHOUT a free lone pair (sp3-C backbone, plain H, etc.)
-        OR an atom outside any bite-compatible range of the designated
-        donor set on its fragment.  This is the soft-DG-drift signature:
-        a ligand backbone carbon randomly sliding into the inner sphere,
-        a hydrogen "tunnelling" past the M-D edge, a non-coordinating
-        fragment that happens to lie near M.
+The SMILES-graph topology is the ground truth for which atoms are donors.
+Anything else inside the metal's geometric shell is by default treated as
+SOFT-DG-DRIFT and rolled back.  The emergent-κⁿ path (the original
+"valid alternatives" branch) is preserved as an opt-in research mode
+behind ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1``.
+
+Two operating modes
+-------------------
+STRICT (default, ``DELFIN_FFFREE_M_SHELL_STRICT=1``)
+    Any heavy atom inside the geometric M-shell that is NOT one of the
+    SMILES-designated donors is classified as ``spurious``.  Triggers
+    rollback through the rotamer-topology gate.  This matches the user
+    mandate — only coordinations that the SMILES topology declares are
+    accepted.
+
+EMERGENT-κⁿ (opt-in, ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1``)
+    Extras that pass the lone-pair AND bite-compatibility test
+    (``MAX_GRAPH_HOPS_TO_DONOR`` hops AND ``MAX_GEOM_DIST_TO_DONOR`` Å to
+    a designated donor on the same ligand fragment) are tagged as
+    ``valid_alternatives`` and accepted.  Everything else is ``spurious``.
+    Use this only for explicit κⁿ-emergence research runs.
 
 The classifier is **pure**: it reads the mol graph, element symbols and
 3-D coordinates only.  No SMARTS, no per-anion table, no SMILES pattern.
 The lone-pair test is the textbook Lewis octet count (re-used from
-``ambidentate_kappa_enum``).  The bite-compatibility test is graph-bond
-distance ≤ ``MAX_GRAPH_HOPS_TO_DONOR`` AND through-space distance to the
-nearest designated donor ≤ ``MAX_GEOM_DIST_TO_DONOR``.
+``ambidentate_kappa_enum``).  Designated donors are exactly the heavy
+neighbours of the metal in the input RDKit Mol (i.e. the SMILES M-D
+edges from ``decompose.py``).
 
 Author: hmaximilian <hmaximilian496@gmail.com>
 Branch: feat-mogul-primary-2026-06-07
@@ -70,17 +76,52 @@ MAX_GEOM_DIST_TO_DONOR = 3.5
 # ---------------------------------------------------------------------------
 # Env-gate
 # ---------------------------------------------------------------------------
+def _truthy(raw) -> bool:
+    """Return True for the canonical "on" values used across DELFIN env-flags."""
+    if raw is None:
+        return False
+    return str(raw).strip() in ("1", "true", "True", "on", "yes", "YES")
+
+
 def _env_on() -> bool:
-    """Return True iff the classifier should soften the m-shell overfill
-    decision.  Default ON when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set.
-    Explicit ``DELFIN_FFFREE_M_SHELL_CLASSIFY=0`` disables.
+    """Return True iff the classifier path is active (i.e. the rotamer gate
+    should consult ``classify_m_shell_extras`` before rejecting an overfill).
+
+    Default ON when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set.  Explicit
+    ``DELFIN_FFFREE_M_SHELL_CLASSIFY=0`` disables.
     """
     raw = os.environ.get("DELFIN_FFFREE_M_SHELL_CLASSIFY")
     if raw is None:
         if os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY", "0") == "1":
             return True
         return False
-    return str(raw).strip() in ("1", "true", "True", "on", "yes", "YES")
+    return _truthy(raw)
+
+
+def _strict_mode_on() -> bool:
+    """Return True iff the classifier should run in STRICT mode -- i.e.
+    reject every non-designated M-shell extra (SMILES topology = ground
+    truth, user mandate 2026-06-08).
+
+    Resolution order (highest precedence first):
+      1. ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1`` -> STRICT is OFF
+         (opt-in to the legacy emergent-friendly path).
+      2. Explicit ``DELFIN_FFFREE_M_SHELL_STRICT=0`` -> STRICT is OFF
+         (rare research override).
+      3. Otherwise STRICT is ON whenever the classifier itself runs.
+    """
+    if _truthy(os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA")):
+        return False
+    raw = os.environ.get("DELFIN_FFFREE_M_SHELL_STRICT")
+    if raw is None:
+        return True
+    return _truthy(raw)
+
+
+def _emergent_opt_in() -> bool:
+    """Return True iff the user explicitly opted into the emergent-κⁿ
+    research path (``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1``)."""
+    return _truthy(os.environ.get("DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA"))
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +269,11 @@ def classify_m_shell_extras(
     """Classify the *extra* heavy atoms inside ``metal_idx``'s coordination
     shell into ``valid_alternatives`` and ``spurious``.
 
+    Default behaviour (STRICT mode, user mandate 2026-06-08): every extra
+    heavy atom is classified as ``spurious`` (SMILES topology = ground
+    truth).  Setting ``DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1`` re-enables
+    the legacy emergent-κⁿ path (lone-pair + bite-compatibility test).
+
     Parameters
     ----------
     syms : sequence of element symbols, length N.
@@ -235,20 +281,21 @@ def classify_m_shell_extras(
     metal_idx : index of the metal whose shell we are auditing.
     designated_donors : iterable of atom indices that the SMILES graph
         marks as the metal's primary donors (i.e. ``M-D`` edges in the
-        expected-bond set).
-    mol : optional RDKit Mol.  Required for graph-distance / lone-pair
-        checks.  When ``None`` the classifier returns every extra in the
-        ``spurious`` bucket (safe — we cannot prove emergence without the
-        graph).
+        expected-bond set).  These come straight from ``decompose.py`` /
+        the RDKit Mol bond graph.
+    mol : optional RDKit Mol.  Required for the emergent-κⁿ research
+        path (graph-distance + lone-pair tests).  In STRICT mode the
+        classifier ignores it because every non-designated extra is
+        rolled back regardless.
 
     Returns
     -------
     dict with three lists of atom indices (all sorted ascending):
-        ``valid_alternatives`` -- extras that pass the lone-pair AND
-            bite-compatibility test (legitimate κⁿ-emergence candidates,
-            chelate extensions, hemilabile arms).
-        ``spurious`` -- extras that fail either test (random soft-DG
-            drift, sp3-backbone, far-out atoms).
+        ``valid_alternatives`` -- emergent-κⁿ candidates kept under the
+            opt-in research mode.  Always empty in STRICT mode.
+        ``spurious`` -- extras to be rolled back.  In STRICT mode this
+            is the full set of non-designated shell atoms; in emergent
+            mode it is the subset that fails the lone-pair / bite tests.
         ``shell`` -- the full set of heavy atoms inside the geometric
             shell (designated_donors UNION extras).
 
@@ -263,6 +310,19 @@ def classify_m_shell_extras(
     valid_alternatives: List[int] = []
     spurious: List[int] = []
 
+    # STRICT mode (user mandate, default): any non-designated atom in the
+    # M-shell is rolled back.  This matches the SMILES topology as ground
+    # truth -- "meist nur koordinationen zulassen die durch topologie
+    # gegeben sind".  Emergent-κⁿ candidates only survive when the user
+    # opts in via DELFIN_FFFREE_M_SHELL_EMERGENT_KAPPA=1.
+    if _strict_mode_on():
+        return {
+            "valid_alternatives": valid_alternatives,
+            "spurious": sorted(extras),
+            "shell": shell,
+        }
+
+    # ---- EMERGENT-κⁿ RESEARCH PATH (opt-in only) ------------------------
     if mol is None or not extras:
         return {
             "valid_alternatives": valid_alternatives,
