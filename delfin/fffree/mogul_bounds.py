@@ -583,45 +583,93 @@ def _detect_md_bond_order_tag(mol, metal_idx: int, donor_idx: int) -> Optional[s
     case the supplement lookup is skipped and the cascade falls through to
     the legacy hyb-only lookup unchanged).
     """
+    from rdkit import Chem  # local import — mogul_bounds avoids module-level rdkit
     try:
         b = mol.GetBondBetweenAtoms(int(metal_idx), int(donor_idx))
     except Exception:
         return None
     if b is None:
         return None
-    # The M-D bond itself encoded as aromatic by RDKit (rare but possible).
+    # Read the bond type up-front so the conservative classifier sees
+    # both the explicit RDKit bond type AND the donor-context aromaticity.
     try:
-        if bool(b.GetIsAromatic()):
-            return "a"
+        bt = b.GetBondType()
     except Exception:
-        pass
-    # Donor-context aromaticity: ring-N or ring-C donor coordinating from an
-    # aromatic ring is what CCDC stores as Aromatic.  This is the chemistry
-    # that distinguishes pyridine-κ¹ (≈2.2 Å for W-N) from imine W-N (1.83 Å)
-    # and from W=N imido (1.76 Å).
-    try:
-        donor_atom = mol.GetAtomWithIdx(int(donor_idx))
-        if bool(donor_atom.GetIsAromatic()):
-            return "a"
-    except Exception:
-        pass
+        bt = None
     try:
         bt_dbl = float(b.GetBondTypeAsDouble())
     except Exception:
         bt_dbl = 1.0
     # RDKit ``GetBondTypeAsDouble``: SINGLE=1.0, DOUBLE=2.0, TRIPLE=3.0,
     # QUADRUPLE=4.0, AROMATIC=1.5, DATIVE=1.0 (treated as single).
-    if bt_dbl >= 3.5:
+    #
+    # Conservative classifier (2026-06-08, hmaximilian): when the RDKit
+    # bond encodes single / dative (the COMMON case for M-D), we always
+    # return '1' (or 'a' for explicitly aromatic donors), never '2' or
+    # '3'.  This guards against the regression where a sp3 P or sp2 C
+    # donor was misclassified as double-bonded via a loose 1.7-2.0
+    # threshold on ``GetBondTypeAsDouble`` (the supplement bo='2' lookup
+    # then returned a short imido / carbene distance for an ordinary
+    # phosphine / Cp donor).  Single-bond is the chemistry default for
+    # κⁿ coordination; '2' / '3' / '4' require EXPLICIT DOUBLE / TRIPLE
+    # / QUADRUPLE bond types from the SMILES parser.
+    is_explicit_single = (
+        bt == Chem.BondType.SINGLE
+        or bt == Chem.BondType.DATIVE
+        or bt == Chem.BondType.ZERO
+    )
+    is_explicit_double = (bt == Chem.BondType.DOUBLE)
+    is_explicit_triple = (bt == Chem.BondType.TRIPLE)
+    is_explicit_quad = (bt == Chem.BondType.QUADRUPLE)
+    is_explicit_aromatic_bond = False
+    try:
+        is_explicit_aromatic_bond = bool(b.GetIsAromatic()) or bt == Chem.BondType.AROMATIC
+    except Exception:
+        pass
+
+    # Triple / quadruple → trust the explicit bond type.
+    if is_explicit_quad or bt_dbl >= 3.5:
         return "4"
-    if bt_dbl >= 2.5:
+    if is_explicit_triple or bt_dbl >= 2.5:
         return "3"
+    # Explicit aromatic bond → 'a'.
+    if is_explicit_aromatic_bond:
+        return "a"
+    # Explicit double → '2'.
+    if is_explicit_double:
+        return "2"
+    # Explicit single / dative: trust it.  Donor-context aromaticity
+    # then upgrades to 'a' only when the donor itself sits in an
+    # aromatic ring (κ¹-pyridine, κ¹-pyrrole, …) — this preserves the
+    # pyridine-κ¹ vs imine-vs-imido disaggregation the supplement was
+    # built for.  Critically, we DO NOT emit '2' or '3' here regardless
+    # of donor hybridisation — that would break sp2-C / sp3-P donor
+    # bonds whose dative type the parser stores as SINGLE.
+    if is_explicit_single:
+        try:
+            donor_atom = mol.GetAtomWithIdx(int(donor_idx))
+            if bool(donor_atom.GetIsAromatic()):
+                return "a"
+        except Exception:
+            pass
+        return "1"
+    # Implicit fall-through (UNSPECIFIED / OTHER bond types from rare
+    # parser paths).  Use the numeric threshold strictly:
+    #   ≥ 1.85  → double (very strict; AROMATIC=1.5 falls below)
+    #   1.4-1.7 → aromatic
+    #   else    → CONSERVATIVE '1' (single is the default for ambiguous)
+    if bt_dbl >= 1.85:
+        return "2"
     if 1.4 <= bt_dbl < 1.7:
         return "a"
-    if bt_dbl >= 1.7:
-        return "2"
-    if bt_dbl >= 0.5:
-        return "1"
-    return "?"
+    # Donor-aromatic fallback for the ambiguous numeric path.
+    try:
+        donor_atom = mol.GetAtomWithIdx(int(donor_idx))
+        if bool(donor_atom.GetIsAromatic()):
+            return "a"
+    except Exception:
+        pass
+    return "1"
 
 
 def _lookup_bond_md(

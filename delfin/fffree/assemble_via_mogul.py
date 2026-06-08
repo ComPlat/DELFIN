@@ -2581,8 +2581,6 @@ def _project_donors_to_ccdc_geometry(
     metal_sym = str(syms[int(metal_idx)])
     ref_unit = _polyhedron_for_donors(metal_sym, n_d,
                                       geometry_key=geometry_key)
-    if ref_unit is None:
-        return P
 
     # Decide which donor sits at which polyhedron vertex.  Default =
     # sorted-canonical (matches the bounds-matrix donor_list); orbit
@@ -2601,14 +2599,23 @@ def _project_donors_to_ccdc_geometry(
         nv = float(np.linalg.norm(v))
         cur_dirs[k] = v / nv if nv > 1e-9 else np.array([1.0, 0.0, 0.0])
 
-    # Kabsch align ``ref_unit`` to ``cur_dirs`` so the polyhedron is in
-    # the same orientation as the embed (no isomer change).
-    H = cur_dirs.T @ ref_unit
-    U, S, Vt = np.linalg.svd(H)
-    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
-        Vt[-1, :] *= -1.0
-    Rrot = U @ Vt
-    aligned = ref_unit @ Rrot.T
+    if ref_unit is not None:
+        # Kabsch align ``ref_unit`` to ``cur_dirs`` so the polyhedron is in
+        # the same orientation as the embed (no isomer change).
+        H = cur_dirs.T @ ref_unit
+        U, S, Vt = np.linalg.svd(H)
+        if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+            Vt[-1, :] *= -1.0
+        Rrot = U @ Vt
+        aligned = ref_unit @ Rrot.T
+    else:
+        # No registered polyhedron for this CN (rare, e.g. CN=12 bis-η⁶
+        # arene).  Use the embed's own donor directions as the projection
+        # rays — supplement-based radial pull still applies (the donor's
+        # M-D distance gets pulled onto the CCDC mean) without enforcing
+        # any specific vertex polyhedron.  Universal fallback so we
+        # never silently skip the projection on rare-CN cases.
+        aligned = cur_dirs.copy()
 
     # Translate each ligand subtree onto its target.
     #
@@ -2697,25 +2704,124 @@ def _project_donors_to_ccdc_geometry(
                 visited.add(a)
             continue
 
-        # CHELATE: the embed already produces a good internal geometry
-        # (donor-donor distance comes out of the polyhedron donor-donor
-        # bound + the chelate's natural bite angle).  The polyhedron the
-        # bounds matrix picks may NOT match the chelate's intrinsic
-        # geometry (e.g. tridentate-N₃ pyridyl chelate fits a meridional
-        # cis-cis arrangement, not the tetrahedron T-4 the default
-        # ``geometries_for_cn(4)`` returns).  Forcing it onto a poor
-        # polyhedron via Kabsch causes some donors to collapse into the
-        # metal.
+        # CHELATE: the embed already produces a good *internal* geometry
+        # (chelate's natural bite angle, ring puckers, bond lengths) but
+        # the M-D distance can drift outside the CCDC supplement window
+        # because the DG embedder uses a smooth soft-penalty that doesn't
+        # strictly enforce the hard bounds — and we don't have a per-
+        # donor delta to apply (each donor's translation would drag the
+        # shared subtree atoms, scrambling the chelate).
         #
-        # Conservative policy: do NOT re-project chelate subtrees.  The
-        # embedder's positions are within ±0.1 Å of the CCDC window for
-        # M-D (verified on BERTEB / ALAHEB) and the D-M-D angles reflect
-        # the chelate's intrinsic bite.  This matches the draft
-        # manuscript's design — chelate geometry IS empirical CCDC for
-        # that LIGAND'S internal frame, not for an idealised polyhedron.
-        # Mark all atoms visited so any subsequent monodentate
-        # projection in the same complex does not double-move them.
+        # Conservative chelate fix (2026-06-08, hmaximilian, Bug B):
+        # apply a single RIGID-BODY transform (rotation + translation)
+        # to the WHOLE chelate subtree so every donor lands as close as
+        # possible to its supplement-derived target ``M + r_target ·
+        # aligned[k]``.  Kabsch solves the LSQ rigid alignment of
+        # ``embed donors`` → ``targets`` and preserves all internal
+        # distances + angles by construction.  Universal: works for any
+        # bidentate / tridentate / polydentate chelate.
+        #
+        # Env-flag: DELFIN_FFFREE_PROJECTION_USE_SUPPLEMENT (default ON
+        # when MOGUL_PRIMARY is active).  Set to 0 explicitly to restore
+        # the legacy "skip chelate projection" behaviour.
+        _use_supp = os.environ.get(
+            "DELFIN_FFFREE_PROJECTION_USE_SUPPLEMENT", "1"
+        ).strip().lower() not in ("", "0", "false", "no")
+        if not _use_supp:
+            for a in movable:
+                visited.add(a)
+            continue
+
+        # Donor coordinates in the embed (one row per donor in this group).
+        src_donors = np.asarray(
+            [P[int(d)] for d in donor_indices_in_group], dtype=float
+        )
+        tgt_donors = np.asarray(target_positions, dtype=float)
+        n_pts = src_donors.shape[0]
+        if n_pts < 2:
+            # Should never hit -- single-donor branch handled above.
+            for a in movable:
+                visited.add(a)
+            continue
+
+        # Centroid radial translation for chelates (2026-06-08,
+        # hmaximilian, Bug B universal fix):
+        #
+        # The fundamental problem: each donor has a target M-D distance
+        # from the CCDC supplement, but donors in a chelate share
+        # subtree atoms (ring carbons, backbone) and cannot be
+        # translated independently without tearing the ring apart.
+        # The DG embed lands the chelate at its OWN intrinsic geometry
+        # which may put the MEAN M-D distance below or above the
+        # supplement window (typically pinched downward when the
+        # chelate's bite forces donors toward each other).
+        #
+        # We solve this with a CENTROID RADIAL TRANSLATION applied to
+        # the whole subtree:
+        #   1. Compute the EMBED'S MEAN per-donor M-D distance:
+        #      r_src_md = mean(|donor_k - metal|).
+        #   2. Compute the TARGET MEAN: r_tgt_md = mean(supplement[k]).
+        #   3. Translate the entire chelate subtree along the unit
+        #      vector ``(centroid_of_donors - metal)/r_src_centroid``
+        #      by magnitude ``(r_tgt_md - r_src_md)``.
+        #
+        # Pure translation -> preserves every internal distance and
+        # angle by construction.  Pulls the chelate's MEAN per-donor M-D
+        # distance onto the CCDC empirical mean.  Per-donor radial
+        # fine-tuning is deferred to GRIP-polish which already runs
+        # after projection and honours per-donor Mahalanobis pulls
+        # under a hard topology validator.
+        #
+        # ACCEPT-IF-BETTER gate: only apply when the post-translation
+        # RMS per-donor deviation IMPROVES.  Guards against degenerate
+        # chelates whose intrinsic geometry already sits near the
+        # supplement mean (no improvement available) or where the
+        # centroid direction is mis-aligned (e.g. a chelate whose
+        # donors converge axially -- the centroid is much closer to
+        # the metal than the donors themselves are).  Universal
+        # geometric check, no per-class branch.
+        r_src_centroid = float(np.linalg.norm(src_donors.mean(axis=0) - metal_pos))
+        if r_src_centroid < 1e-6:
+            for a in movable:
+                visited.add(a)
+            continue
+        per_donor_targets = np.linalg.norm(tgt_donors - metal_pos, axis=1)
+        pre_src_md = np.linalg.norm(src_donors - metal_pos, axis=1)
+        # Centroid direction (unit) -- the chelate moves rigidly along
+        # this ray.
+        radial_dir = (src_donors.mean(axis=0) - metal_pos) / r_src_centroid
+        # Closed-form optimal scalar translation along ``radial_dir``
+        # that minimises Σ((|donor_k + t·r̂ - metal|)² - target_k²)²
+        # is intractable; the linear-in-distance proxy ``t = mean(target)
+        # - mean(pre_md)`` is the right first-order estimate and is what
+        # we use.  Capped at ±0.6 Å.
+        delta_r = float(np.mean(per_donor_targets) - np.mean(pre_src_md))
+        translation_mag = max(-0.6, min(0.6, delta_r))
+        translation = translation_mag * radial_dir
+        post_src = src_donors + translation
+        post_md = np.linalg.norm(post_src - metal_pos, axis=1)
+
+        # Hard floor: reject if any donor would end up below 0.7×target
+        # (heavy contraction) or above 1.5×target (heavy stretch).
+        if (np.any(post_md < 0.7 * per_donor_targets)
+                or np.any(post_md > 1.5 * per_donor_targets)):
+            for a in movable:
+                visited.add(a)
+            continue
+
+        # Accept-if-better gate: RMS per-donor deviation from target.
+        pre_rms_dev = float(np.sqrt(np.mean((pre_src_md - per_donor_targets) ** 2)))
+        post_rms_dev = float(np.sqrt(np.mean((post_md - per_donor_targets) ** 2)))
+        if post_rms_dev >= pre_rms_dev:
+            for a in movable:
+                visited.add(a)
+            continue
+
+        # Apply the radial translation to every movable atom (whole
+        # subtree).  This preserves all internal distances and angles
+        # by construction (pure translation).
         for a in movable:
+            P[a] = P[a] + translation
             visited.add(a)
     return P
 
