@@ -359,9 +359,21 @@ class TestMogulPrimaryConformers(unittest.TestCase):
 
     def test_on_emits_ensemble_berteb(self):
         """BERTEB (Ni CN4, with rotatable C-C single bonds) must emit more
-        than 1 structure when the conformer gate is on (default)."""
-        # Default ON: do not set the env var.
-        res = _run_with_env(True, SMILES_BERTEB)
+        than 1 structure when the conformer gate is on.
+
+        BERTEB has no puckerable 5/6/7 rings (only aromatic π-systems),
+        so its ensemble is driven by the single-bond rotamer channel.
+        Under the 2026-06-08 conformer split that channel defaults OFF,
+        so we explicitly enable it here to preserve the test's semantic
+        intent ("rotamer ensemble emits >=2 structures").
+        """
+        # Enable the single-bond rotamer channel explicitly -- this test
+        # validates the rotamer ensemble for an aromatic-only molecule.
+        os.environ["DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER"] = "1"
+        try:
+            res = _run_with_env(True, SMILES_BERTEB)
+        finally:
+            os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER", None)
         n = self._count_conformers(res)
         # We require at least 2 (so the ensemble is non-trivial).  In
         # practice we see 13 for BERTEB, but allow regression at the
@@ -402,14 +414,23 @@ class TestMogulPrimaryConformers(unittest.TestCase):
         donor-linear (SIYMEU) -- both go through the same enumerate_orbit
         _conformers code path with no per-class branching.  Both must
         produce more than 1 conformer (since both have rotatable bonds).
+
+        Both probe the single-bond rotamer channel (aromatic-only ring
+        systems), so we enable it explicitly under the 2026-06-08 split.
         """
-        for label, smi in [("BERTEB", SMILES_BERTEB), ("SIYMEU", SMILES_SIYMEU)]:
-            res = _run_with_env(True, smi)
-            n = self._count_conformers(res)
-            self.assertGreaterEqual(
-                n, 2,
-                f"{label}: expected conformer ensemble, got N={n}",
-            )
+        os.environ["DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER"] = "1"
+        try:
+            for label, smi in [
+                ("BERTEB", SMILES_BERTEB), ("SIYMEU", SMILES_SIYMEU),
+            ]:
+                res = _run_with_env(True, smi)
+                n = self._count_conformers(res)
+                self.assertGreaterEqual(
+                    n, 2,
+                    f"{label}: expected conformer ensemble, got N={n}",
+                )
+        finally:
+            os.environ.pop("DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER", None)
 
 
 if __name__ == "__main__":
