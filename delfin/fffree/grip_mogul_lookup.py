@@ -641,15 +641,28 @@ class GripLibrary:
             self.meta_n_total_scanned = 0
 
         # ---------------------------------------------------------------
-        # Bond-order-aware M-D supplement (additive, env-gated; default OFF
-        # byte-identical when the env-flag is unset OR the supplement file
-        # is absent).  Built by ``scripts/grip_build_md_bond_order_supplement.py``
+        # Bond-order-aware M-D supplement(s) (additive, env-gated; default OFF
+        # byte-identical when the env-flag is unset OR no supplement file is
+        # present).  Built by ``scripts/grip_build_md_bond_order_supplement.py``
         # to disaggregate M-D bonds whose pair_bond_key collapses chemically
-        # distinct populations (e.g. W=N imido vs W-pyridine, W=O oxo vs
-        # W-alkoxide).  The supplement key format is
+        # distinct populations (e.g. W=N imido vs W-pyridine, Cr=O oxo vs
+        # Cr-O alkoxide).  The supplement key format is
         # ``[Z_donor, hyb_donor, "@bo<X>", Z_metal, "*"]`` where ``<X>`` is
         # ``'1'``, ``'2'``, ``'3'``, ``'4'`` or ``'a'``.
+        #
+        # Multi-supplement support (2026-06-08, hmaximilian): the env-var
+        # ``DELFIN_GRIP_MD_BO_SUPPLEMENT`` accepts a SINGLE path OR an
+        # ``os.pathsep``-separated list of paths.  All supplements load into
+        # a list; the lookup tries each supplement that claims the requested
+        # metal.  This lets the 3d/4d (Ti/V/Cr/Mn/Fe/Co/Ni/Cu/Zr/Nb/Hf/Ta/
+        # Pd/Rh/Pt/Ir/Au) and 5d-mid (W/Mo/Tc/Re) supplements coexist without
+        # one re-building the other's metal scope.
         # ---------------------------------------------------------------
+        # ``_md_bo_supplements`` is a list of dicts, each with keys:
+        #   ``key_to_idx`` (dict[str, int]), ``mu`` / ``sigma`` / ``p5`` / ``p95`` / ``n``
+        #   (numpy arrays), ``metals`` (frozenset[str]).
+        self._md_bo_supplements: list[dict] = []
+        # Legacy aliases for backward-compat with code that reads the scalars.
         self._md_bo_key_to_idx: dict[str, int] = {}
         self._md_bo_mu = None
         self._md_bo_sigma = None
@@ -658,38 +671,54 @@ class GripLibrary:
         self._md_bo_n = None
         self.n_md_bo = 0
         self._md_bo_metals: frozenset = frozenset()
-        sup_path = os.environ.get("DELFIN_GRIP_MD_BO_SUPPLEMENT", "").strip()
-        if sup_path:
-            try:
-                sup_p = Path(sup_path).expanduser().resolve()
-                if sup_p.exists():
+        sup_env = os.environ.get("DELFIN_GRIP_MD_BO_SUPPLEMENT", "").strip()
+        if sup_env:
+            # Allow `os.pathsep`-separated list of supplement files.  Empty
+            # entries (leading / trailing separators) are skipped.
+            raw_paths = [p for p in sup_env.split(os.pathsep) if p.strip()]
+            for raw in raw_paths:
+                try:
+                    sup_p = Path(raw).expanduser().resolve()
+                    if not sup_p.exists():
+                        continue
                     sup = np.load(sup_p, allow_pickle=True, mmap_mode="r")
-                    if "md_bo_pair_keys" in sup.files:
-                        keys_list = sup["md_bo_pair_keys"].tolist()
-                        self._md_bo_key_to_idx = {
-                            str(k): i for i, k in enumerate(keys_list)
-                        }
-                        self._md_bo_mu = sup["md_bo_pair_mu"]
-                        self._md_bo_sigma = sup["md_bo_pair_sigma"]
-                        if "md_bo_pair_p5" in sup.files:
-                            self._md_bo_p5 = sup["md_bo_pair_p5"]
-                            self._md_bo_p95 = sup["md_bo_pair_p95"]
-                        self._md_bo_n = sup["md_bo_pair_n"]
-                        self.n_md_bo = len(keys_list)
-                        if "metals" in sup.files:
-                            self._md_bo_metals = frozenset(
-                                str(s) for s in sup["metals"].tolist()
-                            )
-            except Exception:
-                # Defensive: any load issue silently disables the supplement.
-                self._md_bo_key_to_idx = {}
-                self._md_bo_mu = None
-                self._md_bo_sigma = None
-                self._md_bo_p5 = None
-                self._md_bo_p95 = None
-                self._md_bo_n = None
-                self.n_md_bo = 0
-                self._md_bo_metals = frozenset()
+                    if "md_bo_pair_keys" not in sup.files:
+                        continue
+                    keys_list = sup["md_bo_pair_keys"].tolist()
+                    rec = {
+                        "key_to_idx": {str(k): i for i, k in enumerate(keys_list)},
+                        "mu": sup["md_bo_pair_mu"],
+                        "sigma": sup["md_bo_pair_sigma"],
+                        "p5": sup["md_bo_pair_p5"] if "md_bo_pair_p5" in sup.files else None,
+                        "p95": sup["md_bo_pair_p95"] if "md_bo_pair_p95" in sup.files else None,
+                        "n": sup["md_bo_pair_n"],
+                        "metals": frozenset(
+                            str(s) for s in sup["metals"].tolist()
+                        ) if "metals" in sup.files else frozenset(),
+                    }
+                    self._md_bo_supplements.append(rec)
+                except Exception:
+                    # Defensive: any single-file load issue skips that file
+                    # only -- other supplements still load.
+                    continue
+            # Aggregate legacy scalars from the FIRST supplement (so existing
+            # tests / read-only consumers keep working), and the union of
+            # metals + total n_md_bo across all loaded supplements.
+            if self._md_bo_supplements:
+                first = self._md_bo_supplements[0]
+                self._md_bo_key_to_idx = first["key_to_idx"]
+                self._md_bo_mu = first["mu"]
+                self._md_bo_sigma = first["sigma"]
+                self._md_bo_p5 = first["p5"]
+                self._md_bo_p95 = first["p95"]
+                self._md_bo_n = first["n"]
+                self.n_md_bo = sum(
+                    len(rec["key_to_idx"]) for rec in self._md_bo_supplements
+                )
+                metals_union: set = set()
+                for rec in self._md_bo_supplements:
+                    metals_union |= rec["metals"]
+                self._md_bo_metals = frozenset(metals_union)
 
     @property
     def has_tm_categories(self) -> bool:
@@ -1062,7 +1091,7 @@ class GripLibrary:
         ``'1'`` first then ``'a'`` -- single-bond is the chemistry default
         for κⁿ-donor coordination.
         """
-        if self._md_bo_mu is None or self.n_md_bo == 0:
+        if not self._md_bo_supplements:
             return None
         if metal not in self._md_bo_metals:
             return None
@@ -1072,26 +1101,38 @@ class GripLibrary:
             tag_chain = ("1", "a", "2")
         else:
             tag_chain = (bond_order_tag,)
-        for tag in tag_chain:
-            for dh in (donor_hyb, "*"):
-                key = json.dumps(
-                    [str(donor), str(dh), f"@bo{tag}", str(metal), "*"],
-                    separators=(",", ":"), ensure_ascii=False,
-                )
-                idx = self._md_bo_key_to_idx.get(key)
-                if idx is None:
-                    continue
-                n = int(self._md_bo_n[idx])
-                if n < min_n:
-                    continue
-                mu = float(self._md_bo_mu[idx])
-                sigma = float(self._md_bo_sigma[idx])
-                if not (np.isfinite(mu) and np.isfinite(sigma)):
-                    continue
-                # Sigma floor so a single sample (sigma=0) doesn't degenerate
-                # the downstream bound.
-                sigma = max(0.03, sigma)
-                return (mu, sigma, n)
+        # Iterate supplements in load order; first hit (passing min_n) wins.
+        # Per-supplement order respects the env-var ordering, which lets the
+        # caller prefer one supplement over the other (e.g. put a more
+        # recently built / better-curated one first).  Within each supplement
+        # we walk tag-chain × donor_hyb-wildcard cascade.
+        for rec in self._md_bo_supplements:
+            if metal not in rec["metals"]:
+                continue
+            kti = rec["key_to_idx"]
+            mu_arr = rec["mu"]
+            sigma_arr = rec["sigma"]
+            n_arr = rec["n"]
+            for tag in tag_chain:
+                for dh in (donor_hyb, "*"):
+                    key = json.dumps(
+                        [str(donor), str(dh), f"@bo{tag}", str(metal), "*"],
+                        separators=(",", ":"), ensure_ascii=False,
+                    )
+                    idx = kti.get(key)
+                    if idx is None:
+                        continue
+                    n = int(n_arr[idx])
+                    if n < min_n:
+                        continue
+                    mu = float(mu_arr[idx])
+                    sigma = float(sigma_arr[idx])
+                    if not (np.isfinite(mu) and np.isfinite(sigma)):
+                        continue
+                    # Sigma floor so a single sample (sigma=0) doesn't degenerate
+                    # the downstream bound.
+                    sigma = max(0.03, sigma)
+                    return (mu, sigma, n)
         return None
 
     def _v4_lookup_bond(
