@@ -600,6 +600,79 @@ def assemble_complex_mogul_primary(
     except Exception:
         pass  # silent rollback: never crash on the fused-plane gate
 
+    # 4f) Rigid-aromatic-chelate placement (hmaximilian 2026-06-08).
+    #
+    #     Aromatic chelates (phen, bipy, terpy, pybox, salen-aromatic, ...)
+    #     are crystallographically RIGID BODIES: the aromatic backbone fixes
+    #     the bite angle, donor-donor distance, plane, and every internal
+    #     bond length to within thermal motion.  The soft-DG embed + per-
+    #     donor centroid radial pull treats them as flexible and lets the
+    #     metal pull donors independently, leaving M-N(phen) at 2.07-2.20 Å
+    #     where the CCDC mean is 1.95 ± 0.06 Å, and the metal sitting
+    #     0.05-0.15 Å above the chelate plane.
+    #
+    #     This step:
+    #       1. detects chelate ligands whose donor pairs are connected via
+    #          paths of aromatic bonds only (universal — pure RDKit
+    #          ``Bond.GetIsAromatic()``),
+    #       2. builds a template by standalone RDKit-embedding the ligand
+    #          fragment (aromatic backbone fixes its rigid geometry),
+    #       3. Kabsch-aligns the template donor positions onto the
+    #          polyhedron-vertex × CCDC-M-D target positions, and
+    #       4. drags the WHOLE ligand subtree (donors + aromatic atoms +
+    #          substituents + Hs) by the same rigid transform.
+    #
+    #     Universal: no SMILES patterns, no per-chelate template table.
+    #     Defence-in-depth: per-chelate rollback if the post-placement
+    #     donor RMS exceeds 0.15 Å or any M-D distance drifts more than
+    #     0.05 Å from its supplement target.
+    #
+    #     Env-flag DELFIN_FFFREE_RIGID_AROMATIC_CHELATE default ON when
+    #     MOGUL_PRIMARY=1.  Set to 0 explicitly to compare bytes.
+    try:
+        from delfin.fffree.rigid_aromatic_chelate import (
+            place_rigid_aromatic_chelates,
+            rigid_aromatic_chelate_enabled,
+        )
+        if rigid_aromatic_chelate_enabled():
+            _md_pre_rigid = [
+                float(np.linalg.norm(P[int(d)] - P[int(metal_idx)]))
+                for d in donor_idxs
+            ]
+            Pr, _diag_r = place_rigid_aromatic_chelates(
+                mol=mol,
+                syms=syms,
+                metal_idx=int(metal_idx),
+                donor_idxs=[int(d) for d in donor_idxs],
+                P=P,
+                lower=lower,
+                upper=upper,
+                geometry_key=effective_geometry_key,
+                donor_at_vertex=(
+                    [int(d) for d in donor_at_vertex]
+                    if donor_at_vertex is not None else None
+                ),
+            )
+            # Defence-in-depth M-D check after rigid placement.  The
+            # rigid placement REPLACES the soft-DG M-D with the CCDC
+            # mean by construction, so the per-donor M-D distance can
+            # legitimately change by 0.10-0.25 Å (that is the entire
+            # point of the rigid step).  We therefore tolerate the M-D
+            # change here; the gate is purely against catastrophic
+            # corruption (NaN, all-zero, finite-check failure).
+            if (
+                Pr is not None
+                and isinstance(Pr, np.ndarray)
+                and Pr.shape == P.shape
+                and np.all(np.isfinite(Pr))
+                and np.linalg.norm(Pr) > 0.0
+            ):
+                P = Pr
+    except ImportError:
+        pass
+    except Exception:
+        pass  # silent rollback: never crash on the rigid-chelate gate
+
     # 5) Centre on metal so M is at origin (downstream convention).
     P = P - P[metal_idx]
     out_syms = [a.GetSymbol() for a in mol.GetAtoms()]
