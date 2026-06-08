@@ -807,10 +807,96 @@ def _lookup_bond_organic(
 # ---------------------------------------------------------------------------
 MOGUL_BOND_FALLBACK_ENV_FLAG = "DELFIN_FFFREE_MOGUL_BOND_FALLBACK"
 
+# Tier 1.5 aromatic-specific bond table (aromatic_bond_targets.AROMATIC_BOND_LIB).
+# When both endpoints of a bond are RDKit-aromatic AND the bond itself is
+# aromatic, query the empirical CCDC aromatic distribution BEFORE falling
+# through to the general (bond-order-agnostic) v4/v5 pair tables.  Default
+# OFF for byte-identity; default-ON gating is applied in the public driver
+# (assemble_via_mogul) when DELFIN_FFFREE_MOGUL_PRIMARY=1.
+AROMATIC_TIER_1_5_ENV_FLAG = "DELFIN_FFFREE_AROMATIC_TIER1_5"
+
 
 def _bond_fallback_enabled() -> bool:
     """``True`` when :data:`MOGUL_BOND_FALLBACK_ENV_FLAG` is set to ``1``."""
     return os.environ.get(MOGUL_BOND_FALLBACK_ENV_FLAG, "").strip() == "1"
+
+
+def _aromatic_tier_1_5_enabled() -> bool:
+    """``True`` when the aromatic-specific bond tier is active.
+
+    Default OFF (byte-identity).  ``assemble_via_mogul`` flips the default
+    to ON when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` so the Mogul-primary path
+    sees the CCDC aromatic distribution for every phenyl / pyridyl / NHC
+    ring bond.
+    """
+    return os.environ.get(AROMATIC_TIER_1_5_ENV_FLAG, "0").strip() == "1"
+
+
+def _aromatic_ideal_safe(za: str, zb: str):
+    """Wrap :func:`aromatic_bond_targets.aromatic_ideal` with safe import.
+
+    Returns ``None`` on any import / lookup error so the cascade falls
+    through to the next tier deterministically.
+    """
+    try:
+        from delfin.fffree.aromatic_bond_targets import aromatic_ideal
+    except ImportError:
+        return None
+    try:
+        return aromatic_ideal(str(za), str(zb))
+    except Exception:
+        return None
+
+
+def _bond_is_aromatic(mol, i: int, j: int) -> bool:
+    """Universal: True iff RDKit flags both atoms aromatic AND the (i,j)
+    bond is aromatic (or both atoms sit in the same aromatic ring).
+
+    No SMILES patterns, no element ``if``-branches — pure RDKit perception.
+    """
+    try:
+        ai = mol.GetAtomWithIdx(int(i))
+        aj = mol.GetAtomWithIdx(int(j))
+    except Exception:
+        return False
+    try:
+        if not (ai.GetIsAromatic() and aj.GetIsAromatic()):
+            return False
+    except Exception:
+        return False
+    # Explicit bond aromaticity is the primary signal.
+    try:
+        b = mol.GetBondBetweenAtoms(int(i), int(j))
+    except Exception:
+        b = None
+    if b is not None:
+        try:
+            if b.GetIsAromatic():
+                return True
+            from rdkit import Chem
+            if b.GetBondType() == Chem.BondType.AROMATIC:
+                return True
+        except Exception:
+            pass
+    # Fallback: both atoms in same aromatic SSSR ring (catches kekulised
+    # mols where the bond type is SINGLE/DOUBLE but ring-membership marks
+    # aromaticity).  Universal: pure ring topology.
+    try:
+        ri = mol.GetRingInfo()
+        for r in ri.AtomRings():
+            r_set = set(int(a) for a in r)
+            if int(i) in r_set and int(j) in r_set:
+                # All atoms in the ring aromatic?
+                ok = True
+                for a in r_set:
+                    if not mol.GetAtomWithIdx(int(a)).GetIsAromatic():
+                        ok = False
+                        break
+                if ok:
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _lookup_bond_organic_with_tier(
@@ -1066,17 +1152,35 @@ def build_bounds_matrix(
             # M-D bond: handled separately in the metal-donor block.
             metal_bond_pairs.add((i, j))
             continue
-        hit = _lookup_bond_organic(grip_lib, zi, hi, zj, hj, cod_lib, min_n)
-        if hit is None:
-            # Pauling fallback — single-bond covalent sum.  Larger σ so the
-            # bound is permissive.
-            mu = _cov_radius(zi) + _cov_radius(zj)
-            sigma = max(0.05, 0.05 * mu)
-            info.n_bond_fallback += 1
-        else:
-            mu, sigma, _nbn = hit
+        # Tier 1.5 (env-gated, default OFF): aromatic-specific CCDC table.
+        # Fires only when the (i,j) edge is genuinely aromatic per RDKit
+        # perception (both atoms aromatic + bond is aromatic OR same
+        # aromatic SSSR ring).  Catches phenyl C-C (1.395 Å σ 0.013),
+        # pyridyl C-N (1.34 Å σ 0.013), furan C-O (1.36 Å σ 0.020), ...
+        # which the bond-order-agnostic Tier 2 fallback otherwise averages
+        # with alkyl C-C single (1.54 Å) and pulls the embed window wide.
+        #
+        # Universal: depends only on RDKit aromaticity perception + the
+        # element-pair lookup; no SMILES, no per-class branches.
+        aromatic_hit = None
+        if _aromatic_tier_1_5_enabled() and _bond_is_aromatic(mol, i, j):
+            aromatic_hit = _aromatic_ideal_safe(zi, zj)
+        if aromatic_hit is not None:
+            mu, sigma, _nbn = aromatic_hit
             sigma = max(_SIGMA_FLOOR_BOND, float(sigma))
             info.n_bond_lib_hit += 1
+        else:
+            hit = _lookup_bond_organic(grip_lib, zi, hi, zj, hj, cod_lib, min_n)
+            if hit is None:
+                # Pauling fallback — single-bond covalent sum.  Larger σ so the
+                # bound is permissive.
+                mu = _cov_radius(zi) + _cov_radius(zj)
+                sigma = max(0.05, 0.05 * mu)
+                info.n_bond_fallback += 1
+            else:
+                mu, sigma, _nbn = hit
+                sigma = max(_SIGMA_FLOOR_BOND, float(sigma))
+                info.n_bond_lib_hit += 1
         lo = max(0.1, float(mu) - bond_sigma_mult * float(sigma))
         hi_val = float(mu) + bond_sigma_mult * float(sigma)
         _set_bound(lower, upper, i, j, lo, hi_val)
@@ -1132,6 +1236,119 @@ def build_bounds_matrix(
         _set_bound(lower, upper, i, k, d_lo, d_hi)
         info.n_angle_bounds += 1
         info.n_angle_lib_hit += 1
+
+    # ------------------------------------------------------------------
+    # 2b) AROMATIC RING 1,3 + 1,4 DISTANCE BOUNDS (env-gated, default OFF)
+    # ------------------------------------------------------------------
+    # Pure-graph universal: walk every aromatic ring (RDKit perception);
+    # for atoms at 1,3 separation inside a 5- or 6-ring set a tight
+    # cross-ring distance bound (60° / 72° angle implied by the regular
+    # polygon), for 1,4 in a 6-ring set the para-distance bound
+    # (≈ 2× bond mean).  These bounds eliminate ring-buckling that the
+    # bond-pair + soft-DG embed otherwise leaves behind.
+    #
+    # No SMILES patterns; no element ``if``-branches — element pair is
+    # passed through ``aromatic_ideal`` so phenyl, pyridyl, NHC, furan,
+    # thiophene all derive their bond-mean from CCDC for the cross-ring
+    # geometry calculation.
+    if _aromatic_tier_1_5_enabled():
+        # Reuse RDKit ring info; iterate sorted (determinism).
+        try:
+            arom_rings_raw = list(mol.GetRingInfo().AtomRings())
+        except Exception:
+            arom_rings_raw = []
+        # Filter for fully aromatic 5- or 6-rings (universal); sort the
+        # tuple deterministically (by min idx first).
+        arom_rings: List[Tuple[int, ...]] = []
+        for r in arom_rings_raw:
+            r_sorted = tuple(sorted(int(a) for a in r))
+            if len(r_sorted) not in (5, 6):
+                continue
+            ok = True
+            for a in r_sorted:
+                try:
+                    if not mol.GetAtomWithIdx(int(a)).GetIsAromatic():
+                        ok = False
+                        break
+                except Exception:
+                    ok = False
+                    break
+            if ok:
+                arom_rings.append(r_sorted)
+        arom_rings.sort()
+
+        # Sigma for cross-ring distance (Å).  The CCDC cross-ring scatter is
+        # sub-σ-bond-pair (the ring is internally constrained); 0.02 Å for
+        # 1,3 and 0.03 Å for 1,4 reflects empirical phenyl scatter.
+        _SIGMA_RING_1_3: float = 0.02
+        _SIGMA_RING_1_4: float = 0.03
+
+        # Geometric factor for a regular polygon: 1-3 chord length =
+        # 2 * mu_bond * sin(pi * 2 / N) / (2 * sin(pi / N))
+        # For N=6: 2*mu*sqrt(3)/2 = mu*sqrt(3) ≈ 1.732 * mu  (1.732 * 1.395 ≈ 2.41)
+        # For N=5: 2*mu*sin(72°/2)/sin(36°) ≈ ... actually for regular polygon
+        # 1-3 chord = 2 * R * sin(2*pi/N), bond = 2 * R * sin(pi/N),
+        # so 1-3/bond = sin(2*pi/N)/sin(pi/N) = 2*cos(pi/N).
+        # N=5: 2*cos(36°)=1.618; N=6: 2*cos(30°)=sqrt(3)=1.732.
+        # 1-4 para in a 6-ring: chord = 2*R = bond/sin(pi/6)=2*bond ⇒ 2.79 Å.
+        def _chord_1_3(mu_bond: float, n: int) -> float:
+            return 2.0 * mu_bond * math.cos(math.pi / float(n))
+
+        def _chord_1_4_hex(mu_bond: float) -> float:
+            return 2.0 * mu_bond  # diameter of the circumscribed circle
+
+        bond_set_ring: Set[Tuple[int, int]] = set(bonds)
+
+        for ring in arom_rings:
+            n_ring = len(ring)
+            # Mean bond length for this ring: average of per-edge CCDC
+            # aromatic ideals (or covalent-sum fallback).  Universal.
+            edge_mus: List[float] = []
+            for a_pos in range(n_ring):
+                a = ring[a_pos]
+                b = ring[(a_pos + 1) % n_ring]
+                za = str(syms[a]); zb = str(syms[b])
+                hit_ar = _aromatic_ideal_safe(za, zb)
+                if hit_ar is not None:
+                    edge_mus.append(float(hit_ar[0]))
+                else:
+                    edge_mus.append(_cov_radius(za) + _cov_radius(zb))
+            if not edge_mus:
+                continue
+            mu_bond_ring = float(np.mean(edge_mus))
+
+            # 1,3 cross-ring bounds — every 2-step pair (a_pos, a_pos+2 mod n)
+            d_13 = _chord_1_3(mu_bond_ring, n_ring)
+            lo_13 = max(0.5, d_13 - bond_sigma_mult * _SIGMA_RING_1_3)
+            hi_13 = d_13 + bond_sigma_mult * _SIGMA_RING_1_3
+            for a_pos in range(n_ring):
+                a = ring[a_pos]
+                c = ring[(a_pos + 2) % n_ring]
+                if a == c:
+                    continue
+                # Skip if the (a, c) edge happens to be a direct bond in a
+                # fused ring junction (rare; would over-tighten).
+                key_ac = (min(a, c), max(a, c))
+                if key_ac in bond_set_ring:
+                    continue
+                _set_bound(lower, upper, a, c, lo_13, hi_13)
+                info.n_angle_bounds += 1
+
+            # 1,4 para-bound — only meaningful in 6-rings.
+            if n_ring == 6:
+                d_14 = _chord_1_4_hex(mu_bond_ring)
+                lo_14 = max(0.5, d_14 - bond_sigma_mult * _SIGMA_RING_1_4)
+                hi_14 = d_14 + bond_sigma_mult * _SIGMA_RING_1_4
+                for a_pos in range(n_ring):
+                    a = ring[a_pos]
+                    p = ring[(a_pos + 3) % n_ring]
+                    if a == p:
+                        continue
+                    key_ap = (min(a, p), max(a, p))
+                    if key_ap in bond_set_ring:
+                        continue
+                    _set_bound(lower, upper, a, p, lo_14, hi_14)
+                    info.n_angle_bounds += 1
 
     # ------------------------------------------------------------------
     # 3) METAL-DONOR PAIRS — μ ± 2σ from CCDC TM-aware lookup

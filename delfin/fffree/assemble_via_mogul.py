@@ -74,9 +74,81 @@ def mogul_primary_conformers_enabled() -> bool:
     aryl substituents rotate, single bonds adopt gauche/anti).  Set
     ``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0`` to compare bytes against
     the orbit-only path (single output per orbit).
+
+    Compatibility wrapper (2026-06-08 conformer split):  ``CONFORMERS`` is
+    the legacy master switch.  After the split into
+    :func:`mogul_primary_ring_pucker_enabled` (Cremer-Pople ring pucker,
+    topology-preserving by construction) and
+    :func:`mogul_primary_rotamer_enabled` (single-bond rotamers, may break
+    topology when a rotation propagates into the M-shell), the conformer
+    path runs whenever EITHER sub-feature is active.  ``CONFORMERS=0`` still
+    disables both; ``CONFORMERS=1`` enables the ring-pucker default (and
+    leaves the single-bond rotamer flag at its own default OFF).
     """
+    raw = os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS")
+    if raw is not None:
+        # Legacy master switch: explicit value pins both sub-features.
+        return raw == "1"
+    # No master override -- the conformer codepath runs when at least one
+    # sub-feature is active.
+    return (
+        mogul_primary_ring_pucker_enabled()
+        or mogul_primary_rotamer_enabled()
+    )
+
+
+def mogul_primary_ring_pucker_enabled() -> bool:
+    """Return True iff per-orbit Cremer-Pople ring-pucker enumeration runs.
+
+    Ring puckers are topology-preserving by construction: every ring atom
+    keeps its ring-bond partners, the only change is the out-of-plane
+    displacement vector along the mean-plane normal (boat/chair/twist
+    modes).  Cyclohexane chair/boat/twist, cyclopentane envelope/twist,
+    cycloheptane modes all emerge from the Cremer-Pople (1975) decomposition
+    of the ring's out-of-plane vector.  Aromatic rings stay planar and are
+    auto-skipped (single canonical state).
+
+    Default ON (2026-06-08) when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is set,
+    because the ring-pucker channel is the *safe* half of the conformer
+    space -- it cannot break the bond graph (puckers preserve every
+    1-2 / 1-3 / 1-4 contact within the ring).
+
+    The legacy master switch ``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0``
+    still pins this to OFF for byte-identical comparison runs against the
+    pre-split orbit-only path.
+    """
+    raw_master = os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS")
+    if raw_master == "0":
+        return False
     return os.environ.get(
-        "DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS", "1"
+        "DELFIN_FFFREE_MOGUL_PRIMARY_RING_PUCKER", "1"
+    ) == "1"
+
+
+def mogul_primary_rotamer_enabled() -> bool:
+    """Return True iff per-orbit single-bond rotamer enumeration runs.
+
+    Single-bond rotamers rotate dihedrals about each rotatable bond
+    (gauche+/anti/gauche-, optionally at finer 60° / 30° grid).  This
+    channel can break the bond graph: a rotation in a flexible tether
+    near the metal may swing a substituent atom into the M-shell, drag
+    an unintended atom into M-coordination distance, or twist past an
+    aromatic-ring face.  The :mod:`rotamer_topology_gate` filters such
+    rotations when enabled, but the safest default for the conformer
+    pipeline is to leave the rotamer channel OFF until the gate has
+    been validated for the target SMILES domain.
+
+    Default OFF (2026-06-08) under the conformer-split design.  Setting
+    ``DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER=1`` re-enables it independently
+    of the ring-pucker channel.  The legacy master switch
+    ``DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS=0`` still pins this to OFF
+    for the byte-identical comparison runs.
+    """
+    raw_master = os.environ.get("DELFIN_FFFREE_MOGUL_PRIMARY_CONFORMERS")
+    if raw_master == "0":
+        return False
+    return os.environ.get(
+        "DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER", "0"
     ) == "1"
 
 
@@ -130,6 +202,29 @@ def assemble_complex_mogul_primary(
         (parse, missing metal, empty bounds, infeasible bounds, embed
         failure) so the caller can fall through to legacy.
     """
+    # Default-ON gating for Mogul-primary aromatic-tier upgrades
+    # (hmaximilian 2026-06-08).  When MOGUL_PRIMARY=1 and the operator did
+    # NOT explicitly set the two aromatic env flags, flip them to ON for
+    # this call so phenyl / pyridyl / NHC rings come out planar (max-dev
+    # < 0.10 Å) instead of the soft-DG buckle (0.15-0.30 Å).  Explicit
+    # operator settings (=0 or =1) always win.
+    if mogul_primary_enabled():
+        if os.environ.get("DELFIN_FFFREE_AROMATIC_TIER1_5", "").strip() == "":
+            os.environ["DELFIN_FFFREE_AROMATIC_TIER1_5"] = "1"
+        if os.environ.get(
+            "DELFIN_FFFREE_AROMATIC_PLANARITY_GATE", ""
+        ).strip() == "":
+            os.environ["DELFIN_FFFREE_AROMATIC_PLANARITY_GATE"] = "1"
+        # Fused poly-aromatic systems (phenanthroline, naphthalene, indole,
+        # quinoline, anthracene, pyrene, ...) need a JOINT plane projection
+        # — per-ring planarity alone can leave two fused rings pivoting
+        # 0.5-1.0 Å against each other around the shared edge.
+        # (hmaximilian 2026-06-08)
+        if os.environ.get(
+            "DELFIN_FFFREE_FUSED_AROMATIC_PLANE", ""
+        ).strip() == "":
+            os.environ["DELFIN_FFFREE_FUSED_AROMATIC_PLANE"] = "1"
+
     # 1) Full mol with metal + ligands as one connected graph + explicit H.
     #    The κⁿ enumeration path passes ``mol_override`` (the SAME mol
     #    after graph-rewiring to insert/remove dative bonds for the chosen
@@ -395,6 +490,115 @@ def assemble_complex_mogul_primary(
                     P = Pg
         except Exception:
             pass  # silent rollback to pre-polish P
+
+    # 4d) Aromatic planarity gate (hmaximilian 2026-06-08).
+    #
+    #     The DG embed + GRIP polish honour the bounds matrix in a
+    #     soft-minimum sense; phenyl / pyridyl rings still come out with
+    #     0.15-0.30 Å buckle against the SVD best-fit plane.  This step
+    #     walks every RDKit-aromatic ring and, if max-deviation exceeds
+    #     0.10 Å, projects the ring atoms onto their best-fit plane.
+    #
+    #     The metal + every coordinating donor are FROZEN (zero
+    #     displacement) so the M-D invariant (≤ 0.05 Å, defended in §4c)
+    #     is preserved across the projection.  Cipso-H atoms ride along
+    #     with their ring atom.
+    #
+    #     Universal: pure RDKit aromaticity perception + SVD.  No SMILES,
+    #     no per-class branches.  Env-flag default OFF (byte-identity);
+    #     auto-flips ON when DELFIN_FFFREE_MOGUL_PRIMARY=1 (set above).
+    try:
+        from delfin.fffree.aromatic_flatten import (
+            aromatic_planarity_gate_enabled,
+            flatten_aromatic_rings,
+        )
+        if aromatic_planarity_gate_enabled():
+            # Defence-in-depth: snapshot pre-gate M-D distances so we can
+            # roll back if any donor drifts more than 0.05 Å (should not
+            # happen because donors are frozen, but guard against bugs).
+            _md_pre = [
+                float(np.linalg.norm(P[int(d)] - P[int(metal_idx)]))
+                for d in donor_idxs
+            ]
+            _frozen = [int(metal_idx)] + [int(d) for d in donor_idxs]
+            Pf, _diag = flatten_aromatic_rings(
+                mol, P,
+                max_dev_threshold=0.10,
+                frozen_idxs=_frozen,
+            )
+            if (
+                Pf is not None
+                and isinstance(Pf, np.ndarray)
+                and Pf.shape == P.shape
+                and np.all(np.isfinite(Pf))
+            ):
+                _md_ok = True
+                for _di, _d in enumerate(donor_idxs):
+                    _d_now = float(np.linalg.norm(
+                        Pf[int(_d)] - Pf[int(metal_idx)]
+                    ))
+                    if abs(_d_now - _md_pre[_di]) > 0.05:
+                        _md_ok = False
+                        break
+                if _md_ok:
+                    P = Pf
+    except ImportError:
+        pass
+    except Exception:
+        pass  # silent rollback: never crash on the planarity gate
+
+    # 4e) Fused poly-aromatic JOINT-plane projection (hmaximilian 2026-06-08).
+    #
+    #     Per-ring planarity (4d) flattens each ring individually but two
+    #     fused rings can still pivot against each other around their shared
+    #     edge.  Phenanthroline (3 fused 6-rings, 14 atoms) is seen in the
+    #     wild with plane-RMS 0.62 Å / max-dev 1.04 Å where the CCDC
+    #     distribution mean is < 0.03 Å.  This step groups every aromatic
+    #     fused-system (Union-Find on ring pairs that share ≥ 2 atoms) and
+    #     projects all atoms of the joint system onto ONE common SVD plane.
+    #
+    #     Captures universally: naphthalene, phenanthroline, anthracene,
+    #     acridine, pyrene, quinoline, indole, carbazole, ...  Single-ring
+    #     aromatics are SKIPPED (already handled by 4d).
+    #
+    #     Frozen atoms (metal + donors) anchor the joint plane; M-D guard
+    #     mirrors 4d.  Default OFF; auto-flipped ON under MOGUL_PRIMARY=1.
+    try:
+        from delfin.fffree.aromatic_flatten import (
+            flatten_fused_aromatic_systems,
+            fused_aromatic_plane_enabled,
+        )
+        if fused_aromatic_plane_enabled():
+            _md_pre_fused = [
+                float(np.linalg.norm(P[int(d)] - P[int(metal_idx)]))
+                for d in donor_idxs
+            ]
+            _frozen_fused = [int(metal_idx)] + [int(d) for d in donor_idxs]
+            Pfu, _diag_fu = flatten_fused_aromatic_systems(
+                mol, P,
+                max_dev_threshold=0.10,
+                frozen_idxs=_frozen_fused,
+            )
+            if (
+                Pfu is not None
+                and isinstance(Pfu, np.ndarray)
+                and Pfu.shape == P.shape
+                and np.all(np.isfinite(Pfu))
+            ):
+                _md_ok_fu = True
+                for _di, _d in enumerate(donor_idxs):
+                    _d_now = float(np.linalg.norm(
+                        Pfu[int(_d)] - Pfu[int(metal_idx)]
+                    ))
+                    if abs(_d_now - _md_pre_fused[_di]) > 0.05:
+                        _md_ok_fu = False
+                        break
+                if _md_ok_fu:
+                    P = Pfu
+    except ImportError:
+        pass
+    except Exception:
+        pass  # silent rollback: never crash on the fused-plane gate
 
     # 5) Centre on metal so M is at origin (downstream convention).
     P = P - P[metal_idx]
@@ -1202,58 +1406,42 @@ def enumerate_orbit_conformers(
         ) if mol_g is not None else float("inf")
         return [(syms_list, P0, "base", sev)]
 
-    # 2) Ring-pucker variants.
-    pucker_variants = _enumerate_ring_pucker_variants(
-        mol_g, P0, max_per_ring=max_ring_states,
-        aromatic_atom_set=aromatic_atom_set,
-    )
-    # 3) Rotamer variants -- the rotamer enumerator now applies the
-    #    rotamer-topology hard gate at the source when the env flag is on
-    #    (default OFF -> byte-identical with HEAD; auto-ON under
-    #    DELFIN_FFFREE_MOGUL_PRIMARY=1).  Pucker variants are gated
-    #    separately below so a single API path covers ALL rotation-derived
-    #    conformers.
-    rotamer_variants = _enumerate_rotamer_variants(
-        mol_g, P0, max_configs=max_rotamer_states, syms=syms_list,
-    )
-
-    # 3b) Topology hard-gate on ring-pucker variants.  When the gate is
-    #     active, derive (expected_bonds, expected_cn) ONCE on the source
-    #     mol and filter every pucker before it reaches the combined list.
-    #     This makes the conformer pipeline universal -- ANY rotation that
-    #     breaks topology is rejected, regardless of which enumerator
-    #     produced it.  Default OFF -> byte-identical with HEAD.
-    try:
-        from .rotamer_topology_gate import (
-            _env_on as _topology_gate_on,
-            extract_expected_bonds as _topology_expected_bonds,
-            expected_metal_cn as _topology_expected_cn,
-            rotation_preserves_topology as _topology_preserves,
+    # 2) Ring-pucker variants -- Cremer-Pople formalism.  Topology-preserving
+    #    by construction: each ring atom keeps its ring-bond partners, only
+    #    the out-of-plane displacement changes.  Gated by
+    #    DELFIN_FFFREE_MOGUL_PRIMARY_RING_PUCKER (default ON).  Aromatic
+    #    rings are skipped (planar = single canonical state).
+    if mogul_primary_ring_pucker_enabled():
+        pucker_variants = _enumerate_ring_pucker_variants(
+            mol_g, P0, max_per_ring=max_ring_states,
+            aromatic_atom_set=aromatic_atom_set,
         )
-        _gate_on = bool(_topology_gate_on())
-    except Exception:
-        _gate_on = False
-        _topology_preserves = None
-        _topology_expected_bonds = None
-        _topology_expected_cn = None
+    else:
+        pucker_variants = []
 
-    if _gate_on and _topology_preserves is not None and pucker_variants:
-        try:
-            _exp_b = _topology_expected_bonds(mol_g)
-            _exp_cn = _topology_expected_cn(mol_g, syms_list)
-        except Exception:
-            _exp_b, _exp_cn = None, None
-        kept_puckers: List[Tuple[np.ndarray, str]] = []
-        for Pv, lab in pucker_variants:
-            try:
-                if _topology_preserves(
-                    syms_list, Pv, mol=mol_g,
-                    expected_bonds=_exp_b, expected_cn=_exp_cn,
-                ):
-                    kept_puckers.append((Pv, lab))
-            except Exception:
-                kept_puckers.append((Pv, lab))
-        pucker_variants = kept_puckers
+    # 3) Rotamer variants -- single-bond dihedral rotations.  May break
+    #    topology when a rotation propagates into the M-shell, so kept
+    #    behind its own env-flag DELFIN_FFFREE_MOGUL_PRIMARY_ROTAMER
+    #    (default OFF, 2026-06-08 split).  When enabled the rotamer
+    #    enumerator additionally applies the rotamer-topology hard gate
+    #    at the source if DELFIN_FFFREE_ROTAMER_TOPOLOGY_GATE is on.
+    if mogul_primary_rotamer_enabled():
+        rotamer_variants = _enumerate_rotamer_variants(
+            mol_g, P0, max_configs=max_rotamer_states, syms=syms_list,
+        )
+    else:
+        rotamer_variants = []
+
+    # 3b) The rotamer-topology hard gate is intentionally NOT applied to
+    #     ring-pucker variants.  Puckers are topology-preserving by
+    #     construction (Cremer-Pople moves atoms along the mean-plane
+    #     normal only, every intra-ring bond stays inside its empirical
+    #     window), so running them through the topology gate would risk
+    #     dropping valid chair/boat/twist conformers on a heuristic
+    #     CN-misclassification of the metal shell.  Rotamers already
+    #     carry their own topology check at the source (controlled by
+    #     DELFIN_FFFREE_ROTAMER_TOPOLOGY_GATE inside
+    #     :func:`enumerate_single_bond_rotamers`).
 
     # 4) Combine (base + puckers + rotamers).  Cap at max_total candidates.
     combined: List[Tuple[List[str], np.ndarray, str]] = list(base_variant)
