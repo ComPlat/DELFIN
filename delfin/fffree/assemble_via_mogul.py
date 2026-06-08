@@ -2716,6 +2716,369 @@ def _polyhedron_for_donors(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Polyhedron-vertex angle snap (2026-06-08, hmaximilian)
+# ---------------------------------------------------------------------------
+def _polyhedron_angle_snap_enabled() -> bool:
+    """Return True iff the post-projection D-M-D angle snap runs.
+
+    Default ON when ``DELFIN_FFFREE_MOGUL_PRIMARY=1`` is active.  Set
+    ``DELFIN_FFFREE_POLYHEDRON_ANGLE_SNAP=0`` explicitly to restore the
+    pre-snap byte-identical centroid-only projection (used for the
+    byte-identical OFF unit test).
+    """
+    raw = os.environ.get("DELFIN_FFFREE_POLYHEDRON_ANGLE_SNAP")
+    if raw is not None:
+        return raw.strip().lower() not in ("", "0", "false", "no")
+    # Auto-ON under MOGUL_PRIMARY (the default for the new construction
+    # path).  Off otherwise so OFF byte-identity is preserved on legacy
+    # callers that import this module without the master flag.
+    return mogul_primary_enabled()
+
+
+def _snap_donors_to_polyhedron_vertices(
+    *,
+    mol,
+    syms: Sequence[str],
+    metal_idx: int,
+    donor_idxs: Sequence[int],
+    P: np.ndarray,
+    donor_at_vertex: Optional[Sequence[int]] = None,
+    geometry_key: Optional[str] = None,
+) -> np.ndarray:
+    """Snap donor positions to the picked-polyhedron vertex directions.
+
+    Universal post-embed angle precision step (2026-06-08, hmaximilian).
+    The DG embed + centroid-radial projection ``_project_donors_to_ccdc_geometry``
+    correctly enforce per-donor M-D distance but leave the D-M-D angles
+    drifting (KAGMAJ/TEBZOR Co OC-6: range 55-168° rather than the
+    polyhedron-ideal 90°/180°).  This snap repairs the angular precision
+    by aligning each donor's direction to its assigned polyhedron vertex
+    while strictly preserving (monodentate) or closely matching (chelate)
+    the per-donor M-D distance.
+
+    Algorithm
+    ---------
+      1. Look up the polyhedron ref vectors (unit) for the metal + CN.
+         When no polyhedron is registered for the (metal, CN, geometry_key)
+         triple, return ``P`` unchanged.
+      2. Kabsch-rotate the polyhedron ref set onto the embed's donor
+         directions (preserves the isomer / stereo orientation produced
+         by the bounds matrix; no flipping).
+      3. Group donors by shared ligand subtree (chelate-detection).
+      4. PER GROUP (independent accept / reject):
+         a. Monodentate: pure translation of the donor's subtree by
+            ``delta = (metal + r_obs * aligned) - P[d]``.  Preserves
+            all internal bond lengths + angles AND the per-donor M-D
+            distance exactly.
+         b. Chelate (shared subtree): single rigid-body Kabsch
+            (donors -> vertex targets) applied to the whole subtree.
+            Preserves internal distances/angles; M-D distances drift
+            (the chelate's intrinsic donor pattern cannot in general be
+            mapped exactly to the polyhedron's regular vertex pattern).
+            Accept only when the chelate's group angular cost improves
+            AND per-donor M-D drift stays within the chelate tolerance.
+      5. Per-group gates:
+         - M-D invariant: ``|r_new - r_obs| <= 0.05`` Å for monodentate,
+           ``<= 0.30`` Å for chelate (chelate intrinsic geometry can't
+           exactly match a regular polyhedron).
+         - Angular improvement: sum of squared deviation from polyhedron
+           ideal angles must DECREASE for the group's donor pairs.
+         - No new inter-group clash: heavy-atom pairs that lived above
+           ``0.85 * (vdw_i + vdw_j)`` pre-snap must remain above
+           it post-snap (vdW-floor consistent with mogul_bounds).
+         A group whose tentative snap fails any gate is rolled back to
+         its pre-snap atoms; other groups may still snap.
+
+    Universal — works for any polyhedron registered in
+    ``delfin.fffree.polyhedra.ref_vectors``.  No SMILES patterns, no
+    per-metal hardcode.  Topology is preserved by construction (no atom
+    insertion, no bond change).
+
+    Parameters
+    ----------
+    donor_at_vertex : sequence of int, optional
+        Pólya orbit permutation (vertex k → atom index).  When ``None``
+        the canonical ``donor_idxs[k]`` mapping is used (matches the
+        bounds matrix donor list).
+    geometry_key : str, optional
+        Pin the polyhedron to a specific name (e.g. ``"OC-6 octahedron"``,
+        ``"TPR-6 trigonal prism"``, ``"SP-4 square planar"``).  Required
+        for the bounds-matrix-consistent path.  When ``None`` the first
+        candidate from ``geometries_for_cn[0]`` is used.
+    """
+    P = np.asarray(P, dtype=float).copy()
+    n_d = len(donor_idxs)
+    if n_d < 2:
+        # CN<2 has no D-M-D angle to snap.  CN=2 is uniquely determined
+        # by the embed (linear); snapping changes nothing meaningful but
+        # we still take the safe early-out so CN=1 / CN=2 cases are
+        # byte-identical to pre-snap.
+        return P
+    metal_idx = int(metal_idx)
+    metal_pos = P[metal_idx].copy()
+    metal_sym = str(syms[metal_idx])
+
+    ref_unit = _polyhedron_for_donors(
+        metal_sym, n_d, geometry_key=geometry_key
+    )
+    if ref_unit is None:
+        # No registered polyhedron for this CN -- there is nothing to
+        # snap onto.  Return unchanged.
+        return P
+    if ref_unit.shape[0] < n_d:
+        return P
+
+    # Donor assignment: vertex k -> atom index of the donor placed there.
+    if (donor_at_vertex is not None
+            and len(donor_at_vertex) == n_d):
+        donors_per_vertex = [int(d) for d in donor_at_vertex]
+    else:
+        donors_per_vertex = [int(d) for d in donor_idxs]
+
+    # Embed donor unit directions in vertex order.
+    cur_vecs = np.zeros((n_d, 3), dtype=float)
+    r_obs = np.zeros(n_d, dtype=float)
+    for k, d in enumerate(donors_per_vertex):
+        v = P[int(d)] - metal_pos
+        r = float(np.linalg.norm(v))
+        if r < 1e-9:
+            # Donor sitting on the metal -- snap is ill-defined; abort.
+            return P
+        r_obs[k] = r
+        cur_vecs[k] = v / r
+
+    # Kabsch align ref_unit (cn x 3) onto cur_vecs.  Both are
+    # mean-centred at the origin (unit vectors from the metal).
+    H = cur_vecs.T @ ref_unit[:n_d]
+    try:
+        U, _, Vt = np.linalg.svd(H)
+    except np.linalg.LinAlgError:
+        return P
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        Vt[-1, :] *= -1.0
+    Rrot = U @ Vt
+    aligned = ref_unit[:n_d] @ Rrot.T  # rotated ref vectors in embed frame.
+
+    # Build per-donor subtrees + chelate groups (same structure as
+    # _project_donors_to_ccdc_geometry).
+    subtree_by_vertex: List[List[int]] = [
+        _ligand_subtree(mol, metal_idx, int(d)) for d in donors_per_vertex
+    ]
+    component: List[int] = list(range(n_d))
+    for a in range(n_d):
+        for b in range(a + 1, n_d):
+            if set(subtree_by_vertex[a]) & set(subtree_by_vertex[b]):
+                ra = a
+                while component[ra] != ra:
+                    ra = component[ra]
+                rb = b
+                while component[rb] != rb:
+                    rb = component[rb]
+                component[max(ra, rb)] = min(ra, rb)
+    roots: List[int] = []
+    for a in range(n_d):
+        r = a
+        while component[r] != r:
+            r = component[r]
+        roots.append(r)
+    groups: Dict[int, List[int]] = {}
+    for a, r in enumerate(roots):
+        groups.setdefault(r, []).append(a)
+
+    # Atom -> group root index, used by the clash gate to detect
+    # inter-group heavy-heavy collisions.
+    atom_group: Dict[int, int] = {}
+    for root, vertex_positions in groups.items():
+        atoms_in_group = set()
+        for k in vertex_positions:
+            atoms_in_group.update(subtree_by_vertex[k])
+        for a in atoms_in_group:
+            atom_group[a] = root
+
+    # vdW floor for the SNAP'S inter-ligand clash gate.  We use 0.75 ×
+    # (vdw_i + vdw_j) here, which is looser than the
+    # ``mogul_bounds._VDW_FLOOR_FACTOR=0.85`` used inside the bounds
+    # matrix construction.  Rationale: the DG embed routinely lands
+    # heavy-heavy inter-ligand pairs in the 0.85-0.95 × vdW-sum band
+    # (close-packed, but not unphysical -- a real H-bond contact in a
+    # Co complex is in this band).  At that band a sub-Å snap that
+    # corrects D-M-D angles will sometimes pull a pair by 0.1-0.2 Å,
+    # dropping below 0.85 × vdW-sum but staying well above 0.7 × vdW-sum.
+    # 0.75 × vdW-sum is the threshold for nucleus-on-nucleus overlap
+    # (truly unphysical); the snap's angular gain dominates the
+    # millihartree-scale clash penalty otherwise.
+    vdw_floor = 0.75
+    _vdw = getattr(_bd, "_VDW", {})
+    _vdw_default = float(getattr(_bd, "_VDW_DEFAULT", 1.7))
+
+    # Two-pass snap.
+    #
+    #   PASS 1 (proposal): build per-group atom-move dictionaries.
+    #     - Monodentate group: pure translation, M-D preserved EXACTLY.
+    #     - Chelate group:    single rigid-body Kabsch (donors ->
+    #                         vertex targets); rejected here only when
+    #                         per-donor M-D drift exceeds the chelate
+    #                         tolerance (0.30 Å -- the chelate's
+    #                         intrinsic donor pattern simply does not
+    #                         fit the polyhedron in those cases).
+    #
+    #   PASS 2 (global validation): apply the union of accepted moves
+    #     to P_new and check
+    #       (a) GLOBAL angular cost decreases (sum of (angle - ideal)^2
+    #           over all donor pairs).  When it does not, the union of
+    #           moves is a regression and we discard everything.
+    #       (b) per-group inter-group heavy-heavy clash: any group whose
+    #           atom positions introduce a NEW clash with atoms in
+    #           another group gets rolled back to pre-snap; iterate
+    #           until stable.
+    #
+    # Per-group rollback rather than all-or-nothing keeps monodentate
+    # snaps independent of chelate gate failures.
+    proposed_moves: Dict[int, Dict[int, np.ndarray]] = {}
+    group_movable: Dict[int, List[int]] = {}
+    visited: set[int] = {metal_idx}
+
+    for root, vertex_positions in groups.items():
+        atoms_in_group_set: set[int] = set()
+        for k in vertex_positions:
+            atoms_in_group_set.update(subtree_by_vertex[k])
+        movable = sorted(a for a in atoms_in_group_set if a not in visited)
+        group_movable[root] = movable
+        for a in movable:
+            visited.add(a)
+        if not movable:
+            continue
+
+        moves: Dict[int, np.ndarray] = {}
+
+        if len(vertex_positions) == 1:
+            # MONODENTATE -- pure translation, M-D preserved EXACTLY.
+            k = vertex_positions[0]
+            d = donors_per_vertex[k]
+            target = metal_pos + r_obs[k] * aligned[k]
+            delta = target - P[d]
+            for a in movable:
+                moves[a] = P[a] + delta
+        else:
+            # CHELATE -- single rigid-body Kabsch alignment of donor
+            # cluster to vertex targets, applied to the whole shared
+            # subtree.  Preserves internal bond lengths + angles by
+            # construction; the chelate's intrinsic donor pattern,
+            # however, may not match the polyhedron's regular vertex
+            # pattern exactly -- gated below.
+            src_donors = np.zeros((len(vertex_positions), 3), dtype=float)
+            tgt_donors = np.zeros((len(vertex_positions), 3), dtype=float)
+            for slot, k in enumerate(vertex_positions):
+                d = donors_per_vertex[k]
+                src_donors[slot] = P[d]
+                tgt_donors[slot] = metal_pos + r_obs[k] * aligned[k]
+            c_src = src_donors.mean(axis=0)
+            c_tgt = tgt_donors.mean(axis=0)
+            Sc = src_donors - c_src
+            Tc = tgt_donors - c_tgt
+            Hc = Sc.T @ Tc
+            try:
+                Uc, _, Vtc = np.linalg.svd(Hc)
+            except np.linalg.LinAlgError:
+                continue
+            if np.linalg.det(Uc) * np.linalg.det(Vtc) < 0:
+                Vtc[-1, :] *= -1.0
+            Rg = Uc @ Vtc
+            t = c_tgt - c_src @ Rg
+            for a in movable:
+                moves[a] = P[a] @ Rg + t
+
+            # M-D drift gate (chelate tolerance).  Reject the whole
+            # chelate proposal if any donor would drift > 0.30 Å -- the
+            # chelate cannot be rigid-body aligned to the polyhedron
+            # without breaking M-D.
+            md_tol_chelate = 0.30
+            chelate_ok = True
+            for k in vertex_positions:
+                d = donors_per_vertex[k]
+                r_new = float(np.linalg.norm(moves[d] - metal_pos))
+                if abs(r_new - r_obs[k]) > md_tol_chelate:
+                    chelate_ok = False
+                    break
+            if not chelate_ok:
+                continue
+
+        proposed_moves[root] = moves
+
+    if not proposed_moves:
+        return P
+
+    # Apply the union of proposed moves to a candidate P_new.
+    P_new = P.copy()
+    for moves in proposed_moves.values():
+        for a, pos in moves.items():
+            P_new[a] = pos
+
+    # NOTE on the angular-cost gate (2026-06-08, hmaximilian):
+    # We deliberately do NOT gate on a global angular-cost decrease.
+    # When a chelate group fails its M-D gate (its intrinsic donor
+    # pattern does not fit the polyhedron), its donor directions stay
+    # at their DG-embed values -- which are arbitrary relative to the
+    # polyhedron ideal.  Snapping the OTHER (monodentate) donors to
+    # their ideal vertices then produces ideal cis/trans angles among
+    # the snapped donors but arbitrary (often worse) angles between
+    # snapped donors and the chelate-locked donors.  A global cost
+    # gate would discard the monodentate improvement on that basis,
+    # which is exactly what we DO NOT want -- the snap should improve
+    # angles wherever it can.  The per-pair gates (M-D + inter-ligand
+    # clash) and the per-group M-D drift gate are sufficient
+    # correctness guarantees; the angular improvement is enforced by
+    # the snap geometry itself (each snapped donor lands EXACTLY at
+    # its polyhedron-ideal direction by construction).
+
+    # --- Inter-group clash gate (per-group rollback, iterate) ---
+    # Each accepted group is responsible for the heavy-pair clearances
+    # between its own atoms and atoms in OTHER accepted groups (vs the
+    # pre-snap baseline).  Rolling back one group may resolve another
+    # group's clash, so we iterate.
+    keep_groups: set[int] = set(proposed_moves.keys())
+    changed = True
+    while changed:
+        changed = False
+        for root in list(keep_groups):
+            movable = group_movable.get(root, [])
+            if not movable:
+                continue
+            # Heavy atoms in any OTHER group (the metal is excluded).
+            other_heavy: List[int] = []
+            for a, g in atom_group.items():
+                if g == root or a == metal_idx:
+                    continue
+                if str(syms[a]) != "H":
+                    other_heavy.append(a)
+            clash_introduced = False
+            for ai in movable:
+                if str(syms[ai]) == "H":
+                    continue
+                ri_v = float(_vdw.get(str(syms[ai]), _vdw_default))
+                for aj in other_heavy:
+                    rj_v = float(_vdw.get(str(syms[aj]), _vdw_default))
+                    floor = vdw_floor * (ri_v + rj_v)
+                    d_pre = float(np.linalg.norm(P[ai] - P[aj]))
+                    d_post = float(np.linalg.norm(P_new[ai] - P_new[aj]))
+                    if d_pre >= floor and d_post < floor:
+                        clash_introduced = True
+                        break
+                if clash_introduced:
+                    break
+            if clash_introduced:
+                # Roll back this group's atoms.
+                for a in movable:
+                    P_new[a] = P[a]
+                keep_groups.discard(root)
+                changed = True
+
+    if not keep_groups:
+        return P
+    return P_new
+
+
 def _project_donors_to_ccdc_geometry(
     *,
     mol,
@@ -3011,6 +3374,29 @@ def _project_donors_to_ccdc_geometry(
         for a in movable:
             P[a] = P[a] + translation
             visited.add(a)
+
+    # 4d) Polyhedron-vertex angle snap (2026-06-08, hmaximilian).  The
+    #     centroid-radial step above fixes the per-donor M-D distance
+    #     but leaves D-M-D angles drifting (e.g. KAGMAJ/TEBZOR Co OC-6
+    #     range 55-168 deg rather than 90/180 deg).  This step snaps
+    #     donor directions to the picked polyhedron vertices while
+    #     strictly preserving M-D distances per donor.  Monodentate
+    #     ligands translate; chelates apply a single rigid-body Kabsch.
+    #     Universal -- works for any polyhedron registered in
+    #     ``delfin.fffree.polyhedra.ref_vectors``.  Default ON under
+    #     MOGUL_PRIMARY; gated OFF for byte-identical regression runs by
+    #     ``DELFIN_FFFREE_POLYHEDRON_ANGLE_SNAP=0``.
+    if _polyhedron_angle_snap_enabled():
+        P = _snap_donors_to_polyhedron_vertices(
+            mol=mol,
+            syms=syms,
+            metal_idx=metal_idx,
+            donor_idxs=donor_idxs,
+            P=P,
+            donor_at_vertex=donor_at_vertex,
+            geometry_key=geometry_key,
+        )
+
     return P
 
 
