@@ -5367,6 +5367,39 @@ class OpenAIClient(_BaseClient):
             finally:
                 stream.close()
 
+            # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
+            # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into
+            # the TEXT stream instead of emitting structured tool_calls. If we
+            # see that and no real tool_calls arrived, synthesise them so the
+            # intended tools actually run — through the SAME permission-gated
+            # dispatch below — and replace the visible text with the cleaned
+            # version. Only acts on cleanly-parsed JSON args (never executes
+            # garbage), so safety is unchanged.
+            if not (finish_reason == "tool_calls" and _tool_calls):
+                _joined = "".join(_text_chunks)
+                try:
+                    from delfin.agent.text_sanitize import (
+                        parse_leaked_tool_calls, sanitize_agent_text,
+                    )
+                    _recovered = [
+                        c for c in parse_leaked_tool_calls(_joined)
+                        if isinstance(c.get("arguments"), dict) and c["arguments"]
+                    ]
+                except Exception:
+                    _recovered = []
+                if _recovered:
+                    for _i, _c in enumerate(_recovered):
+                        _tool_calls[_i] = {
+                            "id": f"leak_{_i}",
+                            "name": _c["name"],
+                            "arguments_parts": [json.dumps(_c["arguments"])],
+                        }
+                    try:
+                        _text_chunks = [sanitize_agent_text(_joined).text]
+                    except Exception:
+                        _text_chunks = []
+                    finish_reason = "tool_calls"
+
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:
                 # Build assistant message with tool_calls for the API
