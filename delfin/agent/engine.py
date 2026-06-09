@@ -329,6 +329,8 @@ class AgentEngine:
         self.compaction_summaries: dict[str, str] = {}
         self.token_usage = {"input": 0, "output": 0}
         self.cost_usd: float = 0.0
+        # Exact system prompt of the most recent turn (for bug reports).
+        self.last_system_prompt: str = ""
         # Auto-compact configuration. Threshold is a fraction of the
         # context window; once an estimated turn would exceed it, the
         # engine summarises older messages before sending. Set
@@ -736,6 +738,12 @@ class AgentEngine:
             system_prompt = self._distiller.distill(
                 system_prompt, task_text=user_message,
             )
+
+        # Retain the exact system prompt that drove this turn so a bug
+        # report can show *why* the agent behaved as it did (the injected
+        # playbook + memory determine behaviour). Kept on the engine, not
+        # in the message list, since the API takes it as a separate arg.
+        self.last_system_prompt = system_prompt
 
         # Resolve max_tokens: caller override > role default > global default
         effective_max = max_tokens or self.max_tokens_for_role(self.current_role)

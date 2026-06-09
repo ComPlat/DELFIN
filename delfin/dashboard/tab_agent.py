@@ -10909,6 +10909,9 @@ def create_tab(ctx):
                 engine_messages=getattr(engine, "messages", None),
                 cycle_history=state.get("_cycle_history"),
                 last_compaction_info=getattr(engine, "last_compaction_info", None),
+                system_prompt=getattr(engine, "last_system_prompt", "") or "",
+                error_text=str(state.get("_last_turn_error", "") or ""),
+                denied_commands=list(state.get("_denied_commands", []) or []),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
             )
             short = str(report_dir).replace(str(Path.home()), "~")
@@ -12753,6 +12756,12 @@ def create_tab(ctx):
 
             except Exception as exc:
                 error_text = str(exc)
+                # Stash the full traceback so a Bug Report captures it.
+                try:
+                    import traceback as _tb
+                    state["_last_turn_error"] = _tb.format_exc()
+                except Exception:
+                    state["_last_turn_error"] = error_text
                 is_crash = (
                     "CLI error" in error_text
                     or "Not logged in" in error_text

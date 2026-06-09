@@ -111,6 +111,51 @@ def _delfin_version() -> str:
         return ""
 
 
+def settings_snapshot(settings: dict | None = None) -> dict:
+    """Return a redacted, debugging-relevant slice of the settings.
+
+    Includes the agent + runtime-backend + transfer-target sections (which
+    shape agent behaviour) but NEVER secrets: no API keys (those live in
+    credentials/env, not settings) and no SSH password fields.
+    """
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+        except Exception:
+            settings = {}
+    settings = settings or {}
+    agent = dict((settings.get("agent") or {}))
+    runtime = settings.get("runtime") or {}
+    transfer = settings.get("transfer") or {}
+    return {
+        "agent": agent,
+        "runtime_backend": runtime.get("backend", ""),
+        "transfer": {
+            # host/user/remote_path/port help reproduce the env; no secrets.
+            "host": transfer.get("host", ""),
+            "user": transfer.get("user", ""),
+            "remote_path": transfer.get("remote_path", ""),
+            "port": transfer.get("port", 22),
+        },
+        "features": settings.get("features") or {},
+    }
+
+
+def recent_outcomes(limit: int = 10) -> list:
+    """Tail of the outcome tracker (pass/fail/cost history) — shows whether
+    this bug is part of a recurring failure pattern.  Empty on any error."""
+    try:
+        from delfin.agent.outcome_tracker import load_outcomes
+        outs = load_outcomes(max_entries=limit) or []
+        out = []
+        for o in outs:
+            out.append(o if isinstance(o, dict) else getattr(o, "__dict__", {}))
+        return out
+    except Exception:
+        return []
+
+
 def _report_dirname(user: str, session_id: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     sess = _sanitize(session_id[:8], default="nosess")
@@ -118,7 +163,14 @@ def _report_dirname(user: str, session_id: str) -> str:
     return f"{ts}_{_sanitize(user, default='user')}_{sess}_{rand}"
 
 
-def _render_markdown(meta: dict[str, Any], chat: list[dict]) -> str:
+def _render_markdown(
+    meta: dict[str, Any],
+    chat: list[dict],
+    *,
+    error_text: str = "",
+    denied_commands: list | None = None,
+    system_prompt: str = "",
+) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
         lines += ["## Beschreibung", "", meta["description"].strip(), ""]
@@ -130,6 +182,15 @@ def _render_markdown(meta: dict[str, Any], chat: list[dict]) -> str:
         if key in meta and meta[key] not in (None, ""):
             val = str(meta[key]).replace("|", "\\|")
             lines.append(f"| {key} | {val} |")
+    if error_text and error_text.strip():
+        lines += ["", "## Fehler / Traceback", "", "```", error_text.strip(), "```"]
+    if denied_commands:
+        lines += ["", "## Geblockte Commands (Session)", ""]
+        lines += [f"- `{c}`" for c in denied_commands]
+    if system_prompt and system_prompt.strip():
+        lines += ["", "## System-Prompt (letzter Turn)", "",
+                   "<details><summary>aufklappen</summary>", "",
+                   "```", system_prompt.strip(), "```", "", "</details>"]
     lines += ["", "## Konversation", ""]
     for msg in chat:
         role = msg.get("role", "")
@@ -170,6 +231,9 @@ def write_bug_report(
     engine_messages: list[dict] | None = None,
     cycle_history: list | None = None,
     last_compaction_info: dict | None = None,
+    system_prompt: str = "",
+    error_text: str = "",
+    denied_commands: list | None = None,
     repo_dir: str | None = None,
     extra: dict | None = None,
     settings: dict | None = None,
@@ -212,6 +276,11 @@ def write_bug_report(
 
     payload = {
         **meta,
+        "system_prompt": system_prompt or "",
+        "error_text": error_text or "",
+        "denied_commands": denied_commands or [],
+        "settings": settings_snapshot(settings),
+        "recent_outcomes": recent_outcomes(),
         "chat_messages": chat_messages or [],
         "engine_messages": engine_messages or [],
         "cycle_history": cycle_history or [],
@@ -222,7 +291,13 @@ def write_bug_report(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
     )
     (report_dir / "report.md").write_text(
-        _render_markdown(meta, chat_messages or []), encoding="utf-8",
+        _render_markdown(
+            meta, chat_messages or [],
+            error_text=error_text,
+            denied_commands=denied_commands,
+            system_prompt=system_prompt,
+        ),
+        encoding="utf-8",
     )
     return report_dir
 

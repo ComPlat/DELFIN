@@ -150,6 +150,40 @@ def test_push_runs_mkdir_then_rsync(tmp_path, monkeypatch):
     assert any(str(d) in " ".join(map(str, c)) for c in calls)
 
 
+def test_debug_fields_captured(tmp_path):
+    d = _write(
+        tmp_path,
+        system_prompt="You are the DELFIN solo agent. Pattern 5: ...",
+        error_text="Traceback (most recent call last):\n  ValueError: boom",
+        denied_commands=["rm -rf /", "/orca set foo bar"],
+    )
+    js = json.loads((d / "report.json").read_text())
+    assert "DELFIN solo agent" in js["system_prompt"]
+    assert "ValueError: boom" in js["error_text"]
+    assert "rm -rf /" in js["denied_commands"]
+    # and the human report surfaces them
+    md = (d / "report.md").read_text()
+    assert "## Fehler / Traceback" in md
+    assert "## Geblockte Commands" in md
+    assert "## System-Prompt" in md
+
+
+def test_settings_snapshot_has_no_secrets():
+    snap = br.settings_snapshot({
+        "agent": {"model": "sonnet", "bug_archive_dir": "/x"},
+        "runtime": {"backend": "slurm"},
+        "transfer": {"host": "h", "user": "u", "remote_path": "/r",
+                     "port": 22, "password": "SECRET", "ssh_key": "KEY"},
+    })
+    assert snap["runtime_backend"] == "slurm"
+    assert snap["transfer"]["host"] == "h"
+    # secrets must not survive the snapshot
+    flat = json.dumps(snap)
+    assert "SECRET" not in flat
+    assert "KEY" not in flat
+    assert "password" not in snap["transfer"]
+
+
 def test_push_reports_rsync_failure(tmp_path, monkeypatch):
     d = _write(tmp_path)
 
