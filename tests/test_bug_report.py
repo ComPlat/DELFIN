@@ -119,6 +119,66 @@ def test_empty_chat_still_writes_without_crash(tmp_path):
 # Remote push
 # ---------------------------------------------------------------------------
 
+def test_load_and_list_reports(tmp_path):
+    _write(tmp_path, description="erster bug")
+    _write(tmp_path, description="zweiter bug")
+    reports = br.list_reports(tmp_path)
+    assert len(reports) == 2
+    assert {r["description"] for r in reports} == {"erster bug", "zweiter bug"}
+    # load_report round-trips a directory
+    loaded = br.load_report(reports[0]["path"])
+    assert loaded["schema"] == "delfin-bug-report/1"
+
+
+def test_bug_report_to_task_seeds_prompt_and_forbidden():
+    report = {
+        "mode": "dashboard",
+        "session_id": "deadbeef00",
+        "chat_messages": [
+            {"role": "user", "content": "welche %casscf keywords gibt es?\n"
+                                          "(Faktenfrage erkannt — ...)"},
+            {"role": "assistant", "content": "ORCA nutzt Nactel für aktive Elektronen."},
+        ],
+    }
+    task = br.bug_report_to_task(report)
+    assert task["mode"] == "dashboard"
+    # injected hint stripped from the prompt
+    assert "Faktenfrage erkannt" not in task["prompt"]
+    assert "casscf keywords" in task["prompt"]
+    # hallucinated keyword captured as a forbidden signal
+    pats = " ".join(s["pattern"] for s in task.get("forbidden_signals", []))
+    assert "nactel" in pats.lower()
+    # flagged as a verify_enforcement regression + expected TODO present
+    assert task["task_class"] == "verify_enforcement"
+    assert any("TODO" in s["pattern"] for s in task["expected_signals"])
+    assert task["id"].startswith("bug_")
+
+
+def test_bug_report_to_task_clean_answer_is_regression():
+    report = {
+        "mode": "solo",
+        "chat_messages": [
+            {"role": "user", "content": "fasse die datei zusammen"},
+            {"role": "assistant", "content": "Hier ist eine saubere Zusammenfassung."},
+        ],
+    }
+    task = br.bug_report_to_task(report)
+    assert task["task_class"] == "regression"
+    assert "forbidden_signals" not in task
+
+
+def test_write_task_draft_is_valid_yaml(tmp_path, monkeypatch):
+    monkeypatch.setattr(br, "_TASK_DRAFTS_DIR", tmp_path / "drafts")
+    report = {"mode": "dashboard", "session_id": "abc",
+              "chat_messages": [{"role": "user", "content": "frage"}]}
+    task = br.bug_report_to_task(report)
+    out = br.write_task_draft(task, source_report="/some/report")
+    import yaml
+    parsed = yaml.safe_load(out.read_text())
+    assert parsed["tasks"][0]["id"] == task["id"]
+    assert "REVIEW before committing" in out.read_text()
+
+
 def test_push_noop_without_transfer_config(tmp_path):
     d = _write(tmp_path)
     ok, msg = br.push_report_to_remote(d, host="", user="", remote_path="")

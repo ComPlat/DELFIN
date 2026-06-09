@@ -454,3 +454,149 @@ def push_report_to_remote(
         return False, f"Transfer-Fehler: {exc}"
 
     return True, f"{target_dir}/{report_dir.name}"
+
+
+# ---------------------------------------------------------------------------
+# Closing the loop: turn a bug report into a regression benchmark task
+# ---------------------------------------------------------------------------
+
+_TASK_DRAFTS_DIR = Path.home() / ".delfin" / "bug_tasks"
+
+
+def load_report(report_dir: str | Path) -> dict:
+    """Load a report.json from a report directory (or the file itself)."""
+    p = Path(report_dir).expanduser()
+    if p.is_dir():
+        p = p / "report.json"
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def list_reports(archive_dir: str | Path | None = None) -> list[dict]:
+    """List bug reports in the local archive, newest first.
+
+    Each entry: ``{name, path, created_at, user, mode, model, description}``.
+    Only scans the LOCAL archive (resolve_archive_dir); remote reports live
+    on the SSH target and are browsed there.
+    """
+    root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir()
+    if not root.is_dir():
+        return []
+    out: list[dict] = []
+    for d in root.iterdir():
+        if not d.is_dir():
+            continue
+        rj = d / "report.json"
+        meta: dict = {}
+        if rj.is_file():
+            try:
+                meta = json.loads(rj.read_text(encoding="utf-8"))
+            except Exception:
+                meta = {}
+        out.append({
+            "name": d.name,
+            "path": str(d),
+            "created_at": meta.get("created_at", ""),
+            "user": meta.get("user", ""),
+            "mode": meta.get("mode", ""),
+            "model": meta.get("model", ""),
+            "description": meta.get("description", ""),
+        })
+    # Dir names are sortable by their UTC-timestamp prefix → newest last.
+    out.sort(key=lambda r: r["name"], reverse=True)
+    return out
+
+
+def _last_message(chat: list[dict], role: str) -> str:
+    for msg in reversed(chat or []):
+        if msg.get("role") == role:
+            c = msg.get("content", "")
+            return c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)
+    return ""
+
+
+def _strip_injected_hints(text: str) -> str:
+    """Drop the runtime hint lines we append to user messages (plan /
+    verify hints, session-boot) so the task prompt is the user's words."""
+    lines = []
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if s.startswith("(Multi-Step erkannt") or s.startswith("(Faktenfrage erkannt"):
+            continue
+        if s.startswith("[Conversation summary") or s.startswith("[System]"):
+            continue
+        lines.append(ln)
+    return "\n".join(lines).strip()
+
+
+def bug_report_to_task(report: dict) -> dict:
+    """Scaffold a regression benchmark task from a bug report.
+
+    Seeds what we can *infer* automatically:
+    - ``prompt``        = the user's last message (injected hints stripped),
+    - ``forbidden_signals`` = anything the verify-guard flags in the bad
+      answer (hallucinated keywords) — i.e. "never say this again",
+    - ``expected_signals``  = a single TODO placeholder for the maintainer
+      to fill with what the CORRECT answer must contain.
+
+    The maintainer reviews + completes ``expected_signals`` (30 s) and
+    moves the task into the committed suite; the iteration loop then drives
+    this real failure to zero.
+    """
+    chat = report.get("chat_messages") or []
+    prompt = _strip_injected_hints(_last_message(chat, "user")) or "(prompt unbekannt — bitte ausfüllen)"
+    bad_answer = _last_message(chat, "assistant")
+
+    forbidden: list[dict] = []
+    try:
+        from delfin.agent.verify_guard import scan_for_unverified_keywords
+        for flag in scan_for_unverified_keywords(bad_answer):
+            forbidden.append({
+                "pattern": rf"(?i)\b{re.escape(flag.keyword)}\b",
+                "against": "text",
+            })
+    except Exception:
+        pass
+
+    task_class = "verify_enforcement" if forbidden else "regression"
+    short = (report.get("session_id") or "")[:8] or "bug"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    task: dict = {
+        "id": f"bug_{ts}_{short}",
+        "task_class": task_class,
+        "mode": report.get("mode") or "dashboard",
+        "prompt": prompt,
+        # Maintainer fills this in — what a CORRECT answer must contain.
+        "expected_signals": [
+            {"pattern": "TODO-was-die-richtige-antwort-enthalten-muss",
+             "against": "text"},
+        ],
+        "max_duration_s": 90,
+        "max_cost_usd": 0.30,
+        "max_tool_calls": 8,
+    }
+    if forbidden:
+        task["forbidden_signals"] = forbidden
+    return task
+
+
+def task_to_yaml(task: dict, *, source_report: str = "") -> str:
+    """Render a task dict as a tasks.yaml-style snippet (with a header
+    comment pointing back at the source report)."""
+    import yaml
+    header = "# Auto-scaffolded from a bug report — REVIEW before committing.\n"
+    if source_report:
+        header += f"# source: {source_report}\n"
+    header += "# Fill expected_signals with what the CORRECT answer needs.\n"
+    body = yaml.safe_dump({"tasks": [task]}, sort_keys=False,
+                          allow_unicode=True, default_flow_style=False)
+    return header + body
+
+
+def write_task_draft(task: dict, *, source_report: str = "") -> Path:
+    """Write the scaffolded task to a local DRAFT file (never the committed
+    suite) so a human reviews it before it joins the optimization set."""
+    _TASK_DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = _TASK_DRAFTS_DIR / f"{task['id']}.yaml"
+    out.write_text(task_to_yaml(task, source_report=source_report), encoding="utf-8")
+    return out

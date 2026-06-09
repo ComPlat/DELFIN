@@ -1136,6 +1136,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
     ("Plan", "/plan approve", "Approve a pending plan when model forgot ExitPlanMode", False),
     ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
+    ("Bugs", "/bugs", "List bug reports in the archive (or /bugs ls)", False),
+    ("Bugs", "/bugs task", "Scaffold a regression benchmark task from a report (/bugs task <name>)", True),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
@@ -7029,6 +7031,70 @@ def create_tab(ctx):
             ev.set()
             return True
 
+        # /bugs — browse the bug-report archive and close the optimisation
+        # loop by scaffolding a regression benchmark task from a report.
+        if cmd == "/bugs" or cmd.startswith("/bugs "):
+            arg = cmd[len("/bugs"):].strip()
+            from delfin.agent import bug_report as _br
+            # /bugs task <name> — scaffold a benchmark task from a report
+            if arg.startswith("task"):
+                target = arg[len("task"):].strip()
+                reports = _br.list_reports()
+                if not reports:
+                    _append_system_message("Keine Bug-Reports im Archiv gefunden.")
+                    return True
+                match = None
+                if not target:
+                    match = reports[0]  # newest
+                else:
+                    for r in reports:
+                        if target in r["name"]:
+                            match = r
+                            break
+                if match is None:
+                    _append_system_message(
+                        f"Kein Report passend zu '{target}'. `/bugs ls` für die Liste."
+                    )
+                    return True
+                try:
+                    report = _br.load_report(match["path"])
+                    task = _br.bug_report_to_task(report)
+                    draft = _br.write_task_draft(task, source_report=match["path"])
+                    yaml_text = _br.task_to_yaml(task, source_report=match["path"])
+                    short = str(draft).replace(str(Path.home()), "~")
+                    _append_system_message(
+                        f"🧪 Benchmark-Task aus `{match['name']}` erzeugt → `{short}`\n\n"
+                        f"```yaml\n{yaml_text}```\n"
+                        f"**Review:** `expected_signals` ausfüllen (was die RICHTIGE "
+                        f"Antwort enthalten muss), dann in "
+                        f"`delfin/agent/pack/benchmark/` übernehmen — der reale Bug "
+                        f"wird damit zum Regressionstest."
+                    )
+                except Exception as exc:
+                    _append_system_message(f"Task-Scaffold fehlgeschlagen: {exc}")
+                return True
+            # /bugs  |  /bugs ls — list the local archive
+            reports = _br.list_reports()
+            try:
+                _archive = _br.resolve_archive_dir()
+            except Exception:
+                _archive = "?"
+            if not reports:
+                _append_system_message(
+                    f"Keine Bug-Reports in `{_archive}`.\n"
+                    f"Klicke den 🐞 Bug-Report-Button, um einen zu erstellen."
+                )
+                return True
+            lines = [f"🐞 **Bug-Reports** in `{_archive}` ({len(reports)}):", ""]
+            for r in reports[:20]:
+                desc = (r["description"] or "—")[:60]
+                meta = " · ".join(x for x in (r["mode"], r["model"], r["user"]) if x)
+                lines.append(f"- `{r['name']}` — {desc}  ({meta})")
+            lines.append("")
+            lines.append("→ `/bugs task <name>` erzeugt daraus einen Benchmark-Task.")
+            _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
@@ -11077,6 +11143,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
+            "/bugs",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
