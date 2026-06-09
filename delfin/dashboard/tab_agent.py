@@ -2846,12 +2846,29 @@ def create_tab(ctx):
         tooltip="Export chat as Markdown file",
     )
 
+    # Bug Report: bundle conversation + run config into the (configurable)
+    # archive so maintainers can reproduce a bad turn. Optional one-line
+    # note describes what went wrong. Archive path comes from
+    # DELFIN_BUG_ARCHIVE / settings.agent.bug_archive_dir — never hard-coded.
+    bug_note_input = widgets.Text(
+        placeholder="Bug: was lief schief? (optional)",
+        layout=widgets.Layout(width="220px"),
+    )
+    bug_report_btn = widgets.Button(
+        description="🐞 Bug Report",
+        button_style="warning",
+        layout=widgets.Layout(width="120px"),
+        tooltip="Konversation + Mode/Provider/Model/Effort/Perms als "
+                "Report ins Archiv legen (für Maintainer)",
+    )
+
     controls_row = widgets.VBox([
         widgets.HBox(
             [mode_dropdown, provider_dropdown, model_dropdown,
              effort_dropdown, perm_dropdown,
              new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
              commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
+             bug_note_input, bug_report_btn,
              model_refresh_btn],
             layout=widgets.Layout(flex_flow="row wrap"),
         ),
@@ -10855,6 +10872,55 @@ def create_tab(ctx):
         """Export button handler."""
         _export_chat()
 
+    def _on_bug_report(button):
+        """Bundle the current conversation + run config into the archive.
+
+        Captures exactly what a maintainer needs to reproduce a bad turn:
+        the full chat, the raw engine messages, and Mode / Provider /
+        Model / Effort / Perms + tokens + cost + versions.  Writes into
+        the configurable archive (DELFIN_BUG_ARCHIVE / settings) so many
+        users can share one archive without collisions.
+        """
+        if not state.get("chat_messages"):
+            _append_system_message("Nichts zu melden — die Konversation ist leer.")
+            return
+        engine = state.get("engine")
+        try:
+            status = engine.get_status() if engine else {}
+        except Exception:
+            status = {}
+        try:
+            from delfin.agent.bug_report import write_bug_report
+            report_dir = write_bug_report(
+                chat_messages=state.get("chat_messages", []),
+                mode=mode_dropdown.value or status.get("mode", ""),
+                provider=provider_dropdown.value or status.get("provider", ""),
+                model=model_dropdown.value or "",
+                effort=effort_dropdown.value or "",
+                perms=perm_dropdown.value or "",
+                backend=status.get("backend", ""),
+                role=status.get("role", ""),
+                session_id=status.get("session_id", "")
+                            or state.get("active_session_id", ""),
+                input_tokens=status.get("input_tokens", 0),
+                output_tokens=status.get("output_tokens", 0),
+                cost_usd=status.get("cost_usd", 0.0),
+                description=(bug_note_input.value or "").strip(),
+                engine_messages=getattr(engine, "messages", None),
+                cycle_history=state.get("_cycle_history"),
+                last_compaction_info=getattr(engine, "last_compaction_info", None),
+                repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
+            )
+            short = str(report_dir).replace(str(Path.home()), "~")
+            _append_system_message(
+                f"🐞 Bug-Report gespeichert → `{short}`\n\n"
+                f"Enthält: Konversation, Engine-Messages, "
+                f"Mode/Provider/Model/Effort/Perms, Tokens, Kosten, Versionen."
+            )
+            bug_note_input.value = ""
+        except Exception as exc:
+            _append_system_message(f"Bug-Report fehlgeschlagen: {exc}")
+
     def _on_search_change(change):
         """Live search as user types."""
         _do_search(change["new"])
@@ -13397,6 +13463,7 @@ def create_tab(ctx):
     undo_btn.on_click(_on_undo)
     commit_btn.on_click(_on_commit)
     export_btn.on_click(_on_export)
+    bug_report_btn.on_click(_on_bug_report)
     approve_btn.on_click(_on_approve)
     deny_btn.on_click(_on_deny)
     search_input.observe(_on_search_change, names="value")

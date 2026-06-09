@@ -101,6 +101,11 @@ DEFAULT_SETTINGS = {
         # Soft warning when cumulative session cost crosses this USD
         # mark. The agent shows a banner; nothing is blocked.
         "cost_soft_limit_usd": 5.0,
+        # Directory the "Bug Report" button writes reproducible bug
+        # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
+        # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
+        # overrides this at runtime). NEVER hard-code a site path here.
+        "bug_archive_dir": "",
         "role_models": {
             "dashboard_agent": "auto",
             "session_manager": "auto",
