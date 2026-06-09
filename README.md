@@ -1,11 +1,12 @@
-<h1>
-  <img src="delfin/logo/DELFIN_logo.png" alt="DELFIN logo" width="60" align="center">
-  <span style="color:#1976d2;">DELFIN</span>
-</h1>
+<p align="center">
+  <img src="delfin/logo/DELFIN_readme_demo.gif" alt="DELFIN logo animation" width="820">
+</p>
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg)](https://doi.org/10.5281/zenodo.17208145)
-[![PyPI version](https://img.shields.io/pypi/v/delfin-complat.svg)](https://pypi.org/project/delfin-complat/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/delfin-complat.svg)](https://pypistats.org/packages/delfin-complat)
+<p align="center">
+  <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg" alt="DOI"></a>
+  <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg" alt="PyPI version"></a>
+  <a href="https://pypistats.org/packages/delfin-complat"><img src="https://img.shields.io/pypi/dm/delfin-complat.svg" alt="PyPI downloads"></a>
+</p>
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
