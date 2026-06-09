@@ -56,3 +56,96 @@ def test_plan_mode_addendum_documents_exit_plan_mode_handoff():
     assert "ExitPlanMode" in body
     assert "approve" in body.lower()
     assert "acceptEdits" in body
+
+
+# ---------------------------------------------------------------------------
+# Plan approval decision (button vs /plan approve|reject must not drift)
+# ---------------------------------------------------------------------------
+
+from delfin.dashboard.tab_agent import _finalize_plan_decision  # noqa: E402
+
+
+def _fresh_state(plan_body="step 1\nstep 2"):
+    return {
+        "_plan_approval_result": {"approved": False, "new_mode": "default"},
+        "_pending_plan_body": plan_body,
+    }
+
+
+def _fake_save(plan_body, repo_root):
+    # Deterministic path without touching disk.
+    return f"{repo_root}/.claude/plans/saved.md"
+
+
+def test_approve_flips_mode_and_persists():
+    st = _fresh_state()
+    msgs = _finalize_plan_decision(
+        st, approved=True, repo_root="/repo", save_plan_fn=_fake_save,
+    )
+    res = st["_plan_approval_result"]
+    assert res["approved"] is True
+    assert res["new_mode"] == "acceptEdits"
+    assert res["plan_path"] == "/repo/.claude/plans/saved.md"
+    assert "_pending_plan_body" not in st          # body was consumed
+    assert any("Plan saved" in m for m in msgs)
+
+
+def test_reject_resets_mode_and_does_not_persist():
+    saved = []
+    st = _fresh_state()
+    msgs = _finalize_plan_decision(
+        st, approved=False, repo_root="/repo",
+        save_plan_fn=lambda *a, **k: saved.append(1),
+    )
+    res = st["_plan_approval_result"]
+    assert res["approved"] is False
+    assert res["new_mode"] == "default"
+    assert "plan_path" not in res
+    assert saved == []                             # save_plan never called
+    assert msgs == []
+
+
+def test_button_and_slash_paths_are_identical():
+    # Both call sites pass the same args to the helper — prove the helper
+    # is deterministic so the button == /plan approve.
+    st_btn = _fresh_state()
+    st_cmd = _fresh_state()
+    m_btn = _finalize_plan_decision(
+        st_btn, approved=True, repo_root="/repo", save_plan_fn=_fake_save,
+    )
+    m_cmd = _finalize_plan_decision(
+        st_cmd, approved=True, repo_root="/repo", save_plan_fn=_fake_save,
+    )
+    assert st_btn["_plan_approval_result"] == st_cmd["_plan_approval_result"]
+    assert m_btn == m_cmd
+
+
+def test_no_pending_result_is_noop():
+    assert _finalize_plan_decision({}, approved=True, repo_root="/r") == []
+
+
+def test_save_failure_surfaces_message_but_keeps_approval():
+    def _boom(plan_body, repo_root):
+        raise RuntimeError("disk full")
+
+    st = _fresh_state()
+    msgs = _finalize_plan_decision(
+        st, approved=True, repo_root="/repo", save_plan_fn=_boom,
+    )
+    res = st["_plan_approval_result"]
+    assert res["approved"] is True                 # approval still stands
+    assert res["new_mode"] == "acceptEdits"
+    assert "plan_path" not in res
+    assert any("Plan save failed" in m for m in msgs)
+
+
+def test_empty_plan_body_skips_save():
+    saved = []
+    st = _fresh_state(plan_body="   ")
+    msgs = _finalize_plan_decision(
+        st, approved=True, repo_root="/repo",
+        save_plan_fn=lambda *a, **k: saved.append(1),
+    )
+    assert saved == []                             # nothing to persist
+    assert st["_plan_approval_result"]["approved"] is True
+    assert msgs == []

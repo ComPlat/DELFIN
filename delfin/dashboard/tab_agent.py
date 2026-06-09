@@ -83,6 +83,52 @@ def _build_verify_hint(user_text: str, mode: str = "") -> str:
     return ""
 
 
+def _finalize_plan_decision(
+    state: dict,
+    *,
+    approved: bool,
+    repo_root: str,
+    save_plan_fn=None,
+) -> list[str]:
+    """Shared plan approve/reject logic for BOTH the 'Plan akzeptieren'
+    button (``_on_plan_accept_phase5``) and the ``/plan approve|reject``
+    text fallback, so the two paths can never drift apart.
+
+    Mutates ``state['_plan_approval_result']`` in place (approved flag +
+    post-plan permission mode), pops the pending plan body, and — on
+    approval — persists it via ``save_plan``.  Returns the list of
+    user-facing messages to append.  The caller owns setting the
+    approval event (``ev.set()``) and any path-specific banner.
+
+    ``save_plan_fn`` is injectable for tests; defaults to the real
+    ``memory_store.save_plan``.
+    """
+    result = state.get("_plan_approval_result")
+    messages: list[str] = []
+    if result is None:
+        return messages
+    if approved:
+        result["approved"] = True
+        result["new_mode"] = "acceptEdits"
+        # Persist the pending plan body so the user can re-open it later.
+        plan_body = state.pop("_pending_plan_body", "") or ""
+        if plan_body.strip():
+            try:
+                _save = save_plan_fn
+                if _save is None:
+                    from delfin.agent.memory_store import save_plan as _save
+                fpath = _save(plan_body, repo_root=repo_root)
+                result["plan_path"] = str(fpath)
+                short = str(fpath).replace(str(Path.home()), "~")
+                messages.append(f"📝 Plan saved → {short}")
+            except Exception as exc:
+                messages.append(f"Plan save failed: {exc}")
+    else:
+        result["approved"] = False
+        result["new_mode"] = "default"
+    return messages
+
+
 def _provider_key(name: str) -> str:
     """Resolve an API key: env-var first, then ~/.delfin/credentials.json.
 
@@ -3937,20 +3983,10 @@ def create_tab(ctx):
         ev = state.get("_plan_approval_event")
         result = state.get("_plan_approval_result")
         if ev is not None and result is not None:
-            result["approved"] = True
-            result["new_mode"] = "acceptEdits"
-            # Persist the approved plan so the user can re-open it later
-            # without going through the tool round-trip.
-            plan_body = state.pop("_pending_plan_body", "") or ""
-            if plan_body.strip():
-                try:
-                    from delfin.agent.memory_store import save_plan
-                    fpath = save_plan(plan_body, repo_root=ctx.repo_dir or ".")
-                    short = str(fpath).replace(str(Path.home()), "~")
-                    result["plan_path"] = str(fpath)
-                    _append_system_message(f"📝 Plan saved → {short}")
-                except Exception as exc:
-                    _append_system_message(f"Plan save failed: {exc}")
+            for _m in _finalize_plan_decision(
+                state, approved=True, repo_root=ctx.repo_dir or ".",
+            ):
+                _append_system_message(_m)
             ev.set()
 
     plan_accept_btn.on_click(_on_plan_accept_phase5)
@@ -6955,36 +6991,21 @@ def create_tab(ctx):
                     "Switch to /mode plan and ask the agent to draft a plan."
                 )
                 return True
+            # Same shared logic as the 'Plan akzeptieren' button so the
+            # two paths are functionally identical (persist + perm flip).
+            for _m in _finalize_plan_decision(
+                state,
+                approved=(cmd == "/plan approve"),
+                repo_root=ctx.repo_dir or ".",
+            ):
+                _append_system_message(_m)
             if cmd == "/plan approve":
-                result["approved"] = True
-                result["new_mode"] = "acceptEdits"
-                # Persist the pending plan body the same way the click
-                # handler does, so /plan approve and the button are
-                # functionally identical.
-                plan_body = state.pop("_pending_plan_body", "") or ""
-                if plan_body.strip():
-                    try:
-                        from delfin.agent.memory_store import save_plan
-                        fpath = save_plan(
-                            plan_body, repo_root=ctx.repo_dir or "."
-                        )
-                        short = str(fpath).replace(str(Path.home()), "~")
-                        result["plan_path"] = str(fpath)
-                        _append_system_message(
-                            f"📝 Plan saved → {short}"
-                        )
-                    except Exception as exc:
-                        _append_system_message(
-                            f"Plan save failed: {exc}"
-                        )
                 _append_system_message(
                     "✅ Plan approved via /plan approve fallback. "
                     "Mode flipped to acceptEdits — the agent can now "
                     "execute the plan."
                 )
             else:
-                result["approved"] = False
-                result["new_mode"] = "default"
                 _append_system_message(
                     "🚫 Plan rejected via /plan reject fallback."
                 )
