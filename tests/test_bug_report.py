@@ -168,6 +168,44 @@ def test_debug_fields_captured(tmp_path):
     assert "## System-Prompt" in md
 
 
+def test_referenced_files_are_bundled(tmp_path):
+    # Two real input files the "agent" touched.
+    src1 = tmp_path / "input.inp"
+    src1.write_text("! B3LYP def2-SVP\n* xyz 0 1\n")
+    src2 = tmp_path / "out.log"
+    src2.write_text("FINAL SINGLE POINT ENERGY -76.4\n")
+    d = _write(tmp_path, referenced_files=[str(src1), str(src2),
+                                           str(tmp_path / "ghost.txt")])
+    ws = d / "workspace"
+    assert ws.is_dir()
+    assert (ws / "MANIFEST.txt").is_file()
+    # both real files copied; content preserved
+    copied = list(ws.glob("*.inp")) + list(ws.glob("*.log"))
+    assert len(copied) == 2
+    js = json.loads((d / "report.json").read_text())
+    recs = {r["original"]: r for r in js["referenced_files"]}
+    assert recs[str(src1)]["status"] == "bundled"
+    assert recs[str(tmp_path / "ghost.txt")]["status"] == "missing-or-not-a-file"
+    md = (d / "report.md").read_text()
+    assert "## Referenzierte Workspace-Dateien" in md
+
+
+def test_oversized_file_is_skipped_not_copied(tmp_path, monkeypatch):
+    big = tmp_path / "huge.bin"
+    big.write_bytes(b"x" * 1024)
+    monkeypatch.setattr(br, "_MAX_FILE_BYTES", 100)   # force the cap
+    d = _write(tmp_path, referenced_files=[str(big)])
+    js = json.loads((d / "report.json").read_text())
+    assert js["referenced_files"][0]["status"] == "skipped-too-large"
+    # nothing copied into workspace/
+    assert not (d / "workspace").exists() or not any((d / "workspace").glob("huge*"))
+
+
+def test_no_referenced_files_no_workspace_dir(tmp_path):
+    d = _write(tmp_path)
+    assert not (d / "workspace").exists()
+
+
 def test_settings_snapshot_has_no_secrets():
     snap = br.settings_snapshot({
         "agent": {"model": "sonnet", "bug_archive_dir": "/x"},

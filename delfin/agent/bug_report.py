@@ -47,6 +47,12 @@ _FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
 _BUG_SUBDIR = "AGENT_BUGS"
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Caps for bundling referenced workspace files into a report — keep
+# reports small enough to ship over SSH without dragging huge inputs.
+_MAX_FILE_BYTES = 2 * 1024 * 1024      # 2 MB per file
+_MAX_FILES = 40
+_MAX_TOTAL_BYTES = 25 * 1024 * 1024    # 25 MB across all bundled files
+
 
 def _sanitize(token: str, *, default: str = "x") -> str:
     """Make a string safe for a path component."""
@@ -156,6 +162,82 @@ def recent_outcomes(limit: int = 10) -> list:
         return []
 
 
+def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
+    """Copy the files the agent touched into ``report_dir/workspace`` so a
+    maintainer has the real inputs for replay, not just the path names.
+
+    Size-capped (per-file, count, total) and never raises.  Returns one
+    record per referenced path with its bundling ``status``.  A unique
+    flattened name avoids basename collisions; ``workspace/MANIFEST.txt``
+    maps bundled name → original absolute path.
+    """
+    import shutil
+
+    records: list[dict] = []
+    paths = [str(p) for p in (referenced or []) if str(p).strip()]
+    # De-dup preserving order.
+    seen: set[str] = set()
+    paths = [p for p in paths if not (p in seen or seen.add(p))]
+    if not paths:
+        return records
+
+    ws = report_dir / "workspace"
+    manifest: list[str] = []
+    total = 0
+    bundled = 0
+    used_names: set[str] = set()
+    for original in paths:
+        rec = {"original": original, "status": "", "bytes": 0, "bundled": ""}
+        try:
+            src = Path(original).expanduser()
+            if not src.is_file():
+                rec["status"] = "missing-or-not-a-file"
+                records.append(rec)
+                continue
+            size = src.stat().st_size
+            rec["bytes"] = size
+            if bundled >= _MAX_FILES:
+                rec["status"] = "skipped-file-count-cap"
+                records.append(rec)
+                continue
+            if size > _MAX_FILE_BYTES:
+                rec["status"] = "skipped-too-large"
+                records.append(rec)
+                continue
+            if total + size > _MAX_TOTAL_BYTES:
+                rec["status"] = "skipped-total-cap"
+                records.append(rec)
+                continue
+            # Unique flattened name: <sanitized-tail>__<n>.
+            base = _sanitize(src.name, default="file")
+            name = base
+            n = 1
+            while name in used_names:
+                name = f"{base}__{n}"
+                n += 1
+            used_names.add(name)
+            ws.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, ws / name)
+            manifest.append(f"{name}\t{src}")
+            rec["status"] = "bundled"
+            rec["bundled"] = f"workspace/{name}"
+            total += size
+            bundled += 1
+        except Exception as exc:
+            rec["status"] = f"error: {exc}"
+        records.append(rec)
+
+    if manifest:
+        try:
+            (ws / "MANIFEST.txt").write_text(
+                "bundled_name\toriginal_path\n" + "\n".join(manifest) + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return records
+
+
 def _report_dirname(user: str, session_id: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     sess = _sanitize(session_id[:8], default="nosess")
@@ -170,6 +252,7 @@ def _render_markdown(
     error_text: str = "",
     denied_commands: list | None = None,
     system_prompt: str = "",
+    referenced_files: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -187,6 +270,14 @@ def _render_markdown(
     if denied_commands:
         lines += ["", "## Geblockte Commands (Session)", ""]
         lines += [f"- `{c}`" for c in denied_commands]
+    if referenced_files:
+        lines += ["", "## Referenzierte Workspace-Dateien", "",
+                   "| Datei | Status | Größe | gebündelt |", "|---|---|---|---|"]
+        for r in referenced_files:
+            lines.append(
+                f"| `{r.get('original','')}` | {r.get('status','')} | "
+                f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
+            )
     if system_prompt and system_prompt.strip():
         lines += ["", "## System-Prompt (letzter Turn)", "",
                    "<details><summary>aufklappen</summary>", "",
@@ -234,6 +325,7 @@ def write_bug_report(
     system_prompt: str = "",
     error_text: str = "",
     denied_commands: list | None = None,
+    referenced_files: list | None = None,
     repo_dir: str | None = None,
     extra: dict | None = None,
     settings: dict | None = None,
@@ -274,11 +366,15 @@ def write_bug_report(
     if extra:
         meta["extra"] = extra
 
+    # Bundle the actual files the agent touched (copied under workspace/).
+    bundled_files = _bundle_files(referenced_files or [], report_dir)
+
     payload = {
         **meta,
         "system_prompt": system_prompt or "",
         "error_text": error_text or "",
         "denied_commands": denied_commands or [],
+        "referenced_files": bundled_files,
         "settings": settings_snapshot(settings),
         "recent_outcomes": recent_outcomes(),
         "chat_messages": chat_messages or [],
@@ -296,6 +392,7 @@ def write_bug_report(
             error_text=error_text,
             denied_commands=denied_commands,
             system_prompt=system_prompt,
+            referenced_files=bundled_files,
         ),
         encoding="utf-8",
     )

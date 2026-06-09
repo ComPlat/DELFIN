@@ -10912,6 +10912,7 @@ def create_tab(ctx):
                 system_prompt=getattr(engine, "last_system_prompt", "") or "",
                 error_text=str(state.get("_last_turn_error", "") or ""),
                 denied_commands=list(state.get("_denied_commands", []) or []),
+                referenced_files=sorted(state.get("_turn_files", []) or []),
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
             )
             short = str(report_dir).replace(str(Path.home()), "~")
@@ -11323,6 +11324,9 @@ def create_tab(ctx):
             state["_generation_id"] = state.get("_generation_id", 0) + 1
             _my_gen_id = state["_generation_id"]
             state["_deny_count"] = 0  # Reset retry counter for new message
+            # Reset the per-turn error slot so a Bug Report reflects THIS
+            # turn (empty once the latest turn succeeded), not a stale trace.
+            state["_last_turn_error"] = ""
         if state["session_start_time"] is None:
             state["session_start_time"] = time.monotonic()
         _ensure_task_session_id(engine, create=True)
@@ -11354,6 +11358,7 @@ def create_tab(ctx):
             thinking_chunks = []
             tool_count = [0]  # mutable counter for tool calls in this turn
             turn_tools: set[str] = set()  # tool names used this turn (verify-guard)
+            turn_files: set[str] = set()  # file paths the agent touched (bug report)
             last_update = 0.0
             try:
 
@@ -11431,6 +11436,22 @@ def create_tab(ctx):
                         parsed = _j.loads(tool_input)
                     except Exception:
                         parsed = {}
+
+                    # Collect file paths the agent touched so a Bug Report
+                    # can bundle the actual inputs for replay. Mirrored into
+                    # state (session-cumulative) because the bug-report
+                    # button is a separate callback from this worker.
+                    if isinstance(parsed, dict):
+                        _sess_files = state.setdefault("_turn_files", set())
+                        if not isinstance(_sess_files, set):
+                            _sess_files = set(_sess_files or [])
+                            state["_turn_files"] = _sess_files
+                        for _pk in ("file_path", "path", "notebook_path",
+                                    "filename"):
+                            _pv = parsed.get(_pk)
+                            if isinstance(_pv, str) and _pv.strip():
+                                turn_files.add(_pv.strip())
+                                _sess_files.add(_pv.strip())
 
                     # Spinner detail with tool counter
                     tool_count[0] += 1
