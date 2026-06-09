@@ -9,7 +9,6 @@
   <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
   <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208145-blue.svg?style=for-the-badge" alt="DOI"></a>
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
-  <a href="https://pypistats.org/packages/delfin-complat"><img src="https://img.shields.io/pypi/dm/delfin-complat.svg?style=for-the-badge" alt="PyPI downloads"></a>
 </p>
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
