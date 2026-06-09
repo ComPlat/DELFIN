@@ -280,7 +280,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     # reports. Empty = per-user fallback (~/.delfin/agent_bugs). Env
     # DELFIN_BUG_ARCHIVE overrides this. Teams point it at a shared dir.
     bug_archive_input = widgets.Text(
-        placeholder='~/.delfin/agent_bugs  (leer = lokaler Fallback)',
+        placeholder='leer = <Remote Path>/AGENT_BUGS, sonst ~/.delfin/agent_bugs',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     backend_dropdown = widgets.Dropdown(
@@ -2960,10 +2960,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
-                'Ziel für den 🐞 Bug-Report-Button. Leer = lokaler Fallback '
-                '(<code>~/.delfin/agent_bugs</code>). Für ein geteiltes Team-Archiv '
-                'hier den Pfad setzen (z.B. <code>/home/&lt;gruppe&gt;/archive/AGENT_BUGS</code>) '
-                '— oder per Umgebungsvariable <code>DELFIN_BUG_ARCHIVE</code>, die Vorrang hat.'
+                'Ziel für den 🐞 Bug-Report-Button. <b>Leer</b> = automatisch '
+                '<code>&lt;Remote Path&gt;/AGENT_BUGS</code> (der oben konfigurierte '
+                'Remote Path), sonst lokaler Fallback <code>~/.delfin/agent_bugs</code>. '
+                'Zum Überschreiben hier einen eigenen Pfad setzen — oder per '
+                'Umgebungsvariable <code>DELFIN_BUG_ARCHIVE</code>, die Vorrang hat.'
                 '</div>'
             ),
         ],

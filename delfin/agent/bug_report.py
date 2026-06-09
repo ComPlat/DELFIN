@@ -9,11 +9,15 @@ archive directory as a self-contained, timestamped report.
 The archive location is **never hard-coded**.  It is resolved, in order:
 
 1. ``$DELFIN_BUG_ARCHIVE`` (runtime override),
-2. ``settings["agent"]["bug_archive_dir"]`` (per-install config),
-3. ``~/.delfin/agent_bugs`` (safe per-user fallback).
+2. ``settings["agent"]["bug_archive_dir"]`` (explicit per-install config),
+3. ``<settings["transfer"]["remote_path"]>/AGENT_BUGS`` — i.e. an
+   ``AGENT_BUGS`` sub-folder of the archive path the user already
+   configured for transfers, so a team that set up its remote gets a
+   shared bug archive for free,
+4. ``~/.delfin/agent_bugs`` (safe per-user fallback).
 
-So a team with a shared archive sets the env var or the setting to their
-own path (e.g. a cluster scratch dir); installs without that config still
+So a team with a shared archive sets the env var or the setting (or just
+relies on its configured remote path); installs without any of that still
 work, writing locally.  Each report is its own sub-directory named
 ``<UTC-timestamp>_<user>_<session>_<rand>`` so that many users writing to
 one shared archive never collide and the directory stays chronologically
@@ -36,6 +40,9 @@ from typing import Any
 
 
 _FALLBACK_DIR = Path.home() / ".delfin" / "agent_bugs"
+# Conventional sub-folder appended to the configured transfer remote_path
+# when no explicit bug archive is set.
+_BUG_SUBDIR = "AGENT_BUGS"
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -65,6 +72,13 @@ def resolve_archive_dir(settings: dict | None = None) -> Path:
     ).strip()
     if configured:
         return Path(configured).expanduser()
+    # Derive from the already-configured transfer remote_path: a team that
+    # set up its remote archive gets <remote_path>/AGENT_BUGS for free.
+    remote = (
+        ((settings or {}).get("transfer") or {}).get("remote_path") or ""
+    ).strip()
+    if remote:
+        return Path(remote).expanduser() / _BUG_SUBDIR
     return _FALLBACK_DIR
 
 

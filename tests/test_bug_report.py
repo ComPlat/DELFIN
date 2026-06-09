@@ -30,6 +30,21 @@ def test_setting_used_when_no_env(monkeypatch):
     assert str(got) == "/team/AGENT_BUGS"
 
 
+def test_explicit_setting_beats_remote_path(monkeypatch):
+    monkeypatch.delenv("DELFIN_BUG_ARCHIVE", raising=False)
+    got = br.resolve_archive_dir({
+        "agent": {"bug_archive_dir": "/explicit"},
+        "transfer": {"remote_path": "/home/grp/archive"},
+    })
+    assert str(got) == "/explicit"
+
+
+def test_derives_from_transfer_remote_path(monkeypatch):
+    monkeypatch.delenv("DELFIN_BUG_ARCHIVE", raising=False)
+    got = br.resolve_archive_dir({"transfer": {"remote_path": "/home/grp/archive"}})
+    assert str(got) == "/home/grp/archive/AGENT_BUGS"
+
+
 def test_fallback_is_per_user_local(monkeypatch):
     monkeypatch.delenv("DELFIN_BUG_ARCHIVE", raising=False)
     got = br.resolve_archive_dir({})
