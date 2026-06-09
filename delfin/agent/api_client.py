@@ -5403,6 +5403,15 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         _text_chunks = []
                     finish_reason = "tool_calls"
+                    # Visible note so the user sees WHY the agent suddenly acts:
+                    # its leaked tool calls were repaired and are now running.
+                    _names = ", ".join(c["name"] for c in _recovered)
+                    yield StreamEvent(
+                        type="text_delta",
+                        text=(f"\n\n🔧 [Tool-Format des Modells repariert — "
+                              f"{len(_recovered)} Tool-Call(s) ({_names}) werden "
+                              f"jetzt ausgeführt]\n"),
+                    )
 
             # If model made tool calls, execute them locally and loop
             if finish_reason == "tool_calls" and _tool_calls:
