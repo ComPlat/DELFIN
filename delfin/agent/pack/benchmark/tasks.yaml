@@ -335,6 +335,36 @@ tasks:
     max_cost_usd: 0.20
     max_tool_calls: 8
 
+  # ── solo: parallel fan-out — two INDEPENDENT research strands ─────────
+  # The two audits don't depend on each other, so the right shape is two
+  # subagent calls in ONE turn (the runtime runs them concurrently via
+  # _fan_out_subagents).  We can't count calls in the scorer, but we can
+  # require subagent delegation AND that BOTH deliverables come back.
+  - id: solo_subagent_parallel_fan
+    task_class: solo_delegate
+    mode: solo
+    prompt: >-
+      zwei unabhängige audits, bitte parallel delegieren: (A) finde alle
+      stellen in delfin/agent/api_client.py die `_doc_executor` benutzen,
+      und (B) finde alle stellen in delfin/agent/engine.py die
+      `stream_response` aufrufen. liefere für beide datei+symbol. das sind
+      zwei voneinander unabhängige research-stränge.
+    expected_signals:
+      # Delegation happened (subagent tool call somewhere in the turn).
+      - pattern: '(?i)subagent'
+        against: any
+      # Both independent deliverables are present.
+      - pattern: '(?i)_doc_executor'
+        against: text
+      - pattern: '(?i)stream_response'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)i\s+cannot\s+find'
+        against: text
+    max_duration_s: 120
+    max_cost_usd: 0.30
+    max_tool_calls: 10
+
   # ── solo: planning task ──────────────────────────────────────────────
   - id: solo_plan_propose
     task_class: solo_plan

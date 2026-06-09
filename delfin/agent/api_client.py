@@ -4967,6 +4967,42 @@ class _DocToolExecutor:
 _doc_executor = _DocToolExecutor()
 
 
+def _fan_out_subagents(tc_list, permissions):
+    """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
+    pool so a multi-subagent turn runs concurrently (Claude-Code-style
+    parallel fan-out).
+
+    Returns ``(futures_by_id, executor)``.  When fewer than two subagent
+    calls are present, returns ``({}, None)`` so the caller's sequential
+    dispatch path is unchanged.  Each child still enforces its own hard
+    limits inside ``run_subagent`` — this only overlaps wall-clock.
+    """
+    import concurrent.futures as _cf
+
+    sub_ids = [
+        tc["id"] for tc in tc_list
+        if (tc.get("function", {}).get("name") or "").strip() == "subagent"
+    ]
+    if len(sub_ids) < 2:
+        return {}, None
+    executor = _cf.ThreadPoolExecutor(
+        max_workers=min(len(sub_ids), 4),
+        thread_name_prefix="subagent-fan",
+    )
+    futures: dict[str, Any] = {}
+    for tc in tc_list:
+        if tc["id"] not in sub_ids:
+            continue
+        try:
+            args = json.loads(tc["function"]["arguments"])
+        except json.JSONDecodeError:
+            args = {}
+        futures[tc["id"]] = executor.submit(
+            _doc_executor.execute, "subagent", args, permissions=permissions,
+        )
+    return futures, executor
+
+
 class OpenAIClient(_BaseClient):
     """Use the OpenAI Python SDK for GPT / o-series models.
 
@@ -5353,6 +5389,15 @@ class OpenAIClient(_BaseClient):
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
 
+                # Parallel subagent fan-out (Claude-Code-style): when the
+                # model emits ≥2 `subagent` calls in ONE turn, run them
+                # concurrently instead of sequentially.  The sequential
+                # loop below resolves each future in tc_list order, so
+                # event-yield and api_message ordering are unchanged.
+                _sub_futures, _sub_executor = _fan_out_subagents(
+                    tc_list, self._permissions
+                )
+
                 # Track results from this round for consecutive-failure
                 # detection. Each entry is the tool_result string.
                 _round_results: list[str] = []
@@ -5440,7 +5485,15 @@ class OpenAIClient(_BaseClient):
                         tool_input=json.dumps(fn_args),
                     )
 
-                    if is_mcp:
+                    if tc["id"] in _sub_futures:
+                        # Pre-dispatched parallel subagent — collect result.
+                        try:
+                            result = _sub_futures[tc["id"]].result()
+                        except Exception as exc:
+                            result = json.dumps({
+                                "error": f"subagent failed: {exc}"
+                            })
+                    elif is_mcp:
                         try:
                             from . import mcp_client as _mcp
                             _ws = (self._permissions.workspace
@@ -5478,6 +5531,10 @@ class OpenAIClient(_BaseClient):
                         "content": context_result,
                     })
                     _round_results.append(result)
+
+                # All futures resolved in the loop above — release threads.
+                if _sub_executor is not None:
+                    _sub_executor.shutdown(wait=False)
 
                 # Consecutive-failure check. A "failure round" is one
                 # where every tool_result this round is an `{"error": …}`

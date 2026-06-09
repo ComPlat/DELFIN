@@ -707,6 +707,12 @@ to check, name file paths, and cap the response length.
 calls in ONE assistant message, not sequential. Example: one `explore`
 for "find all callers of X", a second `explore` for "find all callers
 of Y", a `code-reviewer` for "audit the proposed diff". Same turn.
+The runtime executes ≥2 same-turn `subagent` calls **concurrently**
+(thread-pool fan-out, code: `delfin/agent/api_client.py:_fan_out_subagents`),
+so three 60 s probes finish in ~60 s, not 180 s. There is no wall-clock
+penalty for fanning out — emitting them sequentially across turns is
+strictly slower. Fan out whenever the sub-tasks don't depend on each
+other's output.
 
 **Trust but verify.** A subagent's summary describes what it *intended*
 to do, not necessarily what it actually did. If it wrote or edited
