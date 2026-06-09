@@ -7065,10 +7065,14 @@ def create_tab(ctx):
                     _append_system_message(
                         f"🧪 Benchmark-Task aus `{match['name']}` erzeugt → `{short}`\n\n"
                         f"```yaml\n{yaml_text}```\n"
-                        f"**Review:** `expected_signals` ausfüllen (was die RICHTIGE "
-                        f"Antwort enthalten muss), dann in "
-                        f"`delfin/agent/pack/benchmark/` übernehmen — der reale Bug "
-                        f"wird damit zum Regressionstest."
+                        f"**Nächster Schritt — optimieren:**\n"
+                        f"• Im **solo mode** (hier im Dashboard): den Agent bitten, "
+                        f"`expected_signals` zu vervollständigen und den Task nach "
+                        f"`delfin/agent/pack/benchmark/tasks.yaml` zu übernehmen "
+                        f"(Prompts/Benchmark sind frei editierbar; Kern-Code nur mit "
+                        f"Self-Mod-Guard-Freigabe).\n"
+                        f"• Oder in **Claude CLI**: Report lesen + Fix/Task dort bauen.\n"
+                        f"Danach fährt der Iterations-Loop genau diesen Bug auf 0."
                     )
                 except Exception as exc:
                     _append_system_message(f"Task-Scaffold fehlgeschlagen: {exc}")
