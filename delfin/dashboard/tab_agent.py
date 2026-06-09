@@ -5306,6 +5306,31 @@ def create_tab(ctx):
         as plain pre-formatted text for speed.  When *finalize* is True,
         the message is converted to full markdown HTML.
         """
+        # On finalize, repair corrupted output (harmony tool-channel leaks +
+        # glitch tokens from gpt-5.x via the OpenAI endpoint) so the user
+        # never sees Chinese/Korean/Armenian garbage or leaked `to=tool {…}`
+        # fragments. A one-line note is queued for the worker to surface.
+        if finalize and isinstance(content, str) and content:
+            try:
+                from delfin.agent.text_sanitize import sanitize_agent_text
+                _san = sanitize_agent_text(content)
+                if _san.changed:
+                    content = _san.text
+                    _bits = []
+                    if _san.leaked_tools:
+                        _bits.append(
+                            "Tool-Calls als Text geleakt: "
+                            + ", ".join(_san.leaked_tools)
+                        )
+                    if _san.glitch_chars:
+                        _bits.append(f"{_san.glitch_chars} Glitch-Zeichen entfernt")
+                    state["_sanitize_note"] = (
+                        "🧹 Modell-Ausgabe bereinigt (" + "; ".join(_bits) + "). "
+                        "Ursache: gpt-5.x über KIT-Endpoint reicht Harmony-Tool-"
+                        "Syntax als Text durch. Tipp: effort↑ oder erneut senden."
+                    )
+            except Exception:
+                pass
         msgs = state["chat_messages"]
         if msgs and msgs[-1]["role"] == "assistant":
             msgs[-1]["content"] = content
@@ -12194,6 +12219,12 @@ def create_tab(ctx):
                                 f"Voller Verlauf im Transcript-Archiv gesichert "
                                 f"(/session archive ls)."
                             )
+
+                    # If the output was repaired (harmony leak / glitch tokens),
+                    # surface a visible note once per turn.
+                    _snote = state.pop("_sanitize_note", "")
+                    if _snote:
+                        _append_system_message(_snote)
 
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI

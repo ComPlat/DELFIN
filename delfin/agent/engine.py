@@ -854,6 +854,16 @@ class AgentEngine:
                 pass
 
         full_response = "".join(chunks)
+        # Repair corrupted output (harmony tool-channel leaks + glitch
+        # tokens from gpt-5.x via the OpenAI-compatible endpoint) BEFORE it
+        # enters the conversation context — otherwise the garbage is replayed
+        # to the model on every subsequent turn.
+        if full_response:
+            try:
+                from delfin.agent.text_sanitize import sanitize_agent_text
+                full_response = sanitize_agent_text(full_response).text
+            except Exception:
+                pass
         if full_response:
             self.messages.append({"role": "assistant", "content": full_response})
 
