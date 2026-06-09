@@ -30,19 +30,12 @@ def test_setting_used_when_no_env(monkeypatch):
     assert str(got) == "/team/AGENT_BUGS"
 
 
-def test_explicit_setting_beats_remote_path(monkeypatch):
-    monkeypatch.delenv("DELFIN_BUG_ARCHIVE", raising=False)
-    got = br.resolve_archive_dir({
-        "agent": {"bug_archive_dir": "/explicit"},
-        "transfer": {"remote_path": "/home/grp/archive"},
-    })
-    assert str(got) == "/explicit"
-
-
-def test_derives_from_transfer_remote_path(monkeypatch):
+def test_local_path_ignores_remote_path(monkeypatch):
+    # The transfer remote_path is an SSH target, NOT a local write path —
+    # resolve_archive_dir (local staging) must not use it.
     monkeypatch.delenv("DELFIN_BUG_ARCHIVE", raising=False)
     got = br.resolve_archive_dir({"transfer": {"remote_path": "/home/grp/archive"}})
-    assert str(got) == "/home/grp/archive/AGENT_BUGS"
+    assert got == br._FALLBACK_DIR
 
 
 def test_fallback_is_per_user_local(monkeypatch):
@@ -120,3 +113,58 @@ def test_empty_chat_still_writes_without_crash(tmp_path):
     assert (d / "report.json").is_file()
     js = json.loads((d / "report.json").read_text())
     assert js["chat_messages"] == []
+
+
+# ---------------------------------------------------------------------------
+# Remote push
+# ---------------------------------------------------------------------------
+
+def test_push_noop_without_transfer_config(tmp_path):
+    d = _write(tmp_path)
+    ok, msg = br.push_report_to_remote(d, host="", user="", remote_path="")
+    assert ok is False
+    assert "kein Remote" in msg
+
+
+def test_push_runs_mkdir_then_rsync(tmp_path, monkeypatch):
+    d = _write(tmp_path)
+    calls = []
+
+    class _OK:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _OK()
+
+    monkeypatch.setattr(br.subprocess, "run", fake_run)
+    ok, where = br.push_report_to_remote(
+        d, host="login.cluster", user="ka", remote_path="/home/grp/archive",
+        port=22,
+    )
+    assert ok is True
+    assert where == f"/home/grp/archive/AGENT_BUGS/{d.name}"
+    assert len(calls) == 2                       # mkdir, then rsync
+    # rsync command carries the local report dir as a source
+    assert any(str(d) in " ".join(map(str, c)) for c in calls)
+
+
+def test_push_reports_rsync_failure(tmp_path, monkeypatch):
+    d = _write(tmp_path)
+
+    class _Mk:
+        returncode = 0
+        stderr = ""
+
+    class _Fail:
+        returncode = 23
+        stderr = "rsync: connection refused"
+
+    seq = [_Mk(), _Fail()]
+    monkeypatch.setattr(br.subprocess, "run", lambda *a, **k: seq.pop(0))
+    ok, msg = br.push_report_to_remote(
+        d, host="h", user="u", remote_path="/r", port=22,
+    )
+    assert ok is False
+    assert "rsync fehlgeschlagen" in msg

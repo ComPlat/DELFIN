@@ -10912,8 +10912,32 @@ def create_tab(ctx):
                 repo_dir=str(ctx.repo_dir) if ctx.repo_dir else None,
             )
             short = str(report_dir).replace(str(Path.home()), "~")
+            # Ship it to the shared remote archive over SSH (same transfer
+            # the dashboard uses) — the team archive is usually an SSH
+            # remote, not a local path. Local copy is always kept.
+            remote_line = ""
+            try:
+                from delfin.user_settings import load_settings
+                from delfin.agent.bug_report import push_report_to_remote
+                _tcfg = (load_settings() or {}).get("transfer", {}) or {}
+                if _tcfg.get("host") and _tcfg.get("remote_path"):
+                    ok, where = push_report_to_remote(
+                        report_dir,
+                        host=_tcfg.get("host", ""),
+                        user=_tcfg.get("user", ""),
+                        remote_path=_tcfg.get("remote_path", ""),
+                        port=int(_tcfg.get("port", 22) or 22),
+                    )
+                    remote_line = (
+                        f"\n📤 Ins Remote-Archiv kopiert → `{where}`"
+                        if ok else
+                        f"\n⚠️ Remote-Push nicht möglich ({where}) — "
+                        f"lokale Kopie bleibt erhalten."
+                    )
+            except Exception as exc:
+                remote_line = f"\n⚠️ Remote-Push übersprungen: {exc}"
             _append_system_message(
-                f"🐞 Bug-Report gespeichert → `{short}`\n\n"
+                f"🐞 Bug-Report gespeichert → `{short}`{remote_line}\n\n"
                 f"Enthält: Konversation, Engine-Messages, "
                 f"Mode/Provider/Model/Effort/Perms, Tokens, Kosten, Versionen."
             )

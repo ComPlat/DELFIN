@@ -6,22 +6,24 @@ conversation, the run configuration (mode / provider / model / effort /
 perms), token + cost accounting, and environment versions — into an
 archive directory as a self-contained, timestamped report.
 
-The archive location is **never hard-coded**.  It is resolved, in order:
+The report is always written to a **local** directory first (so the
+button never loses data even if the network is down).  That local path
+is resolved, in order:
 
 1. ``$DELFIN_BUG_ARCHIVE`` (runtime override),
 2. ``settings["agent"]["bug_archive_dir"]`` (explicit per-install config),
-3. ``<settings["transfer"]["remote_path"]>/AGENT_BUGS`` — i.e. an
-   ``AGENT_BUGS`` sub-folder of the archive path the user already
-   configured for transfers, so a team that set up its remote gets a
-   shared bug archive for free,
-4. ``~/.delfin/agent_bugs`` (safe per-user fallback).
+3. ``~/.delfin/agent_bugs`` (safe per-user fallback).
 
-So a team with a shared archive sets the env var or the setting (or just
-relies on its configured remote path); installs without any of that still
-work, writing locally.  Each report is its own sub-directory named
-``<UTC-timestamp>_<user>_<session>_<rand>`` so that many users writing to
-one shared archive never collide and the directory stays chronologically
-sortable.
+A shared team archive (e.g. ``/home/<grp>/archive``) is typically an
+**SSH remote**, not a locally-writable path — the dashboard reaches it
+via rsync-over-SSH, not a plain file write.  So :func:`push_report_to_remote`
+optionally ships the locally-written report into ``<remote_path>/AGENT_BUGS``
+using the *same* transfer config (host / user / remote_path / port) the
+dashboard already uses.  Each report is its own sub-directory named
+``<UTC-timestamp>_<user>_<session>_<rand>`` so many users sharing one
+archive never collide and the directory stays chronologically sortable.
+
+The path is **never hard-coded** — it always comes from env / settings.
 """
 
 from __future__ import annotations
@@ -72,13 +74,6 @@ def resolve_archive_dir(settings: dict | None = None) -> Path:
     ).strip()
     if configured:
         return Path(configured).expanduser()
-    # Derive from the already-configured transfer remote_path: a team that
-    # set up its remote archive gets <remote_path>/AGENT_BUGS for free.
-    remote = (
-        ((settings or {}).get("transfer") or {}).get("remote_path") or ""
-    ).strip()
-    if remote:
-        return Path(remote).expanduser() / _BUG_SUBDIR
     return _FALLBACK_DIR
 
 
@@ -230,3 +225,60 @@ def write_bug_report(
         _render_markdown(meta, chat_messages or []), encoding="utf-8",
     )
     return report_dir
+
+
+def push_report_to_remote(
+    report_dir: str | Path,
+    *,
+    host: str,
+    user: str,
+    remote_path: str,
+    port: int = 22,
+    subdir: str = _BUG_SUBDIR,
+    timeout: int = 120,
+) -> tuple[bool, str]:
+    """rsync a locally-written report directory into the shared remote
+    archive over SSH — the same mechanism the dashboard uses for transfers.
+
+    Returns ``(ok, location_or_error)``: on success the remote target
+    (``<remote_path>/<subdir>/<report-dir-name>``), otherwise a short
+    error string.  Never raises — the caller keeps the local copy either
+    way.  No-op (returns ok=False with a reason) when the transfer config
+    is incomplete.
+    """
+    report_dir = Path(report_dir)
+    host = (host or "").strip()
+    user = (user or "").strip()
+    remote_path = (remote_path or "").strip()
+    if not (host and user and remote_path):
+        return False, "kein Remote konfiguriert (Host/User/Remote Path fehlen)"
+    if not report_dir.is_dir():
+        return False, f"lokaler Report fehlt: {report_dir}"
+
+    from delfin.ssh_transfer_jobs import (
+        build_ssh_mkdir_command,
+        build_rsync_transfer_command,
+    )
+
+    target_dir = f"{remote_path.rstrip('/')}/{subdir}"
+    try:
+        mk = subprocess.run(
+            build_ssh_mkdir_command(host, user, target_dir, port),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if mk.returncode != 0:
+            return False, f"remote mkdir fehlgeschlagen: {mk.stderr.strip()[:200]}"
+        rs = subprocess.run(
+            build_rsync_transfer_command(
+                [str(report_dir)], host, user, target_dir, port,
+            ),
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if rs.returncode != 0:
+            return False, f"rsync fehlgeschlagen: {rs.stderr.strip()[:200]}"
+    except subprocess.TimeoutExpired:
+        return False, f"Transfer-Timeout nach {timeout}s"
+    except Exception as exc:
+        return False, f"Transfer-Fehler: {exc}"
+
+    return True, f"{target_dir}/{report_dir.name}"
