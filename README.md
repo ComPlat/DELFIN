@@ -3,18 +3,22 @@
 </p>
 
 <p align="center">
-  <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17208145.svg" alt="DOI"></a>
-  <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg" alt="PyPI version"></a>
-  <a href="https://pypistats.org/packages/delfin-complat"><img src="https://img.shields.io/pypi/dm/delfin-complat.svg" alt="PyPI downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-LGPL--3.0--or--later-blue.svg?style=for-the-badge" alt="License"></a>
+  <a href="https://github.com/ComPlat/DELFIN/graphs/commit-activity"><img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge" alt="Maintenance"></a>
+  <a href="https://github.com/ComPlat/DELFIN/issues"><img src="https://img.shields.io/github/issues/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub issues"></a>
+  <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
+  <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208145-blue.svg?style=for-the-badge" alt="DOI"></a>
+  <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
+  <a href="https://pypistats.org/packages/delfin-complat"><img src="https://img.shields.io/pypi/dm/delfin-complat.svg?style=for-the-badge" alt="PyPI downloads"></a>
 </p>
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is an open-source AI-orchestrated computational chemistry platform that automates first-principles molecular property prediction across the full chemical space — from organics and photoactive emitters to transition-metal catalysts.
+**DELFIN** is an open-source AI-orchestrated computational chemistry platform that automates first-principles molecular property prediction across the full chemical space — from organics and photoactive emitters to transition-metal complexes.
 
 By coupling **topological and mutational structure generation**, semi-empirical methods, density functional theory (DFT), machine-learning potentials, and large-language-model agents behind a single **SMILES-in / property-out** interface, DELFIN lowers the barrier between experimental design and DFT-grade prediction from "weeks of expert work" to "minutes of automated workflow".
 
-> 🧬 organic chemistry · 🧲 transition-metal catalysis · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
+> 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
 DELFIN can be used in three ways:
 - **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
