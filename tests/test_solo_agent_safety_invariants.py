@@ -150,3 +150,33 @@ def test_granting_a_dir_makes_it_accessible(tmp_path):
                                extra_workspace_dirs=(extra,))
     # A path under the granted dir resolves to a real root (not rejected).
     assert perms.find_root_for((extra / "file.xlsx").resolve()) is not None
+
+
+# ---------------------------------------------------------------------------
+# Reasoning models (gpt-5.x / o3 / o4) MUST receive tools — withholding them
+# was why the agent "did nothing" / claimed no filesystem tool on Azure GPT-5.x
+# ---------------------------------------------------------------------------
+
+def test_tools_not_gated_off_for_reasoning_models():
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
+    # Find the line that advertises tools to the OpenAI request.
+    idx = src.find('kwargs["tools"] = advertised_tools')
+    assert idx > 0, "tool-advertisement line not found"
+    # The guarding condition (the preceding `if ...:`) must NOT withhold
+    # tools from reasoning models.
+    guard = src[max(0, idx - 200):idx]
+    assert "not is_reasoning" not in guard, (
+        "tools are gated off for reasoning models — gpt-5.x would get no tools"
+    )
+
+
+def test_gpt5_family_is_detected_as_reasoning():
+    # Documents the classification the fix depends on: gpt-5.x needs
+    # reasoning_effort AND tools (the bug was withholding the tools).
+    import re
+    for base in ("gpt-5", "gpt-5.1", "gpt-5.4", "gpt-5.5", "o3", "o4-mini"):
+        is_reasoning = bool(re.match(r"^o\d", base) or base.startswith("gpt-5"))
+        assert is_reasoning, f"{base} should be classified reasoning"

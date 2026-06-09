@@ -12890,7 +12890,34 @@ def create_tab(ctx):
                     or "Not logged in" in error_text
                     or "Broken pipe" in error_text
                 )
-                if is_crash:
+                # Model not available / wrong key / wrong endpoint (e.g. a
+                # model that isn't provisioned on the KIT/Azure endpoint, like
+                # azure.gpt-5.5 → 401). The raw litellm dump + silent "no
+                # output" is useless to the user — give an actionable hint.
+                _et_low = error_text.lower()
+                is_model_unavailable = (
+                    "authenticationerror" in _et_low
+                    or "invalid subscription" in _et_low
+                    or "access denied" in _et_low
+                    or "model group" in _et_low
+                    or ("401" in error_text and "model" in _et_low)
+                )
+                if is_model_unavailable:
+                    _cur_model = ""
+                    try:
+                        _cur_model = model_dropdown.value or ""
+                    except Exception:
+                        pass
+                    _append_system_message(
+                        f"⚠️ Modell **{_cur_model or 'aktuell gewählt'}** ist auf "
+                        f"diesem Endpoint nicht verfügbar (Auth/401 — kein gültiger "
+                        f"Key, falscher Endpoint, oder das Modell ist nicht "
+                        f"provisioniert).\n\n**Fix:** im Modell-Dropdown auf ein "
+                        f"funktionierendes Modell wechseln (z.B. `azure.gpt-5.4` / "
+                        f"`azure.gpt-5.1`) und erneut senden. Andere User können "
+                        f"rechnen, weil sie ein provisioniertes Modell nutzen."
+                    )
+                elif is_crash:
                     # Auto-recover: invalidate engine so next send recreates it
                     state["engine"] = None
                     _append_system_message(

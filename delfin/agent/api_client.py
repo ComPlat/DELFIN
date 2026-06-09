@@ -5322,7 +5322,14 @@ class OpenAIClient(_BaseClient):
             else:
                 kwargs["max_tokens"] = max_tokens
 
-            if (has_doc_tools or has_calc_tools or has_coding) and not is_reasoning:
+            # Advertise tools to the model. Reasoning models (gpt-5.x, o3,
+            # o4) DO support function calling — withholding tools from them
+            # was the root cause of "the agent does nothing / no filesystem
+            # tool was provided" on Azure GPT-5.x: the model literally had no
+            # tools to call, so it could only talk (and any tool intent
+            # leaked into the text channel). reasoning_effort is set
+            # separately above; tools are orthogonal to it.
+            if has_doc_tools or has_calc_tools or has_coding:
                 kwargs["tools"] = advertised_tools
 
             # Accumulate streamed tool calls (may arrive in chunks)
