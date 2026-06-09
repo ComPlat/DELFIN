@@ -119,3 +119,34 @@ def test_cost_soft_limit_default_present():
     from delfin.user_settings import DEFAULT_SETTINGS
     assert "cost_soft_limit_usd" in DEFAULT_SETTINGS["agent"]
     assert DEFAULT_SETTINGS["agent"]["cost_soft_limit_usd"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Out-of-workspace access is refused with an actionable message
+# (the Jerome case: project in another user's home, outside the sandbox)
+# ---------------------------------------------------------------------------
+
+def test_outside_workspace_path_rejected_with_grant_hint(tmp_path):
+    from delfin.agent.api_client import _DocToolExecutor, KitToolPermissions
+    ex = _DocToolExecutor()
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    resolved, err = ex._resolve_in_workspace(
+        "/home/other_user/project/experiments_all.xlsx", perms
+    )
+    assert resolved is None
+    # Refused...
+    assert "outside the allowed workspace roots" in err
+    # ...AND tells the user how to fix it (grant the path), not a dead end.
+    assert "--add-dir" in err or "extra_workspace_dirs" in err
+    assert "GRANT" in err.upper()
+
+
+def test_granting_a_dir_makes_it_accessible(tmp_path):
+    from delfin.agent.api_client import KitToolPermissions
+    ws = tmp_path / "ws"
+    extra = tmp_path / "granted"
+    ws.mkdir(); extra.mkdir()
+    perms = KitToolPermissions(workspace=str(ws),
+                               extra_workspace_dirs=(extra,))
+    # A path under the granted dir resolves to a real root (not rejected).
+    assert perms.find_root_for((extra / "file.xlsx").resolve()) is not None
