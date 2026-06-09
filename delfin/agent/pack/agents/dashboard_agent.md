@@ -295,6 +295,10 @@ or "what does X mean"), apply these patterns:
    say so AND search the indexed manual.  NEVER fabricate a
    plausible-sounding keyword (the `Nactel`/`Nactorb` pattern that
    keeps breaking real sessions).  Quote what you actually read.
+   *Runtime enforcement:* your answer is checked against the manual
+   ground-truth — an unbacked keyword triggers a visible `⚠️ Verify`
+   warning and, if you didn't ground via doc-search that turn, one
+   forced correction turn.  Look it up first and skip the round-trip.
 
 4. **Verify after modify.**  After `/orca set`, `/control set`,
    `/remember`, etc., either receive the system message

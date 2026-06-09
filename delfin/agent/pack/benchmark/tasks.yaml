@@ -784,3 +784,74 @@ tasks:
     max_duration_s: 45
     max_cost_usd: 0.10
     max_tool_calls: 3
+
+  # ── verify_enforcement: keyword question MUST ground itself ───────────
+  # These check the runtime verify-guard's intent: when asked for exact
+  # ORCA keywords, the agent must look them up (doc-search / Read) AND
+  # never emit a known-fake keyword.  The post-output guard forces a
+  # correction turn if the agent answers ungrounded — so a passing
+  # trajectory shows a grounding tool call somewhere in its turns.
+  - id: verify_casscf_grounded
+    task_class: verify_enforcement
+    mode: dashboard
+    prompt: >-
+      welche EXAKTEN keyword-namen nutzt ORCA im %casscf-block für aktive
+      Elektronen und aktive Orbitale? Bitte im Manual nachschlagen.
+    expected_signals:
+      # Grounding: a doc-search or file read must appear in the trajectory.
+      - pattern: '(?i)(search_docs|search|read|grep|docs)'
+        against: tool_name
+      # Real answer present
+      - pattern: '(?i)\bnel\b'
+        against: text
+      - pattern: '(?i)\bnorb\b'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)\bnactel\b'
+        against: text
+      - pattern: '(?i)\bnactorb\b'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.30
+    max_tool_calls: 6
+
+  - id: verify_scf_grounded
+    task_class: verify_enforcement
+    mode: dashboard
+    prompt: >-
+      wie heißen die ORCA %scf-Keywords für maximale Iterationen und das
+      Konvergenz-Kriterium? Nur echte Manual-Keywords, bitte nachschlagen.
+    expected_signals:
+      - pattern: '(?i)(search_docs|search|read|grep|docs)'
+        against: tool_name
+      - pattern: '(?i)\bmaxiter\b'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)\bmaxiterations\b'
+        against: text
+      - pattern: '(?i)\bscfconvergence\b'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.30
+    max_tool_calls: 6
+
+  - id: verify_no_invented_tddft
+    task_class: verify_enforcement
+    mode: dashboard
+    prompt: >-
+      welches ORCA %tddft-Keyword steuert die Anzahl der angeregten
+      Zustände? Nenne genau den Manual-Namen (vorher nachschlagen).
+    expected_signals:
+      - pattern: '(?i)(search_docs|search|read|grep|docs)'
+        against: tool_name
+      - pattern: '(?i)\bnroots\b'
+        against: text
+    forbidden_signals:
+      # Common invented synonyms for "number of roots/states"
+      - pattern: '(?i)\bnstates\b'
+        against: text
+      - pattern: '(?i)\bnumroots\b'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.30
+    max_tool_calls: 6

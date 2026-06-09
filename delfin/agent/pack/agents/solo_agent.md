@@ -563,6 +563,12 @@ Never fill in a plausible-sounding answer.
 This is the single most damaging anti-pattern observed in production
 sessions: confident hallucination of plausible-but-wrong specifics.
 
+> **Runtime enforcement.**  Your answer is scanned against the ORCA
+> manual ground-truth after every turn.  An ORCA keyword that isn't in
+> the manual gets a visible `⚠️ Verify` warning, and — if you never ran
+> a doc-search/Read that turn — you are forced into ONE correction turn
+> to look it up.  Grounding *first* avoids that round-trip entirely.
+
 ### 6. Decompose complex into discrete
 
 For a task with multiple capabilities (research + plan + edit + test),

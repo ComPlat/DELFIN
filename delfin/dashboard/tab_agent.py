@@ -47,6 +47,42 @@ def _build_plan_hint(user_text: str) -> str:
     return ""
 
 
+# Fact-question shapes: the user is asking for exact ORCA / chemistry
+# keyword names, which is exactly where confident hallucination happens.
+_VERIFY_HINT_PATTERNS = re.compile(
+    r"(?i)("
+    r"welche[s]?\s+(?:exakten?\s+)?keyword|"        # "welche keyword(s)"
+    r"keyword[- ]?name|"                              # "keyword-name"
+    r"\bexakt(?:e|en)?\b.*\b(?:keyword|name|block)|"  # "exakte ... keyword"
+    r"nutzt\s+orca|"                                  # "nutzt ORCA"
+    r"in\s+orca|"                                     # "in ORCA"
+    r"gibt\s+es\s+(?:ein|den|das)?\s*\b\w*\s*(?:keyword|block|flag|option)|"
+    r"wie\s+hei[ßs]t\b|"                              # "wie heißt"
+    r"%\w+\s*[- ]?block"                              # "%casscf-block"
+    r")"
+)
+
+
+def _build_verify_hint(user_text: str, mode: str = "") -> str:
+    """Return a one-line ground-yourself reminder when the user asks a
+    factual ORCA/keyword question, else empty string.
+
+    Mirrors :func:`_build_plan_hint`: cheap, non-blocking, just nudges
+    the model to look the answer up instead of reciting from memory.
+    The runtime verify-guard (delfin.agent.verify_guard) still checks
+    the answer afterwards — this hint just front-loads the grounding.
+    """
+    if not user_text or len(user_text) > 4000:
+        return ""
+    if _VERIFY_HINT_PATTERNS.search(user_text):
+        return (
+            "(Faktenfrage erkannt — vor der Antwort per search_docs/Read "
+            "im Manual bzw. Code nachschlagen; nenne nur Keywords, die "
+            "tatsächlich belegt sind, keine aus dem Gedächtnis.)"
+        )
+    return ""
+
+
 def _provider_key(name: str) -> str:
     """Resolve an API key: env-var first, then ~/.delfin/credentials.json.
 
@@ -11203,6 +11239,7 @@ def create_tab(ctx):
             chunks = []
             thinking_chunks = []
             tool_count = [0]  # mutable counter for tool calls in this turn
+            turn_tools: set[str] = set()  # tool names used this turn (verify-guard)
             last_update = 0.0
             try:
 
@@ -11269,6 +11306,11 @@ def create_tab(ctx):
                         parts = tool_name.split("__")
                         if len(parts) >= 3:
                             tool_name = parts[-1]
+                    # Track tool names this turn so the verify-guard can
+                    # tell whether the answer grounded itself (doc-search /
+                    # file read) before making keyword claims.
+                    if tool_name:
+                        turn_tools.add(tool_name)
                     # Parse tool input
                     try:
                         import json as _j
@@ -11771,6 +11813,16 @@ def create_tab(ctx):
                     if _hint:
                         current_msg = f"{current_msg}\n\n{_hint}"
 
+                # Verify-before-Answer runtime hint (Pattern 5 / anti-
+                # hallucination): if the user asks for exact ORCA/keyword
+                # facts, front-load a one-line "look it up" reminder.  The
+                # post-output verify-guard still checks the answer; this
+                # just reduces the chance it has to fire.  Applies in both
+                # dashboard and solo (keyword questions happen in both).
+                _vhint = _build_verify_hint(user_text, mode_dropdown.value)
+                if _vhint:
+                    current_msg = f"{current_msg}\n\n{_vhint}"
+
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
                 # Prepend it to the first user message of the new engine so
@@ -11994,6 +12046,55 @@ def create_tab(ctx):
                                 f"⏸ Stopped after {_MAX_ACTION_CONT} ACTION rounds — "
                                 f"agent kept emitting commands. Send a follow-up to continue."
                             )
+
+                    # -- Verify-Enforcement (anti-hallucination) ----------
+                    # Scan the finished answer for ORCA keyword claims that
+                    # are NOT backed by the manual ground-truth.  Soft-warn
+                    # for every flag (visible system message), and — if the
+                    # turn never grounded itself via a doc-search / file
+                    # read — force exactly ONE self-correction turn so the
+                    # model looks the keyword up instead of guessing.  Hard
+                    # cap of one correction keeps it from burning tokens.
+                    if chunks and not engine._stop_requested:
+                        try:
+                            from delfin.agent import verify_guard as _vg
+                            _vflags = _vg.scan_for_unverified_keywords(
+                                "".join(chunks)
+                            )
+                        except Exception:
+                            _vflags = []
+                        if _vflags:
+                            for _vf in _vflags:
+                                _append_system_message(_vf.message())
+                            _grounded = any(
+                                re.search(r"(?i)search|read|grep|fetch|docs",
+                                          _t or "")
+                                for _t in turn_tools
+                            )
+                            if not _grounded:
+                                _vfeedback = (
+                                    "[Verify] " + _vg.correction_feedback(_vflags)
+                                )
+                                engine.messages.append(
+                                    {"role": "user", "content": _vfeedback}
+                                )
+                                chunks.clear()
+                                thinking_chunks.clear()
+                                engine.stream_response(
+                                    user_message=_vfeedback,
+                                    on_token=_on_token,
+                                    on_tool_use=_on_tool_use,
+                                    on_tool_result=_on_tool_result,
+                                    on_permission_denied=_on_permission_denied,
+                                    on_thinking=_on_thinking,
+                                    thinking_budget=_budget,
+                                    memory_context=_memory,
+                                )
+                                if chunks:
+                                    _update_last_assistant(
+                                        "".join(chunks), role_label,
+                                        finalize=True,
+                                    )
 
                     # -- Interactive question detection (solo/dashboard) --
                     # After the agent finishes a turn, check if the response
