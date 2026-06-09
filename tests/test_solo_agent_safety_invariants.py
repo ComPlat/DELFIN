@@ -173,6 +173,18 @@ def test_tools_not_gated_off_for_reasoning_models():
     )
 
 
+def test_protected_path_detection_for_confirm_dialog():
+    from delfin.agent.kit_confirm import _is_protected_path
+    # Core self-mod-guarded files → protected (persist intentionally off).
+    assert _is_protected_path("delfin/agent/engine.py") is True
+    assert _is_protected_path("/x/software/delfin/delfin/dashboard/tab_agent.py") is True
+    # Ordinary user files → NOT protected (so the dialog points to
+    # acceptEdits instead of a misleading 'protected file' message).
+    assert _is_protected_path("/home/u/calc/testrechnung/run.inp") is False
+    assert _is_protected_path("experiments_all.xlsx") is False
+    assert _is_protected_path("") is False
+
+
 def test_gpt5_family_is_detected_as_reasoning():
     # Documents the classification the fix depends on: gpt-5.x needs
     # reasoning_effort AND tools (the bug was withholding the tools).

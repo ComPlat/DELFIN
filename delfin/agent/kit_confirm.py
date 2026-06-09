@@ -248,16 +248,28 @@ class KitConfirmBroker:
                     "remember_permission(...) selbst formulieren."
                 )
         elif tool in ("write_file", "edit_file", "multi_edit"):
-            # The Self-Modification Guard fires for these. Permanently
-            # disabling the guard for protected files would defeat its
-            # purpose, so we don't expose a 'dauerhaft' button here.
-            persist_disabled_reason = (
-                "Self-Modification Guard: das Dauerhaft-Erlauben für "
-                "Schreiben in geschützte Dateien (api_client.py, "
-                "kit_confirm.py, engine.py, tab_agent.py) ist bewusst "
-                "nicht möglich — diese Schicht muss jedes Mal explizit "
-                "freigegeben werden. Klick 'Erlauben' für DIESE Aktion."
-            )
+            # Two distinct cases — show the RIGHT reason for each, so the
+            # user isn't told "protected file" for a perfectly normal edit.
+            if _is_protected_path(path_arg):
+                # Self-Mod-Guard: protected core files must be approved every
+                # time; persisting that would defeat the guard's purpose.
+                persist_disabled_reason = (
+                    "Self-Modification Guard: Schreiben in geschützte "
+                    "Kern-Dateien (api_client.py, kit_confirm.py, engine.py, "
+                    "tab_agent.py) muss jedes Mal explizit freigegeben werden. "
+                    "Klick 'Erlauben' für DIESE Aktion."
+                )
+            else:
+                # Normal file: there is no per-file persist rule for edits.
+                # The way to stop being asked is the permission MODE — point
+                # the user there instead of a misleading 'protected' message.
+                persist_disabled_reason = (
+                    "Für Schreiben/Edits gibt es keine Einzel-Regel. Wenn der "
+                    "Agent nicht mehr vor jedem Edit fragen soll: oben im "
+                    "Perms-Dropdown auf 'acceptEdits' wechseln — dann sind "
+                    "Schreib-/Edit-Aktionen ohne Nachfrage erlaubt (Sandbox + "
+                    "Self-Modification Guard bleiben aktiv)."
+                )
         elif tool == "read_file":
             # outside-workspace read: persisting = adding the parent
             # directory as extra_workspace_dir.
@@ -418,6 +430,28 @@ def _suggest_bash_pattern(cmd: str) -> str:
     if parts[0] in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         return f"{parts[0]} -m {parts[2]}"
     return parts[0]
+
+
+def _is_protected_path(path_arg: str) -> bool:
+    """True if ``path_arg`` is one of the self-mod-guarded core files.
+
+    Used so the confirm dialog only shows the (intentional) 'cannot persist
+    writes to protected files' reason for ACTUAL protected paths — normal
+    files get the real guidance (switch to acceptEdits) instead.
+    """
+    if not path_arg:
+        return False
+    try:
+        from .api_client import _DEFAULT_PATH_PROTECTED_GLOBS as _globs
+    except Exception:
+        _globs = ()
+    import fnmatch
+    p = str(path_arg).replace("\\", "/")
+    for g in _globs:
+        if p == g or p.endswith("/" + g) or fnmatch.fnmatch(p, "*/" + g) \
+                or fnmatch.fnmatch(p, g):
+            return True
+    return False
 
 
 def _suggest_persist_pattern(cmd: str) -> str:
