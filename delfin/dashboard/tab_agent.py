@@ -11967,6 +11967,13 @@ def create_tab(ctx):
                         )
                         current_msg = current_msg + _denial_ctx
 
+                    # Snapshot the last-compaction marker so we can detect
+                    # whether THIS turn auto-compacted the history and surface
+                    # it (UX: context management must be visible, not silent).
+                    _compact_before = (
+                        getattr(engine, "last_compaction_info", None) or {}
+                    ).get("archived_at")
+
                     engine.stream_response(
                         user_message=current_msg,
                         on_token=_on_token,
@@ -11980,6 +11987,28 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+
+                    # If the engine auto-compacted during this turn, tell the
+                    # user — they should always be able to SEE that older
+                    # context was summarised (and that nothing was lost: the
+                    # full transcript is archived).  Fires once per turn.
+                    _lci = getattr(engine, "last_compaction_info", None) or {}
+                    if _lci.get("archived_at") and _lci["archived_at"] != _compact_before:
+                        if _lci.get("kind") == "sliding_window":
+                            _n = _lci.get("messages_trimmed", 0)
+                            _append_system_message(
+                                f"🗜️ Kontext gekürzt: {_n} ältere Nachricht(en) "
+                                f"gestrafft (Verlauf bleibt im Archiv erhalten)."
+                            )
+                        else:
+                            _n = _lci.get("messages_compacted", 0)
+                            _saved = _lci.get("tokens_saved", 0)
+                            _append_system_message(
+                                f"🗜️ Kontext komprimiert: {_n} Nachrichten "
+                                f"zusammengefasst (~{_saved} Tokens gespart). "
+                                f"Voller Verlauf im Transcript-Archiv gesichert "
+                                f"(/session archive ls)."
+                            )
 
                     # Auto-execute slash commands from agent output (all modes).
                     # Dashboard, Solo, Builder — any agent can control the UI

@@ -150,9 +150,13 @@ def test_plan_approve_fallback_present_in_dashboard():
     assert idx > 0, "fallback handler missing"
     snippet = text[idx: idx + 2500]
     assert "_plan_approval_event" in snippet
-    assert 'result["approved"] = True' in snippet
-    assert 'result["approved"] = False' in snippet
+    # Approve/reject is delegated to the shared _finalize_plan_decision
+    # helper (same code path as the 'Plan akzeptieren' button) so the two
+    # can't drift — the handler picks the branch via approved=(cmd==...).
+    assert "_finalize_plan_decision(" in snippet
+    assert 'approved=(cmd == "/plan approve")' in snippet
     assert "Plan approved via /plan approve fallback" in snippet
+    assert "Plan rejected via /plan reject fallback" in snippet
     # Slash registry entry so the palette shows it
     assert '"/plan approve"' in text
     assert '"/plan reject"' in text
