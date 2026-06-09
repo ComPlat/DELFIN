@@ -73,3 +73,14 @@ censo.log
 
 # Design docs / forensik reports — keep LOCAL in agent_workspace, NEVER in DELFIN repo
 iters/
+
+# === CCDC/CSD LICENSE GUARD (2026-06-09) — NIEMALS CSD-daten committen ===
+# CSD-daten sind lizenziert, dürfen NICHT in dieses public repo
+paper_data/
+**/ccdc_ref_xyz/
+*.mol2
+**/ccdc_validation.py
+scripts/ccdc_exploit/
+*ccdc*fragment*index*.json
+*fragment_index_v*.json
+**/CCDC_all/
