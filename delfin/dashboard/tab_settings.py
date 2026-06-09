@@ -276,6 +276,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder=str(ctx.default_archive_dir),
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    # Bug-report archive: where the 🐞 Bug Report button drops reproducible
+    # reports. Empty = per-user fallback (~/.delfin/agent_bugs). Env
+    # DELFIN_BUG_ARCHIVE overrides this. Teams point it at a shared dir.
+    bug_archive_input = widgets.Text(
+        placeholder='~/.delfin/agent_bugs  (leer = lokaler Fallback)',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
     backend_dropdown = widgets.Dropdown(
         options=[
             ('Auto', 'auto'),
@@ -811,6 +818,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         paths_payload = ((settings_payload or {}).get('paths') or {})
         calc_path_input.value = str(paths_payload.get('calculations_dir') or '')
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
+        agent_payload = ((settings_payload or {}).get('agent') or {})
+        bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -2748,6 +2757,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 paths_payload['archive_dir'] = archive_override
             settings_payload['paths'] = paths_payload
             settings_payload['runtime'] = runtime_payload
+            # Bug-report archive dir (agent section — preserve other agent
+            # keys loaded above; only update this one).
+            _bug_archive = normalize_local_directory_setting(
+                bug_archive_input.value, 'Bug-Report archive'
+            )
+            settings_payload.setdefault('agent', {})
+            settings_payload['agent']['bug_archive_dir'] = _bug_archive or ''
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -2937,6 +2953,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             widgets.HBox(
                 [widgets.HTML('<b>Archive</b>'), archive_path_input],
                 layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Bug-Report Archiv</b>'), bug_archive_input],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Ziel für den 🐞 Bug-Report-Button. Leer = lokaler Fallback '
+                '(<code>~/.delfin/agent_bugs</code>). Für ein geteiltes Team-Archiv '
+                'hier den Pfad setzen (z.B. <code>/home/&lt;gruppe&gt;/archive/AGENT_BUGS</code>) '
+                '— oder per Umgebungsvariable <code>DELFIN_BUG_ARCHIVE</code>, die Vorrang hat.'
+                '</div>'
             ),
         ],
         layout=_section_layout,
