@@ -7165,9 +7165,13 @@ def create_tab(ctx):
                     note += " — persisted for future sessions."
                 except Exception as exc:
                     note += f" — persist failed: {exc}"
+            # Anchor the session on the granted project so the agent
+            # works THERE and doesn't drift back to the DELFIN repo.
+            state["_project_anchor"] = str(resolved)
             _append_system_message(
                 note + " The agent can now read/write there "
-                "(sandbox still blocks everything not granted)."
+                "(sandbox still blocks everything not granted). "
+                "Session anchored on this project."
             )
             return True
 
@@ -12254,6 +12258,17 @@ def create_tab(ctx):
                             )
                     except Exception:
                         pass
+
+                # Project anchor: when the user granted an external
+                # project dir, keep the agent working THERE (use cwd=<dir>
+                # for bash) instead of drifting back to the DELFIN repo.
+                _panchor = state.get("_project_anchor", "")
+                if _panchor:
+                    current_msg = (
+                        f"{current_msg}\n\n(Active project: `{_panchor}` — "
+                        f"work there (bash: cwd='{_panchor}'); do not switch "
+                        f"back to the DELFIN repo unless asked.)"
+                    )
 
                 # Greeting fast-path: a bare greeting must never trigger
                 # tool calls (and with ask_all: confirm prompts) or long
