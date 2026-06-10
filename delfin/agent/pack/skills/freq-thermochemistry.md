@@ -38,5 +38,5 @@ options) — cite the section; never recite keyword names from memory.
 - Keywords only with manual citation; no submits without confirmation.
 
 ## Output format
-**Zweck** → **Input** (Sektion zitiert) → **Moden-Analyse** →
-**Thermochemie mit Plausibilitäts-Checks**.
+**Purpose** → **Input** (section cited) → **Mode analysis** →
+**Thermochemistry with plausibility checks**.

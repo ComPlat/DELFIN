@@ -173,8 +173,8 @@ def scan_for_unverified_keywords(
             flags.append(VerifyFlag(
                 keyword=fake,
                 reason="fake",
-                suggestion=("ist kein echtes ORCA-Keyword (nicht im Manual) "
-                            "— bitte per search_docs prüfen und ersetzen."),
+                suggestion=("is not a real ORCA keyword (not in the manual) "
+                            "— verify via search_docs and replace it."),
             ))
             seen.add(fake)
 
@@ -207,9 +207,8 @@ def scan_for_unverified_keywords(
         flags.append(VerifyFlag(
             keyword=tok,
             reason="unknown",
-            suggestion=("steht nicht im ORCA-Manual-Namespace — bitte per "
-                        "search_docs verifizieren bevor du es als Keyword "
-                        "nennst."),
+            suggestion=("is not in the ORCA manual namespace — verify via "
+                        "search_docs before presenting it as a keyword."),
         ))
         seen.add(low)
 
@@ -220,7 +219,7 @@ def correction_feedback(flags: list[VerifyFlag]) -> str:
     """Build the feedback message for the forced self-correction turn."""
     kws = ", ".join(f"'{f.keyword}'" for f in flags)
     return (
-        f"Die folgenden Keywords sind nicht im ORCA-Manual belegt: {kws}. "
-        "Schlag sie per search_docs im Manual nach und korrigiere oder "
-        "streiche sie. Nenne nur Keywords, die tatsächlich im Manual stehen."
+        f"The following keywords are not backed by the ORCA manual: {kws}. "
+        "Look them up via search_docs and correct or remove them. Only "
+        "mention keywords that actually exist in the manual."
     )

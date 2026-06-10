@@ -96,7 +96,7 @@ def test_error_signature_scan_finds_jeromes_venv_case(tmp_path):
         "No such file or directory\n"
     )
     labels = jm.scan_error_signatures(str(tmp_path))
-    assert "venv-aktivierung-fehlgeschlagen" in labels
+    assert "venv-activation-failed" in labels
 
 
 def test_signature_scan_handles_missing_folder():
@@ -131,7 +131,7 @@ def test_auto_diagnose_off_spends_zero_tokens():
         engine_factory=lambda *a, **k: calls.append(1),
     )
     assert calls == []                      # engine never built
-    assert "keine LLM" in f.summary
+    assert "no LLM" in f.summary
 
 
 def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
@@ -147,7 +147,7 @@ def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
     )
     f = jm.diagnose_finding(
         jm.Finding("4976064", "/calc/test", "FAILED",
-                   signatures=["venv-aktivierung-fehlgeschlagen"]),
+                   signatures=["venv-activation-failed"]),
         settings=_ON,
         engine_factory=lambda folder, settings: _FakeEngine(),
     )
@@ -162,7 +162,7 @@ def test_diagnosis_failure_is_contained():
         raise RuntimeError("no api key")
     f = jm.diagnose_finding(jm.Finding("9", "/x", "FAILED"),
                             settings=_ON, engine_factory=_boom)
-    assert "Diagnose fehlgeschlagen" in f.summary   # never raises
+    assert "diagnosis failed" in f.summary   # never raises
 
 
 # ---------------------------------------------------------------------------

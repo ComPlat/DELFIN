@@ -256,8 +256,8 @@ def _render_markdown(
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
-        lines += ["## Beschreibung", "", meta["description"].strip(), ""]
-    lines += ["## Kontext", "", "| Feld | Wert |", "|---|---|"]
+        lines += ["## Description", "", meta["description"].strip(), ""]
+    lines += ["## Context", "", "| Field | Value |", "|---|---|"]
     for key in ("created_at", "user", "host", "mode", "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
                 "input_tokens", "output_tokens", "cost_usd",
@@ -266,23 +266,23 @@ def _render_markdown(
             val = str(meta[key]).replace("|", "\\|")
             lines.append(f"| {key} | {val} |")
     if error_text and error_text.strip():
-        lines += ["", "## Fehler / Traceback", "", "```", error_text.strip(), "```"]
+        lines += ["", "## Error / Traceback", "", "```", error_text.strip(), "```"]
     if denied_commands:
-        lines += ["", "## Geblockte Commands (Session)", ""]
+        lines += ["", "## Blocked commands (session)", ""]
         lines += [f"- `{c}`" for c in denied_commands]
     if referenced_files:
-        lines += ["", "## Referenzierte Workspace-Dateien", "",
-                   "| Datei | Status | Größe | gebündelt |", "|---|---|---|---|"]
+        lines += ["", "## Referenced workspace files", "",
+                   "| File | Status | Size | bundled |", "|---|---|---|---|"]
         for r in referenced_files:
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
                 f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
             )
     if system_prompt and system_prompt.strip():
-        lines += ["", "## System-Prompt (letzter Turn)", "",
-                   "<details><summary>aufklappen</summary>", "",
+        lines += ["", "## System prompt (last turn)", "",
+                   "<details><summary>expand</summary>", "",
                    "```", system_prompt.strip(), "```", "", "</details>"]
-    lines += ["", "## Konversation", ""]
+    lines += ["", "## Conversation", ""]
     for msg in chat:
         role = msg.get("role", "")
         content = msg.get("content", "")
@@ -423,9 +423,9 @@ def push_report_to_remote(
     user = (user or "").strip()
     remote_path = (remote_path or "").strip()
     if not (host and user and remote_path):
-        return False, "kein Remote konfiguriert (Host/User/Remote Path fehlen)"
+        return False, "no remote configured (host/user/remote path missing)"
     if not report_dir.is_dir():
-        return False, f"lokaler Report fehlt: {report_dir}"
+        return False, f"local report missing: {report_dir}"
 
     from delfin.ssh_transfer_jobs import (
         build_ssh_mkdir_command,
@@ -439,7 +439,7 @@ def push_report_to_remote(
             capture_output=True, text=True, timeout=timeout,
         )
         if mk.returncode != 0:
-            return False, f"remote mkdir fehlgeschlagen: {mk.stderr.strip()[:200]}"
+            return False, f"remote mkdir failed: {mk.stderr.strip()[:200]}"
         rs = subprocess.run(
             build_rsync_transfer_command(
                 [str(report_dir)], host, user, target_dir, port,
@@ -447,11 +447,11 @@ def push_report_to_remote(
             capture_output=True, text=True, timeout=timeout,
         )
         if rs.returncode != 0:
-            return False, f"rsync fehlgeschlagen: {rs.stderr.strip()[:200]}"
+            return False, f"rsync failed: {rs.stderr.strip()[:200]}"
     except subprocess.TimeoutExpired:
-        return False, f"Transfer-Timeout nach {timeout}s"
+        return False, f"transfer timeout after {timeout}s"
     except Exception as exc:
-        return False, f"Transfer-Fehler: {exc}"
+        return False, f"transfer error: {exc}"
 
     return True, f"{target_dir}/{report_dir.name}"
 
@@ -543,7 +543,7 @@ def bug_report_to_task(report: dict) -> dict:
     this real failure to zero.
     """
     chat = report.get("chat_messages") or []
-    prompt = _strip_injected_hints(_last_message(chat, "user")) or "(prompt unbekannt — bitte ausfüllen)"
+    prompt = _strip_injected_hints(_last_message(chat, "user")) or "(prompt unknown — please fill in)"
     bad_answer = _last_message(chat, "assistant")
 
     forbidden: list[dict] = []
@@ -568,7 +568,7 @@ def bug_report_to_task(report: dict) -> dict:
         "prompt": prompt,
         # Maintainer fills this in — what a CORRECT answer must contain.
         "expected_signals": [
-            {"pattern": "TODO-was-die-richtige-antwort-enthalten-muss",
+            {"pattern": "TODO-what-the-correct-answer-must-contain",
              "against": "text"},
         ],
         "max_duration_s": 90,

@@ -76,10 +76,10 @@ def publish_skill(
     """Push one local skill to the shared registry. Returns (ok, message)."""
     host, user, remote_path = (host or "").strip(), (user or "").strip(), (remote_path or "").strip()
     if not (host and user and remote_path):
-        return False, "kein Remote konfiguriert (Host/User/Remote Path fehlen)"
+        return False, "no remote configured (host/user/remote path missing)"
     src = find_skill_file(name, workspace)
     if src is None:
-        return False, f"Skill '{name}' nicht gefunden (weder lokal noch im Pack)"
+        return False, f"skill '{name}' not found (neither local nor in the pack)"
 
     from delfin.ssh_transfer_jobs import (
         build_ssh_mkdir_command,
@@ -88,11 +88,11 @@ def publish_skill(
     target = _remote_dir(remote_path)
     rc, _, err = run_fn(build_ssh_mkdir_command(host, user, target, port))
     if rc != 0:
-        return False, f"remote mkdir fehlgeschlagen: {err.strip()[:200]}"
+        return False, f"remote mkdir failed: {err.strip()[:200]}"
     rc, _, err = run_fn(
         build_rsync_transfer_command([str(src)], host, user, target, port))
     if rc != 0:
-        return False, f"rsync fehlgeschlagen: {err.strip()[:200]}"
+        return False, f"rsync failed: {err.strip()[:200]}"
     return True, f"{target}/{src.name}"
 
 
@@ -152,7 +152,7 @@ def pull_skills(
     """
     host, user, remote_path = (host or "").strip(), (user or "").strip(), (remote_path or "").strip()
     if not (host and user and remote_path):
-        return False, [("", "kein Remote konfiguriert")]
+        return False, [("", "no remote configured")]
 
     from delfin.ssh_transfer_jobs import build_rsync_download_command
     with tempfile.TemporaryDirectory(prefix="delfin_skills_") as tmp:
@@ -161,12 +161,12 @@ def pull_skills(
         rc, _, err = run_fn(build_rsync_download_command(
             sources, host, user, remote_path, port, tmp))
         if rc != 0:
-            return False, [("", f"rsync fehlgeschlagen: {err.strip()[:200]}")]
+            return False, [("", f"rsync failed: {err.strip()[:200]}")]
         results: list[tuple[str, str]] = []
         for f in sorted(Path(tmp).rglob("*.md")):
             status, _path = install_skill_text(
                 f.stem, f.read_text(encoding="utf-8"), dest_dir=dest_dir)
             results.append((f.stem, status))
         if not results:
-            return True, [("", "keine Skills im Remote-Registry gefunden")]
+            return True, [("", "no skills found in the remote registry")]
         return True, results

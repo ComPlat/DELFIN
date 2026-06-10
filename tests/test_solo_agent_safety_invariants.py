@@ -192,3 +192,18 @@ def test_gpt5_family_is_detected_as_reasoning():
     for base in ("gpt-5", "gpt-5.1", "gpt-5.4", "gpt-5.5", "o3", "o4-mini"):
         is_reasoning = bool(re.match(r"^o\d", base) or base.startswith("gpt-5"))
         assert is_reasoning, f"{base} should be classified reasoning"
+
+
+# ---------------------------------------------------------------------------
+# Streaming fallback: proxy "can't stream" errors are detected (and only those)
+# ---------------------------------------------------------------------------
+
+def test_stream_unsupported_error_detection():
+    from delfin.agent.api_client import _is_stream_unsupported_error
+    prod = Exception(
+        "Error code: 400 - {'detail': \"'async for' requires an object "
+        "with __aiter__ method, got ModelResponse\"}"
+    )
+    assert _is_stream_unsupported_error(prod) is True
+    assert _is_stream_unsupported_error(Exception("401 AuthenticationError")) is False
+    assert _is_stream_unsupported_error(Exception("rate limit")) is False

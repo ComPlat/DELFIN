@@ -4971,6 +4971,20 @@ class _DocToolExecutor:
 _doc_executor = _DocToolExecutor()
 
 
+def _is_stream_unsupported_error(exc: Exception) -> bool:
+    """Proxy signature for "this request cannot be streamed".
+
+    Observed in production on the KIT litellm proxy (azure.gpt-5.4,
+    dashboard): HTTP 400 with detail "'async for' requires an object
+    with __aiter__ method, got ModelResponse" — the proxy's upstream
+    call returned a non-streaming response while the client asked for
+    ``stream=True``.  The cure is to retry once without streaming.
+    """
+    s = str(exc)
+    return ("__aiter__" in s and "ModelResponse" in s) \
+        or "'async for' requires" in s
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
     pool so a multi-subagent turn runs concurrently (Claude-Code-style
@@ -5336,47 +5350,80 @@ class OpenAIClient(_BaseClient):
             _tool_calls: dict[int, dict] = {}  # index -> {id, name, arguments_parts}
             _text_chunks: list[str] = []
 
-            stream = self.client.chat.completions.create(**kwargs)
             finish_reason = None
             try:
-                for chunk in stream:
-                    if chunk.usage:
-                        _total_in += chunk.usage.prompt_tokens or 0
-                        _total_out += chunk.usage.completion_tokens or 0
+                stream = self.client.chat.completions.create(**kwargs)
+                try:
+                    for chunk in stream:
+                        if chunk.usage:
+                            _total_in += chunk.usage.prompt_tokens or 0
+                            _total_out += chunk.usage.completion_tokens or 0
 
-                    if not chunk.choices:
-                        continue
+                        if not chunk.choices:
+                            continue
 
-                    choice = chunk.choices[0]
-                    delta = choice.delta
+                        choice = chunk.choices[0]
+                        delta = choice.delta
 
-                    # Text content
-                    if delta and delta.content:
-                        _text_chunks.append(delta.content)
-                        yield StreamEvent(type="text_delta", text=delta.content)
+                        # Text content
+                        if delta and delta.content:
+                            _text_chunks.append(delta.content)
+                            yield StreamEvent(type="text_delta", text=delta.content)
 
-                    # Tool call chunks
-                    if delta and delta.tool_calls:
-                        for tc_delta in delta.tool_calls:
-                            idx = tc_delta.index
-                            if idx not in _tool_calls:
-                                _tool_calls[idx] = {
-                                    "id": tc_delta.id or "",
-                                    "name": (tc_delta.function.name or "") if tc_delta.function else "",
-                                    "arguments_parts": [],
-                                }
-                            entry = _tool_calls[idx]
-                            if tc_delta.id:
-                                entry["id"] = tc_delta.id
-                            if tc_delta.function and tc_delta.function.name:
-                                entry["name"] = tc_delta.function.name
-                            if tc_delta.function and tc_delta.function.arguments:
-                                entry["arguments_parts"].append(tc_delta.function.arguments)
+                        # Tool call chunks
+                        if delta and delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                if idx not in _tool_calls:
+                                    _tool_calls[idx] = {
+                                        "id": tc_delta.id or "",
+                                        "name": (tc_delta.function.name or "") if tc_delta.function else "",
+                                        "arguments_parts": [],
+                                    }
+                                entry = _tool_calls[idx]
+                                if tc_delta.id:
+                                    entry["id"] = tc_delta.id
+                                if tc_delta.function and tc_delta.function.name:
+                                    entry["name"] = tc_delta.function.name
+                                if tc_delta.function and tc_delta.function.arguments:
+                                    entry["arguments_parts"].append(tc_delta.function.arguments)
 
-                    if choice.finish_reason:
-                        finish_reason = choice.finish_reason
-            finally:
-                stream.close()
+                        if choice.finish_reason:
+                            finish_reason = choice.finish_reason
+                finally:
+                    stream.close()
+            except Exception as _stream_exc:
+                if not _is_stream_unsupported_error(_stream_exc):
+                    raise
+                # The proxy cannot stream this request (litellm 400:
+                # "'async for' requires ... got ModelResponse"). Retry ONCE
+                # without streaming and synthesize the same events from the
+                # complete response — the user gets an answer instead of
+                # "Agent returned no output".
+                nk = dict(kwargs)
+                nk["stream"] = False
+                nk.pop("stream_options", None)
+                resp = self.client.chat.completions.create(**nk)
+                if getattr(resp, "usage", None):
+                    _total_in += resp.usage.prompt_tokens or 0
+                    _total_out += resp.usage.completion_tokens or 0
+                if getattr(resp, "choices", None):
+                    _choice = resp.choices[0]
+                    _msg = _choice.message
+                    if getattr(_msg, "content", None):
+                        _text_chunks.append(_msg.content)
+                        yield StreamEvent(type="text_delta", text=_msg.content)
+                    for _i, _tc in enumerate(
+                            getattr(_msg, "tool_calls", None) or []):
+                        _fn = getattr(_tc, "function", None)
+                        _tool_calls[_i] = {
+                            "id": getattr(_tc, "id", "") or f"ns_{_i}",
+                            "name": (getattr(_fn, "name", "") or "") if _fn else "",
+                            "arguments_parts": [
+                                (getattr(_fn, "arguments", "") or "") if _fn else ""
+                            ],
+                        }
+                    finish_reason = _choice.finish_reason
 
             # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
             # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into
@@ -5415,9 +5462,9 @@ class OpenAIClient(_BaseClient):
                     _names = ", ".join(c["name"] for c in _recovered)
                     yield StreamEvent(
                         type="text_delta",
-                        text=(f"\n\n🔧 [Tool-Format des Modells repariert — "
-                              f"{len(_recovered)} Tool-Call(s) ({_names}) werden "
-                              f"jetzt ausgeführt]\n"),
+                        text=(f"\n\n🔧 [repaired the model's tool-call format — "
+                              f"executing {len(_recovered)} tool call(s) "
+                              f"({_names}) now]\n"),
                     )
 
             # If model made tool calls, execute them locally and loop

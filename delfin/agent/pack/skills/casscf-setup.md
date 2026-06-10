@@ -41,5 +41,5 @@ against the manual extract, cite the section in your answer.
   explicit confirmation if they want you to).
 
 ## Output format
-**Chemische Begründung** → **Active Space (CAS(n,m), warum)** →
-**Input-Block** (zitierte Manual-Sektion) → **Erwartete Checks**.
+**Chemical justification** → **Active space (CAS(n,m), why)** →
+**Input block** (manual section cited) → **Expected checks**.

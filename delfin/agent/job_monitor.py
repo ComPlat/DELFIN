@@ -50,12 +50,12 @@ _OK_TERMINAL_STATES = frozenset({"COMPLETED"})
 # prompt (and the notification) can use.  Grown from real cases — the
 # venv/tarball entry IS Jerome's production failure.
 ERROR_SIGNATURES: tuple[tuple[str, str], ...] = (
-    (r"bin/activate: No such file or directory", "venv-aktivierung-fehlgeschlagen"),
+    (r"bin/activate: No such file or directory", "venv-activation-failed"),
     (r"(?i)out.of.memory|oom-kill|Killed", "out-of-memory"),
     (r"(?i)DUE TO TIME LIMIT", "slurm-timelimit"),
-    (r"(?i)SCF NOT CONVERGED|SCF did not converge", "scf-nicht-konvergiert"),
+    (r"(?i)SCF NOT CONVERGED|SCF did not converge", "scf-not-converged"),
     (r"(?i)ORCA finished by error termination", "orca-error-termination"),
-    (r"(?i)No such file or directory", "datei-fehlt"),
+    (r"(?i)No such file or directory", "file-missing"),
     (r"(?i)Disk quota exceeded", "disk-quota"),
     (r"(?i)Permission denied", "permission-denied"),
     (r"(?i)segmentation fault|signal 11", "segfault"),
@@ -254,14 +254,51 @@ def load_findings(since: float = 0.0, path: Path | None = None) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _DIAGNOSIS_PROMPT = (
-    "SLURM-Job {job_id} in `{folder}` ist fehlgeschlagen "
-    "(Status: {state}{sig_part}).\n"
-    "Diagnostiziere READ-ONLY: lies die letzten Zeilen der .err/.out/Log-"
-    "Dateien im Ordner, klassifiziere die Ursache präzise (Datei + Zeile "
-    "zitieren) und schlage einen konkreten Fix vor.\n"
-    "WICHTIG: KEINE Änderungen, KEINE Submits, keine Schreibzugriffe — "
-    "nur Diagnose + Fix-Vorschlag. Antworte kompakt auf Deutsch."
+    "SLURM job {job_id} in `{folder}` has FAILED "
+    "(state: {state}{sig_part}).\n"
+    "Diagnose READ-ONLY: read the last lines of the .err/.out/log files "
+    "in the folder, classify the root cause precisely (quote file + line) "
+    "and propose a concrete fix.\n"
+    "IMPORTANT: NO changes, NO submits, no writes of any kind — diagnosis "
+    "+ fix proposal only. Respond concisely in English."
 )
+
+
+_PROVIDER_KEY_NAMES = {
+    "kit": "KIT_TOOLBOX_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+}
+
+
+def _resolve_provider_and_key(model: str, explicit_provider: str = "") -> tuple[str, str]:
+    """Resolve provider + API key the SAME way the dashboard agent does.
+
+    Same credential store (env var first, then ~/.delfin/credentials.json
+    via ``delfin.agent.credentials``) and the same provider→key-name
+    mapping as ``tab_agent._ensure_engine`` — nothing new to configure
+    for the monitor.  Provider is inferred from the model name when not
+    set explicitly (azure./kit. → kit, gpt-/o-series → openai,
+    opus/sonnet/haiku → claude; default kit = the lab default).
+    """
+    provider = (explicit_provider or "").strip()
+    m = (model or "").lower()
+    if not provider:
+        if m.startswith(("azure.", "kit.")):
+            provider = "kit"
+        elif m.startswith(("gpt-", "o1", "o3", "o4")):
+            provider = "openai"
+        elif m in ("opus", "sonnet", "haiku") or m.startswith("claude"):
+            provider = "claude"
+        else:
+            provider = "kit"
+    key_name = _PROVIDER_KEY_NAMES.get(provider, "ANTHROPIC_API_KEY")
+    try:
+        from delfin.agent.credentials import load_credential
+        api_key = load_credential(key_name) or ""
+    except Exception:
+        api_key = os.environ.get(key_name, "")
+    return provider, api_key
 
 
 def _default_engine_factory(folder: str, settings: dict | None = None):
@@ -280,16 +317,17 @@ def _default_engine_factory(folder: str, settings: dict | None = None):
             settings = {}
     agent_cfg = (settings or {}).get("agent") or {}
     mon = monitor_settings(settings)
-    kwargs: dict[str, Any] = dict(
+    model = mon["model"] or str(agent_cfg.get("model", "") or "")
+    provider, api_key = _resolve_provider_and_key(model, mon["provider"])
+    return AgentEngine(
         repo_dir=Path(folder or "."),
         backend=mon["backend"] or str(agent_cfg.get("backend", "api") or "api"),
-        model=mon["model"] or str(agent_cfg.get("model", "") or ""),
+        provider=provider,
+        api_key=api_key,
+        model=model,
         mode="solo",
         permission_mode="plan",   # read-only — headless must never mutate
     )
-    if mon["provider"]:
-        kwargs["provider"] = mon["provider"]
-    return AgentEngine(**kwargs)
 
 
 def diagnose_finding(
@@ -305,10 +343,10 @@ def diagnose_finding(
     """
     cfg = monitor_settings(settings)
     if not cfg["auto_diagnose"]:
-        finding.summary = "auto_diagnose aus — keine LLM-Diagnose"
+        finding.summary = "auto_diagnose off — no LLM diagnosis (0 tokens)"
         return finding
 
-    sig_part = ("; Signaturen: " + ", ".join(finding.signatures)
+    sig_part = ("; signatures: " + ", ".join(finding.signatures)
                 if finding.signatures else "")
     prompt = _DIAGNOSIS_PROMPT.format(
         job_id=finding.job_id, folder=finding.folder,
@@ -322,9 +360,10 @@ def diagnose_finding(
             user_message=prompt,
             on_token=lambda t: chunks.append(t),
         )
-        text = "".join(chunks).strip() or "(keine Ausgabe)"
+        text = "".join(chunks).strip() or "(no output)"
     except Exception as exc:
-        text = f"(Diagnose fehlgeschlagen: {exc})"
+        text = (f"(diagnosis failed: {exc} — check API key / "
+                f"agent.job_monitor model settings)")
 
     finding.summary = text[:400]
     # Save as a loadable session so the user can continue the conversation.
@@ -339,7 +378,7 @@ def diagnose_finding(
                 {"role": "assistant", "content": text,
                  "role_label": "Job-Monitor"},
             ],
-            title=f"🚨 Job {finding.job_id} fehlgeschlagen — "
+            title=f"🚨 Job {finding.job_id} failed — "
                   f"{(finding.signatures or [finding.state])[0]}",
         )
         finding.diagnosis_session = sid
@@ -351,7 +390,7 @@ def diagnose_finding(
 def announce(finding: Finding, settings: dict | None = None) -> None:
     """Desktop notification + optional webhook. Best-effort, never raises."""
     cfg = monitor_settings(settings)
-    title = f"🚨 DELFIN: Job {finding.job_id} fehlgeschlagen"
+    title = f"🚨 DELFIN: job {finding.job_id} failed"
     body = (f"{finding.state}"
             + (f" · {', '.join(finding.signatures)}" if finding.signatures else "")
             + (f" · Session: {finding.diagnosis_session}"
@@ -454,15 +493,15 @@ def run_loop(
 def main() -> int:
     cfg = monitor_settings()
     if not cfg["enabled"]:
-        print("job_monitor ist deaktiviert (agent.job_monitor.enabled=false). "
-              "Im Settings-Tab aktivieren — Hinweis: die Diagnose kostet "
-              "Tokens (abschaltbar via auto_diagnose).")
+        print("job_monitor is disabled (agent.job_monitor.enabled=false). "
+              "Enable it in the Settings tab — note: the auto-diagnosis "
+              "costs tokens (separately switchable via auto_diagnose).")
         return 2
     if not acquire_pid_lock():
-        print("job_monitor läuft bereits (PID-Lock).")
+        print("job_monitor is already running (PID lock).")
         return 3
     try:
-        print(f"job_monitor gestartet (Intervall {cfg['interval_s']}s, "
+        print(f"job_monitor started (interval {cfg['interval_s']}s, "
               f"auto_diagnose={cfg['auto_diagnose']}).")
         return run_loop()
     finally:

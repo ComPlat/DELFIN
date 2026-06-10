@@ -36,5 +36,5 @@ hallucination — never use it).
 - No submits without explicit user confirmation.
 
 ## Output format
-**Ziel (Physik)** → **Methode/Funktional (Begründung)** → **Input-Block**
-(Manual-Sektion zitiert) → **Auswertungs-Checks**.
+**Goal (physics)** → **Method/functional (justification)** → **Input block**
+(manual section cited) → **Analysis checks**.

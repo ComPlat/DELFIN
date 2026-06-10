@@ -35,5 +35,5 @@ gas phase or aborts). Cite the section.
 - No submits without explicit confirmation.
 
 ## Output format
-**Modell-Wahl (CPCM/SMD/explizit, warum)** → **Input-Block** (Sektion
-zitiert) → **Konsistenz-/Plausibilitäts-Checks**.
+**Model choice (CPCM/SMD/explicit, why)** → **Input block** (section
+cited) → **Consistency/plausibility checks**.

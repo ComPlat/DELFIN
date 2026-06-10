@@ -89,7 +89,7 @@ def test_metadata_captured(tmp_path):
     assert js["chat_messages"]                       # conversation included
     md = (d / "report.md").read_text()
     assert "erfand ein Keyword" in md
-    assert "## Konversation" in md
+    assert "## Conversation" in md
 
 
 def test_reports_do_not_collide(tmp_path):
@@ -183,7 +183,7 @@ def test_push_noop_without_transfer_config(tmp_path):
     d = _write(tmp_path)
     ok, msg = br.push_report_to_remote(d, host="", user="", remote_path="")
     assert ok is False
-    assert "kein Remote" in msg
+    assert "no remote" in msg
 
 
 def test_push_runs_mkdir_then_rsync(tmp_path, monkeypatch):
@@ -223,9 +223,9 @@ def test_debug_fields_captured(tmp_path):
     assert "rm -rf /" in js["denied_commands"]
     # and the human report surfaces them
     md = (d / "report.md").read_text()
-    assert "## Fehler / Traceback" in md
-    assert "## Geblockte Commands" in md
-    assert "## System-Prompt" in md
+    assert "## Error / Traceback" in md
+    assert "## Blocked commands" in md
+    assert "## System prompt" in md
 
 
 def test_referenced_files_are_bundled(tmp_path):
@@ -247,7 +247,7 @@ def test_referenced_files_are_bundled(tmp_path):
     assert recs[str(src1)]["status"] == "bundled"
     assert recs[str(tmp_path / "ghost.txt")]["status"] == "missing-or-not-a-file"
     md = (d / "report.md").read_text()
-    assert "## Referenzierte Workspace-Dateien" in md
+    assert "## Referenced workspace files" in md
 
 
 def test_oversized_file_is_skipped_not_copied(tmp_path, monkeypatch):
@@ -299,4 +299,4 @@ def test_push_reports_rsync_failure(tmp_path, monkeypatch):
         d, host="h", user="u", remote_path="/r", port=22,
     )
     assert ok is False
-    assert "rsync fehlgeschlagen" in msg
+    assert "rsync failed" in msg

@@ -254,21 +254,21 @@ class KitConfirmBroker:
                 # Self-Mod-Guard: protected core files must be approved every
                 # time; persisting that would defeat the guard's purpose.
                 persist_disabled_reason = (
-                    "Self-Modification Guard: Schreiben in geschützte "
-                    "Kern-Dateien (api_client.py, kit_confirm.py, engine.py, "
-                    "tab_agent.py) muss jedes Mal explizit freigegeben werden. "
-                    "Klick 'Erlauben' für DIESE Aktion."
+                    "Self-Modification Guard: writes to protected core files "
+                    "(api_client.py, kit_confirm.py, engine.py, tab_agent.py) "
+                    "must be approved explicitly every time. Click 'Erlauben' "
+                    "for THIS action."
                 )
             else:
                 # Normal file: there is no per-file persist rule for edits.
                 # The way to stop being asked is the permission MODE — point
                 # the user there instead of a misleading 'protected' message.
                 persist_disabled_reason = (
-                    "Für Schreiben/Edits gibt es keine Einzel-Regel. Wenn der "
-                    "Agent nicht mehr vor jedem Edit fragen soll: oben im "
-                    "Perms-Dropdown auf 'acceptEdits' wechseln — dann sind "
-                    "Schreib-/Edit-Aktionen ohne Nachfrage erlaubt (Sandbox + "
-                    "Self-Modification Guard bleiben aktiv)."
+                    "There is no per-file persist rule for writes/edits. To "
+                    "stop being asked before every edit: switch the Perms "
+                    "dropdown to 'acceptEdits' — write/edit actions then run "
+                    "without prompting (sandbox + self-modification guard "
+                    "stay active)."
                 )
         elif tool == "read_file":
             # outside-workspace read: persisting = adding the parent

@@ -40,9 +40,8 @@ def _build_plan_hint(user_text: str) -> str:
     numbered = len(_PLAN_HINT_NUMBERED.findall(user_text))
     if verbs >= 3 or numbered >= 3 or (verbs >= 2 and connectives >= 2):
         return (
-            "(Multi-Step erkannt — bitte zuerst einen 1-2 Zeilen Plan "
-            "emittieren, dann die ACTIONs in Reihenfolge, abschließend "
-            "ACTION: /done.)"
+            "(Multi-step request detected — emit a 1-2 line plan first, then "
+            "the ACTIONs in order, finishing with ACTION: /done.)"
         )
     return ""
 
@@ -76,9 +75,9 @@ def _build_verify_hint(user_text: str, mode: str = "") -> str:
         return ""
     if _VERIFY_HINT_PATTERNS.search(user_text):
         return (
-            "(Faktenfrage erkannt — vor der Antwort per search_docs/Read "
-            "im Manual bzw. Code nachschlagen; nenne nur Keywords, die "
-            "tatsächlich belegt sind, keine aus dem Gedächtnis.)"
+            "(Factual question detected — look it up via search_docs/Read in "
+            "the manual/code BEFORE answering; only mention keywords that "
+            "are actually documented, none from memory.)"
         )
     return ""
 
@@ -2854,15 +2853,15 @@ def create_tab(ctx):
     # note describes what went wrong. Archive path comes from
     # DELFIN_BUG_ARCHIVE / settings.agent.bug_archive_dir — never hard-coded.
     bug_note_input = widgets.Text(
-        placeholder="Bug: was lief schief? (optional)",
+        placeholder="Bug: what went wrong? (optional)",
         layout=widgets.Layout(width="220px"),
     )
     bug_report_btn = widgets.Button(
         description="🐞 Bug Report",
         button_style="warning",
         layout=widgets.Layout(width="120px"),
-        tooltip="Konversation + Mode/Provider/Model/Effort/Perms als "
-                "Report ins Archiv legen (für Maintainer)",
+        tooltip="Bundle conversation + mode/provider/model/effort/perms "
+                "into an archive report (for maintainers)",
     )
 
     controls_row = widgets.VBox([
@@ -5320,15 +5319,15 @@ def create_tab(ctx):
                     _bits = []
                     if _san.leaked_tools:
                         _bits.append(
-                            "Tool-Calls als Text geleakt: "
+                            "tool calls leaked as text: "
                             + ", ".join(_san.leaked_tools)
                         )
                     if _san.glitch_chars:
-                        _bits.append(f"{_san.glitch_chars} Glitch-Zeichen entfernt")
+                        _bits.append(f"removed {_san.glitch_chars} glitch characters")
                     state["_sanitize_note"] = (
-                        "🧹 Modell-Ausgabe bereinigt (" + "; ".join(_bits) + "). "
-                        "Ursache: gpt-5.x über KIT-Endpoint reicht Harmony-Tool-"
-                        "Syntax als Text durch. Tipp: effort↑ oder erneut senden."
+                        "🧹 Cleaned model output (" + "; ".join(_bits) + "). "
+                        "Cause: gpt-5.x via the KIT endpoint leaks harmony tool "
+                        "syntax as text. Tip: raise effort or resend."
                     )
             except Exception:
                 pass
@@ -7067,7 +7066,7 @@ def create_tab(ctx):
                 target = arg[len("task"):].strip()
                 reports = _br.list_reports()
                 if not reports:
-                    _append_system_message("Keine Bug-Reports im Archiv gefunden.")
+                    _append_system_message("No bug reports found in the archive.")
                     return True
                 match = None
                 if not target:
@@ -7079,7 +7078,7 @@ def create_tab(ctx):
                             break
                 if match is None:
                     _append_system_message(
-                        f"Kein Report passend zu '{target}'. `/bugs ls` für die Liste."
+                        f"No report matching '{target}'. `/bugs ls` for the list."
                     )
                     return True
                 try:
@@ -7089,19 +7088,19 @@ def create_tab(ctx):
                     yaml_text = _br.task_to_yaml(task, source_report=match["path"])
                     short = str(draft).replace(str(Path.home()), "~")
                     _append_system_message(
-                        f"🧪 Benchmark-Task aus `{match['name']}` erzeugt → `{short}`\n\n"
+                        f"🧪 Benchmark task scaffolded from `{match['name']}` → `{short}`\n\n"
                         f"```yaml\n{yaml_text}```\n"
-                        f"**Nächster Schritt — optimieren:**\n"
-                        f"• Im **solo mode** (hier im Dashboard): den Agent bitten, "
-                        f"`expected_signals` zu vervollständigen und den Task nach "
-                        f"`delfin/agent/pack/benchmark/tasks.yaml` zu übernehmen "
-                        f"(Prompts/Benchmark sind frei editierbar; Kern-Code nur mit "
-                        f"Self-Mod-Guard-Freigabe).\n"
-                        f"• Oder in **Claude CLI**: Report lesen + Fix/Task dort bauen.\n"
-                        f"Danach fährt der Iterations-Loop genau diesen Bug auf 0."
+                        f"**Next step — optimise:**\n"
+                        f"• In **solo mode** (here): ask the agent to complete "
+                        f"`expected_signals` and integrate the task into "
+                        f"`delfin/agent/pack/benchmark/tasks.yaml` (prompts/benchmark "
+                        f"are freely editable; core code only with self-mod-guard "
+                        f"approval).\n"
+                        f"• Or in **Claude CLI**: read the report and build fix/task there.\n"
+                        f"The iteration loop then drives exactly this bug to zero."
                     )
                 except Exception as exc:
-                    _append_system_message(f"Task-Scaffold fehlgeschlagen: {exc}")
+                    _append_system_message(f"Task scaffold failed: {exc}")
                 return True
             # /bugs  |  /bugs ls — list the local archive
             reports = _br.list_reports()
@@ -7111,8 +7110,8 @@ def create_tab(ctx):
                 _archive = "?"
             if not reports:
                 _append_system_message(
-                    f"Keine Bug-Reports in `{_archive}`.\n"
-                    f"Klicke den 🐞 Bug-Report-Button, um einen zu erstellen."
+                    f"No bug reports in `{_archive}`.\n"
+                    f"Click the 🐞 bug-report button to create one."
                 )
                 return True
             lines = [f"🐞 **Bug-Reports** in `{_archive}` ({len(reports)}):", ""]
@@ -7121,7 +7120,7 @@ def create_tab(ctx):
                 meta = " · ".join(x for x in (r["mode"], r["model"], r["user"]) if x)
                 lines.append(f"- `{r['name']}` — {desc}  ({meta})")
             lines.append("")
-            lines.append("→ `/bugs task <name>` erzeugt daraus einen Benchmark-Task.")
+            lines.append("→ `/bugs task <name>` scaffolds a benchmark task from it.")
             _append_system_message("\n".join(lines))
             return True
 
@@ -7138,24 +7137,24 @@ def create_tab(ctx):
                 folder = parts[2] if len(parts) >= 3 else ""
                 _jm.add_watch(job_id, folder)
                 _append_system_message(
-                    f"👁 Job `{job_id}` wird überwacht"
-                    + (f" (Ordner: `{folder}`)" if folder else "")
-                    + ". `/watch start` startet den Daemon, falls noch nicht aktiv."
+                    f"👁 Watching job `{job_id}`"
+                    + (f" (folder: `{folder}`)" if folder else "")
+                    + ". `/watch start` launches the daemon if not running."
                 )
             elif sub == "rm" and len(parts) >= 2:
                 _jm.remove_watch(parts[1])
-                _append_system_message(f"Job `{parts[1]}` aus der Überwachung entfernt.")
+                _append_system_message(f"Job `{parts[1]}` removed from watching.")
             elif sub == "start":
                 cfg = _jm.monitor_settings()
                 if not cfg["enabled"]:
                     _append_system_message(
-                        "⚠️ Job-Überwachung ist **deaktiviert** (Standard). "
-                        "Im **Settings-Tab → Job-Überwachung** aktivieren — "
-                        "Hinweis: die Auto-Diagnose kostet Tokens (dort "
-                        "abschaltbar), die Überwachung selbst ist kostenlos."
+                        "⚠️ Job monitoring is **disabled** (default). Enable it in "
+                        "**Settings tab → Job monitoring** — note: the auto-"
+                        "diagnosis costs tokens (switchable there); the watch "
+                        "loop itself is free."
                     )
                 elif _jm.monitor_status()["running"]:
-                    _append_system_message("Daemon läuft bereits. `/watch status` für Details.")
+                    _append_system_message("Daemon already running. `/watch status` for details.")
                 else:
                     import subprocess as _sp, sys as _sys
                     _log = Path.home() / ".delfin" / "job_monitor.log"
@@ -7167,10 +7166,10 @@ def create_tab(ctx):
                             start_new_session=True,  # survives dashboard close
                         )
                     _append_system_message(
-                        f"🚀 Job-Monitor-Daemon gestartet (Intervall "
+                        f"🚀 Job-monitor daemon started (interval "
                         f"{cfg['interval_s']}s, auto_diagnose="
-                        f"{cfg['auto_diagnose']}). Läuft auch bei "
-                        f"geschlossenem Dashboard weiter; Log: `{_log}`."
+                        f"{cfg['auto_diagnose']}). Keeps running after the "
+                        f"dashboard closes; log: `{_log}`."
                     )
             elif sub == "stop":
                 st = _jm.monitor_status()
@@ -7178,20 +7177,20 @@ def create_tab(ctx):
                     import os as _os, signal as _sig
                     try:
                         _os.kill(st["pid"], _sig.SIGTERM)
-                        _append_system_message(f"🛑 Daemon (PID {st['pid']}) gestoppt.")
+                        _append_system_message(f"🛑 Daemon (PID {st['pid']}) stopped.")
                     except Exception as exc:
-                        _append_system_message(f"Stop fehlgeschlagen: {exc}")
+                        _append_system_message(f"Stop failed: {exc}")
                 else:
-                    _append_system_message("Kein Daemon aktiv.")
+                    _append_system_message("No daemon running.")
             else:  # ls / status
                 st = _jm.monitor_status()
                 data = _jm.load_watched()
                 cfg = _jm.monitor_settings()
                 lines = [
-                    f"👁 **Job-Überwachung** — Daemon: "
-                    f"{'🟢 läuft (PID ' + str(st['pid']) + ')' if st['running'] else '⚪ aus'}"
-                    f" · Setting: {'aktiv' if cfg['enabled'] else '**deaktiviert** (Settings-Tab)'}"
-                    f" · Diagnose: {'an (kostet Tokens)' if cfg['auto_diagnose'] else 'aus (0 Tokens)'}",
+                    f"👁 **Job monitoring** — daemon: "
+                    f"{'🟢 running (PID ' + str(st['pid']) + ')' if st['running'] else '⚪ off'}"
+                    f" · setting: {'enabled' if cfg['enabled'] else '**disabled** (Settings tab)'}"
+                    f" · diagnosis: {'on (costs tokens)' if cfg['auto_diagnose'] else 'off (0 tokens)'}",
                     "",
                 ]
                 jobs = data.get("jobs", {})
@@ -7202,12 +7201,12 @@ def create_tab(ctx):
                             + (f" · `{info.get('folder')}`" if info.get('folder') else "")
                         )
                 else:
-                    lines.append("(keine Jobs überwacht — `/watch add <jobid> [ordner]`)")
+                    lines.append("(no jobs watched — `/watch add <jobid> [folder]`)")
                 recent = _jm.load_findings(
                     since=state.get("_findings_seen_ts", 0.0))
                 if recent:
                     lines.append("")
-                    lines.append(f"🚨 **{len(recent)} neue Diagnose(n):**")
+                    lines.append(f"🚨 **{len(recent)} new diagnosis/-es:**")
                     for r in recent[-5:]:
                         lines.append(
                             f"- Job `{r.get('job_id')}` {r.get('state')}"
@@ -7603,31 +7602,31 @@ def create_tab(ctx):
                     ok, msg = _sr.publish_skill(
                         _sub[1], workspace=ctx.repo_dir or None, **_conn)
                     _append_system_message(
-                        f"📤 Skill veröffentlicht → `{msg}`" if ok
-                        else f"Push fehlgeschlagen: {msg}")
+                        f"📤 Skill published → `{msg}`" if ok
+                        else f"Push failed: {msg}")
                 elif _sub[0] == "pull":
                     _name = _sub[1] if len(_sub) >= 2 else ""
                     ok, results = _sr.pull_skills(_name, **_conn)
                     if not ok:
                         _append_system_message(
-                            f"Pull fehlgeschlagen: {results[0][1]}")
+                            f"Pull failed: {results[0][1]}")
                     else:
-                        _lines = ["📥 **Skills gezogen:**"]
+                        _lines = ["📥 **Skills pulled:**"]
                         for nm, status in results:
                             _icon = {"installed": "✅", "identical": "＝",
-                                     "conflict": "⚠️ als -shared installiert"
+                                     "conflict": "⚠️ installed as -shared"
                                      }.get(status, status)
                             _lines.append(f"- `{nm}` {_icon}" if nm
                                           else f"- {status}")
-                        _lines.append("Sofort nutzbar: `/skills` zeigt sie.")
+                        _lines.append("Usable immediately: `/skills` lists them.")
                         _append_system_message("\n".join(_lines))
                 else:  # shared
                     ok, names = _sr.list_shared(**_conn)
                     _append_system_message(
-                        "🌐 **Geteilte Skills:**\n"
+                        "🌐 **Shared skills:**\n"
                         + ("\n".join(f"- `{n}`" for n in names)
-                           if ok and names else "(keine / Remote nicht erreichbar)")
-                        + "\n\n`/skills pull [name]` zum Installieren.")
+                           if ok and names else "(none / remote unreachable)")
+                        + "\n\n`/skills pull [name]` to install.")
                 return True
             # Detail view: /skills <name> prints the full body so the user
             # can read what the skill does without loading it into the input.
@@ -11113,7 +11112,7 @@ def create_tab(ctx):
         users can share one archive without collisions.
         """
         if not state.get("chat_messages"):
-            _append_system_message("Nichts zu melden — die Konversation ist leer.")
+            _append_system_message("Nothing to report — the conversation is empty.")
             return
         engine = state.get("engine")
         try:
@@ -11164,21 +11163,21 @@ def create_tab(ctx):
                         port=int(_tcfg.get("port", 22) or 22),
                     )
                     remote_line = (
-                        f"\n📤 Ins Remote-Archiv kopiert → `{where}`"
+                        f"\n📤 Copied to the remote archive → `{where}`"
                         if ok else
-                        f"\n⚠️ Remote-Push nicht möglich ({where}) — "
-                        f"lokale Kopie bleibt erhalten."
+                        f"\n⚠️ Remote push not possible ({where}) — "
+                        f"the local copy is kept."
                     )
             except Exception as exc:
-                remote_line = f"\n⚠️ Remote-Push übersprungen: {exc}"
+                remote_line = f"\n⚠️ Remote push skipped: {exc}"
             _append_system_message(
-                f"🐞 Bug-Report gespeichert → `{short}`{remote_line}\n\n"
-                f"Enthält: Konversation, Engine-Messages, "
-                f"Mode/Provider/Model/Effort/Perms, Tokens, Kosten, Versionen."
+                f"🐞 Bug report saved → `{short}`{remote_line}\n\n"
+                f"Contains: conversation, engine messages, "
+                f"mode/provider/model/effort/perms, tokens, cost, versions."
             )
             bug_note_input.value = ""
         except Exception as exc:
-            _append_system_message(f"Bug-Report fehlgeschlagen: {exc}")
+            _append_system_message(f"Bug report failed: {exc}")
 
     def _on_search_change(change):
         """Live search as user types."""
@@ -12334,7 +12333,7 @@ def create_tab(ctx):
                                 _routed_from[0] = model_dropdown.value or ""
                                 engine.client.switch_model(_dec.model)
                                 _append_system_message(
-                                    f"🧭 Modell-Routing: **{_dec.model}** "
+                                    f"🧭 Model routing: **{_dec.model}** "
                                     f"({_dec.reason})"
                                 )
                     except Exception:
@@ -12370,16 +12369,16 @@ def create_tab(ctx):
                         if _lci.get("kind") == "sliding_window":
                             _n = _lci.get("messages_trimmed", 0)
                             _append_system_message(
-                                f"🗜️ Kontext gekürzt: {_n} ältere Nachricht(en) "
-                                f"gestrafft (Verlauf bleibt im Archiv erhalten)."
+                                f"🗜️ Context trimmed: {_n} older message(s) "
+                                f"condensed (full history kept in the archive)."
                             )
                         else:
                             _n = _lci.get("messages_compacted", 0)
                             _saved = _lci.get("tokens_saved", 0)
                             _append_system_message(
-                                f"🗜️ Kontext komprimiert: {_n} Nachrichten "
-                                f"zusammengefasst (~{_saved} Tokens gespart). "
-                                f"Voller Verlauf im Transcript-Archiv gesichert "
+                                f"🗜️ Context compacted: {_n} messages "
+                                f"summarized (~{_saved} tokens saved). "
+                                f"Full history kept in the transcript archive "
                                 f"(/session archive ls)."
                             )
 
@@ -13072,13 +13071,11 @@ def create_tab(ctx):
                     except Exception:
                         pass
                     _append_system_message(
-                        f"⚠️ Modell **{_cur_model or 'aktuell gewählt'}** ist auf "
-                        f"diesem Endpoint nicht verfügbar (Auth/401 — kein gültiger "
-                        f"Key, falscher Endpoint, oder das Modell ist nicht "
-                        f"provisioniert).\n\n**Fix:** im Modell-Dropdown auf ein "
-                        f"funktionierendes Modell wechseln (z.B. `azure.gpt-5.4` / "
-                        f"`azure.gpt-5.1`) und erneut senden. Andere User können "
-                        f"rechnen, weil sie ein provisioniertes Modell nutzen."
+                        f"⚠️ Model **{_cur_model or 'currently selected'}** is not "
+                        f"available on this endpoint (auth/401 — invalid key, "
+                        f"wrong endpoint, or the model is not provisioned).\n\n"
+                        f"**Fix:** switch the model dropdown to a working model "
+                        f"(e.g. `azure.gpt-5.4` / `azure.gpt-5.1`) and resend."
                     )
                 elif is_crash:
                     # Auto-recover: invalidate engine so next send recreates it

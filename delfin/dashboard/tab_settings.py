@@ -280,21 +280,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
     # reports. Empty = per-user fallback (~/.delfin/agent_bugs). Env
     # DELFIN_BUG_ARCHIVE overrides this. Teams point it at a shared dir.
     bug_archive_input = widgets.Text(
-        placeholder='lokaler Pfad (leer = ~/.delfin/agent_bugs)',
+        placeholder='local path (empty = ~/.delfin/agent_bugs)',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     # Proactive job monitoring (headless daemon). OPT-IN: costs tokens when
     # auto-diagnosis is on, so it must be explicitly enabled here.
     jobmon_enabled_toggle = widgets.Checkbox(
-        description='Job-Überwachung aktiv', value=False, indent=False,
+        description='Job monitoring enabled', value=False, indent=False,
     )
     jobmon_diag_toggle = widgets.Checkbox(
-        description='Auto-Diagnose bei Fehlern (kostet Tokens)',
+        description='Auto-diagnose failures (costs tokens)',
         value=True, indent=False,
     )
     jobmon_interval_input = widgets.BoundedIntText(
         value=600, min=60, max=86400, step=60,
-        description='Intervall (s)',
+        description='Interval (s)',
         layout=widgets.Layout(width='200px', height='28px'),
     )
     jobmon_webhook_input = widgets.Text(
@@ -309,7 +309,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='240px', height='28px'),
     )
     jobmon_model_input = widgets.Text(
-        placeholder='Modell für Diagnose (leer = Agent-Default), z.B. azure.gpt-5-nano',
+        placeholder='Model for diagnosis (empty = agent default), e.g. azure.gpt-5-nano',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     backend_dropdown = widgets.Dropdown(
@@ -3007,21 +3007,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 layout=_row_layout,
             ),
             widgets.HBox(
-                [widgets.HTML('<b>Bug-Report Archiv</b>'), bug_archive_input],
+                [widgets.HTML('<b>Bug-report archive</b>'), bug_archive_input],
                 layout=_row_layout,
             ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
-                '<b>Lokaler</b> Zwischenspeicher für den 🐞 Bug-Report-Button '
-                '(leer = <code>~/.delfin/agent_bugs</code>, Env '
-                '<code>DELFIN_BUG_ARCHIVE</code> hat Vorrang). Ist oben ein '
-                '<b>Remote Path</b> + Host konfiguriert, wird der Report '
-                'zusätzlich per SSH (rsync) nach <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
-                'hochgeladen — die lokale Kopie bleibt erhalten.'
+                '<b>Local</b> staging dir for the 🐞 bug-report button '
+                '(empty = <code>~/.delfin/agent_bugs</code>; env '
+                '<code>DELFIN_BUG_ARCHIVE</code> takes precedence). When a '
+                '<b>Remote Path</b> + host is configured above, the report is '
+                'also uploaded via SSH (rsync) to <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
+                '— the local copy is kept.'
                 '</div>'
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
-                         '👁 Job-Überwachung (Agent)</b>'),
+                         '👁 Job monitoring (agent)</b>'),
             widgets.HBox(
                 [jobmon_enabled_toggle, jobmon_diag_toggle,
                  jobmon_interval_input],
@@ -3038,13 +3038,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
-                '<b>Standard: AUS.</b> Ein Headless-Daemon überwacht eure '
-                'SLURM-Jobs (läuft auch bei geschlossenem Dashboard, Start via '
-                '<code>/watch start</code> im Agent-Tab). Die Überwachung selbst '
-                'ist <b>LLM-frei (0 Tokens)</b>; nur die <b>Auto-Diagnose</b> '
-                'bei einem Fehler kostet Tokens — hier abschaltbar. Diagnosen '
-                'erscheinen als 🚨-Session im Agent-Tab + Desktop-Notification '
-                '+ optional Webhook.'
+                '<b>Default: OFF.</b> A headless daemon watches your SLURM '
+                'jobs (keeps running after the dashboard closes; start via '
+                '<code>/watch start</code> in the Agent tab). The watch loop '
+                'itself is <b>LLM-free (0 tokens)</b>; only the <b>auto-'
+                'diagnosis</b> of a failure costs tokens — switchable here. '
+                'It uses the same API keys/credentials as the DELFIN agent. '
+                'Diagnoses appear as 🚨 sessions in the Agent tab + desktop '
+                'notification + optional webhook.'
                 '</div>'
             ),
         ],

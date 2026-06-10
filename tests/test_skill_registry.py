@@ -77,13 +77,13 @@ def _ok_run(calls):
 
 def test_publish_requires_remote_config():
     ok, msg = sr.publish_skill("casscf-setup", host="", user="", remote_path="")
-    assert ok is False and "kein Remote" in msg
+    assert ok is False and "no remote" in msg
 
 
 def test_publish_unknown_skill_fails():
     ok, msg = sr.publish_skill("does-not-exist", host="h", user="u",
                                remote_path="/r")
-    assert ok is False and "nicht gefunden" in msg
+    assert ok is False and "not found" in msg
 
 
 def test_publish_runs_mkdir_then_rsync():

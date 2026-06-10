@@ -22,5 +22,5 @@ Safety rules:
 - For every folder you propose, include the suspected failure mode in
   one sentence so the user can decide.
 
-Output format: German prose, table-like layout, max 30 folders shown
-(if more, say "und N weitere ähnliche Fälle").
+Output format: English prose, table-like layout, max 30 folders shown
+(if more, say "and N more similar cases").

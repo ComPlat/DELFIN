@@ -42,5 +42,5 @@ Ranked, least invasive first; cite the manual section for each keyword:
 - Keywords only with a manual citation.
 
 ## Output format
-**Befund (Zyklen/Gradienten zitiert)** → **Klasse** → **Fix-Ranking
-(1-2-3 mit Kosten)** → **Diff + Frage zur Bestätigung**.
+**Findings (cycles/gradients quoted)** → **Class** → **Fix ranking
+(1-2-3 with costs)** → **Diff + confirmation question**.

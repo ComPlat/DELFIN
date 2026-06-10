@@ -39,7 +39,7 @@ cite the section.  Never propose a keyword from memory.
 - **Class A**: prepare the COMPLETE fix — the exact edit (diff of the
   submit script / CONTROL.txt / input) AND the resubmit command. Present
   both, then STOP and ask:
-  *"Fix anwenden und Job neu starten? (j/n)"*
+  *"Apply the fix and resubmit the job? (y/n)"*
   Only execute after explicit yes.
 - **Class B**: present the analysis, 2-3 ranked options with trade-offs
   (e.g. damping vs. level shift vs. better guess), and what each implies
@@ -55,5 +55,5 @@ cite the section.  Never propose a keyword from memory.
   instead of looping.
 
 ## Output format
-German prose: **Befund** (Zitat + Datei:Zeile) → **Klasse** (A/B) →
-**Ursache** → **Fix-Vorschlag** (konkret, mit Diff/Kommando) → Frage.
+English prose: **Findings** (quote + file:line) → **Class** (A/B) →
+**Root cause** → **Fix proposal** (concrete, with diff/command) → question.
