@@ -84,8 +84,46 @@ def tier_model(provider: str, tier: str, settings: dict | None = None) -> str:
     return _PROVIDER_TIERS.get(provider, {}).get(tier, "")
 
 
+_RUNTIME_BROKEN_PATH = None  # default: ~/.delfin/broken_models.json
+
+
+def _runtime_broken_path():
+    from pathlib import Path as _P
+    return _RUNTIME_BROKEN_PATH or (_P.home() / ".delfin" / "broken_models.json")
+
+
+def runtime_broken() -> set[str]:
+    """Models observed failing (401/unavailable) at runtime — learned, so
+    nobody routes/picks them again until the file is cleared."""
+    import json as _json
+    try:
+        p = _runtime_broken_path()
+        return set(_json.loads(p.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+
+def mark_broken(model: str) -> None:
+    """Record a model as broken (called by the 401/unavailable handler)."""
+    import json as _json
+    m = (model or "").strip()
+    if not m:
+        return
+    try:
+        p = _runtime_broken_path()
+        cur = runtime_broken()
+        if m in cur:
+            return
+        cur.add(m)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(sorted(cur)), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def is_known_broken(model: str) -> bool:
-    return (model or "") in _KNOWN_BROKEN
+    m = model or ""
+    return m in _KNOWN_BROKEN or m in runtime_broken()
 
 
 def route_model(

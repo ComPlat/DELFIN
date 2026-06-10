@@ -125,6 +125,24 @@ def add_watch(job_id: str, folder: str = "", path: Path | None = None) -> dict:
     return data
 
 
+def auto_watch_if_enabled(job_id: str, folder: str = "") -> bool:
+    """Auto-add a freshly submitted SLURM job to the watch list.
+
+    Called from the dashboard submit paths. Respects the opt-in: a no-op
+    unless ``agent.job_monitor.enabled`` is true, so the watch list never
+    grows silently for users who didn't turn monitoring on."""
+    try:
+        jid = str(job_id).strip()
+        if not jid.isdigit():
+            return False
+        if not monitor_settings()["enabled"]:
+            return False
+        add_watch(jid, folder)
+        return True
+    except Exception:
+        return False
+
+
 def remove_watch(job_id: str, path: Path | None = None) -> dict:
     data = load_watched(path)
     data.get("jobs", {}).pop(str(job_id), None)

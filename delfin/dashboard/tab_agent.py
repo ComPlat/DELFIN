@@ -1906,7 +1906,9 @@ def _format_session_boot(
     body = "\n\n".join(parts)
     if len(body) > max_chars:
         body = body[: max_chars - 32].rstrip() + "\n... [truncated]"
-    return f"[Session boot context]\n{body}"
+    return (f"[Session boot context]\n{body}\n"
+            "(This snapshot is CURRENT — do not re-run git status/log "
+            "or job queries just to re-orient; use it directly.)")
 
 
 def _format_solo_domain_state(snapshot: dict) -> str:
@@ -13144,6 +13146,13 @@ def create_tab(ctx):
                     _cur_model = ""
                     try:
                         _cur_model = model_dropdown.value or ""
+                    except Exception:
+                        pass
+                    # Learn it: never route/pick this model again until
+                    # ~/.delfin/broken_models.json is cleared.
+                    try:
+                        from delfin.agent.model_routing import mark_broken
+                        mark_broken(_cur_model)
                     except Exception:
                         pass
                     _append_system_message(

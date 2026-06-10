@@ -1230,6 +1230,11 @@ def create_tab(ctx):
             if result.returncode == 0:
                 stdout = (result.stdout or '').strip()
                 job_id = stdout.split()[-1] if stdout else '(unknown)'
+                try:  # auto-watch (no-op unless job monitoring enabled)
+                    from delfin.agent.job_monitor import auto_watch_if_enabled
+                    auto_watch_if_enabled(job_id)
+                except Exception:
+                    pass
                 print(f'Submitted Fukui job {safe_job_name} (ID: {job_id})')
                 print(f'  Input type: {input_type}')
                 print(f'  Pre-OPT:    {"yes" if pre_opt_value else "no"}')
@@ -1384,6 +1389,11 @@ def create_tab(ctx):
 
                     if result.returncode == 0:
                         job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        try:  # auto-watch (no-op unless job monitoring enabled)
+                            from delfin.agent.job_monitor import auto_watch_if_enabled
+                            auto_watch_if_enabled(job_id)
+                        except Exception:
+                            pass
                         print(
                             f'Submitted {safe_job_name} [SMILES] '
                             f'(ID: {job_id}, PAL: {pal_value}, GOAT: {goat_topk_value}, Timeout: {timeout_value})'
@@ -1456,6 +1466,11 @@ def create_tab(ctx):
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    try:  # auto-watch (no-op unless job monitoring enabled)
+                        from delfin.agent.job_monitor import auto_watch_if_enabled
+                        auto_watch_if_enabled(job_id)
+                    except Exception:
+                        pass
                     print('GUPPY sampling job submitted!')
                     print(f'Job ID: {job_id}')
                     print(f'Time Limit: {timeout_value}')
@@ -2077,6 +2092,11 @@ def create_tab(ctx):
                 if result.returncode == 0:
                     any_success = True
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    try:  # auto-watch (no-op unless job monitoring enabled)
+                        from delfin.agent.job_monitor import auto_watch_if_enabled
+                        auto_watch_if_enabled(job_id)
+                    except Exception:
+                        pass
                     if mode == 'delfin-co2-chain':
                         print(
                             f'Submitted {safe_job_name} '
@@ -2210,6 +2230,11 @@ def create_tab(ctx):
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    try:  # auto-watch (no-op unless job monitoring enabled)
+                        from delfin.agent.job_monitor import auto_watch_if_enabled
+                        auto_watch_if_enabled(job_id)
+                    except Exception:
+                        pass
                     if mode == 'delfin-co2-chain':
                         print('DELFIN + CO2 chain job successfully submitted!')
                         print(f'CO2 Species Delta: {co2_delta}')
@@ -2333,6 +2358,11 @@ def create_tab(ctx):
 
                     if result.returncode == 0:
                         job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        try:  # auto-watch (no-op unless job monitoring enabled)
+                            from delfin.agent.job_monitor import auto_watch_if_enabled
+                            auto_watch_if_enabled(job_id)
+                        except Exception:
+                            pass
                         print('GOAT job successfully submitted!')
                         print(f'Job ID: {job_id}')
                         print(f'Time Limit: {time_limit}')
@@ -2446,6 +2476,11 @@ def create_tab(ctx):
                     )
                     if result.returncode == 0:
                         job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                        try:  # auto-watch (no-op unless job monitoring enabled)
+                            from delfin.agent.job_monitor import auto_watch_if_enabled
+                            auto_watch_if_enabled(job_id)
+                        except Exception:
+                            pass
                         print(f'Submitted {safe_job_name} [GOAT {input_kind.upper()}] (ID: {job_id})')
                         submitted += 1
                     else:
@@ -2516,6 +2551,11 @@ def create_tab(ctx):
 
                 if result.returncode == 0:
                     job_id = result.stdout.strip().split()[-1] if result.stdout.strip() else '(unknown)'
+                    try:  # auto-watch (no-op unless job monitoring enabled)
+                        from delfin.agent.job_monitor import auto_watch_if_enabled
+                        auto_watch_if_enabled(job_id)
+                    except Exception:
+                        pass
                     print('DELFIN + CO2 chain job submitted!')
                     print(f'Job ID: {job_id}')
                     print(f'Time Limit: {time_limit}')
