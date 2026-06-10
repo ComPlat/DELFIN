@@ -1101,6 +1101,7 @@ def _md_to_html(text: str) -> str:
 _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     # Session
     ("Session", "/help", "Show this help", False),
+    ("Session", "/guide", "Full user guide (models, /grant, monitoring, safety)", False),
     ("Session", "/clear", "Clear chat history", False),
     ("Session", "/cost", "Show token usage & cost", False),
     ("Session", "/usage", "Detailed token usage & session stats", False),
@@ -5892,9 +5893,23 @@ def create_tab(ctx):
             )
             return True
 
+        # /guide — show the full user guide (delfin/agent/AGENT_USER_GUIDE.txt)
+        if cmd == "/guide":
+            try:
+                _gp = (Path(__file__).resolve().parent.parent
+                       / "agent" / "AGENT_USER_GUIDE.txt")
+                _append_system_message(
+                    "```\n" + _gp.read_text(encoding="utf-8") + "\n```"
+                )
+            except Exception as exc:
+                _append_system_message(f"Guide not found: {exc}")
+            return True
+
         if cmd == "/help":
             _append_system_message(
+                "📖 New here? Type **/guide** for the full user guide (models, /grant, monitoring, safety).\n\n"
                 "Available commands:\n"
+                "  /guide           — Full user guide (how to use the agent)\n"
                 "  /help            — Show this help\n"
                 "  /clear           — Clear chat history\n"
                 "  /cost            — Show token usage & cost\n"
@@ -11354,7 +11369,7 @@ def create_tab(ctx):
         # short tokens like /help, /calc, /orca etc. count.
         _first_token = user_text.split()[0].lower() if user_text else ""
         _SLASH_PREFIXES = {
-            "/help", "/clear", "/cost", "/compact", "/stop", "/status",
+            "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
