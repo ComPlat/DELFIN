@@ -1,0 +1,86 @@
+DELFIN AGENT — USER GUIDE
+=========================
+How to get real work done with the agent (any project, any user).
+
+1) QUICK START
+--------------
+- Model:   azure.gpt-5.4  (best all-round)  |  kit.qwen3.5-397b (KIT-hosted,
+           good for everyday coding, data-sensitive work)
+           Avoid: gpt-5.5 (broken on the endpoint), mistral-small / nano /
+           gemma for agentic work (they loop — the dashboard warns you).
+- Effort:  medium for normal work, high only for hard problems.
+- Perms:   ask_all   = agent asks before every action (safest, slow)
+           acceptEdits = agent works fluently; sandbox + self-mod guard
+           stay active. Recommended once you trust the setup.
+- Mode:    dashboard = drive the DELFIN UI (tabs, ORCA builder, jobs)
+           solo      = coding agent (read/edit/run code, like a CLI agent)
+
+2) WORKING ON YOUR OWN PROJECT (any directory, not just the DELFIN repo)
+------------------------------------------------------------------------
+The agent may ONLY touch directories you granted. To work in your own
+project (e.g. ~/MyProject):
+
+    /grant /path/to/MyProject always
+
+- "always" persists the grant for future sessions; omit it for this
+  session only.
+- /grant also ANCHORS the session on that project: the agent stays
+  there and will not drift back into the DELFIN repo.
+- Everything outside granted directories is refused by the sandbox.
+  That is intentional — it protects you and everyone else.
+
+Then just talk to it like a colleague:
+    "schau dir das Projekt an und erklär mir die Struktur"
+    "warum schlägt Seed/ax_seed.py fehl? fix es und lass die Tests laufen"
+    "implementiere Feature X, mit Tests"
+
+3) EVERYDAY COMMANDS
+--------------------
+    /grant <dir> [always]   give the agent access to a directory
+    /skills                 list skills; /skill <name> runs a workflow
+                            (casscf-setup, diagnose-failed-run, ...)
+    /skills pull            install the team's shared skills
+    /watch add <jobid> <dir>  watch a SLURM job; /watch start = daemon
+    /bugs                   list bug reports; 🐞 button files a new one
+    /session ls             list / load saved sessions (🚨 = diagnoses)
+    /plan approve|reject    approve a plan the agent proposed
+    /mode plan              read-only planning mode (no edits possible)
+
+4) JOB MONITORING (optional, off by default)
+--------------------------------------------
+Settings tab -> "Job monitoring": enable, pick interval + a cheap
+diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
+- The watch loop is LLM-free (0 tokens). Only the auto-diagnosis of a
+  FAILED job costs tokens (switchable off).
+- /watch start launches a daemon that keeps running after you close
+  the dashboard. Failures appear as 🚨 sessions + desktop notification
+  (+ webhook if configured). Jobs submitted via the dashboard are
+  watched automatically while monitoring is enabled.
+
+5) WHEN SOMETHING GOES WRONG
+----------------------------
+- Click the 🐞 "Bug Report" button (add a one-line note). It bundles the
+  conversation, config, model, errors and touched files into the shared
+  archive — maintainers can reproduce and fix from that alone.
+- Model errors ("not available", 401): switch the model dropdown to
+  azure.gpt-5.4 / 5.1 and resend. Broken models are remembered and
+  avoided automatically.
+
+6) SAFETY MODEL (what the agent can and cannot do)
+--------------------------------------------------
+- It works ONLY inside granted directories (workspace + /grant).
+- Destructive commands (rm -rf, sudo, force-push, ...) are always blocked.
+- Its own safety layer (4 core files) requires YOUR per-action approval
+  to change — in every mode. It can repair itself when asked, but it can
+  never disarm itself.
+- In chemistry it must ground keywords in the manual (hallucinated
+  keywords are flagged and force a self-correction); it never weakens
+  convergence or resubmits jobs without your explicit confirmation.
+
+7) TIPS
+-------
+- Greetings are instant; real tasks deserve one clear message with the
+  goal, the paths involved, and what "done" means.
+- Long calculations: let the job monitor watch them instead of asking
+  the agent to poll.
+- The agent answers in your language; its internals are English.
