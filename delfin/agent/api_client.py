@@ -2205,6 +2205,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "answer."
                         ),
                     },
+                    "background": {
+                        "type": "boolean",
+                        "description": (
+                            "true = run in the background and return "
+                            "immediately; the result appears in the "
+                            "subagent panel. Use for independent research "
+                            "that should not block the main task."
+                        ),
+                    },
                     "isolation": {
                         "type": "string",
                         "enum": ["", "worktree"],
@@ -4652,6 +4661,35 @@ class _DocToolExecutor:
                     "have set perms.subagent_runner. Currently None."
                 ),
             })
+        # Background mode (Claude-Code-style): spawn the subagent on a
+        # thread and return immediately — the main agent keeps working.
+        # Progress/result are visible in the dashboard subagent panel
+        # (running registry + telemetry); limits still apply per child.
+        if bool(arguments.get("background")):
+            import threading as _th
+
+            def _bg_run():
+                try:
+                    perms.subagent_runner(
+                        subagent_type=sa_type,
+                        description=description,
+                        prompt=prompt,
+                        isolation=isolation,
+                    )
+                except Exception:
+                    pass
+
+            _th.Thread(target=_bg_run, daemon=True,
+                       name=f"subagent-bg-{sa_type}").start()
+            return json.dumps({
+                "status": "started_in_background",
+                "subagent_type": sa_type,
+                "description": description,
+                "note": ("Running in the background — progress and the "
+                         "final report appear in the 🤖 Subagents panel; "
+                         "continue with other work meanwhile."),
+            })
+
         try:
             payload = perms.subagent_runner(
                 subagent_type=sa_type,

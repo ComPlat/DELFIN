@@ -58,6 +58,38 @@ _TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
 
 
+_RUNNING_PATH = Path.home() / ".delfin" / "subagent_running.json"
+
+
+def _running_update(sa_id: str, entry: dict | None) -> None:
+    """Maintain the live registry of running subagents (entry=None removes).
+
+    File-based so the dashboard can render a Claude-Code-style live panel
+    (name · task · status · elapsed) without sharing memory with the
+    worker thread."""
+    try:
+        try:
+            data = json.loads(_RUNNING_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        if entry is None:
+            data.pop(sa_id, None)
+        else:
+            data[sa_id] = entry
+        _RUNNING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RUNNING_PATH.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_running() -> dict:
+    """Live registry: {id: {type, description, started_at}}."""
+    try:
+        return json.loads(_RUNNING_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def _write_telemetry(record: dict) -> None:
     """Append a one-line JSON record to ``~/.delfin/subagent_telemetry.jsonl``.
 
@@ -457,6 +489,14 @@ def run_subagent(
     t0 = time.monotonic()
     truncated = False
     error = ""
+    # Live-panel registry entry (removed in the finally below).
+    import uuid as _uuid
+    _sa_id = _uuid.uuid4().hex[:8]
+    _running_update(_sa_id, {
+        "type": subagent_type,
+        "description": (description or "")[:120],
+        "started_at": time.time(),
+    })
 
     try:
         for event in parent_client.stream_message(
@@ -485,6 +525,7 @@ def run_subagent(
     except Exception as exc:
         error = f"sub-agent stream raised: {exc}"
     finally:
+        _running_update(_sa_id, None)
         # Restore parent permissions.
         if hasattr(parent_client, "set_permissions"):
             try:

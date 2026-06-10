@@ -92,3 +92,27 @@ def test_malformed_arguments_default_to_empty(monkeypatch):
     if executor is not None:
         executor.shutdown(wait=True)
     assert {} in captured        # the unparseable args fell back to {}
+
+
+# ---------------------------------------------------------------------------
+# Live-panel registry (Claude-Code-style subagent monitoring)
+# ---------------------------------------------------------------------------
+
+def test_running_registry_roundtrip(tmp_path, monkeypatch):
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_RUNNING_PATH", tmp_path / "running.json")
+    sa._running_update("abc", {"type": "explore", "description": "map hooks",
+                                "started_at": 123.0})
+    reg = sa.read_running()
+    assert reg["abc"]["type"] == "explore"
+    sa._running_update("abc", None)
+    assert "abc" not in sa.read_running()
+
+
+def test_background_flag_in_subagent_schema():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
+    i = src.find('"name": "subagent"')
+    assert '"background"' in src[i:i + 3000], "background param missing"
+    assert "started_in_background" in src

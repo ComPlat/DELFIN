@@ -3763,6 +3763,43 @@ def create_tab(ctx):
     status_line_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="4px 0 0 0"),
     )
+    # Claude-Code-style subagent panel: live (running) + recent (telemetry).
+    subagent_panel_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 0 0"),
+    )
+
+    def _refresh_subagent_panel():
+        try:
+            from delfin.agent.subagents import read_running, read_telemetry
+            import time as _t
+            running = read_running()
+            rows = []
+            for sa in running.values():
+                el = int(_t.time() - float(sa.get("started_at", _t.time())))
+                rows.append(
+                    f"<span style='color:#b45309;'>🟡 {sa.get('type','?')}"
+                    f"</span> {_html.escape(sa.get('description','')[:60])}"
+                    f" · {el//60}m{el%60:02d}s"
+                )
+            for rec in (read_telemetry(last_n=3) or [])[::-1]:
+                ok = not rec.get("error")
+                rows.append(
+                    f"<span style='color:{'#2e7d32' if ok else '#c62828'};'>"
+                    f"{'✅' if ok else '❌'} {rec.get('subagent_type','?')}"
+                    f"</span> {_html.escape(str(rec.get('description',''))[:60])}"
+                    f" · {float(rec.get('elapsed_s',0)):.0f}s"
+                    f" · {rec.get('n_tool_calls', rec.get('tool_calls', 0))} calls"
+                )
+            if rows:
+                subagent_panel_html.value = (
+                    "<div style='font-size:11px; color:#546e7a;'>"
+                    "<b>🤖 Subagents</b> · " + " &nbsp;|&nbsp; ".join(rows[:5])
+                    + "</div>")
+            else:
+                subagent_panel_html.value = ""
+        except Exception:
+            subagent_panel_html.value = ""
+
 
     def _refresh_status_line():
         try:
@@ -4177,7 +4214,7 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
-         status_line_html],
+         status_line_html, subagent_panel_html],
     )
 
     if not _yaml_ok:
@@ -5516,6 +5553,10 @@ def create_tab(ctx):
         # every send/stop/handoff/compact).
         try:
             _refresh_context_bar()
+        except Exception:
+            pass
+        try:
+            _refresh_subagent_panel()
         except Exception:
             pass
         engine = state["engine"]
