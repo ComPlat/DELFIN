@@ -332,6 +332,38 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         jobmon_model_input.options = _JOBMON_MODEL_SUGGESTIONS.get(prov, [])
 
     jobmon_provider_input.observe(_jobmon_update_model_options, names='value')
+
+    # Dedicated save for the job-monitor block: persists immediately so
+    # the toggles survive a dashboard restart without hunting for the
+    # global save button ("settings kept disappearing").
+    jobmon_save_btn = widgets.Button(
+        description='Save monitoring', button_style='primary',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
+    jobmon_save_status = widgets.HTML(value='')
+
+    def _on_jobmon_save(_btn):
+        try:
+            payload = load_settings()
+            payload.setdefault('agent', {})
+            payload['agent']['job_monitor'] = {
+                'enabled': bool(jobmon_enabled_toggle.value),
+                'interval_s': int(jobmon_interval_input.value or 600),
+                'auto_diagnose': bool(jobmon_diag_toggle.value),
+                'webhook_url': str(jobmon_webhook_input.value or '').strip(),
+                'provider': str(jobmon_provider_input.value or ''),
+                'model': str(jobmon_model_input.value or '').strip(),
+                'backend': '',
+            }
+            save_settings(payload, settings_path)
+            jobmon_save_status.value = (
+                '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
+        except Exception as exc:
+            jobmon_save_status.value = (
+                f'<span style="color:#d32f2f; font-size:11px;">'
+                f'save failed: {html.escape(str(exc))}</span>')
+
+    jobmon_save_btn.on_click(_on_jobmon_save)
     backend_dropdown = widgets.Dropdown(
         options=[
             ('Auto', 'auto'),
@@ -3053,7 +3085,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             ),
             widgets.HBox(
                 [jobmon_provider_input,
-                 widgets.HTML('<b>Modell</b>'), jobmon_model_input],
+                 widgets.HTML('<b>Model</b>'), jobmon_model_input,
+                 jobmon_save_btn, jobmon_save_status],
                 layout=_row_layout,
             ),
             widgets.HTML(
