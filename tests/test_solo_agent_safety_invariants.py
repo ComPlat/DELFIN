@@ -222,3 +222,57 @@ def test_greetings_classify_simple_for_fast_turns():
         "Hallo, bitte refactor delfin/agent/engine.py") == "complex"
     # simple budget maps to the OpenAI reasoning_effort "low" bucket (<16k).
     assert int(64000 * _COMPLEXITY_THINKING_MULT["simple"]) < 16000
+
+
+# ---------------------------------------------------------------------------
+# Bash filesystem isolation (Stufe 5): only granted roots are writable
+# ---------------------------------------------------------------------------
+
+def test_bash_isolation_off_is_plain_bash(tmp_path):
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
+        "/bin/bash", "-c", "echo hi"]
+
+
+def test_bash_isolation_default_setting_is_off():
+    from delfin.user_settings import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "off"
+
+
+@pytest.mark.skipif(__import__("shutil").which("bwrap") is None,
+                    reason="bwrap not installed")
+def test_bwrap_isolation_blocks_writes_outside_granted_roots(tmp_path):
+    import subprocess
+    from pathlib import Path
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    # Inside the granted workspace: writable.
+    r1 = subprocess.run(
+        _bash_isolation_argv(f"touch {tmp_path}/inside.txt", tmp_path, perms,
+                             mode="bwrap"),
+        capture_output=True, text=True, timeout=30)
+    assert r1.returncode == 0 and (tmp_path / "inside.txt").exists()
+    # Outside (the user's real home): read-only → blocked.
+    outside = Path.home().resolve() / "delfin_isolation_probe.txt"
+    r2 = subprocess.run(
+        _bash_isolation_argv(f"touch {outside}", tmp_path, perms,
+                             mode="bwrap"),
+        capture_output=True, text=True, timeout=30)
+    assert r2.returncode != 0 and not outside.exists()
+
+
+@pytest.mark.skipif(__import__("shutil").which("bwrap") is None,
+                    reason="bwrap not installed")
+def test_bwrap_isolation_grants_extra_dirs(tmp_path):
+    import subprocess
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    ws = tmp_path / "ws"; ws.mkdir()
+    extra = tmp_path / "granted"; extra.mkdir()
+    perms = KitToolPermissions(workspace=str(ws),
+                               extra_workspace_dirs=(extra,))
+    r = subprocess.run(
+        _bash_isolation_argv(f"touch {extra}/ok.txt", ws, perms,
+                             mode="bwrap"),
+        capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and (extra / "ok.txt").exists()

@@ -120,6 +120,22 @@ DEFAULT_SETTINGS = {
         # off because the failure diagnosis costs tokens. The watch loop
         # itself is LLM-free; auto_diagnose=False keeps monitoring entirely
         # free (notification only, no LLM turn).
+        # Filesystem isolation for the agent's bash tool (Stufe 5). "bwrap"
+        # wraps every bash call in a bubblewrap namespace where ONLY the
+        # workspace roots (workspace + granted extra dirs) are writable —
+        # closes the "subprocess writes outside the sandbox" gap. Opt-in
+        # ("off" default): HPC environments may need unrestricted bash
+        # (MPI, module system), and bwrap may not be installed.
+        "bash_isolation": "off",
+        # Eval loop (Stufe 4): mine outcome history for recurring failure
+        # patterns, scaffold draft benchmark tasks, write a report. The
+        # default pass is LLM-free (0 tokens); a live benchmark run stays
+        # a deliberate manual command. Opt-in.
+        "eval_loop": {
+            "enabled": False,
+            "window": 200,
+            "threshold": 3,
+        },
         "job_monitor": {
             "enabled": False,
             "interval_s": 600,

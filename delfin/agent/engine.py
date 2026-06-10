@@ -1758,6 +1758,19 @@ class AgentEngine:
             return int(base * complexity_mult)
 
     @staticmethod
+    def is_greeting(text: str) -> bool:
+        """True for short greeting/acknowledgement messages ("Hallo",
+        "danke!").  Used for the fast-path: minimal reasoning budget AND
+        a no-tools hint so a greeting never triggers tool calls or
+        confirm prompts."""
+        lower = (text or "").lower().strip()
+        return bool(lower) and len(lower) < 40 and any(
+            lower == g or lower.startswith(g + " ")
+            or lower.startswith(g + "!") or lower.startswith(g + ",")
+            for g in _GREETING_PATTERNS
+        )
+
+    @staticmethod
     def classify_task_complexity(text: str) -> str:
         """Classify task complexity: simple / moderate / complex."""
         lower = (text or "").lower().strip()
@@ -1766,10 +1779,7 @@ class AgentEngine:
         # Simple: short questions, read-only operations
         # Greetings / acknowledgements: short message that *starts* with a
         # greeting token → no reasoning needed (fast, cheap turn).
-        if len(lower) < 40 and any(
-            lower == g or lower.startswith(g + " ") or lower.startswith(g + "!")
-            or lower.startswith(g + ",") for g in _GREETING_PATTERNS
-        ):
+        if AgentEngine.is_greeting(lower):
             return "simple"
         if len(lower) < 60 and any(p in lower for p in _SIMPLE_TASK_PATTERNS):
             return "simple"

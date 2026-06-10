@@ -4056,7 +4056,7 @@ class _DocToolExecutor:
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
-                ["/bin/bash", "-c", cmd],
+                _bash_isolation_argv(cmd, run_cwd, perms),
                 cwd=str(run_cwd),
                 env=env,
                 capture_output=True,
@@ -4969,6 +4969,73 @@ class _DocToolExecutor:
 
 # Singleton — shared across all OpenAIClient instances.
 _doc_executor = _DocToolExecutor()
+
+
+def _bash_isolation_argv(
+    cmd: str,
+    run_cwd,
+    perms,
+    mode: str | None = None,
+) -> list[str]:
+    """argv for the agent's bash tool, optionally bwrap-isolated.
+
+    With ``agent.bash_isolation = "bwrap"`` (and bwrap installed) the
+    command runs in a filesystem namespace where ONLY the workspace roots
+    (workspace + granted extra dirs) are writable: ``/`` is read-only,
+    ``/tmp`` is a fresh tmpfs, and credential paths under ``$HOME`` are
+    masked (reusing the sandbox module's secret list).  This closes the
+    gap where a subprocess (``python script.py``) could write outside the
+    sandbox even though direct path arguments were refused.  Network stays
+    available (git/pip are legitimate); the isolation target is FS writes.
+
+    ``mode=None`` reads ``agent.bash_isolation`` from settings ("off"
+    default — opt-in, since HPC setups may need unrestricted bash).
+    """
+    plain = ["/bin/bash", "-c", cmd]
+    if mode is None:
+        try:
+            from delfin.user_settings import load_settings
+            mode = str(((load_settings() or {}).get("agent") or {})
+                       .get("bash_isolation", "off") or "off")
+        except Exception:
+            mode = "off"
+    if mode.strip().lower() != "bwrap" or not shutil.which("bwrap"):
+        return plain
+
+    try:
+        from delfin.agent.sandbox import _HOME_SECRET_DIRS
+    except Exception:
+        _HOME_SECRET_DIRS = ()
+    home = Path.home()
+    args: list[str] = [
+        "bwrap",
+        "--ro-bind", "/", "/",
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--tmpfs", "/tmp",
+    ]
+    for rel in _HOME_SECRET_DIRS:
+        p = home / rel
+        try:
+            # resolve() — on HPC, $HOME is often a symlink (/home/... →
+            # /pfs/...); bwrap cannot create mountpoints through symlinked
+            # paths ("Can't mkdir parents").  Mask the REAL path.
+            rp = p.resolve()
+            if rp.is_dir():
+                args += ["--tmpfs", str(rp)]
+            elif rp.is_file():
+                args += ["--ro-bind", "/dev/null", str(rp)]
+        except OSError:
+            continue
+    try:
+        roots = [str(Path(r).resolve()) for r in perms.all_workspace_roots()]
+    except Exception:
+        roots = [str(Path(getattr(perms, "workspace", ".")).resolve())]
+    for r in roots:
+        args += ["--bind", r, r]
+    args += ["--chdir", str(Path(run_cwd).resolve()),
+             "--die-with-parent"] + plain
+    return args
 
 
 def _is_stream_unsupported_error(exc: Exception) -> bool:

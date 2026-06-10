@@ -2956,6 +2956,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         path_hidden, path_visible, port_input,
         remote_archive_toggle,
         viewer_enabled_toggle, viewer_quality_dropdown,
+        # Agent blocks — without these the GLOBAL Save Settings button
+        # stays disabled when only these change ("settings disappeared").
+        bug_archive_input,
+        jobmon_enabled_toggle, jobmon_diag_toggle, jobmon_interval_input,
+        jobmon_webhook_input, jobmon_provider_input, jobmon_model_input,
     ]
     for _w in _settings_widgets_to_watch:
         _w.observe(_mark_dirty, names='value')

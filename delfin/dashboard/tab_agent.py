@@ -1137,7 +1137,8 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
     ("Bugs", "/bugs", "List bug reports in the archive (or /bugs ls)", False),
     ("Bugs", "/bugs task", "Scaffold a regression benchmark task from a report (/bugs task <name>)", True),
-    ("Jobs", "/watch", "Job-Überwachung: ls/add <id> [dir]/rm <id>/start/stop/status", True),
+    ("Jobs", "/watch", "Job monitoring: ls/add <id> [dir]/rm <id>/start/stop/status", True),
+    ("Perms", "/grant", "Grant the agent access to a directory (/grant <path> [always])", True),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
@@ -7124,6 +7125,50 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        # /grant — give the agent access to a directory (the explicit
+        # permission flow: the sandbox only allows granted roots — this is
+        # HOW you grant). Session-scoped by default; "always" persists it
+        # to the KIT settings so future sessions keep it.
+        if cmd == "/grant" or cmd.startswith("/grant "):
+            arg = cmd[len("/grant"):].strip()
+            if not arg:
+                _append_system_message(
+                    "Usage: `/grant <path>` (this session) or "
+                    "`/grant <path> always` (persist). The agent can only "
+                    "read/write inside granted directories."
+                )
+                return True
+            parts = arg.split()
+            target = parts[0]
+            persist = len(parts) > 1 and parts[1].lower() in ("always", "persist")
+            engine = state.get("engine")
+            kp = getattr(engine, "kit_permissions", None) if engine else None
+            if kp is None:
+                _append_system_message(
+                    "No active KIT permission context — send a message first "
+                    "(engine starts on first send), then /grant again."
+                )
+                return True
+            try:
+                resolved = kp.add_extra_dir(target)
+            except ValueError as exc:
+                _append_system_message(f"Grant failed: {exc}")
+                return True
+            note = f"✅ Granted (this session): `{resolved}`"
+            if persist:
+                try:
+                    from delfin.agent.kit_settings import persist_extra_dir
+                    persist_extra_dir(str(resolved),
+                                      repo_dir=ctx.repo_dir or ".")
+                    note += " — persisted for future sessions."
+                except Exception as exc:
+                    note += f" — persist failed: {exc}"
+            _append_system_message(
+                note + " The agent can now read/write there "
+                "(sandbox still blocks everything not granted)."
+            )
+            return True
+
         # /watch — proactive SLURM job monitoring (headless daemon that
         # survives dashboard close). Opt-in via Settings-Tab; the daemon
         # itself refuses to run while agent.job_monitor.enabled is false.
@@ -11307,7 +11352,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
-            "/bugs", "/watch",
+            "/bugs", "/watch", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
@@ -12189,6 +12234,19 @@ def create_tab(ctx):
                 _vhint = _build_verify_hint(user_text, mode_dropdown.value)
                 if _vhint:
                     current_msg = f"{current_msg}\n\n{_vhint}"
+
+                # Greeting fast-path: a bare greeting must never trigger
+                # tool calls (and with ask_all: confirm prompts) or long
+                # reasoning — reply directly, one short message.
+                try:
+                    from delfin.agent.engine import AgentEngine as _AE
+                    if _AE.is_greeting(user_text):
+                        current_msg = (
+                            f"{current_msg}\n\n(Greeting — reply with ONE "
+                            f"short sentence; do NOT call any tools.)"
+                        )
+                except Exception:
+                    pass
 
                 # Live mode-switch handoff: if the user just changed mode,
                 # _on_mode_change stashed a full-transcript block here.
