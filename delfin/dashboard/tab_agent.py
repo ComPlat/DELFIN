@@ -11455,6 +11455,7 @@ def create_tab(ctx):
             tool_count = [0]  # mutable counter for tool calls in this turn
             turn_tools: set[str] = set()  # tool names used this turn (verify-guard)
             turn_files: set[str] = set()  # file paths the agent touched (bug report)
+            _routed_from = [""]  # user's model to restore after routed turn
             last_update = 0.0
             try:
 
@@ -12176,6 +12177,32 @@ def create_tab(ctx):
                             + ". Do NOT retry these."
                         )
                         current_msg = current_msg + _denial_ctx
+
+                    # Complexity-based model routing (opt-in via
+                    # agent.routing.enabled): cheap model for simple turns,
+                    # strong for complex — within the active provider, any
+                    # provider (claude/openai/kit/ollama). Switched for THIS
+                    # turn (incl. continuations), restored in finally.
+                    # Skipped on the CLI backend (process churn per switch).
+                    try:
+                        if getattr(engine, "backend", "") != "cli":
+                            from delfin.agent.model_routing import route_model
+                            _dec = route_model(
+                                provider=provider_dropdown.value or "",
+                                user_model=model_dropdown.value or "",
+                                complexity=engine.classify_task_complexity(
+                                    user_text),
+                            )
+                            if _dec.routed and hasattr(engine.client,
+                                                       "switch_model"):
+                                _routed_from[0] = model_dropdown.value or ""
+                                engine.client.switch_model(_dec.model)
+                                _append_system_message(
+                                    f"🧭 Modell-Routing: **{_dec.model}** "
+                                    f"({_dec.reason})"
+                                )
+                    except Exception:
+                        _routed_from[0] = ""
 
                     # Snapshot the last-compaction marker so we can detect
                     # whether THIS turn auto-compacted the history and surface
@@ -12931,6 +12958,13 @@ def create_tab(ctx):
                 else:
                     _append_system_message(f"Error: {error_text}")
             finally:
+                # Restore the user's model after a routed turn so the
+                # dropdown stays the source of truth for the next send.
+                if _routed_from[0]:
+                    try:
+                        engine.client.switch_model(_routed_from[0])
+                    except Exception:
+                        pass
                 # Only clean up UI state if no newer generation has started
                 # (prevents stale worker from clobbering a fresh send after Stop)
                 with state["_state_lock"]:

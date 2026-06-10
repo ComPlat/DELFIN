@@ -106,6 +106,16 @@ DEFAULT_SETTINGS = {
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
         # overrides this at runtime). NEVER hard-code a site path here.
         "bug_archive_dir": "",
+        # Complexity-based model routing (provider-agnostic, opt-in).
+        # enabled=False → exactly today's behaviour (user's model for all).
+        # strong_model/cheap_model override the built-in per-provider tier
+        # table in delfin/agent/model_routing.py; use routing.providers.
+        # <provider>.{strong_model,cheap_model} for per-provider overrides.
+        "routing": {
+            "enabled": False,
+            "strong_model": "",
+            "cheap_model": "",
+        },
         "role_models": {
             "dashboard_agent": "auto",
             "session_manager": "auto",
