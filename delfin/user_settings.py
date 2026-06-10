@@ -116,6 +116,22 @@ DEFAULT_SETTINGS = {
             "strong_model": "",
             "cheap_model": "",
         },
+        # Proactive SLURM job monitoring (headless daemon). OPT-IN: default
+        # off because the failure diagnosis costs tokens. The watch loop
+        # itself is LLM-free; auto_diagnose=False keeps monitoring entirely
+        # free (notification only, no LLM turn).
+        "job_monitor": {
+            "enabled": False,
+            "interval_s": 600,
+            "auto_diagnose": True,
+            "webhook_url": "",
+            # Which provider/model the diagnosis turn uses. Empty = the
+            # agent defaults (agent.backend/model). Lets users pick a cheap
+            # model for monitoring regardless of their interactive choice.
+            "provider": "",
+            "model": "",
+            "backend": "",
+        },
         "role_models": {
             "dashboard_agent": "auto",
             "session_manager": "auto",

@@ -1138,6 +1138,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Plan", "/plan reject", "Reject a pending plan and exit plan mode", False),
     ("Bugs", "/bugs", "List bug reports in the archive (or /bugs ls)", False),
     ("Bugs", "/bugs task", "Scaffold a regression benchmark task from a report (/bugs task <name>)", True),
+    ("Jobs", "/watch", "Job-Überwachung: ls/add <id> [dir]/rm <id>/start/stop/status", True),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
     ("MCP", "/mcp", "List/add/remove/toggle MCP servers (~/.delfin/mcp_servers.json)", False),
@@ -7124,6 +7125,100 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        # /watch — proactive SLURM job monitoring (headless daemon that
+        # survives dashboard close). Opt-in via Settings-Tab; the daemon
+        # itself refuses to run while agent.job_monitor.enabled is false.
+        if cmd == "/watch" or cmd.startswith("/watch "):
+            from delfin.agent import job_monitor as _jm
+            arg = cmd[len("/watch"):].strip()
+            parts = arg.split()
+            sub = parts[0] if parts else "ls"
+            if sub == "add" and len(parts) >= 2:
+                job_id = parts[1]
+                folder = parts[2] if len(parts) >= 3 else ""
+                _jm.add_watch(job_id, folder)
+                _append_system_message(
+                    f"👁 Job `{job_id}` wird überwacht"
+                    + (f" (Ordner: `{folder}`)" if folder else "")
+                    + ". `/watch start` startet den Daemon, falls noch nicht aktiv."
+                )
+            elif sub == "rm" and len(parts) >= 2:
+                _jm.remove_watch(parts[1])
+                _append_system_message(f"Job `{parts[1]}` aus der Überwachung entfernt.")
+            elif sub == "start":
+                cfg = _jm.monitor_settings()
+                if not cfg["enabled"]:
+                    _append_system_message(
+                        "⚠️ Job-Überwachung ist **deaktiviert** (Standard). "
+                        "Im **Settings-Tab → Job-Überwachung** aktivieren — "
+                        "Hinweis: die Auto-Diagnose kostet Tokens (dort "
+                        "abschaltbar), die Überwachung selbst ist kostenlos."
+                    )
+                elif _jm.monitor_status()["running"]:
+                    _append_system_message("Daemon läuft bereits. `/watch status` für Details.")
+                else:
+                    import subprocess as _sp, sys as _sys
+                    _log = Path.home() / ".delfin" / "job_monitor.log"
+                    _log.parent.mkdir(parents=True, exist_ok=True)
+                    with _log.open("a") as _lf:
+                        _sp.Popen(
+                            [_sys.executable, "-m", "delfin.agent.job_monitor"],
+                            stdout=_lf, stderr=_lf,
+                            start_new_session=True,  # survives dashboard close
+                        )
+                    _append_system_message(
+                        f"🚀 Job-Monitor-Daemon gestartet (Intervall "
+                        f"{cfg['interval_s']}s, auto_diagnose="
+                        f"{cfg['auto_diagnose']}). Läuft auch bei "
+                        f"geschlossenem Dashboard weiter; Log: `{_log}`."
+                    )
+            elif sub == "stop":
+                st = _jm.monitor_status()
+                if st["running"]:
+                    import os as _os, signal as _sig
+                    try:
+                        _os.kill(st["pid"], _sig.SIGTERM)
+                        _append_system_message(f"🛑 Daemon (PID {st['pid']}) gestoppt.")
+                    except Exception as exc:
+                        _append_system_message(f"Stop fehlgeschlagen: {exc}")
+                else:
+                    _append_system_message("Kein Daemon aktiv.")
+            else:  # ls / status
+                st = _jm.monitor_status()
+                data = _jm.load_watched()
+                cfg = _jm.monitor_settings()
+                lines = [
+                    f"👁 **Job-Überwachung** — Daemon: "
+                    f"{'🟢 läuft (PID ' + str(st['pid']) + ')' if st['running'] else '⚪ aus'}"
+                    f" · Setting: {'aktiv' if cfg['enabled'] else '**deaktiviert** (Settings-Tab)'}"
+                    f" · Diagnose: {'an (kostet Tokens)' if cfg['auto_diagnose'] else 'aus (0 Tokens)'}",
+                    "",
+                ]
+                jobs = data.get("jobs", {})
+                if jobs:
+                    for jid, info in jobs.items():
+                        lines.append(
+                            f"- `{jid}` {info.get('last_state') or '—'}"
+                            + (f" · `{info.get('folder')}`" if info.get('folder') else "")
+                        )
+                else:
+                    lines.append("(keine Jobs überwacht — `/watch add <jobid> [ordner]`)")
+                recent = _jm.load_findings(
+                    since=state.get("_findings_seen_ts", 0.0))
+                if recent:
+                    lines.append("")
+                    lines.append(f"🚨 **{len(recent)} neue Diagnose(n):**")
+                    for r in recent[-5:]:
+                        lines.append(
+                            f"- Job `{r.get('job_id')}` {r.get('state')}"
+                            + (f" → Session `{r.get('diagnosis_session')}`"
+                               if r.get('diagnosis_session') else "")
+                        )
+                    state["_findings_seen_ts"] = max(
+                        r.get("ts", 0.0) for r in recent)
+                _append_system_message("\n".join(lines))
+            return True
+
         if cmd == "/plans" or cmd.startswith("/plans "):
             from delfin.agent.memory_store import (
                 list_plans, get_plan, delete_plan,
@@ -11172,7 +11267,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
-            "/bugs",
+            "/bugs", "/watch",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",

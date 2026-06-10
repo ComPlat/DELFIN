@@ -283,6 +283,35 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         placeholder='lokaler Pfad (leer = ~/.delfin/agent_bugs)',
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+    # Proactive job monitoring (headless daemon). OPT-IN: costs tokens when
+    # auto-diagnosis is on, so it must be explicitly enabled here.
+    jobmon_enabled_toggle = widgets.Checkbox(
+        description='Job-Überwachung aktiv', value=False, indent=False,
+    )
+    jobmon_diag_toggle = widgets.Checkbox(
+        description='Auto-Diagnose bei Fehlern (kostet Tokens)',
+        value=True, indent=False,
+    )
+    jobmon_interval_input = widgets.BoundedIntText(
+        value=600, min=60, max=86400, step=60,
+        description='Intervall (s)',
+        layout=widgets.Layout(width='200px', height='28px'),
+    )
+    jobmon_webhook_input = widgets.Text(
+        placeholder='https://… (optional: Slack/Teams/Telegram Webhook)',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    jobmon_provider_input = widgets.Dropdown(
+        options=[('Agent-Default', ''), ('KIT Toolbox', 'kit'),
+                 ('Anthropic', 'claude'), ('OpenAI', 'openai'),
+                 ('Ollama', 'ollama')],
+        value='', description='Provider',
+        layout=widgets.Layout(width='240px', height='28px'),
+    )
+    jobmon_model_input = widgets.Text(
+        placeholder='Modell für Diagnose (leer = Agent-Default), z.B. azure.gpt-5-nano',
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
     backend_dropdown = widgets.Dropdown(
         options=[
             ('Auto', 'auto'),
@@ -820,6 +849,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         archive_path_input.value = str(paths_payload.get('archive_dir') or '')
         agent_payload = ((settings_payload or {}).get('agent') or {})
         bug_archive_input.value = str(agent_payload.get('bug_archive_dir') or '')
+        jobmon_payload = agent_payload.get('job_monitor') or {}
+        jobmon_enabled_toggle.value = bool(jobmon_payload.get('enabled', False))
+        jobmon_diag_toggle.value = bool(jobmon_payload.get('auto_diagnose', True))
+        try:
+            jobmon_interval_input.value = int(jobmon_payload.get('interval_s', 600) or 600)
+        except Exception:
+            jobmon_interval_input.value = 600
+        jobmon_webhook_input.value = str(jobmon_payload.get('webhook_url') or '')
+        try:
+            jobmon_provider_input.value = str(jobmon_payload.get('provider') or '')
+        except Exception:
+            jobmon_provider_input.value = ''
+        jobmon_model_input.value = str(jobmon_payload.get('model') or '')
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -2764,6 +2806,16 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             )
             settings_payload.setdefault('agent', {})
             settings_payload['agent']['bug_archive_dir'] = _bug_archive or ''
+            # Job monitoring (opt-in; costs tokens only when auto_diagnose).
+            settings_payload['agent']['job_monitor'] = {
+                'enabled': bool(jobmon_enabled_toggle.value),
+                'interval_s': int(jobmon_interval_input.value or 600),
+                'auto_diagnose': bool(jobmon_diag_toggle.value),
+                'webhook_url': str(jobmon_webhook_input.value or '').strip(),
+                'provider': str(jobmon_provider_input.value or ''),
+                'model': str(jobmon_model_input.value or '').strip(),
+                'backend': '',
+            }
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -2966,6 +3018,33 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 '<b>Remote Path</b> + Host konfiguriert, wird der Report '
                 'zusätzlich per SSH (rsync) nach <code>&lt;Remote Path&gt;/AGENT_BUGS</code> '
                 'hochgeladen — die lokale Kopie bleibt erhalten.'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '👁 Job-Überwachung (Agent)</b>'),
+            widgets.HBox(
+                [jobmon_enabled_toggle, jobmon_diag_toggle,
+                 jobmon_interval_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Webhook</b>'), jobmon_webhook_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [jobmon_provider_input,
+                 widgets.HTML('<b>Modell</b>'), jobmon_model_input],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                '<b>Standard: AUS.</b> Ein Headless-Daemon überwacht eure '
+                'SLURM-Jobs (läuft auch bei geschlossenem Dashboard, Start via '
+                '<code>/watch start</code> im Agent-Tab). Die Überwachung selbst '
+                'ist <b>LLM-frei (0 Tokens)</b>; nur die <b>Auto-Diagnose</b> '
+                'bei einem Fehler kostet Tokens — hier abschaltbar. Diagnosen '
+                'erscheinen als 🚨-Session im Agent-Tab + Desktop-Notification '
+                '+ optional Webhook.'
                 '</div>'
             ),
         ],
