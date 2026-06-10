@@ -12235,6 +12235,24 @@ def create_tab(ctx):
                 if _vhint:
                     current_msg = f"{current_msg}\n\n{_vhint}"
 
+                # Weak-model warning (once per session): small models in
+                # solo mode produce looping/chaotic agentic sessions (583-msg
+                # production case on kit.mistral-small). Warn + recommend.
+                if (mode_dropdown.value == "solo"
+                        and not state.get("_weak_model_warned")):
+                    try:
+                        from delfin.agent.model_profiles import get_profile
+                        if get_profile(model_dropdown.value or "").core_tools_only:
+                            state["_weak_model_warned"] = True
+                            _append_system_message(
+                                f"⚠️ **{model_dropdown.value}** is a small model — "
+                                f"weak for agentic solo work (looping, poor tool "
+                                f"use). Recommended: `azure.gpt-5.4` or "
+                                f"`azure.gpt-5.1` in the model dropdown."
+                            )
+                    except Exception:
+                        pass
+
                 # Greeting fast-path: a bare greeting must never trigger
                 # tool calls (and with ask_all: confirm prompts) or long
                 # reasoning — reply directly, one short message.

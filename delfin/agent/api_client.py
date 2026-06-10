@@ -3359,10 +3359,12 @@ class _DocToolExecutor:
                 )
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
-                f"(mode={mode}). Add a regex pattern with "
-                "remember_permission(kind='allow_pattern', value='^\\\\s*<cmd>\\\\b'), "
-                "or switch the KIT-Mode chip to 'bypassPermissions' for "
-                "trusted scratch work." + hint
+                f"(mode={mode}). Do NOT try to work around this block with "
+                "alternative commands — that wastes turns and erodes trust. "
+                "Instead TELL THE USER the exact command and WHY you need it, "
+                "and ask them to either approve it (remember_permission("
+                "kind='allow_pattern', value='^\\\\s*<cmd>\\\\b')) or switch "
+                "the Perms/KIT mode. Then STOP and wait." + hint
             )
 
         return None
