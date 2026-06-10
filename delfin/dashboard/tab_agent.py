@@ -7588,6 +7588,47 @@ def create_tab(ctx):
                 _append_system_message(f"Could not list skills: {exc}")
                 return True
             arg = cmd[len("/skills "):].strip() if cmd.startswith("/skills ") else ""
+            # Team registry: push/pull/shared via the transfer remote
+            # (<remote_path>/AGENT_SKILLS). Pull never overwrites local
+            # skills (conflict → <name>-shared.md).
+            if arg.split()[:1] in (["push"], ["pull"], ["shared"]):
+                from delfin.agent import skill_registry as _sr
+                from delfin.user_settings import load_settings as _ls
+                _t = (_ls() or {}).get("transfer", {}) or {}
+                _conn = dict(host=_t.get("host", ""), user=_t.get("user", ""),
+                             remote_path=_t.get("remote_path", ""),
+                             port=int(_t.get("port", 22) or 22))
+                _sub = arg.split()
+                if _sub[0] == "push" and len(_sub) >= 2:
+                    ok, msg = _sr.publish_skill(
+                        _sub[1], workspace=ctx.repo_dir or None, **_conn)
+                    _append_system_message(
+                        f"📤 Skill veröffentlicht → `{msg}`" if ok
+                        else f"Push fehlgeschlagen: {msg}")
+                elif _sub[0] == "pull":
+                    _name = _sub[1] if len(_sub) >= 2 else ""
+                    ok, results = _sr.pull_skills(_name, **_conn)
+                    if not ok:
+                        _append_system_message(
+                            f"Pull fehlgeschlagen: {results[0][1]}")
+                    else:
+                        _lines = ["📥 **Skills gezogen:**"]
+                        for nm, status in results:
+                            _icon = {"installed": "✅", "identical": "＝",
+                                     "conflict": "⚠️ als -shared installiert"
+                                     }.get(status, status)
+                            _lines.append(f"- `{nm}` {_icon}" if nm
+                                          else f"- {status}")
+                        _lines.append("Sofort nutzbar: `/skills` zeigt sie.")
+                        _append_system_message("\n".join(_lines))
+                else:  # shared
+                    ok, names = _sr.list_shared(**_conn)
+                    _append_system_message(
+                        "🌐 **Geteilte Skills:**\n"
+                        + ("\n".join(f"- `{n}`" for n in names)
+                           if ok and names else "(keine / Remote nicht erreichbar)")
+                        + "\n\n`/skills pull [name]` zum Installieren.")
+                return True
             # Detail view: /skills <name> prints the full body so the user
             # can read what the skill does without loading it into the input.
             if arg:
