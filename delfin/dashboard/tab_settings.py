@@ -302,16 +302,36 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
     jobmon_provider_input = widgets.Dropdown(
-        options=[('Agent-Default', ''), ('KIT Toolbox', 'kit'),
+        options=[('Agent default', ''), ('KIT Toolbox', 'kit'),
                  ('Anthropic', 'claude'), ('OpenAI', 'openai'),
                  ('Ollama', 'ollama')],
         value='', description='Provider',
         layout=widgets.Layout(width='240px', height='28px'),
     )
-    jobmon_model_input = widgets.Text(
-        placeholder='Model for diagnosis (empty = agent default), e.g. azure.gpt-5-nano',
+    # Known-good models per provider (mirrors the agent tab's lists; the
+    # Combobox still allows free typing for anything newer).
+    _JOBMON_MODEL_SUGGESTIONS = {
+        '': [],
+        'kit': ['azure.gpt-5-nano', 'azure.gpt-5-mini', 'azure.gpt-5.1',
+                'azure.gpt-5.4', 'azure.gpt-4.1-mini', 'azure.o4-mini',
+                'kit.qwen3.5-397b-A17b', 'kit.gpt-oss-120b'],
+        'claude': ['haiku', 'sonnet', 'opus'],
+        'openai': ['gpt-5.4-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
+        'ollama': ['qwen2.5-coder:7b', 'qwen2.5-coder:32b',
+                   'qwen3-coder:32b', 'llama3.3:70b'],
+    }
+    jobmon_model_input = widgets.Combobox(
+        placeholder='Model for diagnosis (empty = agent default)',
+        options=[],
+        ensure_option=False,   # free typing stays allowed
         layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
     )
+
+    def _jobmon_update_model_options(change=None):
+        prov = jobmon_provider_input.value or ''
+        jobmon_model_input.options = _JOBMON_MODEL_SUGGESTIONS.get(prov, [])
+
+    jobmon_provider_input.observe(_jobmon_update_model_options, names='value')
     backend_dropdown = widgets.Dropdown(
         options=[
             ('Auto', 'auto'),

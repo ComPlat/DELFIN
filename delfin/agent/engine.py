@@ -173,11 +173,21 @@ _COMPLEX_TASK_PATTERNS: tuple[str, ...] = (
 )
 
 # Adaptive thinking budget multipliers by task complexity.
+# simple is 0.2 (not 0.4) so the OpenAI reasoning_effort mapping lands on
+# "low" (<16k) — a greeting on gpt-5.x with effort=high used to burn 30+ s
+# of internal reasoning for "Hallo".
 _COMPLEXITY_THINKING_MULT: dict[str, float] = {
-    "simple": 0.4,    # simple questions → 40% of base budget
+    "simple": 0.2,    # greetings / one-liners → minimal budget
     "moderate": 1.0,  # default
     "complex": 1.5,   # complex multi-file tasks → 150%
 }
+
+# Greetings / acknowledgements — no reasoning needed at all.
+_GREETING_PATTERNS: tuple[str, ...] = (
+    "hallo", "hi", "hey", "hello", "moin", "servus", "guten morgen",
+    "guten tag", "danke", "thanks", "thank you", "ok", "okay", "cool",
+    "super", "perfekt", "nice", "👍",
+)
 
 _ROLE_THINKING_BUDGETS: dict[str, int] = {
     "chief_agent": 16000,         # strategic decisions need depth
@@ -1754,6 +1764,13 @@ class AgentEngine:
         if not lower:
             return "moderate"
         # Simple: short questions, read-only operations
+        # Greetings / acknowledgements: short message that *starts* with a
+        # greeting token → no reasoning needed (fast, cheap turn).
+        if len(lower) < 40 and any(
+            lower == g or lower.startswith(g + " ") or lower.startswith(g + "!")
+            or lower.startswith(g + ",") for g in _GREETING_PATTERNS
+        ):
+            return "simple"
         if len(lower) < 60 and any(p in lower for p in _SIMPLE_TASK_PATTERNS):
             return "simple"
         # Complex: multi-file refactors, architecture changes

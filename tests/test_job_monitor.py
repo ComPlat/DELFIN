@@ -157,7 +157,15 @@ def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
     assert "🚨" in saved.get("title", "")
 
 
-def test_diagnosis_failure_is_contained():
+def test_diagnosis_failure_is_contained(monkeypatch):
+    # Isolate the session store — without this the test writes a REAL
+    # "🚨 Job 9 failed" session into the user's ~/.delfin/agent_sessions
+    # (which confused a live user once).
+    monkeypatch.setattr(
+        "delfin.agent.session_store.save_session",
+        lambda sid, **kw: None,
+    )
+
     def _boom(folder, settings):
         raise RuntimeError("no api key")
     f = jm.diagnose_finding(jm.Finding("9", "/x", "FAILED"),

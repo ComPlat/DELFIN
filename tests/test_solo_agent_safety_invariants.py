@@ -207,3 +207,18 @@ def test_stream_unsupported_error_detection():
     assert _is_stream_unsupported_error(prod) is True
     assert _is_stream_unsupported_error(Exception("401 AuthenticationError")) is False
     assert _is_stream_unsupported_error(Exception("rate limit")) is False
+
+
+# ---------------------------------------------------------------------------
+# Greetings classify as simple → minimal reasoning budget (fast "Hallo")
+# ---------------------------------------------------------------------------
+
+def test_greetings_classify_simple_for_fast_turns():
+    from delfin.agent.engine import AgentEngine, _COMPLEXITY_THINKING_MULT
+    for t in ("Hallo", "hi", "Hallo, was kannst du?", "danke!", "ok"):
+        assert AgentEngine.classify_task_complexity(t) == "simple", t
+    # A greeting prefix on a REAL task must not downgrade it.
+    assert AgentEngine.classify_task_complexity(
+        "Hallo, bitte refactor delfin/agent/engine.py") == "complex"
+    # simple budget maps to the OpenAI reasoning_effort "low" bucket (<16k).
+    assert int(64000 * _COMPLEXITY_THINKING_MULT["simple"]) < 16000
