@@ -245,3 +245,32 @@ def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
 
     assert loaded["ui"]["tabs"]["order"] == ["submit", "archive"]
     assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
+
+
+def test_agent_extras_default_off_and_roundtrip(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    # Token-costing agent features are strictly opt-in (default OFF).
+    defaults = _MODULE.DEFAULT_SETTINGS["agent"]
+    assert defaults["auto_memory"]["enabled"] is False
+    assert defaults["eval_loop"]["enabled"] is False
+
+    # Toggle them on the way the Settings tab's save handlers do —
+    # merge into the existing dict instead of replacing it.
+    payload = load_settings(settings_path)
+    automem = dict(payload["agent"].get("auto_memory") or {})
+    automem.update({"enabled": True, "model": "azure.gpt-5-nano", "max_facts": 7})
+    payload["agent"]["auto_memory"] = automem
+    evalloop = dict(payload["agent"].get("eval_loop") or {})
+    evalloop.update({"enabled": True, "window": 300})
+    payload["agent"]["eval_loop"] = evalloop
+    _MODULE.save_settings(payload, settings_path)
+
+    loaded = load_settings(settings_path)
+    assert loaded["agent"]["auto_memory"]["enabled"] is True
+    assert loaded["agent"]["auto_memory"]["model"] == "azure.gpt-5-nano"
+    assert loaded["agent"]["auto_memory"]["max_facts"] == 7
+    assert loaded["agent"]["eval_loop"]["enabled"] is True
+    assert loaded["agent"]["eval_loop"]["window"] == 300
+    # Non-UI keys (hand-edited in the settings file) survive the merge.
+    assert loaded["agent"]["eval_loop"]["threshold"] == 3

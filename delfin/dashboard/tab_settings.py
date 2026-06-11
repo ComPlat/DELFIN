@@ -364,6 +364,69 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 f'save failed: {html.escape(str(exc))}</span>')
 
     jobmon_save_btn.on_click(_on_jobmon_save)
+
+    # Agent extras (opt-in, token-costing features). Auto-memory distills
+    # durable facts into the memory store when a session ends; the eval
+    # loop analyses outcome patterns (its default pass is LLM-free).
+    automem_enabled_toggle = widgets.Checkbox(
+        description='Auto-memory enabled (one small LLM call per session)',
+        value=False, indent=False,
+    )
+    automem_model_input = widgets.Combobox(
+        placeholder='Model for distillation (empty = cheap tier)',
+        options=sorted({m for opts in _JOBMON_MODEL_SUGGESTIONS.values()
+                        for m in opts}),
+        ensure_option=False,   # free typing stays allowed
+        layout=widgets.Layout(width='100%', min_width='280px', height='28px'),
+    )
+    automem_maxfacts_input = widgets.BoundedIntText(
+        value=5, min=1, max=20, step=1,
+        description='Max facts',
+        layout=widgets.Layout(width='170px', height='28px'),
+    )
+    evalloop_enabled_toggle = widgets.Checkbox(
+        description='Eval loop enabled (LLM-free analysis pass)',
+        value=False, indent=False,
+    )
+    evalloop_window_input = widgets.BoundedIntText(
+        value=200, min=10, max=5000, step=10,
+        description='Window',
+        layout=widgets.Layout(width='170px', height='28px'),
+    )
+    agentopt_save_btn = widgets.Button(
+        description='Save agent extras', button_style='primary',
+        layout=widgets.Layout(width='160px', height='28px'),
+    )
+    agentopt_save_status = widgets.HTML(value='')
+
+    def _on_agentopt_save(_btn):
+        try:
+            payload = load_settings()
+            payload.setdefault('agent', {})
+            # Merge instead of replace so non-UI keys (e.g. thresholds)
+            # configured by hand in the settings file survive a save.
+            automem = dict(payload['agent'].get('auto_memory') or {})
+            automem.update({
+                'enabled': bool(automem_enabled_toggle.value),
+                'model': str(automem_model_input.value or '').strip(),
+                'max_facts': int(automem_maxfacts_input.value or 5),
+            })
+            payload['agent']['auto_memory'] = automem
+            evalloop = dict(payload['agent'].get('eval_loop') or {})
+            evalloop.update({
+                'enabled': bool(evalloop_enabled_toggle.value),
+                'window': int(evalloop_window_input.value or 200),
+            })
+            payload['agent']['eval_loop'] = evalloop
+            save_settings(payload, settings_path)
+            agentopt_save_status.value = (
+                '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
+        except Exception as exc:
+            agentopt_save_status.value = (
+                f'<span style="color:#d32f2f; font-size:11px;">'
+                f'save failed: {html.escape(str(exc))}</span>')
+
+    agentopt_save_btn.on_click(_on_agentopt_save)
     backend_dropdown = widgets.Dropdown(
         options=[
             ('Auto', 'auto'),
@@ -914,6 +977,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         except Exception:
             jobmon_provider_input.value = ''
         jobmon_model_input.value = str(jobmon_payload.get('model') or '')
+        automem_payload = agent_payload.get('auto_memory') or {}
+        automem_enabled_toggle.value = bool(automem_payload.get('enabled', False))
+        automem_model_input.value = str(automem_payload.get('model') or '')
+        try:
+            automem_maxfacts_input.value = int(automem_payload.get('max_facts', 5) or 5)
+        except Exception:
+            automem_maxfacts_input.value = 5
+        evalloop_payload = agent_payload.get('eval_loop') or {}
+        evalloop_enabled_toggle.value = bool(evalloop_payload.get('enabled', False))
+        try:
+            evalloop_window_input.value = int(evalloop_payload.get('window', 200) or 200)
+        except Exception:
+            evalloop_window_input.value = 200
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -2868,6 +2944,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'model': str(jobmon_model_input.value or '').strip(),
                 'backend': '',
             }
+            # Agent extras (auto-memory + eval loop) — merge so non-UI
+            # keys configured by hand in the settings file survive.
+            _automem = dict(settings_payload['agent'].get('auto_memory') or {})
+            _automem.update({
+                'enabled': bool(automem_enabled_toggle.value),
+                'model': str(automem_model_input.value or '').strip(),
+                'max_facts': int(automem_maxfacts_input.value or 5),
+            })
+            settings_payload['agent']['auto_memory'] = _automem
+            _evalloop = dict(settings_payload['agent'].get('eval_loop') or {})
+            _evalloop.update({
+                'enabled': bool(evalloop_enabled_toggle.value),
+                'window': int(evalloop_window_input.value or 200),
+            })
+            settings_payload['agent']['eval_loop'] = _evalloop
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -2961,6 +3052,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         bug_archive_input,
         jobmon_enabled_toggle, jobmon_diag_toggle, jobmon_interval_input,
         jobmon_webhook_input, jobmon_provider_input, jobmon_model_input,
+        automem_enabled_toggle, automem_model_input, automem_maxfacts_input,
+        evalloop_enabled_toggle, evalloop_window_input,
     ]
     for _w in _settings_widgets_to_watch:
         _w.observe(_mark_dirty, names='value')
@@ -3104,6 +3197,34 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'It uses the same API keys/credentials as the DELFIN agent. '
                 'Diagnoses appear as 🚨 sessions in the Agent tab + desktop '
                 'notification + optional webhook.'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🧠 Agent extras (auto-memory & eval loop)</b>'),
+            widgets.HBox(
+                [automem_enabled_toggle, automem_maxfacts_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [widgets.HTML('<b>Model</b>'), automem_model_input],
+                layout=_row_layout,
+            ),
+            widgets.HBox(
+                [evalloop_enabled_toggle, evalloop_window_input,
+                 agentopt_save_btn, agentopt_save_status],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                '<b>Default: OFF.</b> <b>Auto-memory</b> runs one small LLM '
+                'call when you switch/close a session and distills durable '
+                'facts (preferences, project constraints, failure fixes) '
+                'into the agent memory store — <code>/memorize</code> in the '
+                'Agent tab triggers it manually regardless of this toggle. '
+                'The <b>eval loop</b> analyses recent session outcomes for '
+                'recurring failure patterns; its default pass is '
+                '<b>LLM-free (0 tokens)</b>. Both use the same API '
+                'keys/credentials as the DELFIN agent.'
                 '</div>'
             ),
         ],
