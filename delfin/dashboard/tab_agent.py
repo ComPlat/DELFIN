@@ -1366,6 +1366,66 @@ def _suggestion_for_tab(tab_name: str) -> str | None:
     return None
 
 
+def _calc_missing_file_hint(filepath: str, look_dir: Path, calc_dir: Path) -> str:
+    """Self-correcting 'Not a file' message for /calc read|tail.
+
+    The agent (any model) tends to GUESS output names like ``orca.out``
+    that don't match DELFIN's actual filenames, then gets stuck
+    repeating "Not a file" (Jerome's error-detection bug). Instead of a
+    dead-end, list what's really in the folder — surfacing
+    ``.out``/``.log``/``.inp`` with OK/ERROR markers — and point at the
+    structured analysis command so even a weak model self-corrects.
+    """
+    try:
+        from delfin.smart_recalc import has_ok_marker
+    except Exception:
+        has_ok_marker = None
+    if look_dir is None or not look_dir.is_dir():
+        return f"Not a file: {filepath}"
+    try:
+        rel = look_dir.resolve().relative_to(calc_dir.resolve())
+        rel_label = f"calc/{rel}" if str(rel) != "." else "calc"
+    except ValueError:
+        rel_label = str(look_dir)
+    outs, others, subdirs = [], [], []
+    try:
+        for p in sorted(look_dir.iterdir(), key=lambda x: x.name):
+            if p.is_dir():
+                subdirs.append(p.name)
+            elif p.suffix in (".out", ".log"):
+                mark = ""
+                if p.suffix == ".out" and has_ok_marker:
+                    try:
+                        mark = " [OK]" if has_ok_marker(p) else " [INCOMPLETE/ERROR]"
+                    except Exception:
+                        mark = ""
+                outs.append(f"{p.name}{mark}")
+            else:
+                others.append(p.name)
+    except Exception:
+        return f"Not a file: {filepath}"
+    lines = [f"Not a file: {filepath} — nothing by that name in {rel_label}."]
+    if outs:
+        lines.append("Output files here: " + ", ".join(outs))
+        lines.append(
+            "Tip: run `ACTION: /analyze errors .` to scan them for errors "
+            "automatically, or `/calc tail <name>` on one of the files "
+            "above — do not guess `orca.out`."
+        )
+    elif subdirs:
+        lines.append("This folder has no output files, only subfolders: "
+                     + ", ".join(subdirs[:20]))
+        lines.append(
+            "The calculation likely lives in one of them — "
+            "`ACTION: /calc cd <subfolder>` then `/calc info .`."
+        )
+    elif others:
+        lines.append("Files here: " + ", ".join(others[:20]))
+    else:
+        lines.append("This folder is empty.")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Helper: distinguish "interactive approval needed" from "structurally
 # blocked" denials so we can show the right message instead of an
@@ -7189,7 +7249,12 @@ def create_tab(ctx):
         # HOW you grant). Session-scoped by default; "always" persists it
         # to the KIT settings so future sessions keep it.
         if cmd == "/grant" or cmd.startswith("/grant "):
-            arg = cmd[len("/grant"):].strip()
+            # Parse the argument from the ORIGINAL-case text, not the
+            # lowercased ``cmd`` — paths are case-sensitive on Linux
+            # (Jerome's bug: ``.../Porpoise`` was searched as
+            # ``.../porpoise`` and "not found"). The "/grant" token is
+            # 6 chars regardless of case.
+            arg = text.strip()[len("/grant"):].strip()
             if not arg:
                 _append_system_message(
                     "Usage: `/grant <path>` (this session) or "
@@ -7254,9 +7319,12 @@ def create_tab(ctx):
         # itself refuses to run while agent.job_monitor.enabled is false.
         if cmd == "/watch" or cmd.startswith("/watch "):
             from delfin.agent import job_monitor as _jm
-            arg = cmd[len("/watch"):].strip()
+            # Parse from original-case text — the folder argument is a
+            # case-sensitive path (same class of bug as /grant). Only the
+            # subcommand token is matched case-insensitively.
+            arg = text.strip()[len("/watch"):].strip()
             parts = arg.split()
-            sub = parts[0] if parts else "ls"
+            sub = parts[0].lower() if parts else "ls"
             if sub == "add" and len(parts) >= 2:
                 job_id = parts[1]
                 folder = parts[2] if len(parts) >= 3 else ""
@@ -8936,6 +9004,13 @@ def create_tab(ctx):
                 return ctx.calc_dir
             return target
 
+        def _file_not_found_hint(filepath: str, target: Path) -> str:
+            # Delegate to the module-level pure helper (testable). The
+            # directory we were looking in is the parent of the missing
+            # file under the agent's current calc dir.
+            look_dir = target.parent if target.parent.is_dir() else None
+            return _calc_missing_file_hint(filepath, look_dir, ctx.calc_dir)
+
         if cmd == "/calc ls" or cmd.startswith("/calc ls "):
             subpath = text[len("/calc ls"):].strip()
             target = _resolve_calc_path(subpath)
@@ -9018,7 +9093,7 @@ def create_tab(ctx):
             filepath = text[len("/calc read"):].strip()
             target = _resolve_calc_path(filepath)
             if not target.is_file():
-                _append_system_message(f"Not a file: {filepath}")
+                _append_system_message(_file_not_found_hint(filepath, target))
                 return True
             size = target.stat().st_size
             limit = 8192 if target.suffix in (".out", ".log") else 32768
@@ -9035,7 +9110,7 @@ def create_tab(ctx):
             filepath = text[len("/calc tail"):].strip()
             target = _resolve_calc_path(filepath)
             if not target.is_file():
-                _append_system_message(f"Not a file: {filepath}")
+                _append_system_message(_file_not_found_hint(filepath, target))
                 return True
             try:
                 size = target.stat().st_size
