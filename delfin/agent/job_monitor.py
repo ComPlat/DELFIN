@@ -71,6 +71,9 @@ class Finding:
     ts: float = field(default_factory=time.time)
     diagnosis_session: str = ""
     summary: str = ""
+    # Agent fix-assessment payload (delfin.agent.job_fix.assess) — routing
+    # class + (for SLURM-resource kills) a prepared, confirm-gated fix.
+    fix: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -360,16 +363,39 @@ def diagnose_finding(
     Honors ``auto_diagnose=False`` (skips — zero tokens). Never raises.
     """
     cfg = monitor_settings(settings)
+
+    # Routing + bounded-fix assessment (LLM-free, never raises). Done even
+    # when auto_diagnose is off so the 🚨 session still carries the precise
+    # class + any prepared resource fix at zero token cost.
+    try:
+        from delfin.agent.job_fix import assess as _assess
+        _a = _assess(finding.job_id, finding.folder, finding.signatures)
+        finding.fix = _a.to_payload()
+    except Exception:
+        finding.fix = {}
+
     if not cfg["auto_diagnose"]:
-        finding.summary = "auto_diagnose off — no LLM diagnosis (0 tokens)"
+        finding.summary = (
+            (finding.fix.get("summary") or "")
+            + " (auto_diagnose off — no LLM diagnosis, 0 tokens)"
+        ).strip()
         return finding
 
     sig_part = ("; signatures: " + ", ".join(finding.signatures)
                 if finding.signatures else "")
+    fix_part = ""
+    if finding.fix:
+        fix_part = (
+            f"\n\nRouting (computed locally, trust it): "
+            f"{finding.fix.get('fix_class')} — {finding.fix.get('recommendation')}"
+        )
+        if finding.fix.get("proposal"):
+            fix_part += (f"\nA bounded resource fix is already prepared:\n"
+                         f"{finding.fix['proposal'].get('diff')}")
     prompt = _DIAGNOSIS_PROMPT.format(
         job_id=finding.job_id, folder=finding.folder,
         state=finding.state, sig_part=sig_part,
-    )
+    ) + fix_part
     try:
         factory = engine_factory or _default_engine_factory
         engine = factory(finding.folder, settings)

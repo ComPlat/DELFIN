@@ -1140,6 +1140,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Bugs", "/bugs", "List bug reports in the archive (or /bugs ls)", False),
     ("Bugs", "/bugs task", "Scaffold a regression benchmark task from a report (/bugs task <name>)", True),
     ("Jobs", "/watch", "Job monitoring: ls/add <id> [dir]/rm <id>/start/stop/status", True),
+    ("Jobs", "/fix", "Show (or `/fix apply`) the prepared fix for the latest failed job", True),
     ("Perms", "/grant", "Grant the agent access to a directory (/grant <path> [always])", True),
     ("Hooks", "/hooks", "List/add/remove/dry-run settings.json hooks", False),
     ("Session", "/session", "ls/restore/search/fork/tree/handoff/bundle/import/archive", False),
@@ -7317,6 +7318,79 @@ def create_tab(ctx):
         # /watch — proactive SLURM job monitoring (headless daemon that
         # survives dashboard close). Opt-in via Settings-Tab; the daemon
         # itself refuses to run while agent.job_monitor.enabled is false.
+        # /fix [apply]  — the prepared, confirm-gated fix for the latest
+        # failed-job finding. /fix shows the routing + diff; /fix apply
+        # edits the submit script (keeps a backup) + resubmits, then
+        # auto-watches the new job. SLURM-resource kills only; chemical /
+        # ORCA-internal failures are never auto-fixed (DELFIN recovers
+        # those in-run) — /fix just reports the routing for them.
+        if cmd == "/fix" or cmd.startswith("/fix "):
+            from delfin.agent import job_monitor as _jm
+            from delfin.agent import job_fix as _jfix
+            sub = cmd[len("/fix"):].strip().lower()
+            findings = _jm.load_findings()
+            latest = findings[-1] if findings else None
+            if latest is None:
+                _append_system_message(
+                    "No failed-job findings yet. The job monitor records them "
+                    "when a watched job fails (`/watch`, Settings → Job "
+                    "monitoring)."
+                )
+                return True
+            fix = latest.get("fix") or {}
+            job_id = str(latest.get("job_id", ""))
+            prop = fix.get("proposal") or {}
+            if sub == "apply":
+                if not fix.get("one_click") or not prop:
+                    _append_system_message(
+                        f"No one-click fix is available for job {job_id} "
+                        f"({fix.get('fix_class','unknown')}). "
+                        f"{fix.get('recommendation','')}"
+                    )
+                    return True
+                proposal = _jfix.ResourceFix(
+                    kind=prop.get("kind", ""),
+                    submit_file=prop.get("submit_file", ""),
+                    old_line=prop.get("old_line", ""),
+                    new_line=prop.get("new_line", ""),
+                )
+                res = _jfix.apply_resource_fix(proposal, job_id)
+                if not res.get("ok"):
+                    _append_system_message(f"Fix not applied: {res.get('error')}")
+                    return True
+                new_job = res.get("new_job_id", "")
+                note = (f"✅ Applied {proposal.kind} bump and resubmitted job "
+                        f"{job_id}. Backup kept at "
+                        f"`{Path(res.get('backup','')).name}`.")
+                if new_job:
+                    try:
+                        _jm.add_watch(new_job, str(latest.get("folder", "")))
+                        note += (f" New job `{new_job}` is now being watched — "
+                                 f"if it dies the same way, I'll escalate "
+                                 f"instead of retrying.")
+                    except Exception:
+                        note += f" New job `{new_job}`."
+                _append_system_message(note)
+                return True
+            # /fix  — show the assessment
+            lines = [
+                f"🚑 Latest failed job: **{job_id}** "
+                f"(`{latest.get('folder','')}`)",
+                f"Class: {fix.get('fix_class','unknown')}",
+                f"{fix.get('summary','')}",
+                f"→ {fix.get('recommendation','')}",
+            ]
+            if prop.get("diff"):
+                lines.append("\nPrepared change:\n```\n" + prop["diff"] + "\n```")
+            if fix.get("one_click"):
+                lines.append("Type `/fix apply` to edit the submit script "
+                             "(a backup is kept) and resubmit.")
+            elif fix.get("escalate"):
+                lines.append("⚠️ Auto-retry budget spent — this needs a human "
+                             "decision, I won't resubmit again.")
+            _append_system_message("\n".join(p for p in lines if p is not None))
+            return True
+
         if cmd == "/watch" or cmd.startswith("/watch "):
             from delfin.agent import job_monitor as _jm
             # Parse from original-case text — the folder argument is a
@@ -11526,7 +11600,7 @@ def create_tab(ctx):
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
             "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
-            "/bugs", "/watch", "/grant",
+            "/bugs", "/watch", "/fix", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",

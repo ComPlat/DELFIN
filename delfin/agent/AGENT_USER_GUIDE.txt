@@ -59,6 +59,14 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   the dashboard. Failures appear as 🚨 sessions + desktop notification
   (+ webhook if configured). Jobs submitted via the dashboard are
   watched automatically while monitoring is enabled.
+- /fix shows the prepared fix for the latest failed job; /fix apply
+  edits the submit script (a backup is kept) and resubmits, then
+  watches the new job. ONLY SLURM resource kills (out-of-memory, time
+  limit) get a one-click fix — a bounded #SBATCH --mem/--time bump.
+  ORCA-internal errors (SCF/geometry/...) are left to DELFIN's own
+  in-run recovery; the agent never loosens convergence or touches the
+  chemistry. After one failed retry of the same kind it escalates to
+  you instead of looping.
 
 5) LONG SESSIONS, MEMORY & SUBAGENTS
 ------------------------------------

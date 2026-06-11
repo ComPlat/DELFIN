@@ -157,6 +157,25 @@ def test_diagnosis_uses_engine_and_records_summary(monkeypatch):
     assert "🚨" in saved.get("title", "")
 
 
+def test_diagnosis_attaches_fix_assessment_zero_tokens(monkeypatch, tmp_path):
+    # An OOM kill with a real submit script -> finding carries a prepared
+    # one-click resource fix, even with auto_diagnose OFF (LLM-free).
+    (tmp_path / "submit.sh").write_text(
+        "#!/bin/bash\n#SBATCH --mem=16G\n#SBATCH --time=4:00:00\norca x.inp\n"
+    )
+    f = jm.diagnose_finding(
+        jm.Finding("555", str(tmp_path), "FAILED",
+                   signatures=["out-of-memory"]),
+        settings={"agent": {"job_monitor": {"enabled": True,
+                                             "auto_diagnose": False}}},
+        engine_factory=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("engine must not be built when auto_diagnose off")),
+    )
+    assert f.fix.get("fix_class") == "slurm_resource"
+    assert f.fix.get("one_click") is True
+    assert "--mem=24G" in f.fix["proposal"]["new_line"]
+
+
 def test_diagnosis_failure_is_contained(monkeypatch):
     # Isolate the session store — without this the test writes a REAL
     # "🚨 Job 9 failed" session into the user's ~/.delfin/agent_sessions
