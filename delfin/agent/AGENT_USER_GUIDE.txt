@@ -43,6 +43,9 @@ Then just talk to it like a colleague:
     /watch add <jobid> <dir>  watch a SLURM job; /watch start = daemon
     /bugs                   list bug reports; 🐞 button files a new one
     /session ls             list / load saved sessions (🚨 = diagnoses)
+    /session handoff new    start a fresh session seeded with a brief
+    /memorize               save this session's durable facts to memory
+    /agents                 subagent presets + recently finished runs
     /plan approve|reject    approve a plan the agent proposed
     /mode plan              read-only planning mode (no edits possible)
 
@@ -57,7 +60,22 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   (+ webhook if configured). Jobs submitted via the dashboard are
   watched automatically while monitoring is enabled.
 
-5) WHEN SOMETHING GOES WRONG
+5) LONG SESSIONS, MEMORY & SUBAGENTS
+------------------------------------
+- Context is managed automatically: old bulky tool output is trimmed
+  early, and near the limit the history is summarised in place —
+  nothing is lost (old transcripts: /session archive ls).
+- /session handoff new  starts a FRESH session seeded with a compact
+  brief of the current one — best when a session got long and slow.
+- /memorize distills this session's durable facts (preferences, paths,
+  failure fixes) into the agent memory, which is recalled in future
+  sessions. Settings tab -> "Agent extras" can do this automatically
+  at session end (auto-memory; one small LLM call, default OFF).
+- The agent can delegate to subagents (live panel in the dashboard;
+  background runs supported). A finished subagent can be CONTINUED
+  with its context intact via its sa_id — /agents lists recent ones.
+
+6) WHEN SOMETHING GOES WRONG
 ----------------------------
 - Click the 🐞 "Bug Report" button (add a one-line note). It bundles the
   conversation, config, model, errors and touched files into the shared
@@ -66,7 +84,7 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   azure.gpt-5.4 / 5.1 and resend. Broken models are remembered and
   avoided automatically.
 
-6) SAFETY MODEL (what the agent can and cannot do)
+7) SAFETY MODEL (what the agent can and cannot do)
 --------------------------------------------------
 - It works ONLY inside granted directories (workspace + /grant).
 - Destructive commands (rm -rf, sudo, force-push, ...) are always blocked.
@@ -77,7 +95,7 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   keywords are flagged and force a self-correction); it never weakens
   convergence or resubmits jobs without your explicit confirmation.
 
-7) TIPS
+8) TIPS
 -------
 - Greetings are instant; real tasks deserve one clear message with the
   goal, the paths involved, and what "done" means.
