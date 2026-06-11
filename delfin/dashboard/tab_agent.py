@@ -1131,6 +1131,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     # Memory
     ("Memory", "/remember", "Save a typed memory ([user|feedback|project|reference:] <text>)", True),
     ("Memory", "/memories", "List all memories", False),
+    ("Memory", "/memorize", "Distill this session into durable memories (one cheap LLM call)", False),
     ("Memory", "/memories verify", "Check stored memories for stale file refs", False),
     ("Memory", "/forget", "Delete a memory by index", True),
     ("Memory", "/plans", "List saved Plan-Mode plans (or /plans <name>)", False),
@@ -7231,6 +7232,23 @@ def create_tab(ctx):
             )
             return True
 
+        # /memorize — manually distill THIS session into the memory store
+        if cmd == "/memorize":
+            msgs = list(state.get("chat_messages") or [])
+            if not msgs:
+                _append_system_message("Nothing to memorize yet.")
+                return True
+            try:
+                from delfin.agent.memory_distill import distill_and_save
+                n = distill_and_save(msgs, force=True)
+                _append_system_message(
+                    f"🧠 Memorized {n} fact(s) from this session."
+                    if n else "🧠 Nothing durable found to memorize."
+                )
+            except Exception as exc:
+                _append_system_message(f"Memorize failed: {exc}")
+            return True
+
         # /watch — proactive SLURM job monitoring (headless daemon that
         # survives dashboard close). Opt-in via Settings-Tab; the daemon
         # itself refuses to run while agent.job_monitor.enabled is false.
@@ -11413,7 +11431,7 @@ def create_tab(ctx):
             "/help", "/guide", "/clear", "/cost", "/compact", "/stop", "/status",
             "/usage", "/export", "/search", "/retry", "/undo", "/git", "/provider",
             "/model", "/effort", "/mode", "/perms", "/perm-cycle", "/reset",
-            "/memories", "/remember", "/forget", "/plans", "/plan", "/hooks",
+            "/memories", "/memorize", "/remember", "/forget", "/plans", "/plan", "/hooks",
             "/bugs", "/watch", "/grant",
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
@@ -13906,14 +13924,38 @@ def create_tab(ctx):
             _append_system_message(f"Undo error: {exc}")
         undo_btn.disabled = len(state["recent_edits"]) == 0
 
+    def _maybe_distill_session():
+        """Auto-memory (opt-in): distill the ENDING session's durable
+        facts into the memory store on a background thread."""
+        msgs = list(state.get("chat_messages") or [])
+        if not msgs:
+            return
+        import threading as _th
+
+        def _run():
+            try:
+                from delfin.agent.memory_distill import distill_and_save
+                n = distill_and_save(msgs)
+                if n:
+                    _append_system_message(
+                        f"🧠 Auto-memory: kept {n} fact(s) from the previous "
+                        f"session (recalled automatically in future turns)."
+                    )
+            except Exception:
+                pass
+
+        _th.Thread(target=_run, daemon=True, name="auto-memory").start()
+
     def _on_load_session(button):
         sid = session_dropdown.value
         if not sid:
-            # "New Session" selected — just reset
+            # "New Session" selected — distill the old one, then reset
+            _maybe_distill_session()
             _on_new_cycle(button)
             return
         if state["streaming"]:
             return
+        _maybe_distill_session()
         _load_saved_session(sid)
 
     def _on_delete_session(button):

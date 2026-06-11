@@ -131,6 +131,15 @@ DEFAULT_SETTINGS = {
         # patterns, scaffold draft benchmark tasks, write a report. The
         # default pass is LLM-free (0 tokens); a live benchmark run stays
         # a deliberate manual command. Opt-in.
+        # Auto-memory (Roadmap B1): one cheap LLM turn when a session
+        # ends distills durable facts into the memory store (BM25 recall
+        # already injects them into future turns). Opt-in — costs one
+        # small call per session; /memorize triggers it manually anytime.
+        "auto_memory": {
+            "enabled": False,
+            "model": "",
+            "max_facts": 5,
+        },
         "eval_loop": {
             "enabled": False,
             "window": 200,
