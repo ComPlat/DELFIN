@@ -389,9 +389,9 @@ def diagnose_finding(
             f"\n\nRouting (computed locally, trust it): "
             f"{finding.fix.get('fix_class')} — {finding.fix.get('recommendation')}"
         )
-        if finding.fix.get("proposal"):
-            fix_part += (f"\nA bounded resource fix is already prepared:\n"
-                         f"{finding.fix['proposal'].get('diff')}")
+        if finding.fix.get("fix"):
+            fix_part += (f"\nA bounded fix is already prepared:\n"
+                         f"{finding.fix['fix'].get('diff')}")
     prompt = _DIAGNOSIS_PROMPT.format(
         job_id=finding.job_id, folder=finding.folder,
         state=finding.state, sig_part=sig_part,

@@ -4,27 +4,38 @@ Division of labour — LEARNED FROM, and deferring to, DELFIN's own
 ``delfin.orca_recovery`` engine which runs programmatically *during* a
 calculation:
 
-  - **ORCA-internal errors** (SCF / geometry / MPI / memory-allocation /
+  - **ORCA-internal errors** (SCF / geometry / MPI / in-process memory /
     TRAH / DIIS / frequency) are recovered by DELFIN's pipeline IN-RUN.
     The agent must NOT duplicate that machinery — it reports the state
     and defers to the built-in recovery.
   - **SLURM-level kills** (out-of-memory kill, wall-time limit) happen
-    OUTSIDE ORCA's reach: the process was killed externally, so the
-    in-run recovery never gets a chance. THIS is the gap the agent
-    fills — a bounded ``#SBATCH`` resource bump + resubmit, always
-    behind an explicit user confirmation (the "Apply fix" click).
+    OUTSIDE ORCA's reach: the scheduler killed the process, so the
+    in-run recovery never got a chance. THIS is the gap the agent
+    fills — a bounded resource bump + resubmit, behind explicit
+    confirmation.
+  - **Environment failures** (venv activation) are usually transient
+    staging races — a plain resubmit (which re-runs DELFIN's env setup)
+    is the safe first move, retry-budgeted.
   - **Infrastructure** (disk quota, permission denied) needs a
     human/admin; the agent only diagnoses.
 
-Safety (non-negotiable, mirrors the project rules):
-  - The agent NEVER proposes a change to the chemistry — functionals,
-    basis sets, and especially SCF/geometry **convergence thresholds**
-    are off-limits. Resource bumps touch only ``#SBATCH --mem`` /
-    ``--time`` directives, verified by ``_is_chemistry_safe``.
-  - Mechanical fixes are *prepared* but applied only on explicit
+How the fix is applied (per the project owner): resubmission ALWAYS goes
+through DELFIN's own recalc path — ``backend.submit_delfin(...,
+mode="delfin-recalc-classic", pal=, maxcore=, time_limit=)``. That path
+edits ``CONTROL.txt`` in place and uses smart-recalc fingerprints to skip
+already-complete steps, so **the old calculation is never overwritten**;
+only the failed step recomputes. DELFIN generates its own submit script —
+the agent never hand-writes one.
+
+Safety (non-negotiable):
+  - The agent NEVER changes the chemistry — functionals, basis sets, and
+    especially SCF/geometry **convergence thresholds** are off-limits.
+    A resource fix touches only the ``maxcore=`` resource line or the
+    submit ``time_limit``, verified by ``_is_chemistry_safe``.
+  - Mechanical/retry fixes are *prepared* but applied only on explicit
     confirmation; chemical failures are never auto-prepared.
   - One auto-retry per (job, signature); a second identical failure
-    escalates to "needs human review" instead of looping.
+    escalates instead of looping.
 """
 
 from __future__ import annotations
@@ -42,10 +53,14 @@ _DELFIN_DIR = Path.home() / ".delfin"
 _ATTEMPTS_PATH = _DELFIN_DIR / "fix_attempts.json"
 _MAX_AUTO_RETRIES = 1
 
+# Memory bump factor (per-core maxcore in CONTROL.txt) and walltime escalation.
+_MEM_FACTOR = 1.5
+_DEFAULT_WALLTIME = "48:00:00"   # doubled from the recalc default of 24h
 
-# Convergence / chemistry keywords that must NEVER appear in an
-# agent-proposed change. If a candidate diff touches any of these, the
-# fix is rejected — loosening convergence is silent bad science.
+
+# Chemistry / convergence keywords that must NEVER appear in a proposed
+# change. A candidate diff touching any of these is rejected outright —
+# loosening convergence to force a result is silent bad science.
 _CHEMISTRY_GUARD = (
     "tole", "tolmaxg", "tolrmsg", "tolmaxd", "tolrmsd", "scfconv",
     "loosescf", "sloppyscf", "normalscf", "tightscf", "verytightscf",
@@ -54,35 +69,42 @@ _CHEMISTRY_GUARD = (
 )
 
 
-# Monitor signature labels (delfin.agent.job_monitor.ERROR_SIGNATURES)
-# routed to the SLURM-resource lane the agent can actually fix.
-_SLURM_RESOURCE_SIGS = {"out-of-memory": "memory", "slurm-timelimit": "walltime"}
+# Monitor signature labels (delfin.agent.job_monitor.ERROR_SIGNATURES).
 _INFRA_SIGS = {"disk-quota", "permission-denied"}
 # ORCA-internal signatures DELFIN recovers itself in-run.
-_ORCA_INTERNAL_SIGS = {
-    "scf-not-converged", "orca-error-termination", "segfault",
-}
+_ORCA_INTERNAL_SIGS = {"scf-not-converged", "orca-error-termination", "segfault"}
 
 
 class FixClass:
     """Routing classes (plain strings — no enum import churn)."""
-    SLURM_RESOURCE = "slurm_resource"        # agent can prepare a bump
-    DELFIN_AUTORECOVERS = "delfin_autorecovers"  # in-run pipeline handles it
-    INFRA = "infra"                           # human/admin
+    SLURM_RESOURCE = "slurm_resource"            # bounded resource bump
+    ENV_RETRY = "env_retry"                       # plain resubmit (env race)
+    DELFIN_AUTORECOVERS = "delfin_autorecovers"   # in-run pipeline handles it
+    INFRA = "infra"                               # human/admin
     UNKNOWN = "unknown"
 
 
 @dataclass
-class ResourceFix:
-    """A bounded, chemistry-free edit to a SLURM submit directive."""
-    kind: str                 # "memory" | "walltime"
-    submit_file: str          # path, or "" when only advisory
-    old_line: str
-    new_line: str
+class Fix:
+    """A bounded, chemistry-free fix applied via DELFIN's recalc path.
+
+    ``kind`` is one of ``memory`` / ``walltime`` / ``retry``. A memory fix
+    carries the exact ``CONTROL.txt`` line edit; a walltime fix carries a
+    new submit ``time_limit``; a retry carries neither (resubmit as-is).
+    """
+    kind: str
+    summary_line: str
+    control_old: str = ""        # CONTROL.txt line being replaced (memory)
+    control_new: str = ""        # replacement line
+    new_time_limit: str = ""     # for walltime — passed to submit_delfin
 
     def diff_preview(self) -> str:
-        loc = self.submit_file or "(no submit script found — advisory only)"
-        return (f"{loc}\n- {self.old_line.strip()}\n+ {self.new_line.strip()}")
+        if self.kind == "memory" and self.control_old:
+            return (f"CONTROL.txt\n- {self.control_old.strip()}\n"
+                    f"+ {self.control_new.strip()}")
+        if self.kind == "walltime":
+            return f"submit time_limit -> {self.new_time_limit}"
+        return "resubmit unchanged (re-runs DELFIN's environment setup)"
 
 
 @dataclass
@@ -91,8 +113,8 @@ class FixAssessment:
     summary: str
     recommendation: str
     error_type: str = ""             # ORCA error type if detected
-    proposal: Optional[ResourceFix] = None
-    one_click: bool = False          # True only for a ready, safe resource fix
+    fix: Optional[Fix] = None
+    one_click: bool = False          # True only for a ready, safe fix
     escalate: bool = False           # retry budget exhausted
     signatures: list[str] = field(default_factory=list)
 
@@ -105,13 +127,14 @@ class FixAssessment:
             "one_click": self.one_click,
             "escalate": self.escalate,
             "signatures": list(self.signatures),
-            "proposal": (
-                {"kind": self.proposal.kind,
-                 "submit_file": self.proposal.submit_file,
-                 "old_line": self.proposal.old_line,
-                 "new_line": self.proposal.new_line,
-                 "diff": self.proposal.diff_preview()}
-                if self.proposal else None
+            "fix": (
+                {"kind": self.fix.kind,
+                 "summary_line": self.fix.summary_line,
+                 "control_old": self.fix.control_old,
+                 "control_new": self.fix.control_new,
+                 "new_time_limit": self.fix.new_time_limit,
+                 "diff": self.fix.diff_preview()}
+                if self.fix else None
             ),
         }
 
@@ -145,121 +168,70 @@ def register_attempt(job_id: str, signature: str, path: Path | None = None) -> i
 
 
 # ---------------------------------------------------------------------------
-# SLURM submit-directive bumps (the only thing the agent edits)
+# CONTROL.txt resource parsing / bumping (the only file the agent edits)
 # ---------------------------------------------------------------------------
 
-def _find_submit_script(folder: Path) -> Optional[Path]:
-    """First *.sh / submit* file in the folder that carries #SBATCH."""
-    if not folder.is_dir():
-        return None
-    cands = sorted(
-        [p for p in folder.iterdir()
-         if p.is_file() and (p.suffix == ".sh" or p.name.lower().startswith("submit"))],
-        key=lambda p: p.name,
-    )
-    for p in cands:
-        try:
-            if "#SBATCH" in p.read_text(encoding="utf-8", errors="replace"):
-                return p
-        except Exception:
-            continue
-    return None
+_PAL_RE = re.compile(r"^\s*PAL\s*=\s*(\d+)", re.MULTILINE)
+_MAXCORE_LINE_RE = re.compile(r"^([^\S\n]*maxcore\s*=\s*)(\d+)([^\S\n]*)$",
+                              re.MULTILINE)
 
 
-def _bump_mem_token(value: str) -> Optional[str]:
-    """`16G`/`16000M`/`16gb` -> 1.5x, rounded up to the same unit."""
-    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([a-zA-Z]*)", value.strip())
-    if not m:
-        return None
-    num = float(m.group(1))
-    unit = m.group(2) or ""
-    new = int(math.ceil(num * 1.5))
-    return f"{new}{unit}"
+def parse_pal_maxcore(control_text: str) -> tuple[Optional[int], Optional[int]]:
+    """Read ``PAL=`` and ``maxcore=`` from CONTROL.txt content.
 
-
-def _bump_time_token(value: str) -> Optional[str]:
-    """Double a SLURM time string, preserving the input's format style.
-
-    Supports D-HH:MM:SS / HH:MM:SS / MM:SS / minutes-only. Day-format
-    (with a leading ``D-``) stays day-format; HH:MM:SS stays HH:MM:SS
-    even when hours pass 24 (24:00:00 reads clearer than 1-00:00:00)."""
-    v = value.strip()
-    day_format = "-" in v
-    days = 0
-    if day_format:
-        d, _, rest = v.partition("-")
-        if not d.isdigit():
-            return None
-        days = int(d)
-        v = rest
-    parts = v.split(":")
+    Prefers DELFIN's OWN parser (``dashboard.input_processing.
+    parse_resource_settings``) so the agent reads resources exactly the
+    way the recalc UI does — imported lazily because it pulls RDKit
+    (~12 s). Falls back to a light local regex if that import is too
+    heavy or unavailable (e.g. the headless monitor daemon)."""
     try:
-        nums = [int(x) for x in parts]
-    except ValueError:
-        return None
-    if len(nums) == 3:
-        h, mnt, s = nums
-    elif len(nums) == 2:
-        h, mnt, s = 0, nums[0], nums[1]
-    elif len(nums) == 1:
-        h, mnt, s = 0, nums[0], 0
-    else:
-        return None
-    total = (((days * 24 + h) * 60 + mnt) * 60 + s) * 2
-    if day_format:
-        d2, rem = divmod(total, 86400)
-        h2, rem = divmod(rem, 3600)
-        m2, s2 = divmod(rem, 60)
-        return f"{d2}-{h2:02d}:{m2:02d}:{s2:02d}"
-    h2, rem = divmod(total, 3600)
-    m2, s2 = divmod(rem, 60)
-    return f"{h2:02d}:{m2:02d}:{s2:02d}"
+        from delfin.dashboard.input_processing import parse_resource_settings
+        return parse_resource_settings(control_text or "")
+    except Exception:
+        pal = _PAL_RE.search(control_text or "")
+        mc = re.search(r"^\s*maxcore\s*=\s*(\d+)", control_text or "",
+                       re.MULTILINE)
+        return (int(pal.group(1)) if pal else None,
+                int(mc.group(1)) if mc else None)
 
 
-def _bump_directive(text: str, kind: str) -> Optional[tuple[str, str]]:
-    """Return (old_line, new_line) for the relevant #SBATCH directive."""
-    if kind == "memory":
-        pat = re.compile(r"^(#SBATCH\s+--mem(?:-per-cpu)?[=\s]+)(\S+)\s*$",
-                         re.MULTILINE)
-        bump = _bump_mem_token
-    elif kind == "walltime":
-        pat = re.compile(r"^(#SBATCH\s+--time[=\s]+)(\S+)\s*$", re.MULTILINE)
-        bump = _bump_time_token
-    else:
-        return None
-    m = pat.search(text)
+def bump_maxcore(control_text: str) -> Optional[tuple[str, str, str]]:
+    """Return (new_control_text, old_line, new_line) with ``maxcore`` x1.5.
+
+    Touches ONLY the maxcore resource line; returns None if absent. The
+    SLURM --mem the backend requests is derived from PAL x maxcore, so
+    raising maxcore raises the allocation that the OOM-killer enforced.
+    """
+    m = _MAXCORE_LINE_RE.search(control_text or "")
     if not m:
         return None
-    new_val = bump(m.group(2))
-    if not new_val:
+    old_val = int(m.group(2))
+    new_val = int(math.ceil(old_val * _MEM_FACTOR))
+    old_line = m.group(0)
+    new_line = f"{m.group(1)}{new_val}{m.group(3)}"
+    if not _is_chemistry_safe(old_line, new_line):
         return None
-    old_line = m.group(0).rstrip("\n")
-    new_line = f"{m.group(1)}{new_val}"
-    return old_line, new_line
+    new_text = control_text[:m.start()] + new_line + control_text[m.end():]
+    return new_text, old_line.strip(), new_line.strip()
 
 
 def _is_chemistry_safe(old_line: str, new_line: str) -> bool:
-    """A proposed change must not touch any chemistry/convergence keyword."""
+    """A proposed change must not touch any chemistry/convergence keyword.
+
+    Word-boundary matching, so a short guard token like ``xc`` does NOT
+    fire inside an innocent word such as ``ma[xc]ore``."""
     blob = (old_line + "\n" + new_line).lower()
-    return not any(g in blob for g in _CHEMISTRY_GUARD)
+    for g in _CHEMISTRY_GUARD:
+        if re.search(r"(?<![a-z0-9])" + re.escape(g) + r"(?![a-z0-9])", blob):
+            return False
+    return True
 
 
-def _build_resource_fix(folder: Path, kind: str) -> Optional[ResourceFix]:
-    script = _find_submit_script(folder)
-    if script is None:
-        return None
+def _read_control(folder: Path) -> str:
     try:
-        text = script.read_text(encoding="utf-8", errors="replace")
+        return (folder / "CONTROL.txt").read_text(encoding="utf-8", errors="replace")
     except Exception:
-        return None
-    bumped = _bump_directive(text, kind)
-    if bumped is None:
-        return None
-    old_line, new_line = bumped
-    if not _is_chemistry_safe(old_line, new_line):
-        return None
-    return ResourceFix(kind=kind, submit_file=str(script),
-                       old_line=old_line, new_line=new_line)
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -283,54 +255,100 @@ def _detect_orca_error(folder: Path) -> str:
     return ""
 
 
+def _resource_assessment(job_id, folder_p, sig, kind, attempts_path, sigs):
+    """Build the assessment for a SLURM resource kill (memory|walltime)."""
+    prior = attempts_for(job_id, sig, attempts_path)
+    control = _read_control(folder_p) if folder_p else ""
+
+    if kind == "memory":
+        bumped = bump_maxcore(control) if control else None
+        fix = None
+        if bumped:
+            new_text, old_line, new_line = bumped
+            fix = Fix(kind="memory",
+                      summary_line=f"raise {old_line} -> {new_line} (x1.5)",
+                      control_old=old_line, control_new=new_line)
+    else:  # walltime
+        fix = Fix(kind="walltime",
+                  summary_line=f"raise submit wall-time to {_DEFAULT_WALLTIME}",
+                  new_time_limit=_DEFAULT_WALLTIME)
+
+    if prior >= _MAX_AUTO_RETRIES:
+        return FixAssessment(
+            fix_class=FixClass.SLURM_RESOURCE,
+            summary=(f"Job {job_id} was killed again by the same "
+                     f"{kind} limit after a previous bump."),
+            recommendation=("Auto-retry budget spent — this needs a human "
+                            "decision (the job may be genuinely too large, "
+                            "or the real cause is elsewhere)."),
+            fix=fix, one_click=False, escalate=True, signatures=sigs,
+        )
+    if fix is None:  # memory kill but no maxcore line to bump
+        return FixAssessment(
+            fix_class=FixClass.SLURM_RESOURCE,
+            summary=(f"Job {job_id} was OOM-killed by SLURM, but no "
+                     f"`maxcore=` line was found in CONTROL.txt."),
+            recommendation=("Raise `maxcore` (or lower `PAL`) in CONTROL.txt "
+                            "and recalc — I couldn't find the line to edit."),
+            one_click=False, signatures=sigs,
+        )
+    noun = ("memory (CONTROL maxcore x1.5)" if kind == "memory"
+            else f"wall-time ({_DEFAULT_WALLTIME})")
+    return FixAssessment(
+        fix_class=FixClass.SLURM_RESOURCE,
+        summary=(f"Job {job_id} was killed by SLURM ({sig}) — outside "
+                 f"ORCA's in-run recovery."),
+        recommendation=(f"Prepared a bounded {noun} bump, resubmitted via "
+                        f"DELFIN's recalc path (old results are kept; only "
+                        f"the failed step recomputes). Review and apply."),
+        fix=fix, one_click=True, escalate=False, signatures=sigs,
+    )
+
+
 def assess(job_id: str, folder: str, signatures: list[str],
            *, attempts_path: Path | None = None) -> FixAssessment:
-    """Classify a failed job and, for SLURM-resource kills only, prepare a
-    bounded, chemistry-free fix. Never raises."""
+    """Classify a failed job and prepare a bounded, chemistry-free fix where
+    the agent legitimately can. Never raises."""
     try:
         sigs = list(signatures or [])
         folder_p = Path(folder) if folder else None
+        orca_type = _detect_orca_error(folder_p) if folder_p else ""
 
-        # SLURM-resource lane — the gap the agent fills.
-        res_kind = next((_SLURM_RESOURCE_SIGS[s] for s in sigs
-                         if s in _SLURM_RESOURCE_SIGS), "")
-        if res_kind:
-            sig = "out-of-memory" if res_kind == "memory" else "slurm-timelimit"
-            prior = attempts_for(job_id, sig, attempts_path)
-            proposal = _build_resource_fix(folder_p, res_kind) if folder_p else None
+        # Out-of-memory disambiguation (#3): if ORCA itself reported an
+        # error in the output, the in-process recovery owns it — DELFIN
+        # adjusts %maxcore in-run. Only a pure SLURM kill (no ORCA error
+        # in the output, process killed externally) is the agent's to bump.
+        if "out-of-memory" in sigs and not orca_type:
+            return _resource_assessment(job_id, folder_p, "out-of-memory",
+                                        "memory", attempts_path, sigs)
+        if "slurm-timelimit" in sigs:
+            return _resource_assessment(job_id, folder_p, "slurm-timelimit",
+                                        "walltime", attempts_path, sigs)
+
+        # Environment activation failures (#6): usually a transient staging
+        # race — a plain recalc resubmit re-runs DELFIN's env setup.
+        if "venv-activation-failed" in sigs:
+            prior = attempts_for(job_id, "venv-activation-failed", attempts_path)
             if prior >= _MAX_AUTO_RETRIES:
                 return FixAssessment(
-                    fix_class=FixClass.SLURM_RESOURCE,
-                    summary=(f"Job {job_id} was killed again by the same "
-                             f"{res_kind} limit after a previous bump."),
-                    recommendation=("Auto-retry budget spent — this needs a "
-                                    "human decision (the job may be genuinely "
-                                    "too large, or the real cause is elsewhere)."),
-                    error_type=_detect_orca_error(folder_p) if folder_p else "",
-                    proposal=proposal, one_click=False, escalate=True,
-                    signatures=sigs,
-                )
-            if proposal is not None:
-                noun = ("memory (#SBATCH --mem ×1.5)" if res_kind == "memory"
-                        else "wall-time (#SBATCH --time ×2)")
-                return FixAssessment(
-                    fix_class=FixClass.SLURM_RESOURCE,
-                    summary=(f"Job {job_id} was killed by SLURM ({sig}) — "
-                             f"outside ORCA's in-run recovery."),
-                    recommendation=(f"Prepared a bounded {noun} bump + resubmit. "
-                                    f"Review the diff and apply if it looks right."),
-                    proposal=proposal, one_click=True, escalate=False,
-                    signatures=sigs,
+                    fix_class=FixClass.ENV_RETRY,
+                    summary=f"Job {job_id} failed to activate its venv again "
+                            f"after a resubmit.",
+                    recommendation=("The environment is structurally broken, "
+                                    "not a transient race — re-stage the venv/"
+                                    "tarball manually; I won't loop on it."),
+                    one_click=False, escalate=True, signatures=sigs,
                 )
             return FixAssessment(
-                fix_class=FixClass.SLURM_RESOURCE,
-                summary=(f"Job {job_id} hit a SLURM {res_kind} limit, but no "
-                         f"submit script with a matching #SBATCH directive was "
-                         f"found in {folder or '(unknown folder)'}."),
-                recommendation=(f"Increase the {res_kind} request and resubmit "
-                                f"manually — I couldn't locate the directive to "
-                                f"edit safely."),
-                one_click=False, signatures=sigs,
+                fix_class=FixClass.ENV_RETRY,
+                summary=f"Job {job_id} failed at venv activation — often a "
+                        f"transient staging race on the cluster.",
+                recommendation=("Resubmit unchanged via DELFIN's recalc path "
+                                "(re-runs the environment setup). If it fails "
+                                "the same way again, I'll escalate."),
+                fix=Fix(kind="retry",
+                        summary_line="resubmit unchanged (re-run env setup)"),
+                one_click=True, escalate=False, signatures=sigs,
             )
 
         # Infrastructure — human/admin.
@@ -339,13 +357,12 @@ def assess(job_id: str, folder: str, signatures: list[str],
                 fix_class=FixClass.INFRA,
                 summary=f"Job {job_id} failed on an infrastructure issue: "
                         f"{', '.join(s for s in sigs if s in _INFRA_SIGS)}.",
-                recommendation=("This needs a human/admin (quota or permissions) "
-                                "— not something to auto-fix."),
+                recommendation=("This needs a human/admin (quota or "
+                                "permissions) — not something to auto-fix."),
                 one_click=False, signatures=sigs,
             )
 
         # ORCA-internal — DELFIN recovers in-run; do not duplicate.
-        orca_type = _detect_orca_error(folder_p) if folder_p else ""
         if orca_type or any(s in _ORCA_INTERNAL_SIGS for s in sigs):
             return FixAssessment(
                 fix_class=FixClass.DELFIN_AUTORECOVERS,
@@ -377,59 +394,90 @@ def assess(job_id: str, folder: str, signatures: list[str],
 
 
 # ---------------------------------------------------------------------------
-# Apply (confirm-gated; called by the dashboard "Apply fix" button)
+# Apply via DELFIN's recalc path (confirm-gated)
 # ---------------------------------------------------------------------------
 
-def apply_resource_fix(
-    proposal: ResourceFix,
+def _signature_for(fix: Fix) -> str:
+    return {"memory": "out-of-memory", "walltime": "slurm-timelimit",
+            "retry": "venv-activation-failed"}.get(fix.kind, fix.kind)
+
+
+def apply_via_recalc(
+    fix: Fix,
     job_id: str,
+    folder: str,
     *,
-    submit_fn: Optional[Callable[[Path], str]] = None,
+    submit_delfin_fn: Callable[..., object],
+    default_time_limit: str = "24:00:00",
     attempts_path: Path | None = None,
 ) -> dict:
-    """Edit the submit script (keeping a timestamped backup) and resubmit.
+    """Apply the fix through DELFIN's recalc submission so the old run is
+    NOT overwritten (smart-recalc skips already-complete steps).
 
-    ``submit_fn(script_path) -> stdout`` is injectable for tests; the
-    default shells out to ``sbatch``. Records a retry attempt so the same
-    failure can't loop. Never raises — returns a status dict.
+    ``submit_delfin_fn(job_dir, job_name, mode, time_limit, pal, maxcore)``
+    is injectable (= ``ctx.backend.submit_delfin`` in the dashboard, a fake
+    in tests) and must return an object with ``.returncode`` + ``.stdout``.
+    A timestamped CONTROL.txt backup is kept; never destroys the original.
+    Records a retry attempt so the same failure can't loop. Never raises.
     """
     try:
-        if not proposal or not proposal.submit_file:
-            return {"ok": False, "error": "no submit script to edit"}
-        script = Path(proposal.submit_file)
-        text = script.read_text(encoding="utf-8", errors="replace")
-        if proposal.old_line not in text:
-            return {"ok": False, "error": "submit script changed since the "
-                                          "fix was prepared; re-assess first"}
-        if not _is_chemistry_safe(proposal.old_line, proposal.new_line):
-            return {"ok": False, "error": "refused: change touches chemistry/"
-                                          "convergence keywords"}
-        # Keep a backup copy (never destroy the original — project rule).
-        backup = script.with_name(
-            f"{script.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-        try:
-            backup.write_text(text, encoding="utf-8")
-        except Exception:
-            pass
-        script.write_text(text.replace(proposal.old_line, proposal.new_line, 1),
-                          encoding="utf-8")
+        folder_p = Path(folder)
+        if not folder_p.is_dir():
+            return {"ok": False, "error": f"job folder not found: {folder}"}
+        control_path = folder_p / "CONTROL.txt"
+        control = _read_control(folder_p)
+        if not control:
+            return {"ok": False, "error": "CONTROL.txt not found/readable"}
 
-        sig = "out-of-memory" if proposal.kind == "memory" else "slurm-timelimit"
-        register_attempt(job_id, sig, attempts_path)
+        backup_note = ""
+        time_limit = default_time_limit
 
-        if submit_fn is None:
-            import subprocess
-            def submit_fn(p: Path) -> str:  # noqa: E306
-                return subprocess.run(
-                    ["sbatch", p.name], cwd=str(p.parent),
-                    capture_output=True, text=True, timeout=60,
-                ).stdout
-        out = submit_fn(script)
+        if fix.kind == "memory":
+            if fix.control_old and fix.control_old not in control:
+                return {"ok": False, "error": "CONTROL.txt changed since the "
+                                              "fix was prepared; re-assess first"}
+            bumped = bump_maxcore(control)
+            if not bumped:
+                return {"ok": False, "error": "no maxcore line to bump"}
+            new_text, _o, _n = bumped
+            if not _is_chemistry_safe(_o, _n):
+                return {"ok": False, "error": "refused: change touches "
+                                              "chemistry/convergence keywords"}
+            backup = control_path.with_name(
+                f"CONTROL.txt.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+            try:
+                backup.write_text(control, encoding="utf-8")
+                backup_note = backup.name
+            except Exception:
+                pass
+            control_path.write_text(new_text, encoding="utf-8")
+            control = new_text
+        elif fix.kind == "walltime":
+            time_limit = fix.new_time_limit or _DEFAULT_WALLTIME
+        # kind == "retry": no edit, resubmit as-is.
+
+        pal, maxcore = parse_pal_maxcore(control)
+        register_attempt(job_id, _signature_for(fix), attempts_path)
+
+        kwargs = dict(job_dir=folder_p, job_name=folder_p.name,
+                      mode="delfin-recalc-classic", time_limit=time_limit)
+        if pal is not None:
+            kwargs["pal"] = pal
+        if maxcore is not None:
+            kwargs["maxcore"] = maxcore
+        result = submit_delfin_fn(**kwargs)
+
+        rc = getattr(result, "returncode", 1)
+        out = str(getattr(result, "stdout", "") or "")
+        if rc != 0:
+            err = str(getattr(result, "stderr", "") or out)
+            return {"ok": False, "error": f"recalc submit failed: {err[:300]}",
+                    "backup": backup_note}
         new_job = ""
-        m = re.search(r"(\d{3,})", str(out))
+        m = re.search(r"(\d{3,})", out)
         if m:
             new_job = m.group(1)
-        return {"ok": True, "submit_file": str(script), "backup": str(backup),
-                "resubmit_output": str(out).strip(), "new_job_id": new_job}
+        return {"ok": True, "new_job_id": new_job, "backup": backup_note,
+                "time_limit": time_limit, "resubmit_output": out.strip()}
     except Exception as exc:
         return {"ok": False, "error": f"apply failed: {exc}"}

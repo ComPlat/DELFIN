@@ -7317,13 +7317,14 @@ def create_tab(ctx):
 
         # /watch — proactive SLURM job monitoring (headless daemon that
         # survives dashboard close). Opt-in via Settings-Tab; the daemon
-        # itself refuses to run while agent.job_monitor.enabled is false.
         # /fix [apply]  — the prepared, confirm-gated fix for the latest
         # failed-job finding. /fix shows the routing + diff; /fix apply
-        # edits the submit script (keeps a backup) + resubmits, then
-        # auto-watches the new job. SLURM-resource kills only; chemical /
-        # ORCA-internal failures are never auto-fixed (DELFIN recovers
-        # those in-run) — /fix just reports the routing for them.
+        # resubmits THROUGH DELFIN's own recalc path
+        # (backend.submit_delfin mode=delfin-recalc-classic) so the old
+        # run is never overwritten — only the failed step recomputes —
+        # then auto-watches the new job. SLURM-resource kills + transient
+        # env failures only; chemical / ORCA-internal failures are left to
+        # DELFIN's in-run recovery (the agent never loosens convergence).
         if cmd == "/fix" or cmd.startswith("/fix "):
             from delfin.agent import job_monitor as _jm
             from delfin.agent import job_fix as _jfix
@@ -7339,7 +7340,8 @@ def create_tab(ctx):
                 return True
             fix = latest.get("fix") or {}
             job_id = str(latest.get("job_id", ""))
-            prop = fix.get("proposal") or {}
+            folder = str(latest.get("folder", ""))
+            prop = fix.get("fix") or {}
             if sub == "apply":
                 if not fix.get("one_click") or not prop:
                     _append_system_message(
@@ -7348,34 +7350,47 @@ def create_tab(ctx):
                         f"{fix.get('recommendation','')}"
                     )
                     return True
-                proposal = _jfix.ResourceFix(
+                backend = getattr(ctx, "backend", None)
+                if backend is None or not hasattr(backend, "submit_delfin"):
+                    _append_system_message(
+                        "No execution backend available to resubmit — open the "
+                        "dashboard with a configured runtime and try again."
+                    )
+                    return True
+                fix_obj = _jfix.Fix(
                     kind=prop.get("kind", ""),
-                    submit_file=prop.get("submit_file", ""),
-                    old_line=prop.get("old_line", ""),
-                    new_line=prop.get("new_line", ""),
+                    summary_line=prop.get("summary_line", ""),
+                    control_old=prop.get("control_old", ""),
+                    control_new=prop.get("control_new", ""),
+                    new_time_limit=prop.get("new_time_limit", ""),
                 )
-                res = _jfix.apply_resource_fix(proposal, job_id)
+                res = _jfix.apply_via_recalc(
+                    fix_obj, job_id, folder,
+                    submit_delfin_fn=backend.submit_delfin,
+                )
                 if not res.get("ok"):
                     _append_system_message(f"Fix not applied: {res.get('error')}")
                     return True
                 new_job = res.get("new_job_id", "")
-                note = (f"✅ Applied {proposal.kind} bump and resubmitted job "
-                        f"{job_id}. Backup kept at "
-                        f"`{Path(res.get('backup','')).name}`.")
+                bak = res.get("backup", "")
+                note = (f"✅ Resubmitted job {job_id} via DELFIN's recalc path "
+                        f"({fix_obj.kind}; old results kept, only the failed "
+                        f"step recomputes).")
+                if bak:
+                    note += f" CONTROL.txt backup: `{bak}`."
                 if new_job:
                     try:
-                        _jm.add_watch(new_job, str(latest.get("folder", "")))
-                        note += (f" New job `{new_job}` is now being watched — "
-                                 f"if it dies the same way, I'll escalate "
-                                 f"instead of retrying.")
+                        _jm.add_watch(new_job, folder)
+                        note += (f" New job `{new_job}` is now watched — if it "
+                                 f"dies the same way I'll escalate instead of "
+                                 f"retrying.")
                     except Exception:
                         note += f" New job `{new_job}`."
                 _append_system_message(note)
                 return True
             # /fix  — show the assessment
             lines = [
-                f"🚑 Latest failed job: **{job_id}** "
-                f"(`{latest.get('folder','')}`)",
+                f"🚑 Latest failed job: **{job_id}** (`{folder}`)",
                 f"Class: {fix.get('fix_class','unknown')}",
                 f"{fix.get('summary','')}",
                 f"→ {fix.get('recommendation','')}",
@@ -7383,8 +7398,9 @@ def create_tab(ctx):
             if prop.get("diff"):
                 lines.append("\nPrepared change:\n```\n" + prop["diff"] + "\n```")
             if fix.get("one_click"):
-                lines.append("Type `/fix apply` to edit the submit script "
-                             "(a backup is kept) and resubmit.")
+                lines.append("Type `/fix apply` to resubmit via DELFIN's "
+                             "recalc path (old run kept, a CONTROL.txt backup "
+                             "is made).")
             elif fix.get("escalate"):
                 lines.append("⚠️ Auto-retry budget spent — this needs a human "
                              "decision, I won't resubmit again.")

@@ -60,13 +60,15 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   (+ webhook if configured). Jobs submitted via the dashboard are
   watched automatically while monitoring is enabled.
 - /fix shows the prepared fix for the latest failed job; /fix apply
-  edits the submit script (a backup is kept) and resubmits, then
-  watches the new job. ONLY SLURM resource kills (out-of-memory, time
-  limit) get a one-click fix — a bounded #SBATCH --mem/--time bump.
-  ORCA-internal errors (SCF/geometry/...) are left to DELFIN's own
-  in-run recovery; the agent never loosens convergence or touches the
-  chemistry. After one failed retry of the same kind it escalates to
-  you instead of looping.
+  resubmits it THROUGH DELFIN's own recalc path (mode delfin-recalc-
+  classic) so the old run is never overwritten — only the failed step
+  recomputes — then watches the new job. One-click fixes cover SLURM
+  resource kills (out-of-memory -> CONTROL maxcore x1.5; time limit ->
+  longer wall-time) and transient venv-activation failures (plain
+  resubmit). ORCA-internal errors (SCF/geometry/...) are left to
+  DELFIN's own in-run recovery; the agent never loosens convergence or
+  touches the chemistry. After one failed retry of the same kind it
+  escalates to you instead of looping.
 
 5) LONG SESSIONS, MEMORY & SUBAGENTS
 ------------------------------------
