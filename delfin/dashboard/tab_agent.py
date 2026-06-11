@@ -7698,6 +7698,25 @@ def create_tab(ctx):
                 name = p.get("subagent_type") or p.get("name") or "?"
                 desc = p.get("description") or ""
                 lines.append(f"  {name:<18} {desc}")
+            # Recently finished subagents — resumable via the subagent
+            # tool's resume_id parameter (context intact).
+            try:
+                from delfin.agent.subagents import list_finished
+                finished = list_finished(last_n=5)
+            except Exception:
+                finished = []
+            if finished:
+                lines.append("\nRecently finished (resume via resume_id):")
+                _now = time.time()
+                for f in finished:
+                    age_min = max(0, int((_now - float(f.get("finished_at") or 0)) / 60))
+                    flag = " ⚠" if f.get("error") else ""
+                    lines.append(
+                        f"  {f.get('sa_id', '?'):<10} "
+                        f"{f.get('subagent_type', '?'):<16} "
+                        f"{(f.get('description') or '')[:48]:<48} "
+                        f"{age_min} min ago{flag}"
+                    )
             lines.append(
                 "\nType `/agents stats` for lifetime cost/duration aggregates."
             )

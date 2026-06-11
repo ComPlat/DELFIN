@@ -116,3 +116,89 @@ def test_background_flag_in_subagent_schema():
     i = src.find('"name": "subagent"')
     assert '"background"' in src[i:i + 3000], "background param missing"
     assert "started_in_background" in src
+
+
+# ---------------------------------------------------------------------------
+# Finished-subagent sessions + resume (Claude-Code SendMessage analog)
+# ---------------------------------------------------------------------------
+
+def _mk_client(text: str = "ok"):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    events = [
+        SimpleNamespace(type="text_delta", text=text, tool_name="",
+                        tool_input="", input_tokens=0, output_tokens=0),
+        SimpleNamespace(type="message_delta", text="", tool_name="",
+                        tool_input="", input_tokens=10, output_tokens=5),
+    ]
+    client = MagicMock()
+    client.stream_message = MagicMock(return_value=iter(events))
+    client._permissions = None
+    client.set_permissions = MagicMock()
+    return client
+
+
+def test_session_persist_and_list(tmp_path, monkeypatch):
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sess")
+    res = sa.run_subagent(
+        subagent_type="explore", description="find answer",
+        prompt="please find the answer to everything",
+        parent_client=_mk_client("the answer is 42"), parent_perms=None,
+    )
+    assert res.sa_id
+    rec = sa.load_subagent_session(res.sa_id)
+    assert rec["subagent_type"] == "explore"
+    assert [m["role"] for m in rec["messages"]] == ["user", "assistant"]
+    assert "the answer is 42" in rec["messages"][-1]["content"]
+    listed = sa.list_finished()
+    assert listed and listed[0]["sa_id"] == res.sa_id
+
+
+def test_resume_replays_prior_turns(tmp_path, monkeypatch):
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sess")
+    res1 = sa.run_subagent(
+        subagent_type="explore", description="find X",
+        prompt="where does X live? look around",
+        parent_client=_mk_client("initial finding: X lives in y.py"),
+        parent_perms=None,
+    )
+    second = _mk_client("follow-up: X moved to z.py")
+    res2 = sa.run_subagent(
+        subagent_type="explore", description="",
+        prompt="now check whether X moved recently",
+        parent_client=second, parent_perms=None,
+        resume_from=res1.sa_id,
+    )
+    assert res2.sa_id == res1.sa_id          # same session accumulates
+    assert res2.error == ""
+    sent = second.stream_message.call_args.kwargs["messages"]
+    contents = " | ".join(str(m.get("content")) for m in sent)
+    assert "initial finding: X lives in y.py" in contents   # replayed
+    assert "now check whether X moved recently" in contents
+    rec = sa.load_subagent_session(res1.sa_id)
+    assert [m["role"] for m in rec["messages"]] == [
+        "user", "assistant", "user", "assistant",
+    ]
+
+
+def test_resume_unknown_id_is_contained(tmp_path, monkeypatch):
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sess")
+    res = sa.run_subagent(
+        subagent_type="explore", description="d",
+        prompt="some long enough prompt here",
+        parent_client=_mk_client(), parent_perms=None,
+        resume_from="nope1234",
+    )
+    assert "unknown resume id" in res.error
+    assert res.final_text == ""
+
+
+def test_resume_id_in_subagent_schema():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
+    i = src.find('"name": "subagent"')
+    assert '"resume_id"' in src[i:i + 4000], "resume_id param missing"

@@ -90,6 +90,102 @@ def read_running() -> dict:
         return {}
 
 
+# Finished-subagent sessions (Claude-Code SendMessage analog): each run
+# persists its conversation so a later ``resume_id`` call can continue
+# the same subagent with its context intact.
+_SESSIONS_DIR = Path.home() / ".delfin" / "subagent_sessions"
+_SESSIONS_LIST_LIMIT = 20
+
+
+def _trim_for_store(text: str, limit: int = 2000) -> str:
+    """Head+tail trim for stored message content (sliding-window style)."""
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    return (
+        text[:1200]
+        + f"\n... [trimmed for subagent session store, "
+        + f"{len(text) - 1600} chars dropped] ...\n"
+        + text[-400:]
+    )
+
+
+def _save_subagent_session(
+    sa_id: str,
+    *,
+    subagent_type: str,
+    description: str,
+    messages: list[dict],
+    tool_calls: list[dict],
+    error: str = "",
+) -> None:
+    """Persist a finished subagent conversation for later resumption.
+
+    Best-effort: never raises. Only user/assistant turns are kept (tool
+    noise is summarised separately in ``tool_calls``); large contents
+    are head+tail trimmed.
+    """
+    try:
+        record = {
+            "sa_id": sa_id,
+            "subagent_type": subagent_type,
+            "description": (description or "")[:200],
+            "finished_at": time.time(),
+            "messages": [
+                {"role": m.get("role", ""),
+                 "content": _trim_for_store(str(m.get("content", "")))}
+                for m in messages
+                if m.get("role") in ("user", "assistant")
+            ],
+            "tool_calls": [
+                {"name": tc.get("name"), "input": str(tc.get("input"))[:200]}
+                for tc in (tool_calls or [])[:30]
+            ],
+            "error": error or "",
+        }
+        _SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        path = _SESSIONS_DIR / f"{sa_id}.json"
+        path.write_text(json.dumps(record, ensure_ascii=False),
+                        encoding="utf-8")
+    except Exception:
+        pass
+
+
+def load_subagent_session(sa_id: str) -> dict | None:
+    """Load one stored subagent session; ``None`` when unknown/corrupt."""
+    try:
+        path = _SESSIONS_DIR / f"{(sa_id or '').strip()}.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def list_finished(last_n: int = _SESSIONS_LIST_LIMIT) -> list[dict]:
+    """Most recently finished subagent sessions, newest first.
+
+    The limit applies at READ time only — older session files stay on
+    disk untouched.
+    """
+    try:
+        files = sorted(_SESSIONS_DIR.glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        return []
+    out: list[dict] = []
+    for p in files[: max(1, int(last_n or _SESSIONS_LIST_LIMIT))]:
+        try:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+            out.append({
+                "sa_id": rec.get("sa_id", p.stem),
+                "subagent_type": rec.get("subagent_type", ""),
+                "description": rec.get("description", ""),
+                "finished_at": rec.get("finished_at", 0),
+                "error": rec.get("error", ""),
+            })
+        except Exception:
+            continue
+    return out
+
+
 def _write_telemetry(record: dict) -> None:
     """Append a one-line JSON record to ``~/.delfin/subagent_telemetry.jsonl``.
 
@@ -372,11 +468,13 @@ class SubagentResult:
     truncated: bool = False
     error: str = ""
     worktree: dict = field(default_factory=dict)
+    sa_id: str = ""
 
     def to_payload(self) -> dict:
         return {
             "subagent_type": self.subagent_type,
             "description": self.description,
+            "sa_id": self.sa_id,
             "result": self.final_text,
             "tool_calls": [
                 {"name": tc.get("name"), "input": str(tc.get("input"))[:200]}
@@ -418,6 +516,7 @@ def run_subagent(
     max_wall_s: float = _MAX_WALL_S,
     max_output_tokens: int = _MAX_OUTPUT_TOKENS,
     isolation: str = "",
+    resume_from: str = "",
 ) -> SubagentResult:
     """Run a sub-agent loop and return its final assistant message.
 
@@ -432,8 +531,32 @@ def run_subagent(
     workspace isn't a git repo (just runs without isolation +
     reports a warning on the result).
 
+    ``resume_from`` continues a FINISHED subagent: the stored
+    conversation (user/assistant turns of all prior rounds) is replayed
+    in front of the new prompt, and the stored ``subagent_type`` wins so
+    permissions match the original preset. The session file accumulates
+    across resumes under the same id.
+
     Returns a SubagentResult; never raises.
     """
+    resume_from = (resume_from or "").strip()
+    prior: dict = {}
+    if resume_from:
+        prior = load_subagent_session(resume_from) or {}
+        if not prior:
+            return SubagentResult(
+                subagent_type=subagent_type,
+                description=description,
+                final_text="",
+                error=(
+                    f"unknown resume id {resume_from!r}: no stored "
+                    "subagent session found. Use a sa_id returned by a "
+                    "previous subagent call."
+                ),
+            )
+        subagent_type = prior.get("subagent_type") or subagent_type
+        description = description or prior.get("description", "")
+
     preset = SUBAGENT_PRESETS.get(subagent_type)
     if preset is None:
         return SubagentResult(
@@ -478,10 +601,18 @@ def run_subagent(
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": prompt},
+    # On resume, replay the stored user/assistant turns (the system
+    # prompt is rebuilt fresh so workspace paths stay current).
+    prior_turns = [
+        {"role": m.get("role", ""), "content": m.get("content", "")}
+        for m in (prior.get("messages") or [])
+        if m.get("role") in ("user", "assistant")
     ]
+    messages = (
+        [{"role": "system", "content": system_prompt}]
+        + prior_turns
+        + [{"role": "user", "content": prompt}]
+    )
 
     final_text_parts: list[str] = []
     tool_calls_seen: list[dict] = []
@@ -489,9 +620,10 @@ def run_subagent(
     t0 = time.monotonic()
     truncated = False
     error = ""
-    # Live-panel registry entry (removed in the finally below).
+    # Live-panel registry entry (removed in the finally below). Resumes
+    # keep their original id so the session file accumulates.
     import uuid as _uuid
-    _sa_id = _uuid.uuid4().hex[:8]
+    _sa_id = resume_from if prior else _uuid.uuid4().hex[:8]
     _running_update(_sa_id, {
         "type": subagent_type,
         "description": (description or "")[:120],
@@ -557,6 +689,20 @@ def run_subagent(
     if not final_text and not error:
         error = "sub-agent returned no text"
     elapsed_s = time.monotonic() - t0
+    # Persist the conversation so the parent can resume this subagent
+    # later via ``resume_id`` (Claude-Code SendMessage analog).
+    _save_subagent_session(
+        _sa_id,
+        subagent_type=subagent_type,
+        description=description,
+        messages=(
+            [m for m in messages if m.get("role") in ("user", "assistant")]
+            + ([{"role": "assistant", "content": final_text}]
+               if final_text else [])
+        ),
+        tool_calls=tool_calls_seen,
+        error=error,
+    )
     # Persist a telemetry record so the dashboard /agents stats command
     # and the subagent-pane can show real costs/durations across runs.
     _write_telemetry({
@@ -582,6 +728,7 @@ def run_subagent(
         truncated=truncated,
         error=error,
         worktree=worktree_summary,
+        sa_id=_sa_id,
     )
 
 
@@ -593,4 +740,6 @@ __all__ = [
     "reload_subagent_presets",
     "SubagentResult",
     "run_subagent",
+    "load_subagent_session",
+    "list_finished",
 ]

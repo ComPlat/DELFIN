@@ -2214,6 +2214,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                             "that should not block the main task."
                         ),
                     },
+                    "resume_id": {
+                        "type": "string",
+                        "description": (
+                            "Continue a FINISHED subagent with its "
+                            "context intact: pass the sa_id returned by "
+                            "a previous subagent call and a follow-up "
+                            "prompt. The stored conversation is replayed "
+                            "in front of the new prompt; subagent_type/"
+                            "description from the original run win."
+                        ),
+                    },
                     "isolation": {
                         "type": "string",
                         "enum": ["", "worktree"],
@@ -4640,15 +4651,19 @@ class _DocToolExecutor:
         description = (arguments.get("description") or "").strip()
         prompt = arguments.get("prompt") or ""
         isolation = (arguments.get("isolation") or "").strip()
-        if not sa_type:
-            return json.dumps({"error": "subagent_type is required"})
-        if sa_type not in _sa.SUBAGENT_PRESETS:
-            return json.dumps({
-                "error": f"unknown subagent_type: {sa_type!r}",
-                "available": list(_sa.SUBAGENT_PRESETS),
-            })
-        if not description:
-            return json.dumps({"error": "description is required"})
+        resume_id = (arguments.get("resume_id") or "").strip()
+        # When resuming, the stored session's type/description win inside
+        # run_subagent — only validate them for fresh runs.
+        if not resume_id:
+            if not sa_type:
+                return json.dumps({"error": "subagent_type is required"})
+            if sa_type not in _sa.SUBAGENT_PRESETS:
+                return json.dumps({
+                    "error": f"unknown subagent_type: {sa_type!r}",
+                    "available": list(_sa.SUBAGENT_PRESETS),
+                })
+            if not description:
+                return json.dumps({"error": "description is required"})
         if not prompt or len(prompt) < 20:
             return json.dumps({"error": (
                 "prompt must brief the sub-agent thoroughly (>=20 chars)"
@@ -4661,6 +4676,9 @@ class _DocToolExecutor:
                     "have set perms.subagent_runner. Currently None."
                 ),
             })
+        # Only pass resume_from when set — externally attached runners
+        # (tests, custom embeddings) may predate the parameter.
+        _resume_kw = {"resume_from": resume_id} if resume_id else {}
         # Background mode (Claude-Code-style): spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
@@ -4675,6 +4693,7 @@ class _DocToolExecutor:
                         description=description,
                         prompt=prompt,
                         isolation=isolation,
+                        **_resume_kw,
                     )
                 except Exception:
                     pass
@@ -4696,6 +4715,7 @@ class _DocToolExecutor:
                 description=description,
                 prompt=prompt,
                 isolation=isolation,
+                **_resume_kw,
             )
         except Exception as exc:
             return json.dumps({"error": f"subagent runner raised: {exc}"})
@@ -5204,7 +5224,7 @@ class OpenAIClient(_BaseClient):
 
         def _runner(
             *, subagent_type: str, description: str, prompt: str,
-            isolation: str = "",
+            isolation: str = "", resume_from: str = "",
         ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
@@ -5213,6 +5233,7 @@ class OpenAIClient(_BaseClient):
                 parent_client=self,
                 parent_perms=self._permissions,
                 isolation=isolation,
+                resume_from=resume_from,
             )
             return res.to_payload()
 
