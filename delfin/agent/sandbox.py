@@ -232,7 +232,10 @@ def _bwrap_argv(cmd: str, repo_dir: Path, allow_network: bool) -> list[str]:
     fresh tmpfs; ``--unshare-net`` blocks outbound traffic by default.
     """
     repo = str(repo_dir.resolve())
-    home = str(Path.home())
+    # Resolve $HOME fully: on HPC clusters /home is often a symlink
+    # (e.g. /home -> /pfs) and bwrap cannot create mountpoints through
+    # symlinked path components ("Can't mkdir parents").
+    home = str(Path.home().resolve())
     args: list[str] = [
         "bwrap",
         "--ro-bind", "/", "/",
