@@ -2541,6 +2541,57 @@ def _smart_truncate(text: str, cap: int, label: str) -> str:
     return head + marker + tail
 
 
+# Tool-result-aware context editing for long tool-call loops.
+_TOOL_CONTEXT_CHAR_BUDGET = 60000   # ~15k tokens of accumulated tool output
+_TOOL_KEEP_RECENT = 8               # most recent tool results kept verbatim
+_ELIDED_PREFIX = "[earlier tool output elided to free context"
+
+
+def _elide_old_tool_results(
+    api_messages: list[dict],
+    *,
+    char_budget: int = _TOOL_CONTEXT_CHAR_BUDGET,
+    keep_recent: int = _TOOL_KEEP_RECENT,
+) -> int:
+    """Semantic context editing inside a long tool-call loop.
+
+    Over up to 50 rounds, accumulated ``role=="tool"`` outputs can
+    dominate the input-token budget. When their combined size exceeds
+    ``char_budget``, replace the OLDEST tool-result contents with a short
+    placeholder — keeping the most recent ``keep_recent`` verbatim — so
+    the model still has its current evidence + all of its own reasoning.
+
+    Protocol-safe: only ``content`` is replaced, never the message
+    itself, so each ``tool_call_id`` stays matched to its assistant
+    ``tool_calls``. User / system / assistant messages are never touched
+    (that is the difference from a blind head+tail trim). Returns the
+    number of tool results elided. Mutates ``api_messages`` in place.
+    """
+    tool_idxs = [i for i, m in enumerate(api_messages)
+                 if m.get("role") == "tool"]
+
+    def _tool_chars() -> int:
+        return sum(len(str(api_messages[i].get("content", "")))
+                   for i in tool_idxs)
+
+    if _tool_chars() <= char_budget:
+        return 0
+    editable = tool_idxs[:-keep_recent] if keep_recent > 0 else tool_idxs
+    elided = 0
+    for i in editable:
+        if _tool_chars() <= char_budget:
+            break
+        content = str(api_messages[i].get("content", ""))
+        if content.startswith(_ELIDED_PREFIX):
+            continue
+        api_messages[i]["content"] = (
+            f"{_ELIDED_PREFIX} — {len(content)} chars; "
+            f"its findings are reflected in the assistant reasoning above]"
+        )
+        elided += 1
+    return elided
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -5446,6 +5497,11 @@ class OpenAIClient(_BaseClient):
         _consecutive_failure_count = 0
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            # Semantic context editing: once accumulated tool output over
+            # this loop grows large, elide the OLDEST tool results (keep
+            # the recent ones + all reasoning) so a long agentic turn
+            # doesn't blow the input-token budget. No-op under budget.
+            _elide_old_tool_results(api_messages)
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": api_messages,
