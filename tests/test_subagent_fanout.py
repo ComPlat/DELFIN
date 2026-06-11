@@ -122,15 +122,26 @@ def test_background_flag_in_subagent_schema():
 # Finished-subagent sessions + resume (Claude-Code SendMessage analog)
 # ---------------------------------------------------------------------------
 
-def _mk_client(text: str = "ok"):
+def _ev(**kw):
     from types import SimpleNamespace
+    base = dict(type="", text="", tool_name="", tool_input="",
+                tool_output="", input_tokens=0, output_tokens=0)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _mk_client(text: str = "ok", tool=None):
+    """Fake client. ``tool=(name, input, output)`` emits a tool_use +
+    tool_result pair before the final text, so resume-fidelity can be
+    exercised."""
     from unittest.mock import MagicMock
-    events = [
-        SimpleNamespace(type="text_delta", text=text, tool_name="",
-                        tool_input="", input_tokens=0, output_tokens=0),
-        SimpleNamespace(type="message_delta", text="", tool_name="",
-                        tool_input="", input_tokens=10, output_tokens=5),
-    ]
+    events = []
+    if tool:
+        name, inp, out = tool
+        events.append(_ev(type="tool_use", tool_name=name, tool_input=inp))
+        events.append(_ev(type="tool_result", tool_name=name, tool_output=out))
+    events.append(_ev(type="text_delta", text=text))
+    events.append(_ev(type="message_delta", input_tokens=10, output_tokens=5))
     client = MagicMock()
     client.stream_message = MagicMock(return_value=iter(events))
     client._permissions = None
@@ -177,10 +188,61 @@ def test_resume_replays_prior_turns(tmp_path, monkeypatch):
     contents = " | ".join(str(m.get("content")) for m in sent)
     assert "initial finding: X lives in y.py" in contents   # replayed
     assert "now check whether X moved recently" in contents
+
+
+def test_resume_preserves_tool_outputs(tmp_path, monkeypatch):
+    """The fidelity fix: a resumed subagent sees the actual tool OUTPUTS
+    it produced earlier, not just its own text conclusions."""
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sess")
+    res1 = sa.run_subagent(
+        subagent_type="explore", description="grep",
+        prompt="search for the audit log writer",
+        parent_client=_mk_client(
+            "found it",
+            tool=("grep_file", '{"q":"audit"}',
+                  "src/audit.py:42: def write_audit(record):")),
+        parent_perms=None,
+    )
     rec = sa.load_subagent_session(res1.sa_id)
-    assert [m["role"] for m in rec["messages"]] == [
-        "user", "assistant", "user", "assistant",
-    ]
+    # The tool output was captured with its result, not dropped.
+    assert rec["interactions"]
+    assert rec["interactions"][0]["name"] == "grep_file"
+    assert "src/audit.py:42" in rec["interactions"][0]["output"]
+
+    # On resume, that concrete output is replayed into the model's context.
+    second = _mk_client("continuing")
+    sa.run_subagent(
+        subagent_type="explore", description="",
+        prompt="now open that file and summarise write_audit",
+        parent_client=second, parent_perms=None, resume_from=res1.sa_id,
+    )
+    sent = second.stream_message.call_args.kwargs["messages"]
+    contents = " | ".join(str(m.get("content")) for m in sent)
+    assert "src/audit.py:42: def write_audit" in contents   # output, not just text
+    assert "grep_file" in contents
+
+
+def test_resume_accumulates_interactions_across_rounds(tmp_path, monkeypatch):
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_SESSIONS_DIR", tmp_path / "sess")
+    r1 = sa.run_subagent(
+        subagent_type="explore", description="d",
+        prompt="first step, look around here",
+        parent_client=_mk_client("step1", tool=("read_file", "a.py", "AAA")),
+        parent_perms=None,
+    )
+    sa.run_subagent(
+        subagent_type="explore", description="",
+        prompt="second step, keep going please",
+        parent_client=_mk_client("step2", tool=("read_file", "b.py", "BBB")),
+        parent_perms=None, resume_from=r1.sa_id,
+    )
+    rec = sa.load_subagent_session(r1.sa_id)
+    outputs = [it["output"] for it in rec["interactions"]]
+    assert "AAA" in outputs and "BBB" in outputs       # both rounds kept
+    roles = [m["role"] for m in rec["messages"]]
+    assert roles == ["user", "assistant", "user", "assistant"]
 
 
 def test_resume_unknown_id_is_contained(tmp_path, monkeypatch):

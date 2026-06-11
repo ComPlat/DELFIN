@@ -109,20 +109,24 @@ def _trim_for_store(text: str, limit: int = 2000) -> str:
     )
 
 
+_MAX_STORED_INTERACTIONS = 60
+
+
 def _save_subagent_session(
     sa_id: str,
     *,
     subagent_type: str,
     description: str,
     messages: list[dict],
-    tool_calls: list[dict],
+    interactions: list[dict],
     error: str = "",
 ) -> None:
     """Persist a finished subagent conversation for later resumption.
 
-    Best-effort: never raises. Only user/assistant turns are kept (tool
-    noise is summarised separately in ``tool_calls``); large contents
-    are head+tail trimmed.
+    Stores the logical user/assistant conversation AND the tool
+    interactions WITH their (trimmed) outputs — so a resumed subagent
+    sees what it actually read, not just its own conclusions. Best-effort,
+    never raises.
     """
     try:
         record = {
@@ -136,9 +140,13 @@ def _save_subagent_session(
                 for m in messages
                 if m.get("role") in ("user", "assistant")
             ],
-            "tool_calls": [
-                {"name": tc.get("name"), "input": str(tc.get("input"))[:200]}
-                for tc in (tool_calls or [])[:30]
+            # Tool calls + the outputs they returned (the fidelity that the
+            # old text-only replay dropped). Keep the most recent ones.
+            "interactions": [
+                {"name": it.get("name"),
+                 "input": str(it.get("input", ""))[:200],
+                 "output": _trim_for_store(str(it.get("output", "")))}
+                for it in (interactions or [])[-_MAX_STORED_INTERACTIONS:]
             ],
             "error": error or "",
         }
@@ -148,6 +156,36 @@ def _save_subagent_session(
                         encoding="utf-8")
     except Exception:
         pass
+
+
+def _render_resume_recap(prior: dict) -> str:
+    """Build a faithful, model-robust recap of a prior subagent run.
+
+    Includes the earlier conversation AND the tool calls with their actual
+    (trimmed) outputs, rendered as one readable context block — this is
+    what closes the resume-fidelity gap without juggling tool_call_id
+    protocol details across backends.
+    """
+    msgs = prior.get("messages") or []
+    inter = prior.get("interactions") or []
+    parts = ["[Resuming this subagent — your earlier context follows. "
+             "Trust it as your own prior work.]"]
+    if msgs:
+        parts.append("\n## Earlier conversation")
+        for m in msgs:
+            role = str(m.get("role", "")).upper()
+            content = _trim_for_store(str(m.get("content", "")), 800)
+            if content.strip():
+                parts.append(f"{role}: {content}")
+    if inter:
+        parts.append("\n## Tools you already ran and what they returned")
+        for it in inter[-_MAX_STORED_INTERACTIONS:]:
+            name = it.get("name", "?")
+            inp = str(it.get("input", ""))[:200]
+            out = _trim_for_store(str(it.get("output", "")), 800)
+            parts.append(f"- {name}({inp}) -> {out}")
+    parts.append("\nContinue from here with the new request below.")
+    return "\n".join(parts)
 
 
 def load_subagent_session(sa_id: str) -> dict | None:
@@ -601,18 +639,19 @@ def run_subagent(
         + f"\n\nWorkspace: {sub_perms.workspace if sub_perms else '(none)'}"
         + f"\nTask label: {description}"
     )
-    # On resume, replay the stored user/assistant turns (the system
-    # prompt is rebuilt fresh so workspace paths stay current).
-    prior_turns = [
-        {"role": m.get("role", ""), "content": m.get("content", "")}
-        for m in (prior.get("messages") or [])
-        if m.get("role") in ("user", "assistant")
-    ]
-    messages = (
-        [{"role": "system", "content": system_prompt}]
-        + prior_turns
-        + [{"role": "user", "content": prompt}]
-    )
+    # On resume, inject a faithful recap (earlier conversation + the tool
+    # outputs the subagent actually saw) as one context block, then the
+    # new request. The system prompt is rebuilt fresh so workspace paths
+    # stay current.
+    messages = [{"role": "system", "content": system_prompt}]
+    if prior:
+        recap = _render_resume_recap(prior)
+        if recap.strip():
+            messages.append({"role": "user", "content": recap})
+            messages.append({"role": "assistant", "content": (
+                "Understood — I have my earlier findings and the tool "
+                "outputs they produced. Continuing from there.")})
+    messages.append({"role": "user", "content": prompt})
 
     final_text_parts: list[str] = []
     tool_calls_seen: list[dict] = []
@@ -651,6 +690,21 @@ def run_subagent(
                     "name": event.tool_name,
                     "input": event.tool_input,
                 })
+            elif event.type == "tool_result":
+                # Attach the output to the most recent tool call still
+                # missing one (preserves what the subagent actually saw).
+                _attached = False
+                for tc in reversed(tool_calls_seen):
+                    if "output" not in tc:
+                        tc["output"] = event.tool_output
+                        _attached = True
+                        break
+                if not _attached:
+                    tool_calls_seen.append({
+                        "name": event.tool_name or "?",
+                        "input": "",
+                        "output": event.tool_output,
+                    })
             elif event.type == "message_delta":
                 in_tokens = max(in_tokens, event.input_tokens)
                 out_tokens = max(out_tokens, event.output_tokens)
@@ -690,17 +744,25 @@ def run_subagent(
         error = "sub-agent returned no text"
     elapsed_s = time.monotonic() - t0
     # Persist the conversation so the parent can resume this subagent
-    # later via ``resume_id`` (Claude-Code SendMessage analog).
+    # later via ``resume_id`` (Claude-Code SendMessage analog). Store the
+    # LOGICAL conversation (clean user/assistant turns) + the tool
+    # interactions WITH outputs, accumulating across resumes — decoupled
+    # from the recap-laden ``messages`` actually sent to the model.
+    prior_messages = [
+        {"role": m.get("role", ""), "content": m.get("content", "")}
+        for m in (prior.get("messages") or [])
+        if m.get("role") in ("user", "assistant")
+    ]
+    this_round = [{"role": "user", "content": prompt}]
+    if final_text:
+        this_round.append({"role": "assistant", "content": final_text})
+    all_interactions = (prior.get("interactions") or []) + tool_calls_seen
     _save_subagent_session(
         _sa_id,
         subagent_type=subagent_type,
         description=description,
-        messages=(
-            [m for m in messages if m.get("role") in ("user", "assistant")]
-            + ([{"role": "assistant", "content": final_text}]
-               if final_text else [])
-        ),
-        tool_calls=tool_calls_seen,
+        messages=prior_messages + this_round,
+        interactions=all_interactions,
         error=error,
     )
     # Persist a telemetry record so the dashboard /agents stats command

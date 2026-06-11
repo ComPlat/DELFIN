@@ -83,7 +83,9 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   at session end (auto-memory; one small LLM call, default OFF).
 - The agent can delegate to subagents (live panel in the dashboard;
   background runs supported). A finished subagent can be CONTINUED
-  with its context intact via its sa_id — /agents lists recent ones.
+  with its context intact via its sa_id — including the actual tool
+  outputs it saw earlier, not just its text conclusions — so a follow-up
+  builds on real evidence. /agents lists recent ones.
 
 6) WHEN SOMETHING GOES WRONG
 ----------------------------
