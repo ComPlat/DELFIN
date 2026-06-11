@@ -134,7 +134,10 @@ def test_mask_empty_value_returns_empty():
     assert cred.mask("") == ""
 
 
-def test_list_credentials_returns_masked_values(store_path):
+def test_list_credentials_returns_masked_values(store_path, monkeypatch):
+    # The host environment may legitimately export this key (e.g. on the
+    # cluster) — remove it so the file-source assertion is deterministic.
+    monkeypatch.delenv("KIT_TOOLBOX_API_KEY", raising=False)
     cred.set_credential("KIT_TOOLBOX_API_KEY", "sk-kitabcdefghij", path=store_path)
     items = cred.list_credentials(path=store_path)
     assert "KIT_TOOLBOX_API_KEY" in items

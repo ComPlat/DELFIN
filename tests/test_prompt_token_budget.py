@@ -20,11 +20,17 @@ def _estimate_tokens(text: str) -> int:
     return (len(text) + 3) // 4
 
 
+# Budgets reflect the post-P4 prompts (verify-enforcement, the 8-pattern
+# playbook, ORCA-builder grounding docs were all deliberate additions
+# after the original S2 slim-down) with ~8% headroom, so any further
+# creep fails immediately. A deliberate "prompt diet" — trimming these
+# back down WITH benchmark validation — is on the backlog; shrink the
+# budgets again when it lands.
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
-        ("dashboard_agent.md", 3000),
-        ("solo_agent.md", 4000),
+        ("dashboard_agent.md", 7500),
+        ("solo_agent.md", 13800),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
@@ -40,15 +46,21 @@ def test_role_prompt_within_token_budget(filename, max_tokens):
 
 
 def test_dashboard_prompt_keeps_essential_sections():
-    """Slimmed prompt must still cover the irreducible safety + tool basics."""
+    """The prompt must keep the irreducible safety + grounding sections.
+
+    The list pins TODAY's intentional design (dashboard mode is
+    guide+UI only since 3a2c802; ORCA claims must be grounded in the
+    manual since P4) — update it consciously when the design changes,
+    never to silence a failure.
+    """
     text = (_PROMPT_DIR / "dashboard_agent.md").read_text()
     must_have = [
-        "ACTION:",                              # how commands work
-        "Safety rules",                         # safety policy
-        "agent_workspace",                      # where Write/Bash are allowed
-        "Mutating MCP-ops calls",               # explicit allow_mutate gate
-        "Background tasks — anti-stall rule",   # learnt-the-hard-way rule
-        "Live state",                           # tells agent to read injected state
+        "ACTION:",                       # how commands work
+        "Safety rules",                  # safety policy
+        "Hard scope limits",             # guide+UI-only contract (3a2c802)
+        "Ground every ORCA",             # manual-grounding rule (P4)
+        "Tools you may NOT use",         # forbidden tool surface
+        "agent_workspace",               # spelled out as NOT available
     ]
     missing = [k for k in must_have if k not in text]
     assert not missing, f"essential sections dropped: {missing}"

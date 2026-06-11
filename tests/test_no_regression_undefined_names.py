@@ -101,6 +101,11 @@ def _iter_delfin_modules():
             dotted = ".".join(py.parent.relative_to(_ROOT).parts)
         else:
             dotted = ".".join(py.relative_to(_ROOT).with_suffix("").parts)
+        # Paths with non-identifier components (e.g. untracked tool build
+        # dirs like qm_tools/build/std2-v2.0.1/) can never be imported as
+        # modules — they are filesystem artifacts, not delfin code.
+        if not all(part.isidentifier() for part in dotted.split(".")):
+            continue
         yield dotted, py
 
 
