@@ -1678,6 +1678,9 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         if not isinstance(seq_value, list):
             errors.append(f"{label} must be a list of mappings")
             return
+        seen_indices: dict[int, int] = {}  # index value -> first 1-based position
+        valid_indices: set[int] = set()    # all well-formed index values present
+        parsed_entries: list[tuple[int, Mapping, int]] = []  # (pos, item, index)
         for idx, item in enumerate(seq_value, start=1):
             if not isinstance(item, Mapping):
                 errors.append(f"{label}[{idx}] must be a mapping")
@@ -1686,10 +1689,53 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
                 errors.append(f"{label}[{idx}] must define 'index' and 'm'")
                 continue
             try:
-                int(item["index"])
+                index_value = int(item["index"])
                 int(item["m"])
             except Exception:  # noqa: BLE001
                 errors.append(f"{label}[{idx}] has non-integer 'index' or 'm'")
+                continue
+            # 'index' becomes the FoB job id (initial_fob_<index>); duplicates
+            # collide at runtime ("Duplicate workflow job id"). Reject upfront.
+            if index_value in seen_indices:
+                errors.append(
+                    f"{label}[{idx}] has duplicate 'index' {index_value} "
+                    f"(already used by {label}[{seen_indices[index_value]}]); "
+                    f"each entry needs a unique index"
+                )
+            else:
+                seen_indices[index_value] = idx
+            valid_indices.add(index_value)
+            parsed_entries.append((idx, item, index_value))
+
+        # 'from' wires each FoB to its parent geometry. A reference to a missing
+        # index is silently dropped at runtime (the FoB then starts without its
+        # parent geometry); a self-reference deadlocks the job. 0/empty means
+        # root (no parent). Catch typos here before the run starts.
+        for idx, item, index_value in parsed_entries:
+            if "from" not in item:
+                continue
+            raw_from = item["from"]
+            if raw_from in (None, "", 0, "0"):
+                continue  # root entry — no parent
+            if isinstance(raw_from, (list, tuple, set)):
+                tokens = list(raw_from)
+            else:
+                tokens = [t for t in re.split(r"[;,|]", str(raw_from)) if t.strip()]
+            for token in tokens:
+                try:
+                    ref = int(str(token).strip())
+                except (TypeError, ValueError):
+                    errors.append(f"{label}[{idx}] has non-integer 'from' value {token!r}")
+                    continue
+                if ref <= 0:
+                    continue  # 0/negative is the root sentinel, ignored at runtime
+                if ref == index_value:
+                    errors.append(f"{label}[{idx}] 'from' {ref} refers to itself")
+                elif ref not in valid_indices:
+                    errors.append(
+                        f"{label}[{idx}] 'from' {ref} refers to an unknown index "
+                        f"(no entry with index {ref} in {label})"
+                    )
 
     # ensure electron sequences have expected structure if present
     for seq_key in ("even_seq", "odd_seq"):
