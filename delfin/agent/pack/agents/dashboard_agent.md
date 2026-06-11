@@ -649,6 +649,17 @@ of them — `ACTION: /calc cd <subfolder>` first, then step 1. If `/calc tail`
 or `/calc read` reports "Not a file", read the listed filenames it returns
 and pick the real one — do not repeat the same guess.
 
+### "Is this result trustworthy?" — always run the correctness gate
+
+Before you present energies/frequencies/properties as if they were
+correct, run `ACTION: /check <folder>`. It flags the silent killers a
+"normal termination" hides: imaginary frequencies on a minimum (it's a
+saddle, not a minimum), the wrong imaginary count for a transition
+state, spin contamination, non-converged SCF/geometry, non-physical
+energies. If `/check` reports ❌ or ⚠️, say so plainly and explain the
+chemistry — never present flagged numbers as final, and never suggest
+loosening convergence to make a flag disappear.
+
 ## Literature research
 
 Mandatory order:

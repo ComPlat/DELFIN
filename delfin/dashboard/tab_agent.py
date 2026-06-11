@@ -1184,6 +1184,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Analysis", "/analyze energy", "Extract Gibbs/ZPE/electronic energies", True),
     ("Analysis", "/analyze convergence", "Check SCF convergence", True),
     ("Analysis", "/analyze errors", "Scan for ORCA error patterns", True),
+    ("Analysis", "/check", "Scientific-correctness gate (imag freqs, spin, convergence)", True),
     ("Analysis", "/analyze status", "Overview of all calc folders", False),
     # Recalc / cancel (destructive — confirmations enforced)
     ("Recalc", "/recalc check", "Check if recalc needed (safe)", True),
@@ -9528,9 +9529,39 @@ def create_tab(ctx):
             if not target.is_dir():
                 _append_system_message(f"Not a directory: {folder}")
                 return True
-            # Run all three: energy + convergence + errors
+            # Run all three: energy + convergence + errors, then the
+            # scientific-correctness critic (the value-add over raw numbers).
             for sub_cmd in [f"/analyze energy {folder}", f"/analyze convergence {folder}", f"/analyze errors {folder}"]:
                 _handle_slash_command(sub_cmd)
+            _handle_slash_command(f"/check {folder}".rstrip())
+            return True
+
+        # /check [folder] — scientific-correctness gate over a folder's
+        # .out files: imaginary frequencies, spin contamination, SCF/geom
+        # convergence, energy sanity. Reports only; never edits or weakens
+        # convergence. Reuses DELFIN's own parsers (imag/parser/energies).
+        if cmd == "/check" or cmd.startswith("/check "):
+            folder = text[len("/check"):].strip()
+            target = _resolve_calc_path(folder)
+            if not target.is_dir():
+                _append_system_message(_file_not_found_hint(folder, target)
+                                       if folder else "No calc folder selected.")
+                return True
+            try:
+                from delfin.agent.result_critic import critique_folder, format_report
+                by_file = critique_folder(target)
+            except Exception as exc:
+                _append_system_message(f"Correctness scan failed: {exc}")
+                return True
+            if not by_file:
+                _append_system_message(
+                    f"No .out files to check in calc/"
+                    f"{target.relative_to(ctx.calc_dir) if target != ctx.calc_dir else '.'}.")
+                return True
+            _append_system_message(
+                f"🔬 Correctness check — calc/"
+                f"{target.relative_to(ctx.calc_dir) if target != ctx.calc_dir else '.'}:"
+                + format_report(by_file))
             return True
 
         # -- Recalc (check = SAFE, submit = CONFIRMATION REQUIRED) -----------
@@ -10503,7 +10534,7 @@ def create_tab(ctx):
         # filesystem paths ("/home/user/file") or URLs.
         _KNOWN_SLASH_PREFIXES = frozenset((
             "/tab", "/control", "/orca", "/submit", "/recalc", "/cancel",
-            "/calc", "/analyze", "/jobs", "/ui", "/workspace",
+            "/calc", "/analyze", "/check", "/jobs", "/ui", "/workspace",
             "/done",
         ))
         _ACTION_RE = _re.compile(
@@ -11620,7 +11651,7 @@ def create_tab(ctx):
             "/session", "/mcp", "/commands", "/init", "/bash", "/failures",
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
-            "/recalc", "/cancel", "/context", "/agents", "/skills",
+            "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
         }
         # User-defined slash commands and skill expansion: when /<name>
         # doesn't match a built-in slash command, first look in the

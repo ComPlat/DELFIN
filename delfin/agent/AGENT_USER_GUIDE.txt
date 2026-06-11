@@ -41,6 +41,7 @@ Then just talk to it like a colleague:
                             (casscf-setup, diagnose-failed-run, ...)
     /skills pull            install the team's shared skills
     /watch add <jobid> <dir>  watch a SLURM job; /watch start = daemon
+    /check [folder]         correctness gate: imag freqs, spin, convergence
     /bugs                   list bug reports; 🐞 button files a new one
     /session ls             list / load saved sessions (🚨 = diagnoses)
     /session handoff new    start a fresh session seeded with a brief
