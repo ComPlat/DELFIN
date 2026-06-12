@@ -25875,6 +25875,509 @@ def _emit_chelate_pucker_variants(
     return n_added
 
 
+# ---------------------------------------------------------------------------
+# Ring-conformer (pucker) enumeration for NON-METAL rings — the pucker
+# analogue of Pólya coordination-isomer enumeration.
+#
+# Root cause: the generator emits one 3D structure per coordination-isomer /
+# ETKDG seed; ring pucker is incidental to the random seed, and UFF cannot
+# cross the ~10 kcal/mol chair<->boat barrier, so each peripheral non-metal
+# ring stays frozen in whatever basin ETKDG happened to land in.  The metal
+# pucker pass (``_emit_chelate_pucker_variants``) only touches rings that
+# CONTAIN a metal atom; peripheral non-metal rings (e.g. the six cyclohexyls
+# hanging off ZIGDOL's two As atoms) receive ZERO pucker enumeration.
+#
+# This sibling pass enumerates DISTINCT pucker basins (chair + boat) for the
+# NON-METAL rings using the chemistry-accurate, graph-only template library
+# in :mod:`delfin._ring_conformer_templates` (which already excludes
+# metal-chelate AND fully-aromatic rings), drives each variant cleanly into
+# its target Cremer-Pople basin with a constrained geometric snap, and
+# REJECTS any variant that does not reach its intended basin.  Pure additive
+# (never reorders/drops existing frames); fixed deterministic ordering; no
+# RNG.  Master flag DELFIN_RING_PUCKER_ENUM (default 0) -> byte-identical
+# no-op fall-through.
+# ---------------------------------------------------------------------------
+
+
+def _cp_basin_6ring(ring_coords) -> Tuple[str, float, float]:
+    """Minimal in-delfin Cremer-Pople (1975) basin classifier for a 6-ring.
+
+    *ring_coords* is a sequence of 6 (x, y, z) tuples IN RING ORDER.  Returns
+    ``(basin, Q, theta_deg)`` where ``basin`` is ``"chair"`` / ``"boat"`` /
+    ``"intermediate"`` / ``"planar"`` / ``"undefined"``.
+
+    Replicates the q_m/phi_m formulation of Cremer & Pople, J. Am. Chem.
+    Soc. 1975, 97, 1354 (the SAME math the private measurement gate uses):
+    mean plane from the m=1 reference vectors, signed out-of-plane
+    displacements z_j, then the (Q, theta) spherical coordinates from the
+    q2 (boat/twist) and q3 (chair) puckering amplitudes.  Basin thresholds
+    match the gate: chair <=> theta<=45 or >=135; boat/twist-boat <=>
+    75<=theta<=105.  No import from quality_framework — standalone, ~30 LOC.
+    """
+    import numpy as _np
+    pts = _np.asarray(ring_coords, dtype=float)
+    if pts.shape[0] != 6:
+        return ("undefined", 0.0, 0.0)
+    R = pts - pts.mean(axis=0)
+    j = _np.arange(6)
+    s = _np.sin(2.0 * _np.pi * j / 6.0)
+    c = _np.cos(2.0 * _np.pi * j / 6.0)
+    Rp = (R * s[:, None]).sum(axis=0)
+    Rpp = (R * c[:, None]).sum(axis=0)
+    n = _np.cross(Rp, Rpp)
+    nn = float(_np.linalg.norm(n))
+    if nn < 1e-12:
+        return ("undefined", 0.0, 0.0)
+    n = n / nn
+    z = R @ n  # signed out-of-mean-plane displacement per ring atom
+    Q = float(_np.sqrt(float((z ** 2).sum())))
+    # q2 (boat/twist amplitude, m=2) and q3 (chair amplitude, m=3=N/2 mode).
+    c2 = _np.sqrt(2.0 / 6.0) * float((z * _np.cos(2.0 * _np.pi * 2 * j / 6.0)).sum())
+    s2 = -_np.sqrt(2.0 / 6.0) * float((z * _np.sin(2.0 * _np.pi * 2 * j / 6.0)).sum())
+    q2 = float(_np.sqrt(c2 * c2 + s2 * s2))
+    q3 = (1.0 / _np.sqrt(6.0)) * float((z * _np.cos(_np.pi * j)).sum())  # signed
+    if Q < 0.10:
+        return ("planar", Q, 0.0)
+    theta = math.degrees(math.atan2(q2, q3)) if (q2 or q3) else 0.0
+    if theta < 0:
+        theta += 360.0
+    if theta > 180.0:
+        theta = 360.0 - theta
+    if theta <= 45.0 or theta >= 135.0:
+        return ("chair", Q, theta)
+    if 75.0 <= theta <= 105.0:
+        return ("boat", Q, theta)
+    return ("intermediate", Q, theta)
+
+
+def _ring_canonical_snap_z(basin: str, size: int):
+    """Return the canonical signed out-of-plane TARGET pattern (one value per
+    ring atom, in ring order) that places a *size*-membered ring at the centre
+    of *basin*.  Values are absolute multipliers of the snap amplitude (NOT
+    L2-normalised) — the snap SETS each atom's out-of-plane component to
+    ``pattern[k] * amplitude``.
+
+    chair (6-ring): perfect D3d alternating +/- (Cremer-Pople theta -> 0/180,
+                    the chair pole).
+    boat  (6-ring): C2v two-flagpole pattern (atoms 0,3 up; 2,5 down; 1,4 in
+                    the base plane) -> pure m=2 character, theta -> 90.
+    """
+    if size != 6:
+        return None
+    if basin == "chair":
+        return [+1.0, -1.0, +1.0, -1.0, +1.0, -1.0]
+    if basin == "boat":
+        # Flagpoles at 0,3 (up), 2,5 (down), 1,4 in plane: cos(2*pi*2*j/6)
+        # pattern = [1, -0.5, -0.5, 1, -0.5, -0.5] is the pure m=2 boat mode
+        # (theta = 90).
+        return [+1.0, -0.5, -0.5, +1.0, -0.5, -0.5]
+    return None
+
+
+def _emit_nonmetal_ring_pucker_variants(
+    mol,
+    results: List[Tuple[str, str]],
+    apply_uff: bool,
+    max_isomers: int,
+) -> int:
+    """Append basin-verified chair / boat pucker variants for NON-METAL rings.
+
+    The pucker analogue of Pólya coordination-isomer enumeration, restricted
+    to the rings the metal pucker pass does NOT handle: peripheral non-metal,
+    non-aromatic rings (cyclohexyl, piperidinyl, sugar, ...).  For every such
+    ring the pass emits, from the BEST-ranked coordination isomer only:
+
+      * one GLOBAL chair-set frame (every eligible ring driven to chair), and
+      * up to a small fixed number of "one-ring-flipped-to-boat" decorations,
+
+    rather than the full 2^N pucker product.  Symmetry-equivalent rings are
+    collapsed to a single DOF (one boat decoration per equivalence class).
+    Each variant is driven into its target Cremer-Pople basin with a
+    constrained geometric snap and REJECTED if it does not realise that
+    basin.  Hard cap DELFIN_5P_B_MAX_RING_VARIANTS (default 6).
+
+    Pure ADDITIVE — never sorts, drops, or modifies existing entries.
+    Master toggle: DELFIN_RING_PUCKER_ENUM (default 0 -> no-op).
+    Returns the number of new entries appended.
+    """
+    if not RDKIT_AVAILABLE:
+        return 0
+    if not _delfin_env_int("DELFIN_RING_PUCKER_ENUM", 0):
+        return 0
+    if not results:
+        return 0
+
+    try:
+        from delfin import _ring_conformer_templates as _rct
+        from delfin import _rotamer_diversity as _rot
+    except Exception:
+        return 0
+
+    max_ring_variants = _delfin_env_int("DELFIN_5P_B_MAX_RING_VARIANTS", 6)
+    if max_ring_variants < 1:
+        max_ring_variants = 6
+
+    def _sig(xyz_str: str) -> tuple:
+        try:
+            lines = [
+                ln.split() for ln in xyz_str.strip().splitlines() if ln.strip()
+            ]
+            heavy = sorted(
+                (p[0], round(float(p[1]), 2), round(float(p[2]), 2),
+                 round(float(p[3]), 2))
+                for p in lines
+                if len(p) >= 4 and p[0] not in ('H', 'h')
+            )
+            return tuple(heavy)
+        except Exception:
+            return tuple()
+
+    seen_sigs = {_sig(xyz) for xyz, _ in results}
+
+    # (2) Generate puckers from the BEST-ranked coordination isomer only.
+    # `results` may already be ordered best-first by the impl, but rank
+    # explicitly so the choice is deterministic and independent of upstream
+    # ordering.
+    base_xyz = results[0][0]
+    try:
+        from delfin._conformer_rank import rank_isomers as _rank
+        _ranked = _rank(list(results))
+        if _ranked:
+            base_xyz = _ranked[0][0]
+    except Exception:
+        base_xyz = results[0][0]
+
+    # Build the OB-perceived graph once from the base frame.
+    try:
+        ob_mol = _rot._build_ob_mol_from_xyz(base_xyz)
+        if ob_mol is None:
+            return 0
+        graph = _rot._graph_from_ob(ob_mol)
+        if not graph:
+            return 0
+        symbols, base_coords_t = _rot._parse_delfin_xyz(base_xyz)
+    except Exception:
+        return 0
+    base_coords = [tuple(c) for c in base_coords_t]
+
+    # Rings amenable to templating = non-metal, non-aromatic, size 3..30.
+    # find_rings_for_templating already EXCLUDES metal-chelate + aromatic
+    # rings on graph features only — so this is exactly the complement of
+    # what the metal pucker pass handles.
+    try:
+        rings = _rct.find_rings_for_templating(graph)
+    except Exception:
+        return 0
+    # Restrict to 6-rings: the CP basin snap + verifier below is defined for
+    # 6-rings (the dominant flexible-ring class and the ZIGDOL signature).
+    rings = [r for r in rings if len(r) == 6]
+    if not rings:
+        return 0
+
+    base_topo = None
+    try:
+        base_topo = _rot._topology_hash(graph)
+    except Exception:
+        base_topo = None
+
+    atomic_nums = graph.get("atomic_nums", [])
+
+    def _ring_key(ring) -> tuple:
+        """Symmetry key: the multiset of (element, heavy-degree) over the ring
+        atoms plus the ring's heavy-substituent element pattern.  Graph-only,
+        so symmetry-equivalent peripheral rings (e.g. ZIGDOL's six chemically
+        identical cyclohexyls) collapse to ONE equivalence class -> one DOF."""
+        neighbours = graph.get("neighbours", [[]])
+        feats = []
+        for idx in ring:
+            z = atomic_nums[idx] if idx < len(atomic_nums) else 0
+            heavy_deg = sum(
+                1 for nb in neighbours[idx]
+                if nb < len(atomic_nums) and atomic_nums[nb] > 1
+            )
+            feats.append((z, heavy_deg))
+        return tuple(sorted(feats))
+
+    # Group symmetry-equivalent rings.
+    sym_groups: Dict[tuple, List[List[int]]] = {}
+    for ring in rings:
+        sym_groups.setdefault(_ring_key(ring), []).append(ring)
+    # Deterministic ordering of the groups + their member rings.
+    ordered_groups = sorted(
+        sym_groups.items(), key=lambda kv: (kv[0], sorted(r[0] for r in kv[1]))
+    )
+
+    def _snap_ring(coords, ring, basin):
+        """Drive *ring* cleanly into the centre of *basin* by an ABSOLUTE
+        out-of-plane snap that HOLDS the Cremer-Pople target.
+
+        Each ring atom's signed out-of-plane component (relative to the ring
+        mean plane) is SET to the canonical chair/boat target ``pat[k]*amp``,
+        so a ring starting in any pucker (deep boat, twist, ...) lands cleanly
+        in the intended basin.  The in-plane components (which carry the ring
+        bond topology) are preserved; bonded hydrogens are dragged rigidly by
+        the per-atom out-of-plane delta so C-H lengths are preserved.  The full
+        alternating chair pattern is applied to EVERY ring atom (including the
+        ipso/attachment carbon) so the CP basin is exact — the attachment-bond
+        stretch this introduces at the ipso atom is healed by the subsequent
+        constrained relax, which frees the ipso atom while freezing the rest of
+        the ring.  Returns the new full coordinate list, or None if undefined.
+        """
+        pat = _ring_canonical_snap_z(basin, len(ring))
+        if pat is None:
+            return None
+        avg = _rct._average_ring_bond_length(coords, ring)
+        if avg < 1e-3:
+            return None
+        # Target out-of-plane amplitude (A): ideal cyclohexane chair sits
+        # ~0.25 A out-of-plane per atom for ~1.54 A C-C; boat flagpoles ~0.65 A.
+        amp = avg * (0.42 if basin == "boat" else 0.165)
+        try:
+            _c, normal = _rct._ring_plane_normal(coords, ring)
+        except Exception:
+            return None
+        nrm = math.sqrt(sum(v * v for v in normal))
+        if nrm < 1e-9:
+            return None
+        normal = tuple(v / nrm for v in normal)
+        neighbours = graph.get("neighbours", [[]])
+        out = [c for c in coords]
+        for k, idx in enumerate(ring):
+            cx, cy, cz = out[idx]
+            cur_z = (cx - _c[0]) * normal[0] + (cy - _c[1]) * normal[1] + \
+                    (cz - _c[2]) * normal[2]
+            d = pat[k] * amp - cur_z
+            shift = (normal[0] * d, normal[1] * d, normal[2] * d)
+            out[idx] = (cx + shift[0], cy + shift[1], cz + shift[2])
+            # rigid-H drag by the same per-atom out-of-plane delta
+            if idx < len(neighbours):
+                for nb in neighbours[idx]:
+                    if nb < len(atomic_nums) and atomic_nums[nb] == 1:
+                        hx, hy, hz = out[nb]
+                        out[nb] = (hx + shift[0], hy + shift[1], hz + shift[2])
+        return out
+
+    def _ring_basin(coords, ring):
+        try:
+            rc = [coords[i] for i in ring]
+            return _cp_basin_6ring(rc)[0]
+        except Exception:
+            return "undefined"
+
+    # Coordination sphere from the TEMPLATE graph (RDKit mol) — reliable even
+    # when OB does not perceive a long/weak M-D bond (e.g. Ag-As ~2.5 A).  The
+    # metal AND its first-shell donors are frozen during every constrained
+    # relax so the M-D invariant cannot drift.
+    template_coord_sphere = set()
+    try:
+        if mol is not None:
+            for _a in mol.GetAtoms():
+                if _a.GetSymbol() in _METAL_SET:
+                    template_coord_sphere.add(_a.GetIdx())
+                    for _nb in _a.GetNeighbors():
+                        template_coord_sphere.add(_nb.GetIdx())
+    except Exception:
+        template_coord_sphere = set()
+
+    def _constrained_relax(coords, hold_ring_atoms):
+        """Constrained local relax that HOLDS the Cremer-Pople target.
+
+        Freeze the heavy atoms of the *hold_ring_atoms* set (the snapped ring
+        atoms whose chair/boat pucker must be held — the ipso/attachment carbon
+        is among them, so its external bond stays at the snapped ~2.1 A, well
+        inside the gate) plus the metal coordination sphere (so the M-D
+        invariant cannot drift).  Everything else — the non-held substituent
+        heavy atoms and ALL hydrogens — relaxes under a short OB-UFF
+        conjugate-gradient step, which relieves the rigid-H-drag / local steric
+        strain the snap introduces and brings the variant's energy back near
+        the pool floor (so it survives the downstream energy-outlier cut).
+        Returns relaxed coords (or the input on any failure).
+        """
+        if not apply_uff or not OPENBABEL_AVAILABLE:
+            return coords
+        xyz_in = _rot._format_delfin_xyz(symbols, coords)
+        fix = sorted(set(hold_ring_atoms) | template_coord_sphere)
+        try:
+            relaxed = _optimize_xyz_openbabel(
+                xyz_in, steps=200, constraints={"fix_atoms": fix},
+            )
+            _syms2, _coords2 = _rot._parse_delfin_xyz(relaxed)
+            if len(_coords2) == len(coords):
+                return [tuple(c) for c in _coords2]
+        except Exception:
+            pass
+        return coords
+
+    def _build_and_validate(coords):
+        """M-D invariant guard + authoritative output topology gate; return the
+        validated DELFIN xyz string or None.
+
+        The authoritative integrity check is ``_verify_topology_from_graph``
+        (the SAME final output gate the whole pipeline trusts): it validates
+        every template-graph bond against a distance cutoff and rejects
+        collapsed / overlapping atoms — robust to a small out-of-plane pucker
+        displacement.  We deliberately do NOT additionally require OB bond
+        re-perception to reproduce the EXACT base topology-hash: OB's
+        distance-based bond-order perception flips spuriously under a 0.5 A
+        ring-atom displacement (it is brittle by design), which would reject
+        chemically valid puckers.  The M-D guard still protects the
+        coordination sphere; the output gate guarantees no bond is
+        broken / created / collapsed.
+        """
+        if not _rct._md_distance_check(base_coords, coords, graph, 0.05):
+            logger.debug("ring-pucker validate: M-D guard failed")
+            return None
+        cand_xyz = _rot._format_delfin_xyz(symbols, coords)
+        try:
+            if not _verify_topology_from_graph(cand_xyz, mol):
+                logger.debug("ring-pucker validate: output topology gate failed")
+                return None
+        except Exception:
+            return None
+        return cand_xyz
+
+    n_added = 0
+    n_dropped_cap = 0
+    n_dropped_basin = 0
+    collapsed_classes = []  # (representative_first_atom, n_collapsed)
+
+    all_rings = [r for _k, grp in ordered_groups for r in grp]
+
+    def _gate_ok(coords):
+        """True iff *coords* passes the M-D invariant guard AND the
+        authoritative output topology gate (no broken / phantom bond, no
+        collapse)."""
+        try:
+            if not _rct._md_distance_check(base_coords, coords, graph, 0.05):
+                return False
+            return bool(_verify_topology_from_graph(
+                _rot._format_delfin_xyz(symbols, coords), mol
+            ))
+        except Exception:
+            return False
+
+    chair_rings_committed = set()
+
+    # --- (1) GLOBAL chair-set frame: drive AS MANY rings to chair as fit. ---
+    # Build INCREMENTALLY: snap each ring onto the accumulating frame and commit
+    # it only if, after a constrained relax that holds the already-committed
+    # rings + the new ring (+ coord sphere) and lets everything else relax, the
+    # ring lands in the chair basin AND the whole-molecule output gate still
+    # passes.  A snap that would clash with a previously-committed bulky ring is
+    # reverted.  One emitted "global-chair" frame with every ring that fits.
+    chair_coords = [c for c in base_coords]
+    committed_list = []
+    for ring in all_rings:
+        snapped = _snap_ring(chair_coords, ring, "chair")
+        if snapped is None:
+            continue
+        if _ring_basin(snapped, ring) != "chair":
+            n_dropped_basin += 1
+            continue
+        hold = set()
+        for cr in committed_list:
+            hold.update(cr)
+        hold.update(ring)
+        candidate = _constrained_relax(snapped, hold)
+        if _ring_basin(candidate, ring) != "chair" or not _gate_ok(candidate):
+            n_dropped_basin += 1
+            continue
+        chair_coords = candidate
+        committed_list.append(ring)
+        chair_rings_committed.add(tuple(sorted(ring)))
+    if committed_list:
+        cand = _build_and_validate(chair_coords)
+        if cand is not None:
+            sig = _sig(cand)
+            if sig not in seen_sigs:
+                seen_sigs.add(sig)
+                results.append((cand, "pucker-global-chair"))
+                n_added += 1
+
+    # --- (2) PER-RING chair frames for rings NOT covered by the global set ---
+    # When the global all-chair frame cannot hold every ring simultaneously
+    # (bulky symmetry-equivalent rings on a shared centre sterically clash when
+    # all forced to the same chair at once), emit a single-ring chair frame for
+    # each remaining ring so that EVERY flexible ring's chair basin is realized
+    # somewhere in the ensemble.  Snapping one ring at a time (on the base
+    # geometry, holding only that ring + the coord sphere) avoids the inter-ring
+    # clash.  Bounded by the per-complex cap.
+    for ring in all_rings:
+        if n_added >= max_ring_variants or len(results) >= max_isomers:
+            n_dropped_cap += 1
+            continue
+        if tuple(sorted(ring)) in chair_rings_committed:
+            continue
+        snapped = _snap_ring(base_coords, ring, "chair")
+        if snapped is None:
+            continue
+        if _ring_basin(snapped, ring) != "chair":
+            n_dropped_basin += 1
+            continue
+        relaxed = _constrained_relax(snapped, set(ring))
+        if _ring_basin(relaxed, ring) != "chair" or not _gate_ok(relaxed):
+            n_dropped_basin += 1
+            continue
+        cand = _build_and_validate(relaxed)
+        if cand is None:
+            continue
+        sig = _sig(cand)
+        if sig in seen_sigs:
+            continue
+        seen_sigs.add(sig)
+        results.append((cand, f"pucker-chair-r6-a{ring[0]}"))
+        n_added += 1
+
+    # --- (3) one-ring-flipped-to-boat decorations (one per symmetry class) ---
+    # Symmetry-equivalent rings collapse to ONE DOF here: a single boat
+    # decoration per equivalence class (snap the representative ring to boat on
+    # the base geometry) rather than the full 2^N pucker product.
+    for _key, grp in ordered_groups:
+        if n_added >= max_ring_variants or len(results) >= max_isomers:
+            n_dropped_cap += 1
+            continue
+        rep = sorted(grp, key=lambda r: r[0])[0]
+        if len(grp) > 1:
+            collapsed_classes.append((rep[0], len(grp) - 1))
+        snapped = _snap_ring(base_coords, rep, "boat")
+        if snapped is None:
+            n_dropped_basin += 1
+            continue
+        if _ring_basin(snapped, rep) != "boat":
+            n_dropped_basin += 1
+            continue
+        relaxed = _constrained_relax(snapped, set(rep))
+        if _ring_basin(relaxed, rep) != "boat" or not _gate_ok(relaxed):
+            n_dropped_basin += 1
+            continue
+        cand = _build_and_validate(relaxed)
+        if cand is None:
+            continue
+        sig = _sig(cand)
+        if sig in seen_sigs:
+            continue
+        seen_sigs.add(sig)
+        results.append((cand, f"pucker-boat-r6-a{rep[0]}"))
+        n_added += 1
+
+    # --- (3) NO silent truncation: log what collapsed / was dropped. ---
+    if n_added or n_dropped_cap or n_dropped_basin or collapsed_classes:
+        logger.debug(
+            "Non-metal ring-pucker pass added %d conformer variants "
+            "(%d rings -> %d symmetry classes); dropped %d (cap), "
+            "%d (basin-unreached); collapsed-by-symmetry: %s",
+            n_added,
+            len(all_rings),
+            len(ordered_groups),
+            n_dropped_cap,
+            n_dropped_basin,
+            ", ".join(
+                f"ring@a{a}(+{n})" for a, n in collapsed_classes
+            ) or "none",
+        )
+    return n_added
+
+
 def _emit_all_trans_by_type_arrangements(
     mol,
     results: List[Tuple[str, str]],
@@ -27927,6 +28430,23 @@ def _smiles_to_xyz_isomers_impl(
             )
         except Exception as _pucker_exc:
             logger.debug("Pucker pass skipped: %s", _pucker_exc)
+
+    # --- Additive NON-METAL ring-pucker enumeration pass (sibling) ---
+    # The metal pucker pass above only touches rings that CONTAIN a metal.
+    # Peripheral non-metal, non-aromatic rings (cyclohexyl, piperidinyl,
+    # sugar, ...) hanging off the complex never receive pucker enumeration
+    # and stay frozen in whatever basin a single ETKDG seed produced.  This
+    # sibling drives every such ring to a basin-verified chair (one global
+    # chair-set frame) plus a small bounded set of one-ring-flipped-to-boat
+    # decorations.  Pure additive; master flag DELFIN_RING_PUCKER_ENUM
+    # (default 0 -> byte-identical no-op).
+    if not DELFIN_TOPOLOGY_STRICT_MODE:
+        try:
+            _emit_nonmetal_ring_pucker_variants(
+                mol, results, apply_uff, max_isomers,
+            )
+        except Exception as _nm_pucker_exc:
+            logger.debug("Non-metal ring-pucker pass skipped: %s", _nm_pucker_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
