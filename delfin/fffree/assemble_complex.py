@@ -163,14 +163,71 @@ def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     return False
 
 
-def _orient_chelate_to_vertices(lP, donor_idxs, targets):
+def _canonical_arm_order(lg, dent):
+    """Return the chelate's donor-local indices reordered into a CANONICAL,
+    instance-independent arm order so that the enumerator's arm index `i`
+    refers to the SAME physical donor (by element) for every instance of a
+    ligand type.
+
+    Why this matters: ``decompose`` builds ``donor_local_idxs`` / ``donor_elems``
+    in raw SMILES atom order, so two chemically-identical asymmetric chelates
+    (e.g. an N,O-glycinate) can land with OPPOSITE arm ordering (one [O,N], the
+    other [N,O]).  ``enumerate_chelate_configs`` labels both as the SAME ligand
+    ``type`` and enumerates arm permutations assuming arm index `a` maps to a
+    fixed element.  If the assembly seats arm `a` -> ``donor_local_idxs[a]``
+    (raw order), the two instances interpret arm indices oppositely, so the
+    enumerated configs no longer biject onto the distinct element-stereoisomers:
+    some collapse to duplicates and others (the homo-trans ones) are never built
+    -> the ~42% coordination-isomer 3D-collapse.
+
+    Canonical order = sort donor arms by ``(element, original-local-index)`` so
+    the i-th arm is deterministic and element-consistent across instances —
+    matching the honest coverage detector's element-sorted arm convention.
+    Returns the reordered ``dons_d`` (length ``dent``); deterministic.  The
+    legacy raw order is restored byte-identically with
+    DELFIN_LEGACY_CHELATE_SEAT=1."""
+    dons = list(lg["donor_local_idxs"])[:dent]
+    if os.environ.get("DELFIN_LEGACY_CHELATE_SEAT", "0") == "1":
+        return dons
+    elems = lg.get("donor_elems") or [None] * len(dons)
+    elems = list(elems)[:dent]
+    try:
+        order = sorted(range(dent),
+                       key=lambda i: (str(elems[i]) if i < len(elems) else "",
+                                      int(dons[i])))
+        return [dons[i] for i in order]
+    except Exception:
+        return dons
+
+
+def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
-    donor directions best-fit the target vertex directions, then uniformly rescale
-    to the ideal M-donor distance.  Tries EVERY donor<->target correspondence and
-    keeps the lowest-residual Kabsch rotation, so a bi-/tri-dentate auto-seats on
-    the matching cis-edge / mer / fac vertex arrangement without the enumerator
-    needing to know it.  The ring geometry (backbone clears the metal) is preserved
-    as a rigid body.  Works for any denticity."""
+    donors seat onto the target vertex directions, then per-donor rescale to the
+    ideal M-donor distance.  The ring geometry (backbone clears the metal) is
+    preserved as a rigid body.  Works for any denticity.
+
+    CONFIG-FAITHFUL seating (default for ASYMMETRIC chelates; DELFIN_LEGACY_CHELATE_SEAT
+    unset): donor_idxs[i] (= the config's arm i) is seated on targets[i] in FIXED
+        correspondence (donor i -> target i), so the enumerated arm->vertex
+        assignment is realised exactly.  Without this, a Kabsch best-permutation
+        collapses every asymmetric-chelate config that differs only in arm seating
+        onto the SAME geometry (a duplicate) and never realises the homo-trans
+        configs (N-trans-N / O-trans-O / all-trans) -> ~42% of coordination
+        isomers are lost as 3D duplicates.  A single rigid Kabsch rotation onto the
+        fixed correspondence preserves the chelate's internal geometry (bite angle,
+        backbone) — it only chooses the orientation, never permutes/distorts.
+
+    SYMMETRIC chelates (``asym=False``, e.g. an all-S thioether crown or
+        ethylenediamine): ALL arm->vertex permutations are the SAME stereoisomer,
+        so the fixed correspondence gives no coverage benefit but can ADD ring
+        strain on a rigid (macrocyclic / tridentate) backbone.  These keep the
+        best-fit (lowest-residual permutation) seating — strictly better geometry,
+        coverage-neutral.  (Gate evidence: bis-kappa3 all-S crowns HUKMEF/AQADIF
+        went 0 -> 11 isolated-atom faults under forced seating; symmetric-scoping
+        removes that with no coverage loss.)
+
+    LEGACY seating (DELFIN_LEGACY_CHELATE_SEAT=1): always the best-fit permutation,
+        byte-identical to the pre-fix behaviour for the ON-vs-OFF gate / escape hatch."""
     dvecs = [np.asarray(lP[d], float) for d in donor_idxs]
     nrm = [float(np.linalg.norm(v)) for v in dvecs]
     if any(x < 1e-6 for x in nrm):
@@ -178,20 +235,40 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets):
     u = np.array([v / x for v, x in zip(dvecs, nrm)])
     Vt = [np.asarray(T, float) / np.linalg.norm(T) for T in targets]
     tgt_md = [float(np.linalg.norm(T)) for T in targets]
-    best = None
-    for perm in itertools.permutations(range(len(targets))):
-        Varr = np.array([Vt[p] for p in perm])
-        R = _kabsch_rot(u, Varr)
-        resid = float(np.sum((u @ R.T - Varr) ** 2))
-        if best is None or resid < best[0]:
-            best = (resid, R, perm)
-    Q = lP @ best[1].T
+    legacy = (os.environ.get("DELFIN_LEGACY_CHELATE_SEAT", "0") == "1"
+              or not asym)        # symmetric chelate -> best-fit (no isomer to lose)
+    if legacy:
+        best = None
+        for perm in itertools.permutations(range(len(targets))):
+            Varr = np.array([Vt[p] for p in perm])
+            R = _kabsch_rot(u, Varr)
+            resid = float(np.sum((u @ R.T - Varr) ** 2))
+            if best is None or resid < best[0]:
+                best = (resid, R, perm)
+        R = best[1]; perm = best[2]
+    else:
+        # config-faithful: fixed correspondence donor i -> target i (identity perm),
+        # one rigid proper-rotation Kabsch fit (no permutation search).  Falls back
+        # to the legacy best-fit on any numerical failure (never crashes).
+        try:
+            perm = tuple(range(len(targets)))
+            Varr = np.array([Vt[p] for p in perm])
+            R = _kabsch_rot(u, Varr)
+        except Exception:
+            best = None
+            for p_ in itertools.permutations(range(len(targets))):
+                Varr = np.array([Vt[p] for p in p_])
+                R_ = _kabsch_rot(u, Varr)
+                resid = float(np.sum((u @ R_.T - Varr) ** 2))
+                if best is None or resid < best[0]:
+                    best = (resid, R_, p_)
+            R = best[1]; perm = best[2]
+    Q = lP @ R.T
     # Per-donor RADIAL placement at the exact ideal M-donor distance (NOT a uniform
     # scale, which preserved the ETKDG embed's M-D asymmetry -> over-contracted donors,
     # the FEKZON CCDC defect).  Keep each donor's Kabsch-rotated DIRECTION (so the embed's
     # natural bite angle is preserved) and set only its radius to md.  The constrained
     # relax (donors fixed here) then pulls the backbone into consistency.
-    perm = best[2]
     for i, di in enumerate(donor_idxs):
         r = float(np.linalg.norm(Q[di]))
         if r > 1e-6:
@@ -675,14 +752,19 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
             # ideal donor positions at the assigned polyhedron vertices (metal at origin)
             # -> the constrained metallacycle embed pins the chelate bite to match them.
             _dent = lg["denticity"]
+            # CONFIG-FAITHFUL: arm index i -> the i-th CANONICAL (element-sorted)
+            # donor, so the enumerator's arm->vertex assignment is realised the
+            # same way for every instance of a ligand type (see _canonical_arm_order).
+            _dons_d = _canonical_arm_order(lg, _dent)
             _vts = [v for v, arm in sorted(va, key=lambda x: x[1])]
-            _delems = lg.get("donor_elems") or [None] * _dent
+            # element of the i-th canonical arm (for the ideal M-D target distance)
+            _delems = [lg["mol"].GetAtomWithIdx(int(di)).GetSymbol() for di in _dons_d]
             try:
                 _dtp = [ref[_vts[i]] / np.linalg.norm(ref[_vts[i]])
                         * MSB.md_distance(metal, _delems[i]) for i in range(_dent)]
             except Exception:
                 _dtp = None
-            ring_confs = _embed_metallacycle(lg["mol"], dons[:_dent], metal, donor_target_pos=_dtp)
+            ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal, donor_target_pos=_dtp)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
@@ -703,15 +785,22 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     Q = (lPv - lPv[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
             else:
                 # chelate (bi-/tri-dentate): the d assigned vertices host the d donors;
-                # the exact donor<->vertex seating is found geometrically in orient.
+                # arm index i (config order) seats on verts[i] in FIXED correspondence
+                # (config-faithful), using the canonical element-sorted arm order so the
+                # enumeration bijects onto the distinct stereoisomers.
                 dent = lg["denticity"]
-                dons_d = dons[:dent]
+                dons_d = _canonical_arm_order(lg, dent)
                 verts = [v for v, arm in sorted(va, key=lambda x: x[1])]
                 targets = [ref[verts[i]] / np.linalg.norm(ref[verts[i]])
                            * MSB.md_distance(metal, lsyms[dons_d[i]]) for i in range(dent)]
+                # config-faithful seating is only meaningful for ASYMMETRIC chelates
+                # (distinct donor elements); for symmetric chelates every arm seating
+                # is the same isomer, so keep the best-fit (lower ring strain).
+                _de = [lsyms[di] for di in dons_d]
+                _asym = len(set(_de)) > 1
                 Q = None
                 if ring_confs is not None:
-                    Q = _orient_chelate_to_vertices(lP, dons_d, targets)
+                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym)
                     # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
                     # embed sometimes produces a backbone with collapsed C-C / C-O bonds.
                     # _orient_chelate_to_vertices preserves that (rigid Kabsch+rescale),
