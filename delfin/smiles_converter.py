@@ -26209,15 +26209,27 @@ def _filter_nonfinite_isomers(results):
     return clean
 
 
+def _rank_emitted_isomers(isomers):
+    """Order the emitted ensemble best (most crystal-like) first via least-clash
+    ranking (cross-validated 2026-06-12).  Never drops/alters a structure — only
+    reorders.  Safe no-op on any error or with DELFIN_NO_FRAME_RANK=1."""
+    try:
+        from delfin._conformer_rank import rank_isomers
+        return rank_isomers(isomers)
+    except Exception:
+        return isomers
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
-    contract (#36) over EVERY return path of the implementation; otherwise the
-    (isomers, error) result passes through unchanged."""
+    contract (#36) over EVERY return path of the implementation, then ordering
+    the ensemble so the most crystal-like (least-clash) frame is first; otherwise
+    the (isomers, error) result passes through unchanged."""
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _filter_nonfinite_isomers(r[0]), r[1]
+        return _rank_emitted_isomers(_filter_nonfinite_isomers(r[0])), r[1]
     if isinstance(r, list):
-        return _filter_nonfinite_isomers(r)
+        return _rank_emitted_isomers(_filter_nonfinite_isomers(r))
     return r
 
 
