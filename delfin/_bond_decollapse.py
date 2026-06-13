@@ -341,43 +341,126 @@ def correct_xyz(mol, xyz: str) -> str:
     for i, j in bonds:
         bonded_set.add((min(i, j), max(i, j)))
 
+    # ---- Perf hoist (byte-identical): precompute the per-pass-invariant
+    # structure of both force loops ONCE.  The 250-pass relaxation re-derived
+    # the same bond list, the same O(n^2) non-bonded pair set and the same
+    # static floors on every pass; only the distances change.  Pulling the
+    # invariants out and vectorizing the distance/force math (matmul-based norm
+    # = bit-identical to the per-row np.linalg.norm via the same BLAS ddot
+    # kernel; interleaved np.add.at scatter = bit-identical to the per-pair
+    # `forces[a]+=f; forces[b]-=f` accumulation order) leaves the emitted
+    # coordinates byte-for-byte unchanged while removing the Python per-pair
+    # overhead and the millions of scalar np.linalg.norm calls.
+
+    # Bonded springs: heavy-heavy bond index arrays + ideal target lengths.
+    _bi: List[int] = []
+    _bj: List[int] = []
+    _btgt: List[float] = []
+    for i, j in bonds:
+        if syms[i] == 'H' or syms[j] == 'H':
+            continue
+        _bi.append(i); _bj.append(j); _btgt.append(_ideal_bond(syms[i], syms[j]))
+    bond_i = np.asarray(_bi, dtype=np.intp)
+    bond_j = np.asarray(_bj, dtype=np.intp)
+    bond_tgt = np.asarray(_btgt, dtype=float)
+    n_bonds_hh = bond_i.shape[0]
+    # interleaved scatter index for bonded force accumulation [i0,j0,i1,j1,...]
+    bond_scatter = np.empty(2 * n_bonds_hh, dtype=np.intp)
+    if n_bonds_hh:
+        bond_scatter[0::2] = bond_i
+        bond_scatter[1::2] = bond_j
+
+    # Non-bonded repulsion: enumerate heavy non-bonded pairs in the exact
+    # original iteration order (a outer 0..n, b inner a+1..n), precompute the
+    # static per-pair floor (depends only on syms/excl, never on positions).
+    _na: List[int] = []
+    _nb: List[int] = []
+    _nfloor: List[float] = []
+    for a in range(n):
+        if syms[a] == 'H':
+            continue
+        sa = syms[a]
+        excl_a = excl[a]
+        metal_a = _is_metal(sa)
+        vdw_a = _VDW.get(sa, _VDW_DEFAULT)
+        for b in range(a + 1, n):
+            if syms[b] == 'H':
+                continue
+            if (a, b) in bonded_set:
+                continue
+            sb = syms[b]
+            floor = _NONBOND_FLOOR * _ideal_bond(sa, sb)
+            # Iter-26: for TRUE non-bonded pairs (not 1-3 neighbors) lift the
+            # floor to the vdw-clash threshold so the relaxation stops
+            # settling atoms into the clash band; 1-3 contacts keep the
+            # gentler covalent floor (else rings blow apart).
+            if b not in excl_a and not (metal_a and _is_metal(sb)):
+                floor = max(floor, _VDW_FACTOR * (vdw_a + _VDW.get(sb, _VDW_DEFAULT)))
+            _na.append(a); _nb.append(b); _nfloor.append(floor)
+    nb_a = np.asarray(_na, dtype=np.intp)
+    nb_b = np.asarray(_nb, dtype=np.intp)
+    nb_floor = np.asarray(_nfloor, dtype=float)
+    n_pairs = nb_a.shape[0]
+
+    def _row_norm(deltas: np.ndarray) -> np.ndarray:
+        """Per-row Euclidean norm, BIT-IDENTICAL to a loop of
+        ``float(np.linalg.norm(row))``.  np.linalg.norm on a 1-D vector reduces
+        to ``sqrt(row.dot(row))`` (BLAS ddot); batched matmul dispatches the
+        same per-row ddot kernel, so the FMA/summation order matches exactly
+        (verified array_equal across scales).  axis-reductions / (x**2).sum
+        do NOT match (1-ULP drift on ~10% of elements)."""
+        if deltas.shape[0] == 0:
+            return np.zeros(0, dtype=float)
+        sq = np.matmul(deltas[:, None, :], deltas[:, :, None]).reshape(-1)
+        return np.sqrt(sq)
+
     for _pass in range(250):
         forces = np.zeros_like(work)
         moved = False
-        # bonded springs → ideal length
-        for i, j in bonds:
-            if syms[i] == 'H' or syms[j] == 'H':
-                continue
-            diff = work[j] - work[i]
-            d = float(np.linalg.norm(diff))
-            tgt = _ideal_bond(syms[i], syms[j])
-            if d < 1e-6:
-                diff = np.random.default_rng(_pass).standard_normal(3); d = float(np.linalg.norm(diff))
-            if abs(d - tgt) > 0.02:
-                f = 0.5 * (d - tgt) * (diff / d)
-                forces[i] += f; forces[j] -= f; moved = True
-        # non-bonded repulsion (resolve superimposed atoms)
-        for a in range(n):
-            if syms[a] == 'H':
-                continue
-            for b in range(a + 1, n):
-                if syms[b] == 'H':
-                    continue
-                if (a, b) in bonded_set:
-                    continue
-                diff = work[b] - work[a]
-                d = float(np.linalg.norm(diff))
-                floor = _NONBOND_FLOOR * _ideal_bond(syms[a], syms[b])
-                # Iter-26: for TRUE non-bonded pairs (not 1-3 neighbors) lift the
-                # floor to the vdw-clash threshold so the relaxation stops
-                # settling atoms into the clash band; 1-3 contacts keep the
-                # gentler covalent floor (else rings blow apart).
-                if b not in excl[a] and not (_is_metal(syms[a]) and _is_metal(syms[b])):
-                    floor = max(floor, _VDW_FACTOR * (_VDW.get(syms[a], _VDW_DEFAULT)
-                                                      + _VDW.get(syms[b], _VDW_DEFAULT)))
-                if d < floor and d > 1e-6:
-                    f = 0.5 * (d - floor) * (diff / d)
-                    forces[a] += f; forces[b] -= f; moved = True
+        # bonded springs → ideal length (vectorized, byte-identical)
+        if n_bonds_hh:
+            diff_b = work[bond_j] - work[bond_i]
+            d_b = _row_norm(diff_b)
+            # rare collapse fallback: a superimposed bonded pair (d<1e-6) is
+            # re-seeded from a per-pass RNG, exactly as the scalar loop did.
+            # This is order-sensitive (one RNG advanced per triggering bond in
+            # bond order) so it is replayed scalar; it almost never fires.
+            zero_mask = d_b < 1e-6
+            if zero_mask.any():
+                diff_b = diff_b.copy()
+                for _k in np.nonzero(zero_mask)[0]:
+                    rdiff = np.random.default_rng(_pass).standard_normal(3)
+                    diff_b[_k] = rdiff
+                    d_b[_k] = float(np.linalg.norm(rdiff))
+            active = np.abs(d_b - bond_tgt) > 0.02
+            if active.any():
+                moved = True
+                coef = 0.5 * (d_b - bond_tgt)
+                fb = coef[:, None] * (diff_b / d_b[:, None])
+                fb = np.where(active[:, None], fb, 0.0)
+                vals = np.empty((2 * n_bonds_hh, 3), dtype=float)
+                vals[0::2] = fb
+                vals[1::2] = -fb
+                np.add.at(forces, bond_scatter, vals)
+        # non-bonded repulsion (resolve superimposed atoms) — vectorized
+        if n_pairs:
+            diff_p = work[nb_b] - work[nb_a]
+            d_p = _row_norm(diff_p)
+            active = (d_p < nb_floor) & (d_p > 1e-6)
+            if active.any():
+                moved = True
+                coef = 0.5 * (d_p - nb_floor)
+                # guard the division for inactive rows (d may be 0); masked out
+                d_safe = np.where(active, d_p, 1.0)
+                fp = coef[:, None] * (diff_p / d_safe[:, None])
+                fp = np.where(active[:, None], fp, 0.0)
+                idx = np.empty(2 * n_pairs, dtype=np.intp)
+                idx[0::2] = nb_a
+                idx[1::2] = nb_b
+                vals = np.empty((2 * n_pairs, 3), dtype=float)
+                vals[0::2] = fp
+                vals[1::2] = -fp
+                np.add.at(forces, idx, vals)
         if not moved:
             break
         # apply, but never move frozen atoms.  Clamp the per-pass displacement:

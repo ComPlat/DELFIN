@@ -7,7 +7,7 @@ GOAT/xTB before running ORCA calculations.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 import concurrent.futures
 import hashlib
@@ -15328,7 +15328,47 @@ def is_smiles_string(content: str) -> bool:
     return (has_smiles_chars or has_aromatic or has_ring_numbers or simple_token) and (has_organic or has_metal)
 
 
+# Perf (byte-identical): per-(smiles, hapto_approx) cache for the embedding-prep
+# mol.  For a single metal complex this builder is invoked up to 4x with only 2
+# distinct (smiles, hapto_approx) keys (η-label probe, σ-isomer enumerator,
+# hapto-diversity gate, ...), and each invocation re-runs the heavy
+# stk.BuildingBlock / RDKit sanitize path from scratch.  The function is a pure
+# deterministic function of its two args (verified: repeated calls produce
+# byte-identical Chem.Mol.ToBinary()), so we memoize the *prepared* mol and hand
+# every caller a fresh Chem.Mol() copy.  The copy is bit-faithful
+# (ToBinary round-trip identical) and decoupled, so callers that mutate it
+# (RemoveAllConformers / AddConformer / dative edits) cannot poison the cache or
+# each other.  Bounded LRU keeps memory flat across a 50k pool.
+_CACHE_MISS = object()  # distinct sentinel: a None entry is a valid cached miss
+_PREP_MOL_CACHE: "OrderedDict[Tuple[str, bool], object]" = OrderedDict()
+_PREP_MOL_CACHE_MAX = 16
+
+
 def _prepare_mol_for_embedding(smiles: str, hapto_approx: bool = False):
+    """Cached wrapper over :func:`_prepare_mol_for_embedding_uncached`.
+
+    Returns a fresh, decoupled :class:`rdkit.Chem.Mol` copy of the cached
+    prepared mol (or ``None``).  Byte-identical to calling the uncached builder
+    directly — the cached object is never handed out, only copies.
+    """
+    if not RDKIT_AVAILABLE:
+        return None
+    key = (smiles, bool(hapto_approx))
+    cached = _PREP_MOL_CACHE.get(key, _CACHE_MISS)
+    if cached is _CACHE_MISS:
+        cached = _prepare_mol_for_embedding_uncached(smiles, hapto_approx)
+        _PREP_MOL_CACHE[key] = cached
+        if len(_PREP_MOL_CACHE) > _PREP_MOL_CACHE_MAX:
+            _PREP_MOL_CACHE.popitem(last=False)
+    else:
+        # mark as recently used (LRU)
+        _PREP_MOL_CACHE.move_to_end(key)
+    if cached is None:
+        return None
+    return Chem.Mol(cached)
+
+
+def _prepare_mol_for_embedding_uncached(smiles: str, hapto_approx: bool = False):
     """Parse SMILES and prepare an RDKit Mol for conformer embedding.
 
     Tries the same strategies as ``smiles_to_xyz`` /
