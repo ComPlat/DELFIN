@@ -25894,8 +25894,8 @@ def _emit_chelate_pucker_variants(
 # its target Cremer-Pople basin with a constrained geometric snap, and
 # REJECTS any variant that does not reach its intended basin.  Pure additive
 # (never reorders/drops existing frames); fixed deterministic ordering; no
-# RNG.  Master flag DELFIN_RING_PUCKER_ENUM (default 0) -> byte-identical
-# no-op fall-through.
+# RNG.  Master flag DELFIN_RING_PUCKER_ENUM (default 1, validated net+ vs golden
+# at 50k; set =0 to revert byte-identical to the no-op fall-through).
 # ---------------------------------------------------------------------------
 
 
@@ -25997,12 +25997,12 @@ def _emit_nonmetal_ring_pucker_variants(
     basin.  Hard cap DELFIN_5P_B_MAX_RING_VARIANTS (default 6).
 
     Pure ADDITIVE — never sorts, drops, or modifies existing entries.
-    Master toggle: DELFIN_RING_PUCKER_ENUM (default 0 -> no-op).
+    Master toggle: DELFIN_RING_PUCKER_ENUM (default 1; =0 -> no-op).
     Returns the number of new entries appended.
     """
     if not RDKIT_AVAILABLE:
         return 0
-    if not _delfin_env_int("DELFIN_RING_PUCKER_ENUM", 0):
+    if not _delfin_env_int("DELFIN_RING_PUCKER_ENUM", 1):
         return 0
     if not results:
         return 0
