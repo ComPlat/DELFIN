@@ -1936,26 +1936,42 @@ def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
 
 
 def _apply_f19_to_fallback_xyz(xyz_content, mol):
-    """Stream-B Fix 2: run the F19 sp3-H tetrahedrality fixer on a RAW XYZ
-    produced by ``_smiles_to_xyz_unsanitized_fallback`` (and the sigma return
-    paths that feed off it).
+    """Stream-B Fix 2 (batch-2 = FULL): repair sp3-H tetrahedrality on a RAW
+    XYZ produced by ``_smiles_to_xyz_unsanitized_fallback`` (and the sigma
+    return paths that feed off it).
 
     The unsanitized-fallback path strips H before embed, then ``AddHs(addCoords=
-    True)`` places sp3 H octahedrally (90/180° "square-planar CH3").  The main
-    sanitized path already runs ``_apply_fixer_f19_if_enabled`` (~line 28923),
-    but the fallback path bypasses it entirely, so XULPUP-class complexes keep
-    their broken methyls.  This helper closes that gap.
+    True)`` places sp3 H octahedrally (90/180° "square-planar CH3"), and the
+    embed/AddHs geometry is often degenerate (overlapping geminal H, so a
+    purely geometric H-count over-counts and the centre is skipped).  The main
+    sanitized path runs ``_apply_fixer_f19_if_enabled``, but the fallback path
+    bypasses it entirely, so XULPUP-class complexes keep their broken methyls.
 
-    Gated by ``DELFIN_FIX_F19`` (default 0 → byte-identical: nothing runs, the
-    raw ``xyz_content`` is returned untouched).  When enabled, hybridization is
-    perceived on a throwaway view of ``mol`` (the unsanitized fallback leaves
-    hybridization UNSPECIFIED, so the fixer's sp3 detector would otherwise see
-    nothing) before delegating to the shared ``_apply_fixer_f19_if_enabled``.
-    The mol's atom ordering matches the XYZ (both come from the same post-AddHs
-    ``mol``), which the index-based fixer relies on.
+    Why batch-2 is FULL (root-of-partial fixed): the legacy per-angle rotation
+    (``fix_sp3_h_tetrahedrality``) corrected only ONE (X-A-H) angle per H and
+    never reconstructed a joint umbrella, and it derived H-count from the
+    degenerate embedded geometry.  Batch-2 instead
+
+      (1) ``fix_sp3_h_tetrahedrality_full`` — reads connectivity from the
+          RDKit ``mol`` bond graph (true per-centre H-count, so a methylene C
+          is known to carry exactly two H even when AddHs overlapped them) and
+          places EVERY sp3 H jointly onto the ideal tetrahedral / pyramidal /
+          bent sites (C/N/O/P/S/Si/B incl. protonated/charged centres), then
+      (2) ``_h_vsepr_realism.correct_xyz`` — a geometry-based finishing pass
+          (now seeing a clean, non-degenerate frame) plus the 5f-D inter-
+          substituent rotamer relief that staggers crowded multi-methyl
+          centres (neopentane / NMe3 / PMe3 / tBu-).
+
+    Both stages are gated by the SAME ``DELFIN_FIX_F19`` flag (default 0 →
+    byte-identical: nothing runs, raw ``xyz_content`` returned untouched).
+    Topology-safe (only H move, A-H lengths preserved, metals never touched),
+    deterministic (fixed tables/probes, sorted iteration), never non-finite
+    (NaN guards + per-H rollback).  The mol's atom ordering matches the XYZ
+    (both come from the same post-AddHs ``mol``), which the index-based stage-1
+    relies on; stage-2 is index-free (pure geometry).
 
     Returns the (possibly repaired) XYZ string; falls back to the input on any
-    failure.  Never alters topology or heavy/metal atoms (F19 moves only H).
+    failure.
     """
     if xyz_content is None or mol is None:
         return xyz_content
@@ -1965,7 +1981,7 @@ def _apply_f19_to_fallback_xyz(xyz_content, mol):
         if not _class_conditional_flag("DELFIN_FIX_F19", mol, default=0):
             return xyz_content
         # The unsanitized fallback leaves hybridization UNSPECIFIED; perceive it
-        # so the F19 sp3 detector can see the methyls.  Done on a copy so the
+        # so the sp3 detector can see the methyls.  Done on a copy so the
         # caller's mol is never mutated.  Topology-safe (perception only).
         try:
             from rdkit import Chem as _Chem
@@ -1977,12 +1993,47 @@ def _apply_f19_to_fallback_xyz(xyz_content, mol):
             _Chem.SetHybridization(mol_h)
         except Exception:
             mol_h = mol
-        repaired = _apply_fixer_f19_if_enabled(
-            mol_h, [(xyz_content, "fallback")], dual_parse_done=False,
-        )
-        if repaired and repaired[0] and repaired[0][0]:
-            return repaired[0][0]
-        return xyz_content
+        # Stage 1 — graph-driven full umbrella reconstruction.
+        result = xyz_content
+        try:
+            from delfin._fix_sp3_h_tetrahedrality import (
+                fix_sp3_h_tetrahedrality_full,
+            )
+            tol = _delfin_env_float("DELFIN_FIX_F19_TOL_DEG", 10.0)
+            new_xyz, _rep = fix_sp3_h_tetrahedrality_full(
+                result, mol_h, tolerance_deg=tol,
+            )
+            if isinstance(new_xyz, str) and new_xyz:
+                result = new_xyz
+        except Exception as _stage1_exc:
+            try:
+                logger.debug("F19 stage-1 (full umbrella) skipped: %s",
+                             _stage1_exc)
+            except Exception:
+                pass
+        # Stage 2 — VSEPR geometry finishing + inter-substituent rotamer relief
+        # (5f-D).  Enable 5f-D only for THIS call; restore the prior env value
+        # deterministically afterwards so we never leak global state.
+        try:
+            from delfin import _h_vsepr_realism as _vsepr
+            _prev_5fd = os.environ.get("DELFIN_5F_D_ALKYL_ROTAMER")
+            os.environ["DELFIN_5F_D_ALKYL_ROTAMER"] = "1"
+            try:
+                new_xyz = _vsepr.correct_xyz(result)
+            finally:
+                if _prev_5fd is None:
+                    os.environ.pop("DELFIN_5F_D_ALKYL_ROTAMER", None)
+                else:
+                    os.environ["DELFIN_5F_D_ALKYL_ROTAMER"] = _prev_5fd
+            if isinstance(new_xyz, str) and new_xyz:
+                result = new_xyz
+        except Exception as _stage2_exc:
+            try:
+                logger.debug("F19 stage-2 (VSEPR finish) skipped: %s",
+                             _stage2_exc)
+            except Exception:
+                pass
+        return result if (isinstance(result, str) and result) else xyz_content
     except Exception as _f19fb_exc:
         try:
             logger.debug("Fixer F19 on fallback XYZ skipped: %s", _f19fb_exc)

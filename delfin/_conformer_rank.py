@@ -295,20 +295,37 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     AFTER the clash score, so a clash-free but bent donor-M-donor frame yields to
     the more idealised polyhedron when their clash scores are (near-)tied.  Clash
     stays primary; this only resolves ties.
+
+    Stream-B batch-2 Fix B (``DELFIN_FRAME_RANK_FIX=1``, default-OFF → byte-
+    identical order): activates the clash ranker on the REAL (headerless)
+    emitter output.  The public ``smiles_to_xyz_isomers`` emits frames with NO
+    atom-count header, so the strict :func:`_parse_xyz` returns [] for every
+    frame → every frame scores 100.0 → no reordering → the clash ranker is a
+    silent no-op today.  With the flag set, the default path parses with the
+    header-tolerant parser so the ranker actually orders frames by least clash.
+    Default-OFF keeps the strict parse → the ranker stays a no-op → byte-
+    identical with today.  ``DELFIN_NO_FRAME_RANK=1`` still wins outright
+    (returns enumeration order regardless of this flag — revert semantics
+    preserved).
     """
     if os.environ.get("DELFIN_NO_FRAME_RANK", "0") == "1":
         return isomers
     if not isinstance(isomers, list) or len(isomers) < 2:
         return isomers
     coord_ideal = os.environ.get("DELFIN_RANK_COORD_IDEAL", "0") == "1"
+    # Fix B: header-tolerant parsing in the default path, gated default-OFF.
+    rank_fix = os.environ.get("DELFIN_FRAME_RANK_FIX", "0") == "1"
+    _default_parse = _parse_xyz_tolerant if rank_fix else _parse_xyz
     try:
         if not coord_ideal:
-            # Default path — UNCHANGED (byte-identical to pre-Fix-3): sort by
-            # descending clash score, enumeration order as the stable tiebreak.
+            # Default path.  Parser choice is the ONLY change: strict (flag-OFF
+            # → byte-identical, ranker is a no-op on headerless frames) vs
+            # header-tolerant (flag-ON → ranker actually orders by least clash).
             scored = []
             for idx, item in enumerate(isomers):
                 xyz = item[0] if isinstance(item, (tuple, list)) and item else ""
-                sc = _frame_score(_parse_xyz(xyz)) if isinstance(xyz, str) else -1e9
+                sc = (_frame_score(_default_parse(xyz))
+                      if isinstance(xyz, str) else -1e9)
                 scored.append((idx, sc, item))
             scored.sort(key=lambda e: (-e[1], e[0]))
             return [e[2] for e in scored]
