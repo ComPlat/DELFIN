@@ -32140,6 +32140,38 @@ def _optimize_xyz_openbabel(
             except Exception as e:
                 logger.debug("OB UFF empty-constraint reset failed: %s", e)
 
+        # DETERMINISM GATE (CG step): when OB-UFF could not parameterise a
+        # metal in this molecule (``_uff_param_unsafe`` — the > 1e9 kcal/mol
+        # energy marker above), every per-atom UFF gradient is read from
+        # uninitialised heap memory and differs across process invocations.
+        # The constraint set (built by ``_build_coordination_constraints_from_xyz``)
+        # freezes the metal + its monodentate donor atoms, but leaves
+        # *non-donor* atoms free (e.g. the carbonyl O of M-C≡O in W(CO)6 /
+        # Cr(CO)6 / Mo(CO)6 — C is the donor, O is free).  ``ConjugateGradients``
+        # then drags those free atoms along the garbage gradient, so the same
+        # SMILES produces a different geometry every run.  This is the homoleptic
+        # metal-carbonyl / unparameterised-TM determinism hole.
+        #
+        # Fix: when the parameterisation is unsafe the CG step provides no real
+        # optimisation (the energy/gradients are meaningless), so skipping it
+        # loses nothing physical and removes the only source of run-to-run
+        # variation.  The geometry returned is the template-built, physically
+        # sensible polyhedron the caller passed in.  Universal — gated purely on
+        # the runtime energy marker, no metal allowlist, no SMILES patterns.
+        # Default ON (deterministic is the correct default); revert with
+        # ``DELFIN_UFF_UNSAFE_SKIP_CG=0`` to restore the legacy (random) CG run.
+        _skip_unsafe_cg = (
+            _uff_param_unsafe
+            and _delfin_env_int("DELFIN_UFF_UNSAFE_SKIP_CG", 1)
+        )
+        if _skip_unsafe_cg:
+            logger.debug(
+                "Skipping OB-UFF ConjugateGradients: metal unparameterised "
+                "(energy marker indicates uninitialised gradients); returning "
+                "input geometry to keep this call bit-deterministic."
+            )
+            return (xyz_delfin, None) if return_energy else xyz_delfin
+
         ff.ConjugateGradients(steps)
         ff.GetCoordinates(ob_mol.OBMol)
 
