@@ -84,7 +84,22 @@ References
 from __future__ import annotations
 
 import itertools
+import os
 from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Set, Tuple
+
+
+def _orbit_enum_enabled() -> bool:
+    """P5 — DELFIN_ORBIT_ENUM (default 0).  When set, the orbit enumerator
+    sweeps the *distinct* chelate-extended label tuples instead of the full
+    factorial permutation list, eliminating the ``_MAX_PERM_CAP`` bare-break
+    that silently truncated high-CN orbit enumeration (same anti-pattern as
+    the topo loop in smiles_converter.py).  Unset → legacy factorial sweep +
+    cap break, unchanged."""
+    val = os.environ.get("DELFIN_ORBIT_ENUM", "0")
+    try:
+        return int(val) != 0
+    except (TypeError, ValueError):
+        return False
 
 try:
     from rdkit import Chem
@@ -323,9 +338,46 @@ def _enumerate_orbits(
     orbits: Dict[Tuple, Dict[str, object]] = {}
     perm_count = 0
 
-    for perm in itertools.permutations(range(cn)):
+    # P5 — DELFIN_ORBIT_ENUM: iterate the *distinct* extended-label
+    # arrangements (n!/prod(mult!)) instead of the full factorial list,
+    # so the cap is never needed and high-CN orbits are complete.  Each
+    # arrangement is realised by its lex-min concrete perm (positions ->
+    # donor-list idx).  Unset → original factorial sweep + cap break.
+    if _orbit_enum_enabled():
+        _label_to_idxs: Dict[str, List[int]] = {}
+        for _di in range(cn):
+            _label_to_idxs.setdefault(extended[_di], []).append(_di)
+        for _lst in _label_to_idxs.values():
+            _lst.sort()
+
+        def _lexmin_perm(arr: Tuple[str, ...]) -> Optional[Tuple[int, ...]]:
+            used = [False] * cn
+            out: List[int] = []
+            for pos in range(cn):
+                want = arr[pos]
+                chosen = -1
+                for cand in _label_to_idxs.get(want, ()):  # sorted asc
+                    if not used[cand]:
+                        chosen = cand
+                        break
+                if chosen < 0:
+                    return None
+                used[chosen] = True
+                out.append(chosen)
+            return tuple(out)
+
+        def _perm_stream():
+            for _arr in set(itertools.permutations(extended)):
+                _p = _lexmin_perm(_arr)
+                if _p is not None:
+                    yield _p
+    else:
+        def _perm_stream():
+            yield from itertools.permutations(range(cn))
+
+    for perm in _perm_stream():
         perm_count += 1
-        if perm_count > _MAX_PERM_CAP:
+        if not _orbit_enum_enabled() and perm_count > _MAX_PERM_CAP:
             break
         if _chelate_violates_trans(perm, chelate_pairs, trans_set):
             continue
@@ -369,6 +421,75 @@ def _enumerate_orbits(
         }
 
     return list(orbits.values())
+
+
+# ---------------------------------------------------------------------------
+# P5 self-test — orbit count == Burnside (Cauchy-Frobenius) count.
+# ---------------------------------------------------------------------------
+def _orbit_burnside_selftest(verbose: bool = False) -> bool:
+    """Assert that :func:`_enumerate_orbits` returns exactly the proper-
+    rotation (Cauchy-Frobenius) orbit count for a battery of CN2-9
+    donor multisets, cross-checked against the independent Burnside
+    oracle :func:`delfin.fffree.polya_isomer_count.count_isomers`.
+
+    Pure graph/group-theory; no SMILES/refcode keying.  Returns True on
+    success, raises AssertionError on any mismatch.  Used as the P5
+    completeness guard (DELFIN_ORBIT_ENUM)."""
+    from delfin.fffree.polya_isomer_count import count_isomers
+
+    # (CODE key, oracle NAME key, CN).  CODE keys cover CN<=12 in
+    # _burnside_groups; oracle NAME keys exist for these geometries.
+    code_to_name = {
+        "TP":  "trigonal_planar",
+        "TS":  "tshape",
+        "TH":  "tetrahedron",
+        "SQ":  "square_planar",
+        "TBP": "trigonal_bipyramid",
+        "OH":  "octahedron",
+        "TPR": "trigonal_prism",
+        "PBP": "pentagonal_bipyramid",
+        "SAP": "square_antiprism",
+        "TTP": "tricapped_trigonal_prism",
+    }
+    # A spread of donor multisets per CN (2 element classes is enough to
+    # exercise the symmetry collapse).
+    cn_specs = {
+        3: [{"N": 2, "O": 1}, {"N": 1, "O": 1, "C": 1}],
+        4: [{"N": 2, "O": 2}, {"N": 3, "O": 1}],
+        5: [{"N": 3, "O": 2}, {"N": 2, "O": 2, "C": 1}],
+        6: [{"N": 4, "O": 2}, {"N": 3, "O": 3}, {"N": 2, "O": 2, "C": 2}],
+        7: [{"N": 4, "O": 3}, {"N": 5, "O": 2}],
+        8: [{"N": 4, "O": 4}, {"N": 5, "O": 3}],
+        9: [{"N": 5, "O": 4}, {"N": 6, "O": 3}],
+    }
+    geoms_by_cn = {
+        3: ["TP", "TS"], 4: ["TH", "SQ"], 5: ["TBP"],
+        6: ["OH", "TPR"], 7: ["PBP"], 8: ["SAP"], 9: ["TTP"],
+    }
+    ok = True
+    for cn, specs in cn_specs.items():
+        for code in geoms_by_cn[cn]:
+            name = code_to_name[code]
+            for spec in specs:
+                labels: List[str] = []
+                ci = 0
+                for el, c in spec.items():
+                    labels += [f"{el}{ci}"] * c
+                    ci += 1
+                orbits = _enumerate_orbits(code, labels, [])
+                got = len(orbits)
+                want = count_isomers(name, spec)
+                if verbose:
+                    print(f"  {code:4s} {str(spec):22s} orbit={got:4d} "
+                          f"oracle={want:4d} "
+                          f"{'OK' if got == want else 'MISMATCH'}")
+                if got != want:
+                    ok = False
+                    raise AssertionError(
+                        f"orbit-count != Burnside-count for {code} {spec}: "
+                        f"{got} != {want}"
+                    )
+    return ok
 
 
 # ---------------------------------------------------------------------------
