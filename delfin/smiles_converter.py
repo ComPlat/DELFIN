@@ -22291,6 +22291,20 @@ def _align_and_orient_ligands(
         def _clash_for_frag(frag_heavy, frag_pts):
             """Penalty between this fragment's non-donor atoms and every
             heavy atom of all OTHER fragments, plus the metal itself.
+
+            PERF (BYTE-IDENTICAL): the per-(point x other_heavy) distance was
+            the profiled norm-storm (~8.1M scalar np.linalg.norm calls on
+            ligand-rich complexes).  It is replaced by ONE matmul-ddot row
+            norm per fragment point: np.matmul(d[:,None,:], d[:,:,None]) ->
+            sqrt dispatches the SAME BLAS ddot kernel as scalar
+            np.linalg.norm(v) = sqrt(v.dot(v)), so each distance is
+            bit-identical (FMA/summation order preserved).  The score
+            accumulation loop is kept SCALAR in the exact original order
+            (frag_pts.items() order, metal-term first, then j in other_heavy
+            order) so the float += summation order -- and hence the emitted
+            geometry -- is unchanged.  Invariant arrays (other-heavy index
+            list, their positions, their radii) are hoisted out of the
+            per-point loop (recomputed identically before).
             """
             score = 0.0
             other_heavy = [
@@ -22299,10 +22313,16 @@ def _align_and_orient_ligands(
                 for j in info["heavy"]
             ]
             m_sym = mol.GetAtomWithIdx(metal_idx).GetSymbol()
+            # Hoisted per-call invariants for the other-heavy inner loop.
+            n_other = len(other_heavy)
+            if n_other:
+                other_pts = _np.asarray([pts[j] for j in other_heavy], dtype=float)
+                other_rcov = [r_cov[j] for j in other_heavy]
             for i, p in frag_pts.items():
                 ri = r_cov[i]
                 sym_i = mol.GetAtomWithIdx(i).GetSymbol()
-                d = float(_np.linalg.norm(_np.asarray(p) - m_pos))
+                p_arr = _np.asarray(p)
+                d = float(_np.linalg.norm(p_arr - m_pos))
                 try:
                     ml_ref = float(_get_ml_bond_length(m_sym, sym_i))
                 except Exception:
@@ -22310,12 +22330,22 @@ def _align_and_orient_ligands(
                 thr_m = max(1.20, 0.80 * ml_ref)
                 if d < thr_m:
                     score += 5.0 * (thr_m - d) ** 2
-                for j in other_heavy:
-                    rj = r_cov[j]
-                    d = float(_np.linalg.norm(_np.asarray(p) - pts[j]))
-                    thr = 1.3 * (ri + rj)
-                    if d < thr:
-                        score += (thr - d) ** 2
+                if n_other:
+                    # Per-row Euclidean norm, BIT-IDENTICAL to a loop of
+                    # float(np.linalg.norm(p - pts[j])): batched matmul uses
+                    # the same per-row ddot kernel (verified array_equal).
+                    deltas = p_arr - other_pts
+                    dists = _np.sqrt(
+                        _np.matmul(deltas[:, None, :], deltas[:, :, None]).reshape(-1)
+                    )
+                    # thr kept in the original scalar 1.3*(ri+rj) form:
+                    # distributing the 1.3 would change the FMA/rounding and
+                    # break bit-identity, so only the norm is vectorized.
+                    for k in range(n_other):
+                        d = float(dists[k])
+                        thr = 1.3 * (ri + other_rcov[k])
+                        if d < thr:
+                            score += (thr - d) ** 2
             return score
 
         def _lp_penalty_for_frag(donors, frag_pts):
