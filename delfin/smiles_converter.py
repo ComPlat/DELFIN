@@ -1935,6 +1935,62 @@ def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_f19_to_fallback_xyz(xyz_content, mol):
+    """Stream-B Fix 2: run the F19 sp3-H tetrahedrality fixer on a RAW XYZ
+    produced by ``_smiles_to_xyz_unsanitized_fallback`` (and the sigma return
+    paths that feed off it).
+
+    The unsanitized-fallback path strips H before embed, then ``AddHs(addCoords=
+    True)`` places sp3 H octahedrally (90/180° "square-planar CH3").  The main
+    sanitized path already runs ``_apply_fixer_f19_if_enabled`` (~line 28923),
+    but the fallback path bypasses it entirely, so XULPUP-class complexes keep
+    their broken methyls.  This helper closes that gap.
+
+    Gated by ``DELFIN_FIX_F19`` (default 0 → byte-identical: nothing runs, the
+    raw ``xyz_content`` is returned untouched).  When enabled, hybridization is
+    perceived on a throwaway view of ``mol`` (the unsanitized fallback leaves
+    hybridization UNSPECIFIED, so the fixer's sp3 detector would otherwise see
+    nothing) before delegating to the shared ``_apply_fixer_f19_if_enabled``.
+    The mol's atom ordering matches the XYZ (both come from the same post-AddHs
+    ``mol``), which the index-based fixer relies on.
+
+    Returns the (possibly repaired) XYZ string; falls back to the input on any
+    failure.  Never alters topology or heavy/metal atoms (F19 moves only H).
+    """
+    if xyz_content is None or mol is None:
+        return xyz_content
+    try:
+        # Cheap gate first → byte-identical OFF (no hybridization mutation, no
+        # fixer call) when DELFIN_FIX_F19 is unset/0.
+        if not _class_conditional_flag("DELFIN_FIX_F19", mol, default=0):
+            return xyz_content
+        # The unsanitized fallback leaves hybridization UNSPECIFIED; perceive it
+        # so the F19 sp3 detector can see the methyls.  Done on a copy so the
+        # caller's mol is never mutated.  Topology-safe (perception only).
+        try:
+            from rdkit import Chem as _Chem
+            mol_h = _Chem.Mol(mol)
+            try:
+                _Chem.GetSymmSSSR(mol_h)
+            except Exception:
+                pass
+            _Chem.SetHybridization(mol_h)
+        except Exception:
+            mol_h = mol
+        repaired = _apply_fixer_f19_if_enabled(
+            mol_h, [(xyz_content, "fallback")], dual_parse_done=False,
+        )
+        if repaired and repaired[0] and repaired[0][0]:
+            return repaired[0][0]
+        return xyz_content
+    except Exception as _f19fb_exc:
+        try:
+            logger.debug("Fixer F19 on fallback XYZ skipped: %s", _f19fb_exc)
+        except Exception:
+            pass
+        return xyz_content
+
+
 def _apply_fixer_f25_if_enabled(mol, results, dual_parse_done: bool):
     """F25 sp3-N pyramidality fixer dispatch helper.
 
@@ -30765,6 +30821,9 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
 
         xyz_content = _mol_to_xyz(mol)
         # H-fix disabled — see INSIGHTS_LOG 2026-04-29 ~12:00 UTC.
+        # Stream-B Fix 2 (DELFIN_FIX_F19, default-OFF → byte-identical): repair
+        # sp3-H tetrahedrality (AddHs places fallback CH3 H at 90/180°).
+        xyz_content = _apply_f19_to_fallback_xyz(xyz_content, mol)
         return xyz_content, None
     except Exception as e:
         # Extra-permissive fallback for explicit valence errors
@@ -30794,6 +30853,8 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                     result = AllChem.EmbedMolecule(mol, _uns_params)
                 if result == 0:
                     xyz_content = _mol_to_xyz(mol)
+                    # Stream-B Fix 2 (DELFIN_FIX_F19, default-OFF → byte-identical).
+                    xyz_content = _apply_f19_to_fallback_xyz(xyz_content, mol)
                     return xyz_content, None
             except Exception:
                 pass
