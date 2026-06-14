@@ -13,8 +13,17 @@ MA2B2C2=6, MABCDEF=30; square-planar MA2B2=2; tetrahedral MABCD=2).
 """
 from __future__ import annotations
 import itertools
+import os
 from collections import Counter
 from typing import Dict, List, Tuple
+
+
+def _delfin_env_int(name: str, default: int) -> int:
+    """Local copy of ``smiles_converter._delfin_env_int`` (avoid import cycle)."""
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
 
 
 def _close_group(generators: List[Tuple[int, ...]], n: int) -> List[Tuple[int, ...]]:
@@ -212,7 +221,13 @@ _ANTIPODE_FULL = {
 #    diagonals (164deg) — those are not real chelate positions, and admitting them would
 #    feed self-gate-rejected configs to the all-or-nothing chelate gate (one bad isomer
 #    bails the whole complex to legacy).
+# NOTE: the 100deg default EXCLUDES the tetrahedron's only pair-angle (109.47deg), so a
+#  Td bis-chelate yields 0 configs.  Stream-B Fix 1 (DELFIN_FFFREE_TET_CHELATE=1) raises
+#  the ceiling to 111deg to admit the 109.47deg Td chelate edges.  Default-OFF keeps the
+#  100deg ceiling -> byte-identical (OC-6/SP-4 only have 90/120/180deg pairs, none of which
+#  fall in the (100, 111] band, so they are unchanged with the flag either way).
 CHELATE_CIS_MAX_DEG = 100.0
+CHELATE_CIS_MAX_DEG_TET = 111.0
 
 _GEOM_KEY_TO_SHAPE = {
     "octahedron": "OC-6 octahedron",
@@ -233,6 +248,13 @@ def _chelate_cis_edges(geometry: str, n: int):
     places into (delfin.fffree.polyhedra), so enumeration and placement stay consistent
     for every geometry (incl. TBP-5/SPY-5).  Byte-identical to the old antipode table for
     octahedron/square_planar.  Falls back to the antipode table if no reference vectors."""
+    # Stream-B Fix 1: gate the cis-edge ceiling so the tetrahedron's only pair-angle
+    # (109.47deg) becomes chelate-feasible when DELFIN_FFFREE_TET_CHELATE=1.  Default-OFF
+    # keeps the 100deg ceiling -> byte-identical (no geometry has a pair in (100, 111]
+    # except the Td 109.47deg, which is exactly what we want to admit when ON).
+    ceiling = (CHELATE_CIS_MAX_DEG_TET
+               if _delfin_env_int("DELFIN_FFFREE_TET_CHELATE", 0)
+               else CHELATE_CIS_MAX_DEG)
     shape = _GEOM_KEY_TO_SHAPE.get(geometry)
     if shape is not None:
         try:
@@ -240,7 +262,7 @@ def _chelate_cis_edges(geometry: str, n: int):
             import numpy as np
             from delfin.fffree import polyhedra as _PLY
             V = _PLY.ref_vectors(shape)
-            cos_max = math.cos(math.radians(CHELATE_CIS_MAX_DEG))
+            cos_max = math.cos(math.radians(ceiling))
             return [(i, j) for i in range(n) for j in range(i + 1, n)
                     if float(np.clip(V[i] @ V[j], -1.0, 1.0)) > cos_max]
         except Exception:
