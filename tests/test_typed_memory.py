@@ -169,3 +169,38 @@ def test_delete_typed_memory_unknown_returns_none(fake_home, tmp_path):
     repo.mkdir()
     ms.save_typed_memory("user: something", repo_root=repo)
     assert ms.delete_typed_memory(repo, "does-not-exist") is None
+
+
+# ---------------------------------------------------------------------------
+# Store lives under DELFIN's OWN ~/.delfin (not Claude Code's ~/.claude)
+# ---------------------------------------------------------------------------
+
+
+def test_memory_dir_is_under_delfin_not_claude(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    mdir = ms._delfin_memory_dir(repo)
+    assert ".delfin" in str(mdir) and ".claude" not in str(mdir)
+    fpath, _, _ = ms.save_typed_memory("user: x lives here", repo_root=repo)
+    assert ".delfin" in str(fpath)
+
+
+def test_plans_dir_under_delfin(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    assert ".delfin" in str(ms._delfin_plans_dir(repo))
+
+
+def test_legacy_claude_store_is_migrated(fake_home, tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    slug = ms._project_slug(repo)
+    old = tmp_path / ".claude" / "projects" / slug / "memory"
+    old.mkdir(parents=True)
+    (old / "MEMORY.md").write_text("# index\n", encoding="utf-8")
+    (old / "user_legacy.md").write_text(
+        "---\nname: legacy\ndescription: an old fact\n"
+        "metadata:\n  type: user\n---\n\nold fact\n", encoding="utf-8")
+    # Resolving the dir migrates the legacy store into ~/.delfin.
+    new = ms._delfin_memory_dir(repo)
+    assert ".delfin" in str(new)
+    assert (new / "user_legacy.md").is_file()
+    assert not old.exists()                         # moved, not copied
+    assert "legacy" in [r["name"] for r in ms.list_typed_memories(repo)]

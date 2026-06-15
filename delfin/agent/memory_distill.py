@@ -115,8 +115,8 @@ def _existing_memory_texts(repo_root=None) -> set[str]:
     if repo_root is not None:
         try:
             from pathlib import Path as _P
-            from delfin.agent.memory_store import _claude_memory_dir
-            mdir = _claude_memory_dir(_P(repo_root))
+            from delfin.agent.memory_store import _delfin_memory_dir
+            mdir = _delfin_memory_dir(_P(repo_root))
             if mdir.is_dir():
                 for p in mdir.glob("*.md"):
                     if p.name == "MEMORY.md":

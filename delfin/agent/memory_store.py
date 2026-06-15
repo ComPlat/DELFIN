@@ -158,14 +158,12 @@ def format_memory_context(
 # Typed project-memory writer (.delfin memory layout)
 # ---------------------------------------------------------------------------
 #
-# In addition to the flat ``~/.delfin/agent_memory.json`` store we mirror
-# memories into the per-project layout that the prompt loader already reads
-# back at startup (``~/.claude/projects/<slug>/memory/MEMORY.md`` plus
-# typed sidecar files — the path uses ``~/.claude/`` because the prompt
-# loader was wired to the same on-disk slug convention from the start;
-# the directory is purely a per-project memory store, no Anthropic CLI
-# dependency). This gives the user a richer, browseable, version-
-# controllable memory while keeping the legacy JSON for backwards-compat.
+# The typed per-project memory lives under DELFIN's OWN namespace
+# ``~/.delfin/projects/<slug>/memory/`` (MEMORY.md index + typed sidecar
+# files) — NOT ``~/.claude`` (that is Claude Code's directory). An existing
+# store at the legacy ~/.claude location is migrated on first access. This is
+# the single source of truth the prompt loader recalls each turn; the flat
+# ``~/.delfin/agent_memory.json`` store is kept only for backwards-compat.
 
 _TYPE_LABELS = {
     "user": "User (background)",
@@ -242,23 +240,54 @@ def _slugify(text: str, max_len: int = 60) -> str:
     return (s or "memory")[:max_len].rstrip("-") or "memory"
 
 
-def _claude_memory_dir(repo_root: Path) -> Path:
-    slug = "-" + str(repo_root.resolve()).replace("/", "-").lstrip("-")
-    return Path.home() / ".claude" / "projects" / slug / "memory"
+def _project_slug(repo_root: Path) -> str:
+    return "-" + str(Path(repo_root).resolve()).replace("/", "-").lstrip("-")
 
 
-def _claude_plans_dir(repo_root: Path) -> Path:
-    """Sibling of the memory dir — plan files written by Plan Mode after
-    user approval land here so the user can re-open them in a later
-    session without going through the tool round-trip."""
-    slug = "-" + str(repo_root.resolve()).replace("/", "-").lstrip("-")
-    return Path.home() / ".claude" / "projects" / slug / "plans"
+def _migrate_legacy_dir(old: Path, new: Path) -> None:
+    """One-time move of a per-project store out of the legacy ~/.claude path
+    into DELFIN's own ~/.delfin namespace (same filesystem → cheap rename).
+    Best-effort; never raises."""
+    try:
+        if old.is_dir() and not new.exists():
+            new.parent.mkdir(parents=True, exist_ok=True)
+            old.rename(new)
+    except Exception:
+        pass
+
+
+def _delfin_memory_dir(repo_root: Path) -> Path:
+    """DELFIN's OWN per-project memory store: ``~/.delfin/projects/<slug>/
+    memory`` (not ``~/.claude`` — that is Claude Code's namespace). Migrates
+    an existing store from the legacy ~/.claude location on first access."""
+    slug = _project_slug(repo_root)
+    new = Path.home() / ".delfin" / "projects" / slug / "memory"
+    _migrate_legacy_dir(
+        Path.home() / ".claude" / "projects" / slug / "memory", new)
+    return new
+
+
+def _delfin_plans_dir(repo_root: Path) -> Path:
+    """Sibling of the memory dir — approved Plan-Mode plans land here so the
+    user can re-open them in a later session. Under DELFIN's own ~/.delfin
+    (migrated from the legacy ~/.claude location)."""
+    slug = _project_slug(repo_root)
+    new = Path.home() / ".delfin" / "projects" / slug / "plans"
+    _migrate_legacy_dir(
+        Path.home() / ".claude" / "projects" / slug / "plans", new)
+    return new
+
+
+# Back-compat aliases — the per-project store moved from ~/.claude (Claude
+# Code's namespace) into DELFIN's own ~/.delfin. Old callers/tests keep working.
+_claude_memory_dir = _delfin_memory_dir
+_claude_plans_dir = _delfin_plans_dir
 
 
 def list_plans(repo_root: Path | str) -> list[dict]:
     """Return one record per saved plan-file under the project's plans
     dir. Newest first (by created_at frontmatter; falls back to mtime)."""
-    plans_dir = _claude_plans_dir(Path(repo_root))
+    plans_dir = _delfin_plans_dir(Path(repo_root))
     if not plans_dir.is_dir():
         return []
     out: list[dict] = []
@@ -348,7 +377,7 @@ def save_plan(
     display_title = (title or first_meaningful or "plan")[:80].strip() or "plan"
     slug = _slugify(display_title)
 
-    plans_dir = _claude_plans_dir(Path(repo_root))
+    plans_dir = _delfin_plans_dir(Path(repo_root))
     plans_dir.mkdir(parents=True, exist_ok=True)
 
     fname = f"{slug}.md"
@@ -399,7 +428,7 @@ def save_typed_memory(
     display_title = (title or first_line)[:80].strip() or "memory"
     slug = _slugify(display_title)
 
-    memory_dir = _claude_memory_dir(Path(repo_root))
+    memory_dir = _delfin_memory_dir(Path(repo_root))
     memory_dir.mkdir(parents=True, exist_ok=True)
 
     fname = f"{memory_type}_{slug}.md"
@@ -496,7 +525,7 @@ def list_typed_memories(repo_root: Path | str) -> list[dict]:
     Sorted by type then name. Each record: file, path, name, description,
     type, body. This is the single source of truth for the agent's learned
     memories (the legacy flat JSON store is no longer used for recall)."""
-    memory_dir = _claude_memory_dir(Path(repo_root))
+    memory_dir = _delfin_memory_dir(Path(repo_root))
     if not memory_dir.is_dir():
         return []
     out: list[dict] = []
@@ -543,7 +572,7 @@ def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None
     target = (name_or_file or "").strip().lower()
     if not target:
         return None
-    memory_dir = _claude_memory_dir(Path(repo_root))
+    memory_dir = _delfin_memory_dir(Path(repo_root))
     match = None
     for rec in list_typed_memories(repo_root):
         if (rec["file"].lower() == target
@@ -663,7 +692,7 @@ def verify_typed_memories(repo_root: Path | str) -> list[dict]:
     list of ``{file, stale_refs}`` records for any file containing one or
     more dead references. Empty list = everything still resolves.
     """
-    memory_dir = _claude_memory_dir(Path(repo_root))
+    memory_dir = _delfin_memory_dir(Path(repo_root))
     if not memory_dir.is_dir():
         return []
     results: list[dict] = []

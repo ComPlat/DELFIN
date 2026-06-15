@@ -8392,8 +8392,8 @@ def create_tab(ctx):
                     for ref in entry["stale_refs"][:8]:
                         lines.append(f"    - {ref}")
                 lines.append(
-                    "Consider /forget <idx> for outdated entries, or edit "
-                    "the .md files in ~/.claude/projects/<slug>/memory/."
+                    "Consider /forget <name> for outdated entries, or edit "
+                    "the .md files in ~/.delfin/projects/<slug>/memory/."
                 )
                 _append_system_message("\n".join(lines))
             return True
@@ -12704,7 +12704,7 @@ def create_tab(ctx):
 
                     # Persistent learned memories are recalled by the prompt
                     # loader directly from the typed store (the single source
-                    # of truth: ~/.claude/projects/<slug>/memory/MEMORY.md +
+                    # of truth: ~/.delfin/projects/<slug>/memory/MEMORY.md +
                     # files, the "External Memory" block). Here we only load
                     # the project instruction files (CLAUDE.md / AGENTS.md /
                     # DELFIN.md) from cwd up.

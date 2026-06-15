@@ -176,14 +176,14 @@ class PromptLoader:
     ) -> str:
         """Load the user's per-project memory for the current repo.
 
-        Looks at ``~/.claude/projects/<slug>/memory/MEMORY.md`` and the
+        Looks at ``~/.delfin/projects/<slug>/memory/MEMORY.md`` (DELFIN's own
+        namespace — migrated from the legacy ~/.claude location) and the
         ``[Title](file.md)`` references inside it.  Returns a flat
         markdown string suitable for prompt injection, capped at
         ``max_chars`` so it can never blow up the context.
 
-        The repo is mapped to a slug by replacing ``/`` with ``-`` —
-        the ``~/.claude/projects/`` directory is the .delfin on-disk
-        slug convention. Empty string if nothing is found.
+        The repo is mapped to a slug by replacing ``/`` with ``-``.
+        Empty string if nothing is found.
 
         Failures (no home dir, missing files, encoding issues) degrade
         silently to an empty string — this is best-effort context.
@@ -193,11 +193,17 @@ class PromptLoader:
         except Exception:
             return ""
         repo_root = Path(self.repo_root).resolve()
-        slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
-        base = (
-            memory_root if memory_root is not None
-            else home / ".claude" / "projects" / slug / "memory"
-        )
+        if memory_root is not None:
+            base = memory_root
+        else:
+            # DELFIN's own per-project store under ~/.delfin (migrated from the
+            # legacy ~/.claude location by _delfin_memory_dir).
+            try:
+                from .memory_store import _delfin_memory_dir
+                base = _delfin_memory_dir(repo_root)
+            except Exception:
+                slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+                base = home / ".delfin" / "projects" / slug / "memory"
         index = base / "MEMORY.md"
         if not index.exists():
             return ""
