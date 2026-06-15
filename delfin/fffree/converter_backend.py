@@ -132,7 +132,7 @@ def _xyz(syms, P) -> str:
                      for s, (x, y, z) in zip(syms, P))
 
 
-def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
+def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (a non-coordinating atom intruding into the metal's first shell) — so fffree
@@ -146,7 +146,12 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
     over-coordination checks use the donors directly instead of the cn-closest-heavy
     heuristic.  This is essential for CHELATES, whose ring backbone legitimately sits
     ~2.4-2.9 A from the metal: the heuristic miscounts a ring carbon as a donor (wrong
-    cshm) or as over-coordination, falsely rejecting correct chelate geometry."""
+    cshm) or as over-coordination, falsely rejecting correct chelate geometry.
+
+    ``exempt_pairs`` (optional set of (min,max) global index pairs): heavy-heavy
+    bonds whose SHORT length is chemically correct (genuine triple/multiple bonds
+    such as a C≡O carbonyl ~1.12 A or a C≡N nitrile), so they are NOT counted as
+    collapsed.  Default None = byte-identical to the historic gate."""
     if os.environ.get("DELFIN_FFFREE_SELFGATE", "1") == "0":
         return True
     P = np.asarray(P, dtype=float)
@@ -154,7 +159,15 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None) -> bool:
         return False
     syms = list(syms)
     bonds = _bd._geometric_bonds(syms, P)
-    if _bd._count_collapsed(syms, P, bonds) > 0:        # any collapsed heavy bond
+    if exempt_pairs:
+        _ex = {(min(i, j), max(i, j)) for i, j in exempt_pairs}
+        n_coll = sum(1 for i, j in bonds
+                     if not (_bd._is_metal(syms[i]) or _bd._is_metal(syms[j]))
+                     and (min(i, j), max(i, j)) not in _ex
+                     and float(np.linalg.norm(P[i] - P[j])) < 0.82 * _bd._ideal_bond(syms[i], syms[j]))
+        if n_coll > 0:
+            return False
+    elif _bd._count_collapsed(syms, P, bonds) > 0:      # any collapsed heavy bond
         return False
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
@@ -277,6 +290,29 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     return results or None
 
 
+def _fffree_hapto_isomers(d, max_isomers):
+    """Build a hapto complex (≥1 η-face) on the FF-free path: rigid-η-unit
+    construction (assemble_complex.assemble_hapto) keeps each Cp/arene/diene/allyl
+    ring at its crystallographic metal→centroid distance instead of collapsing the
+    ring carbons onto the metal (the legacy hapto defect).  v1 emits ONE faithful
+    build per complex (η/σ isomer enumeration is a later increment).  Returns
+    [(xyz, label)] or None (-> legacy fallback).  Env-gated upstream (the dict only
+    carries 'has_eta' when DELFIN_FFFREE_RIGID_HAPTO=1)."""
+    try:
+        built = AC.assemble_hapto(d["metal"], d["geometry"], d)
+    except Exception:
+        return None
+    if built is None:
+        return None
+    syms, P, donors, exempt_pairs = built
+    syms, P = _maybe_relax(syms, P)
+    if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                           donors=donors, exempt_pairs=exempt_pairs):
+        return None                                     # never worse than legacy
+    geom_tag = d["geometry"].split()[0]
+    return [(_xyz(syms, P), f"{geom_tag}-hapto-1")]
+
+
 def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
     d = DEC.decompose(smiles)
@@ -285,6 +321,8 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None
+    if d.get("has_eta"):
+        return _fffree_hapto_isomers(d, max_isomers)
     if d.get("has_chelate"):
         return _fffree_chelate_isomers(d, geom_key, max_isomers)
     # ligand identity = canonical SMILES of each fragment; group by it

@@ -892,6 +892,239 @@ def build_and_relax(metal: str, geometry: str, vertex_specs, relax: bool = True)
     return syms, P
 
 
+def _eta_centroid_distance(metal, eta_n):
+    """Crystallographic metal→ring-centroid distance (Å) for an η-face.  Pulls the
+    open-source literature-averaged table from smiles_converter (a hard-coded table
+    of published averages; reads no proprietary database file) and falls back to its
+    geometric estimator.  Deterministic; always finite."""
+    try:
+        from delfin.smiles_converter import _target_mc_dist
+        d = float(_target_mc_dist(metal, int(eta_n)))
+        if np.isfinite(d) and d > 0.5:
+            return d
+    except Exception:
+        pass
+    # last-resort: covalent M-C sum minus a ring-radius slip (always finite)
+    rmc = PLY.COV.get(metal, 1.5) + PLY.COV.get("C", 0.76)
+    if eta_n >= 3:
+        rr = 1.40 / (2.0 * np.sin(np.pi / max(eta_n, 3)))
+        v = rmc * rmc - rr * rr
+        return float(np.sqrt(v)) if v > 0.25 else 0.80 * rmc
+    return 0.85 * rmc
+
+
+def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist):
+    """Rigidly seat an η-face so its ring CENTROID sits on the polyhedron vertex
+    direction ``Vunit`` at distance ``mc_dist`` from the metal (origin), with the
+    ring plane PERPENDICULAR to the M→centroid axis.  The whole ligand (ring +
+    substituents) is moved as one rigid body, so substituents are dragged with the
+    ring and the η-carbons sit at the ring radius AROUND the centroid (never on the
+    metal).  Returns the transformed coords, or None on degeneracy.
+
+    Geometry-only, deterministic.  The in-plane spin is fixed canonically (first
+    ring atom placed at azimuth 0) so two builds of the same input are identical."""
+    lP = np.asarray(lP, float)
+    ring = [int(i) for i in eta_idxs]
+    if len(ring) < 2:
+        return None
+    R = lP[ring]
+    cen = R.mean(axis=0)                                   # ring centroid (ligand frame)
+    X = R - cen
+    # ring-plane normal via SVD (smallest singular direction); robust for any n>=2.
+    try:
+        _, _, Vt = np.linalg.svd(X)
+    except Exception:
+        return None
+    if len(ring) == 2:
+        # η2 (alkene): "plane normal" is ambiguous; use the C=C bond direction as the
+        # in-plane axis and pick a normal perpendicular to it (deterministic).
+        nrm = Vt[2] if Vt.shape[0] > 2 else np.cross(Vt[0], np.array([0.0, 0.0, 1.0]))
+    else:
+        nrm = Vt[2]
+    nn = np.linalg.norm(nrm)
+    if nn < 1e-8:
+        return None
+    nrm = nrm / nn
+    Vunit = np.asarray(Vunit, float)
+    Vunit = Vunit / np.linalg.norm(Vunit)
+    target_centroid = Vunit * float(mc_dist)
+    # Rotate so the ring-plane normal aligns with the M→centroid axis: the metal
+    # then sits along the ring normal (face-on coordination), exactly as in a real
+    # piano-stool / metallocene.  Sign chosen so the ring is on the FAR side of the
+    # metal (centroid points away from origin along +Vunit).
+    Rrot = _rot_align(nrm, Vunit)
+    Q = (lP - cen) @ Rrot.T + target_centroid
+    if not np.all(np.isfinite(Q)):
+        return None
+    return Q
+
+
+def assemble_hapto(metal, geometry, d):
+    """Build a hapto complex on the FF-free path: η-faces are placed as RIGID rings
+    on their centroid vertices; σ-donors are oriented onto the remaining vertices
+    (homoleptic/heteroleptic monodentate).  ``d`` is a rigid-hapto decompose dict
+    (has per-ligand 'is_eta'/'eta_local_idxs'/'eta_n').  v1: chelating σ-arms are
+    placed by the existing rigid chelate block.  Returns (syms, P, donors) where
+    ``donors`` are the global indices fffree treats as the coordination shell (one
+    representative atom per η-face + every σ-donor), or None on failure.
+
+    Universal, geometry-only, deterministic (fixed seeds, canonical in-plane spin).
+
+    Returns the tuple (syms, P, donors, exempt_pairs) — exempt_pairs are the global
+    index pairs of GENUINE multiple bonds (C≡O carbonyls, C≡N nitriles, C=C, …) whose
+    short length is chemically correct, so the self-gate does not mistake them for a
+    collapse."""
+    ref = MSB._ref_vectors(geometry)
+    n_vert = len(ref)
+    ligands = d["ligands"]
+    # how many vertices each ligand occupies (η-face = 1, σ = denticity)
+    occ = [(1 if lg.get("is_eta") else lg["denticity"]) for lg in ligands]
+    if sum(occ) != n_vert:
+        return None
+    # Deterministic vertex assignment: η-faces first (lowest vertex indices), then
+    # σ-donors in ligand order.  Simple + reproducible; isomer enumeration is a
+    # later increment (v1 emits ONE faithful build per hapto complex).
+    order = sorted(range(len(ligands)), key=lambda i: (0 if ligands[i].get("is_eta") else 1, i))
+    out_syms = [metal]
+    placed = [np.zeros(3)]
+    placed_syms = [metal]
+    donors = []
+    relax_frags = []
+    exempt_pairs = []        # global index pairs that are genuine double/triple bonds
+    pos = 1
+    vi = 0
+    fixed = {0}
+
+    def _collect_exempt(frag_mol, lig_offset):
+        """Local heavy-atom double/triple bonds -> global index pairs (the AddHs
+        ligand block starts at lig_offset+1 in the assembled coords)."""
+        for b in frag_mol.GetBonds():
+            bt = b.GetBondTypeAsDouble()
+            if bt >= 1.5:                       # aromatic(1.5)/double(2)/triple(3)
+                a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+                if (frag_mol.GetAtomWithIdx(a1).GetAtomicNum() > 1
+                        and frag_mol.GetAtomWithIdx(a2).GetAtomicNum() > 1):
+                    g1 = lig_offset + 1 + a1
+                    g2 = lig_offset + 1 + a2
+                    exempt_pairs.append((min(g1, g2), max(g1, g2)))
+    for li in order:
+        lg = ligands[li]
+        lig_offset = pos - 1
+        if lg.get("is_eta"):
+            confs = _ligand_confs_from_mol(lg["mol"])
+            if confs is None:
+                return None
+            lsyms, coords_list, lmol = confs
+            Vunit = ref[vi] / np.linalg.norm(ref[vi])
+            mc = _eta_centroid_distance(metal, lg["eta_n"])
+            best_Q, best_clash = None, 1e18
+            for lP in coords_list:
+                Q = _place_eta_ring(metal, lsyms, lP, lg["eta_local_idxs"], Vunit, mc)
+                if Q is None:
+                    continue
+                cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+                if cl < best_clash:
+                    best_clash, best_Q = cl, Q
+                if cl == 0:
+                    break
+            if best_Q is None:
+                return None
+            out_syms += lsyms
+            for row in best_Q:
+                placed.append(row)
+            placed_syms += lsyms
+            # representative donor = ring atom closest to the metal (for the self-gate)
+            ring_globals = [lig_offset + 1 + int(j) for j in lg["eta_local_idxs"]]
+            rep = min(ring_globals, key=lambda g: float(np.linalg.norm(placed[g])))
+            donors.append(rep)
+            fixed.update(lig_offset + 1 + int(j) for j in lg["eta_local_idxs"])
+            relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
+            _collect_exempt(lg["mol"], lig_offset)
+            pos += len(lsyms)
+            vi += 1
+        elif lg["denticity"] == 1:
+            confs = _ligand_confs_from_mol(lg["mol"])
+            if confs is None:
+                return None
+            lsyms, coords_list, lmol = confs
+            di = lg["donor_local_idxs"][0]
+            Vunit = ref[vi] / np.linalg.norm(ref[vi])
+            md = MSB.md_distance(metal, lsyms[di])
+            best_Q, best_clash = None, 1e18
+            for lP in coords_list:
+                if len(lsyms) == 1:
+                    Q = (Vunit * md).reshape(1, 3)
+                else:
+                    lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+                    Q = (lPv - lPv[di]) @ _rot_align(lp, -Vunit).T + Vunit * md
+                cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+                if cl < best_clash:
+                    best_clash, best_Q = cl, Q
+                if cl == 0:
+                    break
+            if best_Q is None:
+                return None
+            out_syms += lsyms
+            for row in best_Q:
+                placed.append(row)
+            placed_syms += lsyms
+            donors.append(lig_offset + 1 + di)
+            fixed.add(lig_offset + 1 + di)
+            relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
+            _collect_exempt(lg["mol"], lig_offset)
+            pos += len(lsyms)
+            vi += 1
+        else:
+            # chelating σ-arm: rigid-fit onto the next `denticity` vertices.
+            dent = lg["denticity"]
+            confs = _ligand_confs_from_mol(lg["mol"])
+            if confs is None:
+                return None
+            lsyms, coords_list, lmol = confs
+            dons_d = _canonical_arm_order(lg, dent)
+            verts = list(range(vi, vi + dent))
+            targets = [ref[verts[i]] / np.linalg.norm(ref[verts[i]])
+                       * MSB.md_distance(metal, lsyms[dons_d[i]]) for i in range(dent)]
+            best_Q, best_clash = None, 1e18
+            for lP in coords_list:
+                if dent == 2:
+                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
+                                             targets[0], targets[1])
+                else:
+                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=True)
+                if Q is None:
+                    continue
+                cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+                if cl < best_clash:
+                    best_clash, best_Q = cl, Q
+                if cl == 0:
+                    break
+            if best_Q is None:
+                return None
+            out_syms += lsyms
+            for row in best_Q:
+                placed.append(row)
+            placed_syms += lsyms
+            for di in dons_d:
+                donors.append(lig_offset + 1 + di)
+                fixed.add(lig_offset + 1 + di)
+            relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
+            _collect_exempt(lg["mol"], lig_offset)
+            pos += len(lsyms)
+            vi += dent
+    P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+    # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
+    # ring + constructed coordination are preserved; periphery relaxes only).
+    try:
+        from delfin.fffree.refine import refine as _refine
+        P = _refine(out_syms, P, fixed)
+    except Exception:
+        pass
+    if not np.all(np.isfinite(P)):
+        return None
+    return out_syms, P, sorted(set(donors)), exempt_pairs
+
+
 def assemble_from_config(metal, geometry, config, ligands, refine=True):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
