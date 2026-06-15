@@ -769,6 +769,7 @@ class AgentEngine:
         on_thinking: Callable[[str], None] | None = None,
         thinking_budget: int = 0,
         max_tokens: int = 0,
+        images: list[str] | None = None,
     ) -> str:
         """Send a user message and stream the response.
 
@@ -823,7 +824,7 @@ class AgentEngine:
             _hooks_cfg = None
             _ws = None
 
-        self.messages.append({"role": "user", "content": user_message})
+        self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
         # Concurrent stop/send can leave consecutive user messages.
         self._sanitize_messages()
@@ -997,6 +998,41 @@ class AgentEngine:
                 self.messages.pop()
 
         return full_response
+
+    def _build_user_message(
+        self, text: str, images: list[str] | None,
+    ) -> dict[str, Any]:
+        """Build the user message dict.
+
+        When images are attached AND the active model is vision-capable on an
+        OpenAI-compatible backend (Ollama / KIT / OpenAI), the pixels are sent
+        as multimodal ``image_url`` content so the model actually SEES them.
+        Otherwise a plain-text message (the caller adds a note about the
+        attached files). Claude uses a different image format → text fallback.
+        """
+        if not images:
+            return {"role": "user", "content": text}
+        try:
+            if self.provider not in ("openai", "kit", "ollama"):
+                return {"role": "user", "content": text}
+            from .image_input import (
+                load_image, model_supports_vision, to_openai_content)
+            model = getattr(self.client, "model", "") or ""
+            caps = getattr(self, "_active_capabilities", None)
+            if not model_supports_vision(model, caps):
+                return {"role": "user", "content": text}
+            loaded = []
+            for p in images:
+                try:
+                    loaded.append(load_image(p))
+                except Exception:
+                    continue
+            if not loaded:
+                return {"role": "user", "content": text}
+            content = to_openai_content(text, loaded, model=model, caps=caps)
+            return {"role": "user", "content": content}
+        except Exception:
+            return {"role": "user", "content": text}
 
     def _sanitize_messages(self) -> None:
         """Ensure message history has proper user/assistant alternation.

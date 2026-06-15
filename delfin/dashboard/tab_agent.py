@@ -12726,21 +12726,33 @@ def create_tab(ctx):
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
                     # so we do not pay twice for the same profile tokens.
-                    # Phase 5f: note pending file uploads so the agent
-                    # knows where to find them. Cleared after dispatch.
+                    # Pending file uploads. Image files go straight to a
+                    # vision-capable model as pixels (image_url content);
+                    # everything else (and images on a non-vision model) is
+                    # referenced as a file path the agent can read_file.
                     _pending_imgs = state.get("_pending_images") or []
+                    _vision_images: list[str] = []
                     if _pending_imgs:
-                        _img_lines = "\n".join(
-                            f"  - {p}" for p in _pending_imgs
-                        )
-                        current_msg = (
-                            f"{current_msg}\n\n"
-                            f"[The user attached these files — "
-                            f"read them with read_file (for text/code/configs) "
-                            f"or notebook_read (for .ipynb). Images can be "
-                            f"described with whatever vision tools you have:\n"
-                            f"{_img_lines}]"
-                        )
+                        import mimetypes as _mt
+                        from delfin.agent.image_input import (
+                            model_supports_vision as _msv, _ALLOWED_MIMES)
+                        _model = getattr(engine.client, "model", "") or ""
+                        _caps = getattr(engine, "_active_capabilities", None)
+                        _imgs = [p for p in _pending_imgs
+                                 if _mt.guess_type(p)[0] in _ALLOWED_MIMES]
+                        _refs = [p for p in _pending_imgs if p not in _imgs]
+                        if _imgs and _msv(_model, _caps):
+                            _vision_images = _imgs            # pixels → the model
+                        else:
+                            _refs = list(_pending_imgs)       # no vision → ref all
+                        if _refs:
+                            _img_lines = "\n".join(f"  - {p}" for p in _refs)
+                            current_msg = (
+                                f"{current_msg}\n\n"
+                                f"[The user attached these files — read them with "
+                                f"read_file (for text/code/configs) or notebook_read "
+                                f"(for .ipynb):\n{_img_lines}]"
+                            )
                         state["_pending_images"] = []
                         try:
                             image_upload.value = ()
@@ -12798,6 +12810,7 @@ def create_tab(ctx):
                         on_thinking=_on_thinking,
                         thinking_budget=_budget,
                         memory_context=_memory,
+                        images=_vision_images,
                     )
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
