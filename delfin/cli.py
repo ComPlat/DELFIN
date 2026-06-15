@@ -1833,15 +1833,18 @@ def main(argv: list[str] | None = None) -> int:
             metals, config
         )
     
-        D45_SET = {
-            'Y','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd',
-            'Hf','Ta','W','Re','Os','Ir','Pt','Au','Hg','Rf','Db','Sg','Bh','Hs','Mt','Ds','Rg','Cn'
-        }
-        use_rel = any(m in D45_SET for m in metals)
+        # Relativity is decided by DELFIN's single source of truth
+        # (utils._should_use_rel) so this path and the basis-set path can
+        # never drift apart. It is True for 4d/5d transition metals AND for
+        # lanthanides/actinides (4f/5f) — the f-block was previously missing
+        # from the local set here, so an f-block complex (e.g. Dy3+) had its
+        # relativity forced off and ran with a non-relativistic basis.
+        from .utils import _should_use_rel
+        use_rel = _should_use_rel(metals)
         if not use_rel:
             if str(config.get('relativity', '')).lower() != 'none':
-                logger.info("3d-only system detected → relativity=none (ZORA/X2C/DKH is deactivated).")
-            config['relativity'] = 'none' 
+                logger.info("Light-element system (no 4d/5d/4f/5f metal) → relativity=none (ZORA/X2C/DKH is deactivated).")
+            config['relativity'] = 'none'
     
     
         electron_result = calculate_total_electrons_txt(str(control_file_path))

@@ -10,12 +10,24 @@ from delfin.common.paths import resolve_path
 # ------------------------------------------------------------------------------------
 # Transition metals (IUPAC blocks)
 # ------------------------------------------------------------------------------------
+# Lanthanides (4f, La–Lu) and actinides (5f, Ac–Lr). They are detected as
+# metals AND routed through the relativistic path: f-elements REQUIRE a
+# scalar-relativistic treatment (ZORA/X2C/DKH) plus a SARC-family basis.
+# They were previously absent from every set, so an f-block complex (e.g. a
+# Dy3+ system) was seen as "no transition metal" and silently ran
+# non-relativistically with a non-relativistic basis — wrong physics. See
+# classify_tm_presence / _should_use_rel.
+_TM_F = {
+    'La','Ce','Pr','Nd','Pm','Sm','Eu','Gd','Tb','Dy','Ho','Er','Tm','Yb','Lu',
+    'Ac','Th','Pa','U','Np','Pu','Am','Cm','Bk','Cf','Es','Fm','Md','No','Lr',
+}
+
 _TM_LIST: List[str] = [
     'Sc','Ti','V','Cr','Mn','Fe','Co','Ni','Cu','Zn',
     'Y','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd',
     'Hf','Ta','W','Re','Os','Ir','Pt','Au','Hg','Rf',
-    'Db','Sg','Bh','Hs','Mt','Ds','Rg','Cn'
-]
+    'Db','Sg','Bh','Hs','Mt','Ds','Rg','Cn',
+] + sorted(_TM_F)
 
 _TM_D3  = {'Sc','Ti','V','Cr','Mn','Fe','Co','Ni','Cu','Zn'}
 _TM_D45 = {'Y','Zr','Nb','Mo','Tc','Ru','Rh','Pd','Ag','Cd',
@@ -144,22 +156,29 @@ def search_transition_metals(inputfile: str) -> List[str]:
 def classify_tm_presence(found_metals: List[str]) -> str:
     """Classify transition metal composition for computational policy.
 
-    Determines computational approach based on d-orbital period:
+    Determines computational approach based on orbital block:
     - 3d metals: Sc-Zn (typically no relativistic effects needed)
     - 4d/5d metals: Y-Cd, Hf-Hg (require relativistic corrections)
+    - 4f/5f metals: La-Lu, Ac-Lr (require relativistic corrections + SARC)
 
     Args:
         found_metals: List of transition metal symbols
 
     Returns:
-        Classification: 'none', '3d', '4d5d', or 'mixed'
+        Classification: 'none', '3d', '4d5d', '4f5f', or 'mixed'
+        ('mixed' = a light 3d metal together with a heavy 4d/5d/4f/5f one;
+        '4f5f' covers any f-block presence — both route through relativity.)
     """
     if not found_metals:
         return 'none'
     has_3d  = any(m in _TM_D3  for m in found_metals)
     has_d45 = any(m in _TM_D45 for m in found_metals)
-    if has_3d and has_d45:
+    has_f   = any(m in _TM_F   for m in found_metals)
+    heavy = has_d45 or has_f
+    if has_3d and heavy:
         return 'mixed'
+    if has_f:
+        return '4f5f'
     if has_d45:
         return '4d5d'
     return '3d'
@@ -188,8 +207,9 @@ def _rel_method_token(config: Dict[str, Any]) -> str:
 def _should_use_rel(found_metals: List[str]) -> bool:
     """Determine if relativistic corrections are needed.
 
-    Policy: Apply relativistic methods for 4d/5d metals or mixed systems.
-    Pure 3d metal systems use non-relativistic methods.
+    Policy: Apply relativistic methods for 4d/5d transition metals, for
+    lanthanides/actinides (4f/5f), or for mixed systems. Pure 3d metal
+    systems (and metal-free systems) use non-relativistic methods.
 
     Args:
         found_metals: List of transition metal symbols
@@ -198,7 +218,7 @@ def _should_use_rel(found_metals: List[str]) -> bool:
         True if relativistic corrections should be applied
     """
     cls = classify_tm_presence(found_metals)
-    return cls in ('4d5d', 'mixed')
+    return cls in ('4d5d', '4f5f', 'mixed')
 
 
 def select_rel_and_aux(found_metals: List[str], config: Dict[str, Any]) -> Tuple[str, str, bool]:
