@@ -5507,6 +5507,77 @@ class OpenAIClient(_BaseClient):
                         "parameters": _tool.schema or {"type": "object"},
                     },
                 })
+            # MCP resources + prompts surface as on-demand meta-tools so the
+            # agent can read a resource / render a prompt mid-task. Advertised
+            # only when connected servers actually expose them, with the
+            # available items listed so the model knows what it can ask for.
+            try:
+                _mcp_resources = _registry.discover_resources()
+            except Exception:
+                _mcp_resources = []
+            try:
+                _mcp_prompts = _registry.discover_prompts()
+            except Exception:
+                _mcp_prompts = []
+            if _mcp_resources:
+                _res_list = "; ".join(
+                    f"{r.server}:{r.uri}" + (f" ({r.name})" if r.name else "")
+                    for r in _mcp_resources[:40]
+                )
+                advertised_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": "mcp_read_resource",
+                        "description": (
+                            "Read the contents of a resource exposed by a "
+                            "connected MCP server. Available resources: "
+                            + _res_list
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "server": {"type": "string",
+                                           "description": "MCP server name"},
+                                "uri": {"type": "string",
+                                        "description": "Resource URI to read"},
+                            },
+                            "required": ["server", "uri"],
+                        },
+                    },
+                })
+            if _mcp_prompts:
+                _prompt_list = "; ".join(
+                    p.namespaced_name
+                    + (f" — {p.description}" if p.description else "")
+                    for p in _mcp_prompts[:40]
+                )
+                advertised_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": "mcp_get_prompt",
+                        "description": (
+                            "Render a prompt template from a connected MCP "
+                            "server and get its messages as text. Available "
+                            "prompts: " + _prompt_list
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Namespaced prompt name "
+                                                   "(mcp__server__prompt)",
+                                },
+                                "arguments": {
+                                    "type": "object",
+                                    "description": "Prompt arguments as "
+                                                   "key/value pairs",
+                                },
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                })
         except Exception:
             _mcp_tools = []
 
@@ -5816,11 +5887,14 @@ class OpenAIClient(_BaseClient):
                     # MCP tools come prefixed mcp__server__name and route
                     # through the registry, bypassing the doc executor.
                     is_mcp = fn_name.startswith("mcp__")
+                    # MCP resource/prompt meta-tools (single underscore).
+                    is_mcp_meta = fn_name in (
+                        "mcp_read_resource", "mcp_get_prompt")
 
                     # Emit tool_use event for UI display
                     yield StreamEvent(
                         type="tool_use",
-                        tool_name=fn_name if is_mcp
+                        tool_name=fn_name if (is_mcp or is_mcp_meta)
                                   else f"mcp__{ns_prefix}__{fn_name}",
                         tool_input=json.dumps(fn_args),
                     )
@@ -5843,6 +5917,24 @@ class OpenAIClient(_BaseClient):
                             result = json.dumps({
                                 "error": f"MCP dispatch failed: {exc}"
                             })
+                    elif is_mcp_meta:
+                        try:
+                            from . import mcp_client as _mcp
+                            _ws = (self._permissions.workspace
+                                   if self._permissions else None)
+                            _reg = _mcp.get_registry(_ws)
+                            if fn_name == "mcp_read_resource":
+                                result = _reg.read_resource(
+                                    str(fn_args.get("server", "")),
+                                    str(fn_args.get("uri", "")))
+                            else:
+                                result = _reg.get_prompt(
+                                    str(fn_args.get("name", "")),
+                                    fn_args.get("arguments") or {})
+                        except Exception as exc:
+                            result = json.dumps({
+                                "error": f"MCP {fn_name} failed: {exc}"
+                            })
                     else:
                         result = _doc_executor.execute(
                             fn_name, fn_args, permissions=self._permissions
@@ -5851,7 +5943,7 @@ class OpenAIClient(_BaseClient):
                     # Emit tool_result event for UI display
                     yield StreamEvent(
                         type="tool_result",
-                        tool_name=fn_name if is_mcp
+                        tool_name=fn_name if (is_mcp or is_mcp_meta)
                                   else f"mcp__{ns_prefix}__{fn_name}",
                         tool_output=result[:2000],
                     )
