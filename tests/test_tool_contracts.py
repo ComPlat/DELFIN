@@ -337,3 +337,26 @@ def test_default_error_kind_is_none():
     # The historical two-arg construction stays valid; error_kind defaults NONE.
     r = StepResult("x", StepStatus.SUCCESS)
     assert r.error_kind is ErrorKind.NONE
+
+
+# --- OCCUPIER building block (thin wrapper over the legacy engine) ---------
+
+
+def test_occupier_registered_and_described():
+    from delfin.tools import describe, list_steps
+
+    assert "occupier" in list_steps()
+    c = describe("occupier")
+    assert c.category == "dft"
+    assert "orca" in c.requires_binaries
+    assert c.produces_geometry is False
+
+
+def test_occupier_fails_cleanly_without_control(tmp_path):
+    """Without a CONTROL.txt the adapter must fail fast (no engine subprocess)."""
+    from delfin.tools import run_step
+    from delfin.tools._types import ErrorKind, StepStatus
+
+    r = run_step("occupier", work_dir=str(tmp_path))
+    assert r.status == StepStatus.FAILED
+    assert r.error_kind == ErrorKind.MISSING_INPUT

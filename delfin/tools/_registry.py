@@ -51,6 +51,7 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.packmol",
         "delfin.tools.adapters.multiwfn",
         "delfin.tools.adapters.imag",
+        "delfin.tools.adapters.occupier",
         "delfin.tools.adapters.guppy",
         "delfin.tools.adapters.mlp",
         "delfin.tools.adapters.xtb_solvator",
