@@ -22,9 +22,12 @@ Pipeline usage::
     print(results.summary())
 """
 
-from delfin.tools._types import StepError, StepResult, StepStatus
+from delfin.tools._types import ErrorKind, StepError, StepResult, StepStatus
 from delfin.tools._runner import run_step, step_as_workflow_job
 from delfin.tools._registry import list_steps, register
+from delfin.tools._spec import DataKeySpec, ParamSpec, StepContract
+from delfin.tools._catalog import catalog, compatible_successors, describe
+from delfin.tools._serialize import PipelineSerializationError, register_callable
 from delfin.tools.pipeline import Pipeline, PipelineInserter, PipelineResult, PipelineTemplate
 
 __all__ = [
@@ -37,6 +40,17 @@ __all__ = [
     "StepResult",
     "StepStatus",
     "StepError",
+    "ErrorKind",
     "list_steps",
     "register",
+    # Self-describing contract + discovery
+    "ParamSpec",
+    "DataKeySpec",
+    "StepContract",
+    "describe",
+    "catalog",
+    "compatible_successors",
+    # Serialization (blocks as data)
+    "register_callable",
+    "PipelineSerializationError",
 ]

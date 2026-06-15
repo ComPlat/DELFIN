@@ -9,12 +9,28 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 
 
 class ImagFixAdapter(StepAdapter):
     name = "imag_fix"
     description = "Eliminate imaginary frequencies via iterative IMAG optimization"
     produces_geometry = True
+    category = "dft"
+    params = (
+        ParamSpec("charge", "int", required=True, description="Molecular charge"),
+        ParamSpec("mult", "int", required=True, description="Spin multiplicity (2S+1)"),
+        ParamSpec("solvent", "str", required=True, description="Implicit solvent name"),
+        ParamSpec("metals", "list", required=True, description="Metal elements in the system"),
+        ParamSpec("main_basisset", "str", required=True, description="Main basis set"),
+        ParamSpec("metal_basisset", "str", required=True, description="Basis set for metals"),
+        ParamSpec("hess_file", "path", required=True,
+                  description="Path to the upstream .hess (hessian capability)"),
+        ParamSpec("broken_sym", "bool", default=False, description="Use broken symmetry"),
+        ParamSpec("step_name", "str", default="imag_fix", description="Label for the IMAG run"),
+    )
+    consumes = ("geometry",)   # the hessian is supplied via the explicit hess_file param
+    requires_binaries = ("orca",)
 
     def validate_params(self, **kwargs: Any) -> None:
         for key in ("charge", "mult", "solvent", "metals", "main_basisset", "metal_basisset"):

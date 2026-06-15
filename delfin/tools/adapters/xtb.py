@@ -10,6 +10,15 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+
+_XTB_PARAMS = (
+    ParamSpec("charge", "int", required=True, description="Molecular charge"),
+    ParamSpec("mult", "int", default=1, description="Spin multiplicity (2S+1)"),
+    ParamSpec("method", "str", default="XTB2", enum=("XTB1", "XTB2"),
+              description="GFN-xTB method"),
+    ParamSpec("maxcore", "int", default=1000, unit="MB", description="Memory per core"),
+)
 
 
 def _read_xyz_coords(xyz_path: Path) -> str:
@@ -50,6 +59,11 @@ class XtbOptAdapter(StepAdapter):
     name = "xtb_opt"
     description = "GFN2-xTB geometry optimization via ORCA"
     produces_geometry = True
+    category = "semiempirical"
+    params = _XTB_PARAMS
+    consumes = ("geometry",)
+    data_keys = (DataKeySpec("method", "str", "", "xTB method used"),)
+    requires_binaries = ("orca",)   # runs via ORCA's built-in xTB
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
@@ -94,6 +108,11 @@ class XtbGoatAdapter(StepAdapter):
     name = "xtb_goat"
     description = "GOAT conformer search via ORCA's built-in xTB"
     produces_geometry = True
+    category = "semiempirical"
+    params = _XTB_PARAMS
+    consumes = ("geometry",)
+    data_keys = (DataKeySpec("method", "str", "", "xTB method used"),)
+    requires_binaries = ("orca",)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:

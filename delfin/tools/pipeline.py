@@ -1286,11 +1286,20 @@ class Pipeline:
                         return PipelineResult(name=self.name, results=results, branch_results={})
                     continue
 
-            # Auto-inject artifacts from previous steps (MOREAD chaining)
+            # Auto-inject artifacts from previous steps (capability wiring).
+            # Driven by declarative WiringRules; with empty/undeclared adapter
+            # contracts this reproduces the historical gbw→moread behaviour for
+            # orca_* steps exactly.
             if current_artifacts:
-                if "moread" not in merged_kwargs and "gbw" in current_artifacts:
-                    if spec.step_name.startswith("orca_"):
-                        merged_kwargs["moread"] = str(current_artifacts["gbw"])
+                from delfin.tools._wiring import autowire_kwargs
+                from delfin.tools._registry import get as _get_adapter
+                _adapter = _get_adapter(spec.step_name)
+                _consumes = (
+                    _adapter.contract().consumes if _adapter is not None else frozenset()
+                )
+                merged_kwargs = autowire_kwargs(
+                    spec.step_name, merged_kwargs, current_artifacts, consumes=_consumes,
+                )
                 merged_kwargs.setdefault("_prev_artifacts", dict(current_artifacts))
 
             # --- Loop: repeat step until condition met ---
@@ -1598,6 +1607,60 @@ class Pipeline:
     # ------------------------------------------------------------------
     # Conversion to registered workflow
     # ------------------------------------------------------------------
+
+    def validate(self, *, geometry: bool = False,
+                 defaults: Optional[Dict[str, Any]] = None):
+        """Statically validate this pipeline *without executing it*.
+
+        Walks the trunk, branches and nested sub-pipelines, checking each step's
+        declared required params and consumed capability ports against what is
+        available upstream.  Returns a
+        :class:`~delfin.tools._validate.ValidationReport` (``.ok`` / ``.errors``
+        / ``.summary()``).  Pass ``geometry=True`` when an initial geometry will
+        be handed to :meth:`run`, so steps that consume ``geometry`` are
+        considered satisfied.
+        """
+        from delfin.tools._validate import validate_pipeline
+        return validate_pipeline(
+            self,
+            geometry_available=bool(geometry),
+            defaults=defaults if defaults is not None else self._defaults,
+        )
+
+    def dry_run(self, *, geometry: bool = False):
+        """Alias for :meth:`validate` — check wiring before committing compute."""
+        return self.validate(geometry=geometry)
+
+    # ------------------------------------------------------------------
+    # Serialization — declarative skeleton round-trip (blocks as data)
+    # ------------------------------------------------------------------
+
+    def to_dict(self, *, strict: bool = True) -> Dict[str, Any]:
+        """Serialize this pipeline's declarative skeleton to a plain dict.
+
+        See :mod:`delfin.tools._serialize`.  Callables that are neither a
+        condition/loop DSL nor a registered named callable cannot be serialized;
+        ``strict=True`` raises, ``strict=False`` emits a visible marker.
+        """
+        from delfin.tools._serialize import to_dict as _to_dict
+        return _to_dict(self, strict=strict)
+
+    def to_json(self, *, strict: bool = True, indent: int = 2) -> str:
+        """Serialize this pipeline to a JSON string."""
+        from delfin.tools._serialize import to_json as _to_json
+        return _to_json(self, strict=strict, indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]):
+        """Build a Pipeline (or PipelineTemplate) from a plain dict."""
+        from delfin.tools._serialize import from_dict as _from_dict
+        return _from_dict(data)
+
+    @classmethod
+    def from_json(cls, text: str):
+        """Build a Pipeline (or PipelineTemplate) from a JSON string."""
+        from delfin.tools._serialize import from_json as _from_json
+        return _from_json(text)
 
     def as_workflow(self, description: str = "") -> object:
         """Return a Workflow-protocol-compatible object for the registry.
@@ -1939,6 +2002,36 @@ class PipelineTemplate:
             work_dir=work_dir,
             stop_on_failure=stop_on_failure,
         )
+
+    def validate(self, *, geometry: bool = False, **params: Any):
+        """Resolve template *params* then statically validate the pipeline.
+
+        Any placeholder left unresolved (a missing param) surfaces as a warning
+        in the returned :class:`~delfin.tools._validate.ValidationReport`.
+        """
+        return self.build(**params).validate(geometry=geometry)
+
+    def to_dict(self, *, strict: bool = True) -> Dict[str, Any]:
+        """Serialize this template's declarative skeleton to a plain dict."""
+        from delfin.tools._serialize import to_dict as _to_dict
+        return _to_dict(self, strict=strict)
+
+    def to_json(self, *, strict: bool = True, indent: int = 2) -> str:
+        """Serialize this template to a JSON string."""
+        from delfin.tools._serialize import to_json as _to_json
+        return _to_json(self, strict=strict, indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]):
+        """Build a PipelineTemplate (or Pipeline) from a plain dict."""
+        from delfin.tools._serialize import from_dict as _from_dict
+        return _from_dict(data)
+
+    @classmethod
+    def from_json(cls, text: str):
+        """Build a PipelineTemplate (or Pipeline) from a JSON string."""
+        from delfin.tools._serialize import from_json as _from_json
+        return _from_json(text)
 
     def as_workflow(self, description: str = "") -> object:
         """Return a Workflow-protocol-compatible object."""

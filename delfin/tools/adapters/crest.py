@@ -10,12 +10,25 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 
 
 class CrestConformersAdapter(StepAdapter):
     name = "crest_conformers"
     description = "CREST conformer/isomer search"
     produces_geometry = True
+    category = "semiempirical"
+    params = (
+        ParamSpec("charge", "int", required=True, description="Molecular charge"),
+        ParamSpec("mult", "int", default=1, description="Spin multiplicity (2S+1)"),
+        ParamSpec("solvent", "str", description="ALPB implicit solvent name"),
+        ParamSpec("ewin", "float", default=6.0, unit="kcal/mol",
+                  description="Energy window for retained conformers"),
+        ParamSpec("extra_args", "list", description="Extra CLI args passed to CREST"),
+    )
+    consumes = ("geometry",)
+    produces = ("ensemble",)   # geometry is added automatically (produces_geometry)
+    requires_binaries = ("crest",)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:

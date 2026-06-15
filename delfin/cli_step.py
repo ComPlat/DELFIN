@@ -35,6 +35,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List all available steps and exit",
     )
     parser.add_argument(
+        "--describe",
+        action="store_true",
+        dest="describe_step",
+        help="Print the contract (params, ports, requirements) for the given step and exit",
+    )
+    parser.add_argument(
         "--geometry", "-g",
         type=str,
         default=None,
@@ -197,6 +203,34 @@ echo "End: $(date)"
         return 1
 
 
+def _print_contract(c) -> None:
+    """Pretty-print a StepContract for `delfin-step <step> --describe`."""
+    print(f"{c.name}  [{c.category or 'uncategorized'}]")
+    if c.description:
+        print(f"  {c.description}")
+    if c.params:
+        print("  params:")
+        for p in c.params:
+            req = "required" if p.required else f"default={p.default!r}"
+            unit = f" [{p.unit}]" if p.unit else ""
+            enum = f" enum={list(p.enum)}" if p.enum else ""
+            desc = f" — {p.description}" if p.description else ""
+            print(f"    {p.name} ({p.type}, {req}){unit}{enum}{desc}")
+    if c.consumes:
+        print(f"  consumes: {', '.join(sorted(c.consumes))}")
+    if c.produces:
+        print(f"  produces: {', '.join(sorted(c.produces))}")
+    if c.data_keys:
+        keys = ", ".join(
+            d.name + (f" [{d.unit}]" if d.unit else "") for d in c.data_keys
+        )
+        print(f"  data keys: {keys}")
+    if c.requires_binaries:
+        print(f"  requires binaries: {', '.join(sorted(c.requires_binaries))}")
+    if c.requires_python:
+        print(f"  requires python: {', '.join(sorted(c.requires_python))}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args, remaining = parser.parse_known_args(argv)
@@ -212,6 +246,19 @@ def main(argv: list[str] | None = None) -> int:
         for name, adapter in sorted(steps.items()):
             geom = "→ XYZ" if adapter.produces_geometry else "      "
             print(f"  {name:<{max_name}}  {geom}  {adapter.description}")
+        return 0
+
+    # --describe: print a single step's contract
+    if args.describe_step:
+        from delfin.tools import describe
+        if not args.step_name:
+            print("Usage: delfin-step <step_name> --describe", file=sys.stderr)
+            return 1
+        contract = describe(args.step_name)
+        if contract is None:
+            print(f"Unknown step: {args.step_name}", file=sys.stderr)
+            return 1
+        _print_contract(contract)
         return 0
 
     if not args.step_name:

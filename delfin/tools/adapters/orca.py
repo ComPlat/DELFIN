@@ -36,9 +36,38 @@ from delfin.common.logging import get_logger
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools.adapters.xtb import _read_xyz_coords
 
 logger = get_logger(__name__)
+
+
+# Shared declarative contract for the ORCA adapters (see delfin.tools._spec).
+_ORCA_PARAMS = (
+    ParamSpec("charge", "int", required=True, description="Molecular charge"),
+    ParamSpec("mult", "int", default=1, description="Spin multiplicity (2S+1)"),
+    ParamSpec("method", "str", default="B3LYP", description="DFT functional / method"),
+    ParamSpec("basis", "str", default="def2-SVP", description="Main basis set"),
+    ParamSpec("ri", "str", description="RI approximation, e.g. RIJCOSX"),
+    ParamSpec("aux_basis", "str", description="Auxiliary basis, e.g. def2/J"),
+    ParamSpec("dispersion", "str", description="Dispersion correction, e.g. D4"),
+    ParamSpec("solvent", "str", description="Implicit solvent name"),
+    ParamSpec("solvent_model", "str", default="CPCM", enum=("CPCM", "SMD"),
+              description="Implicit solvation model"),
+    ParamSpec("relativity", "str", description="Relativistic treatment, e.g. ZORA"),
+    ParamSpec("opt_level", "str", description="Optimization tightness, e.g. TIGHTOPT"),
+    ParamSpec("maxcore", "int", default=1000, unit="MB", description="Memory per core"),
+    ParamSpec("moread", "path",
+              description="GBW file for orbital guess (auto-wired from upstream gbw)"),
+    ParamSpec("metal_basis", "dict",
+              description="Per-element basis overrides, e.g. {'Fe':'def2-TZVP'}"),
+    ParamSpec("broken_sym", "str", description="Broken-symmetry %scf block"),
+    ParamSpec("base_name", "str", description="Base name for input/output files"),
+)
+_ORCA_DATA = (
+    DataKeySpec("energy_Eh", "float", "Eh", "Final electronic energy"),
+    DataKeySpec("gibbs_Eh", "float", "Eh", "Gibbs free energy (frequency jobs)"),
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -230,7 +259,25 @@ def _extract_gibbs(out_path: Path) -> Optional[float]:
 # ──────────────────────────────────────────────────────────────────────
 
 class _OrcaBase(StepAdapter):
-    """Shared logic for all ORCA adapters."""
+    """Shared logic for all ORCA adapters.
+
+    These adapters drive ORCA via the subprocess path (``requires_binaries =
+    ("orca",)``).  The capability ports below are engine-agnostic, so a future
+    ORCA Python Interface (OPI) variant — ``requires_python = ("opi",)``,
+    reading ``.property.json`` directly — can declare the same ``produces`` /
+    ``consumes`` tags and slot into the same pipelines unchanged.
+    """
+
+    category = "dft"
+    params = _ORCA_PARAMS
+    consumes = ("geometry",)
+    # Truthful for the subprocess path: gbw (orbital file) + qc_output (the .out
+    # log consumed by parsers).  produces_geometry is folded into a "geometry"
+    # port automatically by StepAdapter.contract().  A future OPI variant would
+    # additionally declare "property_json" (the ORCA 6 structured output it reads).
+    produces = ("gbw", "qc_output")
+    data_keys = _ORCA_DATA
+    requires_binaries = ("orca",)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
@@ -384,6 +431,7 @@ class OrcaFreqAdapter(_OrcaBase):
     name = "orca_freq"
     description = "ORCA frequency calculation"
     produces_geometry = False
+    produces = ("gbw", "qc_output", "hessian")
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
         return self._run(work_dir, "FREQ", geometry, cores, time.monotonic(), **kwargs)
@@ -393,6 +441,7 @@ class OrcaOptFreqAdapter(_OrcaBase):
     name = "orca_opt_freq"
     description = "ORCA combined geometry optimization + frequency calculation"
     produces_geometry = True
+    produces = ("gbw", "qc_output", "hessian")
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
         return self._run(work_dir, "OPT FREQ", geometry, cores, time.monotonic(), **kwargs)
@@ -402,6 +451,9 @@ class OrcaTddftAdapter(_OrcaBase):
     name = "orca_tddft"
     description = "ORCA TD-DFT excited state calculation"
     produces_geometry = False
+    params = _ORCA_PARAMS + (
+        ParamSpec("nroots", "int", default=10, description="Number of excited-state roots"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         super().validate_params(**kwargs)

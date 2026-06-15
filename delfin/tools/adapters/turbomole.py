@@ -23,6 +23,20 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+
+# Shared declarative contract for the Turbomole adapters.
+_TM_PARAMS = (
+    ParamSpec("charge", "int", required=True, description="Molecular charge"),
+    ParamSpec("mult", "int", default=1, description="Spin multiplicity (2S+1)"),
+    ParamSpec("method", "str", default="b3-lyp", description="DFT functional"),
+    ParamSpec("basis", "str", default="def2-SVP", description="Basis set"),
+    ParamSpec("ri", "bool", default=True, description="Use the RI approximation (ridft)"),
+    ParamSpec("timeout", "int", unit="s", description="Per-command timeout"),
+)
+_TM_DATA = (DataKeySpec("energy_Eh", "float", "Eh", "Final electronic energy"),)
+# The Turbomole suite is reached via define/x2t plus the runners (ridft/jobex/aoforce).
+_TM_BINARIES = ("define", "x2t")
 
 
 def _run_tm_command(cmd: str, work_dir: Path, cores: int,
@@ -165,6 +179,12 @@ class TurbomoleSpAdapter(StepAdapter):
     name = "turbomole_sp"
     description = "Turbomole single-point energy (DFT/RI)"
     produces_geometry = False
+    category = "dft"
+    params = _TM_PARAMS
+    consumes = ("geometry",)
+    produces = ("qc_output",)
+    data_keys = _TM_DATA
+    requires_binaries = _TM_BINARIES
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
@@ -209,6 +229,14 @@ class TurbomoleOptAdapter(StepAdapter):
     name = "turbomole_opt"
     description = "Turbomole geometry optimization"
     produces_geometry = True
+    category = "dft"
+    params = _TM_PARAMS + (
+        ParamSpec("max_cycles", "int", default=200, description="Max jobex optimisation cycles"),
+    )
+    consumes = ("geometry",)
+    produces = ("qc_output",)   # geometry added automatically (produces_geometry)
+    data_keys = _TM_DATA
+    requires_binaries = _TM_BINARIES
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
@@ -256,6 +284,12 @@ class TurbomoleFreqAdapter(StepAdapter):
     name = "turbomole_freq"
     description = "Turbomole frequency calculation (aoforce)"
     produces_geometry = False
+    category = "dft"
+    params = _TM_PARAMS
+    consumes = ("geometry",)
+    produces = ("qc_output", "hessian")
+    data_keys = _TM_DATA
+    requires_binaries = _TM_BINARIES
 
     def validate_params(self, **kwargs: Any) -> None:
         if "charge" not in kwargs:
