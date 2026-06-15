@@ -1,21 +1,22 @@
-"""Minimal stdio-based MCP (Model Context Protocol) client.
+"""MCP (Model Context Protocol) client — stdio + Streamable HTTP.
 
-Loads server definitions from a JSON config, spawns each server as
-a long-lived subprocess speaking line-delimited JSON-RPC over stdin
-/ stdout, discovers their tools via ``tools/list``, and surfaces
+Loads server definitions from a JSON config and reaches each one over
+either transport, discovers their tools via ``tools/list``, and surfaces
 them to the agent with ``mcp__<server>__<tool>`` namespacing.
 
-Supported only the subset DELFIN needs:
+Transports:
 
-  - JSON-RPC 2.0 framing, line-delimited JSON (Content-Length is
-    optional but most stdio servers ship LD-JSON).
-  - ``initialize`` handshake (protocol version + minimal client info).
-  - ``tools/list`` for discovery.
-  - ``tools/call`` for invocation. Response ``result.content`` is
-    flattened to a single string.
+  - **stdio** (default): the server is spawned as a long-lived subprocess
+    speaking line-delimited JSON-RPC 2.0 over stdin/stdout.
+  - **http** (Streamable HTTP, MCP 2025-03-26+): the server is reached by
+    HTTP ``POST`` to a single ``url``. The response is either a plain JSON
+    body or an ``text/event-stream`` (SSE) carrying the JSON-RPC reply. The
+    ``Mcp-Session-Id`` header returned on ``initialize`` is echoed on every
+    subsequent request. Custom ``headers`` (e.g. bearer auth) are supported.
 
-NOT supported (yet): HTTP/SSE transport, prompts, resources,
-sampling, server-initiated requests, base64 image content.
+Protocol coverage: ``initialize`` handshake, ``tools/list`` + ``tools/call``,
+``resources/list`` + ``resources/read``, ``prompts/list`` + ``prompts/get``.
+NOT supported (yet): sampling, server-initiated requests, base64 image content.
 
 Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 ``<workspace>/.delfin/mcp_servers.json``)::
@@ -27,14 +28,23 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
           "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
           "env": {"FOO": "bar"},
           "enabled": true
+        },
+        "remote": {
+          "type": "http",
+          "url": "https://mcp.example.com/mcp",
+          "headers": {"Authorization": "Bearer ..."},
+          "enabled": true
         }
       }
     }
 
+A server is treated as HTTP when ``type`` is ``http``/``sse``/
+``streamable-http`` or a ``url`` is present; otherwise stdio.
+
 The registry is a singleton — first call to ``get_registry()``
 loads all configured servers; further calls reuse the running
-processes. Servers fail closed: a crash during discovery just
-leaves that server's tool set empty.
+processes / sessions. Servers fail closed: a crash during discovery
+just leaves that server's tool set empty.
 """
 
 from __future__ import annotations
@@ -42,9 +52,12 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -53,6 +66,7 @@ from typing import Any, Optional
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 _RPC_TIMEOUT_S = 15.0
 _NAMESPACE_PREFIX = "mcp__"
+_HTTP_TYPES = {"http", "sse", "streamable-http", "streamablehttp"}
 
 
 def _user_config_path() -> Path:
@@ -82,6 +96,30 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
     return out
 
 
+def _extract_jsonrpc_from_sse(raw: str, rid: Any) -> dict:
+    """Pull the JSON-RPC message matching ``rid`` out of an SSE body.
+
+    SSE frames are blank-line-separated; ``data:`` lines carry the payload
+    (concatenated with newlines per spec). Returns the frame whose ``id``
+    matches, else the first JSON object seen, else an error dict.
+    """
+    best: dict | None = None
+    for block in re.split(r"\n\n+", raw):
+        datas = [ln[len("data:"):].lstrip()
+                 for ln in block.splitlines() if ln.startswith("data:")]
+        if not datas:
+            continue
+        try:
+            msg = json.loads("\n".join(datas))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(msg, dict):
+            if msg.get("id") == rid:
+                return msg
+            best = best or msg
+    return best or {"error": {"message": "no JSON-RPC payload in SSE stream"}}
+
+
 @dataclass
 class MCPTool:
     server: str
@@ -100,6 +138,12 @@ class MCPServer:
     command: str
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
+    # Transport. "stdio" (default) spawns a subprocess; "http" reaches the
+    # server over Streamable HTTP at ``url`` with optional ``headers``.
+    transport: str = "stdio"
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    session_id: str = ""        # Mcp-Session-Id, set from the initialize reply
     proc: Optional[subprocess.Popen] = None
     _id_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -108,6 +152,8 @@ class MCPServer:
     last_error: str = ""
 
     def start(self) -> None:
+        if self.transport == "http":
+            return  # HTTP is connectionless — nothing to spawn
         if self.proc is not None and self.proc.poll() is None:
             return
         env = dict(os.environ)
@@ -127,6 +173,10 @@ class MCPServer:
             self.proc = None
 
     def stop(self) -> None:
+        if self.transport == "http":
+            self.session_id = ""
+            self._initialised = False
+            return
         if self.proc is None:
             return
         try:
@@ -140,6 +190,8 @@ class MCPServer:
         self._initialised = False
 
     def _send(self, method: str, params: dict | None = None) -> dict:
+        if self.transport == "http":
+            return self._send_http(method, params)
         if self.proc is None or self.proc.poll() is not None:
             return {"error": {"message": "server not running"}}
         rid = next(self._id_counter)
@@ -175,13 +227,76 @@ class MCPServer:
                 # ignore notifications / unrelated messages
         return {"error": {"message": "rpc timeout"}}
 
+    def _send_http(
+        self, method: str, params: dict | None = None,
+        *, is_notification: bool = False,
+    ) -> dict:
+        """Streamable-HTTP JSON-RPC. Handles JSON and SSE responses and the
+        Mcp-Session-Id lifecycle. Notifications return ``{}``."""
+        body: dict[str, Any] = {"jsonrpc": "2.0", "method": method,
+                                "params": params or {}}
+        rid: Any = None
+        if not is_notification:
+            rid = next(self._id_counter)
+            body["id"] = rid
+        data = json.dumps(body).encode("utf-8")
+        req_headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        req_headers.update(self.headers or {})
+        if self.session_id:
+            req_headers["Mcp-Session-Id"] = self.session_id
+        req = urllib.request.Request(
+            self.url, data=data, headers=req_headers, method="POST")
+        with self._lock:
+            try:
+                with urllib.request.urlopen(req, timeout=_RPC_TIMEOUT_S) as resp:
+                    sid = resp.headers.get("Mcp-Session-Id")
+                    if sid:
+                        self.session_id = sid
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    raw = resp.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as exc:
+                return {"error": {"message": f"http {exc.code}: {exc.reason}"}}
+            except Exception as exc:
+                return {"error": {"message": f"http request failed: {exc}"}}
+        if is_notification:
+            return {}
+        if "text/event-stream" in ctype:
+            return _extract_jsonrpc_from_sse(raw, rid)
+        if not raw.strip():
+            return {"error": {"message": "empty response"}}
+        try:
+            msg = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"error": {"message": "invalid JSON-RPC response"}}
+        return msg if isinstance(msg, dict) else {
+            "error": {"message": "unexpected response shape"}}
+
+    def _notify(self, method: str, params: dict | None = None) -> None:
+        """Fire a JSON-RPC notification (no id, no response expected)."""
+        if self.transport == "http":
+            self._send_http(method, params, is_notification=True)
+            return
+        try:
+            assert self.proc is not None and self.proc.stdin is not None
+            msg: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+            if params:
+                msg["params"] = params
+            self.proc.stdin.write(json.dumps(msg) + "\n")
+            self.proc.stdin.flush()
+        except Exception as exc:    # pragma: no cover
+            self.last_error = f"{method} notify failed: {exc}"
+
     def initialize(self) -> bool:
         if self._initialised:
             return True
-        if self.proc is None:
-            self.start()
-        if self.proc is None:
-            return False
+        if self.transport != "http":
+            if self.proc is None:
+                self.start()
+            if self.proc is None:
+                return False
         resp = self._send("initialize", {
             "protocolVersion": _DEFAULT_PROTOCOL_VERSION,
             "capabilities": {},
@@ -190,16 +305,8 @@ class MCPServer:
         if "error" in resp:
             self.last_error = json.dumps(resp["error"])[:240]
             return False
-        # Required follow-up notification
-        try:
-            assert self.proc.stdin is not None
-            self.proc.stdin.write(json.dumps({
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-            }) + "\n")
-            self.proc.stdin.flush()
-        except Exception as exc:    # pragma: no cover
-            self.last_error = f"initialized notify failed: {exc}"
+        # Required follow-up notification (over the active transport).
+        self._notify("notifications/initialized")
         self._initialised = True
         return True
 
@@ -252,6 +359,27 @@ class MCPServer:
         return json.dumps(result)
 
 
+def _server_from_config(name: str, cfg: dict) -> MCPServer:
+    """Build an MCPServer from one config entry, picking the transport.
+
+    HTTP when ``type`` is http/sse/streamable-http or a ``url`` is present;
+    otherwise a stdio subprocess.
+    """
+    ttype = str(cfg.get("type", "")).strip().lower()
+    if ttype in _HTTP_TYPES or cfg.get("url"):
+        return MCPServer(
+            name=name, command="", transport="http",
+            url=str(cfg.get("url", "")),
+            headers={k: str(v) for k, v in (cfg.get("headers") or {}).items()},
+        )
+    return MCPServer(
+        name=name,
+        command=str(cfg.get("command", "")),
+        args=list(cfg.get("args", []) or []),
+        env={k: str(v) for k, v in (cfg.get("env") or {}).items()},
+    )
+
+
 @dataclass
 class MCPRegistry:
     servers: dict[str, MCPServer] = field(default_factory=dict)
@@ -263,13 +391,7 @@ class MCPRegistry:
         for name, cfg in configs.items():
             if name in self.servers:
                 continue
-            srv = MCPServer(
-                name=name,
-                command=str(cfg.get("command", "")),
-                args=list(cfg.get("args", []) or []),
-                env={k: str(v) for k, v in (cfg.get("env") or {}).items()},
-            )
-            self.servers[name] = srv
+            self.servers[name] = _server_from_config(name, cfg)
         self.workspace = Path(workspace) if workspace else self.workspace
         self.loaded = True
 
