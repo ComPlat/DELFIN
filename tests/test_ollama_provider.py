@@ -205,3 +205,38 @@ def test_stream_message_no_num_ctx_for_kit(monkeypatch, tmp_path):
     list(client.stream_message("sys", [{"role": "user", "content": "hi"}],
                                max_tokens=100))
     assert "extra_body" not in captured
+
+
+# ---------------------------------------------------------------------------
+# Reasoning models get a max_tokens floor (so thinking doesn't eat the answer)
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_model_max_tokens_floored(monkeypatch, tmp_path):
+    from delfin.agent import model_capabilities as mc
+    caps = mc.ModelCapabilities(model="m", provider="ollama", context_window=32768,
+                                supports_tools=True, is_reasoning=True,
+                                num_ctx_override=32768)
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+    from delfin.agent.api_client import create_client, _REASONING_MIN_TOKENS
+    client = create_client(backend="api", provider="ollama",
+                           model="qwq:32b", cwd=str(tmp_path))
+    captured = _capture_create(client)
+    list(client.stream_message("sys", [{"role": "user", "content": "hi"}],
+                               max_tokens=200))
+    assert captured.get("max_tokens", 0) >= _REASONING_MIN_TOKENS
+
+
+def test_non_reasoning_max_tokens_not_floored(monkeypatch, tmp_path):
+    from delfin.agent import model_capabilities as mc
+    caps = mc.ModelCapabilities(model="m", provider="ollama", context_window=32768,
+                                supports_tools=True, is_reasoning=False,
+                                num_ctx_override=32768)
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+    from delfin.agent.api_client import create_client
+    client = create_client(backend="api", provider="ollama",
+                           model="llama3:8b", cwd=str(tmp_path))
+    captured = _capture_create(client)
+    list(client.stream_message("sys", [{"role": "user", "content": "hi"}],
+                               max_tokens=200))
+    assert captured.get("max_tokens") == 200

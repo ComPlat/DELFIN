@@ -807,6 +807,11 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # apparent UI freeze; the model can call again to keep waiting.
 _BASH_STATUS_WAIT_CAP_S = 300.0
 
+# Minimum max_tokens for a reasoning model. They spend part of the budget
+# THINKING before any visible answer; too small a cap returns an empty reply
+# (budget consumed mid-<think>). Floor any smaller request to this.
+_REASONING_MIN_TOKENS = 2048
+
 
 _WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
     # File-system core
@@ -5475,6 +5480,17 @@ class OpenAIClient(_BaseClient):
         except Exception:
             _caps = None
 
+        # Reasoning models (qwen3/gpt-oss/deepseek-r1/qwq, o-series, gpt-5)
+        # spend part of the budget THINKING before any visible answer; too
+        # small a max_tokens yields an EMPTY reply (budget consumed mid-think).
+        # Floor it so there is always room to think AND answer.
+        _model_reasons = bool(
+            is_reasoning
+            or (_caps is not None and (_caps.is_reasoning or _caps.thinking_tagged))
+        )
+        if _model_reasons and max_tokens < _REASONING_MIN_TOKENS:
+            max_tokens = _REASONING_MIN_TOKENS
+
         if system:
             # o-series uses "developer" role instead of "system"
             sys_role = "developer" if is_reasoning else "system"
@@ -5769,6 +5785,15 @@ class OpenAIClient(_BaseClient):
 
                         choice = chunk.choices[0]
                         delta = choice.delta
+
+                        # Reasoning channel: some backends (Ollama for qwen3/
+                        # gpt-oss, vLLM for r1) stream the model's thinking in a
+                        # separate ``reasoning_content`` field, NOT in content.
+                        # Surface it as thinking (visible-but-separate) instead
+                        # of losing it; it never pollutes the answer text.
+                        _rc = getattr(delta, "reasoning_content", None) if delta else None
+                        if _rc:
+                            yield StreamEvent(type="thinking_delta", text=_rc)
 
                         # Text content
                         if delta and delta.content:
