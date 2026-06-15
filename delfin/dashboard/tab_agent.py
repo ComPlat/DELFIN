@@ -1122,7 +1122,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Subagents", "/plan", "Delegate step-by-step planning (no edits)", True),
     ("Subagents", "/delegate", "Delegate a self-contained task to a subagent", True),
     # Engine config
-    ("Engine", "/provider", "Switch provider (claude/openai/kit)", True),
+    ("Engine", "/provider", "Switch provider (claude/openai/kit/ollama)", True),
     ("Engine", "/model", "Switch model (depends on provider)", True),
     ("Engine", "/effort", "Set effort (low/medium/high/xhigh)", True),
     ("Engine", "/mode", "Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)", True),
@@ -6055,7 +6055,7 @@ def create_tab(ctx):
                 "  /git diff        — Show staged/unstaged changes\n"
                 "  /git log         — Show recent commits\n"
                 "  /git branch      — Show branches\n"
-                "  /provider <name> — Switch provider (claude/openai)\n"
+                "  /provider <name> — Switch provider (claude/openai/kit/ollama)\n"
                 "  /model <name>    — Switch model (depends on provider)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high/xhigh)\n"
                 "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
@@ -13871,7 +13871,7 @@ def create_tab(ctx):
         advance_btn.layout.display = "none" if _is_minimal else "inline-flex"
 
     def _on_provider_change(change):
-        """Switch provider (Claude / OpenAI / KIT), update model options."""
+        """Switch provider (Claude / OpenAI / KIT / Ollama), update model options."""
         if state["streaming"]:
             return
         provider = change["new"]

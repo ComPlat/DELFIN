@@ -22,7 +22,7 @@ By coupling **topological and mutational structure generation**, semi-empirical 
 DELFIN can be used in three ways:
 - **CLI** — `delfin` runs automated workflows from `CONTROL.txt` configuration files
 - **Dashboard** — Interactive browser UI for job management, result analysis, and configuration
-- **Agent** — AI co-pilot that operates the dashboard, analyzes results, researches methods, and implements code changes through a multi-agent pipeline
+- **Agent** — AI coding co-pilot that operates the dashboard, analyzes results, researches methods, and implements code changes — on any model (Claude, OpenAI, KIT Toolbox, or local/open-source via Ollama)
 
 ### Why DELFIN — Fundamental Contribution
 
@@ -56,7 +56,7 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 | **Crystal Structure Prediction** | 🧱 solid state | Genarris integration for organic polymorph generation with configurable space groups |
 | **CO₂ Coordination** | 🧲 metal | Automated CO₂ placement around metal centers, distance/rotation scans |
 | **Reporting** | 🔬 both | Auto-generated DOCX combining all visualized output — spectra plots (UV-Vis, IR, AFP), ESD rate tables (ISC / RISC / IC, ΔE(S-T), E₀₀), redox-potential summaries, free energies, and full method provenance — publication-ready out of the box; JSON export and text summaries also available |
-| **AI Agent** | 🔬 both | Multi-agent orchestration with sandboxed bash execution, persistent memory, dashboard control, code implementation, literature research, result analysis |
+| **AI Agent** | 🔬 both | Conversational coding agent on any model (Claude / OpenAI / KIT / local Ollama) — sandboxed bash, subagents, MCP, persistent memory, dashboard control, literature research, result analysis |
 | **Evolutionary Optimization** | 🔬 both | ChemDarwin-driven genetic-algorithm inverse design — DELFIN's DFT / xTB pipeline serves as the fitness function while ChemDarwin evolves molecular structures toward target redox potentials, ΔE(S-T) gaps, emission wavelengths, β tensors, or any DELFIN-computable property |
 
 ### Use Cases Across Chemistry
@@ -197,7 +197,7 @@ ctx = create_dashboard(backend="auto")
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
 | **Calculations** | File browser, search, recalculation trigger, energy statistics, browser-launched workflows such as `Calc NMR` and `Calc ANMR` |
 | **Archive** | Archive browser with statistics |
-| **Agent** | AI co-pilot with multi-agent pipelines, dashboard control, result analysis, persistent memory |
+| **Agent** | AI coding co-pilot on any model (incl. local Ollama) — subagents, MCP, sandboxed bash, dashboard control, result analysis, persistent memory |
 | **Settings** | Tool detection, per-tool Install/Update buttons, runtime configuration, agent model settings |
 
 ### GUI with Voila
@@ -215,60 +215,40 @@ Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)
 
 ## 🤖 AI Agent System
 
-DELFIN includes a built-in multi-agent AI system that operates as a conversational co-pilot for the entire platform. The agent lives in the **Agent** dashboard tab.
+DELFIN includes a built-in AI coding agent — a conversational, terminal-CLI-style co-pilot embedded in the **Agent** dashboard tab. It reads and edits code, runs sandboxed shell commands, drives the dashboard, researches methods, analyses results, and delegates self-contained work to subagents. It is a single, direct agent (no fixed review pipeline); when work benefits from extra hands it spins up subagents on demand.
 
-The agent's **primary backend is Claude (Anthropic)**, chosen for its extended-thinking and tool-use capabilities — both central to DELFIN's multi-step chemistry orchestration, where method choice, geometry validation, and result interpretation all benefit from genuine reasoning before action. **OpenAI / Codex** and **KIT Toolbox** (university-hosted) are supported as drop-in alternative backends. The provider and model are selectable per session from the dashboard.
+### Works with any model
 
-### Agent Modes
+The agent is **provider-agnostic**. Claude (Anthropic) is the strong default for its extended thinking and tool use, with **OpenAI / Codex** and **KIT Toolbox** (university-hosted) as drop-in alternatives — and it runs fully on **local / open-source models** via **Ollama, vLLM, or LM Studio** (any OpenAI-compatible endpoint). Provider and model are selectable per session.
 
-| Mode | Route | Purpose |
-|------|-------|---------|
-| **dashboard** | Dashboard Agent | Operate the dashboard via natural language — set CONTROL keys, configure ORCA Builder, browse calculations, analyze results, trigger smart recalc, manage jobs. Cheapest mode (Haiku). |
-| **solo** | Solo Agent | Direct conversation for code questions, small edits, debugging. Full tool access, no pipeline overhead. |
-| **research** | Research Agent | Literature search, DFT functional benchmarks, best-practice protocols, state-of-the-art methods. Web search enabled, read-only. |
-| **quick** | Session Manager → Builder → Test | Lightweight implementation pipeline for bugfixes, docs, isolated module changes. |
-| **reviewed** | SM → Critic → Builder → Reviewer → Test | Adds architectural review before and code review after implementation. For risky refactors and API changes. |
-| **tdd** | SM → Test → Builder → Reviewer → Test | Test-driven development: tests written first, then implementation. |
-| **cluster** | SM → Runtime → Critic → Builder → Test | Includes HPC/SLURM runtime specialist for submission scripts, job scheduling, error recovery. |
-| **full** | Chief → SM → Runtime → Critic → Builder → Test | Maximum oversight with strategic lead.|
+A model-capability layer makes every model run at its real potential: the agent auto-detects each model's **true context window** and capabilities (tool use, vision, reasoning) — live from Ollama's `/api/show` and KIT/vLLM's `/v1/models`, with a curated fallback — and sizes context management to it. For Ollama it sends the correct `num_ctx` (so local models aren't silently capped at 2–4k), skips params local servers reject, and strips `<think>` reasoning leaks. Weak/small models automatically get a slimmer prompt and tool surface; a preflight check warns when a model lacks tool support or a stronger one is worth picking.
 
-### Automatic Task Routing
+### Subagents
 
-The agent classifies each task and selects the cheapest capable mode automatically:
+For parallel research, read-only audits, or planning that shouldn't edit, the agent delegates to isolated **subagents** — each with its own tool loop and (usually tighter) permissions:
 
-- **Dashboard operations** (slash commands, CONTROL editing) → dashboard mode
-- **Chemistry / method questions** (DFT functionals, basis sets, spin states) → research mode
-- **Code questions** (how does X work, explain Y) → solo mode (single-agent, no pipeline overhead)
-- **Code changes** (fix, implement, refactor) → quick mode, escalated to reviewed/cluster/full only when risk signals are detected (API semantics, SLURM changes, release scope)
+- `explore` — read-only investigation, reports findings
+- `plan` — step-by-step plan, makes no edits
+- `code-reviewer` — independent read-only review
+- `general-purpose` — self-contained task, inherits permissions
 
-Manual mode selection always takes priority over automatic routing.
+Subagents run **in parallel** (each isolated, so concurrent runs can't clobber one another's sandbox) or **in the background** (fire-and-forget: start a long run, keep working, collect the result later). A finished subagent can be **continued** with its context intact. Per-run limits (wall-clock, tool calls, output tokens) are configurable in Settings. Launch one directly with **`/explore`**, **`/review`**, **`/plan`**, or **`/delegate <task>`**, or let the agent delegate on its own; a live panel shows running and recent subagents.
 
-### Goal-Lock Orchestration
+### Tools, MCP & safety
 
-Multi-agent pipelines use a structured contract to prevent goal drift:
+- **Built-in tools**: read / edit / write files, grep, sandboxed bash (foreground + long-running background jobs), code navigation, test runner, notebooks, web search/fetch, task tracking, scheduling, plus DELFIN-specific calc/manual search.
+- **MCP (Model Context Protocol)**: connect external MCP servers over **stdio or HTTP/SSE** — their tools, resources, and prompts become available to the agent (configured in `~/.delfin/mcp_servers.json`).
+- **Sandboxed execution**: every shell command runs through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
+- **Permission modes**: plan / default / acceptEdits / bypass, with per-pattern allow-list rules the agent can remember across sessions.
 
-1. **Session Manager** locks the real goal, defines a success oracle, names the wrong proxy to avoid, and breaks work into small **stage gates** with explicit exit evidence
-2. **Builder** reports gate status (DONE / PARTIAL / BLOCKED) for each stage gate
-3. **Critic / Runtime / Reviewer** verify the implementation against the locked goal, not a substituted proxy
-4. **Test Agent** verifies each acceptance criterion and stage gate as PASS / FAIL / UNTESTED
-5. **Communication gates** automatically pause the pipeline when: plans are incomplete, builds are partial or blocked, reviews flag goal drift, or risk verdicts require user attention
+### Other features
 
-The **Cycle Inspector** in the dashboard visualises gate decisions, open risks, retry history, and provides action buttons (Continue / Retry / Stop / Next).
-
-### Key Agent Features
-
-- **Multi-provider support**: Claude (CLI or API), OpenAI / Codex (API or CLI), KIT Toolbox — selectable per session with auto-detection of available providers
-- **Per-role model routing**: Each agent role uses the optimal model tier (e.g., Haiku for cheap review roles, Sonnet/Opus for implementation)
-- **Endless conversation**: After a pipeline completes, the Builder stays active for follow-up questions and adjustments — no context lost until explicit `/reset`
-- **Dashboard co-pilot**: In dashboard mode, the agent reads current CONTROL/ORCA settings and executes slash commands visible in real-time (e.g., "setze BP86" → functional changes in Submit tab)
-- **Findings filter**: After Critic/Runtime review, the user can accept all findings or skip specific ones before the Builder starts
-- **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every agent prompt
-- **Agent workspace**: `~/agent_workspace/` directory for uploaded reference files, accessible to the agent
-- **Cost tracking**: Per-role token usage and USD cost displayed in real-time; with Claude prompt-caching enabled, typical agentic chemistry sessions land in the $0.10–$2.00 range
-- **Self-improving forensic loop**: agent-orchestrated benchmarks compare each new pipeline version against historical champions; per-task success rates and costs persist across sessions in `learned_profiles.json` and feed back into the agent's method routing and validation gates
-- **Session persistence**: Conversations can be saved, restored, and exported as Markdown
-- **Tool whitelists**: Each role has a code-level tool whitelist that blocks unauthorized tool use regardless of prompt content
-- **Sandboxed bash execution**: Agent-issued shell commands run through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, ...) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
+- **Dashboard co-pilot**: a dashboard mode reads current CONTROL/ORCA settings and executes slash commands in real time (e.g., "setze BP86" → functional changes in the Submit tab).
+- **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every prompt.
+- **Long sessions**: token-aware context compaction keeps long conversations coherent; `/compact` and `/context` expose the state.
+- **Agent workspace**: `~/agent_workspace/` for uploaded reference files, accessible to the agent.
+- **Cost tracking**: per-session token usage and USD cost in real time (local / Ollama models are free).
+- **Session persistence**: conversations can be saved, restored, and exported as Markdown.
 
 ### Agent Slash Commands
 
@@ -287,15 +267,16 @@ The agent tab supports extensive slash commands for direct dashboard control:
 
 ### Requirements & Architecture
 
-The agent supports three LLM providers. The documented production integration path for each is the official **API**; the CLI binaries are supported as a convenience for local development sessions.
+The agent supports both hosted and local/open-source LLM providers. For the hosted ones the documented production path is the official **API**; the CLI binaries are supported as a convenience for local development sessions.
 
-| Provider | Primary backend | Local-development convenience |
-|----------|------------------|-------------------------------|
+| Provider | Primary backend | Notes |
+|----------|------------------|-------|
 | **Claude** (default) | API via `ANTHROPIC_API_KEY` | [Claude Code CLI](https://claude.ai/code) when `claude` is on PATH |
 | **OpenAI / Codex** | API via `OPENAI_API_KEY` | [Codex CLI](https://github.com/openai/codex) when `codex` is on PATH |
-| **KIT Toolbox** | API via `KIT_TOOLBOX_API_KEY` | — (university-hosted, OpenAI-compatible) |
+| **KIT Toolbox** | API via `KIT_TOOLBOX_API_KEY` | university-hosted, OpenAI-compatible (vLLM) |
+| **Ollama / vLLM / LM Studio** (local & open-source) | OpenAI-compatible endpoint via `OLLAMA_HOST` (default `http://localhost:11434`) | **no API key, runs offline.** Use any pulled model, e.g. `ollama pull qwen2.5-coder`; the agent auto-detects its context window/capabilities and sends the right `num_ctx`. Tool-capable models (e.g. `qwen2.5-coder`, `qwen3-coder`, `llama3.3`) are recommended for agentic work. |
 
-Available providers are auto-detected from environment variables and PATH. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, …): as a dependency that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls each provider's official API (or CLI binary, when present) via documented interfaces. All API usage runs through each provider's standard rate limits and billing under the user's own account.
+Available providers are auto-detected from environment variables and PATH. DELFIN treats each LLM the same way it treats any other external tool (ORCA, xTB, CREST, …): as a dependency that the user installs and authenticates independently. DELFIN does not bundle or redistribute any LLM binary — it calls each provider's official API, OpenAI-compatible endpoint, or CLI binary via documented interfaces. Hosted API usage runs through each provider's standard rate limits and billing under the user's own account; local Ollama/vLLM/LM-Studio models run entirely on your own hardware at no per-token cost.
 
 ---
 
@@ -680,14 +661,19 @@ delfin/
   csp_tools/           ← Crystal structure prediction (Genarris)
   runtime_setup.py     ← Auto-detection of 90+ external programs
   dashboard/           ← Interactive dashboard (Voila/JupyterLab)
-  agent/               ← Multi-agent AI system (Claude, OpenAI/Codex, KIT Toolbox)
-    engine.py          ← Orchestration engine (task routing, goal-lock gates, role transitions, cost tracking)
-    api_client.py      ← LLM backends: Claude CLI, Anthropic API, OpenAI API, Codex CLI
-    prompt_loader.py   ← Role-specific prompt composition from pack system
+  agent/               ← AI coding agent (any model: Claude, OpenAI/Codex, KIT Toolbox, local Ollama/vLLM/LM Studio)
+    engine.py          ← Agent engine (turn loop, per-model context sizing, compaction, cost tracking)
+    api_client.py      ← LLM backends: Claude CLI, Anthropic API, OpenAI-compatible (OpenAI/KIT/Ollama), Codex CLI
+    model_capabilities.py ← Per-model context window + tool/vision/reasoning detection (Ollama /api/show, vLLM /v1/models)
+    model_profiles.py / model_routing.py ← Per-model behaviour knobs + provider-agnostic tier routing
+    subagents.py       ← Isolated subagents (explore/plan/code-reviewer/general-purpose; parallel + background)
+    mcp_client.py      ← MCP client (stdio + Streamable-HTTP; tools, resources, prompts)
+    sandbox.py         ← Layered bash sandbox (allow-list + bubblewrap/firejail + audit)
+    prompt_loader.py   ← Prompt composition from the pack system
     memory_store.py    ← Persistent memory across sessions
     session_store.py   ← Conversation persistence and restore
-    pack/              ← Agent role prompts (builder, critic, runtime, research, ...)
-      shared/          ← Shared context: DELFIN rules, goal decomposition, work cycle rules
+    pack/              ← Agent prompts (solo agent, subagent presets, skills)
+      shared/          ← Shared context: DELFIN rules, work-cycle rules
     pack_lite/         ← Mode definitions and routing manifest
 ```
 
