@@ -96,10 +96,15 @@ def test_per_provider_override_wins_over_global():
 # Safety: never route into broken / unavailable models
 # ---------------------------------------------------------------------------
 
-def test_never_routes_into_known_broken_model():
-    assert is_known_broken("azure.gpt-5.5") is True
+def test_never_routes_into_known_broken_model(monkeypatch, tmp_path):
+    import delfin.agent.model_routing as mr
+    # _KNOWN_BROKEN is empty now (azure.gpt-5.5 works again) — use the runtime
+    # broken mechanism (mark_broken), which is the durable detector.
+    monkeypatch.setattr(mr, "_RUNTIME_BROKEN_PATH", tmp_path / "broken.json")
+    mr.mark_broken("azure.broken-model")
+    assert is_known_broken("azure.broken-model") is True
     s = {"agent": {"routing": {"enabled": True,
-                                "strong_model": "azure.gpt-5.5"}}}
+                                "strong_model": "azure.broken-model"}}}
     d = route_model(provider="kit", user_model="M", complexity="complex",
                     settings=s)
     assert d.model == "M" and d.routed is False

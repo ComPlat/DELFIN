@@ -13,8 +13,8 @@ Nothing here hardcodes a single "the" model; routing resolves a **tier**
    routing degrades gracefully to today's behaviour).
 
 A model is only routed *to* if it is actually **available** (live model
-list when supplied, else assumed) and not on the known-broken list
-(e.g. ``azure.gpt-5.5`` 401s on the KIT endpoint).  Routing is **opt-in**
+list when supplied, else assumed) and not known-broken (the static set plus
+any model marked broken at runtime by the 401 handler).  Routing is **opt-in**
 via ``agent.routing.enabled`` — off by default, zero behaviour change.
 
 Per-model *behaviour* (reasoning_effort, tool surface, round caps) stays
@@ -35,12 +35,12 @@ _PROVIDER_TIERS: dict[str, dict[str, str]] = {
     "ollama": {"strong": "qwen3-coder:32b", "cheap": "qwen2.5-coder:7b"},
 }
 
-# Models advertised by an endpoint but known to fail (kept short; the
-# actionable-401 handler is the runtime detector — this list prevents
-# routing INTO a known failure).
-_KNOWN_BROKEN: frozenset[str] = frozenset({
-    "azure.gpt-5.5",     # listed on the KIT endpoint but 401s (2026-06)
-})
+# Statically known-broken models (advertised by an endpoint but known to
+# fail). Currently EMPTY — the runtime detector (mark_broken, written by the
+# actionable-401 handler) is the primary mechanism and `runtime_broken()`
+# augments this set. azure.gpt-5.5 was here but works again (verified
+# 2026-06-15 across the KIT model matrix), so it was removed.
+_KNOWN_BROKEN: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
