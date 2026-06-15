@@ -32414,6 +32414,205 @@ def _build_coordination_uff_constraints(
     return base
 
 
+# ---------------------------------------------------------------------------
+# Bondi van-der-Waals radii (Å) — identical values to the inter-ligand-clash
+# detector (find_inter_ligand_clash.py).  Used ONLY by the deterministic
+# geometric clash-relief pass below so the floor it enforces matches the
+# metric it is meant to improve.  Default 1.70 for anything missing.
+# ---------------------------------------------------------------------------
+_VDW_RADII_CLASH: Dict[str, float] = {
+    "H": 1.20, "He": 1.40, "Li": 1.82, "Be": 1.53, "B": 1.92, "C": 1.70,
+    "N": 1.55, "O": 1.52, "F": 1.47, "Ne": 1.54, "Na": 2.27, "Mg": 1.73,
+    "Al": 1.84, "Si": 2.10, "P": 1.80, "S": 1.80, "Cl": 1.75, "Ar": 1.88,
+    "K": 2.75, "Ca": 2.31, "Sc": 2.11, "Ti": 1.95, "V": 1.92, "Cr": 1.89,
+    "Mn": 1.97, "Fe": 1.94, "Co": 1.92, "Ni": 1.84, "Cu": 1.86, "Zn": 2.10,
+    "Ga": 1.87, "Ge": 2.11, "As": 1.85, "Se": 1.90, "Br": 1.83, "Kr": 2.02,
+    "Rb": 3.03, "Sr": 2.49, "Y": 2.32, "Zr": 2.23, "Nb": 2.18, "Mo": 2.17,
+    "Tc": 2.16, "Ru": 2.13, "Rh": 2.10, "Pd": 2.10, "Ag": 2.11, "Cd": 2.18,
+    "In": 1.93, "Sn": 2.17, "Sb": 2.06, "Te": 2.06, "I": 1.98, "Xe": 2.16,
+    "Cs": 3.43, "Ba": 2.68, "La": 2.43, "Ce": 2.42, "Pr": 2.40, "Nd": 2.39,
+    "Pm": 2.38, "Sm": 2.36, "Eu": 2.35, "Gd": 2.34, "Tb": 2.33, "Dy": 2.31,
+    "Ho": 2.30, "Er": 2.29, "Tm": 2.27, "Yb": 2.26, "Lu": 2.24, "Hf": 2.23,
+    "Ta": 2.22, "W": 2.18, "Re": 2.16, "Os": 2.16, "Ir": 2.13, "Pt": 2.13,
+    "Au": 2.14, "Hg": 2.23, "Tl": 1.96, "Pb": 2.02, "Bi": 2.07,
+}
+
+
+def _geometric_inter_clash_relief(
+    xyz_delfin: str,
+    frozen_idx,
+    threshold: float = 0.85,
+    max_passes: int = 40,
+    step_frac: float = 0.5,
+):
+    """Deterministic, FF-free inter-ligand clash relief.
+
+    Replaces the (garbage-gradient, non-deterministic) OB-UFF
+    ConjugateGradients step for UFF-unparameterised-metal complexes.  Mirrors
+    the inter-ligand-clash detector's geometry contract exactly so the moves it
+    makes target the metric it is meant to improve:
+
+      1. infer bonds from covalent radii (metal_extra_tol 0.45, organic 0.40);
+      2. cluster atoms into ligand fragments AFTER removing every
+         metal-touching bond (so two ligands = two fragments);
+      3. for every pair of atoms in DISTINCT fragments closer than
+         ``threshold * (vdW_i + vdW_j)``, push the two atoms apart symmetrically
+         along their separation axis.
+
+    Determinism is guaranteed by construction: no force field, no RNG, fixed
+    iteration order by sorted atom index, and a deterministic separation axis
+    even for near-degenerate (overlapping) atoms (the project's
+    sorted-index-seeded canonical-axis idiom).  Frozen atoms (the metal + its
+    pinned donors + hapto ring atoms) never move; only one atom of a clashing
+    pair is displaced when its partner is frozen (full correction onto the free
+    atom), otherwise both move half-and-half.  Bonded atoms and same-fragment
+    atoms are never pushed apart, so covalent connectivity and chelate-ring
+    geometry are preserved.
+
+    Args:
+        xyz_delfin: DELFIN-format coordinate block (``symbol x y z`` per line).
+        frozen_idx: iterable of 0-based atom indices that must NOT move
+            (metal + donors + hapto atoms = ``constraints['fix_atoms']``).
+        threshold: vdW-overlap fraction below which a pair is a clash (0.85,
+            matching the detector default).
+        max_passes: bounded relaxation passes.
+        step_frac: fraction of the missing separation removed per pass
+            (0.5 → half the deficit per pass; converges without overshoot).
+
+    Returns:
+        Relaxed DELFIN-format XYZ string (or the input unchanged on any error).
+    """
+    try:
+        import numpy as _np
+
+        lines = [l for l in xyz_delfin.strip().splitlines() if l.strip()]
+        n = len(lines)
+        if n == 0:
+            return xyz_delfin
+        syms: list = []
+        pos = _np.zeros((n, 3), dtype=float)
+        for i, ln in enumerate(lines):
+            p = ln.split()
+            syms.append(p[0])
+            pos[i, 0] = float(p[1])
+            pos[i, 1] = float(p[2])
+            pos[i, 2] = float(p[3])
+
+        frozen = set(int(x) for x in (frozen_idx or []))
+        is_metal = [s in _METAL_SET for s in syms]
+        cov = _np.array([_COVALENT_RADII.get(s, 1.5) for s in syms], dtype=float)
+        vdw = _np.array(
+            [_VDW_RADII_CLASH.get(s, 1.70) for s in syms], dtype=float
+        )
+
+        # --- (1) bond inference (mirror derive_bonds) -------------------
+        # bonded[i][j] True if i,j within (cov_i+cov_j+tol); metal-touching
+        # bonds use the wider 0.45 tol, organic pairs 0.40.
+        bonded = [set() for _ in range(n)]
+        d_all = _np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
+        for i in range(n):
+            for j in range(i + 1, n):
+                tol = 0.45 if (is_metal[i] or is_metal[j]) else 0.40
+                if d_all[i, j] <= (cov[i] + cov[j] + tol):
+                    bonded[i].add(j)
+                    bonded[j].add(i)
+
+        # --- (2) ligand fragments after removing metal-touching bonds ---
+        metal_set = {i for i in range(n) if is_metal[i]}
+        adj = [[] for _ in range(n)]
+        for i in range(n):
+            if i in metal_set:
+                continue
+            for j in bonded[i]:
+                if j in metal_set or j <= i:
+                    continue
+                adj[i].append(j)
+                adj[j].append(i)
+        frag = [-1] * n
+        cid = 0
+        for start in range(n):
+            if start in metal_set or frag[start] != -1:
+                continue
+            frag[start] = cid
+            stack = [start]
+            while stack:
+                u = stack.pop()
+                for v in adj[u]:
+                    if frag[v] == -1:
+                        frag[v] = cid
+                        stack.append(v)
+            cid += 1
+
+        # --- (3) bounded symmetric push-apart of inter-fragment clashes -
+        moved_any = False
+        for _ in range(max_passes):
+            # Collect all current inter-fragment clashes (deterministic order
+            # by (i, j) ascending), then apply displacements in that order.
+            disp = _np.zeros((n, 3), dtype=float)
+            n_clash = 0
+            d_cur = _np.linalg.norm(pos[:, None, :] - pos[None, :, :], axis=-1)
+            for i in range(n):
+                if i in metal_set or frag[i] < 0:
+                    continue
+                for j in range(i + 1, n):
+                    if j in metal_set or frag[j] < 0:
+                        continue
+                    if frag[i] == frag[j]:
+                        continue  # same ligand → intra, not our concern
+                    if j in bonded[i]:
+                        continue  # directly bonded across (rare) → leave
+                    floor = threshold * (vdw[i] + vdw[j])
+                    d = float(d_cur[i, j])
+                    if d >= floor:
+                        continue
+                    n_clash += 1
+                    deficit = floor - d
+                    # Separation axis; deterministic fallback for the
+                    # (near-)degenerate overlap case: a unit axis seeded by the
+                    # sorted atom indices (no RNG), the project idiom.
+                    axis = pos[i] - pos[j]
+                    na = float(_np.linalg.norm(axis))
+                    if na < 1e-9:
+                        # canonical deterministic axis from index parity
+                        k = (i * 131 + j) % 3
+                        axis = _np.zeros(3)
+                        axis[k] = 1.0
+                        na = 1.0
+                    axis = axis / na
+                    push = step_frac * deficit * axis
+                    fi = i in frozen
+                    fj = j in frozen
+                    if fi and fj:
+                        continue  # both pinned: cannot relieve, skip
+                    elif fi:
+                        disp[j] -= push  # all correction onto free atom j
+                    elif fj:
+                        disp[i] += push  # all correction onto free atom i
+                    else:
+                        disp[i] += 0.5 * push
+                        disp[j] -= 0.5 * push
+            if n_clash == 0:
+                break
+            # Apply (frozen atoms forced to zero displacement for safety).
+            for f in frozen:
+                if 0 <= f < n:
+                    disp[f] = 0.0
+            pos = pos + disp
+            moved_any = True
+
+        if not moved_any:
+            return xyz_delfin
+        out = []
+        for i in range(n):
+            out.append(
+                f"{syms[i]:4s} {pos[i,0]:12.6f} {pos[i,1]:12.6f} {pos[i,2]:12.6f}"
+            )
+        return "\n".join(out) + "\n"
+    except Exception as _exc:
+        logger.debug("Geometric inter-clash relief failed (%s); input kept", _exc)
+        return xyz_delfin
+
+
 def _optimize_xyz_openbabel(
     xyz_delfin: str,
     steps: int = 500,
@@ -32871,6 +33070,113 @@ def _optimize_xyz_openbabel(
             and _delfin_env_int("DELFIN_UFF_UNSAFE_SKIP_CG", 1)
         )
         if _skip_unsafe_cg:
+            # DETERMINISM <-> CLASH HEAL (env DELFIN_UFF_FROZEN_METAL_CG,
+            # default 0 → byte-identical to the b25c8b4 skip behaviour).
+            #
+            # The plain skip above kept the run deterministic but threw away the
+            # incidental ligand relaxation that the (random) CG run used to do,
+            # which had been relieving inter-ligand clashes → a confirmed
+            # inter-clash regression vs golden.  When the flag is ON we instead
+            # apply a clash-relief step that keeps BOTH properties:
+            #
+            #   mode 1 ("cg")  — metal-frozen OB-UFF: pin the unparameterised
+            #       metal atom(s) via AddAtomConstraint and run CG on the rest.
+            #       The garbage metal gradient can never move a fixed atom, but
+            #       the surrounding ligand atoms still relax.  RISK: the M-L UFF
+            #       energy terms are themselves unparameterised, so the LIGAND
+            #       gradients can still read uninitialised heap → must be proven
+            #       byte-identical empirically before trusting it.
+            #
+            #   mode 2 ("geom", DEFAULT when ON) — pure-geometric inter-fragment
+            #       push-apart (``_geometric_inter_clash_relief``): deterministic
+            #       BY CONSTRUCTION (no FF, no RNG, sorted-index order,
+            #       canonical degenerate axis).  Mirrors the inter-ligand-clash
+            #       detector's fragment/vdW contract so it improves exactly the
+            #       measured metric.  Shipped default because empirical testing
+            #       showed the metal-frozen CG (mode 1) can still leak
+            #       non-determinism through the garbage M-L terms.
+            #
+            # Gated purely on the runtime energy marker — no metal allowlist,
+            # no SMILES patterns.  Frozen-set = constraints['fix_atoms'] (metal +
+            # pinned donors + hapto atoms), so chelate / hapto geometry is held.
+            _heal_on = bool(_delfin_env_int("DELFIN_UFF_FROZEN_METAL_CG", 0))
+            if _heal_on:
+                _heal_mode = (os.environ.get(
+                    "DELFIN_UFF_FROZEN_METAL_CG_MODE", "geom"
+                ) or "geom").strip().lower()
+                _frozen = []
+                if isinstance(constraints, dict):
+                    _frozen = list(constraints.get("fix_atoms", []) or [])
+                if _heal_mode == "cg":
+                    # mode 1: metal-frozen OB-UFF.  Ensure every metal atom is
+                    # an AddAtomConstraint (the constraint set already freezes
+                    # metal+donors via fix_atoms, but force it explicitly so the
+                    # garbage metal gradient can never move the metal even if a
+                    # caller passed bare constraints).
+                    try:
+                        _mfc = pybel.ob.OBFFConstraints()
+                        _mfc_added = set()
+                        for _fa in _frozen:
+                            try:
+                                _mfc.AddAtomConstraint(int(_fa) + 1)
+                                _mfc_added.add(int(_fa))
+                            except Exception:
+                                pass
+                        for _oba in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
+                            if pybel.ob.GetSymbol(_oba.GetAtomicNum()) in _METAL_SET:
+                                _mi0 = _oba.GetIdx() - 1
+                                if _mi0 not in _mfc_added:
+                                    try:
+                                        _mfc.AddAtomConstraint(_oba.GetIdx())
+                                        _mfc_added.add(_mi0)
+                                    except Exception:
+                                        pass
+                        # carry over the geometry constraints (distances/angles/
+                        # torsions) so M-D bonds + CO linearity are still pinned.
+                        if isinstance(constraints, dict):
+                            for _a, _b, _t in constraints.get("distances", []):
+                                try:
+                                    _mfc.AddDistanceConstraint(_a + 1, _b + 1, _t)
+                                except Exception:
+                                    pass
+                            for _a, _b, _c, _t in constraints.get("angles", []):
+                                try:
+                                    _mfc.AddAngleConstraint(
+                                        _a + 1, _b + 1, _c + 1, _t
+                                    )
+                                except Exception:
+                                    pass
+                        ff.SetConstraints(_mfc)
+                        ff.ConjugateGradients(steps)
+                        ff.GetCoordinates(ob_mol.OBMol)
+                        _hl_lines = []
+                        for _oba in pybel.ob.OBMolAtomIter(ob_mol.OBMol):
+                            _sym = pybel.ob.GetSymbol(_oba.GetAtomicNum())
+                            _hl_lines.append(
+                                f"{_sym:4s} {_oba.GetX():12.6f} "
+                                f"{_oba.GetY():12.6f} {_oba.GetZ():12.6f}"
+                            )
+                        _xyz_heal = "\n".join(_hl_lines) + "\n"
+                        logger.debug(
+                            "Determinism+clash heal (mode=cg): metal-frozen "
+                            "OB-UFF clash relief applied."
+                        )
+                        return (
+                            (_xyz_heal, None) if return_energy else _xyz_heal
+                        )
+                    except Exception as _hl_exc:
+                        logger.debug(
+                            "Metal-frozen CG heal failed (%s); falling back to "
+                            "geometric clash relief", _hl_exc,
+                        )
+                        # fall through to geometric mode
+                # mode 2 (default): deterministic geometric clash relief.
+                _xyz_heal = _geometric_inter_clash_relief(xyz_delfin, _frozen)
+                logger.debug(
+                    "Determinism+clash heal (mode=geom): deterministic "
+                    "geometric inter-clash relief applied."
+                )
+                return (_xyz_heal, None) if return_energy else _xyz_heal
             logger.debug(
                 "Skipping OB-UFF ConjugateGradients: metal unparameterised "
                 "(energy marker indicates uninitialised gradients); returning "
