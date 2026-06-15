@@ -124,3 +124,40 @@ def test_list_profiles_includes_kit_qwen():
     assert "kit.gemma4-31b-it" in names
     assert "azure.gpt-5.4" in names
     assert "opus" in names
+
+
+# ---------------------------------------------------------------------------
+# Capability-aware tier fallback (get_profile(model, caps))
+# ---------------------------------------------------------------------------
+
+
+def _caps(**kw):
+    from delfin.agent.model_capabilities import ModelCapabilities
+    base = dict(model="m", provider="ollama", context_window=131_072,
+                supports_tools=True)
+    base.update(kw)
+    return ModelCapabilities(**base)
+
+
+def test_get_profile_caps_none_is_unchanged_legacy_behaviour():
+    # An 8B-by-name model is weak via the name heuristic regardless of caps.
+    assert get_profile("llama3.1:8b").core_tools_only is True
+    # An unknown strong-looking name stays strong.
+    assert get_profile("mystery-model-x").core_tools_only is False
+
+
+def test_get_profile_caps_no_tools_forces_weak():
+    p = get_profile("mystery-model-x", _caps(supports_tools=False))
+    assert p is WEAK_DEFAULT
+
+
+def test_get_profile_caps_large_window_does_not_promote_small_model():
+    # 8B model with a 131k (capped) window must STILL be weak — window is not
+    # a strength proxy. Regression guard for the core-tools surface.
+    p = get_profile("llama3.1:8b", _caps(context_window=131_072))
+    assert p.core_tools_only is True
+
+
+def test_get_profile_caps_tiny_window_forces_weak():
+    p = get_profile("mystery-model-x", _caps(context_window=4_096))
+    assert p is WEAK_DEFAULT

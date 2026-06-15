@@ -22,6 +22,10 @@ something useful turns up, not preemptively.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .model_capabilities import ModelCapabilities
 
 
 @dataclass(frozen=True)
@@ -191,8 +195,15 @@ _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
 )
 
 
-def get_profile(model: str) -> ModelProfile:
-    """Return the profile for ``model``, falling back to a tier default."""
+def get_profile(model: str, caps: "ModelCapabilities | None" = None) -> ModelProfile:
+    """Return the profile for ``model``, falling back to a tier default.
+
+    ``caps`` (optional :class:`~delfin.agent.model_capabilities.ModelCapabilities`)
+    lets the tier fallback decide weak/strong from *real* facts — a small
+    context window or no native tool support means WEAK_DEFAULT regardless of
+    the model name. When ``caps`` is None the behaviour is exactly as before
+    (name heuristic only), so existing callers are unaffected.
+    """
     if not model:
         return STRONG_DEFAULT
     if model in _PROFILES:
@@ -206,7 +217,19 @@ def get_profile(model: str) -> ModelProfile:
                 best = (length, prof)
     if best is not None:
         return best[1]
-    # Tier fallback via PromptLoader weak-model heuristic.
+    # Capability signals only ADD weak detections — they never promote a
+    # name-flagged weak model to strong. Crucially, context_window is NOT a
+    # strength proxy: an 8B model can carry a 128k window yet still need the
+    # core-tool surface, and for Ollama the window is the (capped) num_ctx.
+    # So caps flags weak on "no native tools" or a genuinely tiny window;
+    # everything else defers to the name heuristic below.
+    if caps is not None:
+        try:
+            if (not caps.supports_tools) or caps.context_window < 8_000:
+                return WEAK_DEFAULT
+        except Exception:
+            pass
+    # Tier fallback via PromptLoader weak-model heuristic (size-by-name).
     try:
         from .prompt_loader import PromptLoader
         if PromptLoader()._is_weak_model(model):

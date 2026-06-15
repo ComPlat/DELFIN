@@ -132,3 +132,29 @@ def test_to_openai_content_rejects_too_many_images(tmp_path):
     with pytest.raises(ImageError) as exc:
         to_openai_content("hi", images=[img] * 11, model="gpt-5.4")
     assert "too many images" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Capability-aware vision detection (model_supports_vision(model, caps))
+# ---------------------------------------------------------------------------
+
+
+def _vcaps(supports_vision: bool):
+    from delfin.agent.model_capabilities import ModelCapabilities
+    return ModelCapabilities(model="m", provider="ollama",
+                             context_window=32_768,
+                             supports_vision=supports_vision)
+
+
+def test_vision_via_caps_overrides_name_allowlist():
+    # A local model not on the static allow-list, but discovered vision-capable.
+    assert model_supports_vision("some-local-vlm:7b", _vcaps(True)) is True
+
+
+def test_vision_caps_false_blocks_even_known_name():
+    assert model_supports_vision("llava:7b", _vcaps(False)) is False
+
+
+def test_vision_caps_none_falls_back_to_name():
+    assert model_supports_vision("llava:7b") is True
+    assert model_supports_vision("llama3.1:8b") is False

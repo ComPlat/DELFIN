@@ -66,7 +66,20 @@ class ImageError(ValueError):
     pass
 
 
-def model_supports_vision(model: str) -> bool:
+def model_supports_vision(model: str, caps: "Any | None" = None) -> bool:
+    """True if ``model`` can accept image content.
+
+    When a resolved ``ModelCapabilities`` is passed (preferred), trust its
+    ``supports_vision`` flag — this lets local vision models (llava,
+    qwen2-vl, llama3.2-vision) discovered via Ollama's ``/api/show``
+    capability array be recognised without touching the static allow-list.
+    Falls back to the name pattern when ``caps`` is None.
+    """
+    if caps is not None:
+        try:
+            return bool(caps.supports_vision)
+        except Exception:
+            pass
     if not model:
         return False
     m = model.lower()
@@ -97,11 +110,13 @@ def to_openai_content(
     *,
     model: str = "",
     force: bool = False,
+    caps: "Any | None" = None,
 ) -> Any:
     """Build a chat-completions ``content`` value for a multimodal turn.
 
     Returns either a plain string (no images / unsupported model) or a
-    list of content parts in OpenAI's mixed-content format.
+    list of content parts in OpenAI's mixed-content format. ``caps`` is an
+    optional resolved ModelCapabilities used for vision detection.
     """
     images = images or []
     if not images:
@@ -110,7 +125,7 @@ def to_openai_content(
         raise ImageError(
             f"too many images ({len(images)} > {_MAX_PER_MESSAGE})"
         )
-    if not (force or model_supports_vision(model)):
+    if not (force or model_supports_vision(model, caps)):
         # Fall back to text-only with a note so the agent knows.
         names = ", ".join(
             (img.source_path.name if img.source_path else "<inline>")

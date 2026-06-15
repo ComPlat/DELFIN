@@ -4702,6 +4702,23 @@ def create_tab(ctx):
 
             state["engine"] = engine
             ctx.agent_engine = engine
+
+            # Model preflight: surface a clear, actionable message before the
+            # user sends — endpoint down / model not pulled (Ollama), no native
+            # tool support (any provider), or a KIT model not worth the agent
+            # (steered to the best one). ``resolve`` is cached from engine
+            # construction, so this only adds Ollama's cheap liveness probe.
+            try:
+                from delfin.agent.model_capabilities import preflight as _preflight
+                _pf_base = ""
+                _pf_inner = getattr(engine.client, "client", None)
+                if _pf_inner is not None:
+                    _pf_base = str(getattr(_pf_inner, "base_url", "") or "")
+                _pf_ok, _pf_msg = _preflight(provider, model, _pf_base)
+                if _pf_msg:
+                    _append_system_message(("⚠️ " if not _pf_ok else "💡 ") + _pf_msg)
+            except Exception:
+                pass
             # Phase 5 wiring: bind ask_user / plan-approval / scheduler
             # callbacks now that the engine + perms exist.
             try:
@@ -12635,6 +12652,7 @@ def create_tab(ctx):
                         if (hasattr(engine.client, "switch_model")
                                 and _effective_model != getattr(engine.client, "model", "")):
                             engine.client.switch_model(_effective_model)
+                            engine._refresh_context_window()
 
                     # Track per-role costs
                     _cost_before = engine.cost_usd
@@ -12714,6 +12732,7 @@ def create_tab(ctx):
                                                        "switch_model"):
                                 _routed_from[0] = model_dropdown.value or ""
                                 engine.client.switch_model(_dec.model)
+                                engine._refresh_context_window()
                                 _append_system_message(
                                     f"🧭 Model routing: **{_dec.model}** "
                                     f"({_dec.reason})"
@@ -13485,6 +13504,7 @@ def create_tab(ctx):
                 if _routed_from[0]:
                     try:
                         engine.client.switch_model(_routed_from[0])
+                        engine._refresh_context_window()
                     except Exception:
                         pass
                 # Only clean up UI state if no newer generation has started

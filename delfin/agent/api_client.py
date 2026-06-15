@@ -5199,6 +5199,23 @@ def _fan_out_subagents(tc_list, permissions):
     return futures, executor
 
 
+def _infer_provider_from_base_url(base_url: str) -> str:
+    """Best-effort provider id from an OpenAI-compatible base_url.
+
+    Used only when ``OpenAIClient`` is constructed without an explicit
+    ``provider`` (create_client always passes one). ``localhost:11434`` and
+    no-auth local servers → ollama; the KIT host → kit; else openai.
+    """
+    u = (base_url or "").lower()
+    if not u:
+        return "openai"
+    if "11434" in u or "ki-toolbox" not in u and ("localhost" in u or "127.0.0.1" in u):
+        return "ollama"
+    if "ki-toolbox" in u or "kit.edu" in u:
+        return "kit"
+    return "openai"
+
+
 class OpenAIClient(_BaseClient):
     """Use the OpenAI Python SDK for GPT / o-series models.
 
@@ -5235,7 +5252,8 @@ class OpenAIClient(_BaseClient):
 
     def __init__(self, api_key: str = "", model: str = "",
                  base_url: str = "", key_env_var: str = "OPENAI_API_KEY",
-                 permissions: Optional["KitToolPermissions"] = None):
+                 permissions: Optional["KitToolPermissions"] = None,
+                 provider: str = ""):
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -5253,6 +5271,12 @@ class OpenAIClient(_BaseClient):
         import openai
 
         self.model = model or self.DEFAULT_MODEL
+        # Provider identity ("openai"|"kit"|"ollama"). Used to gate
+        # provider-specific request shaping (Ollama num_ctx, reasoning_effort
+        # suppression) and per-model capability resolution. Inferred from the
+        # base_url when not passed, so existing callers keep working.
+        self._provider = (provider or _infer_provider_from_base_url(base_url)).strip().lower()
+        self._base_url = base_url or ""
         kwargs: dict[str, Any] = {"api_key": resolved_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -5348,6 +5372,16 @@ class OpenAIClient(_BaseClient):
             or _base.startswith("gpt-5")             # GPT-5 family
         )
 
+        # Resolve the active model's real capabilities once per turn. Drives
+        # the Ollama num_ctx override (so local models use their full window
+        # instead of the silent 2-4k default), the weak/strong tool surface,
+        # and the no-native-tools gate. Never raises — degrades to None.
+        try:
+            from .model_capabilities import resolve as _resolve_caps
+            _caps = _resolve_caps(self._provider, self.model, self._base_url)
+        except Exception:
+            _caps = None
+
         if system:
             # o-series uses "developer" role instead of "system"
             sys_role = "developer" if is_reasoning else "system"
@@ -5435,7 +5469,7 @@ class OpenAIClient(_BaseClient):
         # 15-tool _WEAK_MODEL_CORE_TOOLS set.
         try:
             from .model_profiles import get_profile as _get_profile
-            _core_only = bool(_get_profile(self.model).core_tools_only)
+            _core_only = bool(_get_profile(self.model, _caps).core_tools_only)
         except Exception:
             # Fallback to the legacy heuristic if the profile registry
             # is unavailable for any reason.
@@ -5449,6 +5483,12 @@ class OpenAIClient(_BaseClient):
                 t for t in advertised_tools
                 if t.get("function", {}).get("name") in _WEAK_MODEL_CORE_TOOLS
             ]
+
+        # No-native-tools gate (defence-in-depth behind the dashboard/CLI
+        # preflight): a model with no native tool support would only choke on
+        # the tool schema and leak malformed calls. Suppress tool advertising
+        # so it runs cleanly in chat-only mode instead of failing silently.
+        _suppress_tools = bool(_caps is not None and not _caps.supports_tools)
 
         # Augment with MCP tools discovered from configured servers.
         # Failures (missing config, server crash) leave the registry
@@ -5509,7 +5549,22 @@ class OpenAIClient(_BaseClient):
                 "stream_options": {"include_usage": True},
             }
 
-            if is_reasoning:
+            # Ollama (and other llama.cpp-backed servers) silently truncate to
+            # a tiny default num_ctx (2-4k) on the OpenAI-compatible surface
+            # unless options.num_ctx is passed — so even a 128k model only
+            # sees a few thousand tokens. Send the resolved (safely capped)
+            # window so local models run at their real potential. Other
+            # backends honour their context server-side; never send it there.
+            if self._provider == "ollama" and _caps is not None \
+                    and _caps.num_ctx_override:
+                kwargs["extra_body"] = {
+                    "options": {"num_ctx": int(_caps.num_ctx_override)}
+                }
+
+            # reasoning_effort / max_completion_tokens are OpenAI/Azure
+            # reasoning-model params; Ollama rejects them (400). Keep plain
+            # max_tokens for Ollama even if the model name looks reasoning-y.
+            if is_reasoning and self._provider != "ollama":
                 kwargs["max_completion_tokens"] = max_tokens
                 if thinking_budget >= 64000:
                     kwargs["reasoning_effort"] = "high"
@@ -5527,7 +5582,8 @@ class OpenAIClient(_BaseClient):
             # tools to call, so it could only talk (and any tool intent
             # leaked into the text channel). reasoning_effort is set
             # separately above; tools are orthogonal to it.
-            if has_doc_tools or has_calc_tools or has_coding:
+            if (has_doc_tools or has_calc_tools or has_coding) \
+                    and not _suppress_tools:
                 kwargs["tools"] = advertised_tools
 
             # Accumulate streamed tool calls (may arrive in chunks)
@@ -6235,6 +6291,7 @@ def create_client(
             base_url="https://ki-toolbox.scc.kit.edu/api/v1",
             key_env_var="KIT_TOOLBOX_API_KEY",
             permissions=kit_perms,
+            provider="kit",
         )
     if provider == "openai":
         if backend == "cli":
@@ -6242,7 +6299,7 @@ def create_client(
                                   permission_mode=permission_mode)
         from .credentials import load_credential as _load_cred_openai
         openai_key = api_key or _load_cred_openai("OPENAI_API_KEY")
-        return OpenAIClient(api_key=openai_key, model=model)
+        return OpenAIClient(api_key=openai_key, model=model, provider="openai")
     if provider == "ollama":
         # Ollama, vLLM, LM Studio, llama.cpp-server etc. expose an
         # OpenAI-compatible /v1 surface. They reuse the same agentic
@@ -6305,6 +6362,7 @@ def create_client(
             base_url=ollama_host,
             key_env_var="OLLAMA_HOST",
             permissions=local_perms,
+            provider="ollama",
         )
     if backend == "api":
         return APIClient(api_key=api_key, model=model)

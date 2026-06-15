@@ -354,6 +354,11 @@ class AgentEngine:
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
         self.context_window_tokens: int = 100_000
+        # Resolved per active model below (real window for Ollama/local/cloud)
+        # so compaction matches each model's true context — and small local
+        # models stop overflowing while large ones stop being throttled to 100k.
+        self._active_capabilities = None
+        self._refresh_context_window()
         self.auto_compact_pct: float = 0.95
         self.last_compaction_info: dict[str, int] | None = None
         # A6 — last cost_usd snapshot at outcome time; the next outcome's
@@ -585,6 +590,33 @@ class AgentEngine:
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
         }
+
+    def _refresh_context_window(self) -> None:
+        """Size the compaction budget to the ACTIVE model's real context.
+
+        Resolves the model's true window + capabilities (Ollama ``/api/show``,
+        KIT/vLLM ``/v1/models`` ``max_model_len``, else a curated static
+        table) and stashes the capabilities for tool/vision decisions. Falls
+        back to the legacy 100k on any error so behaviour never regresses.
+        Call after construction and after every ``client.switch_model(...)``.
+        """
+        try:
+            model = getattr(self.client, "model", "") or ""
+            base_url = ""
+            inner = getattr(self.client, "client", None)
+            if inner is not None:
+                try:
+                    base_url = str(getattr(inner, "base_url", "") or "")
+                except Exception:
+                    base_url = ""
+            from .model_capabilities import resolve as _resolve_caps
+            caps = _resolve_caps(self.provider, model, base_url)
+            if caps and caps.context_window > 0:
+                self.context_window_tokens = int(caps.context_window)
+                self._active_capabilities = caps
+        except Exception:
+            # Keep whatever window is already set (100k default).
+            pass
 
     def _build_context_status_block(self) -> str:
         """Compact self-monitoring block injected into the solo prompt.

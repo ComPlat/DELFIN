@@ -68,8 +68,10 @@ def test_kit_qwen3_5_keeps_full_prompt_per_profile():
 
 def test_api_client_reads_profile_for_core_tools_filter():
     """The advertised_tools filter must consult profile.core_tools_only
-    instead of just the model-name regex. Check via static source
-    scan since we can't construct an OpenAIClient without keys."""
+    instead of just the model-name regex. The filter now also passes the
+    resolved capabilities so the weak/strong split can use real facts
+    (no native tools / tiny window), not only the name. Check via static
+    source scan since we can't construct an OpenAIClient without keys."""
     p = (Path(__file__).resolve().parent.parent
          / "delfin" / "agent" / "api_client.py")
     text = p.read_text(encoding="utf-8")
@@ -77,7 +79,7 @@ def test_api_client_reads_profile_for_core_tools_filter():
     assert idx > 0
     snippet = text[idx: idx + 2500]
     assert "from .model_profiles import get_profile" in snippet
-    assert "_get_profile(self.model).core_tools_only" in snippet
+    assert "_get_profile(self.model, _caps).core_tools_only" in snippet
     assert "_WEAK_MODEL_CORE_TOOLS" in snippet
 
 

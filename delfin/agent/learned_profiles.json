@@ -111,5 +111,23 @@
         "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files"
       ]
     }
+  },
+  "ollama": {
+    "thinking_budget_mult": 0.5,
+    "communication": {
+      "rules": [
+        "Local inference — expect slower token throughput; keep answers tight and avoid long monologues",
+        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
+        "No extended-thinking / reasoning_effort instructions — local models do not honour them; reason inline and briefly"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Prefer the core tool surface (read_file, write_file, edit_file, bash, run_tests, grep_file) — small local models pick the wrong tool out of a large surface",
+        "One tool call at a time; verify each result before the next instead of chaining many speculative calls",
+        "If the same command fails twice, explain the failure and stop instead of retrying",
+        "Grep before Read; never read >200 lines at once — the local context window is smaller and silently truncates"
+      ]
+    }
   }
 }

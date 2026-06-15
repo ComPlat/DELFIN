@@ -36,6 +36,13 @@ _BARE_TOOL_MARKER = re.compile(r"to=\s*[A-Za-z_][\w\-]*")
 # Harmony special-token leftovers that decode as literal words.
 _HARMONY_TOKENS = re.compile(r"\b(?:json_schema|json|constrain)\b(?=[^\sA-Za-z])")
 
+# Reasoning-tag models (deepseek-r1, qwq, qwen3-thinking, …) emit their chain
+# of thought as <think>…</think> in the visible text channel. Strip the whole
+# block; also strip a dangling unterminated <think> (streaming can cut off
+# before </think>) so no reasoning leaks into the user-visible answer.
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_DANGLING = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+
 # Scripts that do not occur in DELFIN's de/en chemistry output — a run of
 # these is glitch-token corruption, not content.  (CJK, kana, Hangul,
 # Armenian, Cyrillic, Malayalam, Georgian, Thai, Devanagari, fullwidth.)
@@ -59,10 +66,12 @@ class SanitizeResult:
     text: str
     leaked_tools: list[str] = field(default_factory=list)
     glitch_chars: int = 0
+    think_stripped: bool = False
 
     @property
     def changed(self) -> bool:
-        return bool(self.leaked_tools) or self.glitch_chars > 0
+        return (bool(self.leaked_tools) or self.glitch_chars > 0
+                or self.think_stripped)
 
 
 def sanitize_agent_text(text: str) -> SanitizeResult:
@@ -85,7 +94,10 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
         if name not in leaked:
             leaked.append(name)
 
-    cleaned = _LEAKED_TOOL.sub(" ", text)
+    think_stripped = bool(_THINK_BLOCK.search(text) or _THINK_DANGLING.search(text))
+    cleaned = _THINK_BLOCK.sub(" ", text)
+    cleaned = _THINK_DANGLING.sub(" ", cleaned)
+    cleaned = _LEAKED_TOOL.sub(" ", cleaned)
     cleaned = _BARE_TOOL_MARKER.sub(" ", cleaned)
     cleaned = _HARMONY_TOKENS.sub(" ", cleaned)
 
@@ -101,6 +113,7 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
         text=cleaned,
         leaked_tools=leaked,
         glitch_chars=glitch_chars,
+        think_stripped=think_stripped,
     )
 
 

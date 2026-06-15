@@ -122,3 +122,86 @@ def test_ollama_pricing_treated_as_free():
     snippet = text[free_block_idx: free_block_idx + 500]
     assert '"input": 0.0' in snippet
     assert '"output": 0.0' in snippet
+
+
+# ---------------------------------------------------------------------------
+# num_ctx is sent ONLY for Ollama (the "full potential" fix)
+# ---------------------------------------------------------------------------
+
+
+class _Usage:
+    prompt_tokens = 5
+    completion_tokens = 3
+
+
+class _Delta:
+    content = "ok"
+    tool_calls = None
+
+
+class _Choice:
+    delta = _Delta()
+    finish_reason = "stop"
+
+
+class _Chunk:
+    usage = _Usage()
+    choices = [_Choice()]
+
+
+class _FakeStream:
+    def __iter__(self):
+        return iter([_Chunk()])
+
+    def close(self):
+        pass
+
+
+def _capture_create(client):
+    """Replace the model's create() with a capturing stub; return the dict
+    that will hold the kwargs of the last call."""
+    captured: dict = {}
+
+    def _fake_create(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return _FakeStream()
+
+    client.client.chat.completions.create = _fake_create
+    return captured
+
+
+def _fixed_caps(monkeypatch, *, provider, num_ctx):
+    from delfin.agent import model_capabilities as mc
+    caps = mc.ModelCapabilities(
+        model="m", provider=provider, context_window=num_ctx or 200_000,
+        supports_tools=True, num_ctx_override=num_ctx, source="static",
+    )
+    monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
+
+
+def test_stream_message_sends_num_ctx_for_ollama(monkeypatch, tmp_path):
+    from delfin.agent.api_client import create_client
+    _fixed_caps(monkeypatch, provider="ollama", num_ctx=4096)
+    client = create_client(backend="api", provider="ollama",
+                           model="qwen2.5-coder:7b", cwd=str(tmp_path))
+    captured = _capture_create(client)
+    list(client.stream_message("sys", [{"role": "user", "content": "hi"}],
+                               max_tokens=100))
+    assert "extra_body" in captured
+    assert captured["extra_body"]["options"]["num_ctx"] == 4096
+    # Ollama must NOT receive reasoning_effort / max_completion_tokens.
+    assert "reasoning_effort" not in captured
+    assert "max_tokens" in captured
+
+
+def test_stream_message_no_num_ctx_for_kit(monkeypatch, tmp_path):
+    monkeypatch.setenv("KIT_TOOLBOX_API_KEY", "dummy-key")
+    from delfin.agent.api_client import create_client
+    _fixed_caps(monkeypatch, provider="kit", num_ctx=None)
+    client = create_client(backend="api", provider="kit",
+                           model="kit.qwen3.5-397b-A17b", cwd=str(tmp_path))
+    captured = _capture_create(client)
+    list(client.stream_message("sys", [{"role": "user", "content": "hi"}],
+                               max_tokens=100))
+    assert "extra_body" not in captured
