@@ -1844,7 +1844,17 @@ def main(argv: list[str] | None = None) -> int:
             config['relativity'] = 'none' 
     
     
-        total_electrons_txt, multiplicity_guess = calculate_total_electrons_txt(str(control_file_path))
+        electron_result = calculate_total_electrons_txt(str(control_file_path))
+        if electron_result is None:
+            logger.error(
+                "Cannot determine electron count or multiplicity: the input geometry "
+                "referenced by CONTROL.txt is missing or unreadable in the run directory. "
+                "Aborting cleanly instead of computing on an empty geometry. Check that the "
+                "input_file named in CONTROL.txt actually exists in the calculation folder "
+                "(this commonly bites a recalc whose geometry file was not staged to scratch)."
+            )
+            return _finalize(1)
+        total_electrons_txt, multiplicity_guess = electron_result
         try:
             total_electrons_txt = int(total_electrons_txt)
         except (TypeError, ValueError):
@@ -2050,13 +2060,22 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
         elif method_token == "classic":
-            try:
-                total_electrons_txt, mult_guess = calculate_total_electrons_txt(str(control_file_path))
-                total_electrons_txt = int(total_electrons_txt)
-                total_electrons = total_electrons_txt - pipeline_ctx.charge
-                pipeline_ctx.multiplicity = 1 if total_electrons % 2 == 0 else 2
-            except Exception:
-                pass
+            electron_result = calculate_total_electrons_txt(str(control_file_path))
+            if electron_result is not None:
+                try:
+                    total_electrons_txt, mult_guess = electron_result
+                    total_electrons_txt = int(total_electrons_txt)
+                    total_electrons = total_electrons_txt - pipeline_ctx.charge
+                    pipeline_ctx.multiplicity = 1 if total_electrons % 2 == 0 else 2
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "[multiplicity classic] Could not determine electron count from %s; "
+                    "keeping existing multiplicity %s.",
+                    control_file_path,
+                    pipeline_ctx.multiplicity,
+                )
     
         summary = compute_summary(pipeline_ctx, E_ref)
     

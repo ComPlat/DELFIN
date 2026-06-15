@@ -27,3 +27,19 @@ def test_calculate_total_electrons_txt_counts_smiles_without_xyz_conversion(tmp_
 
     assert total_electrons == 47
     assert multiplicity == 2
+
+
+def test_calculate_total_electrons_txt_returns_none_when_input_missing(tmp_path):
+    """Reproduces the smart-recalc crash: a missing input geometry must yield
+    None (a clean signal the caller can guard) — never a partial/garbage tuple.
+
+    The run path in cli.py relies on this: None -> log + _finalize(1), instead
+    of unpacking None into a TypeError or computing on an empty geometry.
+    """
+    control = tmp_path / "CONTROL.txt"
+    # No input file is written: CONTROL points at a geometry that isn't there.
+    control.write_text("input_file=input.xyz\ncharge=0\n", encoding="utf-8")
+
+    result = calculate_total_electrons_txt(str(control))
+
+    assert result is None
