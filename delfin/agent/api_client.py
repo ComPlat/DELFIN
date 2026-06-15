@@ -801,6 +801,13 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # disambiguation reliably; weak ones routinely pick the wrong tool
 # out of a large schema (notebook_edit for a Python file, cron_create
 # instead of /control key, etc.).
+# Max seconds a single bash_status(wait_seconds=…) call blocks server-side
+# before returning. Keeps one tool round covering a long wait (so the model
+# stops tight-polling and exhausting the tool-round budget) while bounding the
+# apparent UI freeze; the model can call again to keep waiting.
+_BASH_STATUS_WAIT_CAP_S = 300.0
+
+
 _WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
     # File-system core
     "read_file", "write_file", "edit_file", "multi_edit",
@@ -1559,8 +1566,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "command runs through the SAME safety gate as bash "
                 "(workspace sandbox, deny-list, secret scanner, "
                 "auto-allow patterns). Output is streamed to tempfiles; "
-                "read incrementally with bash_output(job_id). Check "
-                "completion with bash_status(job_id). Stop with "
+                "read incrementally with bash_output(job_id). Wait for "
+                "completion with bash_status(job_id, wait_seconds=300) — "
+                "do NOT poll bash_status in a tight loop. Stop with "
                 "bash_kill(job_id). Hard timeout 24h."
             ),
             "parameters": {
@@ -1603,7 +1611,14 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Check the status of a background bash job. Returns "
                 "running flag, exit_code (None while running), elapsed "
                 "seconds, the command, and the cwd. Use AFTER "
-                "bash_background to know when the job has finished."
+                "bash_background to know when the job has finished.\n"
+                "To WAIT for a long job (e.g. a ~10-min benchmark) pass "
+                "wait_seconds: this BLOCKS until the job finishes or that "
+                "many seconds elapse (capped at 300s/call), then returns. "
+                "Do NOT poll in a tight loop every few seconds — that "
+                "burns the tool-round budget long before the job is done. "
+                "Instead call once with e.g. wait_seconds=300; if it is "
+                "still running, call again."
             ),
             "parameters": {
                 "type": "object",
@@ -1611,6 +1626,15 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "job_id": {
                         "type": "string",
                         "description": "ID returned by bash_background.",
+                    },
+                    "wait_seconds": {
+                        "type": "integer",
+                        "description": (
+                            "Block until the job finishes or this many "
+                            "seconds elapse (capped at 300/call). Returns "
+                            "early the moment the job ends. Default 0 "
+                            "(return immediately)."
+                        ),
                     },
                 },
                 "required": ["job_id"],
@@ -4229,6 +4253,22 @@ class _DocToolExecutor:
             return json.dumps({"error": f"registry error: {exc}"})
         if job is None:
             return json.dumps({"error": f"unknown job_id: {job_id}"})
+        # Optional blocking wait: poll the job server-side so the model spends
+        # ONE tool round on a long wait instead of one every few seconds (which
+        # exhausted the tool-round budget before a ~10-min job could finish —
+        # bug 20260615-152119). Returns the instant the job ends; otherwise
+        # after the (capped) wait so the model can decide to keep waiting.
+        try:
+            wait_s = float(arguments.get("wait_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            wait_s = 0.0
+        if wait_s > 0:
+            deadline = time.monotonic() + min(wait_s, _BASH_STATUS_WAIT_CAP_S)
+            while job.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(2.0, remaining))
         return json.dumps(job.status_dict(), ensure_ascii=False)
 
     def _execute_bash_output(self, arguments: dict) -> str:

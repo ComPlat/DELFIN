@@ -472,7 +472,7 @@ task shapes need different attacks:
 | **"find the cause of bug Z"** | Bisect-style. `subagent(subagent_type="explore", …)` to map the surface, then re-read the candidates yourself, then form a hypothesis, then verify by running pytest on the affected module. Don't speculate without a test. |
 | **"compare two approaches"** | Two parallel `subagent` calls in ONE assistant message — one per approach. Synthesize their reports yourself. |
 | **"audit this diff"** | `subagent(subagent_type="code-reviewer", …)` for an independent read. Trust-but-verify their findings with `git diff`. |
-| **"long-running compute"** | `bash_background` with explicit timeout, then move on to other work. Periodically `bash_status` / `bash_output`. Never wait synchronously past 60 s. |
+| **"long-running compute"** | `bash_background` with explicit timeout. To wait for it, call `bash_status(job_id, wait_seconds=300)` — it blocks until the job ends or 300 s pass, then returns. Do NOT poll `bash_status`/`bash_output` in a tight loop every few seconds: that burns the tool-round budget long before a ~10-min job finishes. Wait in 300 s chunks (call again if still running), or move on to other work and check back. |
 | **"the user reported something is broken"** | Reproduce FIRST. Don't theorise without seeing the failure. Capture the exact failing command + output in the chat before patching. |
 
 **Anti-patterns to avoid:**
