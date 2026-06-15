@@ -39,6 +39,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 
 _IDEAL_TETRA_DEG: float = 109.471  # arccos(-1/3) in degrees
+_IDEAL_XH_DEFAULT: float = 1.09  # used only when an embedded A-H is degenerate
 
 _COV_RADII: Dict[str, float] = {
     "H": 0.31, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.76, "N": 0.71,
@@ -175,7 +176,8 @@ def _build_geometric_adjacency(syms: List[str],
 def _h_introduces_clash(new_h_pos: np.ndarray, h_idx: int, parent_idx: int,
                         syms: List[str], pts: np.ndarray,
                         sibling_idxs: Optional[set] = None,
-                        threshold_factor: float = 0.70) -> bool:
+                        threshold_factor: float = 0.70,
+                        ignore_h_to_h: bool = False) -> bool:
     """True iff placing H at ``new_h_pos`` creates a NEW clash with any
     atom that is neither the H itself nor its parent nor a sibling
     (sibling = another atom bonded to the same parent — geminal pair).
@@ -200,6 +202,8 @@ def _h_introduces_clash(new_h_pos: np.ndarray, h_idx: int, parent_idx: int,
     siblings = sibling_idxs if sibling_idxs is not None else set()
     for j in range(n):
         if j == h_idx or j == parent_idx or j in siblings:
+            continue
+        if ignore_h_to_h and syms[j] == "H":
             continue
         d = float(np.linalg.norm(new_h_pos - pts[j]))
         rj_v = _VDW_RADII.get(syms[j], 1.7 if syms[j] != "H" else 1.20)
@@ -232,6 +236,489 @@ def _sp3_heavy_atom_indices(mol) -> List[int]:
         if atom.GetHybridization() == sp3:
             out.append(atom.GetIdx())
     return out
+
+
+# ---------------------------------------------------------------------------
+# FULL umbrella reconstruction (graph-driven, replaces per-angle rotation)
+# ---------------------------------------------------------------------------
+#
+# Root-of-partial (legacy ``fix_sp3_h_tetrahedrality`` below): it rotated each
+# H independently to make ONE (other-A-H) angle 109.5°, never reconstructing a
+# joint tetrahedral umbrella, and it derived H-count from the *embedded*
+# geometry — which in the unsanitized fallback is degenerate (AddHs overlaps
+# sp3 H, so geometric adjacency over-counts H and the count-4 gate skips the
+# centre entirely).  The functions below fix BOTH: they read connectivity from
+# the RDKit ``mol`` bond graph (correct H-count per centre) and place EVERY H
+# of a centre jointly on the ideal tetrahedral / pyramidal / bent sites left
+# open by the heavy neighbours, at the original A-H bond length.
+#
+# Universal: element + bond-graph + hybridization only.  Topology-safe (only H
+# move; A-H lengths preserved).  Deterministic (fixed tables, sorted iteration,
+# no RNG/clock).  Never emits non-finite coordinates (NaN guards + per-H
+# rollback to the original position).
+
+
+_IDEAL_TETRA_RAD: float = math.acos(-1.0 / 3.0)  # 109.471° in radians
+
+
+def _ortho_basis(axis: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Two deterministic unit vectors perpendicular to unit ``axis``."""
+    helper = (np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9
+              else np.array([0.0, 1.0, 0.0]))
+    u = helper - float(np.dot(helper, axis)) * axis
+    nu = float(np.linalg.norm(u))
+    if nu < 1e-9:
+        u = np.array([0.0, 1.0, 0.0])
+        nu = 1.0
+    u = u / nu
+    v = np.cross(axis, u)
+    nv = float(np.linalg.norm(v))
+    if nv < 1e-9:
+        return u, np.array([0.0, 0.0, 1.0])
+    return u, v / nv
+
+
+def _umbrella_dirs_one_heavy(axis_in: np.ndarray, n_h: int,
+                             apex_rad: float) -> List[np.ndarray]:
+    """``n_h`` outward unit directions making angle ``apex_rad`` with
+    ``-axis_in`` (the single heavy bond), equispaced around ``axis_in``.
+
+    ``axis_in`` = unit vector parent -> the single heavy neighbour.  The
+    umbrella opens AWAY from that bond.  Phase 0 is deterministic.
+    """
+    a = axis_in
+    u, v = _ortho_basis(a)
+    cos_t = math.cos(apex_rad)
+    sin_t = math.sin(apex_rad)
+    dirs: List[np.ndarray] = []
+    k_max = max(1, n_h)
+    for k in range(n_h):
+        phi = 2.0 * math.pi * k / k_max
+        d = (-a) * cos_t + (math.cos(phi) * u + math.sin(phi) * v) * sin_t
+        nd = float(np.linalg.norm(d))
+        if nd > 1e-9:
+            dirs.append(d / nd)
+    return dirs
+
+
+def _umbrella_dirs_two_heavy(a: np.ndarray, b: np.ndarray, n_h: int,
+                             apex_rad: float) -> List[np.ndarray]:
+    """``n_h`` outward unit directions for a centre with TWO heavy bonds
+    ``a``,``b`` (unit, parent->neighbour).  H straddle the plane that
+    bisects the two bonds; H-A-H opening = ``apex_rad``.
+    """
+    bis = a + b
+    nbis = float(np.linalg.norm(bis))
+    if nbis < 1e-9:
+        # collinear heavy bonds — pick an arbitrary perpendicular plane
+        u, w = _ortho_basis(a)
+        bis_n = u
+        out_axis = w
+    else:
+        bis_n = bis / nbis
+        out_axis = np.cross(a, b)
+        no = float(np.linalg.norm(out_axis))
+        if no < 1e-9:
+            u, w = _ortho_basis(bis_n)
+            out_axis = w
+        else:
+            out_axis = out_axis / no
+    half = apex_rad / 2.0
+    cos_h = math.cos(half)
+    sin_h = math.sin(half)
+    d1 = -bis_n * cos_h + out_axis * sin_h
+    d2 = -bis_n * cos_h - out_axis * sin_h
+    out: List[np.ndarray] = []
+    for d in (d1, d2):
+        nd = float(np.linalg.norm(d))
+        if nd > 1e-9:
+            out.append(d / nd)
+    return out[:n_h]
+
+
+def _umbrella_dirs_three_heavy(a: np.ndarray, b: np.ndarray, c: np.ndarray
+                               ) -> List[np.ndarray]:
+    """Single outward direction for a centre with THREE heavy bonds
+    (methine): opposite the sum of the three bond vectors."""
+    s = a + b + c
+    d = -s
+    nd = float(np.linalg.norm(d))
+    if nd < 1e-9:
+        return [-a]
+    return [d / nd]
+
+
+# Apex angle (H-A-H / X-A-H opening) per heavy-atom element.  Tetrahedral for
+# C/Si/N+/quaternary; mild pyramidal/bent narrowing for the lone-pair-bearing
+# neutral heteroatoms; wider for the heavy/soft donors.  All in radians.
+_APEX_DEG: Dict[str, float] = {
+    "C": 109.471, "Si": 109.471, "Ge": 109.471, "Sn": 109.471,
+    "N": 107.0, "P": 93.5, "As": 92.0,
+    "O": 108.5, "S": 92.0, "Se": 91.0,
+    "B": 109.471,
+}
+_APEX_DEFAULT_DEG: float = 109.471
+
+
+def _apex_rad_for(sym: str, formal_charge: int, n_heavy: int, n_h: int
+                  ) -> float:
+    """Ideal apex angle (radians) for an sp3 centre.
+
+    Charged centres with no lone pair (e.g. ammonium N+, oxonium O+) take
+    the full tetrahedral angle; neutral lone-pair heteroatoms keep the mild
+    VSEPR narrowing.  A fully-substituted centre (n_heavy + n_h == 4) is
+    tetrahedral regardless.
+    """
+    if n_heavy + n_h >= 4:
+        return _IDEAL_TETRA_RAD
+    if sym == "N" and formal_charge > 0:
+        return _IDEAL_TETRA_RAD
+    if sym == "O" and formal_charge > 0:
+        return _IDEAL_TETRA_RAD
+    if sym == "S" and formal_charge > 0:
+        return _IDEAL_TETRA_RAD
+    return math.radians(_APEX_DEG.get(sym, _APEX_DEFAULT_DEG))
+
+
+def _ideal_h_dirs_full(sym: str, formal_charge: int,
+                       parent_pos: np.ndarray,
+                       heavy_pos: List[np.ndarray],
+                       n_h: int) -> List[np.ndarray]:
+    """Return ``n_h`` outward unit H directions for an sp3 centre given the
+    fixed heavy-neighbour positions.  Joint umbrella, not per-angle."""
+    bonds: List[np.ndarray] = []
+    for hp in heavy_pos:
+        v = np.asarray(hp) - parent_pos
+        nv = float(np.linalg.norm(v))
+        if nv > 1e-9:
+            bonds.append(v / nv)
+    n_heavy = len(bonds)
+    apex = _apex_rad_for(sym, formal_charge, n_heavy, n_h)
+    if n_heavy == 0:
+        tet = [np.array([1.0, 1.0, 1.0]), np.array([1.0, -1.0, -1.0]),
+               np.array([-1.0, 1.0, -1.0]), np.array([-1.0, -1.0, 1.0])]
+        return [v / math.sqrt(3.0) for v in tet][:n_h]
+    if n_heavy == 1:
+        return _umbrella_dirs_one_heavy(bonds[0], n_h, apex)
+    if n_heavy == 2:
+        return _umbrella_dirs_two_heavy(bonds[0], bonds[1], n_h, apex)
+    return _umbrella_dirs_three_heavy(bonds[0], bonds[1], bonds[2])[:n_h]
+
+
+def _greedy_match(h_vecs: List[np.ndarray],
+                  target_dirs: List[np.ndarray]) -> List[int]:
+    """Assign each existing H vector (parent->H) to the closest unused
+    target direction (min angle).  Deterministic greedy; returns a list
+    ``mapping`` with ``target_dirs[mapping[i]]`` chosen for H ``i``."""
+    nt = len(target_dirs)
+    used = [False] * nt
+    mapping: List[int] = []
+    for hv in h_vecs:
+        nh = float(np.linalg.norm(hv))
+        best_k = -1
+        best_cos = -2.0
+        for k in range(nt):
+            if used[k]:
+                continue
+            nd = float(np.linalg.norm(target_dirs[k]))
+            if nh < 1e-9 or nd < 1e-9:
+                cos = -1.0
+            else:
+                cos = float(np.dot(hv, target_dirs[k]) / (nh * nd))
+            if cos > best_cos:
+                best_cos = cos
+                best_k = k
+        if best_k < 0:
+            best_k = next((k for k in range(nt) if not used[k]), 0) \
+                if nt else -1
+        if 0 <= best_k < nt:
+            used[best_k] = True
+        mapping.append(best_k)
+    return mapping
+
+
+def _rotate_dirs_about_axis(dirs: List[np.ndarray], axis: np.ndarray,
+                            angle: float) -> List[np.ndarray]:
+    """Rodrigues rotation of each unit dir about unit ``axis`` by ``angle``."""
+    a = axis
+    c = math.cos(angle)
+    s = math.sin(angle)
+    out: List[np.ndarray] = []
+    for d in dirs:
+        out.append(d * c + np.cross(a, d) * s
+                   + a * float(np.dot(a, d)) * (1.0 - c))
+    return out
+
+
+def _count_dir_clashes(parent_pos: np.ndarray, dirs: List[np.ndarray],
+                       h_idxs: List[int], d_xh: float, atom_idx: int,
+                       syms: List[str], pts: np.ndarray,
+                       siblings: set) -> int:
+    """Count how many of the placed H (parent + d_xh·dir) introduce a clash."""
+    c = 0
+    for d in dirs:
+        cand = parent_pos + d_xh * d
+        # Ignore H-H during phase probing: other H atoms are still at their
+        # stale (pre-rebuild) positions, so an H-H "clash" is uninformative.
+        if _h_introduces_clash(cand, -1, atom_idx, syms, pts,
+                               sibling_idxs=siblings,
+                               threshold_factor=0.70,
+                               ignore_h_to_h=True):
+            c += 1
+    return c
+
+
+def _best_h_dirs_full(sym: str, formal_charge: int, parent_pos: np.ndarray,
+                      heavy_pos: List[np.ndarray], h_idxs: List[int],
+                      atom_idx: int, syms: List[str], pts: np.ndarray,
+                      siblings: set) -> List[np.ndarray]:
+    """Ideal H directions for a centre, with rigid phase optimisation for the
+    single-heavy (methyl/aminyl) umbrella so a crowded centre rotates its H
+    umbrella to the least-clashing phase instead of being rolled back.
+
+    For n_heavy != 1 the geometry is phase-fixed (methylene plane / methine
+    apex / free tetrahedron), so the base template is returned directly.
+    """
+    base = _ideal_h_dirs_full(sym, formal_charge, parent_pos, heavy_pos,
+                              len(h_idxs))
+    # Phase optimisation only helps the single-heavy umbrella with >=2 H
+    # (CH3 / NH3+ / SiH3 / PH2-on-single-C etc.); other geometries are rigid.
+    if len(heavy_pos) != 1 or len(h_idxs) < 2 or not base:
+        return base
+    axis = np.asarray(heavy_pos[0]) - parent_pos
+    na = float(np.linalg.norm(axis))
+    if na < 1e-9:
+        return base
+    axis = axis / na
+    # Representative A-H length for the clash probe (mean of existing H).
+    d_xh = 0.0
+    for h in h_idxs:
+        d_xh += float(np.linalg.norm(pts[h] - parent_pos))
+    d_xh = (d_xh / len(h_idxs)) if h_idxs else _IDEAL_XH_DEFAULT
+    if d_xh < 1e-6:
+        d_xh = _IDEAL_XH_DEFAULT
+    n_probes = 12
+    period = 2.0 * math.pi / 3.0  # 3-fold symmetric umbrella
+    best_dirs = base
+    best_clash = _count_dir_clashes(parent_pos, base, h_idxs, d_xh,
+                                    atom_idx, syms, pts, siblings)
+    best_dev = _phase_dev(base, h_idxs, parent_pos, pts)
+    for k in range(1, n_probes):
+        phase = period * (k / n_probes)
+        cand = _rotate_dirs_about_axis(base, axis, phase)
+        clash = _count_dir_clashes(parent_pos, cand, h_idxs, d_xh,
+                                   atom_idx, syms, pts, siblings)
+        dev = _phase_dev(cand, h_idxs, parent_pos, pts)
+        if (clash, dev) < (best_clash, best_dev):
+            best_clash = clash
+            best_dev = dev
+            best_dirs = cand
+    return best_dirs
+
+
+def _phase_dev(dirs: List[np.ndarray], h_idxs: List[int],
+               parent_pos: np.ndarray, pts: np.ndarray) -> float:
+    """Sum of angles between existing H vectors and their greedy-matched
+    target dirs — used as a deterministic tiebreak so a clash-free umbrella
+    prefers the phase closest to the input (minimal rotation)."""
+    h_vecs = [pts[h] - parent_pos for h in h_idxs]
+    mapping = _greedy_match(h_vecs, dirs)
+    tot = 0.0
+    for li, hv in enumerate(h_vecs):
+        k = mapping[li]
+        if k < 0 or k >= len(dirs):
+            continue
+        nh = float(np.linalg.norm(hv))
+        nd = float(np.linalg.norm(dirs[k]))
+        if nh < 1e-9 or nd < 1e-9:
+            continue
+        cv = max(-1.0, min(1.0, float(np.dot(hv, dirs[k]) / (nh * nd))))
+        tot += math.degrees(math.acos(cv))
+    return tot
+
+
+def fix_sp3_h_tetrahedrality_full(xyz: str, mol,
+                                  tolerance_deg: float = 10.0
+                                  ) -> Tuple[str, dict]:
+    """FULL graph-driven sp3-H umbrella reconstruction.
+
+    For every sp3 heavy centre in ``mol`` (C/N/O/P/S/Si/B/..., including
+    protonated / charged centres), rebuild ALL of its attached H atoms onto
+    the ideal tetrahedral / pyramidal / bent sites implied by the FIXED
+    heavy-neighbour frame, at the original per-H A-H bond length.
+
+    Connectivity comes from the RDKit ``mol`` bond graph (so a methylene C
+    is known to carry exactly two H even when the embedded geometry overlaps
+    them).  Atom ordering must match the XYZ — guaranteed by the fallback
+    wiring, where both the XYZ and ``mol`` come from the same post-AddHs mol.
+
+    Guarantees: only H move; A-H length preserved (within FP epsilon); no
+    non-finite output (NaN guard + per-centre rollback); deterministic.
+
+    Returns ``(new_xyz, report)`` with the same report keys as the legacy
+    fixer plus ``"centres_rebuilt"``.
+    """
+    report: dict = {
+        "sp3_atoms_checked": 0,
+        "violations_detected": 0,
+        "h_atoms_moved": 0,
+        "centres_rebuilt": 0,
+        "max_angle_correction_deg": 0.0,
+        "topology_preserved": True,
+    }
+    if mol is None:
+        return xyz, report
+    try:
+        syms, pts, orig_lines = _parse_xyz(xyz)
+        if pts.shape[0] == 0:
+            return xyz, report
+        pts = pts.copy()
+        n_atoms = pts.shape[0]
+        n_mol = mol.GetNumAtoms()
+
+        sp3_heavy = _sp3_heavy_atom_indices(mol)
+        report["sp3_atoms_checked"] = len(sp3_heavy)
+        if not sp3_heavy:
+            return xyz, report
+
+        # ---- Pass 1: rebuild every sp3 centre's H umbrella jointly. ----
+        # Heavy-atom clashes block the centre (real overlap with a non-H);
+        # H-H is IGNORED here because the OTHER centres' H are still at their
+        # stale positions — an H-H "clash" against a stale H is uninformative.
+        # Pass 2 re-validates H-H once every centre has been relocated.
+        max_corr = 0.0
+        # Track which H atoms were moved + their parent + old position, for
+        # the pass-2 re-validation/rollback.
+        moved_h: Dict[int, Tuple[int, np.ndarray]] = {}
+        centre_h: Dict[int, List[int]] = {}
+        for atom_idx in sorted(sp3_heavy):
+            if atom_idx >= n_mol or atom_idx >= n_atoms:
+                continue
+            if _is_metal_sym(syms[atom_idx]):
+                continue
+            atom = mol.GetAtomWithIdx(atom_idx)
+            nbr_idxs = [nb.GetIdx() for nb in atom.GetNeighbors()]
+            # Mol-graph H neighbours (true H-count); skip metal-bonded H.
+            h_idxs: List[int] = []
+            for j in nbr_idxs:
+                if j >= n_atoms:
+                    continue
+                if syms[j] != "H":
+                    continue
+                h_idxs.append(j)
+            if not h_idxs:
+                continue
+            heavy_idxs = [j for j in nbr_idxs
+                          if j < n_atoms and syms[j] != "H"
+                          and not _is_metal_sym(syms[j])]
+            # Defensive: a sane sp3 centre has heavy+H <= 4 (C/N/O/F/B) /
+            # <= 6 for hypervalent; skip pathological perception artefacts.
+            cap = 4 if syms[atom_idx] in ("C", "N", "O", "F", "B") else 6
+            if len(heavy_idxs) + len(h_idxs) > cap:
+                continue
+
+            parent_pos = pts[atom_idx]
+            heavy_pos = [pts[j] for j in heavy_idxs]
+            siblings = set(nbr_idxs) | {atom_idx}
+            target_dirs = _best_h_dirs_full(
+                syms[atom_idx], int(atom.GetFormalCharge()),
+                parent_pos, heavy_pos, h_idxs, atom_idx, syms, pts,
+                siblings,
+            )
+            if len(target_dirs) < len(h_idxs):
+                continue  # no clean template — leave centre untouched
+
+            h_vecs = [pts[h] - parent_pos for h in h_idxs]
+            mapping = _greedy_match(h_vecs, target_dirs)
+
+            old_pos = {h: pts[h].copy() for h in h_idxs}
+            new_pos: Dict[int, np.ndarray] = {}
+            this_corr = 0.0
+            bad = False
+            for li, h in enumerate(h_idxs):
+                k = mapping[li]
+                if k < 0 or k >= len(target_dirs):
+                    bad = True
+                    break
+                d_ah = float(np.linalg.norm(old_pos[h] - parent_pos))
+                if d_ah < 1e-6:
+                    d_ah = _IDEAL_XH_DEFAULT
+                cand = parent_pos + d_ah * target_dirs[k]
+                if not np.all(np.isfinite(cand)):
+                    bad = True
+                    break
+                new_pos[h] = cand
+                cur = old_pos[h] - parent_pos
+                nc = float(np.linalg.norm(cur))
+                nt = float(np.linalg.norm(target_dirs[k]))
+                if nc > 1e-9 and nt > 1e-9:
+                    cv = max(-1.0, min(1.0,
+                                       float(np.dot(cur, target_dirs[k])
+                                             / (nc * nt))))
+                    this_corr = max(this_corr, math.degrees(math.acos(cv)))
+            if bad:
+                continue
+            # Skip if every H is already within tolerance (preserve geometry
+            # / avoid needless re-emit) — joint check, byte-stable on good in.
+            if this_corr < tolerance_deg:
+                continue
+
+            # Apply jointly; per-H rollback only on a genuine HEAVY OVERLAP
+            # (factor 0.55 ≈ true atomic interpenetration, not mere vdW
+            # proximity — a correct umbrella in a crowded centre legitimately
+            # places H in soft vdW contact with a neighbour heavy atom; the
+            # downstream VSEPR / rotamer relief resolves the soft contact).
+            # H-H deferred to pass-2.  M / heavy atoms never move.
+            placed: List[int] = []
+            for h in h_idxs:
+                if _h_introduces_clash(new_pos[h], h, atom_idx, syms, pts,
+                                       sibling_idxs=siblings,
+                                       threshold_factor=0.55,
+                                       ignore_h_to_h=True):
+                    continue
+                pts[h] = new_pos[h]
+                moved_h[h] = (atom_idx, old_pos[h])
+                placed.append(h)
+            if placed:
+                centre_h[atom_idx] = placed
+                if this_corr > max_corr:
+                    max_corr = this_corr
+
+        # ---- Pass 2: roll back any H that landed in a GENUINE atomic
+        # overlap (heavy OR H, factor 0.55 = real interpenetration) now that
+        # all centres are relocated.  Soft vdW contacts are left for the
+        # downstream VSEPR / rotamer relief.  Deterministic order. ----
+        for h in sorted(moved_h.keys()):
+            parent_idx, old = moved_h[h]
+            sib = {parent_idx, h}
+            try:
+                pa = mol.GetAtomWithIdx(parent_idx)
+                sib |= {nb.GetIdx() for nb in pa.GetNeighbors()}
+            except Exception:
+                pass
+            if _h_introduces_clash(pts[h], h, parent_idx, syms, pts,
+                                   sibling_idxs=sib,
+                                   threshold_factor=0.55,
+                                   ignore_h_to_h=False):
+                pts[h] = old
+                if parent_idx in centre_h and h in centre_h[parent_idx]:
+                    centre_h[parent_idx].remove(h)
+
+        moved = sum(len(v) for v in centre_h.values())
+        centres = sum(1 for v in centre_h.values() if v)
+
+        report["h_atoms_moved"] = moved
+        report["centres_rebuilt"] = centres
+        report["violations_detected"] = centres
+        report["max_angle_correction_deg"] = float(max_corr)
+        if moved == 0:
+            return xyz, report
+        if not np.all(np.isfinite(pts)):
+            # Never emit non-finite — fall back to input.
+            return xyz, report
+        return _format_xyz(orig_lines, syms, pts), report
+    except Exception:
+        return xyz, report
 
 
 # ---------------------------------------------------------------------------

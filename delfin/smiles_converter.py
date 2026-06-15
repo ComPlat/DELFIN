@@ -1935,6 +1935,113 @@ def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_f19_to_fallback_xyz(xyz_content, mol):
+    """Stream-B Fix 2 (batch-2 = FULL): repair sp3-H tetrahedrality on a RAW
+    XYZ produced by ``_smiles_to_xyz_unsanitized_fallback`` (and the sigma
+    return paths that feed off it).
+
+    The unsanitized-fallback path strips H before embed, then ``AddHs(addCoords=
+    True)`` places sp3 H octahedrally (90/180° "square-planar CH3"), and the
+    embed/AddHs geometry is often degenerate (overlapping geminal H, so a
+    purely geometric H-count over-counts and the centre is skipped).  The main
+    sanitized path runs ``_apply_fixer_f19_if_enabled``, but the fallback path
+    bypasses it entirely, so XULPUP-class complexes keep their broken methyls.
+
+    Why batch-2 is FULL (root-of-partial fixed): the legacy per-angle rotation
+    (``fix_sp3_h_tetrahedrality``) corrected only ONE (X-A-H) angle per H and
+    never reconstructed a joint umbrella, and it derived H-count from the
+    degenerate embedded geometry.  Batch-2 instead
+
+      (1) ``fix_sp3_h_tetrahedrality_full`` — reads connectivity from the
+          RDKit ``mol`` bond graph (true per-centre H-count, so a methylene C
+          is known to carry exactly two H even when AddHs overlapped them) and
+          places EVERY sp3 H jointly onto the ideal tetrahedral / pyramidal /
+          bent sites (C/N/O/P/S/Si/B incl. protonated/charged centres), then
+      (2) ``_h_vsepr_realism.correct_xyz`` — a geometry-based finishing pass
+          (now seeing a clean, non-degenerate frame) plus the 5f-D inter-
+          substituent rotamer relief that staggers crowded multi-methyl
+          centres (neopentane / NMe3 / PMe3 / tBu-).
+
+    Both stages are gated by the SAME ``DELFIN_FIX_F19`` flag (default 0 →
+    byte-identical: nothing runs, raw ``xyz_content`` returned untouched).
+    Topology-safe (only H move, A-H lengths preserved, metals never touched),
+    deterministic (fixed tables/probes, sorted iteration), never non-finite
+    (NaN guards + per-H rollback).  The mol's atom ordering matches the XYZ
+    (both come from the same post-AddHs ``mol``), which the index-based stage-1
+    relies on; stage-2 is index-free (pure geometry).
+
+    Returns the (possibly repaired) XYZ string; falls back to the input on any
+    failure.
+    """
+    if xyz_content is None or mol is None:
+        return xyz_content
+    try:
+        # Cheap gate first → byte-identical OFF (no hybridization mutation, no
+        # fixer call) when DELFIN_FIX_F19 is unset/0.
+        if not _class_conditional_flag("DELFIN_FIX_F19", mol, default=0):
+            return xyz_content
+        # The unsanitized fallback leaves hybridization UNSPECIFIED; perceive it
+        # so the sp3 detector can see the methyls.  Done on a copy so the
+        # caller's mol is never mutated.  Topology-safe (perception only).
+        try:
+            from rdkit import Chem as _Chem
+            mol_h = _Chem.Mol(mol)
+            try:
+                _Chem.GetSymmSSSR(mol_h)
+            except Exception:
+                pass
+            _Chem.SetHybridization(mol_h)
+        except Exception:
+            mol_h = mol
+        # Stage 1 — graph-driven full umbrella reconstruction.
+        result = xyz_content
+        try:
+            from delfin._fix_sp3_h_tetrahedrality import (
+                fix_sp3_h_tetrahedrality_full,
+            )
+            tol = _delfin_env_float("DELFIN_FIX_F19_TOL_DEG", 10.0)
+            new_xyz, _rep = fix_sp3_h_tetrahedrality_full(
+                result, mol_h, tolerance_deg=tol,
+            )
+            if isinstance(new_xyz, str) and new_xyz:
+                result = new_xyz
+        except Exception as _stage1_exc:
+            try:
+                logger.debug("F19 stage-1 (full umbrella) skipped: %s",
+                             _stage1_exc)
+            except Exception:
+                pass
+        # Stage 2 — VSEPR geometry finishing + inter-substituent rotamer relief
+        # (5f-D).  Enable 5f-D only for THIS call; restore the prior env value
+        # deterministically afterwards so we never leak global state.
+        try:
+            from delfin import _h_vsepr_realism as _vsepr
+            _prev_5fd = os.environ.get("DELFIN_5F_D_ALKYL_ROTAMER")
+            os.environ["DELFIN_5F_D_ALKYL_ROTAMER"] = "1"
+            try:
+                new_xyz = _vsepr.correct_xyz(result)
+            finally:
+                if _prev_5fd is None:
+                    os.environ.pop("DELFIN_5F_D_ALKYL_ROTAMER", None)
+                else:
+                    os.environ["DELFIN_5F_D_ALKYL_ROTAMER"] = _prev_5fd
+            if isinstance(new_xyz, str) and new_xyz:
+                result = new_xyz
+        except Exception as _stage2_exc:
+            try:
+                logger.debug("F19 stage-2 (VSEPR finish) skipped: %s",
+                             _stage2_exc)
+            except Exception:
+                pass
+        return result if (isinstance(result, str) and result) else xyz_content
+    except Exception as _f19fb_exc:
+        try:
+            logger.debug("Fixer F19 on fallback XYZ skipped: %s", _f19fb_exc)
+        except Exception:
+            pass
+        return xyz_content
+
+
 def _apply_fixer_f25_if_enabled(mol, results, dual_parse_done: bool):
     """F25 sp3-N pyramidality fixer dispatch helper.
 
@@ -12082,6 +12189,137 @@ def _find_ansa_bridges(
     return bridges
 
 
+def _detect_shared_ring_eta_groups(
+    mol,
+    hapto_groups: List[Tuple[int, List[int]]],
+) -> List[Dict[str, object]]:
+    """P4 Layer 2 — detect clusters of eta-groups fused into one macrocycle.
+
+    Generalises :func:`_find_ansa_bridges` (which only sees SINGLE-ATOM
+    bridges) to multi-atom bridge PATHS (e.g. a benzene ring connecting two
+    eta(C=C) groups, as in MEWCIA / MIRSUE).  For each metal, BFS between
+    every pair of its eta-groups through non-eta / non-metal atoms; a pair
+    is *bridge-connected* when such a path exists (length <= ``max_path``).
+    Pairwise bridge-connected eta-groups are unioned into clusters; a
+    cluster of >= 2 groups that share one macrocyclic ring is returned.
+
+    Returns a list of dicts, one per metal-cluster::
+
+        {"metal": metal_idx,
+         "groups": [g_idx, ...],            # sorted local group indices
+         "bridge_atoms": frozenset(...),    # all path atoms between groups
+         "n_groups": int}
+
+    Graph/group-theory only — no SMILES regex, no refcode keying.
+    Deterministic: groups & atoms sorted by index throughout.
+    """
+    if not RDKIT_AVAILABLE or mol is None or len(hapto_groups) < 2:
+        return []
+    from collections import deque
+
+    # Map atom -> set of group indices it belongs to (per metal).
+    atom_to_group: Dict[int, int] = {}
+    group_metal: Dict[int, int] = {}
+    group_atoms: Dict[int, set] = {}
+    for gi, (metal_idx, grp) in enumerate(hapto_groups):
+        group_metal[gi] = metal_idx
+        group_atoms[gi] = set(grp)
+        for a in grp:
+            atom_to_group[a] = gi
+
+    all_eta_atoms = set(atom_to_group.keys())
+    max_path = 6  # benzene bridge = path length ~3-4; allow some slack
+
+    # Per metal, find bridge-connected eta-group pairs + their path atoms.
+    groups_by_metal: Dict[int, List[int]] = {}
+    for gi, mi in group_metal.items():
+        groups_by_metal.setdefault(mi, []).append(gi)
+
+    def _bridge_path(src_grp: int, dst_grp: int) -> Optional[List[int]]:
+        """Shortest BFS path of non-eta / non-metal atoms linking any atom
+        of src_grp to any atom of dst_grp.  Returns the interior path atoms
+        (excluding the eta endpoints), or None if no short bridge exists."""
+        dst_set = group_atoms[dst_grp]
+        # Seed from atoms directly bonded to a src-group atom (interior only).
+        start_atoms: List[Tuple[int, List[int]]] = []
+        seeded: set = set()
+        for a in sorted(group_atoms[src_grp]):
+            for nb in mol.GetAtomWithIdx(a).GetNeighbors():
+                ni = nb.GetIdx()
+                if (ni in all_eta_atoms or nb.GetSymbol() in _METAL_SET):
+                    continue
+                if ni in seeded:
+                    continue
+                seeded.add(ni)
+                start_atoms.append((ni, [ni]))
+        q = deque(start_atoms)
+        visited = set(seeded)
+        while q:
+            cur, path = q.popleft()
+            # Reached an atom bonded to the destination group?
+            for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+                ni = nb.GetIdx()
+                if ni in dst_set:
+                    return path
+            if len(path) >= max_path:
+                continue
+            for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+                ni = nb.GetIdx()
+                if (ni in all_eta_atoms or nb.GetSymbol() in _METAL_SET
+                        or ni in visited):
+                    continue
+                visited.add(ni)
+                q.append((ni, path + [ni]))
+        return None
+
+    results: List[Dict[str, object]] = []
+    for mi in sorted(groups_by_metal.keys()):
+        glist = sorted(groups_by_metal[mi])
+        if len(glist) < 2:
+            continue
+        # Build bridge graph among this metal's eta-groups.
+        adj: Dict[int, set] = {g: set() for g in glist}
+        pair_paths: Dict[Tuple[int, int], List[int]] = {}
+        for ii in range(len(glist)):
+            for jj in range(ii + 1, len(glist)):
+                gi, gj = glist[ii], glist[jj]
+                path = _bridge_path(gi, gj)
+                if path is not None:
+                    adj[gi].add(gj)
+                    adj[gj].add(gi)
+                    pair_paths[(gi, gj)] = path
+        # Union-find / connected components over the bridge graph.
+        seen_g: set = set()
+        for g0 in glist:
+            if g0 in seen_g:
+                continue
+            comp: List[int] = []
+            stack = [g0]
+            while stack:
+                cur = stack.pop()
+                if cur in seen_g:
+                    continue
+                seen_g.add(cur)
+                comp.append(cur)
+                for nb in sorted(adj[cur]):
+                    if nb not in seen_g:
+                        stack.append(nb)
+            comp.sort()
+            if len(comp) < 2:
+                continue
+            bridge_atoms: set = set()
+            comp_set = set(comp)
+            for (gi, gj), path in pair_paths.items():
+                if gi in comp_set and gj in comp_set:
+                    bridge_atoms.update(path)
+            results.append({
+                "metal": mi,
+                "groups": comp,
+                "bridge_atoms": frozenset(bridge_atoms),
+                "n_groups": len(comp),
+            })
+    return results
+
 
 def _apply_hapto_centroid_bias(
     mol,
@@ -14295,6 +14533,50 @@ def _build_hapto_scaffold(
         for grp in by_metal[mi]:
             group_list.append((mi, grp))
 
+    # ---- P4 Layer 2: DELFIN_HAPTO_SHARED_RING_FIX detection -------------
+    # Detect clusters of eta-groups fused into one macrocycle (multi-atom
+    # bridge paths, invisible to _find_ansa_bridges).  The legacy linked-
+    # pair branch assigns every such pair the SAME [0,0,1] direction +
+    # combined_centroid → exact overlap (MEWCIA: 4 pairs at d=0).  When the
+    # flag is set, the cluster's groups are pre-assigned DISTINCT azimuthal
+    # directions on a circle around the metal so the existing ring-builder
+    # places each at a distinct centroid.  Default OFF → empty map →
+    # byte-identical (legacy collapse preserved).
+    _shared_ring_dirs: Dict[Tuple[int, int], "np.ndarray"] = {}
+    _shared_ring_cluster_members: Dict[int, set] = {}
+    if _delfin_env_int("DELFIN_HAPTO_SHARED_RING_FIX", 0):
+        try:
+            _clusters = _detect_shared_ring_eta_groups(mol, hapto_groups)
+        except Exception as _sr_exc:
+            logger.debug("shared-ring detection failed: %s", _sr_exc)
+            _clusters = []
+        # Map global hapto-group index -> (metal, local index within metal).
+        _gidx_to_local: Dict[int, Tuple[int, int]] = {}
+        _per_metal_counter: Dict[int, int] = {}
+        for _g_idx, (_m_idx, _grp) in enumerate(hapto_groups):
+            _loc = _per_metal_counter.get(_m_idx, 0)
+            _gidx_to_local[_g_idx] = (_m_idx, _loc)
+            _per_metal_counter[_m_idx] = _loc + 1
+        for _cl in _clusters:
+            _cl_metal = int(_cl["metal"])
+            _cl_groups = list(_cl["groups"])  # global g_idx, sorted
+            _n_cl = len(_cl_groups)
+            if _n_cl < 2:
+                continue
+            _members = _shared_ring_cluster_members.setdefault(_cl_metal, set())
+            for _k, _g_idx in enumerate(_cl_groups):
+                _mloc = _gidx_to_local.get(_g_idx)
+                if _mloc is None or _mloc[0] != _cl_metal:
+                    continue
+                _local = _mloc[1]
+                _members.add(_local)
+                # Distinct azimuth on a circle (2*pi*k/N) in the xy-plane,
+                # deterministic by sorted group order.
+                _az = 2.0 * np.pi * _k / _n_cl
+                _shared_ring_dirs[(_cl_metal, _local)] = np.array([
+                    np.cos(_az), np.sin(_az), 0.0,
+                ])
+
     # ---- For each metal: build coordination sphere ----
     for mi in metal_indices:
         m_pos = coords[mi].copy()
@@ -14356,6 +14638,23 @@ def _build_hapto_scaffold(
             d2 = np.array([0.0, -np.sin(half), np.cos(half)])
             hapto_dirs[ansa_local_i] = d1 / float(np.linalg.norm(d1))
             hapto_dirs[ansa_local_j] = d2 / float(np.linalg.norm(d2))
+
+        # P4 Layer 2: pre-assign DISTINCT azimuthal directions to shared-ring
+        # cluster members (DELFIN_HAPTO_SHARED_RING_FIX).  This claims the
+        # cluster groups before the linked-pair detection below (which only
+        # fires on groups with hapto_dirs[li] is None), so the existing
+        # ring-builder places each group at a distinct centroid on the
+        # circle — eliminating the exact-overlap collapse.  Default OFF →
+        # _shared_ring_dirs empty → no-op → byte-identical.
+        _cl_members = _shared_ring_cluster_members.get(mi)
+        if _cl_members:
+            for _local in sorted(_cl_members):
+                if 0 <= _local < n_hapto and hapto_dirs[_local] is None:
+                    _d = _shared_ring_dirs.get((mi, _local))
+                    if _d is not None:
+                        _nrm = float(np.linalg.norm(_d))
+                        if _nrm > 1e-9:
+                            hapto_dirs[_local] = _d / _nrm
 
         # Linked groups: hapto pairs connected through short non-hapto paths
         # (e.g., COD eta2+eta2 bridged by CH2-CH2).
@@ -19356,6 +19655,69 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
         if not any_moved:
             break
 
+    # ---- P4 Layer 1: DELFIN_HAPTO_INTRALIG_FLOOR (BEGIN) -----------------
+    # Universal non-degeneracy floor (default OFF → byte-identical).  The
+    # multi-eta macrocycle placement bug assigns every linked eta-pair the
+    # same [0,0,1] direction and the same combined_centroid, so >=2 eta
+    # groups sharing one macrocyclic ring overlap EXACTLY (verified MEWCIA:
+    # 4 pairs at d=0.000 A).  Catastrophic 0-A overlaps are invisible to the
+    # metal-push loop above (it only repels atoms from METALS, not from each
+    # other).  This pass separates ANY non-bonded heavy-atom pair closer
+    # than ``min_intra`` (default 0.70 A) by pushing them apart symmetrically
+    # — turning degenerate geometry into non-degenerate geometry for ALL
+    # classes.  Deterministic: when d ~= 0 the separation axis is a stable
+    # index-derived unit vector (no RNG, no clock).  Never emits non-finite
+    # coordinates.
+    if _delfin_env_int("DELFIN_HAPTO_INTRALIG_FLOOR", 0):
+        min_intra = 0.70
+        # Bonded-pair set (skip true chemical bonds — never separate them).
+        bonded_pairs: set = set()
+        for b in mol.GetBonds():
+            a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            bonded_pairs.add((min(a1, a2), max(a1, a2)))
+        heavy = [i for i in range(n)
+                 if mol.GetAtomWithIdx(i).GetSymbol() != 'H'
+                 and mol.GetAtomWithIdx(i).GetSymbol() not in _METAL_SET]
+
+        def _det_axis(i, j):
+            # Stable, deterministic unit vector from the atom-index pair
+            # (used only when the two atoms are coincident).  No RNG / clock.
+            h = (1.0 + (i * 131 + j * 17) % 97) / 98.0
+            vec = np.array([
+                np.sin(6.2831853 * h),
+                np.cos(6.2831853 * h),
+                np.sin(3.1415927 * h),
+            ])
+            nrm = float(np.linalg.norm(vec))
+            return vec / nrm if nrm > 1e-9 else np.array([0.0, 0.0, 1.0])
+
+        for _ipass in range(10):
+            moved_any = False
+            for _ix in range(len(heavy)):
+                i = heavy[_ix]
+                pi = _gp(i)
+                for _jx in range(_ix + 1, len(heavy)):
+                    j = heavy[_jx]
+                    if (i, j) in bonded_pairs:
+                        continue
+                    pj = _gp(j)
+                    delta = pj - pi
+                    d = float(np.linalg.norm(delta))
+                    if d >= min_intra:
+                        continue
+                    if d < 1e-6:
+                        axis = _det_axis(i, j)
+                    else:
+                        axis = delta / d
+                    push = (min_intra - d) / 2.0 + 1e-3
+                    _sp(i, pi - axis * push)
+                    _sp(j, pj + axis * push)
+                    pi = _gp(i)
+                    moved_any = True
+            if not moved_any:
+                break
+    # ---- P4 Layer 1: DELFIN_HAPTO_INTRALIG_FLOOR (END) -------------------
+
     # ---- Wave-5 MULTIHAPTO_MM_ENFORCE (BEGIN) ----------------------------
     # The "push non-bonded apart" loop above protects topology by repelling
     # spurious near-contacts; it does NOT pull declared M-M sigma bonds back
@@ -20911,6 +21273,150 @@ _TOPO_GEOMETRY_VECTORS: Dict[str, List[Tuple[float, float, float]]] = {
 }
 
 
+def _enumerate_orbits_topo(
+    geom_name: str,
+    donor_labels: List[str],
+    n_coord: int,
+    chelate_pairs: List[FrozenSet],
+    canonical_fn,
+    trans_pos: List[Tuple[int, int]],
+    chiral: bool,
+    helicity_aware_pairs=None,
+):
+    """Burnside-orbit enumeration for one polyhedron (P5 — DELFIN_ORBIT_ENUM).
+
+    Replaces the factorial ``itertools.permutations(range(n_coord))`` sweep
+    with an enumeration over the *distinct chelate-extended label tuples*
+    (``set(permutations(extended_labels))``), orbit-reduced by the proper
+    rotation group of ``geom_name`` (CODE keys OH/SAP/DD/TTP/… from
+    :mod:`delfin._burnside_groups`, which cover CN<=12).  For a label
+    multiset with multiplicities the number of distinct label tuples is
+    ``n!/prod(mult!)`` — far smaller than ``n!`` — so high-CN cases
+    (CN8 SAP/DD, CN9 TTP) enumerate completely without ever hitting the
+    factorial cap that silently dropped isomers in the legacy loop.
+
+    Returns a list of ``(orbit_key, canonical_form, perm_list)`` — ONE
+    entry per proper-rotation orbit (the complete Cauchy-Frobenius count)
+    — in deterministic order.  ``orbit_key`` is the lex-min orbit
+    representative (used by the caller for cross-geometry dedup);
+    ``perm_list`` is the lex-min donor-list-index assignment that realises
+    the orbit representative's label arrangement.  Same-class donors are
+    interchangeable, so the lex-min assignment is a canonical, reproducible
+    choice.  The completeness basis is the proper rotation group (Λ/Δ
+    enantiomer-distinct), matching ``fffree.polya_isomer_count.count_isomers``.
+
+    Graph/group-theory only — no SMILES, refcode, or atom-index keying.
+    Only invoked when ``DELFIN_ORBIT_ENUM=1``; the legacy factorial loop
+    (with its shared ``perm_count`` and cap-return) is untouched when the
+    flag is unset, preserving byte-identity (incl. the CN8 truncation).
+    """
+    import itertools as _it
+
+    from delfin._burnside_groups import get_groups as _get_groups
+
+    proper, _full = _get_groups(geom_name)
+    # Chelate-extended labels: append a per-chelate colour suffix to each
+    # chelate donor so the orbit reduction is chelate-aware (mirrors
+    # ``_build_extended_label`` in _prescribed_isomer_enumerator.py).
+    extended: List[str] = list(donor_labels)
+    for k, cp in enumerate(chelate_pairs):
+        for d in cp:
+            if 0 <= d < n_coord:
+                extended[d] = f"{extended[d]}@c{k}"
+
+    trans_set = frozenset(frozenset((a, b)) for a, b in trans_pos)
+
+    # Map each distinct extended-label to the sorted list of donor-list
+    # indices carrying it (used to recover a lex-min perm per arrangement).
+    label_to_idxs: Dict[str, List[int]] = {}
+    for di in range(n_coord):
+        label_to_idxs.setdefault(extended[di], []).append(di)
+    for lst in label_to_idxs.values():
+        lst.sort()
+
+    def _lexmin_perm(arrangement: Tuple[str, ...]) -> Optional[List[int]]:
+        """Lex-smallest perm (positions->donor idx) realising ``arrangement``
+        (extended[perm[pos]] == arrangement[pos]); deterministic."""
+        used = [False] * n_coord
+        perm: List[int] = []
+        for pos in range(n_coord):
+            want = arrangement[pos]
+            chosen = -1
+            for cand in label_to_idxs.get(want, ()):  # already sorted asc
+                if not used[cand]:
+                    chosen = cand
+                    break
+            if chosen < 0:
+                return None
+            used[chosen] = True
+            perm.append(chosen)
+        return perm
+
+    # Return ONE (cf, perm) per Burnside orbit (no internal cf-dedup): the
+    # caller applies the final dedup granularity (coarse ``cf`` when
+    # DELFIN_BURNSIDE_FULL is off, fine ``(geom, bk, chir)`` when on),
+    # exactly mirroring the legacy factorial loop's dedup semantics.
+    results: List[Tuple[tuple, List[int]]] = []
+    # Orbit-min over distinct extended-label arrangements.  Per-geometry
+    # local scope: no shared counter, no cap-return across geometries.
+    # Deterministic order: sort the distinct arrangements lexicographically.
+    seen_orbit: set = set()
+    for arrangement in sorted(set(_it.permutations(extended))):
+        # Orbit-min key under the proper rotation group (chiral) — the
+        # complete Burnside invariant of the label arrangement's orbit.
+        best = arrangement
+        for g in proper:
+            if len(g) != n_coord:
+                continue
+            cand = tuple(arrangement[g[i]] for i in range(n_coord))
+            if cand < best:
+                best = cand
+        if best in seen_orbit:
+            continue
+        seen_orbit.add(best)
+
+        # Recover the lex-min concrete perm for the orbit representative
+        # ``best`` so the chelate-trans validity filter and the canonical
+        # form are evaluated on a real donor assignment.
+        perm = _lexmin_perm(best)
+        if perm is None:
+            continue
+
+        # Chelate-trans validity filter on the representative.
+        valid = True
+        for chelate in chelate_pairs:
+            chelate_list = sorted(chelate)
+            if len(chelate_list) != 2:
+                continue
+            try:
+                pos_i = perm.index(chelate_list[0])
+                pos_j = perm.index(chelate_list[1])
+            except ValueError:
+                continue
+            if frozenset((pos_i, pos_j)) in trans_set:
+                valid = False
+                break
+        if not valid:
+            continue
+
+        types = tuple(donor_labels[perm[pos]] for pos in range(n_coord))
+        cf = canonical_fn(types)
+        if chiral and helicity_aware_pairs is not None:
+            try:
+                cf = helicity_aware_pairs(cf, perm, chelate_pairs, geom_name)
+            except Exception as _ce_exc:
+                logger.debug(
+                    "Chirality enumerator no-op (orbit, %s, perm=%s): %s",
+                    geom_name, perm, _ce_exc,
+                )
+        # (orbit_key, cf, perm): orbit_key = the proper-rotation orbit
+        # representative ``best``.  One entry per rotation orbit → the
+        # complete Cauchy-Frobenius count (e.g. CN9 TTP N5O4 → 24).
+        results.append((best, cf, list(perm)))
+
+    return results
+
+
 def _enumerate_topological_isomers(
     donor_labels: List[str],
     n_coord: int,
@@ -21070,6 +21576,49 @@ def _enumerate_topological_isomers(
         except Exception as _be_exc:
             logger.debug("Burnside enumerator import failed: %s", _be_exc)
             _burnside_enabled = False
+
+    # ------------------------------------------------------------------
+    # P5 — DELFIN_ORBIT_ENUM (default 0): Burnside-orbit enumeration that
+    # replaces the factorial permutation sweep + shared ``perm_count`` +
+    # whole-function cap-return.  The legacy loop initialises ``perm_count``
+    # ONCE before the geometry loop and ``return results`` on cap-hit, so a
+    # high-CN geometry that exhausts the cap (e.g. CN8 SAP at 40320) starves
+    # every later geometry (DD) → isomers silently dropped (verified: CN9
+    # N5O4 yielded 4 instead of the Burnside count 24).  The orbit path
+    # enumerates the *distinct* chelate-extended label tuples per geometry
+    # (n!/prod(mult!) << n!), orbit-reduces by the proper rotation group,
+    # and resets the work per geometry — complete and cap-free for CN<=12.
+    # Flag unset → fall through to the unchanged factorial loop below →
+    # byte-identical (incl. the CN8 truncation).
+    if _delfin_env_int("DELFIN_ORBIT_ENUM", 0):
+        for geom_name in geometries:
+            canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
+            trans_pos = _TOPO_TRANS_POSITIONS[geom_name]
+            orbit_isomers = _enumerate_orbits_topo(
+                geom_name=geom_name,
+                donor_labels=donor_labels,
+                n_coord=n_coord,
+                chelate_pairs=chelate_pairs,
+                canonical_fn=canonical_fn,
+                trans_pos=trans_pos,
+                chiral=_chir_enabled,
+                helicity_aware_pairs=(
+                    _helicity_aware_pairs if _chir_enabled else None
+                ),
+            )
+            for orbit_key, cf, perm in orbit_isomers:
+                # The orbit path is inherently Burnside-complete (one entry
+                # per proper-rotation orbit), so it does NOT route through
+                # the coarse ``cf``-dedup or the additive DELFIN_BURNSIDE_FULL
+                # key — both of which exist to recover orbits the factorial
+                # loop would otherwise collapse.  Cross-geometry dedup uses
+                # ``(geom_name, orbit_key)`` so equal cf across distinct
+                # polyhedra never collide and never collapse.
+                dedup_key = (geom_name, orbit_key)
+                if dedup_key not in seen_canonical:
+                    seen_canonical.add(dedup_key)
+                    results.append((cf, list(perm)))
+        return results
 
     for geom_name in geometries:
         canonical_fn = _TOPO_CANONICAL_FNS[geom_name]
@@ -30887,6 +31436,9 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
 
         xyz_content = _mol_to_xyz(mol)
         # H-fix disabled — see INSIGHTS_LOG 2026-04-29 ~12:00 UTC.
+        # Stream-B Fix 2 (DELFIN_FIX_F19, default-OFF → byte-identical): repair
+        # sp3-H tetrahedrality (AddHs places fallback CH3 H at 90/180°).
+        xyz_content = _apply_f19_to_fallback_xyz(xyz_content, mol)
         return xyz_content, None
     except Exception as e:
         # Extra-permissive fallback for explicit valence errors
@@ -30916,6 +31468,8 @@ def _smiles_to_xyz_unsanitized_fallback(smiles: str) -> Tuple[Optional[str], Opt
                     result = AllChem.EmbedMolecule(mol, _uns_params)
                 if result == 0:
                     xyz_content = _mol_to_xyz(mol)
+                    # Stream-B Fix 2 (DELFIN_FIX_F19, default-OFF → byte-identical).
+                    xyz_content = _apply_f19_to_fallback_xyz(xyz_content, mol)
                     return xyz_content, None
             except Exception:
                 pass
