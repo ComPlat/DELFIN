@@ -46,6 +46,28 @@ def _result_for(method: str) -> dict:
                            "inputSchema": {"type": "object"}}]}
     if method == "tools/call":
         return {"content": [{"type": "text", "text": "hello-from-http"}]}
+    if method == "resources/list":
+        return {"resources": [
+            {"uri": "file:///notes.md", "name": "Notes",
+             "description": "Project notes", "mimeType": "text/markdown"},
+            {"uri": "mem://state", "name": "State"},
+        ]}
+    if method == "resources/read":
+        return {"contents": [
+            {"uri": "file:///notes.md", "mimeType": "text/markdown",
+             "text": "# Notes\nhello"},
+        ]}
+    if method == "prompts/list":
+        return {"prompts": [
+            {"name": "summarize", "description": "Summarize text",
+             "arguments": [{"name": "text", "required": True}]},
+        ]}
+    if method == "prompts/get":
+        return {"description": "Summarize",
+                "messages": [
+                    {"role": "user",
+                     "content": {"type": "text", "text": "Summarize this: X"}},
+                ]}
     return {}
 
 
@@ -188,6 +210,50 @@ def test_http_request_failure_is_graceful(monkeypatch):
 # ---------------------------------------------------------------------------
 # Registry wiring
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Resources + prompts
+# ---------------------------------------------------------------------------
+
+
+def test_http_list_and_read_resources(monkeypatch):
+    srv, _ = _http_server(monkeypatch)
+    resources = srv.list_resources()
+    assert [r.uri for r in resources] == ["file:///notes.md", "mem://state"]
+    assert resources[0].name == "Notes"
+    assert resources[0].mime_type == "text/markdown"
+    body = srv.read_resource("file:///notes.md")
+    assert "hello" in body
+
+
+def test_http_list_and_get_prompts(monkeypatch):
+    srv, _ = _http_server(monkeypatch)
+    prompts = srv.list_prompts()
+    assert [p.name for p in prompts] == ["summarize"]
+    assert prompts[0].namespaced_name == "mcp__remote__summarize"
+    assert prompts[0].arguments[0]["name"] == "text"
+    rendered = srv.get_prompt("summarize", {"text": "X"})
+    assert "Summarize this: X" in rendered
+
+
+def test_registry_resources_and_prompts(monkeypatch, tmp_path):
+    fake, _ = make_fake_endpoint()
+    monkeypatch.setattr(M.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(M, "_user_config_path",
+                        lambda: tmp_path / "none.json")
+    cfg = {"servers": {"remote": {"url": "https://mcp.example.com/mcp"}}}
+    (tmp_path / ".delfin").mkdir()
+    (tmp_path / ".delfin" / "mcp_servers.json").write_text(json.dumps(cfg))
+    reg = M.MCPRegistry()
+    reg.load(workspace=tmp_path)
+    assert [r.uri for r in reg.discover_resources()] == \
+        ["file:///notes.md", "mem://state"]
+    assert [p.namespaced_name for p in reg.discover_prompts()] == \
+        ["mcp__remote__summarize"]
+    assert "hello" in reg.read_resource("remote", "file:///notes.md")
+    assert "Summarize this: X" in reg.get_prompt(
+        "mcp__remote__summarize", {"text": "X"})
 
 
 def test_registry_loads_http_and_discovers(monkeypatch, tmp_path):

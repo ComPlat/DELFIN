@@ -96,6 +96,30 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
     return out
 
 
+def _flatten_content(content: Any) -> str:
+    """Flatten an MCP content value (str | {type:text,text} | list) to text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if content.get("type") == "text" or content.get("text") is not None:
+            return str(content.get("text", ""))
+        return json.dumps(content)[:1000]
+    if isinstance(content, list):
+        out: list[str] = []
+        for c in content:
+            if isinstance(c, dict):
+                if c.get("type") == "text" or c.get("text") is not None:
+                    out.append(str(c.get("text", "")))
+                else:
+                    out.append(json.dumps(c)[:1000])
+            elif isinstance(c, str):
+                out.append(c)
+        return "\n".join(out)
+    return str(content)
+
+
 def _extract_jsonrpc_from_sse(raw: str, rid: Any) -> dict:
     """Pull the JSON-RPC message matching ``rid`` out of an SSE body.
 
@@ -126,6 +150,27 @@ class MCPTool:
     name: str
     description: str
     schema: dict
+
+    @property
+    def namespaced_name(self) -> str:
+        return f"{_NAMESPACE_PREFIX}{self.server}__{self.name}"
+
+
+@dataclass
+class MCPResource:
+    server: str
+    uri: str
+    name: str = ""
+    description: str = ""
+    mime_type: str = ""
+
+
+@dataclass
+class MCPPrompt:
+    server: str
+    name: str
+    description: str = ""
+    arguments: list[dict] = field(default_factory=list)
 
     @property
     def namespaced_name(self) -> str:
@@ -358,6 +403,96 @@ class MCPServer:
             return "\n".join(texts)
         return json.dumps(result)
 
+    def list_resources(self) -> list[MCPResource]:
+        if not self.initialize():
+            return []
+        resp = self._send("resources/list")
+        if "error" in resp:
+            self.last_error = json.dumps(resp["error"])[:240]
+            return []
+        result = resp.get("result", {})
+        items = result.get("resources", []) if isinstance(result, dict) else []
+        out: list[MCPResource] = []
+        for r in items:
+            if not isinstance(r, dict):
+                continue
+            uri = str(r.get("uri", "")).strip()
+            if not uri:
+                continue
+            out.append(MCPResource(
+                server=self.name, uri=uri,
+                name=str(r.get("name", "")),
+                description=str(r.get("description", "")),
+                mime_type=str(r.get("mimeType", "")),
+            ))
+        return out
+
+    def read_resource(self, uri: str) -> str:
+        if not self.initialize():
+            return ""
+        resp = self._send("resources/read", {"uri": uri})
+        if "error" in resp:
+            self.last_error = json.dumps(resp["error"])[:240]
+            return json.dumps({"error": resp["error"]})
+        result = resp.get("result", {})
+        contents = result.get("contents", []) if isinstance(result, dict) else []
+        texts: list[str] = []
+        for c in contents:
+            if not isinstance(c, dict):
+                continue
+            if c.get("text") is not None:
+                texts.append(str(c.get("text", "")))
+            elif c.get("blob") is not None:
+                texts.append(
+                    f"[binary {c.get('mimeType', 'application/octet-stream')} "
+                    f"resource {c.get('uri', uri)} — base64 omitted]"
+                )
+        return "\n".join(texts)
+
+    def list_prompts(self) -> list[MCPPrompt]:
+        if not self.initialize():
+            return []
+        resp = self._send("prompts/list")
+        if "error" in resp:
+            self.last_error = json.dumps(resp["error"])[:240]
+            return []
+        result = resp.get("result", {})
+        items = result.get("prompts", []) if isinstance(result, dict) else []
+        out: list[MCPPrompt] = []
+        for p in items:
+            if not isinstance(p, dict):
+                continue
+            name = str(p.get("name", "")).strip()
+            if not name:
+                continue
+            out.append(MCPPrompt(
+                server=self.name, name=name,
+                description=str(p.get("description", "")),
+                arguments=list(p.get("arguments", []) or []),
+            ))
+        return out
+
+    def get_prompt(self, name: str, arguments: dict | None = None) -> str:
+        if not self.initialize():
+            return ""
+        resp = self._send("prompts/get",
+                          {"name": name, "arguments": arguments or {}})
+        if "error" in resp:
+            self.last_error = json.dumps(resp["error"])[:240]
+            return json.dumps({"error": resp["error"]})
+        result = resp.get("result", {})
+        if not isinstance(result, dict):
+            return ""
+        parts: list[str] = []
+        for m in result.get("messages", []) or []:
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role", "")).strip()
+            text = _flatten_content(m.get("content"))
+            if text:
+                parts.append(f"{role}: {text}" if role else text)
+        return "\n\n".join(parts)
+
 
 def _server_from_config(name: str, cfg: dict) -> MCPServer:
     """Build an MCPServer from one config entry, picking the transport.
@@ -416,6 +551,43 @@ class MCPRegistry:
             return json.dumps({"error": f"unknown MCP server: {server_name!r}"})
         return srv.call_tool(tool_name, arguments)
 
+    def discover_resources(self) -> list[MCPResource]:
+        out: list[MCPResource] = []
+        for srv in self.servers.values():
+            try:
+                out.extend(srv.list_resources())
+            except Exception:   # pragma: no cover
+                pass
+        return out
+
+    def discover_prompts(self) -> list[MCPPrompt]:
+        out: list[MCPPrompt] = []
+        for srv in self.servers.values():
+            try:
+                out.extend(srv.list_prompts())
+            except Exception:   # pragma: no cover
+                pass
+        return out
+
+    def read_resource(self, server: str, uri: str) -> str:
+        srv = self.servers.get(server)
+        if srv is None:
+            return json.dumps({"error": f"unknown MCP server: {server!r}"})
+        return srv.read_resource(uri)
+
+    def get_prompt(self, namespaced: str,
+                   arguments: dict | None = None) -> str:
+        if not namespaced.startswith(_NAMESPACE_PREFIX):
+            return json.dumps({"error": f"not an MCP prompt: {namespaced!r}"})
+        rest = namespaced[len(_NAMESPACE_PREFIX):]
+        if "__" not in rest:
+            return json.dumps({"error": f"malformed MCP name: {namespaced!r}"})
+        server_name, _, prompt_name = rest.partition("__")
+        srv = self.servers.get(server_name)
+        if srv is None:
+            return json.dumps({"error": f"unknown MCP server: {server_name!r}"})
+        return srv.get_prompt(prompt_name, arguments or {})
+
     def shutdown(self) -> None:
         for srv in self.servers.values():
             srv.stop()
@@ -447,6 +619,8 @@ def reset_registry() -> None:
 
 __all__ = [
     "MCPTool",
+    "MCPResource",
+    "MCPPrompt",
     "MCPServer",
     "MCPRegistry",
     "get_registry",
