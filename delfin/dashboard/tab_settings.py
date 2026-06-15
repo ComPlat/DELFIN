@@ -393,6 +393,23 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Window',
         layout=widgets.Layout(width='170px', height='28px'),
     )
+    # Subagent per-run limits (agent.subagents.*). Defaults mirror
+    # subagents._MAX_* so the UI shows the real fallbacks.
+    subagent_wall_input = widgets.BoundedIntText(
+        value=300, min=30, max=3600, step=30,
+        description='Wall s',
+        layout=widgets.Layout(width='170px', height='28px'),
+    )
+    subagent_calls_input = widgets.BoundedIntText(
+        value=40, min=5, max=200, step=5,
+        description='Tool calls',
+        layout=widgets.Layout(width='180px', height='28px'),
+    )
+    subagent_tokens_input = widgets.BoundedIntText(
+        value=16000, min=2000, max=64000, step=1000,
+        description='Out tokens',
+        layout=widgets.Layout(width='200px', height='28px'),
+    )
     agentopt_save_btn = widgets.Button(
         description='Save agent extras', button_style='primary',
         layout=widgets.Layout(width='160px', height='28px'),
@@ -418,6 +435,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'window': int(evalloop_window_input.value or 200),
             })
             payload['agent']['eval_loop'] = evalloop
+            subs = dict(payload['agent'].get('subagents') or {})
+            subs.update({
+                'max_wall_s': int(subagent_wall_input.value or 300),
+                'max_tool_calls': int(subagent_calls_input.value or 40),
+                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+            })
+            payload['agent']['subagents'] = subs
             save_settings(payload, settings_path)
             agentopt_save_status.value = (
                 '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
@@ -990,6 +1014,19 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             evalloop_window_input.value = int(evalloop_payload.get('window', 200) or 200)
         except Exception:
             evalloop_window_input.value = 200
+        subagents_payload = agent_payload.get('subagents') or {}
+        try:
+            subagent_wall_input.value = int(subagents_payload.get('max_wall_s', 300) or 300)
+        except Exception:
+            subagent_wall_input.value = 300
+        try:
+            subagent_calls_input.value = int(subagents_payload.get('max_tool_calls', 40) or 40)
+        except Exception:
+            subagent_calls_input.value = 40
+        try:
+            subagent_tokens_input.value = int(subagents_payload.get('max_output_tokens', 16000) or 16000)
+        except Exception:
+            subagent_tokens_input.value = 16000
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -2959,6 +2996,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'window': int(evalloop_window_input.value or 200),
             })
             settings_payload['agent']['eval_loop'] = _evalloop
+            _subs = dict(settings_payload['agent'].get('subagents') or {})
+            _subs.update({
+                'max_wall_s': int(subagent_wall_input.value or 300),
+                'max_tool_calls': int(subagent_calls_input.value or 40),
+                'max_output_tokens': int(subagent_tokens_input.value or 16000),
+            })
+            settings_payload['agent']['subagents'] = _subs
             settings_payload.setdefault('features', {})
             settings_payload['features']['remote_archive_enabled'] = bool(remote_archive_toggle.value)
             settings_payload.setdefault('scheduling', {})
@@ -3208,6 +3252,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             widgets.HBox(
                 [widgets.HTML('<b>Model</b>'), automem_model_input],
                 layout=_row_layout,
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🤖 Subagent limits (per delegated run)</b>'),
+            widgets.HBox(
+                [subagent_wall_input, subagent_calls_input,
+                 subagent_tokens_input],
+                layout=_row_layout,
+            ),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'Caps for each delegated subagent. Higher = subagents can '
+                'investigate/research longer before reporting back (more '
+                'tokens/time). Defaults: 300&nbsp;s wall · 40 tool calls · '
+                '16k output tokens. Empty/0 → default.'
+                '</div>'
             ),
             widgets.HBox(
                 [evalloop_enabled_toggle, evalloop_window_input,
