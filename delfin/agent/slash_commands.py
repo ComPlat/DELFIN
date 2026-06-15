@@ -201,10 +201,67 @@ def render_command(
     return expand_template(tpl.body, args)
 
 
+# Built-in subagent slash commands: a direct lever for the USER to delegate
+# to a sub-agent (instead of waiting for the agent to auto-delegate). They
+# expand to a directive that steers the agent to call the subagent tool with
+# the right preset. A user-defined commands/<name>.md OR a skill of the same
+# name takes precedence (checked first by the dashboard), so these are
+# overridable defaults.
+_BUILTIN_SUBAGENT_COMMANDS: dict[str, tuple[str, str]] = {
+    "explore": ("explore", "read-only investigation, reports findings"),
+    "review": ("code-reviewer", "independent read-only code review"),
+    "plan": ("plan", "step-by-step plan, makes no edits"),
+    "delegate": ("general-purpose", "self-contained task, inherits permissions"),
+}
+
+
+def builtin_subagent_command(name: str, args: str = "") -> str | None:
+    """Expand a built-in subagent slash command to an agent directive.
+
+    Returns the rewritten user message, or None if ``name`` isn't a built-in
+    subagent command. ``/delegate`` accepts an optional leading subagent-type
+    token (``/delegate explore find X``); otherwise general-purpose is used.
+    """
+    key = (name or "").strip().lower().lstrip("/")
+    spec = _BUILTIN_SUBAGENT_COMMANDS.get(key)
+    if spec is None:
+        return None
+    sa_type, gloss = spec
+    task = (args or "").strip()
+
+    # /delegate <type> <task> — let the user pick the preset explicitly.
+    if key == "delegate" and task:
+        first, _, rest = task.partition(" ")
+        try:
+            from .subagents import subagent_type_names
+            known = set(subagent_type_names() or [])
+        except Exception:
+            known = set()
+        if first in known:
+            sa_type, task = first, rest.strip()
+            gloss = f"the '{sa_type}' preset"
+
+    if not task:
+        return (
+            f"The user invoked /{key} with no task. Ask them — in one short "
+            f"line — what the `{sa_type}` subagent should work on."
+        )
+    return (
+        f"The user asked you to delegate the following to a `{sa_type}` "
+        f"subagent ({gloss}). Call subagent(subagent_type='{sa_type}', "
+        f"description=<3-7 word label>, prompt=<self-contained briefing with "
+        f"the goal, relevant files/paths, and the desired form of the answer>)."
+        f" For long or independent work, add background=true and collect the "
+        f"result later with subagent_result(sa_id). Then summarise the "
+        f"subagent's findings for the user.\n\nTask: {task}"
+    )
+
+
 __all__ = [
     "SlashTemplate",
     "discover_commands",
     "get_command",
     "expand_template",
     "render_command",
+    "builtin_subagent_command",
 ]

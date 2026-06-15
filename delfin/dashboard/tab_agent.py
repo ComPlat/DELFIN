@@ -1116,6 +1116,11 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/reset", "Reset engine for new cycle", False),
     ("Session", "/export", "Export chat as Markdown", False),
     ("Session", "/search", "Search in chat history", True),
+    # Subagents — delegate work to an isolated sub-agent
+    ("Subagents", "/explore", "Delegate read-only investigation to an explore subagent", True),
+    ("Subagents", "/review", "Delegate an independent code review (read-only)", True),
+    ("Subagents", "/plan", "Delegate step-by-step planning (no edits)", True),
+    ("Subagents", "/delegate", "Delegate a self-contained task to a subagent", True),
     # Engine config
     ("Engine", "/provider", "Switch provider (claude/openai/kit)", True),
     ("Engine", "/model", "Switch model (depends on provider)", True),
@@ -11705,6 +11710,17 @@ def create_tab(ctx):
                 if _sk is not None:
                     expanded = _skills_mod.render_skill_invocation(_sk, _rest)
                     user_text = expanded + ("\n\n" + _rest if _rest else "")
+                else:
+                    # 3) built-in subagent commands (/explore /review /plan
+                    #    /delegate) — a direct user lever to delegate to a
+                    #    sub-agent. Overridable by a same-named command/skill
+                    #    (checked above), so this is the default fallback.
+                    try:
+                        _bi = _scm.builtin_subagent_command(_name, _rest)
+                    except Exception:
+                        _bi = None
+                    if _bi is not None:
+                        user_text = _bi
         elif _first_token in _SLASH_PREFIXES:
             input_textarea.value = ""
             _append_chat_message("user", user_text)
