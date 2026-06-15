@@ -4,7 +4,9 @@ Plan-mode is solo_agent role + permission_profile="plan" (read-only)
 + a markdown addendum that tells the model to use ExitPlanMode for
 approval. The addendum file lives at
 ``delfin/agent/pack/shared/plan_mode_addendum.md`` and the prompt
-loader picks it up only when ``mode_id == "plan"``.
+loader picks it up when ``mode_id == "plan"`` OR the active
+``permission_mode == "plan"`` — plan is a permission profile now, so
+setting Perms = Plan (in the Code mode) gets the full plan experience.
 """
 
 from __future__ import annotations
@@ -36,6 +38,20 @@ def test_solo_prompt_includes_plan_addendum_when_mode_is_plan():
     assert "ExitPlanMode" in prompt
 
 
+def test_solo_prompt_includes_plan_addendum_when_permission_is_plan():
+    # Plan is a permission profile now: Code mode + Perms=plan must still get
+    # the full plan addendum (read-only-first → ExitPlanMode), like Claude Code.
+    loader = PromptLoader()
+    prompt = loader.build_system_prompt(
+        role_id="solo_agent",
+        mode_id="solo",            # Code mode, NOT the legacy "plan" mode
+        permission_mode="plan",    # but the active permission profile is plan
+        task_text="figure out how to add feature X",
+    )
+    assert "Plan Mode" in prompt
+    assert "ExitPlanMode" in prompt
+
+
 def test_solo_prompt_skips_plan_addendum_in_other_modes():
     loader = PromptLoader()
     for mode in ("solo", "dashboard", "quick"):
@@ -45,7 +61,7 @@ def test_solo_prompt_skips_plan_addendum_in_other_modes():
             mode_description=f"{mode} mode test",
             task_text="anything",
         )
-        # The addendum's distinctive heading must not leak into non-plan modes
+        # No plan mode_id and no plan permission → addendum must not appear.
         assert "# Plan Mode\n" not in prompt, mode
 
 

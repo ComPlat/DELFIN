@@ -874,6 +874,7 @@ class PromptLoader:
         session_key: str = "",
         live_state: str = "",
         model: str = "",
+        permission_mode: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -930,11 +931,13 @@ class PromptLoader:
                     pass
                 sections.append(role_prompt)
 
-            # Plan mode addendum: when the dashboard locked us into "plan"
-            # the agent must investigate first and finalise via ExitPlanMode.
+            # Plan addendum: the agent must investigate first and finalise via
+            # ExitPlanMode. Triggered either by the legacy "plan" mode_id OR by
+            # the "plan" permission profile — plan is a permission now, so
+            # setting Perms = Plan (in any mode) gets the full plan experience.
             # Mode-stable so it stays high in the prompt where the prefix
             # cache benefits most.
-            if mode_id == "plan":
+            if mode_id == "plan" or permission_mode == "plan":
                 plan_addendum = self._cached_read(
                     self.agent_dir / "shared" / "plan_mode_addendum.md"
                 )

@@ -1125,7 +1125,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Engine", "/provider", "Switch provider (claude/openai/kit/ollama)", True),
     ("Engine", "/model", "Switch model (depends on provider)", True),
     ("Engine", "/effort", "Set effort (low/medium/high/xhigh)", True),
-    ("Engine", "/mode", "Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)", True),
+    ("Engine", "/mode", "Switch mode (dashboard/code)", True),
     ("Engine", "/perms", "Show or set permission profile", True),
     ("Engine", "/perm-cycle", "Cycle through permission profiles", False),
     # Git
@@ -2496,9 +2496,10 @@ def create_tab(ctx):
         "dashboard": "Cheapest mode (Haiku) — operate the dashboard via slash commands: "
                      "set CONTROL keys, configure ORCA Builder, browse & analyze calculations, "
                      "trigger smart recalc, manage jobs. No code changes, session-only.",
-        "solo": "Single agent, direct conversation — ask questions about the codebase, "
-                "make small edits, explore code, debug issues. No review pipeline, "
-                "fastest for simple tasks.",
+        "solo": "Code — direct, terminal-style coding agent on your own code: ask "
+                "questions, read & edit files, run sandboxed shell commands, debug, "
+                "refactor. Delegates to subagents for parallel/background work. For "
+                "read-only-first planning, set Perms = Plan.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
                 "ExitPlanMode before any file edits or bash run.",
@@ -2521,12 +2522,15 @@ def create_tab(ctx):
                 "broad architectural changes. Most expensive, highest confidence.",
     }
     mode_dropdown = widgets.Dropdown(
-        # Only solo + dashboard + plan are production-ready; the pipeline
-        # modes (research/quick/reviewed/tdd/cluster/full) are gated until
-        # they graduate from experimental status. Plan mode is a
-        # read-only-first variant that produces a markdown plan and waits
-        # for explicit approval before any edits land.
-        options=["dashboard", "solo", "plan"],
+        # Two modes, user-facing labels with stable internal values:
+        #   Dashboard — drive the DELFIN UI via natural language.
+        #   Code      — general terminal-style coding agent (internal id stays
+        #               "solo" so the engine's mode logic + saved sessions keep
+        #               working; /mode solo remains a back-compat alias).
+        # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
+        # are retired. "Plan" is NOT a mode — it's a permission profile (set
+        # Perms = Plan for read-only-first / draft-a-plan-then-approve).
+        options=[("Dashboard", "dashboard"), ("Code", "solo")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),
@@ -4400,12 +4404,20 @@ def create_tab(ctx):
             _append_system_message(f"Session not found: {session_id[:12]}...")
             return
 
-        # Restore or create engine with the saved mode (migrate legacy names)
-        _legacy_map = {"default": "quick", "high_risk": "reviewed",
-                       "runtime_cluster": "cluster", "release": "full"}
-        saved_mode = data.get("mode", "quick")
+        # Restore the saved mode. The multi-agent pipeline modes are retired
+        # and "plan" is a permission profile now — map any of them (plus the
+        # old legacy names) to the Code agent. _set_mode_programmatically
+        # clamps anything still unknown.
+        _legacy_map = {
+            "default": "solo", "high_risk": "solo", "runtime_cluster": "solo",
+            "release": "solo", "quick": "solo", "reviewed": "solo",
+            "tdd": "solo", "cluster": "solo", "full": "solo",
+            "research": "solo", "plan": "solo", "code": "solo",
+        }
+        saved_mode = data.get("mode", "dashboard")
         saved_mode = _legacy_map.get(saved_mode, saved_mode)
         _set_mode_programmatically(saved_mode)
+        saved_mode = mode_dropdown.value   # effective (clamped) mode
 
         engine = _ensure_engine()
         if not engine:
@@ -4523,9 +4535,18 @@ def create_tab(ctx):
             return {}
 
     def _set_mode_programmatically(new_mode: str):
+        # Normalize the user-facing "code" alias and clamp to a currently
+        # valid option, so a restored legacy/retired mode (quick/reviewed/
+        # plan/…) can never raise a TraitError — it lands on Code instead.
+        nm = (new_mode or "").strip().lower()
+        if nm == "code":
+            nm = "solo"
+        _valid = _dropdown_values(getattr(mode_dropdown, "options", []))
+        if _valid and nm not in _valid:
+            nm = "solo" if "solo" in _valid else _valid[0]
         state["_mode_change_internal"] = True
         try:
-            mode_dropdown.value = new_mode
+            mode_dropdown.value = nm
         finally:
             state["_mode_change_internal"] = False
 
@@ -6058,7 +6079,7 @@ def create_tab(ctx):
                 "  /provider <name> — Switch provider (claude/openai/kit/ollama)\n"
                 "  /model <name>    — Switch model (depends on provider)\n"
                 "  /effort <lvl>    — Set effort (low/medium/high/xhigh)\n"
-                "  /mode <name>     — Switch mode (dashboard/solo/quick/reviewed/tdd/cluster/full)\n"
+                "  /mode <name>     — Switch mode (dashboard/code)\n"
                 "  /perms [profile] — Show/set permission profile (plan/ask_all/repo_free/all_free)\n"
                 "  /reset           — Reset engine for new cycle\n"
                 "\n"
@@ -8267,7 +8288,10 @@ def create_tab(ctx):
 
         # /mode <name>
         if cmd.startswith("/mode "):
-            name = cmd[6:].strip()
+            name = cmd[6:].strip().lower()
+            # "code" is the user-facing name; the internal mode id is "solo".
+            if name == "code":
+                name = "solo"
             opts = _dropdown_values(
                 mode_dropdown.options if hasattr(mode_dropdown, "options") else []
             )
@@ -8275,10 +8299,13 @@ def create_tab(ctx):
                 opts = [mode_dropdown.value]
             if name in opts:
                 mode_dropdown.value = name
-                _append_system_message(f"Mode switched to {name}.")
+                _display = "code" if name == "solo" else name
+                _append_system_message(f"Mode switched to {_display}.")
             else:
+                # Show user-facing names in the hint.
+                _shown = ", ".join("code" if o == "solo" else o for o in opts)
                 _append_system_message(
-                    f"Unknown mode '{name}'. Options: {', '.join(opts)}"
+                    f"Unknown mode '{name}'. Options: {_shown}"
                 )
             return True
 

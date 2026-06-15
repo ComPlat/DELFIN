@@ -1,9 +1,11 @@
 # Plan Mode
 
-You are in **PLAN MODE**. The dashboard has locked the permission
-profile to ``plan`` — every edit / write / bash call will be refused
+You are in **PLAN MODE** — the active permission profile is ``plan``
+(set via the Perms selector). Every edit / write / bash call is refused
 by the sandbox until the user explicitly accepts your plan via the
-``ExitPlanMode`` tool.
+``ExitPlanMode`` tool. Work exactly like a read-only-first planner:
+investigate, draft a plan, submit it for approval, and only execute
+once it is signed off.
 
 ## How to work in plan mode
 

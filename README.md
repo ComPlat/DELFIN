@@ -672,7 +672,7 @@ delfin/
     prompt_loader.py   ← Prompt composition from the pack system
     memory_store.py    ← Persistent memory across sessions
     session_store.py   ← Conversation persistence and restore
-    pack/              ← Agent prompts (solo agent, subagent presets, skills)
+    pack/              ← Agent prompts (the coding agent, subagent presets, skills)
       shared/          ← Shared context: DELFIN rules, work-cycle rules
     pack_lite/         ← Mode definitions and routing manifest
 ```

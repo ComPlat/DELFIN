@@ -737,6 +737,10 @@ class AgentEngine:
                 joined = "\n\n".join(extra_blocks)
                 live_state = f"{joined}\n\n{live_state}" if live_state else joined
 
+        try:
+            _perm_mode = getattr(self.kit_permissions, "mode", "") or ""
+        except Exception:
+            _perm_mode = ""
         return self.loader.build_system_prompt(
             role_id=role,
             mode_id=self.mode,
@@ -749,6 +753,9 @@ class AgentEngine:
             session_key=f"engine-session-{self._prompt_session_serial}",
             live_state=live_state,
             model=getattr(self, "model", "") or "",
+            # Plan is a permission profile now (not a mode): inject the plan
+            # addendum whenever the active permission profile is "plan".
+            permission_mode=_perm_mode,
         )
 
     def stream_response(
