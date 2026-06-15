@@ -3005,6 +3005,21 @@ class _DocToolExecutor:
         if name in ("search_calcs", "get_calc_info", "calc_summary"):
             return self._execute_calc(name, arguments)
 
+        # Repo file-access tools read the workspace filesystem directly and do
+        # NOT need the doc index — dispatch them BEFORE the doc-index gate so
+        # they work in any (un-indexed) workspace. Bug found via live test:
+        # they previously fell through to the gate and failed with "Doc index
+        # not available", which broke read-only subagents (explore/plan) that
+        # cannot fall back to bash.
+        if name == "read_file":
+            return self._execute_read_file(arguments, permissions)
+        elif name == "grep_file":
+            return self._execute_grep_file(arguments, permissions)
+        elif name == "list_files":
+            return self._execute_list_files(arguments, permissions)
+
+        # Doc-index tools below (search_docs / read_section / list_docs /
+        # list_sections) require the prebuilt index.
         if not self._ensure_loaded():
             return json.dumps({"error": "Doc index not available. Run delfin-docs-index."})
 
@@ -3059,14 +3074,6 @@ class _DocToolExecutor:
                     "char_count": len(sec.get("text", "")),
                 })
             return json.dumps(sections, indent=2, ensure_ascii=False)
-
-        # Repo file access tools (workspace-aware when permissions are set)
-        if name == "read_file":
-            return self._execute_read_file(arguments, permissions)
-        elif name == "grep_file":
-            return self._execute_grep_file(arguments, permissions)
-        elif name == "list_files":
-            return self._execute_list_files(arguments, permissions)
 
         return json.dumps({"error": f"Unknown tool: {name}"})
 
