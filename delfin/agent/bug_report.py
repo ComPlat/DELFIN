@@ -253,6 +253,7 @@ def _render_markdown(
     denied_commands: list | None = None,
     system_prompt: str = "",
     referenced_files: list | None = None,
+    tool_trace: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -278,6 +279,15 @@ def _render_markdown(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
                 f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
             )
+    if tool_trace:
+        lines += ["", "## Tool trace", "",
+                  f"{len(tool_trace)} tool call(s) — full data in "
+                  "`tool_trace.jsonl`.", ""]
+        try:
+            from .tool_trace import format_summary as _fmt
+            lines += ["```", _fmt(tool_trace, limit=60), "```"]
+        except Exception:
+            pass
     if system_prompt and system_prompt.strip():
         lines += ["", "## System prompt (last turn)", "",
                    "<details><summary>expand</summary>", "",
@@ -315,6 +325,7 @@ def write_bug_report(
     backend: str = "",
     role: str = "",
     session_id: str = "",
+    trace_session: str = "",
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
@@ -369,12 +380,27 @@ def write_bug_report(
     # Bundle the actual files the agent touched (copied under workspace/).
     bundled_files = _bundle_files(referenced_files or [], report_dir)
 
+    # Tool-call trace: the exact sequence of tools the agent ran this session
+    # (name / input / output / duration / ok). Shipped so a failed session can
+    # be replayed without guessing what the agent actually did.
+    tool_trace: list = []
+    try:
+        from . import tool_trace as _tt
+        tool_trace = _tt.read(trace_session or session_id)
+        if tool_trace:
+            (report_dir / "tool_trace.jsonl").write_text(
+                "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
+                + "\n", encoding="utf-8")
+    except Exception:
+        tool_trace = []
+
     payload = {
         **meta,
         "system_prompt": system_prompt or "",
         "error_text": error_text or "",
         "denied_commands": denied_commands or [],
         "referenced_files": bundled_files,
+        "tool_trace": tool_trace,
         "settings": settings_snapshot(settings),
         "recent_outcomes": recent_outcomes(),
         "chat_messages": chat_messages or [],
@@ -393,6 +419,7 @@ def write_bug_report(
             denied_commands=denied_commands,
             system_prompt=system_prompt,
             referenced_files=bundled_files,
+            tool_trace=tool_trace,
         ),
         encoding="utf-8",
     )

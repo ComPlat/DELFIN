@@ -1108,6 +1108,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/status", "Show engine status", False),
     ("Session", "/compact", "Summarize context to reduce tokens", False),
     ("Session", "/context", "Show context-window usage + compaction status", False),
+    ("Session", "/trace", "Show this session's tool-call trace (/trace N for last N)", True),
     ("Session", "/agents", "List subagent presets (or /agents stats for telemetry)", False),
     ("Session", "/skills", "List discovered skills (or /skills <name> for body)", False),
     ("Session", "/undo", "Undo last agent turn (drop from context)", False),
@@ -8124,6 +8125,24 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        if cmd.startswith("/trace"):
+            engine = state.get("engine")
+            if not engine or not hasattr(engine, "trace_session"):
+                _append_system_message("No active engine. Send a message first.")
+                return True
+            _arg = text[len("/trace"):].strip()
+            _n = int(_arg) if _arg.isdigit() else 30
+            from delfin.agent import tool_trace as _tt
+            _entries = _tt.read(engine.trace_session())
+            if not _entries:
+                _append_system_message(
+                    "No tool calls recorded yet this session.")
+            else:
+                _append_system_message(
+                    _tt.format_summary(_entries, limit=_n)
+                    + f"\n\nFull trace: {_tt.trace_path(engine.trace_session())}")
+            return True
+
         if cmd == "/context":
             engine = state["engine"]
             if not engine:
@@ -11517,6 +11536,8 @@ def create_tab(ctx):
                 role=status.get("role", ""),
                 session_id=status.get("session_id", "")
                             or state.get("active_session_id", ""),
+                trace_session=(engine.trace_session()
+                               if hasattr(engine, "trace_session") else ""),
                 input_tokens=status.get("input_tokens", 0),
                 output_tokens=status.get("output_tokens", 0),
                 cost_usd=status.get("cost_usd", 0.0),

@@ -366,6 +366,9 @@ class AgentEngine:
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
         self._last_outcome_cost: float = 0.0
         self.session_id: str = ""  # CLI session ID for conversation persistence
+        import uuid as _uuid_trace
+        self._trace_id: str = _uuid_trace.uuid4().hex[:12]   # stable trace key
+        self._trace_pending: list = []   # (tool, input, t0) awaiting its result
         self._prompt_session_serial: int = 1
         self._stop_requested = False
         self._lock = threading.Lock()
@@ -914,16 +917,23 @@ class AgentEngine:
                                     continue  # block write outside workspace
                         except Exception:
                             pass
+                    # Trace: stash this call until its result arrives.
+                    self._trace_pending.append(
+                        (event.tool_name, event.tool_input, _time.monotonic()))
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
 
                 elif event.type == "tool_result":
                     if on_tool_result and event.tool_output:
                         on_tool_result(event.tool_name, event.tool_output)
+                    self._record_tool_trace(
+                        event.tool_name, event.tool_output or "", ok=True)
 
                 elif event.type == "permission_denied":
                     if on_permission_denied:
                         on_permission_denied(event.tool_name)
+                    self._record_tool_trace(
+                        event.tool_name, "", ok=False, error="permission denied")
 
                 elif event.type == "session_init":
                     # Capture session ID from CLI for persistence
@@ -998,6 +1008,34 @@ class AgentEngine:
                 self.messages.pop()
 
         return full_response
+
+    def trace_session(self) -> str:
+        """Stable key for this engine's tool-call trace — the backend session
+        id when present, else a per-engine uuid (so OpenAI/KIT/Ollama turns,
+        which have no server session id, still get a stable trace file)."""
+        return self.session_id or self._trace_id
+
+    def _record_tool_trace(
+        self, name: str, output: str = "", *, ok: bool = True, error: str = "",
+    ) -> None:
+        """Pair the latest tool_use with this result and append a trace entry."""
+        try:
+            t0 = None
+            inp = ""
+            for i, (pn, pi, pt) in enumerate(self._trace_pending):
+                if pn == name:
+                    inp, t0 = pi, pt
+                    self._trace_pending.pop(i)
+                    break
+            else:
+                if self._trace_pending:
+                    _, inp, t0 = self._trace_pending.pop(0)
+            dur = int((_time.monotonic() - t0) * 1000) if t0 else 0
+            from .tool_trace import record as _rec
+            _rec(self.trace_session(), tool=name, tool_input=inp,
+                 output=output, duration_ms=dur, ok=ok, error=error)
+        except Exception:
+            pass
 
     def _build_user_message(
         self, text: str, images: list[str] | None,
