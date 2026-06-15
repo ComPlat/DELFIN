@@ -11769,12 +11769,37 @@ def _final_clash_resolution(
     except Exception:
         return
 
-    def _gp(i):
+    n_atoms = mol.GetNumAtoms()
+
+    # PERF (BYTE-IDENTICAL): mirror the conformer into a local float64 array.
+    # _gp returned ``np.array([p.x, p.y, p.z])`` (float64) and _sp wrote
+    # ``Point3D(float(x), float(y), float(z))``; the conformer stores doubles,
+    # so the read→array→write round-trip is bit-identical (verified
+    # array_equal).  The clash passes mutate positions IN PLACE mid-pass (a
+    # push to one pair is visible to later pairs in the same pass), so the loop
+    # is inherently sequential and is kept scalar in the exact original order —
+    # only the per-(get/set) RDKit boundary crossing (the dominant Python cost,
+    # ~13× a local-array access) is removed by reading/writing the local array
+    # and flushing to the conformer once at the end.  The per-pair distance is
+    # ``sqrt(diff.dot(diff))`` which is what ``np.linalg.norm`` reduces to on a
+    # 1-D vector (same BLAS ddot kernel → bit-identical, verified array_equal)
+    # and is the fastest scalar form (matmul is bit-identical too but slower for
+    # a single 3-vector).
+    coords = np.empty((n_atoms, 3), dtype=float)
+    for i in range(n_atoms):
         p = conf.GetAtomPosition(i)
-        return np.array([p.x, p.y, p.z])
+        coords[i, 0] = p.x
+        coords[i, 1] = p.y
+        coords[i, 2] = p.z
+
+    def _gp(i):
+        # fresh copy so caller-side ``+`` does not alias the stored row
+        return coords[i].copy()
 
     def _sp(i, pos):
-        conf.SetAtomPosition(i, Point3D(float(pos[0]), float(pos[1]), float(pos[2])))
+        coords[i, 0] = float(pos[0])
+        coords[i, 1] = float(pos[1])
+        coords[i, 2] = float(pos[2])
 
     def _move_with_h(ai, displacement):
         """Move atom ai and its bonded H atoms by displacement."""
@@ -11787,7 +11812,7 @@ def _final_clash_resolution(
     for mi, catoms in hapto_groups:
         frozen.add(mi)
         frozen.update(catoms)
-    for ai in range(mol.GetNumAtoms()):
+    for ai in range(n_atoms):
         if mol.GetAtomWithIdx(ai).GetSymbol() in _METAL_SET:
             frozen.add(ai)
 
@@ -11800,7 +11825,7 @@ def _final_clash_resolution(
     # Build H→parent and parent→H maps
     h_of: Dict[int, List[int]] = {}
     h_parent: Dict[int, int] = {}
-    for ai in range(mol.GetNumAtoms()):
+    for ai in range(n_atoms):
         a = mol.GetAtomWithIdx(ai)
         if a.GetAtomicNum() == 1:
             for nbr in a.GetNeighbors():
@@ -11810,24 +11835,38 @@ def _final_clash_resolution(
                     break
 
     # Only check heavy atoms (H moves with parent)
-    heavy = [i for i in range(mol.GetNumAtoms()) if mol.GetAtomWithIdx(i).GetAtomicNum() > 1]
-    n_atoms = mol.GetNumAtoms()
+    heavy = [i for i in range(n_atoms) if mol.GetAtomWithIdx(i).GetAtomicNum() > 1]
     rng = np.random.default_rng(99)
+
+    # Hoisted per-call invariants (recomputed identically every pass before):
+    # per-atom symbol + metal flag, and the H-clash candidate list.
+    _sym = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(n_atoms)]
+    _is_metal_atom = [s in _METAL_SET for s in _sym]
+    metal_frozen = [j for j in frozen if _is_metal_atom[j]]
+    h_candidates = []
+    for i in range(n_atoms):
+        if mol.GetAtomWithIdx(i).GetAtomicNum() != 1 or i in frozen:
+            continue
+        parent = h_parent.get(i)
+        if parent is not None and parent in frozen:
+            continue  # parent is frozen, can't fix
+        h_candidates.append((i, parent))
 
     for _pass in range(30):
         any_push = False
         # Heavy-heavy clashes
         for ii, i in enumerate(heavy):
+            i_frozen = i in frozen
+            i_metal = _is_metal_atom[i]
             for j in heavy[ii + 1:]:
                 if (i, j) in bonded_pairs:
                     continue
-                if i in frozen and j in frozen:
+                if i_frozen and j in frozen:
                     continue
                 pi, pj = _gp(i), _gp(j)
-                d = float(np.linalg.norm(pi - pj))
-                si = mol.GetAtomWithIdx(i).GetSymbol()
-                sj = mol.GetAtomWithIdx(j).GetSymbol()
-                if si in _METAL_SET or sj in _METAL_SET:
+                diff = pi - pj
+                d = float(np.sqrt(diff.dot(diff)))
+                if i_metal or _is_metal_atom[j]:
                     min_d = 2.0
                 else:
                     min_d = 1.2
@@ -11839,7 +11878,7 @@ def _final_clash_resolution(
                 else:
                     direction = (pj - pi) / d
                 gap = min_d - d
-                if i in frozen:
+                if i_frozen:
                     _move_with_h(j, gap * direction)
                 elif j in frozen:
                     _move_with_h(i, -gap * direction)
@@ -11850,20 +11889,13 @@ def _final_clash_resolution(
 
         # H-metal clashes: move the parent heavy atom (+ all its H) so
         # the offending H clears the metal without breaking C-H bonds.
-        for i in range(n_atoms):
-            a = mol.GetAtomWithIdx(i)
-            if a.GetAtomicNum() != 1 or i in frozen:
-                continue
-            parent = h_parent.get(i)
-            if parent is not None and parent in frozen:
-                continue  # parent is frozen, can't fix
-            for j in frozen:
+        for i, parent in h_candidates:
+            for j in metal_frozen:
                 if (i, j) in bonded_pairs:
                     continue
-                if mol.GetAtomWithIdx(j).GetSymbol() not in _METAL_SET:
-                    continue
                 pi, pj = _gp(i), _gp(j)
-                d = float(np.linalg.norm(pi - pj))
+                diff = pi - pj
+                d = float(np.sqrt(diff.dot(diff)))
                 if d >= 2.0:
                     continue
                 if d < 1e-8:
@@ -11880,6 +11912,11 @@ def _final_clash_resolution(
 
         if not any_push:
             break
+
+    # Flush the local array back to the conformer (bit-identical write-back).
+    for i in range(n_atoms):
+        conf.SetAtomPosition(i, Point3D(
+            float(coords[i, 0]), float(coords[i, 1]), float(coords[i, 2])))
 
 
 def _fix_secondary_metal_distances(
@@ -12773,13 +12810,29 @@ def _correct_hapto_geometry(
     except Exception:
         return False
 
+    # PERF (BYTE-IDENTICAL): mirror the conformer into a local float64 array and
+    # route every _gp/_sp through it (eliminating the per-call RDKit boundary,
+    # the dominant Python cost in the rotation / clash passes), flushing back to
+    # the conformer once at the end.  _gp returned ``np.array([p.x, p.y, p.z])``
+    # (float64) and _sp wrote ``Point3D(float(...))``; the conformer stores
+    # doubles so the round-trip is bit-identical (verified array_equal).  The
+    # only main-body returns are the early-exit guards above (before any _gp/_sp)
+    # and the final ``return changed`` (flush precedes it), so no write is lost.
+    _n_atoms_chg = mol.GetNumAtoms()
+    coords = np.empty((_n_atoms_chg, 3), dtype=float)
+    for _i in range(_n_atoms_chg):
+        _p = conf.GetAtomPosition(_i)
+        coords[_i, 0] = _p.x
+        coords[_i, 1] = _p.y
+        coords[_i, 2] = _p.z
+
     def _gp(i):
-        p = conf.GetAtomPosition(i)
-        return np.array([p.x, p.y, p.z])
+        return coords[i].copy()
 
     def _sp(i, arr):
-        conf.SetAtomPosition(i, Point3D(float(arr[0]), float(arr[1]),
-                                         float(arr[2])))
+        coords[i, 0] = float(arr[0])
+        coords[i, 1] = float(arr[1])
+        coords[i, 2] = float(arr[2])
 
     # -- Collect all hapto atoms and bridge atoms --
     all_hapto = set()
@@ -13251,6 +13304,19 @@ def _correct_hapto_geometry(
                 continue
             env_atoms.append(_gp(eidx))
 
+        # PERF (BYTE-IDENTICAL): stack the (invariant) environment positions so
+        # the per-(env × ring-point) distance — the profiled norm-storm here —
+        # can be evaluated with one matmul-ddot row-norm per env atom instead of
+        # eta scalar np.linalg.norm calls.  np.matmul(d[:,None,:], d[:,:,None])
+        # dispatches the SAME per-row BLAS ddot kernel as scalar
+        # np.linalg.norm(v)=sqrt(v.dot(v)) → each distance is bit-identical
+        # (FMA/summation order preserved; axis-norm / (x**2).sum drift ~1 ULP
+        # and are rejected).  The score ``+=`` is kept SCALAR in the exact
+        # original ``for ep: for pi:`` order so the float summation — and the
+        # selected best_pts — is unchanged.
+        env_arr = (np.asarray(env_atoms, dtype=float)
+                   if env_atoms else np.zeros((0, 3), dtype=float))
+        n_env = env_arr.shape[0]
         # Try multiple starting angles, pick the one with fewest clashes
         best_pts = None
         best_clash_score = float('inf')
@@ -13267,11 +13333,17 @@ def _correct_hapto_geometry(
                 )
             # Score: sum of 1/d for close contacts with environment
             clash_score = 0.0
-            for ep in env_atoms:
-                for pi in pts_try:
-                    d = float(np.linalg.norm(pi - ep))
-                    if d < 1.5:
-                        clash_score += (1.5 - d) ** 2
+            if n_env:
+                for e_i in range(n_env):
+                    deltas = pts_try - env_arr[e_i]
+                    dists = np.sqrt(
+                        np.matmul(deltas[:, None, :],
+                                  deltas[:, :, None]).reshape(-1)
+                    )
+                    for p_i in range(eta):
+                        d = float(dists[p_i])
+                        if d < 1.5:
+                            clash_score += (1.5 - d) ** 2
             if clash_score < best_clash_score:
                 best_clash_score = clash_score
                 best_pts = pts_try
@@ -13510,55 +13582,66 @@ def _correct_hapto_geometry(
                     _sp(hi, _gp(hi) + displacement)
 
         n_atoms = mol.GetNumAtoms()
+        # PERF (BYTE-IDENTICAL): the candidate (i, j) pairs, their frozen flags
+        # and the static min_d threshold depend only on frozen / bonded_pairs /
+        # symbols — none change across the 40 passes — so hoist them once in the
+        # exact original (outer i, inner j) order; the per-pass mutation
+        # sequence is unchanged.  The distance stays scalar
+        # ``sqrt(diff.dot(diff))`` (= np.linalg.norm on a 1-D vector, same BLAS
+        # ddot → bit-identical) because the loop pushes atoms mid-pass and is
+        # therefore inherently sequential.
+        _sym_chg = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(n_atoms)]
+        step6_pairs = []
+        for i in range(n_atoms):
+            i_frozen = i in frozen
+            i_is_metal = i in metals
+            si = _sym_chg[i]
+            for j in range(i + 1, n_atoms):
+                j_frozen = j in frozen
+                if i_frozen and j_frozen:
+                    continue
+                if (i, j) in bonded_pairs:
+                    continue
+                sj = _sym_chg[j]
+                j_is_metal = j in metals
+                if i_is_metal or j_is_metal:
+                    other_sym = sj if i_is_metal else si
+                    min_d = 2.5 if other_sym == 'H' else 2.2
+                elif si == 'H' and sj == 'H':
+                    min_d = 1.5
+                elif si == 'H' or sj == 'H':
+                    min_d = 1.0
+                else:
+                    min_d = 1.2
+                step6_pairs.append((i, j, i_frozen, j_frozen, min_d))
+
         for _pass in range(40):
             any_push = False
-            for i in range(n_atoms):
-                for j in range(i + 1, n_atoms):
-                    i_frozen = i in frozen
-                    j_frozen = j in frozen
-                    if i_frozen and j_frozen:
-                        continue
-                    if (i, j) in bonded_pairs:
-                        continue
+            for i, j, i_frozen, j_frozen, min_d in step6_pairs:
+                pi = _gp(i)
+                pj = _gp(j)
+                diff = pi - pj
+                d = float(np.sqrt(diff.dot(diff)))
 
-                    pi = _gp(i)
-                    pj = _gp(j)
-                    d = float(np.linalg.norm(pi - pj))
+                if d >= min_d:
+                    continue
 
-                    si = mol.GetAtomWithIdx(i).GetSymbol()
-                    sj = mol.GetAtomWithIdx(j).GetSymbol()
+                if d < 1e-8:
+                    direction = np.random.default_rng(
+                        42 + _pass).standard_normal(3)
+                    direction /= np.linalg.norm(direction)
+                else:
+                    direction = (pj - pi) / d
 
-                    i_is_metal = i in metals
-                    j_is_metal = j in metals
-                    if i_is_metal or j_is_metal:
-                        other_sym = sj if i_is_metal else si
-                        min_d = 2.5 if other_sym == 'H' else 2.2
-                    elif si == 'H' and sj == 'H':
-                        min_d = 1.5
-                    elif si == 'H' or sj == 'H':
-                        min_d = 1.0
-                    else:
-                        min_d = 1.2
-
-                    if d >= min_d:
-                        continue
-
-                    if d < 1e-8:
-                        direction = np.random.default_rng(
-                            42 + _pass).standard_normal(3)
-                        direction /= np.linalg.norm(direction)
-                    else:
-                        direction = (pj - pi) / d
-
-                    gap = min_d - d
-                    if i_frozen:
-                        _push_atom(j, gap * direction)
-                    elif j_frozen:
-                        _push_atom(i, -gap * direction)
-                    else:
-                        _push_atom(i, -0.5 * gap * direction)
-                        _push_atom(j, 0.5 * gap * direction)
-                    any_push = True
+                gap = min_d - d
+                if i_frozen:
+                    _push_atom(j, gap * direction)
+                elif j_frozen:
+                    _push_atom(i, -gap * direction)
+                else:
+                    _push_atom(i, -0.5 * gap * direction)
+                    _push_atom(j, 0.5 * gap * direction)
+                any_push = True
 
             if not any_push:
                 break
@@ -13604,6 +13687,11 @@ def _correct_hapto_geometry(
                     _sp(ai, pi - 0.5 * correction * direction)
                     _sp(aj, pj + 0.5 * correction * direction)
 
+    # Flush the local array back to the conformer (bit-identical write-back).
+    for _i in range(_n_atoms_chg):
+        conf.SetAtomPosition(_i, Point3D(
+            float(coords[_i, 0]), float(coords[_i, 1]), float(coords[_i, 2])))
+
     return changed
 
 
@@ -13631,13 +13719,28 @@ def _propagate_non_hapto_atoms(
     conf = mol.GetConformer(conf_id)
     n_atoms = mol.GetNumAtoms()
 
+    # PERF (BYTE-IDENTICAL): mirror the conformer into a local float64 array.
+    # _gp returned ``np.array([p.x, p.y, p.z])`` (float64) and _sp wrote it
+    # back via ``Point3D(float(...))``; the conformer stores doubles, so the
+    # read→array→write round-trip is bit-identical (verified array_equal).  The
+    # placement BFS and the two relaxation/clash passes mutate positions in
+    # place and read them back sequentially, so every _gp/_sp is routed through
+    # the local array (eliminating the per-call RDKit boundary, the dominant
+    # Python cost) and the conformer is flushed once at the end.
+    coords = np.empty((n_atoms, 3), dtype=float)
+    for _i in range(n_atoms):
+        _p = conf.GetAtomPosition(_i)
+        coords[_i, 0] = _p.x
+        coords[_i, 1] = _p.y
+        coords[_i, 2] = _p.z
+
     def _gp(i):
-        p = conf.GetAtomPosition(i)
-        return np.array([p.x, p.y, p.z])
+        return coords[i].copy()
 
     def _sp(i, pos):
-        conf.SetAtomPosition(i, Point3D(
-            float(pos[0]), float(pos[1]), float(pos[2])))
+        coords[i, 0] = float(pos[0])
+        coords[i, 1] = float(pos[1])
+        coords[i, 2] = float(pos[2])
 
     # Identify metals and hapto ring atoms
     metals = set()
@@ -13791,8 +13894,10 @@ def _propagate_non_hapto_atoms(
         max_err = 0.0
         forces = {}
         for bi, bj, target in bond_targets:
-            diff = _gp(bj) - _gp(bi)
-            d = float(np.linalg.norm(diff))
+            diff = coords[bj] - coords[bi]
+            # bit-identical to float(np.linalg.norm(diff)) (1-D norm = sqrt of
+            # the BLAS ddot); .dot is the fastest scalar form (verified).
+            d = float(np.sqrt(diff.dot(diff)))
             err = abs(d - target)
             if err < 0.01:
                 continue
@@ -13822,52 +13927,69 @@ def _propagate_non_hapto_atoms(
         bonded_pairs.add((bi, bj))
         bonded_pairs.add((bj, bi))
 
+    # PERF (BYTE-IDENTICAL): the active (i, j) pair set and each pair's static
+    # min_d threshold depend only on symbols / bonded / needs_placement, none
+    # of which change across the 20 passes — hoist them once in the exact
+    # original (outer i, inner j) iteration order so the per-pass mutation
+    # sequence is unchanged.  The distance stays scalar (the loop mutates
+    # positions mid-pass, so it is inherently sequential).
+    _sym_p = [mol.GetAtomWithIdx(i).GetSymbol() for i in range(n_atoms)]
+    clash_pairs = []
+    for i in range(n_atoms):
+        si = _sym_p[i]
+        si_metal = si in _METAL_SET
+        si_h = si == 'H'
+        i_in_np = i in needs_placement
+        for j in range(i + 1, n_atoms):
+            if (i, j) in bonded_pairs:
+                continue
+            if not i_in_np and j not in needs_placement:
+                continue
+            sj = _sym_p[j]
+            if si_metal or sj in _METAL_SET:
+                min_d = 2.0
+            elif si_h and sj == 'H':
+                min_d = 1.5
+            elif si_h or sj == 'H':
+                min_d = 1.0
+            else:
+                min_d = 1.2
+            clash_pairs.append((i, j, min_d))
+
     for _pass in range(20):
         any_push = False
-        for i in range(n_atoms):
-            for j in range(i + 1, n_atoms):
-                if (i, j) in bonded_pairs:
-                    continue
-                # At least one must be a re-placed atom
-                if i not in needs_placement and j not in needs_placement:
-                    continue
-                pi = _gp(i)
-                pj = _gp(j)
-                d = float(np.linalg.norm(pi - pj))
+        for i, j, min_d in clash_pairs:
+            pi = _gp(i)
+            pj = _gp(j)
+            diff = pi - pj
+            d = float(np.sqrt(diff.dot(diff)))
 
-                si = mol.GetAtomWithIdx(i).GetSymbol()
-                sj = mol.GetAtomWithIdx(j).GetSymbol()
+            if d >= min_d:
+                continue
+            if d < 1e-8:
+                direction = rng.standard_normal(3)
+                direction /= max(float(np.linalg.norm(direction)), 1e-12)
+            else:
+                direction = (pj - pi) / d
 
-                if si in _METAL_SET or sj in _METAL_SET:
-                    min_d = 2.0
-                elif si == 'H' and sj == 'H':
-                    min_d = 1.5
-                elif si == 'H' or sj == 'H':
-                    min_d = 1.0
-                else:
-                    min_d = 1.2
-
-                if d >= min_d:
-                    continue
-                if d < 1e-8:
-                    direction = rng.standard_normal(3)
-                    direction /= max(float(np.linalg.norm(direction)), 1e-12)
-                else:
-                    direction = (pj - pi) / d
-
-                gap = min_d - d
-                i_fixed = i in fixed
-                j_fixed = j in fixed
-                if i_fixed:
-                    _sp(j, pj + gap * direction)
-                elif j_fixed:
-                    _sp(i, pi - gap * direction)
-                else:
-                    _sp(i, pi - 0.5 * gap * direction)
-                    _sp(j, pj + 0.5 * gap * direction)
-                any_push = True
+            gap = min_d - d
+            i_fixed = i in fixed
+            j_fixed = j in fixed
+            if i_fixed:
+                _sp(j, pj + gap * direction)
+            elif j_fixed:
+                _sp(i, pi - gap * direction)
+            else:
+                _sp(i, pi - 0.5 * gap * direction)
+                _sp(j, pj + 0.5 * gap * direction)
+            any_push = True
         if not any_push:
             break
+
+    # Flush the local array back to the conformer (bit-identical write-back).
+    for _i in range(n_atoms):
+        conf.SetAtomPosition(_i, Point3D(
+            float(coords[_i, 0]), float(coords[_i, 1]), float(coords[_i, 2])))
 
 
 # ---------------------------------------------------------------------------
