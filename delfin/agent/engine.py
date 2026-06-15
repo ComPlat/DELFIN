@@ -614,11 +614,60 @@ class AgentEngine:
         warn = " — WARNING: nearing auto-compaction" if pct >= 80.0 else ""
         return (
             "# Context status (auto-injected each turn)\n"
-            f"- Compaction trigger: 12 msgs OR {compact_pct*100:.0f}% of window\n"
+            f"- Compaction trigger: {compact_pct*100:.0f}% of window "
+            f"(gentle trim from 70%)\n"
             f"- Current usage: {n_msgs} msgs, ~{tokens:,} tokens "
             f"({pct:.1f}% of {window:,}){warn}\n"
             f"{last_line}"
         )
+
+    def _build_open_tasks_block(self) -> str:
+        """Per-turn reminder of OPEN tasks so the agent doesn't forget to mark
+        finished steps ``completed`` (Jerome 2026-06-13: "sometimes forgets to
+        actually check off done tasks"). Read-only; empty string when there are
+        no open tasks. Mirrors the session filter of the ``task_list`` tool so
+        the agent sees exactly the list it manages. The rendered list is capped
+        so a long backlog can't bloat the prompt (the remainder count still
+        shows).
+        """
+        try:
+            perms = self.kit_permissions
+            if perms is None:
+                return ""
+            from delfin.agent.agent_tasks import get_store
+            sid = getattr(perms, "task_session_id", "") or ""
+            tasks = get_store(perms.workspace).list(session_id=sid if sid else None)
+        except Exception:
+            return ""
+        open_tasks = [
+            t for t in (tasks or [])
+            if t.get("status") in ("pending", "in_progress")
+        ]
+        if not open_tasks:
+            return ""
+        in_prog = [t for t in open_tasks if t.get("status") == "in_progress"]
+        pending = [t for t in open_tasks if t.get("status") == "pending"]
+        lines = ["# Open tasks (auto-injected each turn — keep this list honest)"]
+        shown = 0
+        _CAP = 8
+        for t in in_prog:
+            lines.append(f"- [in_progress] #{t.get('id')} {str(t.get('subject', ''))[:80]}")
+            shown += 1
+        for t in pending:
+            if shown >= _CAP:
+                break
+            lines.append(f"- [pending]     #{t.get('id')} {str(t.get('subject', ''))[:80]}")
+            shown += 1
+        remainder = len(open_tasks) - shown
+        if remainder > 0:
+            lines.append(f"- … +{remainder} more open task(s)")
+        if in_prog:
+            lines.append(
+                "→ If any in_progress task above is actually finished, call "
+                "task_update(task_id, status='completed') NOW — don't batch it "
+                "to the end."
+            )
+        return "\n".join(lines)
 
     def _build_current_system_prompt(
         self,
@@ -640,12 +689,21 @@ class AgentEngine:
         # compaction fires (no value for other roles — they run in
         # pipeline mode with their own context budgets).
         live_state = self._live_state
-        if role == "solo_agent":
-            ctx_status = self._build_context_status_block()
-            if ctx_status:
-                live_state = (
-                    f"{ctx_status}\n\n{live_state}" if live_state else ctx_status
-                )
+        if role in ("solo_agent", "dashboard_agent"):
+            extra_blocks: list[str] = []
+            # Context-usage snapshot is solo-only (other roles run in pipeline
+            # mode with their own budgets); the open-tasks reminder applies to
+            # both interactive roles that drive the task list.
+            if role == "solo_agent":
+                ctx_status = self._build_context_status_block()
+                if ctx_status:
+                    extra_blocks.append(ctx_status)
+            tasks_block = self._build_open_tasks_block()
+            if tasks_block:
+                extra_blocks.append(tasks_block)
+            if extra_blocks:
+                joined = "\n\n".join(extra_blocks)
+                live_state = f"{joined}\n\n{live_state}" if live_state else joined
 
         return self.loader.build_system_prompt(
             role_id=role,
@@ -1130,14 +1188,19 @@ class AgentEngine:
         except Exception:
             pass
 
-        msg_threshold_hit = (
-            self.current_role in ("solo_agent", "dashboard_agent")
-            and len(self.messages) >= self._COMPACTION_THRESHOLD
-        )
-        token_threshold_hit = self._should_auto_compact()
-        if not (msg_threshold_hit or token_threshold_hit):
-            return
+        # Full compaction is driven by CONTEXT PRESSURE (token budget), never
+        # by raw message count alone: a dozen short messages can sit at ~15%
+        # of the window, and summarising there throws away the live working
+        # context — forcing the agent to re-discover its own work (Jerome
+        # 2026-06-13: "compacted at 15% full → agent confused"). This was the
+        # legacy ``msg_count >= 12 OR tokens > 95%`` trigger; the OR meant the
+        # 0.95 token threshold (raised precisely to avoid early compaction)
+        # was undermined by the message count. The message count now only acts
+        # as a floor — never summarise a conversation too short to have a
+        # compactable middle (we always keep the last _KEEP_RECENT intact).
         if len(self.messages) < self._COMPACTION_THRESHOLD:
+            return
+        if not self._should_auto_compact():
             return
 
         old_msgs = self.messages[:-self._KEEP_RECENT]

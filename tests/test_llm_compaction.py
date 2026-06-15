@@ -131,7 +131,10 @@ def test_compact_history_uses_llm_path_when_available(monkeypatch):
     eng.route = ["solo_agent"]
     eng.current_role_index = 0
 
-    # 12+ messages required to trip the legacy threshold
+    # Compaction is token-driven now: a small window puts this 13-message
+    # history over the auto-compact threshold (the 12-message count is only
+    # a floor, no longer a trigger).
+    eng.context_window_tokens = 50
     for i in range(13):
         role = "user" if i % 2 == 0 else "assistant"
         eng.messages.append({"role": role, "content": f"msg #{i} body content"})
@@ -167,6 +170,7 @@ def test_compact_history_falls_back_to_extractive_on_llm_failure(monkeypatch):
     eng.route = ["solo_agent"]
     eng.current_role_index = 0
 
+    eng.context_window_tokens = 50  # token pressure drives compaction
     for i in range(13):
         role = "user" if i % 2 == 0 else "assistant"
         eng.messages.append({"role": role, "content": f"important content {i}"})
@@ -202,6 +206,7 @@ def test_compact_history_skipped_when_setting_disables_llm(monkeypatch):
     eng.route = ["solo_agent"]
     eng.current_role_index = 0
 
+    eng.context_window_tokens = 50  # ensure compaction actually fires
     for i in range(13):
         role = "user" if i % 2 == 0 else "assistant"
         eng.messages.append({"role": role, "content": f"item {i}"})

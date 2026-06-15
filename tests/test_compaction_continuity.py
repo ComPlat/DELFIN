@@ -72,6 +72,9 @@ def test_full_compaction_keeps_user_goal_and_recent(monkeypatch, tmp_path, tmp_a
     eng = _make_engine(tmp_path)
     # Force the deterministic extractive path (no API summariser).
     monkeypatch.setattr(eng, "_llm_summarize_old_messages", lambda *a, **k: "")
+    # Full compaction fires on CONTEXT PRESSURE, not raw message count: shrink
+    # the window so the dialog below crosses the auto-compact threshold.
+    eng.context_window_tokens = 200
 
     goal = "GOALSENTINEL implement the dark-mode toggle end to end"
     msgs = [{"role": "user", "content": goal}]
@@ -83,6 +86,7 @@ def test_full_compaction_keeps_user_goal_and_recent(monkeypatch, tmp_path, tmp_a
     eng.messages = msgs
 
     assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert eng._should_auto_compact()              # token pressure present
     eng._compact_history()
 
     blob = "\n".join(
@@ -101,6 +105,7 @@ def test_full_compaction_keeps_user_goal_and_recent(monkeypatch, tmp_path, tmp_a
 def test_full_compaction_archives_old_messages(monkeypatch, tmp_path, tmp_archive):
     eng = _make_engine(tmp_path)
     monkeypatch.setattr(eng, "_llm_summarize_old_messages", lambda *a, **k: "")
+    eng.context_window_tokens = 100            # force context pressure
 
     goal = "ARCHIVEGOAL refactor the api client into modules"
     msgs = [{"role": "user", "content": goal}]
@@ -117,3 +122,32 @@ def test_full_compaction_archives_old_messages(monkeypatch, tmp_path, tmp_archiv
         m["content"] for rec in records for m in rec["messages"]
     )
     assert "ARCHIVEGOAL" in archived_blob
+
+
+def test_many_short_messages_do_not_compact_at_low_usage(monkeypatch, tmp_path, tmp_archive):
+    """Regression — Jerome 2026-06-13: compaction fired at ~15% window full.
+
+    A long-but-light conversation (well past the 12-message floor, but nowhere
+    near the token budget) must NOT trigger full compaction. The live working
+    context — including the user's directory anchor — has to survive verbatim,
+    otherwise the agent loses track of where it is and re-discovers its work.
+    """
+    eng = _make_engine(tmp_path)
+    monkeypatch.setattr(eng, "_llm_summarize_old_messages", lambda *a, **k: "")
+    eng.context_window_tokens = 100_000          # large window, tiny messages
+
+    goal = "DIRSENTINEL work inside /home/user/project and stay there"
+    msgs = [{"role": "user", "content": goal}]
+    for i in range(20):                          # far over the 12-message floor
+        role = "assistant" if i % 2 == 0 else "user"
+        msgs.append({"role": role, "content": f"step {i}"})
+    eng.messages = list(msgs)
+
+    assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert not eng._should_auto_compact()        # nowhere near the budget
+    eng._compact_history()
+
+    # Nothing was summarised away: every message is still present, verbatim.
+    assert len(eng.messages) == len(msgs)
+    assert eng.messages[0]["content"] == goal
+    assert eng.last_compaction_info is None       # no compaction event recorded

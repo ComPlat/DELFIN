@@ -64,6 +64,11 @@ def _build_engine(agent_tree, *, n_messages=20):
         )
     # current_role is derived from the mode's route — solo_agent mode
     # gives us solo_agent as current_role automatically.
+    # Compaction is token-driven (the legacy message-count trigger was
+    # removed — it fired at ~15% window full). Shrink the window so the
+    # long history below crosses the auto-compact threshold; the 12-message
+    # floor still protects short conversations from compacting at all.
+    engine.context_window_tokens = 10
     # Long alternating history (must exceed _COMPACTION_THRESHOLD = 12)
     for i in range(n_messages):
         role = "user" if i % 2 == 0 else "assistant"

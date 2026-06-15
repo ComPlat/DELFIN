@@ -58,16 +58,23 @@ def test_disabled_when_pct_zero():
 
 
 def test_compaction_records_info():
-    """Token-trigger compaction (above threshold + many messages) updates last_compaction_info."""
+    """Full-compaction path (irreducible token pressure) records last_compaction_info.
+
+    The gentle sliding-window trim (stage 1) only shrinks large *assistant*
+    payloads — user messages are preserved verbatim as the GOALS. To force the
+    full summarisation path we use a history dominated by large user messages
+    that the slide cannot relieve, so usage stays above the budget and full
+    compaction fires. (We also need > _COMPACTION_THRESHOLD=12 messages — that
+    floor guards against summarising a too-short conversation.)
+    """
     eng = _bare_engine()
-    # Need both: many messages AND big content to push us above threshold.
-    # _COMPACTION_THRESHOLD is 12, _KEEP_RECENT is 4 — so we need >12 messages.
     big_chunk = "y" * 25_000  # ~6.25k tokens each
     eng.messages = [
-        {"role": ("user" if i % 2 == 0 else "assistant"), "content": f"msg-{i} " + big_chunk}
+        {"role": "user", "content": f"msg-{i} " + big_chunk}
         for i in range(20)
     ]
-    # 20 messages * 25k chars = 500k chars = 125k tokens > 80k budget
+    # 20 user messages * 25k chars = 500k chars = 125k tokens > 80k budget,
+    # and the slide can't trim user content -> full compaction must fire.
     assert eng._should_auto_compact()
     eng._compact_history()
     info = eng.last_compaction_info

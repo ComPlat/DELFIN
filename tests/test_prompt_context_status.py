@@ -1,8 +1,10 @@
 """Tests for the live context-status block injected into the solo prompt.
 
 The block tells the model how close it is to the engine's auto-compaction
-trigger (12 msgs OR 95% of 100k tokens) so it can proactively delegate to
-subagents before compaction fires.
+trigger (95% of the token window, with a gentle trim from 70%) so it can
+proactively delegate to subagents before compaction fires. Compaction is now
+purely token-driven — the legacy 12-message trigger was removed because it
+fired at ~15% window full and threw away live context (Jerome 2026-06-13).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ def _bare_engine() -> AgentEngine:
 def test_status_block_zero_usage_when_no_messages():
     eng = _bare_engine()
     block = eng._build_context_status_block()
-    assert "Compaction trigger: 12 msgs OR 95% of window" in block
+    assert "Compaction trigger: 95% of window" in block
     assert "0 msgs" in block
     assert "(none this session)" in block
     # Empty conversation must NOT trigger the >=80% warning
@@ -85,3 +87,65 @@ def test_status_block_only_injected_for_solo_role(monkeypatch):
     eng.route = ["builder_agent"]
     eng._build_current_system_prompt()
     assert "# Context status" not in (captured.get("live_state") or "")
+
+
+# ---------------------------------------------------------------------------
+# Open-tasks reminder (Jerome 2026-06-13: agent forgets to check off tasks)
+# ---------------------------------------------------------------------------
+
+def _perms_for(tmp_path, sid):
+    class _Perms:
+        workspace = tmp_path
+        task_session_id = sid
+    return _Perms()
+
+
+def test_open_tasks_block_lists_open_and_nudges_completion(tmp_path, monkeypatch):
+    from delfin.agent.agent_tasks import get_store
+    store = get_store(tmp_path)
+    t1 = store.create("Wire parser into ops_server", session_id="s1")
+    store.create("Add regression test", session_id="s1")
+    store.update(t1["id"], status="in_progress")
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "s1")),
+    )
+    block = eng._build_open_tasks_block()
+    assert "Open tasks" in block
+    assert "[in_progress] #" in block and "Wire parser" in block
+    assert "[pending]" in block and "Add regression test" in block
+    # An in_progress task present → an explicit completion nudge fires.
+    assert "status='completed'" in block
+
+
+def test_open_tasks_block_empty_when_no_open_tasks(tmp_path, monkeypatch):
+    from delfin.agent.agent_tasks import get_store
+    store = get_store(tmp_path)
+    done = store.create("already finished", session_id="s2")
+    store.update(done["id"], status="completed")
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "s2")),
+    )
+    assert eng._build_open_tasks_block() == ""
+
+
+def test_open_tasks_block_caps_long_backlog(tmp_path, monkeypatch):
+    from delfin.agent.agent_tasks import get_store
+    store = get_store(tmp_path)
+    for i in range(20):
+        store.create(f"task number {i}", session_id="s3")
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "s3")),
+    )
+    block = eng._build_open_tasks_block()
+    # The list is capped; the remainder is surfaced as a count, not dumped.
+    assert "more open task(s)" in block
+    assert block.count("[pending]") <= 8

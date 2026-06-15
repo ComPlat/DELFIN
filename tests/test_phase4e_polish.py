@@ -56,6 +56,17 @@ def test_task_ticker_renders_tasks(fresh_workspace):
     assert in_pos < plan_pos
 
 
+def test_task_ticker_long_backlog_is_scrollable(fresh_workspace):
+    """A long task list must render inside a bounded, scrollable container
+    (side scrollbar) rather than a giant wall of rows (Jerome 2026-06-13)."""
+    store = get_store(fresh_workspace)
+    for i in range(25):
+        store.create(f"task {i}", "")
+    html = TT.render_html(fresh_workspace)
+    assert "overflow-y:auto" in html
+    assert "max-height" in html
+
+
 def test_task_ticker_text_format(fresh_workspace):
     store = get_store(fresh_workspace)
     store.create("Step A", "")

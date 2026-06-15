@@ -92,12 +92,19 @@ def render_html(
         f"&#9744; {counts.get('pending', 0)} &nbsp; "
         f"&#9745; {counts.get('completed', 0)}"
     )
+    # Bounded, scrollable list: a long backlog stays a compact panel with a
+    # side scrollbar instead of growing into a giant wall of tasks that pushes
+    # the chat off-screen (Jerome 2026-06-13). The summary header stays fixed
+    # above the scroll area so the counts are always visible.
+    scroll_open = "<div style='max-height:220px;overflow-y:auto;'>"
     return (
         "<div style='border-left:3px solid #444;padding:6px 10px;"
         "background:#0001;border-radius:4px;'>"
         f"<div style='font-size:11px;color:#aaa;margin-bottom:4px;'>"
         f"Tasks &nbsp; {summary}</div>"
+        + scroll_open
         + "".join(rows)
+        + "</div>"
         + "</div>"
     )
 

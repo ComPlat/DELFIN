@@ -161,8 +161,10 @@ def test_selective_compaction_keeps_user_goals_more_than_first_line():
     """The new selective compactor must keep up to 400 chars of the
     user message, not just the first line as the legacy version did."""
     eng = _bare_engine()
-    # Force the message threshold
-    long_goal = "I need to refactor the flux capacitor.\nDetails:\n" + "x" * 200
+    # Force token pressure (compaction is token-driven, not message-count):
+    # 15 user messages of ~450 chars each clear the 95% budget of the tiny
+    # 1000-token window set by _bare_engine.
+    long_goal = "I need to refactor the flux capacitor.\nDetails:\n" + "x" * 400
     eng.messages = [{"role": "user", "content": long_goal}] * 15
     # Stub the client so LLM path fails and we fall through to extractive
     eng.client = None
