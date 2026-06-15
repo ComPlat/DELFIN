@@ -5297,6 +5297,19 @@ def _fan_out_subagents(tc_list, permissions):
             args = json.loads(tc["function"]["arguments"])
         except json.JSONDecodeError:
             args = {}
+        # Auto-isolation: when ≥2 subagents fan out in parallel, give each
+        # WRITER (a non-read-only preset, e.g. general-purpose) its OWN git
+        # worktree so concurrent edits can't clobber one another on the shared
+        # tree. Read-only presets (explore/plan/code-reviewer) need none. An
+        # explicit isolation in the call is respected. Falls back gracefully
+        # when the workspace isn't a git repo.
+        try:
+            from . import subagents as _sa_fan
+            if (not args.get("isolation")
+                    and _sa_fan.is_writer_preset(args.get("subagent_type", ""))):
+                args["isolation"] = "worktree"
+        except Exception:
+            pass
         futures[tc["id"]] = executor.submit(
             _doc_executor.execute, "subagent", args, permissions=permissions,
         )

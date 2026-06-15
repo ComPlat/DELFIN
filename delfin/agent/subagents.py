@@ -857,6 +857,14 @@ def run_subagent(
     )
 
 
+def is_writer_preset(subagent_type: str) -> bool:
+    """True if a subagent type can WRITE (mutate the workspace) — i.e. its
+    preset is NOT the read-only 'plan' permission profile. Used to auto-isolate
+    parallel writers into separate worktrees so they can't clobber each other."""
+    p = SUBAGENT_PRESETS.get((subagent_type or "").strip())
+    return bool(p) and (p.mode or "").strip().lower() != "plan"
+
+
 def get_subagent_result(sa_id: str) -> dict:
     """Fetch a background subagent's status/result by id.
 

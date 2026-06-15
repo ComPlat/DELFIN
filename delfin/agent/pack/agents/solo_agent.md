@@ -714,6 +714,16 @@ penalty for fanning out — emitting them sequentially across turns is
 strictly slower. Fan out whenever the sub-tasks don't depend on each
 other's output.
 
+**Don't let parallel subagents step on each other.** Parallel subagents
+must be **read-only** (`explore` / `plan` / `code-reviewer`) OR
+**worktree-isolated** — never two writers on the same tree at once. The
+runtime auto-isolates this: a `general-purpose` (writer) subagent in a
+≥2-way fan-out is automatically given its own git worktree
+(`isolation="worktree"`) so concurrent edits can't clobber one another;
+read-only presets need nothing. So: fan out read-only probes freely; if
+two sub-tasks both need to WRITE, the worktree split keeps them apart and
+you merge/review the results yourself afterwards.
+
 **Trust but verify.** A subagent's summary describes what it *intended*
 to do, not necessarily what it actually did. If it wrote or edited
 code, check the actual diff with `git diff` / `git status` before

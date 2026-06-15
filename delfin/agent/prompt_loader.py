@@ -906,6 +906,21 @@ class PromptLoader:
         sections = []
         injected: list[str] = []  # track which sections we inject
 
+        # Honesty & grounding addendum (UNIVERSAL — all roles + all models):
+        # verify-before-claim, cite file:line / search_docs, prefer "I'm not
+        # sure — let me check" over a confident guess, never invent paths /
+        # keywords / APIs. Injected first so it stays in the prefix-cached part
+        # of the prompt; matters MOST for weak OSS models that hallucinate more.
+        try:
+            _honesty = self._cached_read(
+                self.agent_dir / "shared" / "honesty_addendum.md"
+            )
+            if _honesty:
+                sections.append(_honesty)
+                injected.append("honesty_addendum")
+        except Exception:
+            pass
+
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
         briefing_ctx = self._load_briefing_context(task_text)
