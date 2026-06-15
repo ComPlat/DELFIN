@@ -8399,59 +8399,54 @@ def create_tab(ctx):
             return True
 
         if cmd == "/memories":
-            from delfin.agent.memory_store import load_memories
-            facts = load_memories()
-            if not facts:
-                _append_system_message("No memories stored. Use /remember <text> to add one.")
+            from delfin.agent.memory_store import list_typed_memories
+            mems = list_typed_memories(ctx.repo_dir or ".")
+            if not mems:
+                _append_system_message(
+                    "No memories stored. Use /remember <text> to add one.")
             else:
                 lines = []
-                for i, f in enumerate(facts):
-                    lines.append(f"  [{i}] ({f.get('source', '?')}) {f['text']}")
+                _last_type = None
+                for m in mems:
+                    if m["type"] != _last_type:
+                        lines.append(f"  [{m['type']}]")
+                        _last_type = m["type"]
+                    desc = m["description"] or m["body"][:80]
+                    lines.append(f"    • {m['name']} — {desc}")
                 _append_system_message("Agent memories:\n" + "\n".join(lines))
             return True
 
         if cmd.startswith("/remember "):
             text_to_save = text[len("/remember "):].strip()
             if text_to_save:
-                from delfin.agent.memory_store import (
-                    save_memory,
-                    save_typed_memory,
-                    parse_memory_type,
-                )
-                mem_type, body = parse_memory_type(text_to_save)
-                # Always keep a flat JSON record for legacy retrieval.
-                idx = save_memory(body or text_to_save, source=mem_type)
-                # Mirror into the .delfin typed-memory layout so the
-                # next session picks it up via the prompt loader.
                 try:
-                    fpath, slug, _t = save_typed_memory(
-                        text_to_save,
-                        repo_root=ctx.repo_dir or ".",
+                    from delfin.agent.memory_store import save_typed_memory
+                    fpath, slug, mem_type = save_typed_memory(
+                        text_to_save, repo_root=ctx.repo_dir or ".",
                     )
                     short = str(fpath).replace(str(Path.home()), "~")
                     _append_system_message(
-                        f"Memory [{idx}] saved as {mem_type} → {short}"
-                    )
+                        f"Memory saved as {mem_type} → {short}")
                 except Exception as exc:
-                    _append_system_message(
-                        f"Memory [{idx}] saved (flat); typed-mirror failed: {exc}"
-                    )
+                    _append_system_message(f"Memory save failed: {exc}")
             else:
                 _append_system_message(
-                    "Usage: /remember [user|feedback|project|reference:] <text>"
-                )
+                    "Usage: /remember [user|feedback|project|reference:] <text>")
             return True
 
         if cmd.startswith("/forget"):
             arg = text[7:].strip()
-            if arg.isdigit():
-                from delfin.agent.memory_store import delete_memory
-                if delete_memory(int(arg)):
-                    _append_system_message(f"Memory [{arg}] deleted.")
+            if arg:
+                from delfin.agent.memory_store import delete_typed_memory
+                p = delete_typed_memory(ctx.repo_dir or ".", arg)
+                if p is not None:
+                    _append_system_message(f"Memory '{arg}' deleted.")
                 else:
-                    _append_system_message(f"Invalid index: {arg}")
+                    _append_system_message(
+                        f"No memory named '{arg}'. Use /memories for the list.")
             else:
-                _append_system_message("Usage: /forget <index>")
+                _append_system_message(
+                    "Usage: /forget <name>  (see /memories for names)")
             return True
 
         # -- Workspace commands ------------------------------------------------
@@ -12707,11 +12702,14 @@ def create_tab(ctx):
                     chunks.clear()
                     thinking_chunks.clear()
 
-                    # Load persistent memory for system prompt
-                    from delfin.agent.memory_store import format_memory_context
+                    # Persistent learned memories are recalled by the prompt
+                    # loader directly from the typed store (the single source
+                    # of truth: ~/.claude/projects/<slug>/memory/MEMORY.md +
+                    # files, the "External Memory" block). Here we only load
+                    # the project instruction files (CLAUDE.md / AGENTS.md /
+                    # DELFIN.md) from cwd up.
                     from delfin.agent.project_memory import load_project_memory
-                    _memory = format_memory_context(task_text=original_task)
-                    # Auto-load CLAUDE.md / AGENTS.md / DELFIN.md from cwd up.
+                    _memory = ""
                     try:
                         _kperms = engine.kit_permissions
                         _extra = list(_kperms.extra_workspace_dirs) if _kperms else []

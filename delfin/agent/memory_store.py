@@ -464,6 +464,105 @@ def _update_memory_index(
     index.write_text(content, encoding="utf-8")
 
 
+def _type_from_filename(fname: str) -> str:
+    for t in ("feedback", "project", "reference", "user"):
+        if fname.startswith(t + "_"):
+            return t
+    return ""
+
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Return ({name, description, type}, body) from a memory file's text."""
+    meta: dict[str, str] = {}
+    body = text
+    if text.startswith("---\n"):
+        try:
+            _, fm, body = text.split("---\n", 2)
+        except ValueError:
+            return meta, text
+        for line in fm.splitlines():
+            s = line.strip()
+            if s.startswith("type:"):
+                meta["type"] = s.split(":", 1)[1].strip()
+            elif ":" in s and not s.startswith(("metadata", "-")):
+                k, _, v = s.partition(":")
+                meta.setdefault(k.strip(), v.strip())
+    return meta, body
+
+
+def list_typed_memories(repo_root: Path | str) -> list[dict]:
+    """One record per typed memory file under the project's memory dir.
+
+    Sorted by type then name. Each record: file, path, name, description,
+    type, body. This is the single source of truth for the agent's learned
+    memories (the legacy flat JSON store is no longer used for recall)."""
+    memory_dir = _claude_memory_dir(Path(repo_root))
+    if not memory_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(memory_dir.glob("*.md")):
+        if p.name == "MEMORY.md":
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(text)
+        out.append({
+            "file": p.name,
+            "path": str(p),
+            "name": meta.get("name") or p.stem,
+            "description": meta.get("description") or "",
+            "type": meta.get("type") or _type_from_filename(p.name) or "user",
+            "body": body.strip(),
+        })
+    out.sort(key=lambda r: (r["type"], r["name"]))
+    return out
+
+
+def _remove_memory_index_line(memory_dir: Path, filename: str) -> None:
+    """Drop the MEMORY.md pointer line that references ``filename``."""
+    index = memory_dir / "MEMORY.md"
+    if not index.exists():
+        return
+    try:
+        lines = index.read_text(encoding="utf-8").splitlines(keepends=True)
+    except OSError:
+        return
+    kept = [ln for ln in lines if f"({filename})" not in ln]
+    if len(kept) != len(lines):
+        try:
+            index.write_text("".join(kept), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None:
+    """Delete a typed memory by name / slug / filename and remove its
+    MEMORY.md pointer. Returns the deleted path, or None if not found."""
+    target = (name_or_file or "").strip().lower()
+    if not target:
+        return None
+    memory_dir = _claude_memory_dir(Path(repo_root))
+    match = None
+    for rec in list_typed_memories(repo_root):
+        if (rec["file"].lower() == target
+                or rec["file"].lower() == target + ".md"
+                or rec["name"].lower() == target
+                or rec["name"].lower() == target.removesuffix(".md")):
+            match = rec
+            break
+    if match is None:
+        return None
+    p = Path(match["path"])
+    try:
+        p.unlink()
+    except OSError:
+        return None
+    _remove_memory_index_line(memory_dir, match["file"])
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Memory enrichment: cross-links, stale-ref verification, recall helpers
 # ---------------------------------------------------------------------------

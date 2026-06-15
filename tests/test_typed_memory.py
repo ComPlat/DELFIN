@@ -123,3 +123,49 @@ def test_slugify_handles_unicode_and_punctuation():
         "ber-die-brcke-ja",     # ASCII-stripped variant
         "ber-die-br-cke-ja",
     } or ms._slugify("Über die Brücke!! ja??")  # at minimum non-empty
+
+
+# ---------------------------------------------------------------------------
+# list_typed_memories + delete_typed_memory (single-store consolidation)
+# ---------------------------------------------------------------------------
+
+
+def test_list_typed_memories_returns_records(fake_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ms.save_typed_memory("feedback: never add a co-author trailer", repo_root=repo)
+    ms.save_typed_memory("user: Max is a quantum chemist at KIT", repo_root=repo)
+    recs = ms.list_typed_memories(repo)
+    assert {r["type"] for r in recs} == {"feedback", "user"}
+    by_type = {r["type"]: r for r in recs}
+    assert "co-author" in by_type["feedback"]["body"].lower()
+    assert by_type["user"]["name"]            # slug present
+    assert by_type["user"]["description"]     # frontmatter description present
+
+
+def test_list_typed_memories_empty_when_none(fake_home, tmp_path):
+    assert ms.list_typed_memories(tmp_path / "norepo") == []
+
+
+def test_delete_typed_memory_removes_file_and_index(fake_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fpath, slug, _ = ms.save_typed_memory(
+        "project: ship the memory layer this week", repo_root=repo)
+    mdir = ms._claude_memory_dir(repo)
+    assert (mdir / fpath.name).is_file()
+    index_before = (mdir / "MEMORY.md").read_text(encoding="utf-8")
+    assert fpath.name in index_before
+
+    deleted = ms.delete_typed_memory(repo, slug)
+    assert deleted is not None
+    assert not fpath.exists()
+    index_after = (mdir / "MEMORY.md").read_text(encoding="utf-8")
+    assert fpath.name not in index_after       # pointer line removed
+
+
+def test_delete_typed_memory_unknown_returns_none(fake_home, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ms.save_typed_memory("user: something", repo_root=repo)
+    assert ms.delete_typed_memory(repo, "does-not-exist") is None
