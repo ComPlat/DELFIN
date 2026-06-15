@@ -50,9 +50,44 @@ if TYPE_CHECKING:  # pragma: no cover
     from .api_client import KitToolPermissions, OpenAIClient
 
 
-_MAX_TOOL_CALLS = 30
-_MAX_WALL_S = 60.0
-_MAX_OUTPUT_TOKENS = 8000
+# Per-run hard caps. These are FALLBACK defaults; settings
+# ["agent"]["subagents"] overrides them (see _subagent_limits). Wall-clock
+# raised 60→300s: 60s truncated real exploration/research runs (especially on
+# slower KIT/Qwen models) before they could report back — subagents were too
+# short-leashed to be useful for anything but trivial lookups.
+_MAX_TOOL_CALLS = 40
+_MAX_WALL_S = 300.0
+_MAX_OUTPUT_TOKENS = 16000
+
+
+def _subagent_limits() -> dict:
+    """Resolve per-run subagent limits from settings, with fallbacks.
+
+    ``settings["agent"]["subagents"]`` may set ``max_tool_calls``,
+    ``max_wall_s`` and ``max_output_tokens`` — so Jerome can tune how deep and
+    how long a delegated subagent may run from the dashboard, without code
+    changes. Missing/zero values fall back to the module defaults above.
+    """
+    cfg: dict = {}
+    try:
+        from delfin.user_settings import load_settings
+        cfg = (((load_settings() or {}).get("agent") or {})
+               .get("subagents") or {})
+    except Exception:
+        cfg = {}
+
+    def _num(key, default, cast):
+        try:
+            v = cfg.get(key)
+            return cast(v) if v not in (None, "", 0) else default
+        except Exception:
+            return default
+
+    return {
+        "max_tool_calls": _num("max_tool_calls", _MAX_TOOL_CALLS, int),
+        "max_wall_s": _num("max_wall_s", _MAX_WALL_S, float),
+        "max_output_tokens": _num("max_output_tokens", _MAX_OUTPUT_TOKENS, int),
+    }
 
 _TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
@@ -550,9 +585,9 @@ def run_subagent(
     prompt: str,
     parent_client: "OpenAIClient",
     parent_perms: Optional["KitToolPermissions"],
-    max_tool_calls: int = _MAX_TOOL_CALLS,
-    max_wall_s: float = _MAX_WALL_S,
-    max_output_tokens: int = _MAX_OUTPUT_TOKENS,
+    max_tool_calls: int | None = None,
+    max_wall_s: float | None = None,
+    max_output_tokens: int | None = None,
     isolation: str = "",
     resume_from: str = "",
 ) -> SubagentResult:
@@ -604,6 +639,15 @@ def run_subagent(
             error=f"unknown subagent_type: {subagent_type!r}. Pick one of {list(SUBAGENT_PRESETS)}.",
         )
 
+    # Resolve limits (settings-configurable) unless the caller pinned them.
+    _lim = _subagent_limits()
+    if max_tool_calls is None:
+        max_tool_calls = _lim["max_tool_calls"]
+    if max_wall_s is None:
+        max_wall_s = _lim["max_wall_s"]
+    if max_output_tokens is None:
+        max_output_tokens = _lim["max_output_tokens"]
+
     # Optionally spin up an isolated git worktree before deriving the
     # sub-agent's permissions. Defer the tear-down to the finally block.
     isolation = (isolation or "").strip().lower()
@@ -625,14 +669,29 @@ def run_subagent(
     sub_workspace = worktree_info.path if worktree_info else None
     sub_perms = _derive_perms(parent_perms, preset.mode, workspace=sub_workspace)
 
-    # Use the parent client's underlying OpenAI client + model, but
-    # swap permissions for the duration of this call.
-    saved_perms = getattr(parent_client, "_permissions", None)
-    if hasattr(parent_client, "set_permissions"):
-        try:
-            parent_client.set_permissions(sub_perms)
-        except Exception:
-            pass
+    # Run against an isolated SHALLOW COPY of the parent client: it shares the
+    # same underlying OpenAI client (endpoint/key/model — thread-safe to share)
+    # but carries its OWN _permissions. This makes concurrent fan-out subagents
+    # safe: previously each run mutated the SHARED parent's _permissions (swap
+    # + restore), a race that could run a subagent under a sibling's sandbox
+    # (e.g. a read-only explorer transiently gaining a builder's write perms).
+    # The parent client is never touched on this path.
+    import copy as _copy
+    saved_perms = None
+    restore_parent = False
+    try:
+        sub_client = _copy.copy(parent_client)
+        sub_client.set_permissions(sub_perms)
+    except Exception:
+        # Fallback to the legacy swap-on-parent if copying fails.
+        sub_client = parent_client
+        saved_perms = getattr(parent_client, "_permissions", None)
+        restore_parent = True
+        if hasattr(parent_client, "set_permissions"):
+            try:
+                parent_client.set_permissions(sub_perms)
+            except Exception:
+                pass
 
     system_prompt = (
         preset.system_prompt
@@ -670,7 +729,7 @@ def run_subagent(
     })
 
     try:
-        for event in parent_client.stream_message(
+        for event in sub_client.stream_message(
             messages=messages,
             system=system_prompt,
             max_tokens=max_output_tokens,
@@ -712,8 +771,9 @@ def run_subagent(
         error = f"sub-agent stream raised: {exc}"
     finally:
         _running_update(_sa_id, None)
-        # Restore parent permissions.
-        if hasattr(parent_client, "set_permissions"):
+        # Restore parent permissions ONLY if we fell back to running on the
+        # shared parent client (the normal isolated-copy path never touched it).
+        if restore_parent and hasattr(parent_client, "set_permissions"):
             try:
                 parent_client.set_permissions(saved_perms)
             except Exception:
