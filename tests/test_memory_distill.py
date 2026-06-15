@@ -109,3 +109,55 @@ def test_excerpt_drops_tool_noise():
     ex = md._transcript_excerpt(chat)
     assert "HUGE TOOL OUTPUT" not in ex
     assert "USER:" in ex and "ASSISTANT:" in ex
+
+
+# ---------------------------------------------------------------------------
+# Typed project-memory store (repo_root) — "memory like Claude Code"
+# ---------------------------------------------------------------------------
+
+
+def test_save_facts_writes_typed_store(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    n = md.save_facts(
+        ["feedback: never add a Co-Authored-By trailer to commits",
+         "project: shipping the memory layer this week"],
+        repo_root=repo,
+    )
+    assert n == 2
+    mdir = ms._claude_memory_dir(repo)
+    files = sorted(p.name for p in mdir.glob("*.md"))
+    assert "MEMORY.md" in files
+    assert any(f.startswith("feedback_") for f in files)
+    assert any(f.startswith("project_") for f in files)
+    index = (mdir / "MEMORY.md").read_text(encoding="utf-8")
+    assert "Feedback" in index and "Project" in index
+
+
+def test_save_facts_typed_dedups_on_body(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    repo = tmp_path / "repo"; repo.mkdir()
+    assert md.save_facts(["user: Max is a quantum chemist at KIT"],
+                         repo_root=repo) == 1
+    # Same fact again (even without the prefix) must be skipped.
+    assert md.save_facts(["Max is a quantum chemist at KIT"],
+                         repo_root=repo) == 0
+
+
+def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    n = md.distill_and_save(
+        _CHAT,
+        settings={"agent": {"auto_memory": {"enabled": True}}},
+        llm_fn=lambda *a: "feedback: always use English strings in code",
+        repo_root=repo,
+    )
+    assert n == 1
+    mdir = ms._claude_memory_dir(repo)
+    assert any(p.name.startswith("feedback_") for p in mdir.glob("*.md"))

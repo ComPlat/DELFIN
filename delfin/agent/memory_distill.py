@@ -19,11 +19,17 @@ from typing import Callable
 
 _DISTILL_SYSTEM = (
     "You extract durable memories from an assistant work session. "
-    "Return up to {max_facts} short, self-contained facts worth keeping "
-    "for FUTURE sessions: user preferences/corrections, project "
-    "constraints, recurring failures and their fixes, important paths or "
-    "settings. One fact per line, no numbering, no commentary. English. "
-    "If nothing is durable, return exactly: NONE"
+    "Return up to {max_facts} short, self-contained facts worth keeping for "
+    "FUTURE sessions. PREFIX each line with its type:\n"
+    "  feedback: how the user wants you to work (a correction or confirmed "
+    "preference) — say briefly why\n"
+    "  project: ongoing work, goals, constraints, deadlines (use absolute "
+    "dates, not 'next week')\n"
+    "  reference: a pointer to an external resource (URL, ticket, dashboard)\n"
+    "  user: who the user is (role, expertise, durable preference)\n"
+    "One fact per line, no numbering, no commentary. Skip anything the repo "
+    "already records (code structure, git history, past fixes). English. "
+    "If nothing durable, return exactly: NONE"
 )
 
 
@@ -97,22 +103,72 @@ def parse_facts(raw: str, max_facts: int = 5) -> list[str]:
     return facts
 
 
-def save_facts(facts: list[str]) -> int:
-    """Store facts in the memory store, skipping near-duplicates."""
+def _existing_memory_texts(repo_root=None) -> set[str]:
+    """Collect existing memory texts (legacy JSON + typed store) for dedup."""
+    out: set[str] = set()
+    try:
+        from delfin.agent.memory_store import load_memories
+        out |= {str(m.get("text", "")).strip().lower()
+                for m in (load_memories() or []) if m.get("text")}
+    except Exception:
+        pass
+    if repo_root is not None:
+        try:
+            from pathlib import Path as _P
+            from delfin.agent.memory_store import _claude_memory_dir
+            mdir = _claude_memory_dir(_P(repo_root))
+            if mdir.is_dir():
+                for p in mdir.glob("*.md"):
+                    if p.name == "MEMORY.md":
+                        continue
+                    try:
+                        txt = p.read_text(encoding="utf-8")
+                    except OSError:
+                        continue
+                    body = txt.split("---", 2)[-1] if txt.startswith("---") else txt
+                    out.add(body.strip().lower())
+        except Exception:
+            pass
+    return out
+
+
+def save_facts(facts: list[str], *, repo_root=None) -> int:
+    """Store facts, skipping duplicates.
+
+    When ``repo_root`` is given, each fact is written to the TYPED project
+    memory store (``save_typed_memory`` → ``<type>_<slug>.md`` + MEMORY.md
+    pointer, the same store the prompt recalls) — classified by its
+    ``feedback:/project:/reference:/user:`` prefix or the heuristic. Without
+    a repo_root it falls back to the legacy flat JSON store.
+    """
     if not facts:
         return 0
+    existing = _existing_memory_texts(repo_root)
     try:
-        from delfin.agent.memory_store import load_memories, save_memory
-        existing = {str(m.get("text", "")).strip().lower()
-                    for m in (load_memories() or [])}
+        from delfin.agent.memory_store import (
+            parse_memory_type, save_memory, save_typed_memory,
+        )
     except Exception:
         return 0
     saved = 0
     for f in facts:
-        if f.strip().lower() in existing:
+        body = f.strip()
+        if not body:
+            continue
+        # Dedup on both the raw line and its type-prefix-stripped form.
+        try:
+            _t, stripped = parse_memory_type(body)
+        except Exception:
+            stripped = body
+        if body.lower() in existing or stripped.strip().lower() in existing:
             continue
         try:
-            save_memory(f, source="auto-distill")
+            if repo_root is not None:
+                save_typed_memory(body, repo_root=repo_root)
+            else:
+                save_memory(body, source="auto-distill")
+            existing.add(body.lower())
+            existing.add(stripped.strip().lower())
             saved += 1
         except Exception:
             continue
@@ -125,11 +181,14 @@ def distill_and_save(
     settings: dict | None = None,
     llm_fn: Callable[[str, str, dict | None], str] | None = None,
     force: bool = False,
+    repo_root=None,
 ) -> int:
     """Distill a session into memories. Returns the number saved.
 
     Respects the opt-in unless ``force=True`` (the manual /memorize).
-    Skips trivially short sessions. Never raises.
+    Skips trivially short sessions. Never raises. When ``repo_root`` is given
+    the facts land in the typed project-memory store (recalled like Claude
+    Code's memory); otherwise the legacy flat store.
     """
     try:
         cfg = auto_memory_settings(settings)
@@ -144,6 +203,6 @@ def distill_and_save(
             return 0
         system = _DISTILL_SYSTEM.format(max_facts=cfg["max_facts"])
         raw = (llm_fn or _default_llm)(excerpt, system, settings)
-        return save_facts(parse_facts(raw, cfg["max_facts"]))
+        return save_facts(parse_facts(raw, cfg["max_facts"]), repo_root=repo_root)
     except Exception:
         return 0

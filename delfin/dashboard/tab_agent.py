@@ -7350,7 +7350,8 @@ def create_tab(ctx):
                 return True
             try:
                 from delfin.agent.memory_distill import distill_and_save
-                n = distill_and_save(msgs, force=True)
+                n = distill_and_save(msgs, force=True,
+                                     repo_root=getattr(ctx, "repo_dir", None))
                 _append_system_message(
                     f"🧠 Memorized {n} fact(s) from this session."
                     if n else "🧠 Nothing durable found to memorize."
@@ -14213,7 +14214,7 @@ def create_tab(ctx):
         def _run():
             try:
                 from delfin.agent.memory_distill import distill_and_save
-                n = distill_and_save(msgs)
+                n = distill_and_save(msgs, repo_root=getattr(ctx, "repo_dir", None))
                 if n:
                     _append_system_message(
                         f"🧠 Auto-memory: kept {n} fact(s) from the previous "
