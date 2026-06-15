@@ -590,6 +590,7 @@ def run_subagent(
     max_output_tokens: int | None = None,
     isolation: str = "",
     resume_from: str = "",
+    sa_id: str = "",
 ) -> SubagentResult:
     """Run a sub-agent loop and return its final assistant message.
 
@@ -721,7 +722,9 @@ def run_subagent(
     # Live-panel registry entry (removed in the finally below). Resumes
     # keep their original id so the session file accumulates.
     import uuid as _uuid
-    _sa_id = resume_from if prior else _uuid.uuid4().hex[:8]
+    # Honour a caller-supplied id (background runs reserve it up-front so the
+    # parent can poll/retrieve the result); else resume keeps its id; else new.
+    _sa_id = resume_from if prior else ((sa_id or "").strip() or _uuid.uuid4().hex[:8])
     _running_update(_sa_id, {
         "type": subagent_type,
         "description": (description or "")[:120],
@@ -854,6 +857,40 @@ def run_subagent(
     )
 
 
+def get_subagent_result(sa_id: str) -> dict:
+    """Fetch a background subagent's status/result by id.
+
+    Returns ``{status: "running"|"finished"|"unknown", ...}``. For a finished
+    run, ``final_text`` is the subagent's last report. Lets the parent agent
+    (or the dashboard) collect a backgrounded subagent's output without
+    resuming it.
+    """
+    sa_id = (sa_id or "").strip()
+    if not sa_id:
+        return {"error": "sa_id is required"}
+    running = read_running()
+    if sa_id in running:
+        ent = running[sa_id] or {}
+        return {"sa_id": sa_id, "status": "running",
+                "subagent_type": ent.get("type", ""),
+                "description": ent.get("description", ""),
+                "started_at": ent.get("started_at", 0)}
+    sess = load_subagent_session(sa_id)
+    if not sess:
+        return {"sa_id": sa_id, "status": "unknown",
+                "error": "no running or finished subagent with this id"}
+    final = ""
+    for m in reversed(sess.get("messages") or []):
+        if m.get("role") == "assistant" and m.get("content"):
+            final = m.get("content", "")
+            break
+    return {"sa_id": sa_id, "status": "finished",
+            "subagent_type": sess.get("subagent_type", ""),
+            "description": sess.get("description", ""),
+            "final_text": final,
+            "error": sess.get("error", "")}
+
+
 __all__ = [
     "SubagentPreset",
     "SUBAGENT_PRESETS",
@@ -864,4 +901,5 @@ __all__ = [
     "run_subagent",
     "load_subagent_session",
     "list_finished",
+    "get_subagent_result",
 ]

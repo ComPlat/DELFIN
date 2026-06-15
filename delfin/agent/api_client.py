@@ -818,7 +818,7 @@ _WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
     "ask_user_question",
     # Planning + delegation
     "task_create", "task_update", "task_list",
-    "subagent",
+    "subagent", "subagent_result",
     # Web fallback for simple lookups
     "web_search",
     # Skill invocation (lets the user route weak models through
@@ -2186,8 +2186,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "read-only audits, planning that should not edit. "
                 "Pick subagent_type carefully — 'explore' / 'plan' / "
                 "'code-reviewer' are read-only; 'general-purpose' "
-                "inherits the parent's full permissions. Hard caps: "
-                "30 tool calls, 60s wall clock, 8k output tokens."
+                "inherits the parent's full permissions. Default caps "
+                "(configurable in settings): 40 tool calls, 300s wall "
+                "clock, 16k output tokens. Set background=true to run "
+                "without blocking and collect later with subagent_result."
             ),
             "parameters": {
                 "type": "object",
@@ -2263,6 +2265,30 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["subagent_type", "description", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "subagent_result",
+            "description": (
+                "Collect the status/result of a BACKGROUND subagent by the "
+                "sa_id that subagent(background=true) returned. Returns "
+                "status 'running' (still working), 'finished' (with the "
+                "subagent's final_text report), or 'unknown'. Poll this "
+                "instead of blocking; if still running, do other work and "
+                "check again later."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sa_id": {
+                        "type": "string",
+                        "description": "ID returned by subagent(background=true).",
+                    },
+                },
+                "required": ["sa_id"],
             },
         },
     },
@@ -2898,6 +2924,8 @@ class _DocToolExecutor:
         # via the runner the parent OpenAIClient attached.
         if name == "subagent":
             return self._execute_subagent(arguments, permissions)
+        if name == "subagent_result":
+            return self._execute_subagent_result(arguments)
 
         # Worktree isolation: create / tear down a temporary
         # git-worktree-on-branch sandbox for the current task.
@@ -4776,16 +4804,31 @@ class _DocToolExecutor:
         # (running registry + telemetry); limits still apply per child.
         if bool(arguments.get("background")):
             import threading as _th
+            import uuid as _uuid
+            # Reserve the id up-front so the parent can poll/collect this
+            # specific run via subagent_result(sa_id) once it finishes.
+            _bg_sa_id = _uuid.uuid4().hex[:8]
 
             def _bg_run():
                 try:
-                    perms.subagent_runner(
-                        subagent_type=sa_type,
-                        description=description,
-                        prompt=prompt,
-                        isolation=isolation,
-                        **_resume_kw,
-                    )
+                    try:
+                        perms.subagent_runner(
+                            subagent_type=sa_type,
+                            description=description,
+                            prompt=prompt,
+                            isolation=isolation,
+                            sa_id=_bg_sa_id,
+                            **_resume_kw,
+                        )
+                    except TypeError:
+                        # Older runner without sa_id support.
+                        perms.subagent_runner(
+                            subagent_type=sa_type,
+                            description=description,
+                            prompt=prompt,
+                            isolation=isolation,
+                            **_resume_kw,
+                        )
                 except Exception:
                     pass
 
@@ -4793,11 +4836,13 @@ class _DocToolExecutor:
                        name=f"subagent-bg-{sa_type}").start()
             return json.dumps({
                 "status": "started_in_background",
+                "sa_id": _bg_sa_id,
                 "subagent_type": sa_type,
                 "description": description,
-                "note": ("Running in the background — progress and the "
-                         "final report appear in the 🤖 Subagents panel; "
-                         "continue with other work meanwhile."),
+                "note": ("Running in the background. Collect the result later "
+                         f"with subagent_result(sa_id='{_bg_sa_id}'); it also "
+                         "appears in the 🤖 Subagents panel. Continue other "
+                         "work meanwhile."),
             })
 
         try:
@@ -4813,6 +4858,13 @@ class _DocToolExecutor:
         if not isinstance(payload, dict):
             return json.dumps({"error": "runner must return a dict payload"})
         return json.dumps(payload, ensure_ascii=False)
+
+    def _execute_subagent_result(self, arguments: dict) -> str:
+        from . import subagents as _sa
+        sa_id = (arguments.get("sa_id") or "").strip()
+        if not sa_id:
+            return json.dumps({"error": "sa_id is required"})
+        return json.dumps(_sa.get_subagent_result(sa_id), ensure_ascii=False)
 
     # ------- Skill invocation ---------------------------------------------
 
@@ -5339,7 +5391,7 @@ class OpenAIClient(_BaseClient):
 
         def _runner(
             *, subagent_type: str, description: str, prompt: str,
-            isolation: str = "", resume_from: str = "",
+            isolation: str = "", resume_from: str = "", sa_id: str = "",
         ) -> dict:
             res = _sa.run_subagent(
                 subagent_type=subagent_type,
@@ -5349,6 +5401,7 @@ class OpenAIClient(_BaseClient):
                 parent_perms=self._permissions,
                 isolation=isolation,
                 resume_from=resume_from,
+                sa_id=sa_id,
             )
             return res.to_payload()
 
@@ -5450,6 +5503,7 @@ class OpenAIClient(_BaseClient):
                               "exit_plan_mode",
                               "skill",
                               "subagent",
+                              "subagent_result",
                               "enter_worktree",
                               "exit_worktree",
                               "schedule_wakeup",
@@ -5909,6 +5963,7 @@ class OpenAIClient(_BaseClient):
                                             "exit_plan_mode",
                                             "skill",
                                             "subagent",
+                                            "subagent_result",
                                             "enter_worktree",
                                             "exit_worktree",
                                             "schedule_wakeup",
