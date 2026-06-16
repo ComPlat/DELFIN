@@ -305,8 +305,43 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if not colorings:
         return None
     results: List[Tuple[str, str]] = []
+    # CN2-ensemble (iter-32g): the rigid FF-free CN2 path emits ONE frame per coloring,
+    # but the legacy multi-frame path sprays ~3-7 conformers, and best-of-ensemble MIN
+    # rewards the larger spray on flexible-ligand CN2 (JEVDUJ/NESLED/YUXVUJ) — the same
+    # pattern an ensemble already fixed for rigid-hapto.  So for CN2 emit a small,
+    # RMSD-deduped conformer/rotamer ENSEMBLE per coloring (ligand internal conformers
+    # + co-ligand orientation vary; the 180° linear core stays rigid), reusing the same
+    # FF-free Layer-3 machinery (_ligand_confs_from_mol ETKDG pool + clash scoring +
+    # refine).  Gated behind CN_EXTEND (already required for CN2 to exist); opt-out via
+    # DELFIN_FFFREE_CN2_ENSEMBLE=0.  Default OFF overall (CN_EXTEND off => byte-id).
+    _cn2_ens = (d.get("cn") == 2
+                and os.environ.get("DELFIN_FFFREE_CN2_ENSEMBLE", "1") == "1")
+    _n_ens = int(os.environ.get("DELFIN_FFFREE_CN2_NFRAMES", "6"))
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
+        vertex_elems = [lab_elem[lab] for lab in coloring]
+        name = _classify_coloring(geom_key, vertex_elems)
+        geom_tag = d["geometry"].split()[0]
+        base_label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
+        if _cn2_ens:
+            try:
+                ens = AC.assemble_heteroleptic_ensemble(
+                    d["metal"], d["geometry"], vertex_specs, n_frames=_n_ens)
+            except Exception:
+                ens = None
+            if not ens:
+                return None
+            kept = 0
+            for fi, (syms, P) in enumerate(ens):
+                syms, P = _maybe_relax(syms, P)
+                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):
+                    continue            # skip a bad frame; keep the clean ones
+                lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
+                results.append((_xyz(syms, P), lbl))
+                kept += 1
+            if kept == 0:               # whole coloring unbuildable -> legacy (never-worse)
+                return None
+            continue
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
         except Exception:
@@ -317,10 +352,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         syms, P = _maybe_relax(syms, P)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
             return None
-        vertex_elems = [lab_elem[lab] for lab in coloring]
-        name = _classify_coloring(geom_key, vertex_elems)
-        geom_tag = d["geometry"].split()[0]
-        label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
+        label = base_label
         results.append((_xyz(syms, P), label))
     # CN5 polytopal completeness (#coverage): decompose defaults CN5 -> TBP-5, but SPY-5
     # is the Berry-pseudorotation partner — real CN5 complexes split between the two.

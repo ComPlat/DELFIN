@@ -654,6 +654,146 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     return out_syms, P
 
 
+def _complex_rmsd(syms, Pa, Pb):
+    """Heavy-atom RMSD between two SAME-topology complex frames (identity
+    correspondence; both built from the same atom ordering).  Translation-only
+    aligned on the metal+heavy centroid (the core is already rigid/identical, so a
+    full Kabsch is unnecessary and would mask genuine conformer differences)."""
+    heavy = [k for k, s in enumerate(syms) if s != "H"]
+    if not heavy:
+        heavy = list(range(len(syms)))
+    A = Pa[heavy]; B = Pb[heavy]
+    A = A - A.mean(axis=0); B = B - B.mean(axis=0)
+    R = _kabsch_rot(A, B)
+    return float(np.sqrt(((A @ R.T - B) ** 2).sum(axis=1).mean()))
+
+
+def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
+                                   n_frames: int = 6, rmsd_dedup: float = 0.5,
+                                   per_lig_confs: int = 6, refine: bool = True):
+    """Ensemble variant of ``assemble_heteroleptic_from_mols``: instead of keeping
+    only the single clash-minimal conformer per ligand, emit a small RMSD-deduped
+    ENSEMBLE of full-complex frames that vary ligand internal conformation +
+    substituent/co-ligand orientation while keeping the ideal coordination core
+    (vertex directions + M-D distances) FIXED.
+
+    This reuses the SAME FF-free Layer-3 machinery as the single path —
+    ``_ligand_confs_from_mol`` (deterministic ETKDG conformer pool + MMFF),
+    ``_vsepr_reconstruct``/``_rot_align`` orientation, ``_clash_count`` scoring, and
+    the geometric ``refine`` — only it RETAINS several distinct low-clash conformer
+    *combinations* across ligands rather than collapsing to one.  Best-of-ensemble
+    crystal-recall then gets a comparable conformer spray to the legacy multi-frame
+    path.  Deterministic (fixed SEED, single-thread), graph-only, never non-finite.
+
+    Returns a list of (syms, P) frames (>=1) or None on failure.  The first frame is
+    byte-identical to ``assemble_heteroleptic_from_mols`` (the clash-minimal pick).
+    """
+    ref = MSB._ref_vectors(geometry)
+    if len(vertex_specs) != len(ref):
+        raise ValueError("vertex_specs count != vertices")
+    # Per-vertex candidate placements: for each ligand build its conformer pool and
+    # orient every conformer onto the vertex; keep the distinct low-clash candidates
+    # (clash vs the metal only -> placement-order-independent + diverse).  An
+    # all-monatomic ligand set has a single rigid placement (-> 1 frame).
+    out_syms = [metal]
+    fixed = {0}
+    per_vertex_cands = []     # per vertex: list of (Q, internal_clash) sorted best-first
+    vertex_lsyms = []
+    pos = 1
+    metal_P = np.zeros((1, 3))
+    metal_sym = [metal]
+    for i, (frag, di) in enumerate(vertex_specs):
+        Vunit = ref[i] / np.linalg.norm(ref[i])
+        confs = _ligand_confs_from_mol(frag, k=max(per_lig_confs, 1))
+        if confs is None:
+            return None
+        lsyms, coords_list, lmol = confs
+        md = MSB.md_distance(metal, lsyms[di])
+        vertex = Vunit * md
+        cand = []                                   # (Q, clash_vs_metal)
+        seen_local = []
+        for lP in coords_list:
+            if len(lsyms) == 1:
+                Q = vertex.reshape(1, 3)
+            else:
+                lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+                R = _rot_align(lp, -Vunit)
+                Q = (lPv - lPv[di]) @ R.T + vertex
+            if not np.all(np.isfinite(Q)):
+                continue
+            cl = _clash_count(Q, metal_P, lsyms, metal_sym)
+            # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
+            dup = False
+            for Qs in seen_local:
+                if Qs.shape == Q.shape:
+                    c0 = Q - Q.mean(axis=0); c1 = Qs - Qs.mean(axis=0)
+                    if float(np.sqrt(((c0 - c1) ** 2).sum(axis=1).mean())) < rmsd_dedup:
+                        dup = True
+                        break
+            if dup:
+                continue
+            seen_local.append(Q)
+            cand.append((Q, cl))
+        if not cand:
+            return None
+        cand.sort(key=lambda t: t[1])               # low clash-vs-metal first
+        per_vertex_cands.append(cand)
+        vertex_lsyms.append(lsyms)
+        out_syms += lsyms
+        if len(lsyms) == 1:
+            fixed.add(pos); pos += 1
+        else:
+            fixed.add(pos + di); pos += len(lsyms)
+
+    # Enumerate full-complex frames over the Cartesian product of per-vertex
+    # conformer choices, greedily ordered (sum of candidate ranks -> the best
+    # combinations first), score each by total inter-ligand clash, RMSD-dedup at the
+    # complex level, keep up to n_frames.  Capped product keeps it bounded+fast.
+    import itertools as _it
+    rank_lists = [list(range(len(c))) for c in per_vertex_cands]
+    combos = list(_it.product(*rank_lists))
+    # order combos by total rank (frame 0 = all best = the single-path pick), then
+    # lexicographically -> deterministic.
+    combos.sort(key=lambda cb: (sum(cb), cb))
+    MAX_EVAL = 64                                    # bound the build work
+    frames = []                                      # (syms, P) kept (deduped)
+    for cb in combos[:MAX_EVAL]:
+        blocks = [np.zeros((1, 3))]
+        placed_P = [np.zeros(3)]; placed_syms = [metal]
+        ok = True
+        for vi, ci in enumerate(cb):
+            Q = per_vertex_cands[vi][ci][0]
+            blocks.append(Q)
+            for row in Q:
+                placed_P.append(row)
+            placed_syms += vertex_lsyms[vi]
+        P = np.vstack(blocks)
+        if not np.all(np.isfinite(P)):
+            continue
+        if refine:
+            try:
+                from delfin.fffree.refine import refine as _refine
+                P = _refine(out_syms, P, fixed)
+            except Exception:
+                pass
+        if not np.all(np.isfinite(P)):
+            continue
+        # complex-level RMSD dedup vs already-kept frames
+        dup = False
+        for _, Pk in frames:
+            if Pk.shape == P.shape and _complex_rmsd(out_syms, P, Pk) < rmsd_dedup:
+                dup = True
+                break
+        if dup:
+            continue
+        frames.append((list(out_syms), P))
+        if len(frames) >= n_frames:
+            break
+    if not frames:
+        return None
+    return frames
+
+
 def _constrained_uff_relax(ligmol, fixed_idx, max_its=500):
     """METAL-FREE constrained UFF relax (the _hapto_rigid_v2 pattern): the ligands-
     only mol (no metal, no M-D bonds) is UFF-minimized with the donor atoms FIXED
