@@ -55,9 +55,16 @@ in this priority order and appends new findings back here.
   unusable. Detect non-chat aliases and skip/flag them in the model picker.
 
 ### Observability / self-improvement
+- [x] **Per-turn timing telemetry** — `turn_metrics` records one entry per turn
+  (provider/model/role, total_ms, **ttft_ms**, output_chars, tool_calls) to
+  `~/.delfin/turn_metrics/<session>.jsonl`, bundled into bug reports. `is_stall`
+  flags a turn where the wait — not the agent — ate the time (high ttft, tiny
+  output, no tools): exactly the 20260616-101958 "Hallo → 92.7s" shape, so if it
+  recurs the report proves backend stall vs code path. Live-verified: a real KIT
+  engine turn recorded total=9.8s/ttft=9.8s/out=41ch/tools=0.
 - [ ] **Tool-trace → metrics/UI** — feed `tool_trace` into `agent_metrics`/
   `outcome_tracker`; add a dashboard panel for the live trace (not only
-  `/trace`).
+  `/trace`). (turn_metrics is the timing half of this.)
 - [ ] **MCP resources/prompts UX** — beyond the agent meta-tools, surface MCP
   prompts as slash commands + resources as @-mentions in the dashboard.
 

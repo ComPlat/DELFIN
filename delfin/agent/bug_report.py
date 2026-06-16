@@ -254,6 +254,7 @@ def _render_markdown(
     system_prompt: str = "",
     referenced_files: list | None = None,
     tool_trace: list | None = None,
+    turn_metrics: list | None = None,
 ) -> str:
     lines = ["# DELFIN Agent — Bug Report", ""]
     if meta.get("description"):
@@ -286,6 +287,17 @@ def _render_markdown(
         try:
             from .tool_trace import format_summary as _fmt
             lines += ["```", _fmt(tool_trace, limit=60), "```"]
+        except Exception:
+            pass
+    if turn_metrics:
+        lines += ["", "## Turn timing", "",
+                  f"{len(turn_metrics)} turn(s) — full data in "
+                  "`turn_metrics.jsonl`. ttft = time-to-first-token; a "
+                  "`backend-stall` flag means the wait, not the agent, ate "
+                  "the time.", ""]
+        try:
+            from .turn_metrics import format_summary as _fmt_tm
+            lines += ["```", _fmt_tm(turn_metrics, limit=40), "```"]
         except Exception:
             pass
     if system_prompt and system_prompt.strip():
@@ -394,6 +406,20 @@ def write_bug_report(
     except Exception:
         tool_trace = []
 
+    # Per-turn timing (total + time-to-first-token + tool count). Shipped so a
+    # "turn took 92.7s" report shows WHERE the time went — a backend stall
+    # (high ttft, tiny output, no tools) vs generation vs tool rounds.
+    turn_metrics: list = []
+    try:
+        from . import turn_metrics as _tm
+        turn_metrics = _tm.read(trace_session or session_id)
+        if turn_metrics:
+            (report_dir / "turn_metrics.jsonl").write_text(
+                "\n".join(json.dumps(e, ensure_ascii=False) for e in turn_metrics)
+                + "\n", encoding="utf-8")
+    except Exception:
+        turn_metrics = []
+
     payload = {
         **meta,
         "system_prompt": system_prompt or "",
@@ -401,6 +427,7 @@ def write_bug_report(
         "denied_commands": denied_commands or [],
         "referenced_files": bundled_files,
         "tool_trace": tool_trace,
+        "turn_metrics": turn_metrics,
         "settings": settings_snapshot(settings),
         "recent_outcomes": recent_outcomes(),
         "chat_messages": chat_messages or [],
@@ -420,6 +447,7 @@ def write_bug_report(
             system_prompt=system_prompt,
             referenced_files=bundled_files,
             tool_trace=tool_trace,
+            turn_metrics=turn_metrics,
         ),
         encoding="utf-8",
     )

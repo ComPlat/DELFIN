@@ -876,6 +876,13 @@ class AgentEngine:
             pass
 
         chunks: list[str] = []
+        # Per-turn timing: capture time-to-first-token + tool count so a slow
+        # turn can be diagnosed after the fact (backend stall vs generation vs
+        # tool rounds). Recorded in the finally below so errored/partial turns
+        # are captured too. See turn_metrics.
+        _turn_t0 = _time.monotonic()
+        _turn_ttft: float | None = None
+        _turn_tool_calls = 0
         try:
             for event in self.client.stream_message(
                 system=system_prompt,
@@ -888,6 +895,8 @@ class AgentEngine:
                     break
 
                 if event.type == "text_delta" and event.text:
+                    if _turn_ttft is None:
+                        _turn_ttft = _time.monotonic()
                     chunks.append(event.text)
                     if on_token:
                         on_token(event.text)
@@ -924,6 +933,9 @@ class AgentEngine:
                         except Exception:
                             pass
                     # Trace: stash this call until its result arrives.
+                    if _turn_ttft is None:
+                        _turn_ttft = _time.monotonic()
+                    _turn_tool_calls += 1
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
                     if on_tool_use:
@@ -974,6 +986,25 @@ class AgentEngine:
                 if _hooks_cfg is not None and not _hooks_cfg.is_empty():
                     from . import hooks as _hm2
                     _hm2.run_hooks("Stop", _hooks_cfg, workspace=_ws)
+            except Exception:
+                pass
+            # Per-turn timing telemetry (best-effort; never affects the turn).
+            # Captures total + time-to-first-token so a slow turn is diagnosable
+            # after the fact (backend stall vs generation vs tool rounds).
+            try:
+                from . import turn_metrics as _tm
+                _tm.record(
+                    self.trace_session(),
+                    provider=getattr(self, "provider", "") or "",
+                    model=getattr(self.client, "model", "") or "",
+                    role=self.current_role or "",
+                    total_ms=int((_time.monotonic() - _turn_t0) * 1000),
+                    ttft_ms=(int((_turn_ttft - _turn_t0) * 1000)
+                             if _turn_ttft is not None else None),
+                    output_chars=sum(len(c) for c in chunks),
+                    tool_calls=_turn_tool_calls,
+                    stopped=self._stop_requested,
+                )
             except Exception:
                 pass
 
