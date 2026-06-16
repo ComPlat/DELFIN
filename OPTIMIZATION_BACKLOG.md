@@ -66,6 +66,15 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Busy-poll guard for `bash_status`** (bug 20260615-152119) — the
+  `wait_seconds` blocking wait existed but only helped if the model used it;
+  models still tight-polled a ~10-min job every 3-4s and exhausted the
+  tool-round budget. Now the FIRST status check is an instant snapshot, but a
+  re-check of the SAME still-running job *without* `wait_seconds` is throttled
+  server-side (early-returns the instant the job ends). Model-independent.
+  Live-verified two ways: real subprocess (instant snapshot → throttled
+  re-poll returns at job end), and KIT-qwen drove `bash_background → 1×
+  bash_status(wait_seconds) → bash_output` in 3 calls (was ~170).
 - [x] `/loop` command — recurring agent loop (interval-based, scheduler-backed),
   like Claude Code's /loop. `/loop <5m|2h|1d> <prompt>` · `/loop list` ·
   `/loop stop <id|all>`. Live-verified: scheduler fires a real KIT-qwen turn.

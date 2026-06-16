@@ -807,6 +807,14 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
 # apparent UI freeze; the model can call again to keep waiting.
 _BASH_STATUS_WAIT_CAP_S = 300.0
 
+# Busy-poll guard: even when the model omits wait_seconds, a tight loop of
+# status checks on a still-running job burns the tool-round budget (bug
+# 20260615-152119: ~3-4s polling exhausted it before a ~10-min run finished).
+# The FIRST check returns an instant snapshot; a re-check of the SAME running
+# job within this window is throttled with a server-side wait (still returns
+# early the instant the job ends). Doubles as the window and the wait length.
+_BASH_STATUS_BUSY_POLL_WAIT_S = 15.0
+
 # Minimum max_tokens for a reasoning model. They spend part of the budget
 # THINKING before any visible answer; too small a cap returns an empty reply
 # (budget consumed mid-<think>). Floor any smaller request to this.
@@ -1623,7 +1631,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "Do NOT poll in a tight loop every few seconds — that "
                 "burns the tool-round budget long before the job is done. "
                 "Instead call once with e.g. wait_seconds=300; if it is "
-                "still running, call again."
+                "still running, call again. (If you do re-check a running "
+                "job without wait_seconds, the call auto-throttles so a "
+                "tight loop can't exhaust the budget.)"
             ),
             "parameters": {
                 "type": "object",
@@ -4344,10 +4354,25 @@ class _DocToolExecutor:
         # exhausted the tool-round budget before a ~10-min job could finish —
         # bug 20260615-152119). Returns the instant the job ends; otherwise
         # after the (capped) wait so the model can decide to keep waiting.
-        try:
-            wait_s = float(arguments.get("wait_seconds", 0) or 0)
-        except (TypeError, ValueError):
+        raw_wait = arguments.get("wait_seconds", None)
+        if raw_wait is None:
             wait_s = 0.0
+        else:
+            try:
+                wait_s = float(raw_wait or 0)
+            except (TypeError, ValueError):
+                wait_s = 0.0
+        # Busy-poll guard (model-independent): the first status check on a job
+        # is an instant snapshot, but re-checking the SAME still-running job
+        # within the busy-poll window — without an explicit wait_seconds — is
+        # throttled so a tight poll loop self-paces instead of burning rounds.
+        hist = getattr(self, "_bash_poll_ts", None)
+        if hist is None:
+            hist = self._bash_poll_ts = {}
+        if raw_wait is None and job.poll() is None:
+            last = hist.get(job_id)
+            if last is not None and (time.monotonic() - last) < _BASH_STATUS_BUSY_POLL_WAIT_S:
+                wait_s = _BASH_STATUS_BUSY_POLL_WAIT_S
         if wait_s > 0:
             deadline = time.monotonic() + min(wait_s, _BASH_STATUS_WAIT_CAP_S)
             while job.poll() is None:
@@ -4355,6 +4380,12 @@ class _DocToolExecutor:
                 if remaining <= 0:
                     break
                 time.sleep(min(2.0, remaining))
+        # Record the post-wait poll time so the NEXT rapid re-poll is throttled;
+        # forget finished jobs so reading their result stays instant.
+        if job.poll() is None:
+            hist[job_id] = time.monotonic()
+        else:
+            hist.pop(job_id, None)
         return json.dumps(job.status_dict(), ensure_ascii=False)
 
     def _execute_bash_output(self, arguments: dict) -> str:
