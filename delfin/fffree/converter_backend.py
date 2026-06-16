@@ -290,26 +290,92 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     return results or None
 
 
+def _hapto_subst_rotamers(xyz, n_per=2):
+    """Add substituent / co-ligand rotamers to ONE assembled rigid-hapto frame using
+    the project FF-free σ-rotamer machinery (_rotamer_diversity.apply): it rotates
+    distal sub-trees about rotatable bonds with the coordination shell frozen + a
+    never-worse / M-D-invariant firewall, so the η-ring + donors stay rigid while
+    peripheral methyls / phenyls / co-ligand arms sample distinct clock positions.
+    Returns [xyz, rot1, ...] (base always first); falls back to [xyz] on any error.
+    Deterministic (the rotamer grid + seeds are fixed inside the module)."""
+    if os.environ.get("DELFIN_FFFREE_HAPTO_NO_SUBROT", "0") == "1" or n_per < 1:
+        return [xyz]
+    try:
+        from delfin import _rotamer_diversity as RD
+        outs = RD.apply(xyz, n_per_isomer=int(n_per), n_states=3, max_dofs=4)
+        return outs if outs else [xyz]
+    except Exception:
+        return [xyz]
+
+
 def _fffree_hapto_isomers(d, max_isomers):
     """Build a hapto complex (≥1 η-face) on the FF-free path: rigid-η-unit
-    construction (assemble_complex.assemble_hapto) keeps each Cp/arene/diene/allyl
-    ring at its crystallographic metal→centroid distance instead of collapsing the
-    ring carbons onto the metal (the legacy hapto defect).  v1 emits ONE faithful
-    build per complex (η/σ isomer enumeration is a later increment).  Returns
-    [(xyz, label)] or None (-> legacy fallback).  Env-gated upstream (the dict only
-    carries 'has_eta' when DELFIN_FFFREE_RIGID_HAPTO=1)."""
+    construction keeps each Cp/arene/diene/allyl ring at its crystallographic
+    metal→centroid distance instead of collapsing the ring carbons onto the metal
+    (the legacy hapto defect).  Emits a deterministic, RMSD-deduplicated rigid
+    ENSEMBLE (η-ring rotamers via symmetry-reduced spin, valence-gated η/σ ring-slip
+    isomers, Cremer-Pople pucker for non-aromatic faces, plus substituent/co-ligand
+    rotamers) comparable in size to the ~30-frame legacy spray, every member fully
+    rigid (no collapse).  Returns [(xyz, label), ...] or None (-> legacy fallback).
+    Env-gated upstream (the dict only carries 'has_eta' when
+    DELFIN_FFFREE_RIGID_HAPTO=1).  Determinism: PYTHONHASHSEED=0 + fixed seeds."""
+    geom_tag = d["geometry"].split()[0]
+    cn = d.get("cn")
+    geom = d.get("geometry")
+
+    def _accept(built, label):
+        if built is None:
+            return None
+        syms, P, donors, exempt_pairs = built
+        syms, P = _maybe_relax(syms, P)
+        if not _build_is_clean(syms, P, cn=cn, geom=geom,
+                               donors=donors, exempt_pairs=exempt_pairs):
+            return None                                 # never worse than legacy
+        return (syms, P, label)
+
+    # ENSEMBLE path (default for the rigid-hapto flag): enumerate distinct rigid
+    # builds, gate each, then expand each accepted build with substituent rotamers.
+    cap = max(1, int(max_isomers))
     try:
-        built = AC.assemble_hapto(d["metal"], d["geometry"], d)
+        builds = AC.assemble_hapto_ensemble(d["metal"], geom, d, max_builds=cap)
+    except Exception:
+        builds = None
+
+    results = []
+    seen_keys = set()
+    if builds:
+        n_subrot = 1 if len(builds) >= 8 else 2        # keep total near legacy size
+        for bi, b in enumerate(builds):
+            acc = _accept(b, None)
+            if acc is None:
+                continue
+            syms, P, _ = acc
+            base_xyz = _xyz(syms, P)
+            tag = "hapto" if bi == 0 else f"hapto-iso{bi}"
+            for ri, rot in enumerate(_hapto_subst_rotamers(base_xyz, n_per=n_subrot)):
+                key = rot
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                lab = f"{geom_tag}-{tag}" + (f"-r{ri}" if ri else "")
+                results.append((rot, lab))
+                if len(results) >= cap:
+                    break
+            if len(results) >= cap:
+                break
+    if results:
+        return results
+
+    # Fallback: the single canonical build (historic v1 behaviour) so the rigid path
+    # still fires even if the ensemble enumerator yields nothing clean.
+    try:
+        built = AC.assemble_hapto(d["metal"], geom, d)
     except Exception:
         return None
-    if built is None:
+    acc = _accept(built, None)
+    if acc is None:
         return None
-    syms, P, donors, exempt_pairs = built
-    syms, P = _maybe_relax(syms, P)
-    if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                           donors=donors, exempt_pairs=exempt_pairs):
-        return None                                     # never worse than legacy
-    geom_tag = d["geometry"].split()[0]
+    syms, P, _ = acc
     return [(_xyz(syms, P), f"{geom_tag}-hapto-1")]
 
 

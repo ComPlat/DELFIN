@@ -913,7 +913,21 @@ def _eta_centroid_distance(metal, eta_n):
     return 0.85 * rmc
 
 
-def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist):
+def _rot_about_axis(axis, theta):
+    """Rodrigues rotation matrix: rotate by ``theta`` (rad) about unit ``axis``."""
+    axis = np.asarray(axis, float)
+    n = np.linalg.norm(axis)
+    if n < 1e-12:
+        return np.eye(3)
+    axis = axis / n
+    c, s = float(np.cos(theta)), float(np.sin(theta))
+    x, y, z = axis
+    K = np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
+    return np.eye(3) * c + s * K + (1.0 - c) * np.outer(axis, axis)
+
+
+def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist,
+                    spin=0.0, pucker=0.0):
     """Rigidly seat an η-face so its ring CENTROID sits on the polyhedron vertex
     direction ``Vunit`` at distance ``mc_dist`` from the metal (origin), with the
     ring plane PERPENDICULAR to the M→centroid axis.  The whole ligand (ring +
@@ -922,8 +936,16 @@ def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist):
     metal).  Returns the transformed coords, or None on degeneracy.
 
     Geometry-only, deterministic.  The in-plane spin is fixed canonically (first
-    ring atom placed at azimuth 0) so two builds of the same input are identical."""
-    lP = np.asarray(lP, float)
+    ring atom placed at azimuth 0) so two builds of the same input are identical.
+
+    ``spin`` (rad): additional rigid rotation of the whole ligand ABOUT the
+    M→centroid axis — generates the η-ring ROTAMER orientations (rotates substituent
+    positions around the ring while the ring itself maps onto itself up to symmetry).
+    ``pucker`` (Å): out-of-plane displacement amplitude of alternating ring atoms
+    (Cremer-Pople-style envelope/twist mode) applied to NON-aromatic η-rings before
+    seating, so diene / allyl / cyclohexadienyl rings emit puckered conformers.  Both
+    default to 0.0 -> byte-identical to the canonical single rigid build."""
+    lP = np.asarray(lP, float).copy()
     ring = [int(i) for i in eta_idxs]
     if len(ring) < 2:
         return None
@@ -945,6 +967,15 @@ def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist):
     if nn < 1e-8:
         return None
     nrm = nrm / nn
+    # Cremer-Pople-style pucker: displace ring atoms along the ring NORMAL with an
+    # alternating sign (B/T-like envelope), in the LIGAND frame, before seating.  Only
+    # the ring atoms move; substituents stay rigid relative to the (unpuckered) ring
+    # carbon they hang off — this is a deterministic conformer, not an MMFF relax.
+    if abs(pucker) > 1e-9 and len(ring) >= 4:
+        for k, ai in enumerate(ring):
+            lP[ai] = lP[ai] + nrm * (float(pucker) * (1.0 if (k % 2 == 0) else -1.0))
+        # recompute centroid after the symmetric in-out displacement (≈ unchanged)
+        cen = lP[ring].mean(axis=0)
     Vunit = np.asarray(Vunit, float)
     Vunit = Vunit / np.linalg.norm(Vunit)
     target_centroid = Vunit * float(mc_dist)
@@ -954,12 +985,17 @@ def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist):
     # metal (centroid points away from origin along +Vunit).
     Rrot = _rot_align(nrm, Vunit)
     Q = (lP - cen) @ Rrot.T + target_centroid
+    if abs(spin) > 1e-9:
+        # rotate the seated ligand about the M→centroid axis through the centroid:
+        # spins substituents to a distinct rotamer; the bare ring maps onto itself.
+        Spin = _rot_about_axis(Vunit, float(spin))
+        Q = (Q - target_centroid) @ Spin.T + target_centroid
     if not np.all(np.isfinite(Q)):
         return None
     return Q
 
 
-def assemble_hapto(metal, geometry, d):
+def assemble_hapto(metal, geometry, d, variant=None):
     """Build a hapto complex on the FF-free path: η-faces are placed as RIGID rings
     on their centroid vertices; σ-donors are oriented onto the remaining vertices
     (homoleptic/heteroleptic monodentate).  ``d`` is a rigid-hapto decompose dict
@@ -973,7 +1009,21 @@ def assemble_hapto(metal, geometry, d):
     Returns the tuple (syms, P, donors, exempt_pairs) — exempt_pairs are the global
     index pairs of GENUINE multiple bonds (C≡O carbonyls, C≡N nitriles, C=C, …) whose
     short length is chemically correct, so the self-gate does not mistake them for a
-    collapse."""
+    collapse.
+
+    ``variant`` (optional dict, default None = byte-identical canonical build): a
+    per-build perturbation spec used by ``assemble_hapto_ensemble`` to enumerate the
+    rigid ENSEMBLE.  Recognised keys::
+
+        variant["eta"][li] = {"spin": rad, "pucker": Å, "eta_idxs": [...], "eta_n": k}
+
+    where ``spin`` rotates the seated η-ligand about the M→centroid axis (η-ring
+    ROTAMER), ``pucker`` applies a Cremer-Pople envelope to non-aromatic rings, and
+    ``eta_idxs``/``eta_n`` (optional) override the ring-atom set + hapticity for a
+    deterministic ring-SLIP (η6→η4→η2 / η5→η3→η1) isomer.  All variation is geometric
+    + deterministic; an absent/None variant reproduces the historic single build."""
+    variant = variant or {}
+    eta_var = variant.get("eta", {})
     ref = MSB._ref_vectors(geometry)
     n_vert = len(ref)
     ligands = d["ligands"]
@@ -1016,10 +1066,17 @@ def assemble_hapto(metal, geometry, d):
                 return None
             lsyms, coords_list, lmol = confs
             Vunit = ref[vi] / np.linalg.norm(ref[vi])
-            mc = _eta_centroid_distance(metal, lg["eta_n"])
+            # per-build variation (ensemble): η-ring spin/pucker + optional ring-slip.
+            _ev = eta_var.get(li, {})
+            _spin = float(_ev.get("spin", 0.0))
+            _pucker = float(_ev.get("pucker", 0.0))
+            _eta_idxs = _ev.get("eta_idxs", lg["eta_local_idxs"])
+            _eta_n = int(_ev.get("eta_n", lg["eta_n"]))
+            mc = _eta_centroid_distance(metal, _eta_n)
             best_Q, best_clash = None, 1e18
             for lP in coords_list:
-                Q = _place_eta_ring(metal, lsyms, lP, lg["eta_local_idxs"], Vunit, mc)
+                Q = _place_eta_ring(metal, lsyms, lP, _eta_idxs, Vunit, mc,
+                                    spin=_spin, pucker=_pucker)
                 if Q is None:
                     continue
                 cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
@@ -1033,11 +1090,13 @@ def assemble_hapto(metal, geometry, d):
             for row in best_Q:
                 placed.append(row)
             placed_syms += lsyms
-            # representative donor = ring atom closest to the metal (for the self-gate)
-            ring_globals = [lig_offset + 1 + int(j) for j in lg["eta_local_idxs"]]
+            # representative donor = ring atom closest to the metal (for the self-gate).
+            # Uses the ACTIVE ring set (_eta_idxs) so ring-slip isomers freeze + report
+            # the η-carbons they actually coordinate, not the full pre-slip face.
+            ring_globals = [lig_offset + 1 + int(j) for j in _eta_idxs]
             rep = min(ring_globals, key=lambda g: float(np.linalg.norm(placed[g])))
             donors.append(rep)
-            fixed.update(lig_offset + 1 + int(j) for j in lg["eta_local_idxs"])
+            fixed.update(lig_offset + 1 + int(j) for j in _eta_idxs)
             relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
             _collect_exempt(lg["mol"], lig_offset)
             pos += len(lsyms)
@@ -1123,6 +1182,186 @@ def assemble_hapto(metal, geometry, d):
     if not np.all(np.isfinite(P)):
         return None
     return out_syms, P, sorted(set(donors)), exempt_pairs
+
+
+# ---------------------------------------------------------------------------
+# Rigid-hapto ENSEMBLE (deterministic, RMSD-deduplicated) — used by the FF-free
+# converter backend when DELFIN_FFFREE_RIGID_HAPTO=1.  Every member is a fully
+# rigid build (no ring collapse); the variation is purely geometric + enumerated
+# deterministically, so two runs of the same SMILES emit byte-identical frames.
+# ---------------------------------------------------------------------------
+
+# Symmetry-distinct in-plane spin counts per hapticity for a BARE ring (the ring
+# carbons map onto themselves under the cyclic group C_n; a SUBSTITUTED ring breaks
+# that symmetry, so spinning to n_fold orientations samples the substituent rotamers
+# without emitting bare-ring duplicates — the RMSD dedup removes any that coincide).
+_ETA_NFOLD = {2: 2, 3: 3, 4: 4, 5: 5, 6: 6}
+
+
+def _ring_spins(eta_n):
+    """Deterministic, symmetry-reduced list of η-ring spin angles (rad), starting
+    at the canonical 0.  For an η-n face the carbons recur every 2π/n; we sample one
+    full inter-carbon sector in n_fold steps (so a substituted ring visits each
+    distinct substituent-vs-coligand clock position exactly once).  Duplicate frames
+    (symmetric rings) are removed later by the RMSD dedup."""
+    nf = _ETA_NFOLD.get(int(eta_n), max(2, int(eta_n)))
+    sector = 2.0 * np.pi / float(nf)
+    # sample the sector at nf sub-steps -> the substituent sweeps a full inter-carbon
+    # gap; canonical 0 first so member[0] is the historic single build.
+    return [sector * (k / float(nf)) for k in range(nf)]
+
+
+def _slip_modes(lg):
+    """Deterministic ring-SLIP isomers for one η-ligand, gated by valence sanity.
+    Returns a list of (eta_idxs, eta_n) the ring may bind through, lowest-disruption
+    first and ALWAYS including the full face.  An η-n face can ring-slip to a
+    CONTIGUOUS sub-arc of the ring (η6→η4→η2 for arenes/dienes, η5→η3→η1 for Cp/allyl)
+    — the canonical odd/even hapticity ladder.  We only emit a slip when the sub-arc
+    atoms are mutually contiguous through ring bonds (graph-checked), so no impossible
+    mode is invented; substituents stay rigidly attached (whole ligand still rigid)."""
+    full = list(lg["eta_local_idxs"])
+    n = len(full)
+    modes = [(full, n)]
+    if n < 3:
+        return modes
+    mol = lg["mol"]
+    # ring-bond adjacency among the η carbons (graph-only)
+    fs = set(full)
+    adj = {i: [] for i in full}
+    for b in mol.GetBonds():
+        a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        if a1 in fs and a2 in fs:
+            adj[a1].append(a2)
+            adj[a2].append(a1)
+    # canonical ring traversal order (follow adjacency from the lowest index)
+    seq = [full[0]]
+    seen = {full[0]}
+    while len(seq) < n:
+        nxt = next((x for x in adj.get(seq[-1], []) if x not in seen), None)
+        if nxt is None:
+            return modes                      # not a simple ring path -> no slip
+        seq.append(nxt)
+        seen.add(nxt)
+    # hapticity ladder: drop 2 carbons at a time (one from each end of the arc) so the
+    # bound arc stays contiguous + centred; preserve odd/even parity (η6→η4→η2,
+    # η5→η3→η1).  Stop at η1 (single σ-C, no longer a face — handled as edge case).
+    k = n - 2
+    while k >= 1:
+        drop = (n - k) // 2
+        arc = seq[drop: drop + k] if k > 1 else [seq[n // 2]]
+        if len(arc) == k and k >= 1:
+            modes.append((sorted(arc), k))
+        k -= 2
+    return modes
+
+
+def _cp_pucker_amps(eta_n, aromatic):
+    """Cremer-Pople-style out-of-plane pucker amplitudes (Å) for a NON-aromatic
+    η-ring (diene / allyl / cyclohexadienyl).  Aromatic faces (Cp, arene) are planar
+    -> no pucker (amp 0 only).  Returns [0.0] for planar faces (single conformer) and
+    a small symmetric set for puckerable rings."""
+    if aromatic or int(eta_n) < 4:
+        return [0.0]
+    return [0.0, 0.15, -0.15]
+
+
+def _eta_is_aromatic(lg):
+    """True if every η-ring atom is aromatic (planar face: Cp / arene)."""
+    mol = lg["mol"]
+    try:
+        return all(mol.GetAtomWithIdx(int(j)).GetIsAromatic()
+                   for j in lg["eta_local_idxs"])
+    except Exception:
+        return True
+
+
+def _rmsd_aligned(A, B):
+    """Heavy-rigid coordinate RMSD between two SAME-ORDERING coordinate sets after a
+    proper-rotation Kabsch superposition (both already metal-centred at origin).
+    Deterministic; used only to dedup ensemble members of ONE complex."""
+    A = np.asarray(A, float); B = np.asarray(B, float)
+    if A.shape != B.shape or A.shape[0] < 3:
+        return 1e9
+    Ac = A - A.mean(0); Bc = B - B.mean(0)
+    R = _kabsch_rot(Ac, Bc)
+    D = Ac @ R.T - Bc
+    return float(np.sqrt((D * D).sum() / len(A)))
+
+
+def _dedup_builds(builds, rmsd_tol=0.25):
+    """RMSD-deduplicate a list of (syms, P, donors, exempt) builds (same complex, so
+    identical atom ordering).  Keeps the FIRST occurrence (emission order = canonical
+    build first), dropping any later build within ``rmsd_tol`` Å of a kept one.
+    Deterministic.  Distinct-by-atom-count builds (ring-slip changes nothing in the
+    atom list, so counts always match) are compared directly."""
+    kept = []
+    for b in builds:
+        P = b[1]
+        dup = False
+        for kb in kept:
+            if kb[1].shape == P.shape and _rmsd_aligned(kb[1], P) < rmsd_tol:
+                dup = True
+                break
+        if not dup:
+            kept.append(b)
+    return kept
+
+
+def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
+    """Deterministic RIGID-hapto ENSEMBLE: enumerate η-ring rotamers (symmetry-
+    reduced spin), η/σ ring-slip isomers (valence-gated), and Cremer-Pople ring
+    pucker (non-aromatic faces), assembling each as a fully rigid build (no collapse),
+    then RMSD-deduplicate.  Returns a list of (syms, P, donors, exempt_pairs) builds
+    (canonical build first), or None on total failure.
+
+    Universal, graph-only, deterministic (fixed seeds; canonical ordering); the
+    canonical build (member 0) is byte-identical to ``assemble_hapto(...)``."""
+    ligands = d["ligands"]
+    eta_lis = [i for i, lg in enumerate(ligands) if lg.get("is_eta")]
+    if not eta_lis:
+        return None
+
+    # Per-η-ligand variation menus (deterministic, bounded).
+    per_eta_choices = {}
+    for li in eta_lis:
+        lg = ligands[li]
+        aromatic = _eta_is_aromatic(lg)
+        slips = _slip_modes(lg)                       # [(eta_idxs, eta_n), ...]
+        choices = []
+        for (eidx, en) in slips:
+            spins = _ring_spins(en)
+            for sp in spins:
+                for pk in _cp_pucker_amps(en, aromatic):
+                    choices.append({"spin": sp, "pucker": pk,
+                                    "eta_idxs": eidx, "eta_n": en})
+        per_eta_choices[li] = choices
+
+    # Build the variant grid.  To keep the count bounded + deterministic with multiple
+    # η-faces, vary ONE η-ligand at a time off the canonical base (the others stay at
+    # their canonical choice = first menu entry); the canonical all-base build leads.
+    base_choice = {li: per_eta_choices[li][0] for li in eta_lis}
+    variants = [{"eta": dict(base_choice)}]           # member 0 = canonical
+    for li in eta_lis:
+        for ch in per_eta_choices[li][1:]:
+            ev = dict(base_choice)
+            ev[li] = ch
+            variants.append({"eta": ev})
+
+    builds = []
+    for var in variants:
+        if len(builds) >= max_builds * 3:             # generous cap before dedup
+            break
+        try:
+            b = assemble_hapto(metal, geometry, d, variant=var)
+        except Exception:
+            b = None
+        if b is None:
+            continue
+        builds.append(b)
+    if not builds:
+        return None
+    builds = _dedup_builds(builds)
+    return builds[:max_builds] if builds else None
 
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True):
