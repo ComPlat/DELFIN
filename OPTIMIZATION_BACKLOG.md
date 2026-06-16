@@ -75,6 +75,19 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **First-turn latency: capability probe moved off the hot path** — found
+  while investigating bug 20260616-101958 (Dashboard/KIT/azure.gpt-5.4 "Hallo"
+  → 92.7s). The per-turn `stream_message` did a synchronous live `/v1/models`
+  probe on a cold cache (~5s, worsened to ~8s by the iteration-6 timeout bump),
+  delaying the first token. Fix: `engine._refresh_context_window` now passes the
+  provider key and runs at construction/switch_model (off the per-turn path),
+  warming the *authed* cap cache so the first turn reads it instantly. Live:
+  first KIT turn 17.8s → 4.7s. NOTE: the 92.7s itself was NOT reproducible —
+  at the API azure.gpt-5.4 answers "Hallo" in 3–4s at every reasoning_effort
+  (minimal 400s on Azure; low/med/high all ~3–4s, 0 reasoning tokens), with or
+  without 47 tools, streaming or not. Most likely transient KIT GPU-queue
+  latency, not a code path. Bug left open (can't repro / no archive write perm).
+  Follow-up idea: per-turn timing telemetry to catch transient backend stalls.
 - [x] **Busy-poll guard for `bash_status`** (bug 20260615-152119) — the
   `wait_seconds` blocking wait existed but only helped if the model used it;
   models still tight-polled a ~10-min job every 3-4s and exhausted the

@@ -613,7 +613,13 @@ class AgentEngine:
                 except Exception:
                     base_url = ""
             from .model_capabilities import resolve as _resolve_caps
-            caps = _resolve_caps(self.provider, model, base_url)
+            # Pass the provider key so the KIT/vLLM /v1/models probe authenticates
+            # (else it 401s → static window). Doing it HERE — at construction /
+            # switch_model, off the per-turn hot path — also warms the (authed)
+            # capability cache, so the first stream_message turn reads it instantly
+            # instead of paying a ~5s synchronous probe before its first token.
+            api_key = getattr(self.client, "_api_key", "") or ""
+            caps = _resolve_caps(self.provider, model, base_url, api_key=api_key)
             if caps and caps.context_window > 0:
                 self.context_window_tokens = int(caps.context_window)
                 self._active_capabilities = caps
