@@ -8052,6 +8052,7 @@ def create_tab(ctx):
                     ("exit_plan_mode", "Submit a plan for user approval (plan-mode only)"),
                     ("enter_worktree", "Create an isolated git worktree"),
                     ("exit_worktree", "Tear down a worktree"),
+                    ("worktree_merge", "Safely merge a worktree's changes back (clean-apply-or-nothing)"),
                 ],
                 "Task / Skill": [
                     ("task_create", "Add a todo (subject, description, active_form)"),

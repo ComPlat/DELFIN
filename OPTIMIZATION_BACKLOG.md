@@ -57,9 +57,13 @@ in this priority order and appends new findings back here.
 - [x] **Review**: subagent result now carries a `diff_summary` (changed files +
   --stat + untracked) so the parent SEES what an isolated writer did, not just
   `had_changes`. `worktree.diff_summary`. Live-verified with KIT-qwen.
-- [ ] **Integrate**: a safe `worktree_merge` tool to bring a chosen worktree's
-  changes back into the main tree (commit-in-worktree → apply/merge, report
-  conflicts, never force). Completes the fan-out-writers → review → merge flow.
+- [x] **Integrate**: `worktree_merge` tool brings a worktree's changes back
+  into the main tree, **clean-apply-or-nothing** (stage full state → patch vs
+  branch-point → `git apply --check` → apply only if clean; on conflict the
+  target is left untouched, worktree kept). Lands uncommitted for review.
+  `worktree.merge_worktree`. Live-verified: KIT-qwen chained
+  `enter_worktree → write_file → worktree_merge`, file arrived in the main tree.
+  Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
 - [x] `/loop` command — recurring agent loop (interval-based, scheduler-backed),

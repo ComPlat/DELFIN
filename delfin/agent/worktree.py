@@ -156,6 +156,86 @@ def exit_worktree(
     return info
 
 
+@dataclass
+class MergeResult:
+    ok: bool                 # operation completed without error
+    applied: bool            # changes were actually written to the target tree
+    files: list              # changed paths (relative to the worktree)
+    message: str             # human/agent-facing summary
+
+
+def _changed_files(wt: Path, base_ref: str) -> list:
+    try:
+        out = _run_git(wt, "diff", "--cached", "--name-only", base_ref)
+    except WorktreeError:
+        return []
+    return [ln for ln in out.splitlines() if ln.strip()]
+
+
+def _git_apply(repo: Path, patch: str, *, check: bool) -> tuple[bool, str]:
+    """Run `git apply` reading the patch from stdin. Returns (ok, stderr)."""
+    args = ["git", "apply", "--whitespace=nowarn"]
+    if check:
+        args.append("--check")
+    args.append("-")
+    try:
+        proc = subprocess.run(
+            args, cwd=str(repo), input=patch,
+            capture_output=True, text=True, timeout=60,
+        )
+    except FileNotFoundError as exc:
+        raise WorktreeError("git is not installed") from exc
+    return proc.returncode == 0, proc.stderr.strip()
+
+
+def merge_worktree(
+    info: WorktreeInfo,
+    *,
+    target_repo: Path | str | None = None,
+) -> MergeResult:
+    """Bring a worktree's changes (vs its ``base_ref``) into the target repo's
+    working tree — but ONLY if they apply cleanly. Never forces, never leaves a
+    half-applied tree: on any conflict the target is left untouched and the
+    worktree is kept for manual merge.
+
+    Completes the fan-out-writers → review (``diff_summary``) → merge flow.
+    ``target_repo`` defaults to ``info.repo_dir`` (the source). Changes land in
+    the working tree *uncommitted* so the parent can review and commit them.
+    """
+    repo = Path(target_repo).resolve() if target_repo else info.repo_dir
+    wt = info.final_path or info.path
+    if not _is_git_repo(repo):
+        raise WorktreeError(f"not a git repo: {repo}")
+    if not wt.exists():
+        raise WorktreeError(f"worktree path missing: {wt}")
+    # Stage everything (including untracked) so the patch captures the full
+    # worktree state, then diff against the shared branch point.
+    _run_git(wt, "add", "-A")
+    patch = _run_git(wt, "diff", "--cached", "--binary", info.base_ref)
+    if not patch.strip():
+        return MergeResult(True, False, [], "no changes to merge")
+    files = _changed_files(wt, info.base_ref)
+    ok, err = _git_apply(repo, patch, check=True)
+    if not ok:
+        return MergeResult(
+            False, False, files,
+            f"changes do not apply cleanly to {repo} (conflicts) — target tree "
+            f"left untouched; worktree kept at {wt} for manual merge. "
+            f"git: {err}"[:600],
+        )
+    applied_ok, err2 = _git_apply(repo, patch, check=False)
+    if not applied_ok:  # passed --check but failed for real → nothing partial trusted
+        return MergeResult(
+            False, False, files,
+            f"merge failed mid-apply into {repo}: {err2}"[:600],
+        )
+    return MergeResult(
+        True, True, files,
+        f"merged {len(files)} file(s) into the working tree of {repo}; "
+        f"review with `git -C {repo} diff` and commit.",
+    )
+
+
 def diff_summary(info: WorktreeInfo, *, max_chars: int = 2000) -> str:
     """Concise review of what a worktree changed vs its base: the ``--stat`` of
     tracked changes plus any new untracked files. Empty when the worktree is
@@ -193,8 +273,10 @@ def worktree_session(
 __all__ = [
     "WorktreeError",
     "WorktreeInfo",
+    "MergeResult",
     "enter_worktree",
     "exit_worktree",
+    "merge_worktree",
     "diff_summary",
     "worktree_session",
 ]

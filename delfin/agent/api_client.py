@@ -2181,6 +2181,50 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "worktree_merge",
+            "description": (
+                "Merge a worktree's changes back into the main "
+                "tree, safely. Stages the worktree's full state "
+                "(including new files), then applies it to the "
+                "target repo's working tree ONLY if it applies "
+                "cleanly — on any conflict the target is left "
+                "untouched and the worktree is kept for manual "
+                "merge. Changes land uncommitted so you can review "
+                "(`git diff`) and commit. Completes the fan-out → "
+                "review (worktree diff) → merge flow. Pass the "
+                "worktree path returned by enter_worktree (or the "
+                "final_path from a subagent's worktree_summary)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Worktree path to merge from.",
+                    },
+                    "base_ref": {
+                        "type": "string",
+                        "description": (
+                            "Commit the worktree branched from "
+                            "(default: auto-detected via merge-base "
+                            "with the target's HEAD)."
+                        ),
+                    },
+                    "target_dir": {
+                        "type": "string",
+                        "description": (
+                            "Repo to merge into (default: the "
+                            "worktree's source repository)."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "subagent",
             "description": (
                 "Delegate a self-contained task to an isolated "
@@ -2938,6 +2982,8 @@ class _DocToolExecutor:
             return self._execute_enter_worktree(arguments, permissions)
         if name == "exit_worktree":
             return self._execute_exit_worktree(arguments, permissions)
+        if name == "worktree_merge":
+            return self._execute_worktree_merge(arguments, permissions)
 
         # Scheduler: one-shot wake-ups + interval cron.
         if name in ("schedule_wakeup", "cron_create",
@@ -4772,6 +4818,72 @@ class _DocToolExecutor:
             "branch": info.branch,
         })
 
+    def _execute_worktree_merge(
+        self, arguments: dict, perms: Optional["KitToolPermissions"]
+    ) -> str:
+        from . import worktree as _wt
+        path_arg = (arguments.get("path") or "").strip()
+        base_arg = (arguments.get("base_ref") or "").strip()
+        target_arg = (arguments.get("target_dir") or "").strip()
+        if not path_arg:
+            return json.dumps({"error": "path is required"})
+        wt_path = Path(path_arg).expanduser()
+        if not wt_path.is_dir():
+            return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        try:
+            head = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(wt_path), text=True,
+            ).strip()
+            # The source repo is the FIRST entry of `git worktree list`.
+            listing = subprocess.check_output(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=str(wt_path), text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            return json.dumps({"error": f"git query failed: {exc}"})
+        except FileNotFoundError:
+            return json.dumps({"error": "git is not installed"})
+        source_repo = wt_path
+        for line in listing.splitlines():
+            if line.startswith("worktree "):
+                source_repo = Path(line.removeprefix("worktree ").strip())
+                break
+        target = Path(target_arg).expanduser() if target_arg else source_repo
+        # Determine the branch point: explicit, else merge-base of the
+        # worktree's HEAD with the target's HEAD (the shared ancestor).
+        base = base_arg
+        if not base:
+            try:
+                target_head = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=str(target), text=True,
+                ).strip()
+                base = subprocess.check_output(
+                    ["git", "merge-base", "HEAD", target_head],
+                    cwd=str(wt_path), text=True,
+                ).strip()
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                base = "HEAD"  # fall back to dirty-only changes vs current HEAD
+        info = _wt.WorktreeInfo(
+            repo_dir=target,
+            path=wt_path,
+            branch=head,
+            base_ref=base,
+            created_at=0.0,
+        )
+        try:
+            result = _wt.merge_worktree(info)
+        except _wt.WorktreeError as exc:
+            return json.dumps({"error": str(exc)})
+        return json.dumps({
+            "status": "ok" if result.ok else "conflict",
+            "applied": result.applied,
+            "files": result.files,
+            "target": str(target),
+            "message": result.message,
+        })
+
     # ------- Sub-agent delegation -----------------------------------------
 
     def _execute_subagent(
@@ -5542,6 +5654,7 @@ class OpenAIClient(_BaseClient):
                               "subagent_result",
                               "enter_worktree",
                               "exit_worktree",
+                              "worktree_merge",
                               "schedule_wakeup",
                               "cron_create",
                               "cron_list",
@@ -6011,6 +6124,7 @@ class OpenAIClient(_BaseClient):
                                             "subagent_result",
                                             "enter_worktree",
                                             "exit_worktree",
+                                            "worktree_merge",
                                             "schedule_wakeup",
                                             "cron_create",
                                             "cron_list",
