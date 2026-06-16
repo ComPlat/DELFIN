@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import logging
 import re
 from typing import Any, Callable, Iterable, Mapping, MutableMapping
+
+logger = logging.getLogger(__name__)
 
 ORCA_SOLVENTS = (
     "1,1,1-trichloroethane",
@@ -264,12 +267,21 @@ ORCA_SOLVENTS = (
 
 _SOLVENTS_LOWER = {name.lower(): name for name in ORCA_SOLVENTS}
 
+# Named density functionals understood by ORCA's simple-input keyword line.
+# This list drives both the CONTROL validator and the ORCA-builder dropdown.
+# It is intentionally broad — ORCA also supports the full LibXC catalogue via
+# ``LibXC(...)`` and user-defined functional blocks, so an unknown name here is
+# passed through rather than rejected (see ``_as_functional``).
 ORCA_FUNCTIONALS = (
+    # --- Local density approximation (LDA) -------------------------------
     "HFS",
     "LSD",
+    "LDA",
+    "VWN",
     "VWN5",
     "VWN3",
     "PWLDA",
+    # --- Generalized gradient approximation (GGA) ------------------------
     "BNULL",
     "BVWN",
     "BP",
@@ -281,27 +293,43 @@ ORCA_FUNCTIONALS = (
     "GP",
     "GLYP",
     "PBE",
+    "PBEsol",
     "revPBE",
     "RPBE",
     "PWP",
     "OLYP",
     "OPBE",
     "XLYP",
-    "B97D",
+    "BPBE",
+    "BPW91",
+    "B97-D",
+    "B97-D3",
+    "B97-D4",
     "PW86PBE",
     "RPW86PBE",
+    # --- Meta-GGA --------------------------------------------------------
     "M06L",
     "TPSS",
     "revTPSS",
     "SCANfunc",
+    "SCAN",
     "RSCAN",
     "R2SCAN",
+    "B97M-V",
+    "B97M-D3BJ",
+    "B97M-D4",
+    "MN12L",
+    "MN15L",
+    "TASKxc",
+    # --- Hybrid GGA ------------------------------------------------------
     "B1LYP",
     "B1P",
     "G1LYP",
     "G1P",
     "B3LYP",
+    "B3LYP/G",
     "B3P",
+    "B3P86",
     "G3LYP",
     "G3P",
     "PBE0",
@@ -309,27 +337,92 @@ ORCA_FUNCTIONALS = (
     "mPW1PW",
     "mPW1LYP",
     "PW91_0",
+    "PW1PW",
     "O3LYP",
     "X3LYP",
     "B97",
+    "B97-3c",
     "BHANDHLYP",
+    "BHLYP",
+    "B1PW91",
+    "B3PW91",
+    "revPBE0",
+    "revPBE38",
+    # --- Hybrid meta-GGA -------------------------------------------------
     "TPSSh",
     "TPSS0",
     "PW6B95",
+    "B1B95",
+    "mPW1B95",
     "M06",
     "M062X",
+    "M06HF",
+    "M08HX",
+    "M08SO",
+    "MN15",
+    "PWB6K",
+    "PW6B95",
     "r2SCANh",
     "r2SCAN0",
     "r2SCAN50",
+    # --- Range-separated hybrids -----------------------------------------
     "wB97",
     "wB97X",
+    "wB97X-D3",
+    "wB97X-D3BJ",
+    "wB97X-V",
+    "wB97X-D4",
+    "wB97X-D4rev",
+    "wB97M-V",
+    "wB97M-D3BJ",
+    "wB97M-D4",
+    "wB97M-D4rev",
     "CAM-B3LYP",
-    "LC_BLYP",
-    "LC_PBE",
+    "LC-BLYP",
+    "LC-PBE",
+    "LC-B3LYP",
+    "LC-wPBE",
     "wr2SCAN",
+    "wB97X-2",
+    # --- Double hybrids --------------------------------------------------
+    "B2PLYP",
+    "RI-B2PLYP",
+    "B2GP-PLYP",
+    "B2K-PLYP",
+    "B2T-PLYP",
+    "mPW2PLYP",
+    "PWPB95",
+    "DSD-BLYP",
+    "DSD-PBEP86",
+    "DSD-PBEB95",
+    "revDSD-PBEP86/2021",
+    "revDOD-PBEP86/2021",
+    "PBE-QIDH",
+    "PBE0-DH",
+    "PBE0-2",
+    "RSX-QIDH",
+    "RSX-0DH",
+    "r2SCAN0-DH",
+    "r2SCAN-CIDH",
+    "r2SCAN-QIDH",
+    "r2SCAN0-2",
+    "Pr2SCAN50",
+    "kPr2SCAN50",
+    "wPr2SCAN50",
+    "Pr2SCAN69",
+    # --- Composite "3c" methods ------------------------------------------
+    "HF-3c",
+    "PBEh-3c",
+    "r2SCAN-3c",
 )
 
 _FUNCTIONALS_LOWER = {name.lower(): name for name in ORCA_FUNCTIONALS}
+
+# Separator-insensitive lookup so that LC-B3LYP / LC_B3LYP / "LC B3LYP" and
+# M06-2X / M062X all resolve to the same canonical spelling.
+_FUNCTIONALS_NOSEP: dict[str, str] = {}
+for _func_name in ORCA_FUNCTIONALS:
+    _FUNCTIONALS_NOSEP.setdefault(re.sub(r"[-_\s]", "", _func_name.lower()), _func_name)
 
 ORCA_BASIS_SETS = (
     "STO-3G",
@@ -994,6 +1087,19 @@ def _as_solvent(value: Any) -> str:
     raise ValueError(f"unknown solvent '{text}'")
 
 
+def _resolve_functional_name(text: str) -> str | None:
+    """Return the canonical ORCA spelling for ``text`` or ``None`` if unknown.
+
+    Matching is case-insensitive and ignores ``-``/``_``/space separators so
+    that e.g. LC-B3LYP, LC_B3LYP and "LC B3LYP" all resolve to the same name.
+    """
+    key = text.lower()
+    if key in _FUNCTIONALS_LOWER:
+        return _FUNCTIONALS_LOWER[key]
+    nosep = re.sub(r"[-_\s]", "", key)
+    return _FUNCTIONALS_NOSEP.get(nosep)
+
+
 def _as_functional(value: Any) -> str:
     text = str(value or "").strip()
     if text == "":
@@ -1003,19 +1109,17 @@ def _as_functional(value: Any) -> str:
         inner = libxc_match.group(1).strip()
         if not inner:
             raise ValueError("LibXC(...) requires a functional name inside parentheses")
-        inner_key = inner.lower()
-        if inner_key in _FUNCTIONALS_LOWER:
-            canonical = _FUNCTIONALS_LOWER[inner_key]
-            return f"LibXC({canonical})"
-        return f"LibXC({inner})"
-    key = text.lower()
-    if key in _FUNCTIONALS_LOWER:
-        return _FUNCTIONALS_LOWER[key]
-    suggestions = _suggest_from_options(key, _FUNCTIONALS_LOWER.keys())
-    if suggestions:
-        formatted = ", ".join(_FUNCTIONALS_LOWER[s] for s in suggestions)
-        raise ValueError(f"unknown functional '{text}'. Did you mean: {formatted}")
-    raise ValueError(f"unknown functional '{text}'")
+        canonical = _resolve_functional_name(inner)
+        return f"LibXC({canonical or inner})"
+    canonical = _resolve_functional_name(text)
+    if canonical is not None:
+        return canonical
+    # Unknown to our curated list. ORCA supports far more functionals than we
+    # enumerate (the full LibXC catalogue, composite methods, user-defined
+    # functional blocks), so do NOT block the job here — ORCA validates the
+    # functional itself and fails fast on a genuine typo. Pass the value
+    # through unchanged so submission is never refused over the functional name.
+    return text
 
 
 def _as_basis_set_optional(value: Any) -> str:
@@ -1300,6 +1404,12 @@ def validate_disp_corr_functional_combo(disp_corr: str, functional: str) -> list
         func_text = libxc_match.group(1).strip()
     func_upper = func_text.upper().replace("_", "-")
     disp_upper = disp_corr.upper()
+
+    # Skip the advisory when the functional name already encodes a dispersion
+    # correction (e.g. wB97X-D4, B97-D3, wB97M-D4): the parametrization is part
+    # of the method itself, so a "may not be parametrized" hint is misleading.
+    if re.search(r"-D[0-9]", func_upper):
+        return warnings
 
     if disp_upper == "D4":
         if func_upper not in D4_FUNCTIONALS:
@@ -1773,7 +1883,12 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         func_val = None
     if disp_val is not None and func_val is not None:
-        errors.extend(validate_disp_corr_functional_combo(disp_val, func_val))
+        # Dispersion/functional compatibility is advisory only ("may not be
+        # parametrized"). ORCA decides what is actually available, and our
+        # curated tables lag behind it, so do NOT block submission here — log
+        # the hint instead of adding it to the blocking error list.
+        for warning in validate_disp_corr_functional_combo(disp_val, func_val):
+            logger.warning("CONTROL validation: %s", warning)
 
     thermodynamics_enabled = str(validated.get("stability_constant", config.get("stability_constant", "no"))).strip().lower() == "yes"
     stability_mode = str(validated.get("stability_constant_mode", config.get("stability_constant_mode", "auto"))).strip().lower() or "auto"
