@@ -245,6 +245,12 @@ def wait_run(run_id: str, *, timeout: Optional[float] = None):
     return RunHandle(run_id, get_runtime()).wait(timeout=timeout)
 
 
+def run_metrics() -> Dict[str, Any]:
+    """Aggregate the run history into timing / success-rate / cost signals."""
+    from delfin.tools._metrics import aggregate_runs
+    return aggregate_runs()
+
+
 # ======================================================================
 #  Environment (probe + install)
 # ======================================================================
@@ -300,6 +306,7 @@ __all__ = [
     "list_runs",
     "cancel_run",
     "wait_run",
+    "run_metrics",
     # environment
     "probe",
     "missing_tools",

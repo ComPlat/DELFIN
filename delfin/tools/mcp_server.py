@@ -150,6 +150,10 @@ def h_cancel_run(run_id: str) -> str:
     return _dumps({"cancelled": platform.cancel_run(run_id)})
 
 
+def h_run_metrics() -> str:
+    return _dumps(platform.run_metrics())
+
+
 # --- environment ----------------------------------------------------------
 
 
@@ -268,6 +272,11 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     def cancel_run(run_id: str) -> str:
         """Request cooperative cancellation of a running run."""
         return h_cancel_run(run_id)
+
+    @mcp.tool()
+    def run_metrics() -> str:
+        """Aggregate run history: counts by status, success rate and timing per application."""
+        return h_run_metrics()
 
     @mcp.tool()
     def probe() -> str:

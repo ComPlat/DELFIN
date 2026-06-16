@@ -24,6 +24,12 @@ Pipeline usage::
 
 from delfin.tools._types import ErrorKind, StepError, StepResult, StepStatus
 from delfin.tools._runner import run_step, step_as_workflow_job
+from delfin.tools._cache import StepCache, cache_key, run_step_cached
+from delfin.tools._recovery import (
+    classify_error,
+    run_step_with_recovery,
+    suggest_recovery,
+)
 from delfin.tools._registry import list_steps, register
 from delfin.tools._spec import DataKeySpec, ParamSpec, StepContract
 from delfin.tools._keys import KeySpec, key, register_key
@@ -50,6 +56,13 @@ __all__ = [
     "ErrorKind",
     "list_steps",
     "register",
+    # Cross-cutting: caching + recovery
+    "run_step_cached",
+    "StepCache",
+    "cache_key",
+    "run_step_with_recovery",
+    "classify_error",
+    "suggest_recovery",
     # Self-describing contract + discovery
     "ParamSpec",
     "DataKeySpec",
