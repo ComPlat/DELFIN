@@ -468,7 +468,8 @@ def assemble_monodentate(metal: str, ligand_smiles: str, donor_idx: int,
     n = len(ref)
     lsyms, lP, lmol = _ligand_3d(ligand_smiles)
     donor_elem = lsyms[donor_idx]
-    md = MSB.md_distance(metal, donor_elem)
+    md = MSB.md_distance(metal, donor_elem,
+                         atom=lmol.GetAtomWithIdx(donor_idx), mol=lmol)
     if thetas is None:
         thetas = [0.0] * n
     out_syms = [metal]
@@ -607,8 +608,10 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
     for smi, dons, verts in chelate_specs:
         lsyms, lP, lmol = _ligand_3d(smi)
         d1, d2 = dons
-        T1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]]) * MSB.md_distance(metal, lsyms[d1])
-        T2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]]) * MSB.md_distance(metal, lsyms[d2])
+        T1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]]) * MSB.md_distance(
+            metal, lsyms[d1], atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+        T2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]]) * MSB.md_distance(
+            metal, lsyms[d2], atom=lmol.GetAtomWithIdx(d2), mol=lmol)
         Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
         out_syms += lsyms; blocks.append(Q)
     return out_syms, np.vstack(blocks)
@@ -624,7 +627,8 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     ref = MSB._ref_vectors(geometry)
     lsyms, lP, lmol = _ligand_3d(ligand_smiles)
     d1, d2 = donor_indices[0], donor_indices[1]
-    md1 = MSB.md_distance(metal, lsyms[d1]); md2 = MSB.md_distance(metal, lsyms[d2])
+    md1 = MSB.md_distance(metal, lsyms[d1], atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+    md2 = MSB.md_distance(metal, lsyms[d2], atom=lmol.GetAtomWithIdx(d2), mol=lmol)
     T1 = ref[vertex_indices[0]] / np.linalg.norm(ref[vertex_indices[0]]) * md1
     T2 = ref[vertex_indices[1]] / np.linalg.norm(ref[vertex_indices[1]]) * md2
     # rigid-fit + backbone-away-from-metal axial sweep (single source of truth)
@@ -723,7 +727,8 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         if confs is None:
             return None
         lsyms, coords_list, lmol = confs
-        md = MSB.md_distance(metal, lsyms[di])
+        md = MSB.md_distance(metal, lsyms[di],
+                             atom=lmol.GetAtomWithIdx(di), mol=lmol)
         vertex = Vunit * md
         # UNIVERSAL: pick the conformer whose placement clashes least with the
         # metal + already-placed ligands (defect-count-driven conformer selection).
@@ -812,7 +817,8 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         if confs is None:
             return None
         lsyms, coords_list, lmol = confs
-        md = MSB.md_distance(metal, lsyms[di])
+        md = MSB.md_distance(metal, lsyms[di],
+                             atom=lmol.GetAtomWithIdx(di), mol=lmol)
         vertex = Vunit * md
         cand = []                                   # (Q, clash_vs_metal)
         seen_local = []
@@ -961,7 +967,8 @@ def build_and_relax(metal: str, geometry: str, vertex_specs, relax: bool = True)
         if emb is None:
             return None
         lsyms, lP, lmol = emb
-        md = MSB.md_distance(metal, lsyms[di])
+        md = MSB.md_distance(metal, lsyms[di],
+                             atom=lmol.GetAtomWithIdx(di), mol=lmol)
         vertex = Vunit * md
         if len(lsyms) == 1:
             Q = vertex.reshape(1, 3)
@@ -1212,7 +1219,8 @@ def assemble_hapto(metal, geometry, d, variant=None):
             lsyms, coords_list, lmol = confs
             di = lg["donor_local_idxs"][0]
             Vunit = ref[vi] / np.linalg.norm(ref[vi])
-            md = MSB.md_distance(metal, lsyms[di])
+            md = MSB.md_distance(metal, lsyms[di],
+                                 atom=lmol.GetAtomWithIdx(di), mol=lmol)
             best_Q, best_clash = None, 1e18
             for lP in coords_list:
                 if len(lsyms) == 1:
@@ -1247,7 +1255,9 @@ def assemble_hapto(metal, geometry, d, variant=None):
             dons_d = _canonical_arm_order(lg, dent)
             verts = list(range(vi, vi + dent))
             targets = [ref[verts[i]] / np.linalg.norm(ref[verts[i]])
-                       * MSB.md_distance(metal, lsyms[dons_d[i]]) for i in range(dent)]
+                       * MSB.md_distance(metal, lsyms[dons_d[i]],
+                                         atom=lmol.GetAtomWithIdx(dons_d[i]), mol=lmol)
+                       for i in range(dent)]
             best_Q, best_clash = None, 1e18
             for lP in coords_list:
                 if dent == 2:
@@ -1527,7 +1537,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             _delems = [lg["mol"].GetAtomWithIdx(int(di)).GetSymbol() for di in _dons_d]
             try:
                 _dtp = [ref[_vts[i]] / np.linalg.norm(ref[_vts[i]])
-                        * MSB.md_distance(metal, _delems[i]) for i in range(_dent)]
+                        * MSB.md_distance(metal, _delems[i],
+                                          atom=lg["mol"].GetAtomWithIdx(int(_dons_d[i])),
+                                          mol=lg["mol"]) for i in range(_dent)]
             except Exception:
                 _dtp = None
             ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal, donor_target_pos=_dtp)
@@ -1549,7 +1561,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             if lg["denticity"] == 1:
                 v = va[0][0]
                 Vunit = ref[v] / np.linalg.norm(ref[v])
-                md = MSB.md_distance(metal, lsyms[dons[0]])
+                md = MSB.md_distance(metal, lsyms[dons[0]],
+                                     atom=lg["mol"].GetAtomWithIdx(int(dons[0])),
+                                     mol=lg["mol"])
                 if len(lsyms) == 1:
                     Q = (Vunit * md).reshape(1, 3)
                 else:
@@ -1564,7 +1578,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 dons_d = _canonical_arm_order(lg, dent)
                 verts = [v for v, arm in sorted(va, key=lambda x: x[1])]
                 targets = [ref[verts[i]] / np.linalg.norm(ref[verts[i]])
-                           * MSB.md_distance(metal, lsyms[dons_d[i]]) for i in range(dent)]
+                           * MSB.md_distance(metal, lsyms[dons_d[i]],
+                                             atom=lg["mol"].GetAtomWithIdx(int(dons_d[i])),
+                                             mol=lg["mol"]) for i in range(dent)]
                 # config-faithful seating is only meaningful for ASYMMETRIC chelates
                 # (distinct donor elements); for symmetric chelates every arm seating
                 # is the same isomer, so keep the best-fit (lower ring strain).
@@ -1753,7 +1769,8 @@ def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):
     for i, (smi, di) in enumerate(vertex_specs):
         Vunit = ref[i] / np.linalg.norm(ref[i])
         lsyms, lP, lmol = _ligand_3d(smi)
-        md = MSB.md_distance(metal, lsyms[di])
+        md = MSB.md_distance(metal, lsyms[di],
+                             atom=lmol.GetAtomWithIdx(di), mol=lmol)
         vertex = Vunit * md
         if len(lsyms) == 1:                       # monatomic ligand (e.g. Cl-)
             out_syms += lsyms; blocks.append(vertex.reshape(1, 3)); continue
@@ -1776,7 +1793,8 @@ def generate_complex_conformers(metal, ligand_smiles, donor_idx, geometry,
     for e, m in confs[:max_lig_conf]:
         lsyms = [a.GetSymbol() for a in m.GetAtoms()]
         lP = m.GetConformer().GetPositions()
-        md = MSB.md_distance(metal, lsyms[donor_idx])
+        md = MSB.md_distance(metal, lsyms[donor_idx],
+                             atom=m.GetAtomWithIdx(donor_idx), mol=m)
         lp = _donor_and_lp(lsyms, lP, m, donor_idx)
         syms = [metal]; blocks = [np.zeros((1, 3))]
         for i in range(n):

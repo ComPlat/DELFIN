@@ -7,6 +7,7 @@ table.  Metal-donor distances use covalent-radii sums.
 """
 from __future__ import annotations
 import math
+import os
 import numpy as np
 
 
@@ -107,8 +108,136 @@ def ref_vectors(geometry: str) -> np.ndarray:
     raise KeyError(geometry)
 
 
-def md_distance(metal: str, donor: str) -> float:
-    return COV.get(metal, 1.5) + COV.get(donor, 0.75)
+# --- Context-aware donor radii (env-gated; #305 root fix) -------------------
+# Pyykkö & Atsumi single / double / triple-bond COVALENT radii (Å), OPEN data:
+#   single  : Pyykkö & Atsumi, Chem. Eur. J. 2009, 15, 186  (table of r_cov^(1))
+#   double  : Pyykkö & Atsumi, Chem. Eur. J. 2009, 15, 12770 (r_cov^(2))
+#   triple  : Pyykkö, Riedel & Patzschke, Chem. Eur. J. 2005, 11, 3511 (r_cov^(3))
+# These are PUBLISHED open reference values (no CCDC/CSD data).  The donor atom's
+# effective radius is selected by its MAX heavy-neighbour bond order (single /
+# aromatic≈double / double / triple).  The element-pair covalent sum (default,
+# flag-OFF) is left BYTE-IDENTICAL.
+PYYKKO_SINGLE = {
+    "C": 0.75, "N": 0.71, "O": 0.63, "S": 1.03, "P": 1.11, "Se": 1.16,
+    "F": 0.64, "Cl": 0.99, "Br": 1.14, "I": 1.33, "As": 1.21, "Te": 1.36,
+}
+PYYKKO_DOUBLE = {
+    "C": 0.67, "N": 0.60, "O": 0.57, "S": 0.94, "P": 1.02, "Se": 1.07,
+    "F": 0.59, "Cl": 0.95, "Br": 1.09, "I": 1.29, "As": 1.14, "Te": 1.30,
+}
+PYYKKO_TRIPLE = {
+    "C": 0.60, "N": 0.54, "O": 0.53, "S": 0.95, "P": 0.94, "Se": 1.07,
+    "As": 1.06, "Te": 1.21,
+}
+
+# Anionic / short-σ ligand-class shortening (Å), applied to the donor radius.
+# A documented chemical rule (anionic σ-donors form notably shorter M–D bonds
+# than neutral L donors), keyed ONLY on the local molecular graph — never on a
+# specific SMILES.  Magnitudes are modest and physically reasonable; the
+# classes (azide-N, cyanide-C/N, halide, hydroxide/alkoxide/oxo, amide/imide-N)
+# are the canonical short anionic donors.  Open chemical knowledge, no CSD data.
+_SIGMA_SHORTEN = {
+    "azide": 0.12,      # terminal N of N–N=N (anionic, short Co–N≈1.94 vs py 2.16)
+    "cyanide": 0.10,    # C/N of C≡N (strong-field σ-donor, short M–C/M–N)
+    "halide": 0.08,     # F/Cl/Br/I anionic terminal halide
+    "oxo_alkoxo": 0.12, # O with ≤1 heavy neighbour (oxo / hydroxide / alkoxide)
+    "amide": 0.10,      # deprotonated (anionic) N donor
+}
+
+
+def _max_heavy_bond_order(atom) -> float:
+    """Max bond order from ``atom`` to its HEAVY neighbours (H ignored).
+    Aromatic bonds count as ~1.5.  Graph-only, deterministic."""
+    from rdkit.Chem import BondType
+    bo = 1.0
+    for b in atom.GetBonds():
+        other = b.GetOtherAtom(atom)
+        if other.GetAtomicNum() == 1:
+            continue
+        bt = b.GetBondType()
+        if b.GetIsAromatic() or bt == BondType.AROMATIC:
+            v = 1.5
+        elif bt == BondType.DOUBLE:
+            v = 2.0
+        elif bt == BondType.TRIPLE:
+            v = 3.0
+        else:
+            v = 1.0
+        if v > bo:
+            bo = v
+    return bo
+
+
+def _pyykko_radius(sym: str, bond_order: float) -> float:
+    """Bond-order-selected Pyykkö covalent radius (Å); fall back to COV[sym]."""
+    if bond_order >= 2.5 and sym in PYYKKO_TRIPLE:
+        return PYYKKO_TRIPLE[sym]
+    if bond_order >= 1.5 and sym in PYYKKO_DOUBLE:     # aromatic≈1.5 -> double
+        return PYYKKO_DOUBLE[sym]
+    if sym in PYYKKO_SINGLE:
+        return PYYKKO_SINGLE[sym]
+    return COV.get(sym, 0.75)
+
+
+def _sigma_shorten(atom, mol) -> float:
+    """Detect a short anionic σ-donor class from the LOCAL graph around the donor
+    ``atom`` and return the radius shortening (Å, >=0).  Graph-only, universal,
+    deterministic.  Returns 0.0 for ordinary neutral L donors."""
+    sym = atom.GetSymbol()
+    heavy = [nb for nb in atom.GetNeighbors() if nb.GetAtomicNum() != 1]
+    # Halide donor: a lone / terminal F,Cl,Br,I bound to the metal.
+    if sym in ("F", "Cl", "Br", "I"):
+        return _SIGMA_SHORTEN["halide"]
+    # Cyanide: donor C or N that is triple-bonded to a C/N partner (–C≡N / N≡C–).
+    if sym in ("C", "N"):
+        from rdkit.Chem import BondType
+        for b in atom.GetBonds():
+            o = b.GetOtherAtom(atom)
+            if b.GetBondType() == BondType.TRIPLE and o.GetSymbol() in ("C", "N"):
+                return _SIGMA_SHORTEN["cyanide"]
+    # Azide terminal N: donor N bonded to an N that is itself bonded to a 3rd N
+    # (the N–N=N chain), i.e. the coordinating end of an azide.
+    if sym == "N":
+        for nb in heavy:
+            if nb.GetSymbol() == "N":
+                for nb2 in nb.GetNeighbors():
+                    if nb2.GetIdx() != atom.GetIdx() and nb2.GetSymbol() == "N":
+                        return _SIGMA_SHORTEN["azide"]
+    # Oxo / hydroxide / alkoxide: O donor with <=1 heavy neighbour.
+    if sym == "O" and len(heavy) <= 1:
+        return _SIGMA_SHORTEN["oxo_alkoxo"]
+    # Amide / imide N: a deprotonated (formally anionic) N donor.
+    if sym == "N" and atom.GetFormalCharge() < 0:
+        return _SIGMA_SHORTEN["amide"]
+    return 0.0
+
+
+def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
+    """Metal–donor placement distance (Å).
+
+    DEFAULT (flag OFF or no donor context): the original element-pair covalent
+    sum ``COV[metal] + COV[donor]`` — byte-identical to the historic behaviour.
+
+    CONTEXT-AWARE (``DELFIN_FFFREE_MD_CONTEXT=1`` and ``atom`` given): the donor
+    radius is replaced by a bond-order/hybridisation-selected Pyykkö covalent
+    radius (open data) and shortened for short anionic σ-donor classes detected
+    from the local graph (azide / cyanide / halide / oxo-alkoxo / amide).  This
+    differentiates e.g. azide-N (short, anionic) from pyridine-N (long, neutral)
+    that the element-pair sum cannot distinguish (#305 / GIXFIF).  Universal
+    (graph-only, never SMILES-specific), deterministic, no RNG."""
+    if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
+        return COV.get(metal, 1.5) + COV.get(donor, 0.75)
+    try:
+        sym = atom.GetSymbol()
+        r_d = _pyykko_radius(sym, _max_heavy_bond_order(atom))
+        r_d = r_d - _sigma_shorten(atom, mol)
+        md = COV.get(metal, 1.5) + r_d
+        if not math.isfinite(md):
+            md = COV.get(metal, 1.5) + COV.get(donor, 0.75)
+    except Exception:
+        md = COV.get(metal, 1.5) + COV.get(donor, 0.75)
+    # Final guard: never non-finite or absurd.
+    return float(min(4.0, max(0.8, md)))
 
 
 def _kabsch_resid(P: np.ndarray, Q: np.ndarray) -> float:
