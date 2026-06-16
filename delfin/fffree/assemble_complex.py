@@ -567,16 +567,39 @@ def _ligand_3d_from_mol(frag_mol):
     return syms, m.GetConformer().GetPositions(), m
 
 
+# Process-local conformer memo (deterministic embed -> cacheable).  Keyed by the
+# fragment's canonical SMILES + k, so the ENSEMBLE builder re-uses one ligand embed
+# across all its variant builds instead of re-running ETKDG per variant (the embed of
+# a large flexible η-substituent dominates the per-build cost).  Transparent: the same
+# input always returns the same (deterministic) result, so behaviour is unchanged —
+# this is a speedup, not a semantic change.  Bounded to avoid unbounded growth.
+_CONF_CACHE = {}
+_CONF_CACHE_MAX = 256
+
+
 def _ligand_confs_from_mol(frag_mol, k=10):
     """UNIVERSAL multi-conformer generation for a ligand (deterministic): K diverse
     ETKDG conformers (fixed seed, single-thread) + MMFF.  Returns (syms, [coords],
     mol).  Used to pick the clash-minimal conformer per ligand at placement — a
-    fundamental Layer-3 mechanism applied to every ligand, not a per-case patch."""
+    fundamental Layer-3 mechanism applied to every ligand, not a per-case patch.
+
+    Result is memoised by canonical SMILES + k (deterministic embed): repeated calls
+    for the same ligand (e.g. the ensemble builder's variant loop) skip the costly
+    re-embed.  The cached coords/mol are NOT mutated by any caller."""
+    key = None
+    try:
+        key = (Chem.MolToSmiles(frag_mol), int(k))
+    except Exception:
+        key = None
+    if key is not None and key in _CONF_CACHE:
+        return _CONF_CACHE[key]
     m = Chem.AddHs(frag_mol)
     cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
                                            numThreads=1))
     if not cids:
         if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
+            if key is not None:
+                _CONF_CACHE[key] = None
             return None
         cids = [0]
     try:
@@ -584,7 +607,10 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     except Exception:
         pass
     syms = [a.GetSymbol() for a in m.GetAtoms()]
-    return syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m
+    out = (syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m)
+    if key is not None and len(_CONF_CACHE) < _CONF_CACHE_MAX:
+        _CONF_CACHE[key] = out
+    return out
 
 
 def _clash_count(Q, existing, syms_Q, syms_ex):

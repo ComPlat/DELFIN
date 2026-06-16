@@ -300,6 +300,12 @@ def _hapto_subst_rotamers(xyz, n_per=2):
     Deterministic (the rotamer grid + seeds are fixed inside the module)."""
     if os.environ.get("DELFIN_FFFREE_HAPTO_NO_SUBROT", "0") == "1" or n_per < 1:
         return [xyz]
+    # Size guard: the OB rotor-tree rotamer search is O(atoms) per DOF; on very large
+    # complexes (huge oligo-aryl substituents) it dominates wall-clock for little gain
+    # (the η-ring + donors are frozen, so distal rotamers barely move heavy atoms near
+    # the crystal core).  Skip it past a generous cap -> bounded per-SMILES time.
+    if xyz.count("\n") + 1 > 160:
+        return [xyz]
     try:
         from delfin import _rotamer_diversity as RD
         outs = RD.apply(xyz, n_per_isomer=int(n_per), n_states=3, max_dofs=4)
