@@ -893,9 +893,83 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
     # order combos by total rank (frame 0 = all best = the single-path pick), then
     # lexicographically -> deterministic.
     combos.sort(key=lambda cb: (sum(cb), cb))
+
+    # ---- inter-ligand-clash-aware selection (env-gated, default OFF = byte-id) ----
+    # ROOT FIX (#306 inter-ligand): the per-vertex candidate scoring above clashes vs
+    # the METAL ONLY, and this combo loop orders by metal-clash RANK SUM and NEVER
+    # scores the assembled frame for inter-ligand overlap.  For homoleptic bulky
+    # ligands every vertex then independently picks the same metal-optimal pose ->
+    # systematic inter-ligand clash, identical in every frame (e.g. Zr(C6H5)6: min
+    # inter-aryl H-H = 0.73 A in all frames).  The axial-spin candidates that COULD
+    # interleave the ligands already exist in per_vertex_cands -- they are just never
+    # selected for.  When DELFIN_FFFREE_INTERLIG_RANK=1: (a) lead frame 0 with a
+    # GREEDY sequential placement that picks, at each vertex, the candidate minimising
+    # _clash_count vs the already-placed ligands (mirrors assemble_heteroleptic_from_
+    # mols), and (b) emit the remaining frames in ASCENDING total inter-ligand clash.
+    # RIGID only: we re-select among existing conformer/spin candidates; the core
+    # (vertex directions + M-D distances) stays fixed.  Deterministic, geometry-only.
+    _interlig = os.environ.get("DELFIN_FFFREE_INTERLIG_RANK", "0") == "1"
     MAX_EVAL = 64                                    # bound the build work
+
+    def _interlig_clash(cb):
+        """Total inter-ligand _clash_count for combo cb: sum over each ligand block
+        of its clash vs the union of PREVIOUSLY-placed ligand blocks (metal at origin
+        excluded; same H-inclusive measure used everywhere).  Rigid-block geometry."""
+        placed = []                       # accumulated already-placed ligand atoms
+        placed_syms = []
+        total = 0
+        for vi, ci in enumerate(cb):
+            Q = per_vertex_cands[vi][ci][0]
+            lsyms = vertex_lsyms[vi]
+            if placed:
+                total += _clash_count(Q, np.array(placed), lsyms, placed_syms)
+            for row in Q:
+                placed.append(row)
+            placed_syms += lsyms
+        return total
+
+    if _interlig:
+        MAX_EVAL = 128                               # modest, capped bump when ON
+        # (a) greedy inter-ligand-minimal lead combo: fixed deterministic vertex order,
+        #     each vertex takes the candidate minimising clash vs already-placed blocks.
+        greedy = []
+        gplaced = []; gplaced_syms = []
+        for vi in range(len(per_vertex_cands)):
+            cands_vi = per_vertex_cands[vi]
+            lsyms = vertex_lsyms[vi]
+            best_ci, best_cl = 0, None
+            for ci, (Q, _mc) in enumerate(cands_vi):
+                if not gplaced:
+                    cl = 0
+                else:
+                    cl = _clash_count(Q, np.array(gplaced), lsyms, gplaced_syms)
+                # strictly-less keeps the FIRST (lowest-index = lowest metal-clash)
+                # candidate on ties -> deterministic, and =all-best when no clash.
+                if best_cl is None or cl < best_cl:
+                    best_cl, best_ci = cl, ci
+                if cl == 0:
+                    break
+            greedy.append(best_ci)
+            Qsel = cands_vi[best_ci][0]
+            for row in Qsel:
+                gplaced.append(row)
+            gplaced_syms += lsyms
+        greedy = tuple(greedy)
+        # rank the bounded combo window by total inter-ligand clash (ascending), then
+        # by the original metal-rank ordering as a stable deterministic tiebreak; put
+        # the greedy lead combo first (dedup so it is not double-evaluated).
+        window = combos[:MAX_EVAL]
+        if greedy not in window:
+            window = [greedy] + window[:MAX_EVAL - 1]
+        scored = [(_interlig_clash(cb), sum(cb), cb) for cb in window]
+        # greedy combo forced to the front via a sentinel key; rest by (clash, rank).
+        scored.sort(key=lambda t: (0 if t[2] == greedy else 1, t[0], t[1], t[2]))
+        eval_order = [t[2] for t in scored]
+    else:
+        eval_order = combos[:MAX_EVAL]
+
     frames = []                                      # (syms, P) kept (deduped)
-    for cb in combos[:MAX_EVAL]:
+    for cb in eval_order:
         blocks = [np.zeros((1, 3))]
         placed_P = [np.zeros(3)]; placed_syms = [metal]
         ok = True
