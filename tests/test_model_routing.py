@@ -124,6 +124,17 @@ def test_candidate_in_live_list_is_used():
     assert d.model == "azure.gpt-5-nano" and d.routed
 
 
+def test_dashboard_feeds_available_models_into_routing():
+    """The dashboard route_model call must feed the live model list (the model
+    dropdown's values) so routing never switches into a model the provider no
+    longer serves."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    assert "available_models=_avail" in src
+    assert "for _, v in" in src and "model_dropdown.options" in src
+
+
 def test_same_as_user_model_is_not_reported_as_routed():
     d = route_model(provider="kit", user_model="azure.gpt-5-nano",
                     complexity="simple", settings=_ON)

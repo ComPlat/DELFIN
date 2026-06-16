@@ -41,10 +41,13 @@ in this priority order and appends new findings back here.
   gpt-oss-120b **131072**, gemma4-31b **262144**. Authed/key-less probes use
   distinct cache keys so a key-less miss is never served to an authed lookup.
   Follow-up: the ~5s first-turn probe is synchronous — could pre-warm/async.
-- [ ] **Live `available_models` into `route_model`** — the mechanism exists
-  (`route_model(available_models=…)`) but nothing feeds the live model list, so
-  routing can't avoid an unlisted/removed model. Wire the dashboard's fetched
-  list in.
+- [x] **Live `available_models` into `route_model`** — the dashboard's single
+  `route_model` call now feeds the model dropdown's values (which hold the live
+  `/v1/models`·`/api/tags` list, else the curated fallback) as
+  `available_models`, so routing never switches INTO a model the provider no
+  longer serves. Live-proven against the real 23-model KIT list: complex turn →
+  routes to `azure.gpt-5.4` (strong); with that tier removed from the list →
+  falls back to the user model ("not in live model list"), no dead route.
 
 ### Multimodal / providers
 - [ ] **Claude-format vision** — `engine._build_user_message` only emits

@@ -12859,11 +12859,22 @@ def create_tab(ctx):
                     try:
                         if getattr(engine, "backend", "") != "cli":
                             from delfin.agent.model_routing import route_model
+                            # Feed the live (or fallback) model list so routing
+                            # never switches INTO a model the provider no longer
+                            # serves — the dropdown holds exactly the available
+                            # set (live /v1/models or /api/tags, else curated).
+                            _avail = None
+                            try:
+                                _avail = [v for _, v in
+                                          (model_dropdown.options or [])] or None
+                            except Exception:
+                                _avail = None
                             _dec = route_model(
                                 provider=provider_dropdown.value or "",
                                 user_model=model_dropdown.value or "",
                                 complexity=engine.classify_task_complexity(
                                     user_text),
+                                available_models=_avail,
                             )
                             if _dec.routed and hasattr(engine.client,
                                                        "switch_model"):
