@@ -290,15 +290,30 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
         return False
     syms = list(syms)
     bonds = _bd._geometric_bonds(syms, P)
-    if exempt_pairs:
-        _ex = {(min(i, j), max(i, j)) for i, j in exempt_pairs}
-        n_coll = sum(1 for i, j in bonds
-                     if not (_bd._is_metal(syms[i]) or _bd._is_metal(syms[j]))
-                     and (min(i, j), max(i, j)) not in _ex
-                     and float(np.linalg.norm(P[i] - P[j])) < 0.82 * _bd._ideal_bond(syms[i], syms[j]))
-        if n_coll > 0:
-            return False
-    elif _bd._count_collapsed(syms, P, bonds) > 0:      # any collapsed heavy bond
+    # X-H collapse calibration (#306/#281): X-ray C-H/N-H/O-H bonds are legitimately
+    # SHORT (~0.65-0.95 A); the uniform 0.82*ideal floor (=0.88 A for C-H) FALSELY
+    # flags them as "collapsed", which drops an otherwise-clean geometry isomer to the
+    # legacy fallback (measured: AFOWOH's trans-Cl isomer rejected over 2 aryl C-H at
+    # 0.81/0.87 A — 0.01 A under threshold).  When enabled, H-involving bonds use a
+    # lower floor (XH_FRAC*ideal, default 0.55 ~= the CCDC X-H metric floor) so a real
+    # H-on-atom collapse (< ~0.6 A) is still caught while X-ray-short H pass.  Heavy-
+    # heavy bonds keep the 0.82 floor unchanged.  Env-gated, default OFF => byte-id
+    # (floor is 0.82*ideal for every bond, exactly the historic _count_collapsed /
+    # exempt-branch behaviour).
+    _xh = os.environ.get("DELFIN_FFFREE_XH_COLLAPSE", "0") == "1"
+    _xh_frac = float(os.environ.get("DELFIN_FFFREE_XH_COLLAPSE_FRAC", "0.55"))
+
+    def _coll_floor(a, b):
+        if _xh and (a == "H" or b == "H"):
+            return _xh_frac * _bd._ideal_bond(a, b)
+        return 0.82 * _bd._ideal_bond(a, b)
+
+    _ex = {(min(i, j), max(i, j)) for i, j in (exempt_pairs or ())}
+    n_coll = sum(1 for i, j in bonds
+                 if not (_bd._is_metal(syms[i]) or _bd._is_metal(syms[j]))
+                 and (min(i, j), max(i, j)) not in _ex
+                 and float(np.linalg.norm(P[i] - P[j])) < _coll_floor(syms[i], syms[j]))
+    if n_coll > 0:
         return False
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
