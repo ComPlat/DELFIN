@@ -85,6 +85,43 @@ def _eta_groups(mol, m: int) -> List[List[int]]:
     return groups
 
 
+def _restore_eta_ring_hydrogens(fmol, local_eta: List[int]):
+    """Restore the hydrogens dropped from η-ring carbons after the M-C cleave.
+
+    The dative-bond SMILES encoding writes π-face carbons as ``[C+]`` cations
+    (degree-3 with the metal bond).  When ``_decompose_hapto`` cleaves the M-C
+    bonds the bare ring carbons keep ``noImplicit=True`` + a radical electron, so
+    RDKit's ``AddHs`` adds ZERO hydrogen to them — the η-ring CH hydrogens vanish
+    from every emitted frame (eye-caught: CEBQEI 11 H vs 17, BOCMIR 6 vs 10).
+
+    Real Cp / arene / diene / allyl ring carbons are sp2 (valence 3): a ring
+    carbon with no substituent (2 heavy neighbours) bears exactly ONE H; a
+    substituted ring carbon (3 heavy neighbours) bears none.  We therefore drop
+    the encoding-artifact formal charge + radical on each η-carbon and set its
+    explicit-H count to ``max(0, 3 - heavy_neighbours)``.  The H land exo / in the
+    ring plane via RDKit's geometric embed (handled downstream in
+    ``_ligand_confs_from_mol``).  Graph-only, deterministic, idempotent; returns a
+    sanitized RWMol-derived mol or the original fmol on any failure (never raises,
+    never produces a non-finite molecule)."""
+    try:
+        rw = Chem.RWMol(fmol)
+        for i in local_eta:
+            a = rw.GetAtomWithIdx(int(i))
+            if a.GetAtomicNum() != 6:
+                continue                                  # η-faces are carbon
+            n_heavy = sum(1 for nb in a.GetNeighbors() if nb.GetAtomicNum() > 1)
+            nh = max(0, 3 - n_heavy)                       # sp2 ring carbon, valence 3
+            a.SetFormalCharge(0)                           # drop the [C+] artifact
+            a.SetNumRadicalElectrons(0)
+            a.SetNoImplicit(True)
+            a.SetNumExplicitHs(nh)
+        m2 = rw.GetMol()
+        Chem.SanitizeMol(m2)
+        return m2
+    except Exception:
+        return fmol
+
+
 def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     """Hapto-aware decomposition (DELFIN_FFFREE_RIGID_HAPTO=1 only).
 
@@ -152,6 +189,9 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
             gid = f_eta_gids[0]
             g = egroups[gid]
             local_eta = [orig.index(o) for o in g]
+            # Restore the η-ring CH hydrogens the M-C cleave stripped (the [C+]
+            # artifact otherwise has AddHs add zero H to the π-face carbons).
+            fmol = _restore_eta_ring_hydrogens(fmol, local_eta)
             ligands.append({
                 "mol": fmol,
                 "is_eta": True,
