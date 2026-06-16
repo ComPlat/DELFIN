@@ -78,6 +78,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         tab_orca_builder,
         tab_recalc,
         tab_submit,
+        tab_tools,
     )
 
     # -- ensure delfin is importable & up-to-date --------------------------
@@ -254,6 +255,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tab_lit, _refs_lit = tab_literature.create_tab(ctx)
     tab_ag, refs_ag = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
+    # Tools & Platform tab (defensive: never let it break dashboard startup)
+    try:
+        tab_tools_widget, refs_tools = tab_tools.create_tab(ctx)
+    except Exception:
+        tab_tools_widget, refs_tools = None, {}
+    ctx.tools_refs = refs_tools
     try:
         from delfin.agent.credentials import load_credential as _lc_anth
         _anth_key = _lc_anth("ANTHROPIC_API_KEY")
@@ -381,6 +388,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'available': tab7 is not None,
             'fixed': False,
             'reason': '' if tab7 is not None else 'Enable Remote Archive in Settings first.',
+        },
+        {
+            'id': 'tools',
+            'title': 'Tools',
+            'widget': tab_tools_widget,
+            'default_order': 9_000,
+            'default_visible': True,
+            'available': tab_tools_widget is not None,
+            'fixed': False,
+            'reason': '' if tab_tools_widget is not None else 'Tools panel unavailable.',
         },
         {
             'id': 'settings',
