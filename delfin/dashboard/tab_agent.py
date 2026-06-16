@@ -1109,6 +1109,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("Session", "/compact", "Summarize context to reduce tokens", False),
     ("Session", "/context", "Show context-window usage + compaction status", False),
     ("Session", "/trace", "Show this session's tool-call trace (/trace N for last N)", True),
+    ("Session", "/loop", "Re-run a prompt on an interval (/loop 30m /check · /loop list · /loop stop <id>)", True),
     ("Session", "/agents", "List subagent presets (or /agents stats for telemetry)", False),
     ("Session", "/skills", "List discovered skills (or /skills <name> for body)", False),
     ("Session", "/undo", "Undo last agent turn (drop from context)", False),
@@ -8143,6 +8144,65 @@ def create_tab(ctx):
                     + f"\n\nFull trace: {_tt.trace_path(engine.trace_session())}")
             return True
 
+        if cmd.startswith("/loop"):
+            # Recurring agent loop (like Claude Code's /loop): re-run a prompt
+            # on a fixed interval via the scheduler — the existing fire-callback
+            # injects the prompt as a turn each time.
+            from delfin.agent import scheduler as _sch_mod
+            sch = _sch_mod.get_scheduler()
+
+            def _loops():
+                return [e for e in sch.list_entries()
+                        if e.kind == "interval" and (e.reason or "").startswith("loop:")]
+
+            _rest = text[len("/loop"):].strip()
+            if _rest in ("", "list", "ls"):
+                _loop_list = _loops()
+                if not _loop_list:
+                    _append_system_message(
+                        "No active loops. Usage: /loop <5m|2h|1d> <prompt>  ·  "
+                        "/loop list  ·  /loop stop <id|all>")
+                else:
+                    _ls = ["🔁 Active loops:"]
+                    for e in _loop_list:
+                        _ls.append(f"  [{e.id}] every {max(1, e.every_seconds // 60)}m"
+                                   f" → {e.prompt[:60]}")
+                    _ls.append("Stop with /loop stop <id> (or /loop stop all).")
+                    _append_system_message("\n".join(_ls))
+                return True
+            if _rest.startswith("stop"):
+                _sa = _rest[4:].strip()
+                if _sa == "all":
+                    _nstop = sum(1 for e in _loops() if sch.delete(e.id))
+                    _append_system_message(f"Stopped {_nstop} loop(s).")
+                elif _sa:
+                    _append_system_message(
+                        f"Loop {_sa} stopped." if sch.delete(_sa)
+                        else f"No loop with id {_sa}.")
+                else:
+                    _append_system_message("Usage: /loop stop <id|all>")
+                return True
+            _lp = _rest.split(None, 1)
+            _secs = _sch_mod.parse_interval_seconds(_lp[0]) if _lp else None
+            if not _secs or len(_lp) < 2 or not _lp[1].strip():
+                _append_system_message(
+                    "Usage: /loop <5m|2h|1d> <prompt>  ·  /loop list  ·  "
+                    "/loop stop <id|all>\nExample: /loop 30m /check")
+                return True
+            _lprompt = _lp[1].strip()
+            try:
+                _ent = sch.schedule_interval(
+                    every_seconds=_secs, prompt=_lprompt,
+                    reason=f"loop: {_lprompt[:40]}")
+                _append_system_message(
+                    f"🔁 Loop [{_ent.id}] started — every "
+                    f"{max(1, _secs // 60)}m: {_lprompt[:60]}\n"
+                    f"First run in {max(1, _secs // 60)}m. "
+                    f"Stop with /loop stop {_ent.id}.")
+            except Exception as _exc:
+                _append_system_message(f"Loop failed: {_exc}")
+            return True
+
         if cmd == "/context":
             engine = state["engine"]
             if not engine:
@@ -11718,6 +11778,7 @@ def create_tab(ctx):
             "/workspace", "/tab", "/ui",
             "/control", "/submit", "/orca", "/jobs", "/calc", "/analyze",
             "/check", "/recalc", "/cancel", "/context", "/agents", "/skills",
+            "/trace", "/loop",
         }
         # User-defined slash commands and skill expansion: when /<name>
         # doesn't match a built-in slash command, first look in the

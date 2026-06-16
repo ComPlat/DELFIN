@@ -10,8 +10,10 @@ in this priority order and appends new findings back here.
 2. **Pick ONE task** by priority: open bug reports → a regression caught by the
    smoke → the highest-value backlog item below → a weak spot from
    telemetry/traces.
-3. **Implement** small + atomic; **test** (full suite + a live check where it
-   matters). **Never commit on red.**
+3. **Implement** small + atomic; **test** — full suite AND a **live check with a
+   real model** (qwen via Ollama localhost or KIT `kit.qwen3.5-397b-A17b`):
+   don't just build, prove the change actually works end-to-end. **Never commit
+   on red.**
 4. **Ship** — commit to `main` (no Co-Authored-By trailer), push; move a fixed
    bug report to `…/AGENT_BUGS/Solved`; tick the item here + note any new
    finding.
@@ -51,6 +53,10 @@ in this priority order and appends new findings back here.
   prompts as slash commands + resources as @-mentions in the dashboard.
 
 ### Done (recent, for context)
+- [x] `/loop` command — recurring agent loop (interval-based, scheduler-backed),
+  like Claude Code's /loop. `/loop <5m|2h|1d> <prompt>` · `/loop list` ·
+  `/loop stop <id|all>`. Live-verified: scheduler fires a real KIT-qwen turn.
+  Also fixed: `/trace` was never routed (missing from `_SLASH_PREFIXES`).
 - [x] read_file/grep/list no longer require the doc index (off-repo subagents).
 - [x] reasoning-model token floor; reasoning channel surfaced.
 - [x] vision wired (OpenAI-compatible backends).

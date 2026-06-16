@@ -202,6 +202,19 @@ class Scheduler:
             self._stop.wait(_POLL_S)
 
 
+def parse_interval_seconds(token: str) -> int | None:
+    """Parse a ``/loop`` interval token (``5m`` / ``2h`` / ``1d`` / ``90s``)
+    into seconds, clamped to the scheduler minimum (60s). None when the token
+    is not a valid ``<N><s|m|h|d>`` interval."""
+    import re as _re
+    m = _re.fullmatch(r"(\d+)\s*([smhd])", (token or "").strip().lower())
+    if not m:
+        return None
+    n = int(m.group(1))
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    return max(60, n * mult)
+
+
 _GLOBAL_LOCK = threading.Lock()
 _GLOBAL: Scheduler | None = None
 
@@ -229,4 +242,5 @@ __all__ = [
     "Scheduler",
     "get_scheduler",
     "reset_scheduler",
+    "parse_interval_seconds",
 ]
