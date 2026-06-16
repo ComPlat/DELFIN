@@ -26,6 +26,7 @@ from delfin.tools._types import ErrorKind, StepError, StepResult, StepStatus
 from delfin.tools._runner import run_step, step_as_workflow_job
 from delfin.tools._registry import list_steps, register
 from delfin.tools._spec import DataKeySpec, ParamSpec, StepContract
+from delfin.tools._keys import KeySpec, key, register_key
 from delfin.tools._catalog import catalog, compatible_successors, describe
 from delfin.tools._serialize import PipelineSerializationError, register_callable
 from delfin.tools._application import (
@@ -56,6 +57,10 @@ __all__ = [
     "describe",
     "catalog",
     "compatible_successors",
+    # Central key vocabulary
+    "KeySpec",
+    "key",
+    "register_key",
     # Serialization (blocks as data)
     "register_callable",
     "PipelineSerializationError",

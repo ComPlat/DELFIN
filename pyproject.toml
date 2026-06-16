@@ -114,6 +114,7 @@ delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
 delfin-pipeline = "delfin.cli_pipeline:main"
 delfin-docs-index = "delfin.doc_server.indexer:main"
+delfin-tools-server = "delfin.tools.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

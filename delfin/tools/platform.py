@@ -40,6 +40,8 @@ from delfin.tools._application import register_application as _register_applicat
 from delfin.tools._catalog import catalog as _catalog
 from delfin.tools._catalog import compatible_successors as _compatible_successors
 from delfin.tools._catalog import describe as _describe
+from delfin.tools._keys import get_key as _get_key
+from delfin.tools._keys import list_keys as _list_keys
 from delfin.tools._registry import list_steps
 
 
@@ -66,6 +68,38 @@ def catalog(*, by: str = "category") -> Dict[str, list]:
 def compatible_successors(name: str) -> List[str]:
     """Capabilities whose inputs *name* can satisfy (what can follow it)."""
     return _compatible_successors(name)
+
+
+# ======================================================================
+#  Keys (central well-known-parameter vocabulary)
+# ======================================================================
+
+
+def list_keys() -> List[str]:
+    """Names of all well-known keys (functional, basis, solvent, …)."""
+    return sorted(_list_keys().keys())
+
+
+def describe_key(name: str):
+    """The :class:`KeySpec` (type, default, allowed values) for one key, or ``None``."""
+    return _get_key(name)
+
+
+# ======================================================================
+#  Manifest (machine-readable binding contract)
+# ======================================================================
+
+
+def manifest() -> Dict[str, Any]:
+    """The full platform manifest (capabilities, applications, keys, schemas)."""
+    from delfin.tools.manifest import build_manifest
+    return build_manifest()
+
+
+def manifest_json(*, indent: int = 2) -> str:
+    """The full platform manifest as a JSON string."""
+    from delfin.tools.manifest import manifest_json as _mj
+    return _mj(indent=indent)
 
 
 # ======================================================================
@@ -191,6 +225,11 @@ __all__ = [
     "describe_capability",
     "catalog",
     "compatible_successors",
+    # keys + manifest
+    "list_keys",
+    "describe_key",
+    "manifest",
+    "manifest_json",
     # applications
     "ApplicationResult",
     "register_application",

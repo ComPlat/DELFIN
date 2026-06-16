@@ -139,3 +139,83 @@ def test_install_tools_plans_without_executing():
     assert out["executed"] is False
     assert "plan" in out
     assert set(out["plan"]).issuperset({"auto_binaries", "manual", "python", "installer"})
+
+
+# --- Key vocabulary -------------------------------------------------------
+
+
+def test_central_keys_and_allowed_values():
+    keys = platform.list_keys()
+    assert {"functional", "basis", "solvent", "relativity", "dispersion"} <= set(keys)
+    func = platform.describe_key("functional")
+    assert func is not None and func.enum and "PBE0" in func.enum
+    assert "ZORA" in platform.describe_key("relativity").enum
+    assert platform.describe_key("does_not_exist") is None
+
+
+def test_key_helper_builds_paramspec_with_enum():
+    from delfin.tools import key
+
+    p = key("functional", required=True)
+    assert p.name == "functional" and p.required is True
+    assert p.enum and "B3LYP" in p.enum
+    # unknown key still yields a usable ParamSpec
+    q = key("totally_unknown")
+    assert q.name == "totally_unknown" and q.enum is None
+
+
+# --- Manifest -------------------------------------------------------------
+
+
+def test_manifest_structure():
+    m = platform.manifest()
+    assert m["delfin_tools_manifest"] == "1"
+    assert {"capabilities", "applications", "keys", "schemas"} <= set(m)
+    cap_names = {c["name"] for c in m["capabilities"]}
+    assert {"orca_sp", "occupier", "esd"} <= cap_names
+    key_names = {k["name"] for k in m["keys"]}
+    assert "functional" in key_names
+    func = next(k for k in m["keys"] if k["name"] == "functional")
+    assert "PBE0" in func["enum"] and func["enum_source"]
+    assert m["schemas"]["pipeline_spec"]["title"] == "DelfinPipelineSpec"
+    assert m["schemas"]["application"]["title"] == "DelfinApplication"
+
+
+def test_manifest_json_is_valid_json():
+    import json
+
+    data = json.loads(platform.manifest_json())
+    assert data["delfin_tools_manifest"] == "1"
+
+
+# --- MCP request handlers (no mcp dependency needed) ----------------------
+
+
+def test_mcp_handlers_return_valid_json():
+    import json
+
+    from delfin.tools import mcp_server as srv
+
+    # read-only handlers
+    assert "orca_sp" in json.loads(srv.h_list_capabilities())
+    assert json.loads(srv.h_describe_capability("orca_sp"))["name"] == "orca_sp"
+    assert "error" in json.loads(srv.h_describe_capability("nope_xyz"))
+    assert any(k["name"] == "functional" for k in json.loads(srv.h_list_keys()))
+    assert json.loads(srv.h_describe_key("functional"))["name"] == "functional"
+    assert "opt_freq_energy" in json.loads(srv.h_list_applications())
+    assert json.loads(srv.h_describe_application("opt_freq_energy"))["name"] == "opt_freq_energy"
+    assert "capabilities" in json.loads(srv.h_get_manifest())
+
+    # validate handler
+    v = json.loads(srv.h_validate_application("opt_freq_energy",
+                                              {"smiles": "CCO", "charge": 0}))
+    assert "ok" in v and "diagnostics" in v
+
+    # run handler on an unknown app fails fast with structured error
+    r = json.loads(srv.h_run_application("does_not_exist"))
+    assert r["ok"] is False and r["error"]
+
+    # environment handlers
+    assert isinstance(json.loads(srv.h_probe()), list)
+    plan = json.loads(srv.h_install_plan())
+    assert "orca" not in plan["auto_binaries"]
