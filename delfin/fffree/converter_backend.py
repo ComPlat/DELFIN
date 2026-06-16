@@ -271,10 +271,41 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         return None
     geom_tag = d["geometry"].split()[0]
     results = []
+    # SIGMA-ensemble (Task A.1): the chelate σ sub-path emits ONE frame per config,
+    # but the legacy converter sprays 4-25 frames per refcode (chelate-ring PUCKER +
+    # ligand conformers) and best-of-ensemble MIN crystal-recall rewards the larger
+    # spray purely on shot count (SARKOM/QEPFAS/UWUJAY trail legacy with the FIRST
+    # coordination shell already correct).  Generalise the SAME proven lever (CN2
+    # +5.9pp, hapto +5.8pp): per config emit a deterministic, RMSD-deduped ensemble.
+    # The metallacycle / ETKDG conformer pool already samples chelate-ring pucker
+    # (Cremer-Pople) across conformers, so assemble_from_config(n_frames>1) RETAINS
+    # the distinct low-clash conformer combinations instead of collapsing to one.
+    # Env-gated DELFIN_FFFREE_SIGMA_ENSEMBLE, default OFF (=> byte-identical, single
+    # frame per config) ; size capped near the legacy spray.
+    _sig_ens = os.environ.get("DELFIN_FFFREE_SIGMA_ENSEMBLE", "0") == "1"
+    _n_chel = int(os.environ.get("DELFIN_FFFREE_SIGMA_CHELATE_NFRAMES", "8"))
     for k, config in enumerate(configs[:max_isomers]):
         # per-config pruning (generate-gate-floor): a geometrically infeasible config
         # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
         # bad isomer no longer drops the whole complex to legacy.  Clean isomers survive.
+        if _sig_ens:
+            try:
+                built = AC.assemble_from_config(d["metal"], d["geometry"], config,
+                                                ligands, n_frames=_n_chel)
+            except Exception:
+                continue
+            if not built:
+                continue
+            kept = 0
+            for fi, (syms, P, donors) in enumerate(built):
+                syms, P = _maybe_relax(syms, P)
+                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                                       donors=donors):   # per-frame self-gate
+                    continue                             # skip a bad frame, keep clean ones
+                lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
+                results.append((_xyz(syms, P), lab))
+                kept += 1
+            continue
         try:
             built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
         except Exception:
@@ -426,17 +457,33 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # DELFIN_FFFREE_CN2_ENSEMBLE=0.  Default OFF overall (CN_EXTEND off => byte-id).
     _cn2_ens = (d.get("cn") == 2
                 and os.environ.get("DELFIN_FFFREE_CN2_ENSEMBLE", "1") == "1")
+    # SIGMA-ensemble (Task A.2): the monodentate CN4/5/6 path emits ONE frame per
+    # coloring via assemble_heteroleptic_from_mols, but the legacy multi-frame
+    # converter sprays ~8-13 conformers (cis/trans donor perms + ligand internal
+    # conformers + co-ligand orientation) and best-of-ensemble MIN crystal-recall
+    # rewards the larger spray (FANYAW/LEYLAC/CPOCEM trail legacy by frame count
+    # alone — the first coordination shell is already correct).  This is the SAME
+    # lever already proven for CN2 (+5.9pp) and rigid-hapto (+5.8pp).  Reuse the
+    # identical CN2 ensemble machinery (assemble_heteroleptic_ensemble: ETKDG
+    # conformer pool + axial-spin rotamers + inter-ligand combos, RMSD-deduped,
+    # clash-aware, every frame self-gated).  Env-gated DELFIN_FFFREE_SIGMA_ENSEMBLE,
+    # default OFF (=> byte-identical when unset).  Scoped to MONODENTATE CN4/5/6
+    # (chelate + hapto + CN2/3 reach this branch only via their own paths/gates).
+    _sigma_ens = (d.get("cn") in (4, 5, 6)
+                  and os.environ.get("DELFIN_FFFREE_SIGMA_ENSEMBLE", "0") == "1")
     _n_ens = int(os.environ.get("DELFIN_FFFREE_CN2_NFRAMES", "8"))
+    _n_sigma = int(os.environ.get("DELFIN_FFFREE_SIGMA_NFRAMES", "10"))
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         geom_tag = d["geometry"].split()[0]
         base_label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
-        if _cn2_ens:
+        if _cn2_ens or _sigma_ens:
+            _nf = _n_ens if _cn2_ens else _n_sigma
             try:
                 ens = AC.assemble_heteroleptic_ensemble(
-                    d["metal"], d["geometry"], vertex_specs, n_frames=_n_ens)
+                    d["metal"], d["geometry"], vertex_specs, n_frames=_nf)
             except Exception:
                 ens = None
             if not ens:

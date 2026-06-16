@@ -1390,12 +1390,25 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
     return builds[:max_builds] if builds else None
 
 
-def assemble_from_config(metal, geometry, config, ligands, refine=True):
+def assemble_from_config(metal, geometry, config, ligands, refine=True,
+                         n_frames=1, per_lig_confs=6, rmsd_dedup=0.5):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
-    vertex.  Multi-conformer selection per ligand + constrained refine.  Returns
-    (syms, P) = [metal] + ligand atoms, or None on failure."""
+    vertex.  Multi-conformer selection per ligand + constrained refine.
+
+    ``n_frames``: with the default ``1`` the single clash-minimal frame is returned
+    (byte-identical to the historic behaviour) as ``(syms, P, donors)``.  With
+    ``n_frames > 1`` an RMSD-deduped ENSEMBLE of full-complex frames is returned as
+    a list ``[(syms, P, donors), ...]`` (canonical clash-minimal frame first) that
+    varies ligand internal / chelate-ring conformation while keeping the
+    constructed coordination (vertex directions + M-D distances) fixed -- the same
+    best-of-ensemble lever proven for CN2 / rigid-hapto, generalised to the chelate
+    σ sub-path (Task A.1).  Returns ``None`` on failure (in either mode).
+    Deterministic (fixed SEED, single-thread); every emitted frame is internally
+    refined; ETKDG / metallacycle conformer pool already samples chelate-ring
+    pucker (Cremer-Pople) across conformers, so distinct puckers fall out naturally.
+    """
     ref = MSB._ref_vectors(geometry)
     # group config by ligand instance: lig_idx -> [(vertex, arm), ...]
     by_lig = {}
@@ -1404,6 +1417,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
     out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}; pos = 1
     relax_frags = []          # (AddHs(lg.mol), ligands-only offset) for the internal relax
+    # ENSEMBLE refactor (Task A.1): collect per-ligand candidate placements
+    # (Q, clash_vs_metal) deduped by intra-ligand RMSD instead of only the single
+    # clash-minimal pick, then enumerate full-complex combinations.  n_frames==1
+    # keeps only the all-best combo -> byte-identical to the historic single path.
+    ensemble = int(n_frames) > 1
+    _k_confs = max(int(per_lig_confs), 1) if ensemble else 6
+    per_lig_cands = []        # per ligand: [(Q, clash_vs_metal), ...] sorted best-first
+    per_lig_syms = []         # per ligand: lsyms (for combo assembly)
+    metal_P = np.zeros((1, 3)); metal_sym = [metal]
     for li, va in by_lig.items():
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
@@ -1434,11 +1456,17 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
-            confs = _ligand_confs_from_mol(lg["mol"])
+            confs = _ligand_confs_from_mol(lg["mol"], k=_k_confs)
             if confs is None:
                 return None
             lsyms, coords_list, lmol = confs
+        # Build every valid placement for this ligand across the conformer pool.
+        # Single mode: pick the clash-minimal vs already-placed atoms (historic,
+        # byte-identical).  Ensemble mode: keep distinct low-clash-vs-metal
+        # candidates (placement-order-independent + diverse), deduped intra-ligand.
         best_Q, best_clash = None, 1e18
+        cands = []                                  # (Q, clash_vs_metal) for ensemble
+        seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
             if lg["denticity"] == 1:
                 v = va[0][0]
@@ -1480,92 +1508,160 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True):
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
+            if not np.all(np.isfinite(Q)):
+                continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
-            if cl == 0:
+            if ensemble:
+                # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
+                dup = False
+                for Qs in seen_local:
+                    if Qs.shape == Q.shape:
+                        c0 = Q - Q.mean(axis=0); c1 = Qs - Qs.mean(axis=0)
+                        if float(np.sqrt(((c0 - c1) ** 2).sum(axis=1).mean())) < rmsd_dedup:
+                            dup = True
+                            break
+                if not dup:
+                    seen_local.append(Q)
+                    cands.append((Q, _clash_count(Q, metal_P, lsyms, metal_sym)))
+            elif cl == 0:
                 break
         if best_Q is None:                  # no conformer could be placed -> bail to legacy
             return None
+        if ensemble:
+            if not cands:
+                return None
+            cands.sort(key=lambda t: t[1])          # low clash-vs-metal first
+            per_lig_cands.append(cands)
+            per_lig_syms.append(lsyms)
         out_syms += lsyms
-        for row in best_Q:
-            placed.append(row)
         placed_syms += lsyms
         relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))   # bonds for internal relax
+        # in single mode the placed coords come from best_Q; the ensemble assembles
+        # placed coords per combo below (placed[] is only the single-mode buffer)
+        if not ensemble:
+            for row in best_Q:
+                placed.append(row)
         # freeze the donor atoms at their vertices
         for d in dons:
             fixed.add(pos + d)
         pos += len(lsyms)
-    P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
-    if refine:
-        # FUNDAMENTAL internal relaxation (division-of-labor doctrine): build the
-        # ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
-        # DONORS FIXED + inter-fragment vdW ON.  All organic internals (bond lengths,
-        # angles, funcgroup/aromatic planarity, H geometry) recover to MM-ideal and
-        # inter-ligand clashes resolve, while the constructed coordination is preserved
-        # (donors pinned -> M-D invariant; metal never enters the force field).  This
-        # replaces the weak defect-count refine(), which left ETKDG-rough internals.
-        # INTERNAL finishing.  THREE-WAY RACE design:
-        #   Track 3 (FF-FREE, DEFAULT): pure construction -- GEOMETRIC correctors only
-        #     (sp2-flatten projection + defect-count clash-relief).  No force field.
-        #   Track 2 (ligand-FF, opt-in DELFIN_FFFREE_LIGANDFF=1): additionally a constrained
-        #     UFF relax of the organic internals (metal + donors frozen) before the geometric
-        #     correctors.  Track 1 (UFF) is the legacy path (DELFIN_FFFREE_BUILDER=0).
-        # The complex mol (metal + ligand bonds) is the sp2-flatten template (and the optional
-        # UFF mol); metal + donors stay frozen so the constructed coordination is preserved.
-        try:
-            cm = Chem.RWMol()
-            cm.AddAtom(Chem.Atom(out_syms[0]))
-            for frag, _off in relax_frags:
-                base = cm.GetNumAtoms()
-                for a in frag.GetAtoms():
-                    cm.AddAtom(Chem.Atom(a.GetAtomicNum()))
-                for b in frag.GetBonds():
-                    cm.AddBond(b.GetBeginAtomIdx() + base, b.GetEndAtomIdx() + base, b.GetBondType())
-            donor_globals = sorted(fixed - {0})
-            for dg in donor_globals:
-                cm.AddBond(0, dg, Chem.BondType.SINGLE)
-            if cm.GetNumAtoms() == len(out_syms):
-                conf = Chem.Conformer(cm.GetNumAtoms())
-                for kk in range(cm.GetNumAtoms()):
-                    x = P[kk]; conf.SetAtomPosition(kk, [float(x[0]), float(x[1]), float(x[2])])
-                cm.AddConformer(conf, assignId=True)
-                try:
-                    Chem.SanitizeMol(cm, catchErrors=True)
-                except Exception:
-                    pass
-                if os.environ.get("DELFIN_FFFREE_LIGANDFF", "0") == "1":   # Track 2: FF relax
-                    if _constrained_uff_relax(cm, [0] + donor_globals):
-                        Pn = np.array(cm.GetConformer().GetPositions(), float)
-                        if Pn.shape == P.shape:
-                            P = Pn
-                            c = cm.GetConformer()
-                            for kk in range(len(P)):
-                                c.SetAtomPosition(kk, [float(P[kk][0]), float(P[kk][1]), float(P[kk][2])])
-                # FF-FREE geometric planarity corrector (BOTH tracks): project sp2 atoms onto
-                # their neighbour plane (aromatic/amide/funcgroup planarity).  Pure geometry.
-                try:
-                    from delfin.smiles_converter import _flatten_sp2_atoms_xyz
-                    xyz_str = "\n".join(f"{s} {float(p[0]):.6f} {float(p[1]):.6f} {float(p[2]):.6f}"
-                                        for s, p in zip(out_syms, P))
-                    flat = _flatten_sp2_atoms_xyz(xyz_str, cm)
-                    if flat:
-                        newP = np.array([[float(x) for x in ln.split()[1:4]]
-                                         for ln in flat.splitlines() if ln.strip()], float)
-                        if newP.shape == P.shape:
-                            P = newP
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        # FF-free geometric clash-relief (both tracks)
-        try:
-            from delfin.fffree.refine import refine as _refine
-            P = _refine(out_syms, P, fixed)
-        except Exception:
-            pass
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
-    return out_syms, P, donors
+    if not ensemble:
+        P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+        P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine)
+        return out_syms, P, donors
+
+    # ENSEMBLE assembly (Task A.1): enumerate the Cartesian product of per-ligand
+    # conformer choices, greedily ordered (sum of candidate ranks -> the best
+    # combinations first = frame 0 == the single-path pick), refine each, RMSD-dedup
+    # at the complex level, keep up to n_frames.  Capped product keeps it bounded.
+    import itertools as _it
+    rank_lists = [list(range(len(c))) for c in per_lig_cands]
+    combos = list(_it.product(*rank_lists))
+    combos.sort(key=lambda cb: (sum(cb), cb))      # deterministic; frame 0 = all-best
+    MAX_EVAL = 64
+    frames = []                                    # (syms, P) kept (deduped)
+    for cb in combos[:MAX_EVAL]:
+        blocks = [np.zeros((1, 3))]
+        ok = True
+        for vi, ci in enumerate(cb):
+            Q = per_lig_cands[vi][ci][0]
+            blocks.append(Q)
+        Pc = np.vstack(blocks)
+        if not np.all(np.isfinite(Pc)):
+            continue
+        Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine)
+        if not np.all(np.isfinite(Pc)):
+            continue
+        dup = False
+        for _, Pk in frames:
+            if Pk.shape == Pc.shape and _complex_rmsd(out_syms, Pc, Pk) < rmsd_dedup:
+                dup = True
+                break
+        if dup:
+            continue
+        frames.append((list(out_syms), Pc))
+        if len(frames) >= int(n_frames):
+            break
+    if not frames:
+        return None
+    return [(syms, P, donors) for syms, P in frames]
+
+
+def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
+    """Shared finishing tail for a single assembled chelate-config frame: the
+    FUNDAMENTAL internal relaxation (division-of-labor doctrine) — build the
+    ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
+    DONORS FIXED + inter-fragment vdW ON.  All organic internals (bond lengths,
+    angles, funcgroup/aromatic planarity, H geometry) recover to MM-ideal and
+    inter-ligand clashes resolve, while the constructed coordination is preserved
+    (donors pinned -> M-D invariant; metal never enters the force field).  This
+    replaces the weak defect-count refine(), which left ETKDG-rough internals.
+    INTERNAL finishing.  THREE-WAY RACE design:
+      Track 3 (FF-FREE, DEFAULT): pure construction -- GEOMETRIC correctors only
+        (sp2-flatten projection + defect-count clash-relief).  No force field.
+      Track 2 (ligand-FF, opt-in DELFIN_FFFREE_LIGANDFF=1): additionally a constrained
+        UFF relax of the organic internals (metal + donors frozen) before the geometric
+        correctors.  Track 1 (UFF) is the legacy path (DELFIN_FFFREE_BUILDER=0).
+    The complex mol (metal + ligand bonds) is the sp2-flatten template (and the optional
+    UFF mol); metal + donors stay frozen so the constructed coordination is preserved.
+    Returns the (possibly relaxed) coordinate array; never raises."""
+    if not refine:
+        return P
+    try:
+        cm = Chem.RWMol()
+        cm.AddAtom(Chem.Atom(out_syms[0]))
+        for frag, _off in relax_frags:
+            base = cm.GetNumAtoms()
+            for a in frag.GetAtoms():
+                cm.AddAtom(Chem.Atom(a.GetAtomicNum()))
+            for b in frag.GetBonds():
+                cm.AddBond(b.GetBeginAtomIdx() + base, b.GetEndAtomIdx() + base, b.GetBondType())
+        donor_globals = sorted(fixed - {0})
+        for dg in donor_globals:
+            cm.AddBond(0, dg, Chem.BondType.SINGLE)
+        if cm.GetNumAtoms() == len(out_syms):
+            conf = Chem.Conformer(cm.GetNumAtoms())
+            for kk in range(cm.GetNumAtoms()):
+                x = P[kk]; conf.SetAtomPosition(kk, [float(x[0]), float(x[1]), float(x[2])])
+            cm.AddConformer(conf, assignId=True)
+            try:
+                Chem.SanitizeMol(cm, catchErrors=True)
+            except Exception:
+                pass
+            if os.environ.get("DELFIN_FFFREE_LIGANDFF", "0") == "1":   # Track 2: FF relax
+                if _constrained_uff_relax(cm, [0] + donor_globals):
+                    Pn = np.array(cm.GetConformer().GetPositions(), float)
+                    if Pn.shape == P.shape:
+                        P = Pn
+                        c = cm.GetConformer()
+                        for kk in range(len(P)):
+                            c.SetAtomPosition(kk, [float(P[kk][0]), float(P[kk][1]), float(P[kk][2])])
+            # FF-FREE geometric planarity corrector (BOTH tracks): project sp2 atoms onto
+            # their neighbour plane (aromatic/amide/funcgroup planarity).  Pure geometry.
+            try:
+                from delfin.smiles_converter import _flatten_sp2_atoms_xyz
+                xyz_str = "\n".join(f"{s} {float(p[0]):.6f} {float(p[1]):.6f} {float(p[2]):.6f}"
+                                    for s, p in zip(out_syms, P))
+                flat = _flatten_sp2_atoms_xyz(xyz_str, cm)
+                if flat:
+                    newP = np.array([[float(x) for x in ln.split()[1:4]]
+                                     for ln in flat.splitlines() if ln.strip()], float)
+                    if newP.shape == P.shape:
+                        P = newP
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # FF-free geometric clash-relief (both tracks)
+    try:
+        from delfin.fffree.refine import refine as _refine
+        P = _refine(out_syms, P, fixed)
+    except Exception:
+        pass
+    return P
 
 
 def assemble_heteroleptic(metal: str, geometry: str, vertex_specs):
