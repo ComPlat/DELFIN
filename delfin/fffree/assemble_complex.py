@@ -311,6 +311,58 @@ def _subtree(mol, start, blocked):
     return seen
 
 
+# --- donor-local VSEPR bend for under-coordinated bent-capable donors ----------
+_CHALCOGENS = frozenset(("O", "S", "Se", "Te"))
+_PNICTOGENS = frozenset(("N", "P", "As", "Sb"))
+# VSEPR ideal M-D-X angles for a SINGLE-substituent donor that keeps its lone
+# pairs (chalcogen 2-coord ether/thioether/selenoether/selenolate ~100 deg; a
+# pyramidal pnictogen ~107 deg).  CCDC-sane: H2Se 91, R2Se ~96-98, R2Te ~95,
+# H2O 104.5, R2O ~111, R3N/R3P ~107.
+_DONOR_BEND_DEG = {"O": 109.0, "S": 100.0, "Se": 98.0, "Te": 95.0,
+                   "N": 107.0, "P": 100.0, "As": 96.0, "Sb": 95.0}
+
+
+def _donor_bend_angle(mol, atom):
+    """If a SINGLE-ligand-substituent donor ``atom`` (so M + this one substituent
+    => 2-coordinate) is a CHALCOGEN or a BENT (pyramidal) PNICTOGEN that retains
+    lone pairs, return its VSEPR ideal M-D-X angle in degrees; else ``None`` (=
+    keep the linear placement).  Graph/hybridisation-only, no coordinates.
+
+    Genuinely-linear donors are NOT bent: an sp-hybridised nitrogen (nitrile
+    N#C, azo/diazo, azide-terminal N), a terminal double-bonded oxo / carbonyl
+    O (M=O, M-O#... ), or any donor whose single neighbour is reached by a
+    triple bond / allene-type sp centre.  These keep the metal antiperiplanar
+    to the substituent (180 deg)."""
+    sym = atom.GetSymbol()
+    deg = _DONOR_BEND_DEG.get(sym)
+    if deg is None:
+        return None
+    nbrs = list(atom.GetNeighbors())
+    if len(nbrs) != 1:
+        return None                       # only the M + one-substituent (2-coord) case
+    bond = mol.GetBondBetweenAtoms(atom.GetIdx(), nbrs[0].GetIdx())
+    bt = bond.GetBondTypeAsDouble() if bond is not None else 1.0
+    # sp donor / multiply-bonded terminal donor => genuinely linear, do not bend.
+    hyb = str(atom.GetHybridization())
+    if hyb == "SP":
+        return None
+    if sym in _PNICTOGENS:
+        # bend only a *pyramidal* (sp3-ish single-bonded) pnictogen; a
+        # double/triple-bonded terminal N (imido/nitrido/diazo) or an aromatic
+        # sp2 N stays linear-to-substituent (its lone pair is already the donor
+        # axis and bending would distort the multiple bond).
+        if bt >= 2.0 or atom.GetIsAromatic():
+            return None
+        if hyb not in ("SP3", "UNSPECIFIED", "S"):
+            return None
+    else:  # chalcogen
+        # a terminal oxo/chalcogenide double bond (M=O, =S) is linear (the lone
+        # pairs sit perpendicular; the donor axis is the pi bond) -> no bend.
+        if bt >= 2.0:
+            return None
+    return float(deg)
+
+
 def _vsepr_reconstruct(lsyms, lP, lmol, di):
     """Re-pyramidalise the donor's LOCAL geometry to ideal VSEPR with one
     coordination vacancy for the metal, rigidly dragging each substituent's
@@ -343,6 +395,32 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
         u.append(w / nw)
     u = np.array(u)
     if k == 1:
+        # Default: linear (metal antiperiplanar to the single substituent).  With
+        # DELFIN_FFFREE_DONOR_BEND=1, a 2-coordinate BENT-CAPABLE donor (chalcogen
+        # selenoether/thioether/ether, or a pyramidal pnictogen) gets its real
+        # VSEPR M-D-X angle instead of the colinear 180 deg: place the metal
+        # vacancy at angle theta from the substituent in an arbitrary (but
+        # deterministic) lone-pair plane.  Substituent stays put; the caller's
+        # _rot_align(lp, -Vunit) makes M-D-X == theta.  Genuinely-linear donors
+        # (sp nitrile/azo N, terminal oxo, =S, M=N) return None -> stay 180 deg.
+        if os.environ.get("DELFIN_FFFREE_DONOR_BEND", "0") == "1":
+            bend = _donor_bend_angle(lmol, atom)
+            if bend is not None:
+                s = u[0]                       # donor->substituent unit vector
+                # deterministic perpendicular to s (lone-pair plane in-plane axis)
+                tmp = (np.array([1.0, 0.0, 0.0]) if abs(s[0]) < 0.9
+                       else np.array([0.0, 1.0, 0.0]))
+                p = tmp - s * float(np.dot(tmp, s))
+                np_ = np.linalg.norm(p)
+                if np_ > 1e-6:
+                    p = p / np_
+                    th = np.radians(bend)
+                    # vacancy a with angle(a, s) == theta: cos(theta) along s,
+                    # sin(theta) along the perpendicular p.
+                    a = np.cos(th) * s + np.sin(th) * p
+                    na = np.linalg.norm(a)
+                    if na > 1e-6 and np.all(np.isfinite(a)):
+                        return lP, a / na
         return lP, -u[0]                       # linear: metal opposite, no move
     # substituent subtrees must be disjoint (else a ring not through the donor)
     subs = [_subtree(lmol, nbrs[i], di) for i in range(k)]
