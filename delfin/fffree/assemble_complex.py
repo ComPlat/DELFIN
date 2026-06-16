@@ -736,6 +736,34 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             cand.append((Q, cl))
         if not cand:
             return None
+        # Axial-spin rotamers (substituent/co-ligand orientation): for a near-rigid
+        # donor (e.g. =S/=P thiourea/phosphine CN2 ligands) the dominant pose DOF vs
+        # the crystal is the ROTATION of the whole ligand about the M-donor axis, which
+        # the ETKDG internal-conformer pool does not sample.  Spin each candidate block
+        # about its M-D axis (= Vunit through the donor) at deterministic increments,
+        # keeping distinct low-clash variants.  Pure geometry (the linear core/M-D stay
+        # fixed -> only orientation changes).  Opt-out via DELFIN_FFFREE_CN2_NOSPIN=1.
+        if len(lsyms) > 1 and os.environ.get("DELFIN_FFFREE_CN2_NOSPIN", "0") != "1":
+            n_spin = int(os.environ.get("DELFIN_FFFREE_CN2_SPINS", "4"))
+            spun = []
+            for Q0, _cl0 in list(cand):
+                for s in range(1, max(n_spin, 1)):
+                    ang = 2.0 * np.pi * s / max(n_spin, 1)
+                    Rs = _axis_rot(Vunit, ang)
+                    Qs = (Q0 - vertex) @ Rs.T + vertex   # spin about the donor vertex
+                    if not np.all(np.isfinite(Qs)):
+                        continue
+                    cls = _clash_count(Qs, metal_P, lsyms, metal_sym)
+                    dup = False
+                    for Qe, _ in (cand + spun):
+                        if Qe.shape == Qs.shape:
+                            c0 = Qs - Qs.mean(axis=0); c1 = Qe - Qe.mean(axis=0)
+                            if float(np.sqrt(((c0 - c1) ** 2).sum(axis=1).mean())) < rmsd_dedup:
+                                dup = True
+                                break
+                    if not dup:
+                        spun.append((Qs, cls))
+            cand += spun
         cand.sort(key=lambda t: t[1])               # low clash-vs-metal first
         per_vertex_cands.append(cand)
         vertex_lsyms.append(lsyms)
