@@ -31,10 +31,16 @@ in this priority order and appends new findings back here.
   ignored so only the total counts. Family regex stays as the no-size fallback.
   Live-proven: `qwen3-vl:4b` → core_tools_only, advertised **16** tools (was
   **47**); `gpt-oss:120b` keeps the full 47; real qwen3-vl:4b turn replied OK.
-- [ ] **KIT live context-window detection needs auth** — `model_capabilities.
-  _fetch_openai_models` sends no `Authorization` header, so KIT `/v1/models`
-  (which carries `max_model_len`) 401s and we fall back to the static 128k.
-  Thread the provider key into the probe so KIT windows are detected live.
+- [x] **KIT live context-window detection** — threaded the provider key
+  (`resolve(..., api_key=)`) as a Bearer token into the `/v1/models` probe, and
+  discovered KIT is an **Open-WebUI proxy**: no numeric `max_model_len`, the
+  window lives as prose in `info.meta.description` ("Context length ≈ 256K").
+  Added a prose parser + nested `info.meta` lookup, and bumped `_TIMEOUT_MODELS`
+  3→8s (real KIT answers in ~5s; result is disk-cached 24h so it's one-time).
+  Live-proven: qwen3.5-397b now resolves **262144** (was static 128000),
+  gpt-oss-120b **131072**, gemma4-31b **262144**. Authed/key-less probes use
+  distinct cache keys so a key-less miss is never served to an authed lookup.
+  Follow-up: the ~5s first-turn probe is synchronous — could pre-warm/async.
 - [ ] **Live `available_models` into `route_model`** — the mechanism exists
   (`route_model(available_models=…)`) but nothing feeds the live model list, so
   routing can't avoid an unlisted/removed model. Wire the dashboard's fetched

@@ -209,6 +209,58 @@ def test_kit_static_fallback_when_models_unreachable(monkeypatch):
     assert caps.source == "static"
 
 
+def test_kit_live_window_requires_auth_header(monkeypatch):
+    """KIT /v1/models rejects an unauthenticated probe (401) and falls back to
+    static; with the provider key threaded through, the Bearer header is sent
+    and the server's TRUE window is read live."""
+    payload = {"data": [
+        {"id": "qwen3.5-397b-A17b", "object": "model", "max_model_len": 262_144},
+    ]}
+    seen = {}
+
+    def _fake(req, timeout=None):
+        auth = req.headers.get("Authorization")
+        seen["auth"] = auth
+        if "/v1/models" not in (getattr(req, "full_url", "") or str(req)):
+            raise OSError("no route")
+        if not auth:
+            raise OSError("401 Unauthorized")       # mimic KIT's rejection
+        return _FakeResp(payload)
+
+    monkeypatch.setattr(mc.urllib.request, "urlopen", _fake)
+
+    # No key → unauthenticated probe is rejected → static fallback.
+    caps0 = mc.resolve("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE)
+    assert caps0.source == "static"
+    assert caps0.context_window == 128_000
+
+    # With the key → Bearer header sent, live window discovered (distinct cache
+    # entry, so the earlier key-less miss is not served).
+    caps1 = mc.resolve("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE, api_key="SECRET")
+    assert seen["auth"] == "Bearer SECRET"
+    assert caps1.source == "live"
+    assert caps1.context_window == 262_144
+
+
+def test_kit_window_from_open_webui_description(monkeypatch):
+    """KIT Toolbox is an Open-WebUI proxy: no numeric max_model_len — the
+    window lives as prose in info.meta.description ("Context length ≈ 256K").
+    Parse it as the live signal (the real KIT /v1/models shape)."""
+    payload = {"data": [
+        {"id": "kit.qwen3.5-397b-A17b",
+         "info": {"id": "kit.qwen3.5-397b-A17b",
+                  "meta": {"description":
+                           "MoE multimodal model • Context length ≈ 256K\n"
+                           "Host: KIT • Origin: Alibaba"}}},
+    ]}
+    monkeypatch.setattr(
+        mc.urllib.request, "urlopen", _urlopen_router({"/v1/models": payload}),
+    )
+    caps = mc.resolve("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE, api_key="K")
+    assert caps.source == "live"
+    assert caps.context_window == 256 * 1024        # 262144, parsed from prose
+
+
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------

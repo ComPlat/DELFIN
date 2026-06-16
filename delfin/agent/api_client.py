@@ -5537,6 +5537,9 @@ class OpenAIClient(_BaseClient):
         # base_url when not passed, so existing callers keep working.
         self._provider = (provider or _infer_provider_from_base_url(base_url)).strip().lower()
         self._base_url = base_url or ""
+        # Kept so capability resolution can authenticate the /v1/models probe
+        # (KIT requires a Bearer key to report its true max_model_len window).
+        self._api_key = resolved_key
         kwargs: dict[str, Any] = {"api_key": resolved_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -5639,7 +5642,8 @@ class OpenAIClient(_BaseClient):
         # and the no-native-tools gate. Never raises — degrades to None.
         try:
             from .model_capabilities import resolve as _resolve_caps
-            _caps = _resolve_caps(self._provider, self.model, self._base_url)
+            _caps = _resolve_caps(self._provider, self.model, self._base_url,
+                                  api_key=getattr(self, "_api_key", ""))
         except Exception:
             _caps = None
 

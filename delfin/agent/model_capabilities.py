@@ -71,10 +71,13 @@ _KIT_RECOMMENDED: frozenset[str] = frozenset({
 _KIT_MIN_WINDOW = 32_000
 
 # Network timeouts (seconds). Tags is a cheap liveness probe; show parses
-# metadata; models is the OpenAI-compatible list.
+# metadata; models is the OpenAI-compatible list. The hosted KIT Toolbox
+# /v1/models takes ~5s to answer, so the models probe gets a generous budget —
+# it is a one-time cost: the live result is cached to ~/.delfin (24h TTL), so
+# only the first turn per (model, endpoint) per day pays it.
 _TIMEOUT_TAGS = 1.5
 _TIMEOUT_SHOW = 4.0
-_TIMEOUT_MODELS = 3.0
+_TIMEOUT_MODELS = 8.0
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +235,11 @@ def _ollama_root(base_url: str) -> str:
     return root or "http://localhost:11434"
 
 
-def _http_get_json(url: str, timeout: float) -> Any:
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+def _http_get_json(url: str, timeout: float, api_key: str = "") -> Any:
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         return json.loads(resp.read().decode("utf-8"))
 
@@ -305,10 +311,16 @@ def _models_url(base_url: str) -> str:
     return (url if url.endswith("/v1") else url + "/v1") + "/models"
 
 
-def _fetch_openai_models(base_url: str) -> list[dict] | None:
-    """Raw ``/v1/models`` entries (None if unreachable)."""
+def _fetch_openai_models(base_url: str, api_key: str = "") -> list[dict] | None:
+    """Raw ``/v1/models`` entries (None if unreachable).
+
+    KIT Toolbox (and most hosted vLLM/OpenAI-compatible backends) require a
+    Bearer key on ``/v1/models`` — without it the probe 401s and the caller
+    falls back to the static window. Thread the provider key through so the
+    server's TRUE ``max_model_len`` is read live.
+    """
     try:
-        data = _http_get_json(_models_url(base_url), _TIMEOUT_MODELS)
+        data = _http_get_json(_models_url(base_url), _TIMEOUT_MODELS, api_key)
         entries = data.get("data") or []
         return [e for e in entries if isinstance(e, dict)]
     except Exception:
@@ -330,30 +342,78 @@ def _model_matches(entry_id: str, model: str) -> bool:
     return a == b_base or a0 == b0 or b_base in a or a in b_base
 
 
-def _discover_openai_models(base_url: str, model: str) -> dict[str, Any] | None:
+# KIT Toolbox is an Open-WebUI proxy: it does NOT expose a numeric
+# ``max_model_len`` — the window lives as prose in ``info.meta.description``
+# (e.g. "… Context length ≈ 256K …"). Parse that as a last-resort live signal.
+_CTX_PROSE_RE = _re.compile(
+    r"context\s*length\s*[≈~:=]?\s*([\d.]+)\s*([kKmM])", _re.IGNORECASE)
+
+
+def _win_from_numeric(d: dict) -> int:
+    for k in ("max_model_len", "context_length", "max_context_length",
+              "context_window"):
+        try:
+            v = int(d.get(k) or 0)
+        except (TypeError, ValueError):
+            v = 0
+        if v > 0:
+            return v
+    return 0
+
+
+def _win_from_prose(text: str) -> int:
+    m = _CTX_PROSE_RE.search(text or "")
+    if not m:
+        return 0
+    try:
+        num = float(m.group(1))
+    except (TypeError, ValueError):
+        return 0
+    mult = 1024 if m.group(2).lower() == "k" else 1024 * 1024
+    return int(num * mult)
+
+
+def _discover_openai_models(
+    base_url: str, model: str, api_key: str = ""
+) -> dict[str, Any] | None:
     """Refine the context window from an OpenAI-compatible ``/v1/models``.
 
-    vLLM (which serves KIT Toolbox) reports ``max_model_len`` per entry;
-    some backends use ``context_length``/``max_context_length``. When the
-    matched entry carries one, it is the server's TRUE window — authoritative
-    over the static table. Returns a partial spec or None.
+    True vLLM backends report ``max_model_len`` per entry (authoritative).
+    KIT Toolbox (Open-WebUI) instead nests the window in ``info.meta`` — as a
+    numeric field if present, else as prose in its ``description``
+    ("Context length ≈ 256K"). When the matched entry carries any of these it
+    is the server's TRUE window, authoritative over the static table. Returns a
+    partial spec or None.
     """
-    entries = _fetch_openai_models(base_url)
+    entries = _fetch_openai_models(base_url, api_key)
     if not entries:
         return None
 
     def _win(e: dict) -> int:
-        for k in ("max_model_len", "context_length", "max_context_length",
-                  "context_window"):
-            try:
-                v = int(e.get(k) or 0)
-            except (TypeError, ValueError):
-                v = 0
-            if v > 0:
-                return v
+        # 1) numeric field on the entry itself (vLLM / OpenAI shape)
+        w = _win_from_numeric(e)
+        if w > 0:
+            return w
+        # 2) KIT Open-WebUI: numeric or prose window under info.meta
+        info = e.get("info")
+        meta = info.get("meta") if isinstance(info, dict) else None
+        if isinstance(meta, dict):
+            w = _win_from_numeric(meta)
+            if w > 0:
+                return w
+            w = _win_from_prose(str(meta.get("description") or ""))
+            if w > 0:
+                return w
         return 0
 
-    matched = [e for e in entries if _model_matches(e.get("id", ""), model)]
+    def _entry_id(e: dict) -> str:
+        # KIT nests the canonical id under info.id; fall back to the top-level.
+        info = e.get("info")
+        if isinstance(info, dict) and info.get("id"):
+            return str(info["id"])
+        return str(e.get("id", ""))
+
+    matched = [e for e in entries if _model_matches(_entry_id(e), model)]
     pool = matched or (entries if len(entries) == 1 else [])
     for e in pool:
         w = _win(e)
@@ -369,8 +429,12 @@ def _discover_openai_models(base_url: str, model: str) -> dict[str, Any] | None:
 _CACHE: dict[str, ModelCapabilities] = {}
 
 
-def _cache_key(provider: str, model: str, base_url: str) -> str:
-    return f"{provider}\x1f{model}\x1f{base_url}"
+def _cache_key(provider: str, model: str, base_url: str,
+               authed: bool = False) -> str:
+    # Authed and key-less probes can yield different windows (a 401 falls back
+    # to static), so cache them under distinct keys — an authed lookup must not
+    # be served a stale key-less miss.
+    return f"{provider}\x1f{model}\x1f{base_url}\x1f{int(authed)}"
 
 
 def _load_disk_cache() -> None:
@@ -436,11 +500,14 @@ def resolve(
     base_url: str = "",
     *,
     allow_live: bool = True,
+    api_key: str = "",
 ) -> ModelCapabilities:
     """Resolve capabilities for ``(provider, model)``.
 
     Order: cache → live discovery → static table → name heuristic. Never
     raises; degrades to a safe fallback so the engine always gets a window.
+    ``api_key`` is sent as a Bearer token on the ``/v1/models`` probe so KIT
+    (and any authenticated vLLM backend) reports its TRUE window live.
     """
     global _disk_loaded
     provider = (provider or "").strip().lower()
@@ -450,7 +517,7 @@ def resolve(
         _disk_loaded = True
         _load_disk_cache()
 
-    key = _cache_key(provider, model, base_url)
+    key = _cache_key(provider, model, base_url, bool(api_key))
     cached = _CACHE.get(key)
     if cached is not None:
         return cached
@@ -468,7 +535,7 @@ def resolve(
         if provider == "ollama":
             live = _discover_ollama(base_url, model)
         else:
-            live = _discover_openai_models(base_url, model)
+            live = _discover_openai_models(base_url, model, api_key)
         if live:
             spec = live
             source = "live"
