@@ -709,6 +709,40 @@ def _clash_count(Q, existing, syms_Q, syms_ex):
     return c
 
 
+def _ligand_block_bonds(lmol, offset, donor_local):
+    """True connectivity of one ligand block for the #308 torsion relaxer.
+
+    Returns ``(offset, [(li, lj), ...], donor_local)`` where the local (i,j) bond
+    pairs come directly from the ligand mol (atom order preserved through assembly,
+    AddHs included), so the relaxer never has to GUESS bonds from distance on a
+    crowded complex (where two ligands at a fortuitous bonding distance would be
+    mis-read as covalently bonded).  Returns ``None`` on any failure (relaxer then
+    falls back to geometric perception)."""
+    try:
+        lb = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in lmol.GetBonds()]
+        return (int(offset), lb, int(donor_local))
+    except Exception:
+        return None
+
+
+def _torsion_relax_frame(out_syms, P, fixed, block_specs):
+    """Apply the env-gated #308 torsion-space clash relax to one assembled frame,
+    threading the true per-ligand connectivity (``block_specs`` = list of
+    ``(offset, lmol, donor_local)``).  No-op when the flag is unset; never raises."""
+    try:
+        from delfin.fffree import torsion_relax as _TR
+        bp = None
+        if block_specs:
+            blocks = [bb for bb in (_ligand_block_bonds(m, off, dl)
+                                    for (off, m, dl) in block_specs) if bb is not None]
+            if blocks:
+                bp = _TR.bonds_from_blocks(0, blocks)
+        return np.asarray(_TR.relax_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                          dtype=float)
+    except Exception:
+        return P
+
+
 def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                                     refine: bool = True):
     """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
@@ -721,6 +755,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     placed_P = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}                       # metal frozen
     pos = 1
+    block_specs = []                  # (offset, lmol, donor_local) for the torsion relax
     for i, (frag, di) in enumerate(vertex_specs):
         Vunit = ref[i] / np.linalg.norm(ref[i])
         confs = _ligand_confs_from_mol(frag)
@@ -745,6 +780,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                 best_clash, best_Q = cl, Q
             if cl == 0:
                 break
+        block_specs.append((pos, lmol, di))
         out_syms += lsyms; blocks.append(best_Q)
         for row in best_Q:
             placed_P.append(row)
@@ -760,6 +796,12 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
             P = _refine(out_syms, P, fixed)
         except Exception:
             pass
+        # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
+        # byte-id): when rigid M-D-axis selection is not enough and ligand-internal
+        # rotation is needed, jointly optimise all rotatable single bonds of the
+        # assembled complex (metal + donors = `fixed` frozen).  Torsion-only -> bond
+        # lengths/angles preserved exactly; never-worse.  No-op when flag unset.
+        P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
     return out_syms, P
 
 
@@ -808,6 +850,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
     fixed = {0}
     per_vertex_cands = []     # per vertex: list of (Q, internal_clash) sorted best-first
     vertex_lsyms = []
+    block_specs = []          # (offset, lmol, donor_local) for the #308 torsion relax
     pos = 1
     metal_P = np.zeros((1, 3))
     metal_sym = [metal]
@@ -817,6 +860,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         if confs is None:
             return None
         lsyms, coords_list, lmol = confs
+        block_specs.append((pos, lmol, di))
         md = MSB.md_distance(metal, lsyms[di],
                              atom=lmol.GetAtomWithIdx(di), mol=lmol)
         vertex = Vunit * md
@@ -988,6 +1032,9 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
                 P = _refine(out_syms, P, fixed)
             except Exception:
                 pass
+            # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
+            # byte-id); torsion-only, never-worse, metal+donors (`fixed`) frozen.
+            P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
         if not np.all(np.isfinite(P)):
             continue
         # complex-level RMSD dedup vs already-kept frames
@@ -1827,6 +1874,32 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
     try:
         from delfin.fffree.refine import refine as _refine
         P = _refine(out_syms, P, fixed)
+    except Exception:
+        pass
+    # #308 whole-complex torsion-space clash relax (env-gated, default-OFF byte-id):
+    # joint multi-axis torsion of all rotatable single bonds, metal + donors (`fixed`)
+    # frozen.  Chelate ring + M-D arms are ring bonds -> kept rigid by construction;
+    # only the σ-arms/substituents rotate.  Torsion-only, never-worse.  No-op when unset.
+    try:
+        from delfin.fffree import torsion_relax as _TR
+        bp = None
+        try:
+            # true connectivity: ligand-internal bonds (lig_offset shifts the AddHs
+            # mol's local indices to global = lig_offset+1, atom 0 = metal) + M-D bonds
+            # to every constructed donor (so the relaxer keeps chelate metallacycles
+            # rigid via ring detection and never mis-perceives a crowded contact).
+            pairs = []
+            for frag, lig_off in relax_frags:
+                base = lig_off + 1                 # global index of the frag's atom 0
+                for b in frag.GetBonds():
+                    pairs.append((base + b.GetBeginAtomIdx(), base + b.GetEndAtomIdx()))
+            for dg in sorted(fixed - {0}):
+                pairs.append((0, dg))
+            bp = pairs or None
+        except Exception:
+            bp = None
+        P = np.asarray(_TR.relax_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                       dtype=float)
     except Exception:
         pass
     return P
