@@ -190,6 +190,62 @@ def run_application(
 
 
 # ======================================================================
+#  Runs (async execution — submit / status / result / list / cancel)
+# ======================================================================
+
+
+def submit_application(
+    name: str,
+    *,
+    cores: int = 1,
+    geometry: Optional[str | Path] = None,
+    work_dir: Optional[Path] = None,
+    **inputs: Any,
+) -> str:
+    """Submit an application run in the background and return its run id.
+
+    Non-blocking: poll :func:`run_status` / :func:`run_record`, or
+    :func:`wait_run`, and cancel with :func:`cancel_run`.
+    """
+    from delfin.tools._runtime import get_runtime
+    handle = get_runtime().submit_application(
+        name, cores=cores, geometry=geometry, work_dir=work_dir, inputs=inputs,
+    )
+    return handle.id
+
+
+def run_status(run_id: str) -> Optional[str]:
+    """Current status of a run (``pending``/``running``/``success``/…), or ``None``."""
+    from delfin.tools._runtime import get_runtime
+    rec = get_runtime().get(run_id)
+    return rec.status if rec else None
+
+
+def run_record(run_id: str):
+    """The full :class:`RunRecord` (inputs, status, outputs, events, metrics)."""
+    from delfin.tools._runtime import get_runtime
+    return get_runtime().get(run_id)
+
+
+def list_runs() -> list:
+    """All run records, newest first."""
+    from delfin.tools._runtime import get_runtime
+    return get_runtime().list_runs()
+
+
+def cancel_run(run_id: str) -> bool:
+    """Request cooperative cancellation of a run (takes effect before the next step)."""
+    from delfin.tools._runtime import get_runtime
+    return get_runtime().cancel(run_id)
+
+
+def wait_run(run_id: str, *, timeout: Optional[float] = None):
+    """Block until a run finishes (or *timeout*); returns its :class:`RunRecord`."""
+    from delfin.tools._runtime import RunHandle, get_runtime
+    return RunHandle(run_id, get_runtime()).wait(timeout=timeout)
+
+
+# ======================================================================
 #  Environment (probe + install)
 # ======================================================================
 
@@ -237,6 +293,13 @@ __all__ = [
     "describe_application",
     "validate_application",
     "run_application",
+    # runs (async)
+    "submit_application",
+    "run_status",
+    "run_record",
+    "list_runs",
+    "cancel_run",
+    "wait_run",
     # environment
     "probe",
     "missing_tools",

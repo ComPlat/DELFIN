@@ -118,6 +118,38 @@ def h_run_application(
     })
 
 
+# --- runs (async execution) -----------------------------------------------
+
+
+def h_submit_application(
+    name: str, inputs: Optional[Dict[str, Any]] = None, cores: int = 1,
+) -> str:
+    inputs = inputs or {}
+    run_id = platform.submit_application(name, cores=cores, **inputs)
+    return _dumps({"run_id": run_id})
+
+
+def h_run_status(run_id: str) -> str:
+    from dataclasses import asdict
+    rec = platform.run_record(run_id)
+    if rec is None:
+        return _dumps({"error": f"unknown run {run_id!r}"})
+    return _dumps(asdict(rec))
+
+
+def h_list_runs() -> str:
+    out = [
+        {"id": r.id, "name": r.name, "status": r.status,
+         "created_at": r.created_at, "outputs": r.outputs}
+        for r in platform.list_runs()
+    ]
+    return _dumps(out)
+
+
+def h_cancel_run(run_id: str) -> str:
+    return _dumps({"cancelled": platform.cancel_run(run_id)})
+
+
 # --- environment ----------------------------------------------------------
 
 
@@ -216,6 +248,26 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         Note: this can be long-running (it executes real QM jobs).
         """
         return h_run_application(name, inputs, cores)
+
+    @mcp.tool()
+    def submit_application(name: str, inputs: dict | None = None, cores: int = 1) -> str:
+        """Submit an application run in the background; returns a run_id immediately."""
+        return h_submit_application(name, inputs, cores)
+
+    @mcp.tool()
+    def run_status(run_id: str) -> str:
+        """Status, outputs, events and metrics of a submitted run."""
+        return h_run_status(run_id)
+
+    @mcp.tool()
+    def list_runs() -> str:
+        """List submitted runs (newest first) with status and outputs."""
+        return h_list_runs()
+
+    @mcp.tool()
+    def cancel_run(run_id: str) -> str:
+        """Request cooperative cancellation of a running run."""
+        return h_cancel_run(run_id)
 
     @mcp.tool()
     def probe() -> str:
