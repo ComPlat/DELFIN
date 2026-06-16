@@ -1,8 +1,8 @@
 """ChemDarwin tab – Custom Reaction SMARTS morphing for the DELFIN Dashboard.
 
-This module is **optional and local-only**: it is listed in ``.gitignore`` so
-that only developers who have the file locally will see the tab.  All
-chemistry logic is self-contained (no imports from ChemDarwin2/).
+This module is version-controlled and wired into the dashboard tab bar via
+``delfin.dashboard.__init__``.  All chemistry logic is self-contained
+(RDKit only; no imports from ChemDarwin2/).
 """
 
 import io
@@ -350,6 +350,15 @@ def mutate_complex_ligands(complex_smiles, mutation_func, use_dative_bonds=True,
     if not ligands:
         raise ValueError("No ligands found in complex")
 
+    # Fragment baseline of the input complex – the reassembled complex must not
+    # gain disconnected pieces (e.g. a ligand that lost its dative bond to the
+    # metal during mutation) relative to the seed.
+    try:
+        _base_complex = Chem.MolFromSmiles(complex_smiles, sanitize=False)
+        base_complex_frags = len(Chem.GetMolFrags(_base_complex)) if _base_complex else 1
+    except Exception:
+        base_complex_frags = 1
+
     orig_lig_mols = []
     orig_binding_indices = []
     for i, lig in enumerate(ligands):
@@ -510,6 +519,13 @@ def mutate_complex_ligands(complex_smiles, mutation_func, use_dative_bonds=True,
                 )
                 if combo is None:
                     continue
+                # Drop complexes that fragmented during reassembly (e.g. an
+                # unbound ligand becomes a disconnected piece) relative to seed.
+                try:
+                    if len(Chem.GetMolFrags(combo)) > base_complex_frags:
+                        continue
+                except Exception:
+                    pass
                 canon_complex = Chem.MolToSmiles(combo)
                 if canon_complex in seen_complexes:
                     continue
@@ -1024,6 +1040,7 @@ def check_protected_patterns(seed_mol, product_mol, protected_smarts_list, debug
 def apply_custom_reaction_iter(
     seed_smiles, rxn_smarts, iterations=1, keep_rings=True,
     forbidden_patterns=None, protected_patterns=None, debug=False,
+    drop_fragmented=True, drop_radicals=True, max_growth_factor=3.0,
 ):
     base = Chem.MolFromSmiles(seed_smiles)
     if base is None:
@@ -1094,10 +1111,24 @@ def apply_custom_reaction_iter(
         input_aromatic = 0
         keep_rings = False
 
+    # Seed baselines for the mutation validity guards (all relative to seed).
+    try:
+        seed_frags = len(Chem.GetMolFrags(base))
+    except Exception:
+        seed_frags = 1
+    try:
+        seed_heavy = base.GetNumHeavyAtoms()
+        max_heavy = int(round(seed_heavy * max_growth_factor)) if max_growth_factor else None
+    except Exception:
+        max_heavy = None
+
     seen = set()
     out = []
     filtered_count = 0
     protected_filtered_count = 0
+    fragmented_count = 0
+    radical_count = 0
+    oversized_count = 0
 
     current = [base]
     for _iter_num in range(max(1, int(iterations))):
@@ -1116,6 +1147,29 @@ def apply_custom_reaction_iter(
                         Chem.SanitizeMol(m)
                     except Exception:
                         continue
+                    # Validity guards (relative to seed) – reject before the product
+                    # can enter next_round and seed the following iteration.
+                    if drop_fragmented:
+                        try:
+                            if len(Chem.GetMolFrags(m)) > seed_frags:
+                                fragmented_count += 1
+                                continue
+                        except Exception:
+                            pass
+                    if drop_radicals:
+                        try:
+                            if Descriptors.NumRadicalElectrons(m) > 0:
+                                radical_count += 1
+                                continue
+                        except Exception:
+                            pass
+                    if max_heavy is not None:
+                        try:
+                            if m.GetNumHeavyAtoms() > max_heavy:
+                                oversized_count += 1
+                                continue
+                        except Exception:
+                            pass
                     # Dedup early via canonical SMILES (much faster than InchiKey)
                     s = Chem.MolToSmiles(m, canonical=True, isomericSmiles=False)
                     if s in seen:
@@ -1145,13 +1199,25 @@ def apply_custom_reaction_iter(
     if debug:
         print(f"\n[DEBUG] Filtered by forbidden patterns: {filtered_count}")
         print(f"[DEBUG] Filtered by protected patterns: {protected_filtered_count}")
+        print(f"[DEBUG] Filtered fragmented: {fragmented_count}")
+        print(f"[DEBUG] Filtered radicals: {radical_count}")
+        print(f"[DEBUG] Filtered oversized: {oversized_count}")
         print(f"[DEBUG] Results: {len(out)}")
 
     if not out:
-        if filtered_count > 0:
-            raise ValueError(
-                f'All {filtered_count} products were filtered by forbidden patterns.'
-            )
+        reasons = []
+        if filtered_count:
+            reasons.append(f"{filtered_count} by forbidden patterns")
+        if protected_filtered_count:
+            reasons.append(f"{protected_filtered_count} by protected patterns")
+        if fragmented_count:
+            reasons.append(f"{fragmented_count} fragmented")
+        if radical_count:
+            reasons.append(f"{radical_count} radicals")
+        if oversized_count:
+            reasons.append(f"{oversized_count} oversized")
+        if reasons:
+            raise ValueError('All products were filtered: ' + ', '.join(reasons) + '.')
         raise ValueError('Reaction SMARTS produced no products.')
     return out
 
@@ -1585,6 +1651,9 @@ def create_tab(ctx):
                 'protected_patterns': protected_text or '',
                 'iterations': custom_iters.value,
                 'preserve_ring_count': custom_keep_rings.value,
+                'drop_fragmented': True,
+                'drop_radicals': True,
+                'max_growth_factor': 3.0,
                 'debug': debug_mode,
                 'is_complex': bool(is_complex),
                 'result_count': len(results),
@@ -1602,6 +1671,9 @@ def create_tab(ctx):
                 protected_text or '',
                 f'Iterations: {custom_iters.value}',
                 f'Preserve Ring Count: {custom_keep_rings.value}',
+                'Drop Fragmented: True',
+                'Drop Radicals: True',
+                'Max Growth Factor: 3.0',
                 f'Debug: {debug_mode}',
                 f'Complex Mode: {bool(is_complex)}',
                 f'Result Count: {len(results)}',
