@@ -289,14 +289,35 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
         # bad isomer no longer drops the whole complex to legacy.  Clean isomers survive.
         if _sig_ens:
+            # NEVER-WORSE GUARD: emit the ensemble for a config ONLY IF its
+            # single-frame (clash-minimal) build ALSO passes the self-gate.  This
+            # keeps the ENSEMBLE strictly ADDITIVE to the single-frame path's
+            # accepted-config set: a config that the single-frame path would have
+            # SKIPPED (-> potentially the whole complex falls back to legacy, which
+            # may hold the crystallised structure) must NOT be rescued by the
+            # larger conformer pool, or a refcode that legacy was winning (e.g.
+            # KADZUL: single-frame None -> legacy 0.74Å) would lose its fallback to
+            # a geometrically inferior FF-free frame (2.24Å).  Same self-gate, same
+            # decision; the ensemble only adds conformer DIVERSITY on top.
+            try:
+                single = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
+            except Exception:
+                single = None
+            if single is None:
+                continue
+            ssyms, sP, sdonors = single
+            ssyms, sP = _maybe_relax(ssyms, sP)
+            if not _build_is_clean(ssyms, sP, cn=d.get("cn"), geom=d.get("geometry"),
+                                   donors=sdonors):
+                continue                                 # single-frame would skip -> skip
             try:
                 built = AC.assemble_from_config(d["metal"], d["geometry"], config,
                                                 ligands, n_frames=_n_chel)
             except Exception:
+                built = None
+            if not built:                                # ensemble failed -> use the single frame
+                results.append((_xyz(ssyms, sP), f"{geom_tag}-chelate-{k+1}"))
                 continue
-            if not built:
-                continue
-            kept = 0
             for fi, (syms, P, donors) in enumerate(built):
                 syms, P = _maybe_relax(syms, P)
                 if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
@@ -304,7 +325,6 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     continue                             # skip a bad frame, keep clean ones
                 lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
                 results.append((_xyz(syms, P), lab))
-                kept += 1
             continue
         try:
             built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
