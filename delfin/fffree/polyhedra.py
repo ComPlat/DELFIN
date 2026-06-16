@@ -218,19 +218,26 @@ def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     DEFAULT (flag OFF or no donor context): the original element-pair covalent
     sum ``COV[metal] + COV[donor]`` — byte-identical to the historic behaviour.
 
-    CONTEXT-AWARE (``DELFIN_FFFREE_MD_CONTEXT=1`` and ``atom`` given): the donor
-    radius is replaced by a bond-order/hybridisation-selected Pyykkö covalent
-    radius (open data) and shortened for short anionic σ-donor classes detected
-    from the local graph (azide / cyanide / halide / oxo-alkoxo / amide).  This
-    differentiates e.g. azide-N (short, anionic) from pyridine-N (long, neutral)
-    that the element-pair sum cannot distinguish (#305 / GIXFIF).  Universal
-    (graph-only, never SMILES-specific), deterministic, no RNG."""
+    CONTEXT-AWARE (``DELFIN_FFFREE_MD_CONTEXT=1`` and ``atom`` given): NEUTRAL
+    dative donors (pyridine / amine / imine / aromatic-N / ether / phosphine —
+    the most common class) keep the HISTORIC single-bond covalent radius and so
+    are byte-identical to the element-pair sum (a dative bond from a lone pair has
+    single-bond length REGARDLESS of the donor's internal aromaticity/unsaturation
+    — keying the M–D radius off the donor's own bond order erroneously shortened
+    every aromatic/imine N donor).  Differentiation comes ONLY from shortening the
+    genuinely-short anionic σ-donor classes detected from the local graph (azide /
+    cyanide / halide / oxo-alkoxo / amide) — this is what distinguishes e.g.
+    azide-N (short) from pyridine-N (unchanged) that the bare element sum cannot
+    (#305 / GIXFIF).  Universal (graph-only, never SMILES-specific), deterministic."""
     if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
         return COV.get(metal, 1.5) + COV.get(donor, 0.75)
     try:
         sym = atom.GetSymbol()
-        r_d = _pyykko_radius(sym, _max_heavy_bond_order(atom))
-        r_d = r_d - _sigma_shorten(atom, mol)
+        # Base = historic single-bond covalent radius -> neutral dative donors
+        # NEVER regress; only the short anionic σ-donor classes shorten.  (PYYKKO
+        # bond-order radii + _pyykko_radius/_max_heavy_bond_order are retained above
+        # as reference for a future explicit M=O / M≡N multiple-bond layer.)
+        r_d = COV.get(sym, 0.75) - _sigma_shorten(atom, mol)
         md = COV.get(metal, 1.5) + r_d
         if not math.isfinite(md):
             md = COV.get(metal, 1.5) + COV.get(donor, 0.75)
