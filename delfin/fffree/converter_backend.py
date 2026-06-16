@@ -23,6 +23,96 @@ from delfin.fffree import backbone_reembed as _BR
 import delfin._bond_decollapse as _bd
 
 
+def _multibond_enabled() -> bool:
+    """#279/#281: bond-order-aware collapse self-gate.  When enabled, genuine SHORT
+    multiple/aromatic bonds (C≡O carbonyl, C≡N nitrile, N=N/N≡N azo, aromatic/imine
+    C=N) are LENGTH-GATED-exempted from the `collapsed_bond` check so an EXCELLENT
+    FF-free build is no longer false-flagged as collapsed and dropped to the distorted
+    legacy-UFF fallback (root cause of the 9% native rate on the hard pool).  Default
+    OFF => no exempt_pairs passed => exact historic gate (byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_MULTIBOND_EXEMPT", "0") == "1"
+
+
+def _local_multibond_ideals(mol):
+    """LOCAL heavy-heavy multiple/aromatic bonds of a ligand ``mol`` -> mapping
+    {(a1, a2): ideal_multibond_length} in the mol's OWN atom-index space (heavy-atom
+    indices are preserved under AddHs, so they map 1:1 onto the assembled block).
+    The ideal length is the bond-order-appropriate Pyykkö covalent-radius sum (#305
+    PYYKKO_DOUBLE / PYYKKO_TRIPLE), so the self-gate can verify a flagged-short bond
+    is genuinely a multiple bond (within tolerance) rather than a true collapse.
+    Graph-only, deterministic; never raises."""
+    from rdkit.Chem import BondType
+    out = {}
+    try:
+        for b in mol.GetBonds():
+            bt = b.GetBondType()
+            if b.GetIsAromatic() or bt == BondType.AROMATIC:
+                order = 1.5
+            elif bt == BondType.DOUBLE:
+                order = 2.0
+            elif bt == BondType.TRIPLE:
+                order = 3.0
+            else:
+                continue                              # single bond -> never exempt
+            aa, ab = b.GetBeginAtom(), b.GetEndAtom()
+            if aa.GetAtomicNum() <= 1 or ab.GetAtomicNum() <= 1:
+                continue                              # heavy-heavy only
+            sa, sb = aa.GetSymbol(), ab.GetSymbol()
+            ideal = PLY._pyykko_radius(sa, order) + PLY._pyykko_radius(sb, order)
+            i, j = aa.GetIdx(), ab.GetIdx()
+            out[(min(i, j), max(i, j))] = float(ideal)
+    except Exception:
+        return {}
+    return out
+
+
+def _exempt_from_blocks(block_mols_offsets):
+    """Assemble the GLOBAL length-gated exempt-pair mapping for a built complex from
+    a list of (ligand_mol, block_offset) — the block_offset is the global index where
+    the ligand's AddHs block begins (metal at 0).  Local heavy-atom indices map to
+    global as offset + local (AddHs preserves heavy-atom order).  Returns
+    {(gi, gj): ideal_multibond_length}; empty when the flag is off."""
+    if not _multibond_enabled():
+        return {}
+    ex = {}
+    for mol, off in block_mols_offsets:
+        for (i, j), ideal in _local_multibond_ideals(mol).items():
+            gi, gj = off + int(i), off + int(j)
+            ex[(min(gi, gj), max(gi, gj))] = ideal
+    return ex
+
+
+def _heteroleptic_block_offsets(vertex_specs):
+    """Deterministic per-ligand block offsets for the monodentate heteroleptic build
+    order (assemble_heteroleptic_from_mols / _ensemble / _enumerate_geometry): metal at
+    0, then one AddHs block per vertex_spec in order.  Returns
+    [(frag_mol, offset), ...] matching the placement layout exactly."""
+    out = []
+    pos = 1
+    for frag, _di in vertex_specs:
+        out.append((frag, pos))
+        pos += Chem.AddHs(frag).GetNumAtoms()
+    return out
+
+
+def _config_block_offsets(config, ligands):
+    """Deterministic per-ligand block offsets for the chelate-config build order
+    (assemble_from_config places ligands in first-appearance order of the config
+    dict, one AddHs block per ligand instance).  Returns [(lig_mol, offset), ...]
+    matching the placement layout exactly (same dict-iteration order as the builder)."""
+    out = []
+    pos = 1
+    seen = set()
+    for _v, (li, _arm) in config.items():
+        if li in seen:
+            continue
+        seen.add(li)
+        mol = ligands[li]["mol"]
+        out.append((mol, pos))
+        pos += Chem.AddHs(mol).GetNumAtoms()
+    return out
+
+
 def _maybe_relax(syms, P):
     """#38: env-gated COD-loss torsional/rigid-body ligand relaxer (default OFF).
     Relieves van-der-Waals clashes by rotating distal sub-trees about rotatable bonds —
@@ -279,10 +369,14 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
     ~2.4-2.9 A from the metal: the heuristic miscounts a ring carbon as a donor (wrong
     cshm) or as over-coordination, falsely rejecting correct chelate geometry.
 
-    ``exempt_pairs`` (optional set of (min,max) global index pairs): heavy-heavy
-    bonds whose SHORT length is chemically correct (genuine triple/multiple bonds
-    such as a C≡O carbonyl ~1.12 A or a C≡N nitrile), so they are NOT counted as
-    collapsed.  Default None = byte-identical to the historic gate."""
+    ``exempt_pairs`` (optional): heavy-heavy bonds whose SHORT length is chemically
+    correct (genuine triple/multiple/aromatic bonds such as a C≡O carbonyl ~1.12 A,
+    a C≡N nitrile ~1.16 A, an azo N=N ~1.08 A, or an aromatic/imine C=N ~1.14 A), so
+    they are NOT counted as collapsed.  Accepts either a set/iterable of (i,j) pairs
+    (UNCONDITIONAL exemption; the historic hapto path) or a mapping
+    {(i,j): ideal_multibond_length} (LENGTH-GATED exemption: only honoured when the
+    observed length is within DELFIN_FFFREE_MULTIBOND_TOL of the ideal, so a real
+    sub-ideal collapse is still caught).  Default None = byte-identical."""
     if os.environ.get("DELFIN_FFFREE_SELFGATE", "1") == "0":
         return True
     P = np.asarray(P, dtype=float)
@@ -308,11 +402,44 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
             return _xh_frac * _bd._ideal_bond(a, b)
         return 0.82 * _bd._ideal_bond(a, b)
 
-    _ex = {(min(i, j), max(i, j)) for i, j in (exempt_pairs or ())}
-    n_coll = sum(1 for i, j in bonds
-                 if not (_bd._is_metal(syms[i]) or _bd._is_metal(syms[j]))
-                 and (min(i, j), max(i, j)) not in _ex
-                 and float(np.linalg.norm(P[i] - P[j])) < _coll_floor(syms[i], syms[j]))
+    # exempt_pairs (#279/#281, DELFIN_FFFREE_MULTIBOND_EXEMPT): heavy-heavy bonds whose
+    # SHORT length is chemically correct (genuine double/triple/aromatic bonds such as a
+    # metal-carbonyl C≡O ~1.12 A, nitrile C≡N ~1.16 A, azo N=N ~1.08 A, or aromatic/imine
+    # C=N ~1.14 A).  Two accepted shapes, both byte-identical when unused:
+    #   * plain iterable of (i, j)            -> UNCONDITIONAL exemption (the historic
+    #                                            hapto-path behaviour; kept unchanged).
+    #   * mapping {(i, j): ideal_multibond}   -> LENGTH-GATED exemption: the bond is
+    #                                            exempted ONLY when its observed length is
+    #                                            within MULTIBOND_TOL (default 0.15 A) of
+    #                                            the bond-order-appropriate ideal.  A real
+    #                                            embedding COLLAPSE (e.g. a C-O at 0.76 A,
+    #                                            far below even the triple-bond ideal) is
+    #                                            NOT exempted and is STILL caught.  SAFETY.
+    _mb_tol = float(os.environ.get("DELFIN_FFFREE_MULTIBOND_TOL", "0.15"))
+    if isinstance(exempt_pairs, dict):
+        _ex_len = {(min(i, j), max(i, j)): float(t) for (i, j), t in exempt_pairs.items()}
+        _ex = set()                                   # length-gated, evaluated per bond
+    else:
+        _ex_len = {}
+        _ex = {(min(i, j), max(i, j)) for i, j in (exempt_pairs or ())}
+
+    def _is_exempt(i, j, d):
+        key = (min(i, j), max(i, j))
+        if key in _ex:                                # unconditional (hapto-path set form)
+            return True
+        ideal_mb = _ex_len.get(key)                   # length-gated (multibond dict form)
+        return ideal_mb is not None and d >= ideal_mb - _mb_tol
+
+    n_coll = 0
+    for i, j in bonds:
+        if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
+            continue
+        d_ij = float(np.linalg.norm(P[i] - P[j]))
+        if d_ij >= _coll_floor(syms[i], syms[j]):
+            continue
+        if _is_exempt(i, j, d_ij):                    # genuine short multiple bond -> pass
+            continue
+        n_coll += 1
     if n_coll > 0:
         return False
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
@@ -434,6 +561,11 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # per-config pruning (generate-gate-floor): a geometrically infeasible config
         # (e.g. a fac vertex-triple for a mer pincer) is SKIPPED, not bailed -- so one
         # bad isomer no longer drops the whole complex to legacy.  Clean isomers survive.
+        # #279/#281: genuine short multiple/aromatic bonds (global, length-gated) for the
+        # collapse self-gate (e.g. AWELOD's aromatic C=N at 1.14 A).  The chelate builder
+        # places ligands in first-appearance config order; offsets mirror that exactly.
+        # Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-identical.
+        _ex = _exempt_from_blocks(_config_block_offsets(config, ligands))
         if _sig_ens:
             # NEVER-WORSE GUARD: emit the ensemble for a config ONLY IF its
             # single-frame (clash-minimal) build ALSO passes the self-gate.  This
@@ -454,7 +586,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             ssyms, sP, sdonors = single
             ssyms, sP = _maybe_relax(ssyms, sP)
             if not _build_is_clean(ssyms, sP, cn=d.get("cn"), geom=d.get("geometry"),
-                                   donors=sdonors):
+                                   donors=sdonors, exempt_pairs=_ex):
                 continue                                 # single-frame would skip -> skip
             try:
                 built = AC.assemble_from_config(d["metal"], d["geometry"], config,
@@ -476,7 +608,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             for fi, (syms, P, donors) in enumerate(built):
                 syms, P = _maybe_relax(syms, P)
                 if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       donors=donors):   # per-frame self-gate
+                                       donors=donors, exempt_pairs=_ex):   # per-frame self-gate
                     continue                             # skip a bad frame, keep clean ones
                 lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
                 results.append((_xyz(syms, P), lab))
@@ -491,7 +623,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         syms, P = _maybe_relax(syms, P)
         _clg = _lig_groups_from_config(config, ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors):   # donor-aware self-gate
+                               donors=donors, exempt_pairs=_ex):   # donor-aware self-gate
             # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
             # a large-arm chelate config whose rigid build fails the self-gate is
             # re-seated (donors frozen on the native vertices; backbone re-folded).
@@ -673,6 +805,9 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         name = _classify_coloring(geom_key, vertex_elems)
         geom_tag = d["geometry"].split()[0]
         base_label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
+        # #279/#281: genuine short multiple/aromatic bonds (global, length-gated) for the
+        # collapse self-gate.  Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-id.
+        _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))
         if _cn2_ens or _sigma_ens:
             _nf = _n_ens if _cn2_ens else _n_sigma
             try:
@@ -685,7 +820,8 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             kept = 0
             for fi, (syms, P) in enumerate(ens):
                 syms, P = _maybe_relax(syms, P)
-                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):
+                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                                       exempt_pairs=_ex):
                     continue            # skip a bad frame; keep the clean ones
                 lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
                 results.append((_xyz(syms, P), lbl))
@@ -706,7 +842,8 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         syms, P = built
         syms, P = _maybe_relax(syms, P)
         _lg = _lig_groups_from_vertex_specs(vertex_specs)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
+                               exempt_pairs=_ex):   # self-gate: destroyed/over-coord/shape-outlier
             # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
             # large ligands (raised heavy-cap) often FAIL the rigid placement self-gate
             # because their backbone folds into the coordination shell.  Re-seat them by
@@ -777,6 +914,7 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
     geom_tag = geom_name.split()[0]
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
+        _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))   # #279/#281
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], geom_name, vertex_specs)
         except Exception:
@@ -785,7 +923,7 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
             continue
         syms, P = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name):
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex):
             continue
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
