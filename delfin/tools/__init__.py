@@ -28,6 +28,12 @@ from delfin.tools._registry import list_steps, register
 from delfin.tools._spec import DataKeySpec, ParamSpec, StepContract
 from delfin.tools._catalog import catalog, compatible_successors, describe
 from delfin.tools._serialize import PipelineSerializationError, register_callable
+from delfin.tools._application import (
+    Application,
+    OutputSpec,
+    list_applications,
+    register_application,
+)
 from delfin.tools.pipeline import Pipeline, PipelineInserter, PipelineResult, PipelineTemplate
 
 __all__ = [
@@ -53,4 +59,9 @@ __all__ = [
     # Serialization (blocks as data)
     "register_callable",
     "PipelineSerializationError",
+    # Applications (workflows with a contract) — facade in delfin.tools.platform
+    "Application",
+    "OutputSpec",
+    "register_application",
+    "list_applications",
 ]
