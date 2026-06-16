@@ -316,7 +316,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # DELFIN_FFFREE_CN2_ENSEMBLE=0.  Default OFF overall (CN_EXTEND off => byte-id).
     _cn2_ens = (d.get("cn") == 2
                 and os.environ.get("DELFIN_FFFREE_CN2_ENSEMBLE", "1") == "1")
-    _n_ens = int(os.environ.get("DELFIN_FFFREE_CN2_NFRAMES", "6"))
+    _n_ens = int(os.environ.get("DELFIN_FFFREE_CN2_NFRAMES", "8"))
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         vertex_elems = [lab_elem[lab] for lab in coloring]

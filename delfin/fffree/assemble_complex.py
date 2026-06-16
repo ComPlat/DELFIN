@@ -744,7 +744,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         # keeping distinct low-clash variants.  Pure geometry (the linear core/M-D stay
         # fixed -> only orientation changes).  Opt-out via DELFIN_FFFREE_CN2_NOSPIN=1.
         if len(lsyms) > 1 and os.environ.get("DELFIN_FFFREE_CN2_NOSPIN", "0") != "1":
-            n_spin = int(os.environ.get("DELFIN_FFFREE_CN2_SPINS", "4"))
+            n_spin = int(os.environ.get("DELFIN_FFFREE_CN2_SPINS", "6"))
             spun = []
             for Q0, _cl0 in list(cand):
                 for s in range(1, max(n_spin, 1)):
