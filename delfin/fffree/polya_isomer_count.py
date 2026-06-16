@@ -41,6 +41,14 @@ def _close_group(generators: List[Tuple[int, ...]], n: int) -> List[Tuple[int, .
     return sorted(group)
 
 
+def _linear_group():
+    # CN2 L-2 linear: 2 antipodal vertices (180°).  Proper rotation group C2 (order 2):
+    # identity + the C2 about an axis perpendicular to the molecular axis, which swaps
+    # the two vertices.  iter-32f (DELFIN_FFFREE_CN_EXTEND).
+    C2 = (1, 0)
+    return _close_group([C2], 2)
+
+
 def _trigonal_planar_group():
     # CN3 SP-3 trigonal planar: 3 vertices in a plane at 120°.  Proper rotation group
     # D3 (order 6): C3 about perp axis + 3 C2 through each vertex (and midpoint of
@@ -128,6 +136,7 @@ def _tricapped_trigonal_prism_group():
 
 
 _GROUPS = {
+    "linear": (_linear_group(), 2),
     "trigonal_planar": (_trigonal_planar_group(), 3),
     "tshape": (_tshape_group(), 3),
     "octahedron": (_octahedron_group(), 6),
@@ -230,6 +239,7 @@ CHELATE_CIS_MAX_DEG = 100.0
 CHELATE_CIS_MAX_DEG_TET = 111.0
 
 _GEOM_KEY_TO_SHAPE = {
+    "linear": "L-2 linear",
     "octahedron": "OC-6 octahedron",
     "square_planar": "SP-4 square planar",
     "tetrahedron": "T-4 tetrahedron",

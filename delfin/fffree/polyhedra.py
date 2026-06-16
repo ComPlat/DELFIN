@@ -17,6 +17,13 @@ def _norm_rows(V: np.ndarray) -> np.ndarray:
 def _ref_polyhedra():
     R = {}
     t = 1 / math.sqrt(3)
+    # CN2 (iter-32f, DELFIN_FFFREE_CN_EXTEND): linear two-coordinate (180°), the
+    # canonical d10 geometry for Cu(I)/Ag(I)/Au(I)/Hg(II) etc.  Two antipodal
+    # vertices on the z-axis — the smallest non-trivial polyhedron.  Index order
+    # 0=+z, 1=-z so the C2/inversion swap (0<->1) in _linear_group below is a real
+    # geometric symmetry of this vertex set (same contract as the higher CNs).
+    R[("CN2", "L-2 linear")] = np.array(
+        [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], float)
     # CN3 (iter-32c, User 2026-05-28 ADUMOD: Pd CN3 built as Td=109.5°/linear=180°
     # instead of correct SP-3 trigonal-planar 120° or d8 T-shape 90°/180°).
     R[("CN3", "SP-3 trigonal planar")] = np.array(
@@ -71,6 +78,7 @@ def _ref_polyhedra():
 REFS = _ref_polyhedra()
 
 GEOM_BY_CN = {
+    2: ["L-2 linear"],
     3: ["SP-3 trigonal planar", "T-3 T-shape"],
     4: ["T-4 tetrahedron", "SP-4 square planar"],
     5: ["TBP-5 trigonal bipyramid", "SPY-5 square pyramid"],

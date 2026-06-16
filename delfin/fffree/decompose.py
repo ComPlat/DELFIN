@@ -19,6 +19,11 @@ _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
 
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
+    if cn == 2:
+        # iter-32f (DELFIN_FFFREE_CN_EXTEND): linear two-coordinate — the canonical
+        # d10 geometry (Cu(I)/Ag(I)/Au(I)/Hg(II)).  No metal-specific branch: CN2 is
+        # essentially always linear.
+        return "L-2 linear"
     if cn == 6:
         return "OC-6 octahedron"
     if cn == 5:
@@ -65,12 +70,18 @@ def decompose(smiles: str) -> Optional[Dict]:
     # High-CN (7-9) support is env-gated: default coverage stays CN 4-6 (byte-
     # identical), CN 7-9 polyhedra (PB-7/SQAP-8/TTP-9) only when DELFIN_FFFREE_HIGHCN=1.
     # Low-CN (3) support is env-gated: DELFIN_FFFREE_CN3=1 enables SP-3/T-3 (iter-32c).
+    # CN-coverage extension (iter-32f): DELFIN_FFFREE_CN_EXTEND=1 accepts the most
+    # impactful out-of-range buckets — CN2 (linear, the big one: d10 Cu/Ag/Au/Hg) plus
+    # CN7 (PB-7) and CN8 (SQAP-8) — routing them to the polyhedra that already exist.
+    # Default OFF -> byte-identical (the branch is never entered).
     _allowed = set()
     _allowed.update({4, 5, 6})
     if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
         _allowed.update({7, 8, 9})
     if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
         _allowed.add(3)
+    if os.environ.get("DELFIN_FFFREE_CN_EXTEND", "0") == "1":
+        _allowed.update({2, 7, 8})
     if cn not in _allowed:
         return None
     metal = matom.GetSymbol()
