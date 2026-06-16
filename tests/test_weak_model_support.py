@@ -33,6 +33,8 @@ def loader():
     ("qwen3-coder:32b",                 False),
     ("llama3.3:70b",                    False),
     ("gemma:27b",                       False),
+    ("mistral-small:22b",               False),   # >14b via generic size
+    ("deepseek-r1:671b",                False),   # huge MoE
     # Weak local models — compact prompt activates
     ("qwen2.5-coder:7b",                True),
     ("qwen2.5-coder:14b",               True),
@@ -43,6 +45,11 @@ def loader():
     ("phi-3.5",                         True),
     ("mistral-7b",                      True),
     ("codellama:7b",                    True),
+    # Generic size signal catches tags the family regex missed (the bug):
+    ("qwen3-vl:4b",                     True),    # was wrongly classified strong
+    ("gemma3:2b",                       True),
+    ("qwen3:0.6b",                      True),
+    ("deepseek-r1:7b",                  True),
 ])
 def test_is_weak_model_classification(loader, model, expected_weak):
     assert loader._is_weak_model(model) is expected_weak, (

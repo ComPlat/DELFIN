@@ -23,11 +23,14 @@ in this priority order and appends new findings back here.
 ## Backlog (curated; newest insight wins)
 
 ### Model adaptivity
-- [ ] **Weak-model detection misses small multi-modal/reasoning tags** — e.g.
-  `qwen3-vl:4b` (4b) isn't matched by `prompt_loader._WEAK_MODEL_PATTERNS`
-  (qwen pattern lacks `4b`), so a 4B model gets the full 45-tool surface +
-  full prompt. Extend the patterns / prefer the capability layer's window+size
-  signal for the weak/strong split.
+- [x] **Weak-model detection misses small multi-modal/reasoning tags** —
+  `prompt_loader._is_weak_model` now parses a generic `<N>b` parameter-size tag
+  (`_param_size_b`): an explicit size is authoritative (≤14b ⇒ weak), so any
+  `:Nb` Ollama tag is classified right without enumerating every size in the
+  family regex; MoE `…-A17b` active-param suffixes (glued to a letter) are
+  ignored so only the total counts. Family regex stays as the no-size fallback.
+  Live-proven: `qwen3-vl:4b` → core_tools_only, advertised **16** tools (was
+  **47**); `gpt-oss:120b` keeps the full 47; real qwen3-vl:4b turn replied OK.
 - [ ] **KIT live context-window detection needs auth** — `model_capabilities.
   _fetch_openai_models` sends no `Authorization` header, so KIT `/v1/models`
   (which carries `max_model_len`) 401s and we fall back to the static 128k.

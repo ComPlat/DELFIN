@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -620,13 +621,36 @@ class PromptLoader:
     _COMPACT_LINE_MAX = 80   # collapse paragraphs longer than this when compact
     _COMPACT_TARGET_TOKENS = 3000
 
+    # Models at or below this parameter count (in billions) get the compact
+    # prompt + core tool surface. 14b is the weak/strong boundary (qwen-14b is
+    # weak; 32b/70b/120b/397b are strong) — matches _WEAK_MODEL_PATTERNS.
+    _WEAK_MODEL_MAX_B = 14.0
+    # An "<N>b" parameter-size token at a separator boundary (":4b", "-7b",
+    # "397b"). A size glued to a letter (MoE "…-A17b" active-param suffix) is
+    # deliberately NOT matched, so only the total parameter count is read.
+    _PARAM_SIZE_RE = re.compile(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)b(?![a-z0-9])")
+
+    def _param_size_b(self, model: str):
+        """Largest parameter-size tag (in billions) in the model name, or None
+        when the name carries no explicit size. ``qwen3-vl:4b`` → 4.0,
+        ``kit.qwen3.5-397b-A17b`` → 397.0 (not 17)."""
+        sizes = [float(x) for x in self._PARAM_SIZE_RE.findall(model.lower())]
+        return max(sizes) if sizes else None
+
     def _is_weak_model(self, model: str = "") -> bool:
-        """Heuristic — does the active model need the compact prompt?"""
+        """Heuristic — does the active model need the compact prompt?
+
+        An explicit parameter-size tag is authoritative (small => weak, large
+        => strong), so any ``:Nb`` Ollama tag is classified correctly without
+        enumerating every size in the family regex (e.g. ``qwen3-vl:4b`` is now
+        caught). Names without a size fall back to the family patterns."""
         if not model:
             return False
         m = model.lower()
-        import re as _re_wm
-        return any(_re_wm.search(p, m) for p in self._WEAK_MODEL_PATTERNS)
+        size = self._param_size_b(m)
+        if size is not None:
+            return size <= self._WEAK_MODEL_MAX_B
+        return any(re.search(p, m) for p in self._WEAK_MODEL_PATTERNS)
 
     def _compact_prose(self, text: str) -> str:
         """Aggressively shrink long prose sections for weak models.
