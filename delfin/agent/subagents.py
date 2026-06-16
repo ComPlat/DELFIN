@@ -795,6 +795,16 @@ def run_subagent(
                 "final_path": str(info.final_path) if info.final_path else "",
                 "cleaned_up": bool(info.cleaned_up),
             }
+            # Surface WHAT the isolated subagent changed so the parent can
+            # review parallel-writer work without hunting through the worktree.
+            if info.had_changes:
+                try:
+                    from .worktree import diff_summary as _diff_sum
+                    _ds = _diff_sum(info)
+                    if _ds:
+                        worktree_summary["diff_summary"] = _ds
+                except Exception:
+                    pass
         except Exception as exc:
             worktree_summary = {"error": f"worktree teardown failed: {exc}"}
 

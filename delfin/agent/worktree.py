@@ -156,6 +156,26 @@ def exit_worktree(
     return info
 
 
+def diff_summary(info: WorktreeInfo, *, max_chars: int = 2000) -> str:
+    """Concise review of what a worktree changed vs its base: the ``--stat`` of
+    tracked changes plus any new untracked files. Empty when the worktree is
+    gone or unchanged. Lets the parent agent SEE what an isolated (e.g.
+    parallel-writer) subagent actually did, not just that it changed something."""
+    path = info.final_path or info.path
+    try:
+        stat = _run_git(path, "diff", "--stat", info.base_ref)
+        untracked = _run_git(path, "ls-files", "--others", "--exclude-standard")
+    except WorktreeError:
+        return ""
+    parts: list[str] = []
+    if stat.strip():
+        parts.append(stat.strip())
+    if untracked.strip():
+        parts.append("Untracked (new):\n" + "\n".join(
+            f"  {f}" for f in untracked.strip().splitlines()))
+    return "\n".join(parts).strip()[:max_chars]
+
+
 @contextmanager
 def worktree_session(
     repo_dir: Path | str,
@@ -175,5 +195,6 @@ __all__ = [
     "WorktreeInfo",
     "enter_worktree",
     "exit_worktree",
+    "diff_summary",
     "worktree_session",
 ]

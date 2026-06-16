@@ -52,6 +52,15 @@ in this priority order and appends new findings back here.
 - [ ] **MCP resources/prompts UX** — beyond the agent meta-tools, surface MCP
   prompts as slash commands + resources as @-mentions in the dashboard.
 
+### Worktree orchestration (focus area)
+- [x] Auto-isolate parallel writers into separate worktrees (done earlier).
+- [x] **Review**: subagent result now carries a `diff_summary` (changed files +
+  --stat + untracked) so the parent SEES what an isolated writer did, not just
+  `had_changes`. `worktree.diff_summary`. Live-verified with KIT-qwen.
+- [ ] **Integrate**: a safe `worktree_merge` tool to bring a chosen worktree's
+  changes back into the main tree (commit-in-worktree → apply/merge, report
+  conflicts, never force). Completes the fan-out-writers → review → merge flow.
+
 ### Done (recent, for context)
 - [x] `/loop` command — recurring agent loop (interval-based, scheduler-backed),
   like Claude Code's /loop. `/loop <5m|2h|1d> <prompt>` · `/loop list` ·
