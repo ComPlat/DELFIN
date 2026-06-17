@@ -1310,6 +1310,33 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "view_image",
+            "description": (
+                "LOOK AT an image file (PNG/JPEG/WebP/GIF) — the image is "
+                "shown to you (the vision model) so you can actually SEE and "
+                "describe its visual content: plots, screenshots, diagrams, "
+                "molecular renders, photos. Use this for images instead of "
+                "read_file (which only reads text and would return garbage on "
+                "a PNG). Accepts a workspace-relative or absolute path."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Path to the image file. Workspace-relative "
+                            "(e.g. 'plots/spectrum.png') OR absolute."
+                        ),
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep_file",
             "description": (
                 "Search for a regex pattern in files under the DELFIN repository. "
@@ -3126,6 +3153,8 @@ class _DocToolExecutor:
         # cannot fall back to bash.
         if name == "read_file":
             return self._execute_read_file(arguments, permissions)
+        elif name == "view_image":
+            return self._execute_view_image(arguments, permissions)
         elif name == "grep_file":
             return self._execute_grep_file(arguments, permissions)
         elif name == "list_files":
@@ -3256,6 +3285,10 @@ class _DocToolExecutor:
         if full.is_dir():
             entries = sorted(p.name for p in full.iterdir())[:50]
             return json.dumps({"type": "directory", "entries": entries})
+        if full.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"):
+            return json.dumps({"error": (
+                f"{rel_path} is an image, not text — reading it as text gives "
+                "garbage. Use the view_image tool to actually LOOK at it.")})
         try:
             lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
@@ -3267,6 +3300,40 @@ class _DocToolExecutor:
         if len(lines) > offset + limit:
             result += f"\n... ({len(lines)} lines total, showing {offset}-{offset + limit})"
         return result
+
+    def _execute_view_image(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        rel_path = self._get_path_arg(arguments)
+        if not rel_path:
+            return json.dumps({"error": "path is required"})
+        root = perms.workspace if perms is not None else self._repo_root()
+        full = (root / rel_path) if not Path(rel_path).is_absolute() else Path(rel_path)
+        # Same read-gate as read_file: secrets denied, outside-workspace needs
+        # the user's confirm. Images aren't special-cased for safety.
+        if perms is not None:
+            err = self._check_read_access(perms, full, label=rel_path)
+            if err is not None:
+                return json.dumps({"error": err})
+        try:
+            from .image_input import load_image
+            img = load_image(full)
+        except Exception as exc:
+            return json.dumps({"error": f"cannot load image: {exc}"})
+        # A tool result can only carry text, so stash the loaded image; the
+        # stream loop injects it as visual content for the NEXT model round.
+        pend = getattr(self, "_pending_view_images", None)
+        if pend is None:
+            pend = self._pending_view_images = []
+        pend.append(img)
+        return json.dumps({
+            "status": "ok",
+            "path": str(full),
+            "mime": img.mime,
+            "bytes": img.size_bytes(),
+            "note": ("The image is shown to you in the next message — look at "
+                     "it and describe / use what you SEE."),
+        })
 
     def _execute_grep_file(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
@@ -5838,6 +5905,18 @@ class OpenAIClient(_BaseClient):
                 if t.get("function", {}).get("name") in _WEAK_MODEL_CORE_TOOLS
             ]
 
+        # Vision gate: view_image only helps a model that can SEE images. Strip
+        # it for text-only models so they don't open images they can't process.
+        try:
+            from .image_input import model_supports_vision as _msv_gate
+            if not _msv_gate(self.model, _caps):
+                advertised_tools = [
+                    t for t in advertised_tools
+                    if t.get("function", {}).get("name") != "view_image"
+                ]
+        except Exception:
+            pass
+
         # No-native-tools gate (defence-in-depth behind the dashboard/CLI
         # preflight): a model with no native tool support would only choke on
         # the tool schema and leak malformed calls. Suppress tool advertising
@@ -6332,6 +6411,30 @@ class OpenAIClient(_BaseClient):
                 # All futures resolved in the loop above — release threads.
                 if _sub_executor is not None:
                     _sub_executor.shutdown(wait=False)
+
+                # view_image: a tool result is text-only, so the handler stashed
+                # any image the agent opened. Inject it now as visual content
+                # for the NEXT round so a vision-capable model actually SEES it.
+                _pending_imgs = getattr(_doc_executor, "_pending_view_images", None)
+                if _pending_imgs:
+                    _doc_executor._pending_view_images = []
+                    try:
+                        from .image_input import model_supports_vision as _msv
+                        if _msv(self.model, _caps):
+                            for _img in _pending_imgs:
+                                _nm = (_img.source_path.name
+                                       if _img.source_path else "image")
+                                api_messages.append({
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "text",
+                                         "text": f"[Image you opened: {_nm}]"},
+                                        {"type": "image_url",
+                                         "image_url": {"url": _img.data_uri()}},
+                                    ],
+                                })
+                    except Exception:
+                        pass
 
                 # Consecutive-failure check. A "failure round" is one
                 # where every tool_result this round is an `{"error": …}`

@@ -50,6 +50,16 @@ in this priority order and appends new findings back here.
   falls back to the user model ("not in live model list"), no dead route.
 
 ### Multimodal / providers
+- [x] **Agent can view images from disk** (Jerome report 20260617-140214,
+  "Agent kann keine PNGs anzeigen/lesen") — new `view_image` tool: loads a
+  PNG/JPEG/WebP/GIF, and the stream loop injects it as `image_url` visual
+  content for the next round so the vision model actually SEES it (a tool result
+  is text-only). Advertised only to vision-capable models; `read_file` now
+  redirects images to it instead of returning garbage. Also fixed live vision
+  detection: `model_capabilities` reads KIT's per-model `info.meta.capabilities.
+  vision` flag (qwen3.5-397b / gemma4 were wrongly "no-vision"). Live-verified:
+  KIT-qwen called `view_image` on a real PNG and described it (red circle +
+  "DELFIN" text) correctly.
 - [ ] **Claude-format vision** — `engine._build_user_message` only emits
   OpenAI `image_url` content (Ollama/KIT/OpenAI). Claude uses Anthropic image
   blocks → currently text-fallback. Add the Anthropic shape for the

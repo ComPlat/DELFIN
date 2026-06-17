@@ -446,12 +446,29 @@ def _discover_openai_models(
             return str(info["id"])
         return str(e.get("id", ""))
 
+    def _vision(e: dict):
+        # KIT Open-WebUI exposes per-model capability flags under
+        # info.meta.capabilities (e.g. {"vision": true, ...}) — authoritative
+        # for whether the model accepts image content. None when not declared.
+        info = e.get("info")
+        meta = info.get("meta") if isinstance(info, dict) else None
+        caps = meta.get("capabilities") if isinstance(meta, dict) else None
+        if isinstance(caps, dict) and "vision" in caps:
+            return bool(caps.get("vision"))
+        return None
+
     matched = [e for e in entries if _model_matches(_entry_id(e), model)]
     pool = matched or (entries if len(entries) == 1 else [])
     for e in pool:
+        spec: dict[str, Any] = {}
         w = _win(e)
         if w > 0:
-            return {"context_window": w}
+            spec["context_window"] = w
+        v = _vision(e)
+        if v is not None:
+            spec["supports_vision"] = v
+        if spec:
+            return spec
     return None
 
 

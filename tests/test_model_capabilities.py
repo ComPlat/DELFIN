@@ -242,6 +242,23 @@ def test_kit_live_window_requires_auth_header(monkeypatch):
     assert caps1.context_window == 262_144
 
 
+def test_kit_vision_capability_parsed_live(monkeypatch):
+    """KIT exposes a per-model vision flag under info.meta.capabilities — read it
+    so a multimodal model (qwen3.5-397b, gemma4) is recognised as vision-capable
+    instead of falling back to the name heuristic (which would say no)."""
+    def _payload(vis):
+        return {"data": [{"id": "kit.m", "info": {"id": "kit.m", "meta": {
+            "description": "… Context length ≈ 256K",
+            "capabilities": {"vision": vis, "file_context": True}}}}]}
+    monkeypatch.setattr(
+        mc.urllib.request, "urlopen", _urlopen_router({"/v1/models": _payload(True)}))
+    assert mc.resolve("kit", "kit.m", _KIT_BASE, api_key="K").supports_vision is True
+    mc._CACHE.clear()
+    monkeypatch.setattr(
+        mc.urllib.request, "urlopen", _urlopen_router({"/v1/models": _payload(False)}))
+    assert mc.resolve("kit", "kit.m", _KIT_BASE, api_key="K").supports_vision is False
+
+
 def test_nonchat_reason_filters_modality_models():
     """Embedding / reranker / speech / image models (listed by KIT alongside
     chat models, but they 400 on the chat endpoint) get a reason; real chat
