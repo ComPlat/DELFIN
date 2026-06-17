@@ -118,4 +118,34 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     return head + ":\n" + "\n".join(rows)
 
 
-__all__ = ["record", "read", "clear", "trace_path", "format_summary"]
+def format_panel_html(entries: list[dict], *, limit: int = 12) -> str:
+    """Compact HTML feed of the most-recent tool calls for the dashboard's live
+    tool-trace panel — newest first, ✓/✗ glyph, tool name, short input, dur.
+    Empty string when there are no calls (panel hides itself)."""
+    from html import escape as _esc
+    if not entries:
+        return ""
+    rows = []
+    for e in entries[-limit:][::-1]:          # newest first
+        ok = bool(e.get("ok", True))
+        glyph, colour = ("✓", "#2e7d32") if ok else ("✗", "#c62828")
+        tool = _esc(str(e.get("tool", "?")))
+        inp = _esc(_to_text(e.get("input", ""))[:48])
+        dur = int(e.get("duration_ms") or 0)
+        dur_s = f"{dur / 1000:.1f}s" if dur >= 1000 else f"{dur}ms"
+        rows.append(
+            "<div style='font-family:monospace;font-size:11px;white-space:nowrap;"
+            "overflow:hidden;text-overflow:ellipsis;'>"
+            f"<span style='color:{colour};'>{glyph}</span> "
+            f"<b>{tool}</b> <span style='color:#888;'>{inp}</span> "
+            f"<span style='color:#aaa;'>· {dur_s}</span></div>"
+        )
+    head = (f"<div style='font-size:11px;color:#546e7a;'>"
+            f"<b>🔧 Tools</b> · {len(entries)} call(s)</div>")
+    return (head + "<div style='max-height:118px;overflow-y:auto;"
+            "border:1px solid #2a2a2a;border-radius:4px;padding:2px 6px;"
+            "margin-top:2px;'>" + "".join(rows) + "</div>")
+
+
+__all__ = ["record", "read", "clear", "trace_path", "format_summary",
+           "format_panel_html"]

@@ -83,9 +83,13 @@ in this priority order and appends new findings back here.
   output, no tools): exactly the 20260616-101958 "Hallo → 92.7s" shape, so if it
   recurs the report proves backend stall vs code path. Live-verified: a real KIT
   engine turn recorded total=9.8s/ttft=9.8s/out=41ch/tools=0.
-- [ ] **Tool-trace → metrics/UI** — feed `tool_trace` into `agent_metrics`/
-  `outcome_tracker`; add a dashboard panel for the live trace (not only
-  `/trace`). (turn_metrics is the timing half of this.)
+- [x] **Live tool-trace dashboard panel** — a compact, always-visible feed of
+  the MAIN agent's tool calls (✓/✗ · tool · short input · duration), newest
+  first, refreshed per tool_result and at turn end — the dashboard analogue of
+  the terminal action feed, sibling to the existing subagent/task panels.
+  `tool_trace.format_panel_html` + `_refresh_tool_trace_panel`. Tested
+  (render + wiring). Follow-up still open: feed `tool_trace` into
+  `agent_metrics`/`outcome_tracker` for aggregate stats (usage/error rates).
 - [ ] **MCP resources/prompts UX** — beyond the agent meta-tools, surface MCP
   prompts as slash commands + resources as @-mentions in the dashboard.
 

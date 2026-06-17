@@ -45,6 +45,33 @@ def test_read_empty_session(home):
     assert tt.read("nope") == []
 
 
+def test_format_panel_html(home):
+    """The live dashboard panel: newest-first feed with ✓/✗ + duration."""
+    tt.record("p1", tool="read_file", tool_input={"path": "foo.py"},
+              output="ok", duration_ms=3, ok=True)
+    tt.record("p1", tool="bash", tool_input="pytest -q", ok=False,
+              error="boom", duration_ms=2100)
+    html = tt.format_panel_html(tt.read("p1"))
+    assert "read_file" in html and "bash" in html
+    assert "✓" in html and "✗" in html
+    assert "2.1s" in html and "3ms" in html          # duration formatting
+    assert html.index("bash") < html.index("read_file")   # newest first
+    assert "2 call(s)" in html
+
+
+def test_format_panel_html_empty(home):
+    assert tt.format_panel_html([]) == ""
+
+
+def test_tool_trace_panel_wired_in_dashboard():
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    assert "tool_trace_panel_html" in src             # widget exists
+    assert "_refresh_tool_trace_panel" in src          # refresh fn
+    assert "format_panel_html" in src                   # uses the renderer
+
+
 def test_engine_records_trace(home, monkeypatch, tmp_path):
     from delfin.agent import model_capabilities as mc
     monkeypatch.setattr(mc, "resolve", lambda *a, **k: mc.ModelCapabilities(

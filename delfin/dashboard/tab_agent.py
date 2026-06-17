@@ -3876,6 +3876,24 @@ def create_tab(ctx):
         except Exception:
             subagent_panel_html.value = ""
 
+    # Live tool-trace panel: the MAIN agent's tool calls as they happen — the
+    # dashboard analogue of the terminal action feed (the subagent panel above
+    # already does this for subagents; this does it for the main run).
+    tool_trace_panel_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 0 0"),
+    )
+
+    def _refresh_tool_trace_panel():
+        try:
+            from delfin.agent import tool_trace as _tt
+            eng = state.get("engine")
+            if eng is None:
+                tool_trace_panel_html.value = ""
+                return
+            tool_trace_panel_html.value = _tt.format_panel_html(
+                _tt.read(eng.trace_session(), last_n=12))
+        except Exception:
+            tool_trace_panel_html.value = ""
 
     def _refresh_status_line():
         try:
@@ -4290,7 +4308,7 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
-         status_line_html, subagent_panel_html],
+         status_line_html, subagent_panel_html, tool_trace_panel_html],
     )
 
     if not _yaml_ok:
@@ -5667,6 +5685,10 @@ def create_tab(ctx):
             pass
         try:
             _refresh_subagent_panel()
+        except Exception:
+            pass
+        try:
+            _refresh_tool_trace_panel()
         except Exception:
             pass
         engine = state["engine"]
@@ -12476,6 +12498,11 @@ def create_tab(ctx):
                             _refresh_task_ticker()
                         except Exception:
                             pass
+                    # Live tool-trace panel: reflect every tool call as it lands.
+                    try:
+                        _refresh_tool_trace_panel()
+                    except Exception:
+                        pass
                     # Truncate for display
                     output = tool_output
                     _MAX_LINES = 8
