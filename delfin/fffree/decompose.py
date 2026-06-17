@@ -462,12 +462,31 @@ def decompose(smiles: str) -> Optional[Dict]:
     # do); denticity>3 / kappa4 already bailed above (class-C, separate).
     _jd = os.environ.get("DELFIN_FFFREE_JOINT_DECLASH", "0") == "1"
     _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", "12")) if _jd else 8
+    # CHELATE-BACKBONE gate-lift (DELFIN_FFFREE_CHELATE_BACKBONE, default OFF -> byte-id):
+    # PHASE 0 of the polydentate project (K4_MACROCYCLE_DESIGN_2026_06_17.md §10).
+    # Large kappa<=3 chelates with an extended/strained backbone (e.g. BIQCOV: Ta,
+    # kappa3 diamido, ~9.7 heavy/arm; ABEZAJ Ti diamido-amine; ABIBAP Ru terpy-class)
+    # build cleanly via the hardened metallacycle DG-embed (soft donor-donor windows +
+    # more conformers, assemble_complex._embed_metallacycle) but are CUT OFF at the
+    # decompose stage because the historic per-arm chelate cap (8 heavy/arm) rejects
+    # their aryl/strained backbone BEFORE any build is attempted.  Raise the CHELATE arm
+    # ceiling (8 -> DELFIN_FFFREE_CHELATE_HEAVY_CAP, default 12) ONLY when the flag is on;
+    # the self-gate (_build_is_clean) still vetoes any unclean result -> never worse than
+    # legacy.  Strictly the already-allowed kappa<=3 path: the denticity>3 gate (Z.398-399)
+    # is UNTOUCHED, so kappa4+ stays legacy (Phase 1+, separately user-gated).
+    _chel_bb = os.environ.get("DELFIN_FFFREE_CHELATE_BACKBONE", "0") == "1"
+    _chel_cap = int(os.environ.get("DELFIN_FFFREE_CHELATE_HEAVY_CAP", "12")) if _chel_bb else 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
-        # union of both flags: monodentate arms may be raised by EITHER the
-        # seating heavy-cap OR the joint-declash mono-cap (whichever is larger);
-        # chelate arms keep the seating-aware base cap.  Both flags OFF => 8 (byte-id).
-        cap = max(MAX_HEAVY_PER_DONOR, _mono_cap) if lg["denticity"] == 1 else MAX_HEAVY_PER_DONOR
+        # union of all three independent cap-raisers (each default OFF -> 8 -> byte-id):
+        #   MAX_HEAVY_PER_DONOR : seating heavy-cap (raises EVERY arm)
+        #   _mono_cap           : joint-declash mono-cap (raises MONODENTATE arms)
+        #   _chel_cap           : chelate-backbone cap (raises CHELATE arms)
+        # Whichever applicable raiser is largest wins per arm; all OFF => 8 everywhere.
+        if lg["denticity"] == 1:
+            cap = max(MAX_HEAVY_PER_DONOR, _mono_cap)
+        else:
+            cap = max(MAX_HEAVY_PER_DONOR, _chel_cap)
         if nheavy / max(lg["denticity"], 1) > cap:
             return None
     return {"metal": metal, "cn": cn, "geometry": geometry,

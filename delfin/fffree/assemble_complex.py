@@ -51,7 +51,8 @@ def _kabsch_rot(Pobs: np.ndarray, Ptgt: np.ndarray) -> np.ndarray:
     return Vt.T @ np.diag([1.0, 1.0, dsign]) @ U.T
 
 
-def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None):
+def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
+                        harden=False):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
     donor atoms, so the metallacycle ring forms with correct ring geometry.  A
     free-ligand embed yields the (energetically preferred) extended/anti conformer
@@ -84,9 +85,31 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None)
         # on the exact vertices -> clean coordination shape (CShM->0).  Per-chelate DG
         # bounds (feasible; the WHOLE-complex DG was not).  Validated: bite 80-101° ->
         # 87-94°.  Falls back to the unconstrained embed if infeasible/fails.
+        #
+        # CHELATE-BACKBONE hardening (DELFIN_FFFREE_CHELATE_BACKBONE, default OFF -> byte-id):
+        # PHASE 0 of the polydentate project (K4_MACROCYCLE_DESIGN_2026_06_17.md §3.2).  For
+        # a large/strained backbone (BIQCOV-class) the CHELATE_BITE HARD donor-donor pin
+        # (tol 0.05) over-constrains the bounds matrix -> Triangle-Smoothing fails -> the
+        # unconstrained fallback embed buckles the backbone INTO the coordination shell
+        # (H-H / C-H collapses, the self-gate then drops the whole complex to legacy).  The
+        # fix: keep the M-D distances HARD-pinned (so M-D stays invariant), but relax the
+        # donor-donor distances to a WIDE SOFT window [d-tol, d+tol] (DELFIN_FFFREE_POLY_BB_TOL,
+        # default 0.4 A) so the strained ring has folding freedom, AND embed MORE conformers
+        # (DELFIN_FFFREE_POLY_K_CONFS, default 12) so the assembler can pick a collapse-free
+        # backbone pose.  Activated by EITHER flag; CHELATE_BACKBONE => soft windows + more
+        # confs, CHELATE_BITE-only => the historic hard pins (byte-id).  Per-donor M-D radial
+        # rescale downstream (_orient_chelate_to_vertices) re-sets M-D exactly, so the soft
+        # window never moves a donor off its ideal radius.
         cids = []
+        # harden == True only for the newly-admitted LARGE backbones (set by the caller,
+        # per-arm > historic cap, flag-gated).  Existing chelates (harden=False) keep the
+        # exact historic embed (k=6, hard donor-donor pins ONLY under CHELATE_BITE).
+        _chel_bite = os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"
+        if harden:
+            k = max(int(k), int(os.environ.get("DELFIN_FFFREE_POLY_K_CONFS", "12")))
+        _dd_tol = float(os.environ.get("DELFIN_FFFREE_POLY_BB_TOL", "0.4")) if harden else 0.05
         if (donor_target_pos is not None and len(donor_target_pos) == len(donor_idxs)
-                and os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"):
+                and (_chel_bite or harden)):
             try:
                 from rdkit.Chem import rdDistGeom as _DG
                 from rdkit import DistanceGeometry as _DGs
@@ -103,10 +126,11 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None)
                     if i != mi and i not in dset:
                         bm[min(i, mi)][max(i, mi)] = 100.0
                         bm[max(i, mi)][min(i, mi)] = 1.2
-                for a, da in enumerate(donor_idxs):       # pin M-D + donor-donor to ideal vertices
+                for a, da in enumerate(donor_idxs):       # M-D HARD; donor-donor (soft for backbone)
                     _setb(mi, int(da), float(np.linalg.norm(tp[a])))
                     for b in range(a + 1, len(donor_idxs)):
-                        _setb(int(da), int(donor_idxs[b]), float(np.linalg.norm(tp[a] - tp[b])))
+                        _setb(int(da), int(donor_idxs[b]),
+                              float(np.linalg.norm(tp[a] - tp[b])), tol=_dd_tol)
                 if _DGs.DoTriangleSmoothing(bm):
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
@@ -1692,7 +1716,18 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                                           mol=lg["mol"]) for i in range(_dent)]
             except Exception:
                 _dtp = None
-            ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal, donor_target_pos=_dtp)
+            # CHELATE-BACKBONE hardening is SCOPED to the newly-admitted LARGE backbones
+            # (per-arm heavy > the historic cap of 8) so every existing native chelate
+            # (per-arm <= 8: en, acac, bipy, terpy, ...) keeps the EXACT historic embed
+            # -> byte-identical to OFF.  Only an over-cap arm (BIQCOV/ABEZAJ-class, only
+            # reachable at all because the flag lifted the decompose cap) gets the soft
+            # donor-donor windows + more conformers.  Flag-gated; OFF => harden=False
+            # everywhere => byte-identical.
+            _nheavy_lg = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
+            _harden = (os.environ.get("DELFIN_FFFREE_CHELATE_BACKBONE", "0") == "1"
+                       and _nheavy_lg / max(_dent, 1) > 8.0)
+            ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal,
+                                             donor_target_pos=_dtp, harden=_harden)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
