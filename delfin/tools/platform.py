@@ -118,6 +118,74 @@ register({cls}())
 '''
 
 
+def register_module(
+    name: str, code: str, *, directory=None, overwrite: bool = True,
+) -> Dict[str, Any]:
+    """Build a NEW building block from source and integrate it into the framework.
+
+    The agent's "no tool exists → build one → integrate it" primitive, for ANY
+    kind of step (parser, external-program wrapper, analysis …) — not tied to a
+    specific engine. It writes *code* to ``<adapters_dir>/<name>.py``, loads it,
+    and verifies the module registered a working capability:
+
+    * writes + loads the file (``$DELFIN_ADAPTERS_DIR`` or ``~/.delfin/adapters``)
+    * checks a new capability appeared and its :class:`StepContract` builds
+    * on any failure removes the freshly written file so it can't poison
+      discovery, and reports the error instead of raising
+
+    Returns ``{"ok", "name", "path", "provides", "capability", "diagnostics"}``;
+    on success the new block is immediately usable in pipelines, shows up in
+    ``catalog``/``probe``/the Pipelines tab, and survives restarts.
+    """
+    from delfin.tools import _registry
+    from delfin.tools.manifest import contract_to_dict
+
+    diagnostics: List[str] = []
+    target_dir = Path(directory) if directory else _registry._user_adapter_dirs()[0]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    path = target_dir / f"{name}.py"
+    existed = path.exists()
+    if existed and not overwrite:
+        return {"ok": False, "name": name, "path": str(path), "provides": [],
+                "capability": None,
+                "diagnostics": [f"{path} already exists (overwrite=False)"]}
+
+    before = set(list_steps().keys())
+    path.write_text(code, encoding="utf-8")
+    try:
+        _registry.load_user_adapter_file(path)
+    except Exception as exc:  # noqa: BLE001 — surface the build error to the agent
+        if not existed:
+            path.unlink(missing_ok=True)
+        return {"ok": False, "name": name, "path": str(path), "provides": [],
+                "capability": None,
+                "diagnostics": [f"failed to load module: {type(exc).__name__}: {exc}"]}
+
+    provides = sorted(set(list_steps().keys()) - before)
+    if not provides:
+        if not existed:
+            path.unlink(missing_ok=True)
+        return {"ok": False, "name": name, "path": str(path), "provides": [],
+                "capability": None,
+                "diagnostics": ["module loaded but registered no new capability "
+                                "(did it call register(...)?)"]}
+
+    primary = name if name in provides else provides[0]
+    capability = None
+    contract = describe_capability(primary)
+    if contract is None:
+        diagnostics.append(f"capability {primary!r} not introspectable")
+    else:
+        try:
+            capability = contract_to_dict(contract)
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(f"contract did not build: {exc}")
+
+    return {"ok": not diagnostics, "name": primary, "path": str(path),
+            "provides": provides, "capability": capability,
+            "diagnostics": diagnostics}
+
+
 # ======================================================================
 #  Keys (central well-known-parameter vocabulary)
 # ======================================================================
@@ -448,6 +516,7 @@ __all__ = [
     "catalog",
     "compatible_successors",
     "new_capability_template",
+    "register_module",
     # keys + manifest
     "list_keys",
     "describe_key",

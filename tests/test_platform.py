@@ -135,6 +135,35 @@ def test_new_capability_template_and_user_adapter_discovery(tmp_path, monkeypatc
     assert "my_custom_step" in list_steps()
 
 
+def test_register_module_builds_and_integrates(tmp_path, monkeypatch):
+    from delfin.tools import list_steps
+
+    monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(tmp_path))
+    code = platform.new_capability_template("built_block", category="analysis")
+    res = platform.register_module("built_block", code)
+    assert res["ok"] is True
+    assert res["provides"] == ["built_block"]
+    assert res["capability"]["category"] == "analysis"      # contract is introspectable
+    assert "built_block" in list_steps()                    # usable in pipelines now
+    assert (tmp_path / "built_block.py").is_file()          # persisted → survives restart
+
+
+def test_register_module_rejects_broken_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(tmp_path))
+    res = platform.register_module("broken_block", "this is not valid python @#$")
+    assert res["ok"] is False
+    assert res["diagnostics"] and "failed to load" in res["diagnostics"][0]
+    assert not (tmp_path / "broken_block.py").exists()      # poison file cleaned up
+
+
+def test_register_module_requires_a_registration(tmp_path, monkeypatch):
+    monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(tmp_path))
+    res = platform.register_module("noop_block", "VALUE = 1\n")
+    assert res["ok"] is False
+    assert "registered no new capability" in res["diagnostics"][0]
+    assert not (tmp_path / "noop_block.py").exists()
+
+
 def test_run_application_missing_required_input():
     # opt_freq_energy requires smiles + charge; omit them → fail fast, no run.
     res = platform.run_application("opt_freq_energy", method="B3LYP")

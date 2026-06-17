@@ -81,6 +81,23 @@ def _user_adapter_dirs():
     return dirs
 
 
+def load_user_adapter_file(path) -> None:
+    """Execute a single user adapter file (it calls ``register(...)`` itself).
+
+    Raises on any import/exec error so callers that want feedback (e.g. the
+    agent integrating a freshly built module) can surface it.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(path)
+    spec = importlib.util.spec_from_file_location(f"delfin_user_adapter_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load adapter file {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+
 def _load_user_adapters() -> None:
     """Load user-defined building blocks from ~/.delfin/adapters/*.py.
 
@@ -88,19 +105,13 @@ def _load_user_adapters() -> None:
     there and it becomes a registered capability without editing the package.
     Failures per file are skipped so one bad file never blocks discovery.
     """
-    import importlib.util
-
     for directory in _user_adapter_dirs():
         try:
             if not directory.is_dir():
                 continue
             for f in sorted(directory.glob("*.py")):
                 try:
-                    spec = importlib.util.spec_from_file_location(
-                        f"delfin_user_adapter_{f.stem}", f)
-                    if spec and spec.loader:
-                        module = importlib.util.module_from_spec(spec)
-                        spec.loader.exec_module(module)
+                    load_user_adapter_file(f)
                 except Exception:
                     logger.debug("Failed to load user adapter %s", f, exc_info=True)
         except Exception:

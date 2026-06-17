@@ -55,6 +55,10 @@ def h_new_capability_template(name: str, category: str = "meta") -> str:
     return platform.new_capability_template(name, category=category)
 
 
+def h_register_module(name: str, code: str) -> str:
+    return _dumps(platform.register_module(name, code))
+
+
 # --- keys -----------------------------------------------------------------
 
 
@@ -260,6 +264,14 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         """A Python skeleton for a NEW building block (StepAdapter), for when no
         existing tool fits. Save it to ~/.delfin/adapters/<name>.py to register it."""
         return h_new_capability_template(name, category)
+
+    @mcp.tool()
+    def register_module(name: str, code: str) -> str:
+        """Build a NEW building block from source and integrate it: writes the
+        adapter, loads it, verifies it registered a working capability, and
+        returns its contract (or the build error). Use when no existing tool fits
+        — the new block is then usable in pipelines like any built-in."""
+        return h_register_module(name, code)
 
     @mcp.tool()
     def list_keys() -> str:
