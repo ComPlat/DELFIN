@@ -86,6 +86,55 @@ def test_run_application_unknown():
     assert res.ok is False and "unknown application" in res.error
 
 
+# --- agent build-loop toolkit (validate / save / diagnostics / new module) ---
+
+
+def test_validate_spec_draft_and_application():
+    from delfin.tools import Application, OutputSpec, Pipeline
+
+    pipe = Pipeline("vs_pipe")
+    pipe.add("fake_energy_step", label="calc")
+    assert platform.validate_spec(pipe.to_dict()).ok                    # raw pipeline spec
+    app = Application.from_pipeline(
+        pipe, name="vs_app",
+        outputs=(OutputSpec("energy_Eh", step="calc", key="energy_Eh"),))
+    assert platform.validate_spec(app.to_dict()).ok                     # application dict
+    # a broken draft is reported, not raised
+    assert not platform.validate_spec({"name": "bad", "steps": [{"step": "orca_opt"}]}).ok
+
+
+def test_save_application_persists_and_registers(tmp_path, monkeypatch):
+    from delfin.tools import Application, OutputSpec, Pipeline
+
+    monkeypatch.setenv("DELFIN_APPLICATIONS_DIR", str(tmp_path))
+    pipe = Pipeline("sa_pipe")
+    pipe.add("fake_energy_step", label="calc")
+    app = Application.from_pipeline(
+        pipe, name="saved_demo_app",
+        outputs=(OutputSpec("energy_Eh", step="calc", key="energy_Eh"),))
+    platform.save_application(app.to_dict())
+    assert (tmp_path / "saved_demo_app.json").is_file()
+    assert "saved_demo_app" in platform.list_applications()
+
+
+def test_run_diagnostics_unknown_run():
+    assert "error" in platform.run_diagnostics("does_not_exist")
+
+
+def test_new_capability_template_and_user_adapter_discovery(tmp_path, monkeypatch):
+    import delfin.tools._registry as R
+    from delfin.tools import list_steps
+
+    code = platform.new_capability_template("my_custom_step", category="meta")
+    assert "class MyCustomStepAdapter(StepAdapter)" in code
+    assert "register(" in code
+
+    monkeypatch.setenv("DELFIN_ADAPTERS_DIR", str(tmp_path))
+    (tmp_path / "my_custom_step.py").write_text(code)
+    R._load_user_adapters()
+    assert "my_custom_step" in list_steps()
+
+
 def test_run_application_missing_required_input():
     # opt_freq_energy requires smiles + charge; omit them → fail fast, no run.
     res = platform.run_application("opt_freq_energy", method="B3LYP")

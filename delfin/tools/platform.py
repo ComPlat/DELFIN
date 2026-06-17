@@ -70,6 +70,54 @@ def compatible_successors(name: str) -> List[str]:
     return _compatible_successors(name)
 
 
+def new_capability_template(name: str, *, category: str = "meta") -> str:
+    """A ready-to-fill Python skeleton for a NEW building block (StepAdapter).
+
+    For when no existing tool does what a workflow needs: save the result to
+    ``~/.delfin/adapters/<name>.py`` (or ``$DELFIN_ADAPTERS_DIR``) and it is
+    auto-discovered as a new capability, usable in pipelines like any built-in.
+    """
+    cls = "".join(w.capitalize() for w in name.replace("-", "_").split("_")) + "Adapter"
+    return f'''"""Custom DELFIN building block: {name}."""
+
+import time
+from pathlib import Path
+
+from delfin.tools._base import StepAdapter
+from delfin.tools._types import StepResult, StepStatus
+from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+
+
+class {cls}(StepAdapter):
+    name = "{name}"
+    description = "TODO: what this step does"
+    produces_geometry = False          # True if it writes an output geometry
+    category = "{category}"
+    params = (
+        # ParamSpec("charge", "int", required=True, description="Molecular charge"),
+    )
+    consumes = ()                      # e.g. ("geometry",) or ("qc_output",)
+    produces = ()                      # e.g. ("qc_output",)
+    data_keys = ()                     # e.g. (DataKeySpec("energy_Eh", "float", "Eh"),)
+    requires_binaries = ()             # e.g. ("orca",)
+    requires_python = ()               # e.g. ("rdkit",)
+
+    def validate_params(self, **kwargs):
+        # raise ValueError("'x' parameter is required") for any missing required key
+        pass
+
+    def execute(self, work_dir: Path, *, geometry=None, cores: int = 1, **kwargs) -> StepResult:
+        start = time.monotonic()
+        # TODO: do the work inside work_dir (never os.chdir). Call your tool, then:
+        return self._make_result(self.name, StepStatus.SUCCESS, work_dir, start,
+                                 data={{}})
+
+
+register({cls}())
+'''
+
+
 # ======================================================================
 #  Keys (central well-known-parameter vocabulary)
 # ======================================================================
@@ -145,6 +193,52 @@ def validate_application(name: str, *, geometry: bool = False, **inputs: Any):
     if app is None:
         return None
     return app.validate(geometry=geometry, **inputs)
+
+
+def validate_spec(spec: Dict[str, Any], *, inputs: Optional[Dict[str, Any]] = None,
+                  geometry: bool = False):
+    """Validate an ad-hoc PipelineSpec or Application dict *without* registering it.
+
+    The build-loop feedback for an agent assembling a workflow: returns a
+    :class:`ValidationReport` (``.ok`` / ``.errors`` / ``.summary()``).  Accepts
+    either a raw pipeline spec (``{"name","steps",...}``) or an Application dict
+    (``{"name","spec","inputs","outputs"}``); for the latter pass ``inputs`` to
+    resolve template params.
+    """
+    inputs = inputs or {}
+    if "spec" in spec and "steps" not in spec:
+        from delfin.tools._application import Application
+        return Application.from_dict(spec).validate(geometry=geometry, **inputs)
+    from delfin.tools._serialize import from_dict
+    from delfin.tools.pipeline import PipelineTemplate
+    pipeline = from_dict(spec)
+    if isinstance(pipeline, PipelineTemplate):
+        pipeline = pipeline.build(**inputs)
+    return pipeline.validate(geometry=geometry)
+
+
+def save_application(app: Any, *, directory: Optional[str | Path] = None) -> str:
+    """Register *app* and persist it so it shows up everywhere (Pipelines tab …).
+
+    *app* is an :class:`Application` or its ``to_dict()`` dict.  Writes
+    ``<name>.json`` into the user applications dir (``$DELFIN_APPLICATIONS_DIR``
+    or ``~/.delfin/applications``) and returns the path.  This is how an agent
+    makes a workflow it just built permanent.
+    """
+    import json
+
+    from delfin.tools._application import (Application, _user_application_dirs,
+                                           register_application)
+
+    if isinstance(app, dict):
+        app = Application.from_dict(app)
+    register_application(app)
+
+    target = Path(directory) if directory else _user_application_dirs()[0]
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / f"{app.name}.json"
+    path.write_text(json.dumps(app.to_dict(), indent=2, default=str), encoding="utf-8")
+    return str(path)
 
 
 def run_application(
@@ -239,6 +333,38 @@ def list_runs() -> list:
     return get_runtime().list_runs()
 
 
+def run_diagnostics(run_id: str) -> Dict[str, Any]:
+    """Failure diagnostics for a run: status, error, events, and its log files.
+
+    The pipeline's output files (ORCA ``.out``, logs) live in the run's work dir
+    under ``~/calc``; this lists them so an agent can study what went wrong and
+    iterate.  Returns ``{"error": ...}`` if the run is unknown.
+    """
+    from delfin.tools._runtime import get_runtime
+
+    rec = get_runtime().get(run_id)
+    if rec is None:
+        return {"error": f"unknown run {run_id!r}"}
+
+    log_files: List[str] = []
+    if rec.work_dir:
+        wd = Path(rec.work_dir)
+        if wd.is_dir():
+            for f in sorted(wd.rglob("*")):
+                if f.is_file() and (f.suffix in (".out", ".log", ".err", ".txt")):
+                    log_files.append(str(f))
+    return {
+        "id": rec.id,
+        "name": rec.name,
+        "status": rec.status,
+        "error": rec.error,
+        "work_dir": rec.work_dir,
+        "outputs": rec.outputs,
+        "events": rec.events[-20:],
+        "log_files": log_files[:50],
+    }
+
+
 def cancel_run(run_id: str) -> bool:
     """Request cooperative cancellation of a run (takes effect before the next step)."""
     from delfin.tools._runtime import get_runtime
@@ -321,6 +447,7 @@ __all__ = [
     "describe_capability",
     "catalog",
     "compatible_successors",
+    "new_capability_template",
     # keys + manifest
     "list_keys",
     "describe_key",
@@ -332,12 +459,15 @@ __all__ = [
     "list_applications",
     "describe_application",
     "validate_application",
+    "validate_spec",
+    "save_application",
     "run_application",
     # runs (async)
     "submit_application",
     "run_status",
     "run_record",
     "list_runs",
+    "run_diagnostics",
     "cancel_run",
     "wait_run",
     "run_metrics",

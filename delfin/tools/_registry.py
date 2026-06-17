@@ -66,6 +66,45 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.openbabel",
     ):
         _try_import(mod)
+    _load_user_adapters()
+
+
+def _user_adapter_dirs():
+    import os
+    from pathlib import Path
+
+    dirs = []
+    env = os.environ.get("DELFIN_ADAPTERS_DIR")
+    if env:
+        dirs.append(Path(env))
+    dirs.append(Path.home() / ".delfin" / "adapters")
+    return dirs
+
+
+def _load_user_adapters() -> None:
+    """Load user-defined building blocks from ~/.delfin/adapters/*.py.
+
+    Each file is a normal adapter module that calls ``register(...)``; drop one
+    there and it becomes a registered capability without editing the package.
+    Failures per file are skipped so one bad file never blocks discovery.
+    """
+    import importlib.util
+
+    for directory in _user_adapter_dirs():
+        try:
+            if not directory.is_dir():
+                continue
+            for f in sorted(directory.glob("*.py")):
+                try:
+                    spec = importlib.util.spec_from_file_location(
+                        f"delfin_user_adapter_{f.stem}", f)
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                except Exception:
+                    logger.debug("Failed to load user adapter %s", f, exc_info=True)
+        except Exception:
+            continue
 
 
 def _try_import(module_path: str) -> None:

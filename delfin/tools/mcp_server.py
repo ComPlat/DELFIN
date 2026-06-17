@@ -51,6 +51,10 @@ def h_catalog(by: str = "category") -> str:
     return _dumps({k: [c.name for c in v] for k, v in grouped.items()})
 
 
+def h_new_capability_template(name: str, category: str = "meta") -> str:
+    return platform.new_capability_template(name, category=category)
+
+
 # --- keys -----------------------------------------------------------------
 
 
@@ -116,6 +120,38 @@ def h_run_application(
         "outputs": res.outputs,
         "error": res.error,
     })
+
+
+def h_validate_spec(
+    spec: Dict[str, Any], inputs: Optional[Dict[str, Any]] = None, geometry: bool = False,
+) -> str:
+    try:
+        rep = platform.validate_spec(spec, inputs=inputs, geometry=geometry)
+    except Exception as exc:  # noqa: BLE001
+        return _dumps({"error": str(exc)})
+    return _dumps({
+        "ok": rep.ok,
+        "diagnostics": [
+            {
+                "step": d.step_name, "label": d.label, "level": d.level.value,
+                "location": d.location, "missing_params": list(d.missing_params),
+                "missing_inputs": list(d.missing_inputs), "messages": list(d.messages),
+            }
+            for d in rep.diagnostics
+        ],
+    })
+
+
+def h_save_application(app: Dict[str, Any]) -> str:
+    try:
+        path = platform.save_application(app)
+    except Exception as exc:  # noqa: BLE001
+        return _dumps({"error": str(exc)})
+    return _dumps({"saved": path})
+
+
+def h_run_diagnostics(run_id: str) -> str:
+    return _dumps(platform.run_diagnostics(run_id))
 
 
 # --- runs (async execution) -----------------------------------------------
@@ -220,6 +256,12 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         return h_catalog(by)
 
     @mcp.tool()
+    def new_capability_template(name: str, category: str = "meta") -> str:
+        """A Python skeleton for a NEW building block (StepAdapter), for when no
+        existing tool fits. Save it to ~/.delfin/adapters/<name>.py to register it."""
+        return h_new_capability_template(name, category)
+
+    @mcp.tool()
     def list_keys() -> str:
         """List the central key vocabulary (functional, basis, solvent, …) with allowed values."""
         return h_list_keys()
@@ -252,6 +294,31 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         Note: this can be long-running (it executes real QM jobs).
         """
         return h_run_application(name, inputs, cores)
+
+    @mcp.tool()
+    def validate_spec(spec: dict, inputs: dict | None = None, geometry: bool = False) -> str:
+        """Validate a DRAFT pipeline spec / application dict without registering it.
+
+        Build-loop feedback for assembling a workflow: returns per-step
+        diagnostics (missing params/inputs, unknown steps). Use the schemas from
+        get_manifest to author the spec.
+        """
+        return h_validate_spec(spec, inputs, geometry)
+
+    @mcp.tool()
+    def save_application(app: dict) -> str:
+        """Register + persist an application dict (to ~/.delfin/applications).
+
+        Makes a workflow you built permanent so it appears in the Pipelines tab,
+        delfin-app, and here.
+        """
+        return h_save_application(app)
+
+    @mcp.tool()
+    def run_diagnostics(run_id: str) -> str:
+        """A run's status, error, recent events and log files (in its ~/calc work
+        dir) — to study what a pipeline did wrong and iterate."""
+        return h_run_diagnostics(run_id)
 
     @mcp.tool()
     def submit_application(name: str, inputs: dict | None = None, cores: int = 1) -> str:
