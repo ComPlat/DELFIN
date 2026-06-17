@@ -365,7 +365,15 @@ class AgentEngine:
         # delta is (current cost_usd - this). Reset together with cost_usd
         # in reset_cycle() so a fresh cycle starts at delta = full spend.
         self._last_outcome_cost: float = 0.0
-        self.session_id: str = ""  # CLI session ID for conversation persistence
+        # Session id. The Claude CLI fills this from its stream events; the
+        # OpenAI / KIT / Ollama backends emit no such event, so without a value
+        # here every API session collapses onto the same empty-id bucket —
+        # task_list then falls back to "all workspace tasks", so a brand-new
+        # session shows the entire history (bug 20260616-183359). Mint a fresh
+        # id for those backends so tasks (and session save/load) scope per
+        # session. CLI stays "" and gets its real id from the stream.
+        self.session_id: str = self._fresh_session_id()
+        self._sync_task_session()
         import uuid as _uuid_trace
         self._trace_id: str = _uuid_trace.uuid4().hex[:12]   # stable trace key
         self._trace_pending: list = []   # (tool, input, t0) awaiting its result
@@ -1767,6 +1775,27 @@ class AgentEngine:
         """
         self._live_state = text or ""
 
+    def _fresh_session_id(self) -> str:
+        """A new session id for backends that supply none. The Claude CLI emits
+        its own id via the stream, so it returns "" (filled in later); the
+        OpenAI / KIT / Ollama backends get a minted UUID so each session is a
+        distinct, stable bucket for task scoping and session save/load."""
+        if (getattr(self, "backend", "") or "").lower() == "cli":
+            return ""
+        import uuid as _u
+        return _u.uuid4().hex
+
+    def _sync_task_session(self) -> None:
+        """Bind the agent's task list to the current session id so task_create/
+        task_list scope to THIS session (empty id → task_list shows all
+        workspace tasks). Best-effort; no-op when there are no KIT permissions."""
+        try:
+            kp = self.kit_permissions
+            if kp is not None:
+                kp.task_session_id = self.session_id or ""
+        except Exception:
+            pass
+
     def reset_cycle(
         self,
         mode: str | None = None,
@@ -1796,7 +1825,8 @@ class AgentEngine:
             self.token_usage = {"input": 0, "output": 0}
             self.cost_usd = 0.0
             self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
-            self.session_id = ""  # New session for new cycle
+            self.session_id = self._fresh_session_id()  # fresh session for new cycle
+            self._sync_task_session()
         else:
             # Mode-switch with continuity: keep messages so the new
             # agent sees the user's prompt history, but reset
@@ -2463,7 +2493,11 @@ class AgentEngine:
         self.messages.clear()
         if hasattr(self.client, "kill"):
             self.client.kill()
-        self.session_id = ""
+        # Only the CLI needs a fresh session here (its process is restarted so
+        # the next role gets a new --append-system-prompt). API backends keep
+        # the same session across role compaction so tasks stay scoped to it.
+        if (getattr(self, "backend", "") or "").lower() == "cli":
+            self.session_id = ""
 
     # -- acceptance criteria extraction ---------------------------------------
 

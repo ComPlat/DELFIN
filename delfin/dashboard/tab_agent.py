@@ -13877,11 +13877,15 @@ def create_tab(ctx):
             state["engine"] = None
         state["chat_messages"].clear()
         state["streaming"] = False
-        state["active_session_id"] = ""
+        # Adopt the engine's fresh session id (reset_cycle mints a new UUID for
+        # API backends, "" for CLI) so the new session is scoped to it from the
+        # first turn — task_list/panel filter by it, so old tasks don't leak in.
+        _new_sid = (getattr(engine, "session_id", "") or "") if engine else ""
+        state["active_session_id"] = _new_sid
         try:
             kp = getattr(engine, "kit_permissions", None) if engine else None
             if kp is not None:
-                kp.task_session_id = ""
+                kp.task_session_id = _new_sid
         except Exception:
             pass
         state["recent_edits"].clear()
