@@ -58,15 +58,16 @@ def test_submit_wait_success(tmp_path):
     assert rec.metrics.get("steps") == 1
 
 
-def test_submit_defaults_work_dir_under_store(tmp_path):
-    """With no work_dir, output files land in a predictable per-run dir."""
+def test_submit_defaults_work_dir_to_calc(tmp_path, monkeypatch):
+    """With no work_dir, outputs land in ~/calc/<app>_<id> (the standard calc dir)."""
+    monkeypatch.setenv("DELFIN_CALC_DIR", str(tmp_path / "calc"))
     rt = Runtime(RunStore(tmp_path / "store"))
     register_application(_energy_app())
     handle = rt.submit_application("rt_app")     # no work_dir given
     rec = handle.wait(timeout=10)
     assert rec.status == RunStatus.SUCCESS.value
-    assert rec.work_dir and str(tmp_path / "store") in rec.work_dir
-    assert "work" in rec.work_dir
+    assert rec.work_dir and str(tmp_path / "calc") in rec.work_dir
+    assert "rt_app_" in rec.work_dir            # <app>_<run_id> folder
 
 
 def test_submit_unknown_application_fails(tmp_path):

@@ -145,7 +145,8 @@ def render_runs_html(limit: int = 20) -> str:
         f"<p>by status: {metrics.get('by_status', {})}</p>",
         "<p><small>Named outputs are stored per run in "
         "<code>~/.delfin/runs/&lt;id&gt;.json</code>; raw files (ORCA .out, "
-        "geometries, logs) live in each run's work dir below.</small></p>",
+        "geometries, logs) land in <code>~/calc/&lt;app&gt;_&lt;id&gt;/</code> "
+        "(the standard calc dir → Calculations browser).</small></p>",
     ]
     if runs:
         rows = "".join(

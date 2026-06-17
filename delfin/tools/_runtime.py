@@ -44,6 +44,17 @@ def _default_runs_dir() -> Path:
     return Path(env) if env else (Path.home() / ".delfin" / "runs")
 
 
+def _default_calc_dir() -> Path:
+    """DELFIN's standard calculations directory (``$DELFIN_CALC_DIR`` → ``~/calc``).
+
+    Platform runs land here (one ``<app>_<run_id>`` folder each) so their outputs
+    appear in the Calculations browser, consistent with the classic DELFIN
+    workflow.
+    """
+    env = os.environ.get("DELFIN_CALC_DIR")
+    return Path(env) if env else (Path.home() / "calc")
+
+
 class _Cancelled(Exception):
     """Raised internally to abort a run between steps."""
 
@@ -184,10 +195,11 @@ class Runtime:
         compute node and writes its result back into the (shared) run store.
         """
         run_id = uuid.uuid4().hex[:12]
-        # Default each run to a predictable work dir under the run store so its
-        # output files are findable (not scattered in the current directory).
+        # Default each run into DELFIN's standard calculations directory
+        # (~/calc/<app>_<id>) so its outputs show up in the Calculations browser,
+        # just like the classic DELFIN workflow.
         if work_dir is None:
-            work_dir = self.store.base / run_id / "work"
+            work_dir = _default_calc_dir() / f"{name}_{run_id}"
         rec = RunRecord(
             id=run_id, kind="application", name=name,
             inputs=dict(inputs or {}), created_at=_now(),
