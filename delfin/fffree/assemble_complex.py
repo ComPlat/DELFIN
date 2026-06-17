@@ -743,6 +743,27 @@ def _torsion_relax_frame(out_syms, P, fixed, block_specs):
         return P
 
 
+def _joint_declash_frame(out_syms, P, fixed, block_specs):
+    """Apply the env-gated JOINT global INTER-LIGAND heavy-heavy declash to one
+    assembled frame (``DELFIN_FFFREE_JOINT_DECLASH``), threading the true
+    per-ligand connectivity (``block_specs`` = list of ``(offset, lmol,
+    donor_local)``).  Runs AFTER #308 torsion-relax and BEFORE the self-gate so a
+    declashed class-B build passes ``_build_is_clean``.  No-op when the flag is
+    unset; never raises."""
+    try:
+        from delfin.fffree import joint_declash as _JD
+        bp = None
+        if block_specs:
+            blocks = [bb for bb in (_ligand_block_bonds(m, off, dl)
+                                    for (off, m, dl) in block_specs) if bb is not None]
+            if blocks:
+                bp = _JD._TR.bonds_from_blocks(0, blocks)
+        return np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                          dtype=float)
+    except Exception:
+        return P
+
+
 def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                                     refine: bool = True):
     """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
@@ -802,6 +823,11 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         # assembled complex (metal + donors = `fixed` frozen).  Torsion-only -> bond
         # lengths/angles preserved exactly; never-worse.  No-op when flag unset.
         P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
+        # JOINT inter-ligand declash (env-gated, default-OFF byte-id): whole-ligand
+        # M-D-axis rotations + internal torsions jointly minimising the GLOBAL
+        # inter-ligand heavy-heavy clash (the self-gate blocker for class-B), core
+        # frozen.  Runs after #308; no-op when DELFIN_FFFREE_JOINT_DECLASH unset.
+        P = _joint_declash_frame(out_syms, P, fixed, block_specs)
     return out_syms, P
 
 
@@ -1035,6 +1061,9 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
             # byte-id); torsion-only, never-worse, metal+donors (`fixed`) frozen.
             P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
+            # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
+            # inter-ligand heavy-heavy minimisation, core frozen.  After #308.
+            P = _joint_declash_frame(out_syms, P, fixed, block_specs)
         if not np.all(np.isfinite(P)):
             continue
         # complex-level RMSD dedup vs already-kept frames
@@ -1899,6 +1928,12 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         except Exception:
             bp = None
         P = np.asarray(_TR.relax_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                       dtype=float)
+        # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
+        # inter-ligand heavy-heavy minimisation, core frozen.  After #308.  Reuses
+        # the same true-connectivity bond list.  No-op when the flag is unset.
+        from delfin.fffree import joint_declash as _JD
+        P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
                        dtype=float)
     except Exception:
         pass

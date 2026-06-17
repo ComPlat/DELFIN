@@ -368,9 +368,24 @@ def decompose(smiles: str) -> Optional[Dict]:
     # ligand reaches the build, where the conformer-aware seating (+ backbone re-embed)
     # places it and the self-gate enforces never-worse.  Default OFF -> cap 8 (byte-id).
     MAX_HEAVY_PER_DONOR = _heavy_cap()
+    #
+    # JOINT-DECLASH gate-lift (DELFIN_FFFREE_JOINT_DECLASH, default OFF -> byte-id):
+    # large MONODENTATE ligands (per-arm 9-12 heavy: PMePh2, mesityloxide, ArO,
+    # N(SiMe3)2, ...) are the cleanest "class-B" sub-population — their coordination
+    # core builds IDEAL and only the ligand BODIES clash, which the new joint
+    # inter-ligand declash pass now relieves before the self-gate.  So raise the
+    # per-arm ceiling for MONODENTATE arms only (8 -> 12).  CHELATE arms keep the
+    # historic cap (their backbone needs ring/metallacycle work the declash does not
+    # do); denticity>3 / kappa4 already bailed above (class-C, separate).
+    _jd = os.environ.get("DELFIN_FFFREE_JOINT_DECLASH", "0") == "1"
+    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", "12")) if _jd else 8
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
-        if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
+        # union of both flags: monodentate arms may be raised by EITHER the
+        # seating heavy-cap OR the joint-declash mono-cap (whichever is larger);
+        # chelate arms keep the seating-aware base cap.  Both flags OFF => 8 (byte-id).
+        cap = max(MAX_HEAVY_PER_DONOR, _mono_cap) if lg["denticity"] == 1 else MAX_HEAVY_PER_DONOR
+        if nheavy / max(lg["denticity"], 1) > cap:
             return None
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,
