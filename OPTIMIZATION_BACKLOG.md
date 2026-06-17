@@ -94,10 +94,14 @@ in this priority order and appends new findings back here.
   python3.10 || echo nf`) auto-runs. Also widened `python3?` → versioned
   interpreters (`python3.10`/`3.11`). Live: KIT-qwen ran the exact reported
   command in default mode (exit 0, not blocked). Quoted `|` and `2>&1` intact.
-  NOTE still open — the broader UX: a non-allowed command makes the agent ASK
-  IN PROSE ("may I have permission?") rather than popping an approve/deny dialog
-  (per-action dialogs were removed by design). That's a product decision — the
-  "ask_all" chip name implies a click-approve prompt. Needs the user's call.
+  Broader UX (user chose "click-approve dialog", 2026-06-16): in "Ask All"
+  (default) mode a non-auto-allowed bash command now routes through the existing
+  KitConfirmBroker approval dialog (one click: approve→run, deny→blocked)
+  instead of the prose block — head-less callers keep the prose fallback. The
+  deny-list + secret scan still run first, so the dialog only appears for
+  non-dangerous commands. Live-verified with KIT-qwen (approve runs, deny
+  blocks). Shipped via branch/PR `fix/bash-approval-dialog-ask-all` (security-
+  sensitive → review before merge), not direct-to-main.
 - [x] **First-turn latency: capability probe moved off the hot path** — found
   while investigating bug 20260616-101958 (Dashboard/KIT/azure.gpt-5.4 "Hallo"
   → 92.7s). The per-turn `stream_message` did a synchronous live `/v1/models`

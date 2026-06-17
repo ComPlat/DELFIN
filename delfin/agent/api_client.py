@@ -3592,11 +3592,30 @@ class _DocToolExecutor:
                 return None
             if perms.matches_bash_auto_allow(cmd):
                 return None
-            # default / acceptEdits: command must match an auto-allow regex.
-            # Per-action confirm dialogs are gone — the user controls policy
-            # by adding allow_patterns (via remember_permission or the
-            # Aktions-Bestätigung "Dauerhaft speichern" checkbox), or by
-            # switching the mode chip to bypassPermissions.
+            # Not auto-allowed. In "Ask All" (default) mode, when a per-action
+            # approval dialog is wired (the dashboard KitConfirmBroker), ask the
+            # user to approve THIS command — one click — instead of dead-ending
+            # into a prose block that makes the agent ask in prose whether it
+            # may ask (bug 20260616-183359). The deny-list + secret scan already
+            # ran above, so only non-dangerous, non-auto-allowed commands reach
+            # the prompt. Head-less callers (no callback) keep the prose block.
+            if mode == "default" and perms.confirm_callback is not None:
+                _cwd = str(args.get("cwd") or "").strip()
+                preview = f"$ {cmd}" + (f"\n(cwd: {_cwd})" if _cwd else "")
+                try:
+                    ok = bool(perms.confirm_callback("bash", {"command": cmd}, preview))
+                except Exception as exc:
+                    return f"confirm_callback raised: {exc}"
+                if ok:
+                    return None
+                return (
+                    f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
+                    "it or work around it — ask the user what to do instead."
+                )
+            # default / acceptEdits without a UI callback (head-less / CLI):
+            # the command must match an auto-allow regex; otherwise tell the
+            # user the exact command and let them add an allow_pattern or switch
+            # the mode chip.
             hint = ""
             if cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
