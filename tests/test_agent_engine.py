@@ -391,6 +391,35 @@ def test_engine_session_persistence(agent_tree):
     assert engine.session_id == ""
 
 
+def test_api_backend_mints_fresh_session_id(agent_tree):
+    """API backends (KIT/OpenAI/Ollama) emit no session id, so the engine mints
+    one — otherwise every session shares the empty-id bucket and task_list falls
+    back to 'all workspace tasks' (bug 20260616-183359). The perms task session
+    is synced, and a new cycle gets a fresh, distinct id."""
+    from delfin.agent.engine import AgentEngine
+    client = MagicMock()
+    perms = MagicMock()
+    client._permissions = perms
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        eng = AgentEngine(repo_dir=agent_tree, backend="api",
+                          mode="quick", pack_dir=agent_tree)
+    first = eng.session_id
+    assert first and len(first) >= 8                  # minted, not ""
+    assert perms.task_session_id == first             # tasks scoped to it
+    eng.reset_cycle()
+    assert eng.session_id and eng.session_id != first  # fresh per session
+    assert perms.task_session_id == eng.session_id
+
+
+def test_cli_backend_session_id_stays_empty_until_stream(agent_tree, mock_client):
+    """CLI gets its id from the stream, so the engine must NOT mint one."""
+    from delfin.agent.engine import AgentEngine
+    with patch("delfin.agent.engine.create_client", return_value=mock_client):
+        eng = AgentEngine(repo_dir=agent_tree, backend="cli",
+                          mode="quick", pack_dir=agent_tree)
+    assert eng.session_id == ""
+
+
 def test_engine_export_state(agent_tree, mock_client):
     """Test that export_state captures all relevant engine state."""
     from delfin.agent.engine import AgentEngine
