@@ -115,9 +115,9 @@ class ApplicationFormPanel:
         self._platform = platform
         apps = platform.list_applications()
 
-        self._title = widgets.HTML("<h3>Run Application</h3>")
+        self._title = widgets.HTML("<h3>Pipelines</h3>")
         self._app_dd = widgets.Dropdown(
-            options=apps or [], description="Application",
+            options=apps or [], description="Workflow",
             style={"description_width": "140px"}, layout=widgets.Layout(width="60%"),
         )
         self._desc = widgets.HTML("")
@@ -126,7 +126,15 @@ class ApplicationFormPanel:
                                        button_style="primary")
         self._backend_dd = widgets.Dropdown(
             options=["local", "slurm"], value="local", description="Backend",
-            style={"description_width": "70px"}, layout=widgets.Layout(width="30%"),
+            style={"description_width": "60px"}, layout=widgets.Layout(width="auto"),
+        )
+        self._pal = widgets.IntText(
+            value=4, description="PAL", style={"description_width": "45px"},
+            layout=widgets.Layout(width="auto"),
+        )
+        self._maxcore = widgets.IntText(
+            value=1000, description="maxcore", style={"description_width": "70px"},
+            layout=widgets.Layout(width="auto"),
         )
         self._status = widgets.HTML("")
 
@@ -139,12 +147,13 @@ class ApplicationFormPanel:
         if apps:
             self._rebuild_form(apps[0])
         else:
-            self._desc.value = "<em>No applications registered.</em>"
+            self._desc.value = "<em>No workflows registered yet.</em>"
             self._run_btn.disabled = True
 
         self.widget = widgets.VBox([
             self._title, self._app_dd, self._desc, self._form_box,
-            widgets.HBox([self._run_btn, self._backend_dd]), self._status,
+            widgets.HBox([self._run_btn, self._backend_dd, self._pal, self._maxcore]),
+            self._status,
         ])
 
     # -- form building -------------------------------------------------
@@ -185,11 +194,15 @@ class ApplicationFormPanel:
         self._status.value = "<p>Submitting…</p>"
 
         backend = self._backend_dd.value
+        cores = int(self._pal.value or 1)
+        maxcore = int(self._maxcore.value or 0) or None
 
         def _work():
             try:
-                run_id = self._platform.submit_application(name, backend=backend, **inputs)
-                self._status.value = f"<p>Running… (run {run_id}, {backend})</p>"
+                run_id = self._platform.submit_application(
+                    name, backend=backend, cores=cores, maxcore=maxcore, **inputs)
+                self._status.value = (
+                    f"<p>Running… (run {run_id}, {backend}, PAL={cores})</p>")
                 rec = self._platform.wait_run(run_id, timeout=None)
                 if rec is None:
                     self._status.value = "<p style='color:#dc3545'>run vanished.</p>"
@@ -222,7 +235,7 @@ def create_tab(ctx: Any):
 # Register additively with the dashboard tab registry.
 try:
     from delfin.dashboard.tab_registry import register_tab
-    register_tab("run_application", "Run", create_tab, order=8500)
+    register_tab("pipelines", "Pipelines", create_tab, order=8500)
 except Exception:  # pragma: no cover
     pass
 

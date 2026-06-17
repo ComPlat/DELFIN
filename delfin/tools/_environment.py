@@ -26,7 +26,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.tools._registry import list_steps
 
@@ -207,6 +207,37 @@ def missing_tools() -> Dict[str, Dict[str, List[str]]]:
     return {"binaries": binaries, "python": python}
 
 
+def tool_inventory() -> List[Dict[str, Any]]:
+    """Per-tool installation status across all capabilities.
+
+    One entry per distinct required binary / Python module: whether it is
+    available, where it was found, its install policy, source/hint, and which
+    capabilities use it — so the dashboard can show a ✓/✗ status per tool.
+    """
+    tools: Dict[Tuple[str, str], set] = {}
+    for cap_name, adapter in list_steps().items():
+        c = adapter.contract()
+        for b in c.requires_binaries:
+            tools.setdefault((b, "binary"), set()).add(cap_name)
+        for m in c.requires_python:
+            tools.setdefault((m, "python"), set()).add(cap_name)
+
+    out: List[Dict[str, Any]] = []
+    for (tname, kind), caps in sorted(tools.items(), key=lambda kv: (kv[0][1], kv[0][0].lower())):
+        st = _status(tname, kind)
+        out.append({
+            "name": tname,
+            "kind": kind,
+            "available": st.available,
+            "detail": st.detail,
+            "policy": st.policy if not st.available else "",
+            "source": st.source,
+            "install_hint": st.install_hint,
+            "used_by": sorted(caps),
+        })
+    return out
+
+
 # --- installation ---------------------------------------------------------
 
 
@@ -329,6 +360,7 @@ __all__ = [
     "CapabilityReadiness",
     "probe",
     "missing_tools",
+    "tool_inventory",
     "installer_path",
     "install_plan",
     "install_tools",

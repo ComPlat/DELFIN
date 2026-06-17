@@ -81,6 +81,37 @@ def render_environment_html() -> str:
     return "".join(parts)
 
 
+def render_tool_status_html() -> str:
+    """Per-tool install status — every required tool with ✓ installed / ✗ missing."""
+    from delfin.tools import platform
+
+    inv = platform.tool_inventory()
+    ready = sum(1 for t in inv if t["available"])
+    parts = [f"<h4>Tool status — {ready}/{len(inv)} installed</h4>", _TABLE,
+             _TH + "<th>tool</th><th>kind</th><th>status</th>"
+                   "<th>how to get it</th><th>used by</th></tr>"]
+    for t in inv:
+        if t["available"]:
+            status = "<span style='color:#28a745'>✓ installed</span>"
+            how = f"<span style='font-size:0.8em;color:#666'>{t['detail']}</span>"
+        else:
+            status = "<span style='color:#dc3545'>✗ missing</span>"
+            if t["policy"] == "auto":
+                how = "open source — tick it in 'Selective install' above"
+            else:
+                src = (f" &middot; <a href='{t['source']}' target='_blank'>{t['source']}</a>"
+                       if t["source"] else "")
+                how = f"{t['install_hint']}{src}"
+        used = ", ".join(t["used_by"][:4]) + (" …" if len(t["used_by"]) > 4 else "")
+        parts.append(
+            f"<tr><td><b>{t['name']}</b></td><td>{t['kind']}</td><td>{status}</td>"
+            f"<td style='font-size:0.85em'>{how}</td>"
+            f"<td style='font-size:0.8em;color:#666'>{used}</td></tr>"
+        )
+    parts.append("</table>")
+    return "".join(parts)
+
+
 def render_capabilities_html() -> str:
     from delfin.tools import platform
 
@@ -166,8 +197,9 @@ def render_runs_html(limit: int = 20) -> str:
 
 def render_all_html() -> str:
     """One combined HTML view of the whole platform (used by the widget)."""
-    sections = [render_environment_html, render_capabilities_html,
-                render_applications_html, render_keys_html, render_runs_html]
+    sections = [render_environment_html, render_tool_status_html,
+                render_capabilities_html, render_applications_html,
+                render_keys_html, render_runs_html]
     return "<hr>".join(_safe(s) for s in sections)
 
 
@@ -294,6 +326,7 @@ def create_tab(ctx: Any):
 
 __all__ = [
     "render_environment_html",
+    "render_tool_status_html",
     "render_capabilities_html",
     "render_applications_html",
     "render_keys_html",

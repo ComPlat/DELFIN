@@ -102,6 +102,31 @@ def test_cancel_between_steps(tmp_path):
     assert rec.status == RunStatus.CANCELLED.value
 
 
+def test_apply_resources_injects_maxcore(tmp_path):
+    from delfin.tools import Pipeline
+    from delfin.tools._runtime import _apply_resources
+
+    p = Pipeline("r")
+    p.add("rt_fast_energy", charge=0)
+    _apply_resources(p, {"maxcore": 5000})
+    assert p._trunk[0].kwargs["maxcore"] == 5000
+
+    p2 = Pipeline("r2")
+    p2.add("rt_fast_energy", charge=0, maxcore=9999)   # explicit wins
+    _apply_resources(p2, {"maxcore": 5000})
+    assert p2._trunk[0].kwargs["maxcore"] == 9999
+
+
+def test_submit_records_pal_and_maxcore(tmp_path):
+    rt = Runtime(RunStore(tmp_path / "store"))
+    register_application(_energy_app())
+    handle = rt.submit_application("rt_app", cores=4, maxcore=3000, work_dir=tmp_path / "wd")
+    rec = handle.wait(timeout=10)
+    assert rec.status == RunStatus.SUCCESS.value
+    assert rec.metrics.get("cores") == 4
+    assert rec.metrics.get("resources", {}).get("maxcore") == 3000
+
+
 def test_execute_run_runs_and_updates_record(tmp_path):
     """The compute-node executor runs a submitted record and writes its result."""
     from delfin.tools._runtime import RunRecord, RunStatus, RunStore, execute_run

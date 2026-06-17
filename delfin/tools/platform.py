@@ -198,6 +198,7 @@ def submit_application(
     name: str,
     *,
     cores: int = 1,
+    maxcore: Optional[int] = None,
     geometry: Optional[str | Path] = None,
     work_dir: Optional[Path] = None,
     backend: str = "local",
@@ -205,6 +206,7 @@ def submit_application(
 ) -> str:
     """Submit an application run in the background and return its run id.
 
+    ``cores`` is the parallelism (ORCA PAL); ``maxcore`` the memory per core (MB).
     ``backend="local"`` runs on this machine; ``backend="slurm"`` submits an
     sbatch job that runs it on a compute node (results land in the shared run
     store). Non-blocking: poll :func:`run_status` / :func:`run_record`, or
@@ -212,7 +214,7 @@ def submit_application(
     """
     from delfin.tools._runtime import get_runtime
     handle = get_runtime().submit_application(
-        name, cores=cores, geometry=geometry, work_dir=work_dir,
+        name, cores=cores, maxcore=maxcore, geometry=geometry, work_dir=work_dir,
         inputs=inputs, backend=backend,
     )
     return handle.id
@@ -287,6 +289,11 @@ def missing_tools() -> Dict[str, Dict[str, List[str]]]:
     return _environment.missing_tools()
 
 
+def tool_inventory() -> List[Dict[str, Any]]:
+    """Per-tool install status (installed ✓ / missing, policy, hint, used_by)."""
+    return _environment.tool_inventory()
+
+
 def install_plan() -> Dict[str, object]:
     """Classify missing tools into auto-installable vs. manual (license-restricted)."""
     return _environment.install_plan()
@@ -339,6 +346,7 @@ __all__ = [
     # environment
     "probe",
     "missing_tools",
+    "tool_inventory",
     "install_plan",
     "install_tools",
 ]

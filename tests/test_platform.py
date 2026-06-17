@@ -170,6 +170,17 @@ def test_missing_orca_requirement_is_annotated_manual():
                 assert "orca" in r.install_hint.lower()
 
 
+def test_tool_inventory_reports_per_tool_status():
+    inv = platform.tool_inventory()
+    by = {t["name"]: t for t in inv}
+    # ORCA is tracked with an installed-status (it's not 'missing' just because it
+    # isn't license-installable — that confused a user; the inventory shows it).
+    assert "orca" in by
+    assert isinstance(by["orca"]["available"], bool)
+    assert "orca_sp" in by["orca"]["used_by"]
+    assert "morfeus" in by and by["morfeus"]["kind"] == "python"
+
+
 def test_install_tools_plans_without_executing():
     out = platform.install_tools(run=False)
     assert out["executed"] is False

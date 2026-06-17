@@ -16,6 +16,13 @@ def test_renderers_return_expected_html():
     assert isinstance(tab_tools.render_all_html(), str)
 
 
+def test_tool_status_table_lists_tools_with_install_state():
+    html = tab_tools.render_tool_status_html()
+    assert "Tool status" in html
+    assert "orca" in html                                   # tracked tools are shown
+    assert ("✓ installed" in html) or ("✗ missing" in html)  # each has a state
+
+
 def test_environment_renders_manual_orca_guidance(monkeypatch):
     """ORCA must be shown as manual/license-restricted with source + hint, never auto."""
     from delfin.tools import platform

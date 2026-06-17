@@ -59,6 +59,24 @@ class _Cancelled(Exception):
     """Raised internally to abort a run between steps."""
 
 
+def _apply_resources(pipeline, resources: Dict[str, Any]) -> None:
+    """Inject run-level resource kwargs (e.g. maxcore) into every step.
+
+    Explicit per-step kwargs always win; non-QM steps ignore the extra kwargs.
+    """
+    if not resources:
+        return
+
+    def _inject(trunk) -> None:
+        for spec in trunk:
+            if getattr(spec, "kwargs", None) is not None:
+                spec.kwargs = {**resources, **spec.kwargs}
+
+    _inject(pipeline._trunk)
+    for branch in getattr(pipeline, "_branches", {}).values():
+        _inject(branch._trunk)
+
+
 @dataclass
 class RunRecord:
     id: str
@@ -183,6 +201,7 @@ class Runtime:
         name: str,
         *,
         cores: int = 1,
+        maxcore: Optional[int] = None,
         geometry: Optional[str | Path] = None,
         work_dir: Optional[str | Path] = None,
         inputs: Optional[Dict[str, Any]] = None,
@@ -190,9 +209,11 @@ class Runtime:
     ) -> RunHandle:
         """Submit an application run; returns immediately with a handle.
 
-        ``backend="local"`` runs it in a background thread on this machine;
-        ``backend="slurm"`` submits an sbatch job that executes the run on a
-        compute node and writes its result back into the (shared) run store.
+        ``cores`` is the parallelism (ORCA PAL); ``maxcore`` the memory per core
+        (MB) injected into the QM steps. ``backend="local"`` runs in a background
+        thread on this machine; ``backend="slurm"`` submits an sbatch job that
+        executes the run on a compute node and writes its result back into the
+        (shared) run store.
         """
         run_id = uuid.uuid4().hex[:12]
         # Default each run into DELFIN's standard calculations directory
@@ -200,11 +221,14 @@ class Runtime:
         # just like the classic DELFIN workflow.
         if work_dir is None:
             work_dir = _default_calc_dir() / f"{name}_{run_id}"
+        resources: Dict[str, Any] = {}
+        if maxcore is not None:
+            resources["maxcore"] = maxcore
         rec = RunRecord(
             id=run_id, kind="application", name=name,
             inputs=dict(inputs or {}), created_at=_now(),
             work_dir=str(work_dir),
-            metrics={"cores": cores, "backend": backend},
+            metrics={"cores": cores, "backend": backend, "resources": resources},
         )
         self.store.save(rec)
 
@@ -293,6 +317,7 @@ class Runtime:
                 raise ValueError(f"missing required input(s): {', '.join(missing)}")
 
             pipeline = app.build(**inputs)
+            _apply_resources(pipeline, (rec.metrics or {}).get("resources") or {})
             report = pipeline.validate(geometry=bool(geometry))
             if not report.ok:
                 raise ValueError("application failed static validation")
@@ -317,10 +342,10 @@ class Runtime:
             rec.status = RunStatus.SUCCESS.value if result.ok else RunStatus.FAILED.value
             rec.outputs = outputs
             rec.finished_at = _now()
-            rec.metrics = {
-                "steps": len(result.results),
-                "elapsed_s": round(sum(r.elapsed_seconds for r in result.all_results), 3),
-            }
+            rec.metrics.update(
+                steps=len(result.results),
+                elapsed_s=round(sum(r.elapsed_seconds for r in result.all_results), 3),
+            )
             rec.events.append({"t": _now(), "event": "run_finished", "status": rec.status})
             self.store.save(rec)
 
@@ -403,6 +428,7 @@ def execute_run(run_id: str, store_base: Optional[str] = None) -> None:
             raise ValueError(f"unknown application {rec.name!r}")
         cores = int(rec.metrics.get("cores", 1) or 1)
         pipeline = app.build(**rec.inputs)
+        _apply_resources(pipeline, (rec.metrics or {}).get("resources") or {})
         result = pipeline.run(
             cores=cores,
             work_dir=Path(rec.work_dir) if rec.work_dir else None,

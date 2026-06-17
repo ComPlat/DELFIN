@@ -34,9 +34,11 @@ def test_registered_tabs_are_ordered():
     assert orders == sorted(orders)
 
 
-def test_run_application_tab_is_auto_discovered():
+def test_pipelines_tab_is_auto_discovered():
     # importing nothing extra: discovery imports tab_application which self-registers
-    assert "run_application" in {t.id for t in R.registered_tabs()}
+    ids = {t.id for t in R.registered_tabs()}
+    titles = {t.title for t in R.registered_tabs()}
+    assert "pipelines" in ids and "Pipelines" in titles
 
 
 # --- application form logic (no ipywidgets needed) ------------------------
