@@ -40,6 +40,10 @@ def _is_orca(name: str) -> bool:
 
 # The historical default: upstream GBW → next ORCA step's MOREAD.  Keep this
 # first and unchanged so existing pipelines behave identically.
+def _is_imag_fix(name: str) -> bool:
+    return name == "imag_fix"
+
+
 DEFAULT_RULES: Tuple[WiringRule, ...] = (
     WiringRule(
         capability="gbw",
@@ -47,8 +51,15 @@ DEFAULT_RULES: Tuple[WiringRule, ...] = (
         applies_to=_is_orca,
         artifact_key="gbw",
     ),
-    # Future opt-in rules (inactive until a consumer declares `consumes`):
-    # WiringRule("hessian", "hess_file", lambda n: n == "imag_fix", "hess"),
+    # Upstream ORCA frequency job's .hess → imag_fix's required hess_file, so an
+    # opt_freq → imag_fix chain needs no manual path. The producer emits the
+    # artifact under key "hess"; the capability tag it advertises is "hessian".
+    WiringRule(
+        capability="hessian",
+        inject_kwarg="hess_file",
+        applies_to=_is_imag_fix,
+        artifact_key="hess",
+    ),
 )
 
 

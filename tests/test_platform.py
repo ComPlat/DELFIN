@@ -164,6 +164,80 @@ def test_register_module_requires_a_registration(tmp_path, monkeypatch):
     assert not (tmp_path / "noop_block.py").exists()
 
 
+# --- defaults + autowiring hardening + build guide ------------------------
+
+
+def _msgs(rep):
+    return [m for d in rep.diagnostics for m in d.messages]
+
+
+def test_validation_fills_defaults_for_minimal_spec():
+    # orca_sp needs only `charge`; method/basis/maxcore come from contract defaults
+    rep = platform.validate_spec(
+        {"name": "m", "steps": [{"step": "orca_sp", "kwargs": {"charge": 0}}]},
+        geometry=True)
+    assert rep.ok
+
+
+def test_validation_suggests_concrete_param_fix():
+    rep = platform.validate_spec({"name": "m", "steps": [{"step": "orca_sp"}]},
+                                 geometry=True)
+    assert rep.ok is False
+    assert any("pass charge=<int>" in m for m in _msgs(rep))
+
+
+def test_validation_flags_out_of_enum_value_with_allowed_set():
+    # advisory (warning, not a hard fail): adapter enums can be non-exhaustive,
+    # but the model still gets the exact allowed set to fix from.
+    rep = platform.validate_spec(
+        {"name": "m", "steps": [
+            {"step": "orca_sp", "kwargs": {"charge": 0, "solvent_model": "XXX"}}]},
+        geometry=True)
+    assert any("CPCM|SMD" in m for m in _msgs(rep))
+    assert any(d.level.value == "warning" for d in rep.diagnostics)
+
+
+def test_validation_names_upstream_producers_for_missing_input():
+    rep = platform.validate_spec({"name": "m", "steps": [{"step": "cclib_parse"}]},
+                                 geometry=False)
+    assert any("producing it" in m and "orca_sp" in m for m in _msgs(rep))
+
+
+def test_hessian_autowires_into_imag_fix():
+    common = {"charge": 0, "mult": 1, "solvent": "water", "metals": [],
+              "main_basisset": "def2-SVP", "metal_basisset": "def2-TZVP"}
+    # an upstream opt_freq produces the hessian → hess_file is auto-wired → clean
+    ok = platform.validate_spec({"name": "m", "steps": [
+        {"step": "orca_opt_freq", "kwargs": {"charge": 0}},
+        {"step": "imag_fix", "kwargs": common}]}, geometry=True)
+    assert ok.ok
+    # without the producer the same step reports hess_file missing
+    bad = platform.validate_spec({"name": "m", "steps": [
+        {"step": "imag_fix", "kwargs": common}]}, geometry=True)
+    assert any("hess_file" in d.missing_params for d in bad.diagnostics)
+
+
+def test_resolve_spec_fills_contract_defaults():
+    res = platform.resolve_spec(
+        {"name": "m", "steps": [{"step": "orca_sp", "kwargs": {"charge": 0}}]})
+    step = res["steps"][0]
+    assert step["resolved_kwargs"]["method"] == "B3LYP"
+    assert step["resolved_kwargs"]["basis"] == "def2-SVP"
+    assert step["resolved_kwargs"]["charge"] == 0          # explicit kept
+    assert step["filled_defaults"]["maxcore"] == 1000      # default injected
+
+
+def test_manifest_includes_build_guide():
+    from delfin.tools.manifest import build_guide, build_manifest
+
+    g = build_manifest()["guide"]
+    assert g == build_guide()
+    steps = [w["step"] for w in g["workflow"]]
+    assert steps[0] == "discover" and "validate" in steps and "diagnose" in steps
+    tools = [t for w in g["workflow"] for t in w["tools"]]
+    assert "validate_spec" in tools and "register_module" in tools
+
+
 def test_run_application_missing_required_input():
     # opt_freq_energy requires smiles + charge; omit them → fail fast, no run.
     res = platform.run_application("opt_freq_energy", method="B3LYP")

@@ -24,7 +24,34 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from delfin.tools._registry import get as _get_adapter
+from delfin.tools._registry import list_steps as _list_steps
 from delfin.tools._wiring import can_autowire
+
+_MAX_ENUM_SHOWN = 8          # list allowed values inline only for small enums
+
+
+def _producers_of(tag: str) -> List[str]:
+    """Registered step names that produce capability *tag* (for fix hints)."""
+    out = []
+    for name, adapter in _list_steps().items():
+        try:
+            if tag in adapter.contract().produces:
+                out.append(name)
+        except Exception:
+            continue
+    return sorted(out)
+
+
+def _param_fix_hint(spec_param) -> str:
+    """A concrete 'pass X=<…>' suggestion for one missing parameter."""
+    if spec_param is None:
+        return ""
+    if spec_param.enum:
+        vals = list(spec_param.enum)
+        if len(vals) <= _MAX_ENUM_SHOWN:
+            return f"={'|'.join(map(str, vals))}"
+        return f"=<one of {len(vals)} (e.g. {', '.join(map(str, vals[:3]))}; see describe_capability)>"
+    return f"=<{spec_param.type}>"
 
 
 class DiagLevel(enum.Enum):
@@ -122,7 +149,10 @@ def _check_real_step(
         )
 
     contract = adapter.contract()
-    eff: Dict[str, Any] = {**defaults, **spec.kwargs}
+    # Precedence: explicit kwargs > pipeline defaults > the contract's own
+    # defaults — so a *minimal* spec (only required params) resolves cleanly and
+    # we can enum-check the values that will actually be used.
+    eff: Dict[str, Any] = {**contract.defaults, **defaults, **spec.kwargs}
     messages: List[str] = []
     level = DiagLevel.OK
 
@@ -144,18 +174,41 @@ def _check_real_step(
             continue
         missing_params.append(p)
     if missing_params:
+        # concrete fix: "pass charge=<int>, solvent=<water|thf|…>"
+        fixes = ", ".join(p + _param_fix_hint(contract.param(p)) for p in missing_params)
         if relax_step:
             level = DiagLevel.WARNING
             messages.append(
-                "missing required param(s) "
-                + ", ".join(missing_params)
-                + " — may be injected at runtime"
+                "missing required param(s) " + ", ".join(missing_params)
+                + " — may be injected at runtime; otherwise pass " + fixes
             )
         else:
             level = DiagLevel.ERROR
-            messages.append("missing required param(s): " + ", ".join(missing_params))
+            messages.append("missing required param(s) — pass " + fixes)
 
-    # 2. consumed capability ports
+    # 2. parameter values must respect declared enums (catches a bad
+    #    functional/solvent before any compute runs).  Only check what THIS step
+    #    sets itself — explicit kwargs or its own contract default — not values
+    #    broadcast from pipeline-level defaults (a key like `method` meant for
+    #    other steps may legitimately not apply here).
+    enum_scope: Dict[str, Any] = {**contract.defaults, **spec.kwargs}
+    for p in contract.params:
+        if not p.enum or p.name not in enum_scope:
+            continue
+        val = enum_scope[p.name]
+        if isinstance(val, str) and "{" in val and "}" in val:
+            continue                      # unresolved placeholder, checked elsewhere
+        if val not in p.enum:
+            # advisory: adapter enums may be non-exhaustive and a value may be
+            # broadcast from a pipeline default meant for another engine, so flag
+            # (with the allowed set) rather than hard-fail.
+            if level is DiagLevel.OK:
+                level = DiagLevel.WARNING
+            allowed = ("|".join(map(str, p.enum)) if len(p.enum) <= _MAX_ENUM_SHOWN
+                       else f"{len(p.enum)} allowed values (see describe_capability)")
+            messages.append(f"param {p.name}={val!r} not in declared enum — expected one of {allowed}")
+
+    # 3. consumed capability ports
     missing_inputs: List[str] = []
     for tag in sorted(contract.consumes):
         if tag == "geometry":
@@ -165,25 +218,31 @@ def _check_real_step(
         if not satisfied:
             missing_inputs.append(tag)
     if missing_inputs:
+        # concrete fix: name the upstream steps that can produce each tag
+        hints = []
+        for tag in missing_inputs:
+            producers = _producers_of(tag)
+            if producers:
+                shown = ", ".join(producers[:6]) + ("…" if len(producers) > 6 else "")
+                hints.append(f"{tag} (add an upstream step producing it: {shown})")
+            else:
+                hints.append(tag)
         if relax_step:
             if level is DiagLevel.OK:
                 level = DiagLevel.WARNING
-            messages.append(
-                "input capability not statically available: "
-                + ", ".join(missing_inputs)
-            )
+            messages.append("input capability not statically available: " + "; ".join(hints))
         else:
             level = DiagLevel.ERROR
-            messages.append("missing input capability: " + ", ".join(missing_inputs))
+            messages.append("missing input capability: " + "; ".join(hints))
 
-    # 3. unresolved template placeholders (advisory)
+    # 4. unresolved template placeholders (advisory)
     placeholders = _unresolved_placeholders(eff)
     if placeholders:
         if level is DiagLevel.OK:
             level = DiagLevel.WARNING
         messages.append("unresolved placeholder(s): " + ", ".join(sorted(placeholders)))
 
-    # 4. binaries / python deps (advisory)
+    # 5. binaries / python deps (advisory)
     env_msgs = _check_binaries_and_python(contract)
     if env_msgs:
         if level is DiagLevel.OK:

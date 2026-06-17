@@ -178,6 +178,49 @@ def application_schema() -> Dict[str, Any]:
     }
 
 
+# --- the build guide (read this first) -----------------------------------
+
+
+def build_guide() -> Dict[str, Any]:
+    """A short, authoritative recipe for assembling/validating/running/extending
+    a pipeline — the rails a model (even a weak one) should follow."""
+    return {
+        "overview": (
+            "Build a workflow as a pipeline spec (JSON matching schemas."
+            "pipeline_spec), validate it, then run it. Specify only the truly "
+            "required params — the framework fills declared defaults and wires "
+            "artifacts between steps. If no building block does what you need, "
+            "build one and register it. Study failures via diagnostics and iterate."
+        ),
+        "rules": [
+            "Specify only required params; declared defaults (method, basis, "
+            "maxcore, …) and auto-wiring (e.g. gbw→moread, hessian→hess_file) "
+            "are filled for you — call resolve_spec to see the full resolved spec.",
+            "Prefer values allowed by a param's enum / the key vocabulary (see "
+            "keys / describe_capability); validate flags others with the allowed set.",
+            "Validate before running; each diagnostic names the concrete fix.",
+            "License-restricted engines (ORCA, Turbomole) are never auto-installed.",
+        ],
+        "workflow": [
+            {"step": "discover", "do": "Find building blocks and allowed values",
+             "tools": ["get_manifest", "list_capabilities", "describe_capability",
+                       "catalog", "list_keys", "describe_key", "compatible_successors"]},
+            {"step": "assemble", "do": "Write a pipeline spec (schemas.pipeline_spec)",
+             "tools": ["pipeline_spec schema", "resolve_spec"]},
+            {"step": "validate", "do": "Statically check it; apply the suggested fixes",
+             "tools": ["validate_spec"]},
+            {"step": "build-missing", "do": "No block fits? scaffold + integrate one",
+             "tools": ["new_capability_template", "register_module"]},
+            {"step": "persist", "do": "Save it so it appears in the Pipelines tab",
+             "tools": ["save_application"]},
+            {"step": "run", "do": "Execute locally or on SLURM; results land in ~/calc",
+             "tools": ["run_application", "submit_application", "run_status"]},
+            {"step": "diagnose", "do": "Study what failed and iterate",
+             "tools": ["run_diagnostics", "run_metrics"]},
+        ],
+    }
+
+
 # --- the manifest ---------------------------------------------------------
 
 
@@ -190,6 +233,7 @@ def build_manifest() -> Dict[str, Any]:
     keys = [_keyspec_to_dict(ks) for _, ks in sorted(list_keys().items())]
     return {
         "delfin_tools_manifest": MANIFEST_VERSION,
+        "guide": build_guide(),
         "capabilities": capabilities,
         "applications": applications,
         "keys": keys,
@@ -211,6 +255,7 @@ __all__ = [
     "contract_to_dict",
     "pipeline_spec_schema",
     "application_schema",
+    "build_guide",
     "build_manifest",
     "manifest_json",
 ]

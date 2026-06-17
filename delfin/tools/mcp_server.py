@@ -34,6 +34,18 @@ def h_get_manifest() -> str:
     return manifest_json()
 
 
+def h_get_guide() -> str:
+    from delfin.tools.manifest import build_guide
+    return _dumps(build_guide())
+
+
+def h_resolve_spec(spec: Dict[str, Any]) -> str:
+    try:
+        return _dumps(platform.resolve_spec(spec))
+    except Exception as exc:  # noqa: BLE001
+        return _dumps({"error": str(exc)})
+
+
 def h_list_capabilities() -> str:
     return _dumps(platform.list_capabilities())
 
@@ -241,8 +253,20 @@ def run_server(argv: Optional[list[str]] = None) -> None:
 
     @mcp.tool()
     def get_manifest() -> str:
-        """Full machine-readable manifest: capabilities, applications, keys, schemas."""
+        """Full machine-readable manifest: guide, capabilities, applications, keys, schemas."""
         return h_get_manifest()
+
+    @mcp.tool()
+    def get_guide() -> str:
+        """Read this first: the short recipe for building, validating, running and
+        extending a pipeline, with the tool to use at each step."""
+        return h_get_guide()
+
+    @mcp.tool()
+    def resolve_spec(spec: dict) -> str:
+        """Fill a minimal spec to the full one that will run: injects each step's
+        default params and flags which inputs get auto-wired from upstream."""
+        return h_resolve_spec(spec)
 
     @mcp.tool()
     def list_capabilities() -> str:

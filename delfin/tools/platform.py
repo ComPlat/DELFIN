@@ -186,6 +186,41 @@ def register_module(
             "diagnostics": diagnostics}
 
 
+def resolve_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill a *minimal* spec to the full one that will actually run.
+
+    For each step it injects the contract's default params (those the author
+    omitted) and flags which still-missing required params will be auto-wired
+    from an upstream capability — so a model can see exactly what
+    ``add('orca_sp', charge=0)`` resolves to (method, basis, maxcore, moread …)
+    before running. Pure inspection; nothing is executed or mutated.
+    """
+    from delfin.tools._registry import get as _get
+    from delfin.tools._wiring import can_autowire
+
+    inner = spec.get("spec") if "spec" in spec and "steps" not in spec else spec
+    out = {k: v for k, v in inner.items() if k != "steps"}
+    resolved: List[Dict[str, Any]] = []
+    avail: set = set()
+    for st in inner.get("steps", []):
+        entry = dict(st)
+        adapter = _get(st.get("step")) if st.get("step") else None
+        if adapter is not None:
+            c = adapter.contract()
+            kwargs = dict(st.get("kwargs", {}))
+            filled = {k: v for k, v in c.defaults.items() if k not in kwargs}
+            entry["resolved_kwargs"] = {**filled, **kwargs}
+            entry["filled_defaults"] = filled
+            entry["autowired"] = [
+                p for p in c.required_params
+                if p not in kwargs and can_autowire(p, frozenset(avail))
+            ]
+            avail |= set(c.produces)
+        resolved.append(entry)
+    out["steps"] = resolved
+    return out
+
+
 # ======================================================================
 #  Keys (central well-known-parameter vocabulary)
 # ======================================================================
@@ -517,6 +552,7 @@ __all__ = [
     "compatible_successors",
     "new_capability_template",
     "register_module",
+    "resolve_spec",
     # keys + manifest
     "list_keys",
     "describe_key",

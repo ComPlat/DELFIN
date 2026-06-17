@@ -92,6 +92,15 @@ class StepContract:
         """Names of the parameters declared ``required=True``."""
         return tuple(p.name for p in self.params if p.required)
 
+    @property
+    def defaults(self) -> dict:
+        """Map of parameter name → default value for params that carry one.
+
+        The single source of truth a caller can fill in so a *minimal* spec
+        (only the truly required params) resolves to a complete one.
+        """
+        return {p.name: p.default for p in self.params if p.default is not None}
+
     def param(self, name: str) -> Optional[ParamSpec]:
         """Look up a single :class:`ParamSpec` by name."""
         for p in self.params:
