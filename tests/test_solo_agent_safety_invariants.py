@@ -15,6 +15,24 @@ import pytest
 from delfin.agent.api_client import KitToolPermissions
 
 
+def _bwrap_functional() -> bool:
+    """True only if bwrap is installed AND can actually sandbox. On unprivileged
+    CI containers bwrap is often present but cannot create user namespaces, so
+    it exits non-zero — `which("bwrap")` alone would wrongly let the test run."""
+    import shutil
+    import subprocess
+    if shutil.which("bwrap") is None:
+        return False
+    try:
+        r = subprocess.run(
+            ["bwrap", "--ro-bind", "/", "/", "true"],
+            capture_output=True, timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 @pytest.fixture
 def perms():
     return KitToolPermissions(workspace="/tmp")
@@ -72,8 +90,12 @@ def test_ordinary_file_is_not_protected(perms):
 # ---------------------------------------------------------------------------
 
 def _solo_engine(tmp_path):
+    from unittest.mock import MagicMock, patch
     from delfin.agent.engine import AgentEngine
-    return AgentEngine(repo_dir=str(tmp_path), mode="solo")
+    # Stub the client (CI has no `claude` CLI); check_auto_verify inspects the
+    # tool name/output, never the client, so a MagicMock keeps this in CI.
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        return AgentEngine(repo_dir=str(tmp_path), mode="solo")
 
 
 def test_auto_verify_fires_after_python_edit(tmp_path):
@@ -240,8 +262,8 @@ def test_bash_isolation_default_setting_is_off():
     assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "off"
 
 
-@pytest.mark.skipif(__import__("shutil").which("bwrap") is None,
-                    reason="bwrap not installed")
+@pytest.mark.skipif(not _bwrap_functional(),
+                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
 def test_bwrap_isolation_blocks_writes_outside_granted_roots(tmp_path):
     import subprocess
     from pathlib import Path
@@ -262,8 +284,8 @@ def test_bwrap_isolation_blocks_writes_outside_granted_roots(tmp_path):
     assert r2.returncode != 0 and not outside.exists()
 
 
-@pytest.mark.skipif(__import__("shutil").which("bwrap") is None,
-                    reason="bwrap not installed")
+@pytest.mark.skipif(not _bwrap_functional(),
+                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
 def test_bwrap_isolation_grants_extra_dirs(tmp_path):
     import subprocess
     from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions

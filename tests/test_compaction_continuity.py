@@ -62,8 +62,13 @@ def test_empty_session_id_is_noop(tmp_archive):
 # ---------------------------------------------------------------------------
 
 def _make_engine(tmp_path):
+    from unittest.mock import MagicMock, patch
     from delfin.agent.engine import AgentEngine
-    eng = AgentEngine(repo_dir=str(tmp_path), mode="solo")
+    # Stub the client so the engine builds without a real backend binary — CI
+    # has no `claude` CLI. Compaction operates on eng.messages, never the
+    # client, so a MagicMock is sufficient and keeps this covered in CI.
+    with patch("delfin.agent.engine.create_client", return_value=MagicMock()):
+        eng = AgentEngine(repo_dir=str(tmp_path), mode="solo")
     eng.session_id = "sess-compact"
     return eng
 

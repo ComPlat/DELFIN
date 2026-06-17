@@ -24,6 +24,21 @@ import pytest
 from delfin.agent import sandbox
 
 
+def _bwrap_functional() -> bool:
+    """True only if bwrap is installed AND can sandbox. Unprivileged CI
+    containers ship bwrap but can't create user namespaces (it exits non-zero),
+    so `which("bwrap")` alone would wrongly let the real-bwrap test run + fail."""
+    import subprocess
+    if shutil.which("bwrap") is None:
+        return False
+    try:
+        r = subprocess.run(["bwrap", "--ro-bind", "/", "/", "true"],
+                           capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Layer 1 — allow-list
 
@@ -238,7 +253,8 @@ def test_run_agent_command_executes_allowed(monkeypatch, tmp_path):
     assert any('"exit": 0' in line for line in audit)
 
 
-@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bwrap not installed")
+@pytest.mark.skipif(not _bwrap_functional(),
+                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
 def test_run_agent_command_via_bwrap_blocks_network(monkeypatch, tmp_path):
     """End-to-end with real bwrap: --unshare-net should block outbound calls.
 
