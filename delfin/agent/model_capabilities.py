@@ -306,6 +306,39 @@ def _discover_ollama(base_url: str, model: str) -> dict[str, Any] | None:
     return spec or None
 
 
+# Model ids whose MODALITY is not chat-completion — a provider's /v1/models
+# (e.g. KIT) lists them alongside chat models, but using one on the chat
+# endpoint 400s ("model does not support chat"). Detected by name so the model
+# picker can skip them instead of letting the user select a dead option.
+_NONCHAT_MODALITY = (
+    (_re.compile(r"(?:^|[-._/])(?:embed|embedding)(?:[-._/]|$|\d)", _re.I),
+     "embedding model"),
+    (_re.compile(r"(?:^|[-._/])(?:rerank|reranker)(?:[-._/]|$|\d)", _re.I),
+     "reranker"),
+    (_re.compile(r"(?:^|[-._/])whisper(?:[-._/]|$|\d)", _re.I),
+     "speech-to-text"),
+    (_re.compile(r"(?:^|[-._/])(?:tts|voxtral|asr|stt)(?:[-._/]|$|\d)", _re.I),
+     "speech model"),
+    (_re.compile(r"(?:^|[-._/])(?:flux|sdxl|stable[-_]?diffusion|dall[-_]?e|"
+                 r"image[-_]?gen)(?:[-._/]|$|\d)", _re.I),
+     "image generation"),
+)
+
+
+def nonchat_reason(model: str) -> str | None:
+    """Why ``model`` is NOT usable for chat completion (embedding / reranker /
+    speech / image), or None if it's a normal chat model. Name-based so the
+    picker can filter a provider's mixed /v1/models list without probing each."""
+    m = (model or "").strip().lower()
+    if not m:
+        return None
+    base = m.split(".", 1)[-1] if m.startswith(("kit.", "azure.")) else m
+    for rx, reason in _NONCHAT_MODALITY:
+        if rx.search(base) or rx.search(m):
+            return reason
+    return None
+
+
 def _models_url(base_url: str) -> str:
     url = (base_url or "").rstrip("/")
     return (url if url.endswith("/v1") else url + "/v1") + "/models"
@@ -688,6 +721,7 @@ __all__ = [
     "kit_recommendation",
     "register_static",
     "clear_cache",
+    "nonchat_reason",
     "DEFAULT_NUM_CTX_CAP",
     "KIT_BEST_MODEL",
 ]

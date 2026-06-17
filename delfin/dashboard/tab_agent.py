@@ -2611,7 +2611,6 @@ def create_tab(ctx):
     # Embedding models can't generate chat completions — they'd error
     # out on the first send, so we hide them from the chat-model picker.
     _KIT_SKIP = {"standard-external", "standard-extern", "standard-local"}
-    _MODEL_ID_HIDE_SUBSTRINGS = ("embedding", "embed-")
 
     def _fetch_models(provider):
         """Fetch model list from API. Returns [(label, id), ...] or None."""
@@ -2685,16 +2684,19 @@ def create_tab(ctx):
             else:
                 return None
 
+            from delfin.agent.model_capabilities import (
+                nonchat_reason as _nonchat,
+            )
             models = data.get("data", [])
             result = []
             for m in models:
                 mid = m.get("id", "")
                 if not mid or mid in _KIT_SKIP:
                     continue
-                # Hide embedding / re-ranker models — they can't generate
-                # chat completions and would error out at send time.
-                if any(sub in mid.lower()
-                       for sub in _MODEL_ID_HIDE_SUBSTRINGS):
+                # Skip non-chat-modality models (embedding / reranker / speech /
+                # image) — a provider lists them alongside chat models but they
+                # 400 ("does not support chat") at send time. Detected by name.
+                if _nonchat(mid):
                     continue
                 label = mid.replace("azure.", "Azure ").replace("kit.", "KIT ")
                 result.append((label, mid))

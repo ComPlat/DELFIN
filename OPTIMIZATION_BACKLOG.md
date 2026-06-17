@@ -54,8 +54,16 @@ in this priority order and appends new findings back here.
   OpenAI `image_url` content (Ollama/KIT/OpenAI). Claude uses Anthropic image
   blocks → currently text-fallback. Add the Anthropic shape for the
   CLI/API backends.
-- [ ] **`standard-extern` KIT alias 400s** — surfaced cleanly (no crash) but
-  unusable. Detect non-chat aliases and skip/flag them in the model picker.
+- [x] **Non-chat models leak into the model picker** — `model_capabilities.
+  nonchat_reason(id)` detects embedding / reranker / speech (whisper, tts,
+  voxtral) / image (flux) models by name; `_fetch_models` skips them so the user
+  can't pick a model that 400s ("does not support chat") at send time. Replaced
+  the incomplete `_MODEL_ID_HIDE_SUBSTRINGS` (only matched "embedding"), which
+  let reranker/whisper/voxtral/flux through. Live-verified against the real
+  23-entry KIT list: 5 modality models hidden, 16 chat models kept. NOTE: the
+  original premise was wrong — `standard-extern`/`standard-local` do NOT 400 any
+  more (both answer on chat); they stay in `_KIT_SKIP` as quirky Open-WebUI
+  presets (standard-extern returns empty on a trivial prompt), unchanged.
 
 ### Observability / self-improvement
 - [x] **Per-turn timing telemetry** — `turn_metrics` records one entry per turn

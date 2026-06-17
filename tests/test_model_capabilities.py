@@ -242,6 +242,23 @@ def test_kit_live_window_requires_auth_header(monkeypatch):
     assert caps1.context_window == 262_144
 
 
+def test_nonchat_reason_filters_modality_models():
+    """Embedding / reranker / speech / image models (listed by KIT alongside
+    chat models, but they 400 on the chat endpoint) get a reason; real chat
+    models — including the working standard-* aliases — return None."""
+    nonchat = mc.nonchat_reason
+    assert nonchat("kit.qwen3-embedding-8b") == "embedding model"
+    assert nonchat("kit.qwen3-reranker-8b") == "reranker"
+    assert nonchat("kit.whisper-large-v3") == "speech-to-text"
+    assert nonchat("kit.voxtral-4b-tts-2603") == "speech model"
+    assert nonchat("kit.flux.2-dev") == "image generation"
+    for chat in ("azure.gpt-5.4", "kit.qwen3.5-397b-A17b", "kit.gpt-oss-120b",
+                 "kit.gemma4-31b-it", "kit.minimax-m2.7-229b",
+                 "kit.mistral-small-4-119b-a8b", "azure.o3",
+                 "standard-extern", "standard-local", ""):
+        assert nonchat(chat) is None, f"{chat!r} wrongly flagged non-chat"
+
+
 def test_kit_window_from_open_webui_description(monkeypatch):
     """KIT Toolbox is an Open-WebUI proxy: no numeric max_model_len — the
     window lives as prose in info.meta.description ("Context length ≈ 256K").
