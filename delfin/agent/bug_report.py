@@ -451,7 +451,31 @@ def write_bug_report(
         ),
         encoding="utf-8",
     )
+    _make_group_readable(report_dir)
     return report_dir
+
+
+def _make_group_readable(report_dir: Path) -> None:
+    """Add group read (+ traverse on dirs) to the whole report so a maintainer
+    in the archive's shared group can ALWAYS read it — independent of the
+    writing user's umask (a restrictive 0077 umask otherwise produces an
+    unreadable ``drwx------`` report). Does NOT touch the "others" bits, so the
+    report stays as private as the archive's home dir already makes it. The
+    report's group itself is inherited from the archive dir (set it once with
+    ``chgrp <maintainer-grp> + chmod g+s`` on the archive). Best-effort: a
+    chmod failure must never break bug reporting."""
+    import stat as _stat
+    try:
+        targets = [report_dir, *report_dir.rglob("*")]
+    except Exception:
+        return
+    for p in targets:
+        try:
+            mode = p.stat().st_mode
+            extra = _stat.S_IRGRP | (_stat.S_IXGRP if p.is_dir() else 0)
+            p.chmod(mode | extra)
+        except Exception:
+            pass
 
 
 def push_report_to_remote(

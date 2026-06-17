@@ -63,6 +63,29 @@ def test_format_panel_html_empty(home):
     assert tt.format_panel_html([]) == ""
 
 
+def test_bug_report_group_readable_even_with_restrictive_umask(tmp_path):
+    """A maintainer in the archive's shared group must be able to read every
+    report — even one written under a restrictive 0077 umask (which would
+    otherwise produce an unreadable drwx------). Group-read is forced; the
+    "others" bits are left untouched so the report stays private."""
+    import os
+    import stat as _stat
+    from delfin.agent.bug_report import write_bug_report
+    old = os.umask(0o077)                       # would strip all group/other bits
+    try:
+        rd = write_bug_report(
+            chat_messages=[{"role": "user", "content": "x"}],
+            session_id="grp", description="t", archive_dir=tmp_path)
+    finally:
+        os.umask(old)
+    dmode = _stat.S_IMODE(rd.stat().st_mode)
+    assert dmode & _stat.S_IRGRP and dmode & _stat.S_IXGRP   # dir: group read+traverse
+    rj = rd / "report.json"
+    fmode = _stat.S_IMODE(rj.stat().st_mode)
+    assert fmode & _stat.S_IRGRP                              # file: group read
+    assert not (fmode & _stat.S_IROTH)                       # but NOT world-readable
+
+
 def test_tool_trace_panel_wired_in_dashboard():
     from pathlib import Path as _P
     src = (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
