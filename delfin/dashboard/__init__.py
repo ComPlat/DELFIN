@@ -426,6 +426,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 spec['default_visible'] = True
             break
 
+    # Additively append dynamically-registered tabs (tab_registry). No-op when
+    # nothing is registered; defensive so a registered tab can never break
+    # dashboard startup. Built-in tabs above are untouched.
+    try:
+        from delfin.dashboard.tab_registry import registered_tab_specs
+        tab_specs.extend(registered_tab_specs(ctx))
+    except Exception:
+        pass
+
     ctx.tab_specs = tab_specs
     tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6)
     for spec in ctx.tab_specs:
