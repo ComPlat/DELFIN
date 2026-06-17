@@ -184,55 +184,103 @@ class ToolsPanel:
         self._title = widgets.HTML("<h3>Tools &amp; Platform</h3>")
         self._refresh_btn = widgets.Button(description="Refresh", icon="refresh")
         self._install_btn = widgets.Button(
-            description="Install open-source tools", icon="download",
-            tooltip="Runs the bundled installer for open-source QM tools only "
-                    "(ORCA / Turbomole are never installed).",
+            description="Install all open-source", icon="download",
+            tooltip="Install all auto-installable open-source tools "
+                    "(ORCA / Turbomole / Multiwfn are never installed).",
         )
+        self._install_sel_btn = widgets.Button(
+            description="Install selected", icon="download", button_style="primary",
+        )
+        self._install_box = widgets.VBox([])
+        self._install_checks: dict = {}
         self._status = widgets.HTML("")
         self._body = widgets.HTML(render_all_html())
 
         self._refresh_btn.on_click(self._on_refresh)
-        self._install_btn.on_click(self._on_install)
+        self._install_btn.on_click(lambda _b: self._run_install(None))
+        self._install_sel_btn.on_click(self._on_install_selected)
+
+        self._build_install_checklist()
 
         self.widget = widgets.VBox([
             self._title,
             widgets.HBox([self._refresh_btn, self._install_btn]),
+            widgets.HTML("<b>Selective install</b> — tick what to install:"),
+            self._install_box,
             self._status,
             self._body,
         ])
 
+    def _build_install_checklist(self) -> None:
+        from delfin.tools import platform
+        try:
+            plan = platform.install_plan()
+        except Exception:  # noqa: BLE001
+            self._install_box.children = ()
+            return
+        self._install_checks = {}
+        rows = []
+        auto = plan.get("auto_binaries", [])
+        if auto:
+            cb = widgets.Checkbox(value=True, indent=False,
+                                  description=f"QM tools bundle ({', '.join(auto)})")
+            self._install_checks["__qm__"] = (cb, list(auto))
+            rows.append(cb)
+        for p in plan.get("python", []):
+            cb = widgets.Checkbox(value=False, indent=False,
+                                  description=f"pip: {p['tool']}")
+            self._install_checks[p["tool"]] = (cb, [p["tool"]])
+            rows.append(cb)
+        if rows:
+            rows.append(self._install_sel_btn)
+            self._install_box.children = tuple(rows)
+        else:
+            self._install_box.children = (
+                widgets.HTML("<em>Nothing auto-installable is missing.</em>"),)
+
     def refresh(self) -> None:
         self._body.value = render_all_html()
+        self._build_install_checklist()
 
     def _on_refresh(self, _btn) -> None:
         self.refresh()
 
-    def _on_install(self, _btn) -> None:
+    def _on_install_selected(self, _btn) -> None:
+        select = []
+        for cb, names in self._install_checks.values():
+            if cb.value:
+                select.extend(names)
+        if not select:
+            self._status.value = "<p>Nothing selected.</p>"
+            return
+        self._run_install(select)
+
+    def _run_install(self, select) -> None:
         import threading
 
         self._install_btn.disabled = True
-        self._status.value = "<p>Installing open-source tools… (ORCA/Turbomole are skipped)</p>"
+        self._install_sel_btn.disabled = True
+        what = "selected tools" if select else "all open-source tools"
+        self._status.value = (f"<p>Installing {what}… "
+                              "(ORCA/Turbomole/Multiwfn are skipped)</p>")
 
         def _work():
             from delfin.tools import platform
             try:
-                result = platform.install_tools(run=True)
-                if result.get("executed") and result.get("ok"):
-                    self._status.value = "<p style='color:#28a745'>Open-source tools installed.</p>"
-                elif not result.get("executed"):
-                    self._status.value = (
-                        "<p>Nothing to auto-install (no open-source tool missing, "
-                        "or installer not found).</p>"
-                    )
+                result = platform.install_tools(run=True, select=select)
+                if not result.get("executed"):
+                    self._status.value = ("<p>Nothing was installed (nothing "
+                                          "selected/missing, or installer not found).</p>")
+                elif result.get("ok"):
+                    self._status.value = "<p style='color:#28a745'>Installed.</p>"
                 else:
-                    self._status.value = (
-                        f"<p style='color:#dc3545'>Installer exited with code "
-                        f"{result.get('returncode')}.</p>"
-                    )
+                    self._status.value = ("<p style='color:#dc3545'>Some installs "
+                                          "failed — check the run logs.</p>")
             except Exception as exc:  # noqa: BLE001
                 self._status.value = f"<p style='color:#dc3545'>install failed: {exc}</p>"
             finally:
                 self._install_btn.disabled = False
+                self._install_sel_btn.disabled = False
                 self.refresh()
 
         threading.Thread(target=_work, daemon=True).start()

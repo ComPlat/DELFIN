@@ -177,6 +177,26 @@ def test_install_tools_plans_without_executing():
     assert set(out["plan"]).issuperset({"auto_binaries", "manual", "python", "installer"})
 
 
+def test_install_tools_selective_empty_installs_nothing():
+    # An empty / non-installable selection executes nothing (deterministic).
+    out = platform.install_tools(run=True, select=[])
+    assert out["executed"] is False
+    assert out["actions"] == []
+    # selecting a license-restricted tool also installs nothing
+    out2 = platform.install_tools(run=True, select=["orca", "define"])
+    assert out2["executed"] is False
+
+
+def test_open_source_tools_have_specific_install_guidance():
+    """Multiwfn/packmol/genarris get a concrete source + hint, not the generic default."""
+    from delfin.tools._environment import tool_info
+
+    for tool in ("multiwfn", "packmol", "genarris"):
+        info = tool_info(tool, "binary")
+        assert info.source, f"{tool} should carry a source URL"
+        assert info.install_hint
+
+
 # --- Key vocabulary -------------------------------------------------------
 
 

@@ -84,6 +84,17 @@ for _b in ("xtb", "crest", "xtb4stda", "std2", "stda", "dftb+"):
         installer="qm_tools",
     )
 
+# Open-source tools that DELFIN can't install for you (own distribution), but
+# with a concrete pointer instead of a generic 'add it to PATH' message.
+_t("multiwfn", "binary", "manual", source="http://sobereva.com/multiwfn",
+   hint="Multiwfn is free but distributed from its own site. Download it and add "
+        "the 'Multiwfn' binary to PATH.")
+_t("packmol", "binary", "manual", source="https://m3g.github.io/packmol",
+   hint="Open source. Install via conda ('conda install -c conda-forge packmol') "
+        "or build from source, then add 'packmol' to PATH.")
+_t("genarris", "binary", "manual", source="https://www.noamarom.com/software/genarris",
+   hint="Install Genarris (open source) from its distribution and add it to PATH.")
+
 # Common Python dependencies — pip/conda installable.
 for _m in ("rdkit", "mendeleev", "morfeus", "cclib", "ase", "openbabel"):
     _t(_m, "python", "auto", hint=f"pip install {_m}  (or via conda)", installer="pip")
@@ -241,35 +252,73 @@ def install_plan() -> Dict[str, object]:
     }
 
 
-def install_tools(*, run: bool = False, timeout: Optional[float] = None) -> Dict[str, object]:
-    """Install the *open-source* QM binaries DELFIN may legally install.
+def install_tools(
+    *,
+    run: bool = False,
+    select: Optional[List[str]] = None,
+    timeout: Optional[float] = None,
+) -> Dict[str, object]:
+    """Install the open-source tools DELFIN may legally install.
 
-    With ``run=False`` (default) returns the plan without executing anything.
-    With ``run=True`` runs the bundled ``install_qm_tools.sh`` for the missing
-    open-source binaries only.  License-restricted tools (ORCA, Turbomole) are
-    **never** installed; their guidance is always returned under ``plan.manual``.
+    ``run=False`` (default) only returns the plan.  ``run=True`` installs the
+    bundled open-source QM binaries (``install_qm_tools.sh``) and/or the missing
+    pip packages.  ``select`` restricts execution to the named tools (a subset of
+    ``plan.auto_binaries`` ∪ ``plan.python``); ``None`` means all auto-installable.
+    License-restricted tools (ORCA, Turbomole, Multiwfn, …) are **never**
+    installed — their guidance stays under ``plan.manual``.
     """
+    import sys
+
     plan = install_plan()
-    out: Dict[str, object] = {"plan": plan, "executed": False}
+    out: Dict[str, object] = {"plan": plan, "executed": False, "actions": []}
     if not run:
         return out
 
-    script = installer_path()
-    if script is None or not plan["auto_binaries"]:
-        out["note"] = "no auto-installable binaries missing, or installer not found"
-        return out
-    try:
-        proc = subprocess.run(
-            ["bash", str(script)], capture_output=True, text=True, timeout=timeout,
-        )
-        out["executed"] = True
-        out["ok"] = proc.returncode == 0
-        out["returncode"] = proc.returncode
-        out["stdout"] = (proc.stdout or "")[-4000:]
-        out["stderr"] = (proc.stderr or "")[-4000:]
-    except Exception as exc:  # never raise out of the platform call
-        out["ok"] = False
-        out["error"] = str(exc)
+    auto_bins = set(plan["auto_binaries"])
+    py_tools = {p["tool"] for p in plan["python"]}
+    if select is None:
+        want_qm = bool(auto_bins)
+        want_py = sorted(py_tools)
+    else:
+        chosen = set(select)
+        want_qm = bool(chosen & auto_bins)
+        want_py = sorted(chosen & py_tools)
+
+    actions: List[Dict[str, object]] = out["actions"]  # type: ignore[assignment]
+
+    if want_qm:
+        script = installer_path()
+        if script is None:
+            actions.append({"qm_tools": {"ok": False, "error": "install_qm_tools.sh not found"}})
+        else:
+            try:
+                proc = subprocess.run(["bash", str(script)], capture_output=True,
+                                      text=True, timeout=timeout)
+                actions.append({"qm_tools": {
+                    "ok": proc.returncode == 0, "returncode": proc.returncode,
+                    "stdout": (proc.stdout or "")[-2000:],
+                    "stderr": (proc.stderr or "")[-2000:],
+                }})
+                out["executed"] = True
+            except Exception as exc:  # noqa: BLE001
+                actions.append({"qm_tools": {"ok": False, "error": str(exc)}})
+
+    if want_py:
+        try:
+            proc = subprocess.run([sys.executable, "-m", "pip", "install", *want_py],
+                                  capture_output=True, text=True, timeout=timeout)
+            actions.append({"pip": {
+                "packages": want_py, "ok": proc.returncode == 0,
+                "returncode": proc.returncode,
+                "stdout": (proc.stdout or "")[-2000:],
+                "stderr": (proc.stderr or "")[-2000:],
+            }})
+            out["executed"] = True
+        except Exception as exc:  # noqa: BLE001
+            actions.append({"pip": {"packages": want_py, "ok": False, "error": str(exc)}})
+
+    out["ok"] = (all(list(a.values())[0].get("ok", False) for a in actions)
+                 if actions else True)
     return out
 
 

@@ -292,14 +292,20 @@ def install_plan() -> Dict[str, object]:
     return _environment.install_plan()
 
 
-def install_tools(*, run: bool = False, timeout: Optional[float] = None) -> Dict[str, object]:
+def install_tools(
+    *,
+    run: bool = False,
+    select: Optional[List[str]] = None,
+    timeout: Optional[float] = None,
+) -> Dict[str, object]:
     """Install the open-source tools DELFIN may legally install.
 
-    License-restricted tools (ORCA, Turbomole) are never installed; their
-    guidance is returned under ``plan.manual``.  ``run=False`` (default) only
-    plans.
+    ``select`` restricts which tools to install (subset of the plan's
+    auto-installable tools); ``None`` installs all. License-restricted tools
+    (ORCA, Turbomole, Multiwfn, …) are never installed — their guidance is
+    returned under ``plan.manual``. ``run=False`` (default) only plans.
     """
-    return _environment.install_tools(run=run, timeout=timeout)
+    return _environment.install_tools(run=run, select=select, timeout=timeout)
 
 
 __all__ = [
