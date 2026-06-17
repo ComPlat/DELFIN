@@ -251,6 +251,23 @@ def run_metrics() -> Dict[str, Any]:
     return aggregate_runs()
 
 
+def application_keyfile(name: str) -> str:
+    """Generate an editable CONTROL.txt-style keys file for an application.
+
+    Each input key shows its default, type and (from the central key vocabulary)
+    its allowed values.  Edit it and run via :func:`run_from_keyfile` or
+    ``delfin-app run <file>``.
+    """
+    from delfin.tools._keyfile import application_keyfile as _kf
+    return _kf(name)
+
+
+def run_from_keyfile(path: str, *, cores: int = 1, submit: bool = False, **overrides: Any):
+    """Run (or submit) an application described by a keys file."""
+    from delfin.tools._keyfile import run_from_keyfile as _run
+    return _run(path, cores=cores, submit=submit, **overrides)
+
+
 # ======================================================================
 #  Environment (probe + install)
 # ======================================================================
@@ -307,6 +324,8 @@ __all__ = [
     "cancel_run",
     "wait_run",
     "run_metrics",
+    "application_keyfile",
+    "run_from_keyfile",
     # environment
     "probe",
     "missing_tools",

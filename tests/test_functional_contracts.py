@@ -53,6 +53,7 @@ _ENTRY_POINTS = {
     "delfin-pipeline": ("delfin.cli_pipeline", "main"),
     "delfin-docs-index": ("delfin.doc_server.indexer", "main"),
     "delfin-tools-server": ("delfin.tools.mcp_server", "main"),
+    "delfin-app": ("delfin.cli_app", "main"),
     "delfin-fukui": ("delfin.cli_fukui", "main"),
 }
 
