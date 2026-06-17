@@ -34,6 +34,22 @@ def test_builtin_application_registered_and_described():
     assert {o.name for o in app.outputs} == {"energy_Eh", "gibbs_Eh"}
 
 
+def test_flagship_applications_registered_and_validate():
+    """The flagship template-based apps are registered and validate statically."""
+    apps = platform.list_applications()
+    assert {"redox_potential", "multi_level_energy", "opt_freq_energy"} <= set(apps)
+
+    redox = platform.describe_application("redox_potential")
+    assert redox.required_inputs == ("smiles", "charge")
+    out = {o.name: (o.branch, o.step, o.key) for o in redox.outputs}
+    assert out["e_oxidation_Eh"] == ("oxidation", "ox_freq", "gibbs_Eh")
+    assert out["e_reduction_Eh"] == ("reduction", "red_freq", "gibbs_Eh")
+    assert platform.validate_application(
+        "redox_potential", smiles="CCO", charge=0, mult_ox=2, mult_red=2).ok
+    assert platform.validate_application(
+        "multi_level_energy", smiles="CCO", charge=0).ok
+
+
 def test_application_to_from_dict_roundtrip():
     from delfin.tools import Application
 
