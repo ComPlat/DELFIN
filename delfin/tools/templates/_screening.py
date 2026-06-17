@@ -51,7 +51,7 @@ multi_level_opt = PipelineTemplate("multi_level_opt", defaults={
 })
 
 multi_level_opt.add("smiles_to_xyz", smiles="{smiles}", label="smiles")
-multi_level_opt.add("xtb_opt", label="xtb_preopt")
+multi_level_opt.add("xtb_opt", method="XTB2", label="xtb_preopt")
 multi_level_opt.add("orca_opt", basis="{small_basis}", label="small_basis_opt")
 multi_level_opt.add("orca_opt", basis="{large_basis}", label="large_basis_opt")
 multi_level_opt.add("orca_freq", basis="{large_basis}", label="freq")

@@ -21,7 +21,7 @@ As a composable sub-pipeline::
 
     main = Pipeline("full_workflow")
     main.add("smiles_to_xyz", smiles="CCO")
-    main.add("xtb_opt", charge=0)
+    main.add("xtb_opt", charge=0, method="XTB2")
     main.add("orca_opt", charge=0, method="B3LYP", basis="def2-SVP")
     main.add_sub_pipeline(
         imag_sub_pipeline(charge=0, method="B3LYP", basis="def2-SVP", max_iter=5),

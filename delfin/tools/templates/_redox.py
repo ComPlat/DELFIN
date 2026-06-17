@@ -34,7 +34,7 @@ redox_potential = PipelineTemplate("redox_potential", defaults={
 
 # Trunk: SMILES → xTB pre-opt → ORCA opt + freq (neutral species)
 redox_potential.add("smiles_to_xyz", smiles="{smiles}", label="smiles")
-redox_potential.add("xtb_opt", label="xtb_preopt")
+redox_potential.add("xtb_opt", method="XTB2", label="xtb_preopt")
 redox_potential.add("orca_opt", label="neutral_opt")
 redox_potential.add("orca_freq", label="neutral_freq")
 

@@ -45,6 +45,7 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.morfeus",
         "delfin.tools.adapters.cclib",
         "delfin.tools.adapters.xtb",
+        "delfin.tools.adapters.xtb_native",
         "delfin.tools.adapters.orca",
         "delfin.tools.adapters.crest",
         "delfin.tools.adapters.censo",

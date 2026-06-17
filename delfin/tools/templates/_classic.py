@@ -45,8 +45,9 @@ classic_opt_freq = PipelineTemplate("classic_opt_freq", defaults={
 # Step 1: SMILES → 3D geometry (skipped if geometry provided directly)
 classic_opt_freq.add("smiles_to_xyz", smiles="{smiles}", label="smiles")
 
-# Step 2: xTB pre-optimization (fast, gets close to minimum)
-classic_opt_freq.add("xtb_opt", label="xtb_preopt")
+# Step 2: xTB pre-optimization (fast, gets close to minimum).
+# Pin the xTB method so it does not inherit the DFT `method` broadcast default.
+classic_opt_freq.add("xtb_opt", method="XTB2", label="xtb_preopt")
 
 # Step 3: ORCA geometry optimization (DFT)
 classic_opt_freq.add("orca_opt", label="orca_opt")
