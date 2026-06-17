@@ -154,6 +154,70 @@ def _restore_eta_ring_hydrogens(fmol, local_eta: List[int]):
         return fmol
 
 
+def _nhc_carbene_enabled() -> bool:
+    """Free-carbene repair of metal-bound carbene-C after the M-C cleave (default
+    OFF -> byte-identical: the repair branch is never entered)."""
+    return os.environ.get("DELFIN_FFFREE_NHC_CARBENE", "0") == "1"
+
+
+def _carbene_carbon_idxs(mol, m: int, matom) -> List[int]:
+    """Graph-only detection of carbene-carbon DONORS on the metal.
+
+    A carbene C (NHC = imidazol-2-yliden and its saturated/benzannulated kin, but
+    also any divalent C-donor) is encoded in the dative-bond SMILES as ``[C+]``: a
+    ring carbon that bonds the metal AND sits between heteroatoms (the canonical
+    N-C-N of an NHC; generalised to ≥2 ring heteroatom neighbours, N/O/S/P).  Once
+    the M-C bond is cleaved this carbon drops to degree 2 (two σ bonds to the ring
+    heteroatoms) while still carrying the ``[C+]``/aromatic encoding artifact, which
+    leaves RDKit unable to kekulise the ring (KekulizeException) -> the whole
+    fragment split fails -> the system falls back to legacy.
+
+    Returns the sorted local indices of such carbons (metal-bound, in a ring, with
+    ≥2 ring heteroatom neighbours).  A lone σ-C (methyl, carbonyl C, aryl-C) has
+    fewer than two heteroatom neighbours and is never flagged.  Deterministic."""
+    out: List[int] = []
+    for n in matom.GetNeighbors():
+        if n.GetAtomicNum() != 6:
+            continue
+        if not n.IsInRing():
+            continue
+        het = 0
+        for x in n.GetNeighbors():
+            if x.GetIdx() == m:
+                continue
+            if x.GetAtomicNum() in (7, 8, 15, 16) and x.IsInRing():
+                het += 1
+        if het >= 2:
+            out.append(n.GetIdx())
+    return sorted(out)
+
+
+def _repair_carbene_carbons(em, carbene_idxs: List[int]):
+    """Repair cleaved carbene carbons IN-PLACE on the bond-removed RWMol ``em`` to
+    the RDKit-valid representation of a FREE singlet carbene.
+
+    After the M-C cleave the carbene carbon is a degree-2 carbon still tagged
+    ``[C+]`` (charge +1, valence 3, the dative-bond encoding artifact) — RDKit
+    cannot kekulise the surrounding ring, so ``SanitizeMol``/``sanitizeFrags``
+    raises.  The chemically correct free species (after heterolytic M-C cleavage the
+    σ lone pair stays on carbon) is the neutral divalent singlet carbene ``:C:`` —
+    an sp² carbon with a σ lone pair and an empty p orbital, i.e. RDKit valence 2
+    with 2 (non-bonding) radical electrons, charge 0, no implicit/explicit H.  This
+    is exactly the representation RDKit accepts and round-trips, and embeds to the
+    real ~101-106° N-C-N carbene angle.  Idempotent; only touches the flagged
+    carbons.  Mutates ``em`` in place (the caller owns the RWMol)."""
+    cset = set(int(i) for i in carbene_idxs)
+    for i in cset:
+        a = em.GetAtomWithIdx(i)
+        if a.GetAtomicNum() != 6:
+            continue
+        a.SetFormalCharge(0)            # drop the [C+] dative-encoding artifact
+        a.SetNumExplicitHs(0)
+        a.SetNumRadicalElectrons(2)     # divalent singlet carbene :C: (val 2)
+        a.SetNoImplicit(True)
+        a.SetIsAromatic(False)          # carbene C is no longer ring-aromatic
+
+
 def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     """Hapto-aware decomposition (DELFIN_FFFREE_RIGID_HAPTO=1 only).
 
@@ -333,7 +397,26 @@ def decompose(smiles: str) -> Optional[Dict]:
         frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
                                  fragsMolAtomMapping=mapping)
     except Exception:
-        return None
+        # NHC / carbene-C donor repair (DELFIN_FFFREE_NHC_CARBENE=1 only; default OFF
+        # -> this branch is never entered and the failure stays a legacy fallback,
+        # byte-identical).  Defect-driven: the fragment split only fails (kekulize/
+        # valence) when a cleaved carbene-C kept its [C+] encoding; repair those
+        # carbons to the free singlet carbene :C: and retry the split ONCE.  A
+        # genuinely unsplittable input (no carbene, real valence error) still has no
+        # carbene candidates -> no repair -> return None unchanged.
+        frags = None
+        if _nhc_carbene_enabled():
+            carbene_idxs = _carbene_carbon_idxs(mol, m, matom)
+            if carbene_idxs:
+                _repair_carbene_carbons(em, carbene_idxs)
+                mapping = []
+                try:
+                    frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
+                                             fragsMolAtomMapping=mapping)
+                except Exception:
+                    frags = None
+        if frags is None:
+            return None
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
