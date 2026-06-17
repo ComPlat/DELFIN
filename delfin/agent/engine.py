@@ -891,6 +891,13 @@ class AgentEngine:
         _turn_t0 = _time.monotonic()
         _turn_ttft: float | None = None
         _turn_tool_calls = 0
+        # Per-turn runaway circuit-breaker: snapshot the cost at turn start so a
+        # single turn's tool-loop can't run away forever. Resets every turn — it
+        # is NOT a cumulative session budget. (_MAX_TOOL_ROUNDS already bounds
+        # rounds; this is the extra, very-high cost ceiling.)
+        self._turn_start_cost = self.cost_usd
+        self._cost_cap_hit = False
+        self._cost_cap_value = self._cost_hard_cap()   # read once per turn
         try:
             for event in self.client.stream_message(
                 system=system_prompt,
@@ -978,6 +985,24 @@ class AgentEngine:
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
                         self.cost_usd += event.cost_usd
+                    # Per-turn runaway breaker: if THIS turn's spend crosses the
+                    # (very high) hard cap, stop so the loop can't run forever.
+                    _cap = getattr(self, "_cost_cap_value", 0.0)
+                    if (_cap > 0 and not self._cost_cap_hit
+                            and (self.cost_usd - self._turn_start_cost) >= _cap):
+                        self._cost_cap_hit = True
+                        self._stop_requested = True
+                        _note = (
+                            f"\n\n🛑 Cost circuit-breaker: this turn hit the "
+                            f"${_cap:.0f} per-turn hard cap and was stopped so "
+                            f"the loop can't run away. (Per turn, NOT a session "
+                            f"budget — raise via agent.cost_hard_limit_usd.)")
+                        chunks.append(_note)
+                        if on_token:
+                            try:
+                                on_token(_note)
+                            except Exception:
+                                pass
                     # Capture session ID from result event
                     if event.text and not self.session_id:
                         self.session_id = event.text
@@ -1795,6 +1820,19 @@ class AgentEngine:
                 kp.task_session_id = self.session_id or ""
         except Exception:
             pass
+
+    def _cost_hard_cap(self) -> float:
+        """Per-turn hard cost ceiling in USD — a runaway circuit-breaker, NOT a
+        cumulative session budget. The default is deliberately very high so it
+        only ever trips on a loop gone wrong, never on normal use. 0 disables
+        it. Configurable via settings ``agent.cost_hard_limit_usd``."""
+        try:
+            from delfin.user_settings import load_settings as _ls
+            v = ((_ls() or {}).get("agent", {}) or {}).get(
+                "cost_hard_limit_usd", 50.0)
+            return max(0.0, float(v))
+        except Exception:
+            return 50.0
 
     def reset_cycle(
         self,

@@ -131,6 +131,52 @@ def test_engine_records_turn_metrics(agent_tree, mock_client, monkeypatch, tmp_p
     assert last["total_ms"] >= 0
 
 
+def test_per_turn_cost_hard_cap_stops_runaway(agent_tree, monkeypatch):
+    """A single turn's loop can't run away forever: once THIS turn's spend
+    crosses the (very high) hard cap, the loop stops. Per-turn, not cumulative."""
+    from delfin.agent.api_client import StreamEvent
+    from delfin.agent.engine import AgentEngine
+
+    def runaway(system, messages, max_tokens=4096, session_id="", thinking_budget=0):
+        yield StreamEvent(type="text_delta", text="work ")
+        yield StreamEvent(type="message_delta", output_tokens=10, cost_usd=0.30)
+        yield StreamEvent(type="text_delta", text="more ")
+        yield StreamEvent(type="message_delta", output_tokens=10, cost_usd=0.30)  # $0.60 >= cap
+        yield StreamEvent(type="text_delta", text="SHOULD-NOT-REACH ")
+        yield StreamEvent(type="message_delta", output_tokens=10, cost_usd=0.30)
+
+    client = MagicMock()
+    client.stream_message = MagicMock(side_effect=runaway)
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        eng = AgentEngine(repo_dir=agent_tree, backend="cli",
+                          mode="quick", pack_dir=agent_tree)
+    monkeypatch.setattr(eng, "_cost_hard_cap", lambda: 0.50)   # low cap for the test
+    resp = eng.stream_response("go")
+    assert eng._stop_requested is True
+    assert "circuit-breaker" in resp.lower() or "hard cap" in resp.lower()
+    assert "SHOULD-NOT-REACH" not in resp          # loop broke before the 3rd round
+
+
+def test_cost_cap_disabled_when_zero(agent_tree, monkeypatch):
+    """A 0 cap disables the breaker — a normal turn runs to completion."""
+    from delfin.agent.api_client import StreamEvent
+    from delfin.agent.engine import AgentEngine
+
+    def normal(system, messages, max_tokens=4096, session_id="", thinking_budget=0):
+        yield StreamEvent(type="text_delta", text="done")
+        yield StreamEvent(type="message_delta", output_tokens=5, cost_usd=999.0)
+
+    client = MagicMock()
+    client.stream_message = MagicMock(side_effect=normal)
+    with patch("delfin.agent.engine.create_client", return_value=client):
+        eng = AgentEngine(repo_dir=agent_tree, backend="cli",
+                          mode="quick", pack_dir=agent_tree)
+    monkeypatch.setattr(eng, "_cost_hard_cap", lambda: 0.0)    # disabled
+    resp = eng.stream_response("go")
+    assert eng._stop_requested is False
+    assert "circuit-breaker" not in resp.lower()
+
+
 def test_engine_advance_role(agent_tree, mock_client):
     from delfin.agent.engine import AgentEngine
 
