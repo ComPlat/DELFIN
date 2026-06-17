@@ -1,6 +1,8 @@
 import shutil
 from pathlib import Path
 
+import pytest
+
 from delfin.runtime_setup import (
     collect_bwunicluster_verification,
     collect_runtime_diagnostics,
@@ -82,6 +84,22 @@ def test_collect_runtime_diagnostics_reports_missing_orca_but_existing_templates
     assert by_name["orca"]["status"] in {"ok", "missing", "system"}
 
 
+def _qm_tools_bundle_present() -> bool:
+    """The xtb4stda / stda binaries are a large optional bundle added at
+    packaging time — they are NOT in a plain source checkout (or CI). Detect
+    them so this test runs in a packaged/release env but skips elsewhere
+    instead of being a permanent expected-failure."""
+    try:
+        return (runtime_setup.get_packaged_qm_tools_dir()
+                / "bin" / "xtb4stda").is_file()
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(
+    not _qm_tools_bundle_present(),
+    reason="packaged qm_tools binary bundle (xtb4stda/stda) not present in this checkout",
+)
 def test_stage_packaged_qm_tools_copies_bundle_to_target(tmp_path):
     target = tmp_path / "user_qm_tools"
 

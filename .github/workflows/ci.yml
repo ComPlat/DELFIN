@@ -1,0 +1,53 @@
+name: CI
+
+# Automated gate for every push to main and every pull request. The suite is
+# fully mocked (no live KIT/Ollama/Claude calls), so no secrets are required.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same branch/PR to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Run the whole declared support range; don't let one version cancel the
+      # other so a 3.10-only break is still visible alongside a green 3.11.
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          # Base scientific deps + the agent / docs / dev extras. The heavy
+          # optional extras (torch, cclib, deepchem, …) are intentionally
+          # omitted: no delfin module imports them at top level, and the tests
+          # that exercise those features use pytest.importorskip, so they skip
+          # cleanly here instead of forcing a multi-GB install.
+          pip install -e ".[agent,docs,dev]"
+
+      - name: Run test suite
+        # The qm_tools binary-bundle test (xtb4stda/stda) self-skips when the
+        # bundle isn't present, so a plain checkout is fully green.
+        run: pytest -q
