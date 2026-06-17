@@ -2502,6 +2502,10 @@ def create_tab(ctx):
                 "questions, read & edit files, run sandboxed shell commands, debug, "
                 "refactor. Delegates to subagents for parallel/background work. For "
                 "read-only-first planning, set Perms = Plan.",
+        "pipeline": "Pipeline Builder — assemble/validate/run computational-chemistry "
+                    "pipelines via the delfin-tools MCP server (get_guide → discover → "
+                    "build → validate → save → submit). Results in ~/calc; needs the "
+                    "delfin-tools MCP server registered.",
         "plan": "Read-only research first — the agent explores the codebase, drafts a "
                 "step-by-step plan in markdown, and waits for your approval via "
                 "ExitPlanMode before any file edits or bash run.",
@@ -2532,7 +2536,8 @@ def create_tab(ctx):
         # The old multi-agent pipeline modes (quick/reviewed/tdd/cluster/full)
         # are retired. "Plan" is NOT a mode — it's a permission profile (set
         # Perms = Plan for read-only-first / draft-a-plan-then-approve).
-        options=[("Dashboard", "dashboard"), ("Code", "solo")],
+        options=[("Dashboard", "dashboard"), ("Code", "solo"),
+                 ("Pipeline", "pipeline")],
         value="dashboard",
         description="Mode:",
         layout=widgets.Layout(width="200px"),

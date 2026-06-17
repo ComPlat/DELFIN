@@ -260,7 +260,10 @@ def test_registry_loads_http_and_discovers(monkeypatch, tmp_path):
     fake, _ = make_fake_endpoint()
     monkeypatch.setattr(M.urllib.request, "urlopen", fake)
     cfg = {"servers": {"remote": {"type": "http",
-                                  "url": "https://mcp.example.com/mcp"}}}
+                                  "url": "https://mcp.example.com/mcp"},
+                       # disable the built-in default so this stays focused on
+                       # the HTTP server under test (no real subprocess spawn).
+                       "delfin-tools": {"enabled": False}}}
     (tmp_path / ".delfin").mkdir()
     (tmp_path / ".delfin" / "mcp_servers.json").write_text(json.dumps(cfg))
     monkeypatch.setattr(M, "_user_config_path",

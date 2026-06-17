@@ -77,9 +77,24 @@ def _project_config_path(workspace: Path) -> Path:
     return Path(workspace) / ".delfin" / "mcp_servers.json"
 
 
+# Built-in MCP servers that ship WITH DELFIN — always available so a mode like
+# Pipeline works out-of-the-box without each user hand-registering them. The
+# user config can override an entry's command/args or disable it entirely
+# (set ``"enabled": false`` for that name).
+_BUILTIN_SERVERS: dict[str, dict] = {
+    "delfin-tools": {
+        "command": "python",
+        "args": ["-m", "delfin.tools.mcp_server"],
+        "enabled": True,
+    },
+}
+
+
 def _load_configs(workspace: Path | None) -> dict[str, dict]:
-    """Merge user-global and project-scoped MCP configs."""
-    out: dict[str, dict] = {}
+    """Merge built-in defaults + user-global + project-scoped MCP configs."""
+    out: dict[str, dict] = {
+        name: dict(cfg) for name, cfg in _BUILTIN_SERVERS.items()
+    }
     for path in [_user_config_path()] + (
         [_project_config_path(workspace)] if workspace else []
     ):
@@ -91,8 +106,12 @@ def _load_configs(workspace: Path | None) -> dict[str, dict]:
         if not isinstance(servers, dict):
             continue
         for name, cfg in servers.items():
-            if isinstance(cfg, dict) and cfg.get("enabled", True):
-                out[name] = cfg
+            if not isinstance(cfg, dict):
+                continue
+            if cfg.get("enabled", True):
+                out[name] = cfg                 # add or override (incl. a builtin)
+            else:
+                out.pop(name, None)             # explicit disable (also disables a builtin)
     return out
 
 

@@ -121,7 +121,21 @@ def test_load_configs_skips_disabled(monkeypatch):
         }))
         monkeypatch.setattr(M, "_user_config_path", lambda: path)
         configs = M._load_configs(None)
-        assert list(configs) == ["on"]
+        assert "on" in configs and "off" not in configs
+        # built-in DELFIN servers are present by default alongside user config
+        assert "delfin-tools" in configs
+
+
+def test_builtin_delfin_tools_default_and_disable(monkeypatch):
+    """delfin-tools ships as a built-in default (so Pipeline mode works without
+    manual per-user setup) but can be disabled via the user config."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "mcp_servers.json"
+        monkeypatch.setattr(M, "_user_config_path", lambda: path)
+        assert "delfin-tools" in M._load_configs(None)          # default on
+        path.write_text(json.dumps(
+            {"servers": {"delfin-tools": {"enabled": False}}}))
+        assert "delfin-tools" not in M._load_configs(None)      # disable-able
 
 
 def test_server_initialize_and_list_tools(fake_server_script):
