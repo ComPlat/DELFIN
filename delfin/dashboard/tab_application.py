@@ -124,6 +124,10 @@ class ApplicationFormPanel:
         self._form_box = widgets.VBox([])
         self._run_btn = widgets.Button(description="Run", icon="play",
                                        button_style="primary")
+        self._backend_dd = widgets.Dropdown(
+            options=["local", "slurm"], value="local", description="Backend",
+            style={"description_width": "70px"}, layout=widgets.Layout(width="30%"),
+        )
         self._status = widgets.HTML("")
 
         self._fields: List[Dict[str, Any]] = []
@@ -140,7 +144,7 @@ class ApplicationFormPanel:
 
         self.widget = widgets.VBox([
             self._title, self._app_dd, self._desc, self._form_box,
-            self._run_btn, self._status,
+            widgets.HBox([self._run_btn, self._backend_dd]), self._status,
         ])
 
     # -- form building -------------------------------------------------
@@ -180,10 +184,12 @@ class ApplicationFormPanel:
         self._run_btn.disabled = True
         self._status.value = "<p>Submitting…</p>"
 
+        backend = self._backend_dd.value
+
         def _work():
             try:
-                run_id = self._platform.submit_application(name, **inputs)
-                self._status.value = f"<p>Running… (run {run_id})</p>"
+                run_id = self._platform.submit_application(name, backend=backend, **inputs)
+                self._status.value = f"<p>Running… (run {run_id}, {backend})</p>"
                 rec = self._platform.wait_run(run_id, timeout=None)
                 if rec is None:
                     self._status.value = "<p style='color:#dc3545'>run vanished.</p>"

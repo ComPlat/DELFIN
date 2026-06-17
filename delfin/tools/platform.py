@@ -200,16 +200,20 @@ def submit_application(
     cores: int = 1,
     geometry: Optional[str | Path] = None,
     work_dir: Optional[Path] = None,
+    backend: str = "local",
     **inputs: Any,
 ) -> str:
     """Submit an application run in the background and return its run id.
 
-    Non-blocking: poll :func:`run_status` / :func:`run_record`, or
+    ``backend="local"`` runs on this machine; ``backend="slurm"`` submits an
+    sbatch job that runs it on a compute node (results land in the shared run
+    store). Non-blocking: poll :func:`run_status` / :func:`run_record`, or
     :func:`wait_run`, and cancel with :func:`cancel_run`.
     """
     from delfin.tools._runtime import get_runtime
     handle = get_runtime().submit_application(
-        name, cores=cores, geometry=geometry, work_dir=work_dir, inputs=inputs,
+        name, cores=cores, geometry=geometry, work_dir=work_dir,
+        inputs=inputs, backend=backend,
     )
     return handle.id
 

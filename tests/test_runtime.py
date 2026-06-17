@@ -90,6 +90,40 @@ def test_cancel_between_steps(tmp_path):
     assert rec.status == RunStatus.CANCELLED.value
 
 
+def test_execute_run_runs_and_updates_record(tmp_path):
+    """The compute-node executor runs a submitted record and writes its result."""
+    from delfin.tools._runtime import RunRecord, RunStatus, RunStore, execute_run
+
+    register_application(_energy_app())
+    store_base = tmp_path / "store"
+    store = RunStore(store_base)
+    store.save(RunRecord(
+        id="x1", kind="application", name="rt_app", inputs={},
+        created_at="now", work_dir=str(tmp_path / "wd"), metrics={"cores": 1},
+    ))
+
+    execute_run("x1", str(store_base))
+
+    done = store.get("x1")
+    assert done.status == RunStatus.SUCCESS.value
+    assert done.outputs == {"energy_Eh": -2.0}
+
+
+def test_submit_slurm_without_sbatch_fails_cleanly(tmp_path, monkeypatch):
+    """backend='slurm' on a host without SLURM marks the run failed, no crash."""
+    from delfin.tools._runtime import RunStatus, RunStore, Runtime
+
+    monkeypatch.setattr("shutil.which", lambda name=None: None)   # no sbatch
+    rt = Runtime(RunStore(tmp_path / "store"))
+    register_application(_energy_app())
+
+    handle = rt.submit_application("rt_app", inputs={}, backend="slurm")
+    rec = handle.record()
+    assert rec.status == RunStatus.FAILED.value
+    assert "sbatch not found" in rec.error
+    assert rec.metrics.get("backend") == "slurm"
+
+
 def test_facade_async_run(tmp_path, monkeypatch):
     import delfin.tools._runtime as rtmod
 

@@ -175,15 +175,26 @@ class Runtime:
         geometry: Optional[str | Path] = None,
         work_dir: Optional[str | Path] = None,
         inputs: Optional[Dict[str, Any]] = None,
+        backend: str = "local",
     ) -> RunHandle:
-        """Submit an application run; returns immediately with a handle."""
+        """Submit an application run; returns immediately with a handle.
+
+        ``backend="local"`` runs it in a background thread on this machine;
+        ``backend="slurm"`` submits an sbatch job that executes the run on a
+        compute node and writes its result back into the (shared) run store.
+        """
         run_id = uuid.uuid4().hex[:12]
         rec = RunRecord(
             id=run_id, kind="application", name=name,
             inputs=dict(inputs or {}), created_at=_now(),
             work_dir=str(work_dir) if work_dir else "",
+            metrics={"cores": cores, "backend": backend},
         )
         self.store.save(rec)
+
+        if backend == "slurm":
+            self._submit_slurm(run_id, name, cores, work_dir)
+            return RunHandle(run_id, self)
 
         cancel = threading.Event()
         with self._lock:
@@ -197,6 +208,54 @@ class Runtime:
             self._threads[run_id] = thread
         thread.start()
         return RunHandle(run_id, self)
+
+    def _submit_slurm(self, run_id, name, cores, work_dir):
+        """Submit the run as a SLURM batch job (executed via execute_run)."""
+        import shlex
+        import shutil
+        import subprocess
+        import sys
+
+        rec = self.store.get(run_id)
+        sbatch = shutil.which("sbatch")
+        if sbatch is None:
+            if rec is not None:
+                rec.status = RunStatus.FAILED.value
+                rec.error = "sbatch not found — SLURM is not available on this host"
+                rec.finished_at = _now()
+                self.store.save(rec)
+            return
+
+        wd = Path(work_dir) if work_dir else (self.store.base / run_id)
+        wd.mkdir(parents=True, exist_ok=True)
+        store_base = str(self.store.base)
+        code = (f"from delfin.tools._runtime import execute_run; "
+                f"execute_run({run_id!r}, {store_base!r})")
+        script = (
+            "#!/bin/bash\n"
+            f"#SBATCH --job-name=delfin-app-{name}\n"
+            "#SBATCH --ntasks=1\n"
+            f"#SBATCH --cpus-per-task={cores}\n"
+            f"#SBATCH --output={wd}/slurm_%j.out\n"
+            f"#SBATCH --error={wd}/slurm_%j.err\n\n"
+            f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}\n"
+        )
+        script_path = wd / "submit.sh"
+        script_path.write_text(script)
+
+        proc = subprocess.run([sbatch, str(script_path)], capture_output=True, text=True)
+        rec = self.store.get(run_id)
+        if rec is None:
+            return
+        if proc.returncode == 0:
+            job_id = (proc.stdout or "").strip().split()[-1] if proc.stdout else ""
+            rec.metrics["slurm_job_id"] = job_id
+            rec.events.append({"t": _now(), "event": "slurm_submitted", "job_id": job_id})
+        else:
+            rec.status = RunStatus.FAILED.value
+            rec.error = f"sbatch failed: {(proc.stderr or '')[:300]}"
+            rec.finished_at = _now()
+        self.store.save(rec)
 
     def _run_application(self, run_id, name, cores, geometry, work_dir, inputs, cancel):
         rec = self.store.get(run_id)
@@ -272,7 +331,20 @@ class Runtime:
     # -- control / query ----------------------------------------------
 
     def cancel(self, run_id: str) -> bool:
-        """Request cooperative cancellation (takes effect before the next step)."""
+        """Cancel a run: ``scancel`` a SLURM job, else cooperative local stop."""
+        rec = self.store.get(run_id)
+        slurm_job = rec.metrics.get("slurm_job_id") if rec else None
+        if slurm_job:
+            import shutil
+            import subprocess
+            scancel = shutil.which("scancel")
+            if scancel:
+                subprocess.run([scancel, str(slurm_job)], capture_output=True)
+            if rec is not None and not rec.done:
+                rec.status = RunStatus.CANCELLED.value
+                rec.finished_at = _now()
+                self.store.save(rec)
+            return True
         with self._lock:
             ev = self._cancels.get(run_id)
         if ev is None:
@@ -285,6 +357,60 @@ class Runtime:
 
     def list_runs(self) -> List[RunRecord]:
         return self.store.list()
+
+
+# --- compute-node executor (used by SLURM jobs) ---------------------------
+
+
+def execute_run(run_id: str, store_base: Optional[str] = None) -> None:
+    """Execute a previously-submitted application run by id.
+
+    The login node creates the :class:`RunRecord` (with name + inputs); a SLURM
+    job calls this on the compute node to run the application locally and write
+    its status / outputs back into the shared run store.
+    """
+    store = RunStore(store_base) if store_base else RunStore()
+    rec = store.get(run_id)
+    if rec is None:
+        raise SystemExit(f"unknown run {run_id!r}")
+
+    rec.status = RunStatus.RUNNING.value
+    rec.started_at = _now()
+    rec.events.append({"t": _now(), "event": "run_started", "name": rec.name})
+    store.save(rec)
+
+    try:
+        from delfin.tools._application import extract_outputs, get_application
+
+        app = get_application(rec.name)
+        if app is None:
+            raise ValueError(f"unknown application {rec.name!r}")
+        cores = int(rec.metrics.get("cores", 1) or 1)
+        pipeline = app.build(**rec.inputs)
+        result = pipeline.run(
+            cores=cores,
+            work_dir=Path(rec.work_dir) if rec.work_dir else None,
+        )
+        outputs = extract_outputs(app, pipeline, result)
+
+        rec = store.get(run_id)
+        rec.status = RunStatus.SUCCESS.value if result.ok else RunStatus.FAILED.value
+        rec.outputs = outputs
+        rec.finished_at = _now()
+        rec.metrics.update(
+            steps=len(result.results),
+            elapsed_s=round(sum(r.elapsed_seconds for r in result.all_results), 3),
+        )
+        rec.events.append({"t": _now(), "event": "run_finished", "status": rec.status})
+        store.save(rec)
+    except Exception as exc:  # noqa: BLE001
+        rec = store.get(run_id)
+        if rec is not None:
+            rec.status = RunStatus.FAILED.value
+            rec.error = str(exc)
+            rec.finished_at = _now()
+            store.save(rec)
+        raise
 
 
 # --- module-level default runtime -----------------------------------------
@@ -310,4 +436,5 @@ __all__ = [
     "RunHandle",
     "Runtime",
     "get_runtime",
+    "execute_run",
 ]
