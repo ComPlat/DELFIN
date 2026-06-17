@@ -32,6 +32,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history: test_pre_refactor_api_preserved.py compares the public
+          # API against a pre-refactor commit (`cf78545^`, ~1100 commits back)
+          # via `git show`. A shallow clone (the default) lacks it → 0 cases →
+          # that guard test fails. Fetch everything so the history is present.
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
