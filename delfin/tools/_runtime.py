@@ -184,10 +184,14 @@ class Runtime:
         compute node and writes its result back into the (shared) run store.
         """
         run_id = uuid.uuid4().hex[:12]
+        # Default each run to a predictable work dir under the run store so its
+        # output files are findable (not scattered in the current directory).
+        if work_dir is None:
+            work_dir = self.store.base / run_id / "work"
         rec = RunRecord(
             id=run_id, kind="application", name=name,
             inputs=dict(inputs or {}), created_at=_now(),
-            work_dir=str(work_dir) if work_dir else "",
+            work_dir=str(work_dir),
             metrics={"cores": cores, "backend": backend},
         )
         self.store.save(rec)

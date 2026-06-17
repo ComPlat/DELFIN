@@ -61,6 +61,26 @@ def test_application_to_from_dict_roundtrip():
     assert rebuilt.spec == app.spec
 
 
+def test_user_application_json_is_discovered(tmp_path, monkeypatch):
+    """A serialized application dropped in the user dir is auto-loaded."""
+    import json
+
+    import delfin.tools._application as A
+    from delfin.tools import Application, OutputSpec, Pipeline
+
+    pipe = Pipeline("uapp_pipe")
+    pipe.add("fake_energy_step", label="calc")   # registered fake adapter (below)
+    app = Application.from_pipeline(
+        pipe, name="user_demo_app",
+        outputs=(OutputSpec("energy_Eh", step="calc", key="energy_Eh"),),
+    )
+    (tmp_path / "user_demo_app.json").write_text(json.dumps(app.to_dict()))
+
+    monkeypatch.setenv("DELFIN_APPLICATIONS_DIR", str(tmp_path))
+    A._load_user_applications()
+    assert "user_demo_app" in platform.list_applications()
+
+
 def test_run_application_unknown():
     res = platform.run_application("does_not_exist")
     assert res.ok is False and "unknown application" in res.error

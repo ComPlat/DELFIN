@@ -127,21 +127,36 @@ def render_keys_html() -> str:
     return "".join(parts)
 
 
+def _fmt_outputs(data: dict) -> str:
+    if not data:
+        return ""
+    items = list(data.items())[:4]
+    text = ", ".join(f"{k}={v}" for k, v in items)
+    return text + (" …" if len(data) > 4 else "")
+
+
 def render_runs_html(limit: int = 20) -> str:
     from delfin.tools import platform
 
     runs = platform.list_runs()
     metrics = platform.run_metrics()
-    parts = [f"<h4>Runs — {metrics['total_runs']} total</h4>",
-             f"<p>by status: {metrics.get('by_status', {})}</p>"]
+    parts = [
+        f"<h4>Runs — {metrics['total_runs']} total</h4>",
+        f"<p>by status: {metrics.get('by_status', {})}</p>",
+        "<p><small>Named outputs are stored per run in "
+        "<code>~/.delfin/runs/&lt;id&gt;.json</code>; raw files (ORCA .out, "
+        "geometries, logs) live in each run's work dir below.</small></p>",
+    ]
     if runs:
         rows = "".join(
             f"<tr><td>{r.id}</td><td>{r.name}</td><td>{r.status}</td>"
-            f"<td>{r.created_at}</td></tr>"
+            f"<td>{_fmt_outputs(r.outputs)}</td>"
+            f"<td style='font-size:0.8em;color:#666'>{r.work_dir or ''}</td></tr>"
             for r in runs[:limit]
         )
         parts.append(_TABLE + _TH
-                     + "<th>id</th><th>application</th><th>status</th><th>created</th></tr>"
+                     + "<th>id</th><th>application</th><th>status</th>"
+                       "<th>outputs</th><th>work dir (files)</th></tr>"
                      + rows + "</table>")
     else:
         parts.append("<p><em>No runs yet.</em></p>")

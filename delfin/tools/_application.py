@@ -238,6 +238,52 @@ def register_application(app: Application) -> Application:
     return app
 
 
+def _user_application_dirs():
+    import os
+    from pathlib import Path
+
+    dirs = []
+    env = os.environ.get("DELFIN_APPLICATIONS_DIR")
+    if env:
+        dirs.append(Path(env))
+    dirs.append(Path.home() / ".delfin" / "applications")
+    return dirs
+
+
+def _load_user_applications() -> None:
+    """Load user applications from ~/.delfin/applications/ (``*.json`` / ``*.py``).
+
+    Drop a serialized application (``delfin-app describe <name> > foo.json``,
+    then edit) or a ``.py`` module that calls :func:`register_application`.
+    Failures per file are skipped so one bad file never blocks discovery.
+    """
+    import json
+
+    for directory in _user_application_dirs():
+        try:
+            if not directory.is_dir():
+                continue
+            for f in sorted(directory.glob("*.json")):
+                try:
+                    register_application(
+                        Application.from_dict(json.loads(f.read_text(encoding="utf-8")))
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            for f in sorted(directory.glob("*.py")):
+                try:
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location(
+                        f"delfin_user_app_{f.stem}", f)
+                    if spec and spec.loader:
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def _ensure_discovered() -> None:
     global _APP_DISCOVERED
     if _APP_DISCOVERED:
@@ -247,6 +293,7 @@ def _ensure_discovered() -> None:
         __import__("delfin.tools.applications")
     except ImportError:
         pass
+    _load_user_applications()
 
 
 def get_application(name: str) -> Optional[Application]:
