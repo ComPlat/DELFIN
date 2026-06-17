@@ -197,19 +197,69 @@ def test_auto_allow_versioned_python_interpreter(workspace):
     assert perms.matches_bash_auto_allow('python3 --version') is True
 
 
-def test_bash_no_match_default_fails_clearly(workspace):
-    """In default mode, an unmatched command must fail with a clear hint —
-    no confirm dialog popped, no silent allow."""
+def test_bash_no_match_default_fails_clearly_headless(workspace):
+    """Head-less (no approval callback wired): an unmatched command in default
+    mode must fail with a clear, actionable hint — no silent allow. (With a
+    callback the dashboard pops the approval dialog instead — see
+    test_ask_all_prompts_non_allowed_bash_via_callback.)"""
     perms = KitToolPermissions(
         workspace=workspace, mode="default",
         bash_auto_allow_patterns=(r"^\s*pytest\b",),
-        confirm_callback=lambda *_: True,  # would have approved if asked
+        confirm_callback=None,  # head-less / CLI: no dialog available
     )
     err = _gate(perms, "bash",
                 {"command": "rsync -a foo bar", "description": "sync"})
     assert err is not None
     assert "auto-allow" in err.lower()
     assert "remember_permission" in err.lower() or "bypass" in err.lower()
+
+
+def test_ask_all_prompts_non_allowed_bash_via_callback(workspace):
+    """Ask-All (default) mode: a non-auto-allowed command pops the per-action
+    approval dialog (confirm_callback) instead of a prose block. Approve → run,
+    deny → blocked."""
+    seen = {}
+
+    def _approve(name, args, preview):
+        seen["call"] = (name, args.get("command"), preview)
+        return True
+
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(r"^\s*ls\b",),
+        confirm_callback=_approve,
+    )
+    err = _gate(perms, "bash",
+                {"command": "rsync -a foo bar", "description": "sync"})
+    assert err is None                                   # approved → runs
+    assert seen["call"][0] == "bash" and "rsync" in seen["call"][1]
+
+    perms_deny = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_auto_allow_patterns=(r"^\s*ls\b",),
+        confirm_callback=lambda *_: False,               # user clicks Deny
+    )
+    err2 = _gate(perms_deny, "bash", {"command": "rsync -a foo bar"})
+    assert err2 is not None and "denied" in err2.lower()
+
+
+def test_ask_all_deny_list_still_wins_over_approval(workspace):
+    """The approval dialog never overrides the deny-list: a deny-listed command
+    is rejected before the prompt even fires."""
+    called = {"n": 0}
+
+    def _approve(*_):
+        called["n"] += 1
+        return True
+
+    perms = KitToolPermissions(
+        workspace=workspace, mode="default",
+        bash_deny_patterns=(r"\brm\s+-rf\s+/",),
+        confirm_callback=_approve,
+    )
+    err = _gate(perms, "bash", {"command": "rm -rf /"})
+    assert err is not None and "deny-pattern" in err
+    assert called["n"] == 0                               # prompt never shown
 
 
 def test_bash_bypass_skips_auto_allow(workspace):
