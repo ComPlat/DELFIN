@@ -7282,7 +7282,7 @@ def create_tab(ctx):
                         f"🧪 Benchmark task scaffolded from `{match['name']}` → `{short}`\n\n"
                         f"```yaml\n{yaml_text}```\n"
                         f"**Next step — optimise:**\n"
-                        f"• In **solo mode** (here): ask the agent to complete "
+                        f"• In **Code mode** (here): ask the agent to complete "
                         f"`expected_signals` and integrate the task into "
                         f"`delfin/agent/pack/benchmark/tasks.yaml` (prompts/benchmark "
                         f"are freely editable; core code only with self-mod-guard "
@@ -12578,7 +12578,7 @@ def create_tab(ctx):
                         _append_system_message(
                             f"⛔ {_tool} is blocked by the {mode_dropdown.value} "
                             f"mode CLI allowlist — Approve won't help. "
-                            f"Switch the Mode dropdown to **solo** "
+                            f"Switch the Mode dropdown to **Code** "
                             f"(live, conversation context is preserved) "
                             f"or run the action manually."
                         )
@@ -12709,7 +12709,7 @@ def create_tab(ctx):
                             state["_weak_model_warned"] = True
                             _append_system_message(
                                 f"⚠️ **{model_dropdown.value}** is a small model — "
-                                f"weak for agentic solo work (looping, poor tool "
+                                f"weak for agentic coding work (looping, poor tool "
                                 f"use). Recommended: `azure.gpt-5.4` or "
                                 f"`azure.gpt-5.1` in the model dropdown."
                             )
@@ -14716,7 +14716,19 @@ def _format_role_label(role_id: str) -> str:
     """Convert role_id to a readable label."""
     if not role_id:
         return "Agent"
+    # 'solo' is the internal id; the user-facing name is 'Code' (the mode was
+    # renamed). Keep the role badge consistent with the mode dropdown/badge.
+    if role_id in ("solo_agent", "solo"):
+        return "Code Agent"
     return role_id.replace("_", " ").title()
+
+
+# User-facing labels for the internal mode ids (the dropdown shows these).
+_MODE_LABELS = {"solo": "Code", "dashboard": "Dashboard"}
+
+
+def _mode_label(mode: str) -> str:
+    return _MODE_LABELS.get((mode or "").strip().lower(), mode)
 
 
 def _render_status(
@@ -14800,7 +14812,7 @@ def _render_status(
 
     return (
         f'<div class="delfin-agent-status">'
-        f'<span class="mode-badge">{_html.escape(mode)}</span>'
+        f'<span class="mode-badge">{_html.escape(_mode_label(mode))}</span>'
         f"{role_info}"
         f"{backend_info}"
         f"{perm_badge}"
