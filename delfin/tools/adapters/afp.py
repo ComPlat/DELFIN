@@ -9,12 +9,20 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
 
 
 class AfpPlotAdapter(StepAdapter):
     name = "afp_plot"
     description = "Generate combined absorption/fluorescence/phosphorescence spectrum plot"
     produces_geometry = False
+    category = "spectra"
+    requires_python = ("matplotlib",)
+    params = (
+        ParamSpec("workspace_dir", "path", required=True, description="ESD workspace directory"),
+        ParamSpec("fwhm", "float", default=50.0, unit="nm", description="Peak broadening"),
+    )
+    data_keys = (DataKeySpec("plot", "str", "", "Path to the generated plot"),)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "workspace_dir" not in kwargs:

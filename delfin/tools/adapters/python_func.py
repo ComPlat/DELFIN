@@ -47,6 +47,7 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 
 
 class PythonFuncAdapter(StepAdapter):
@@ -55,6 +56,15 @@ class PythonFuncAdapter(StepAdapter):
     name = "python_func"
     description = "Call any Python function (RDKit, ASE, numpy, pandas, …)"
     produces_geometry = False  # depends on the function
+    category = "meta"
+    params = (
+        ParamSpec("module", "str", required=True, description="Importable module, e.g. 'rdkit.Chem'"),
+        ParamSpec("function", "str", required=True, description="Function name, e.g. 'MolFromSmiles'"),
+        ParamSpec("args", "list", description="Positional args"),
+        ParamSpec("kwargs", "dict", description="Keyword args"),
+        ParamSpec("store_as", "str", default="return_value", description="Key for the return value"),
+        ParamSpec("args_from_geometry", "bool", description="Inject the geometry path as first arg"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "module" not in kwargs:
@@ -134,6 +144,11 @@ class PythonScriptAdapter(StepAdapter):
     name = "python_script"
     description = "Run a Python script as a pipeline step"
     produces_geometry = False
+    category = "meta"
+    params = (
+        ParamSpec("script", "path", required=True, description="Path to the .py script"),
+        ParamSpec("timeout", "int", unit="s"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "script" not in kwargs:

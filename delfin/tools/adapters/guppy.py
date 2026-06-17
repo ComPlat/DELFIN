@@ -9,12 +9,23 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+from delfin.tools._keys import key
 
 
 class GuppySamplingAdapter(StepAdapter):
     name = "guppy_sampling"
     description = "SMILES-based conformer/isomer sampling with xTB ranking"
     produces_geometry = True
+    category = "structure"
+    requires_binaries = ("xtb",)
+    params = (
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", default=0), key("mult"),
+        ParamSpec("max_isomers", "int", default=50),
+        ParamSpec("extra_args", "list", description="Extra CLI args"),
+    )
+    data_keys = (DataKeySpec("smiles", "str"),)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "smiles" not in kwargs:

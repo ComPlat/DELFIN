@@ -9,12 +9,20 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+
+_PROJECT_DIR = (ParamSpec("project_dir", "path", required=True,
+                          description="DELFIN project directory"),)
 
 
 class ReportJsonAdapter(StepAdapter):
     name = "report_json"
     description = "Collect DELFIN project data into JSON"
     produces_geometry = False
+    category = "reporting"
+    params = _PROJECT_DIR
+    produces = ("json_report",)
+    data_keys = (DataKeySpec("json_path", "str", "", "Path to the JSON report"),)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "project_dir" not in kwargs:
@@ -47,6 +55,11 @@ class ReportDocxAdapter(StepAdapter):
     name = "report_docx"
     description = "Generate DELFIN Word report (DOCX)"
     produces_geometry = False
+    category = "reporting"
+    params = _PROJECT_DIR
+    consumes = ("json_report",)
+    produces = ("docx_report",)
+    data_keys = (DataKeySpec("docx_path", "str", "", "Path to the DOCX report"),)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "project_dir" not in kwargs:

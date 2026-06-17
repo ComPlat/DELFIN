@@ -102,6 +102,26 @@ def test_catalog_groups_known_categories():
     assert {"orca_sp", "orca_opt", "orca_freq"} <= dft_names
 
 
+def test_every_adapter_has_a_contract():
+    """Every built-in adapter must declare a category (full platform coverage).
+
+    Filters to the real adapters under delfin.tools.adapters so test-registered
+    fake adapters from other modules don't affect the check.
+    """
+    builtin = {n: a for n, a in list_steps().items()
+               if type(a).__module__.startswith("delfin.tools.adapters")}
+    uncategorized = sorted(n for n, a in builtin.items() if not a.contract().category)
+    assert uncategorized == [], f"adapters without a contract: {uncategorized}"
+
+
+def test_qc_output_parsers_follow_a_freq_job():
+    """orca_freq emits qc_output, so the QC-output parsers are compatible successors."""
+    from delfin.tools import compatible_successors
+
+    succ = set(compatible_successors("orca_freq"))
+    assert {"cclib_vibrations", "ir_parse", "cclib_parse"} <= succ
+
+
 def test_compatible_successors_respect_ports():
     from delfin.tools import compatible_successors
 

@@ -9,12 +9,23 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
 
 
 class GenarrisAdapter(StepAdapter):
     name = "genarris_csp"
     description = "Random crystal structure generation via Genarris"
     produces_geometry = False
+    category = "csp"
+    requires_binaries = ("genarris", "mpirun")
+    params = (
+        ParamSpec("config", "path", required=True, description="Genarris INI config file"),
+        ParamSpec("np", "int", description="MPI processes (default: cores)"),
+        ParamSpec("mpirun", "str", default="mpirun"),
+        ParamSpec("timeout", "int", unit="s"),
+    )
+    data_keys = (DataKeySpec("n_structures", "int"),
+                 DataKeySpec("structure_files", "list", "", "Generated .cif paths"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "config" not in kwargs:

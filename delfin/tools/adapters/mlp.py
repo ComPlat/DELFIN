@@ -9,12 +9,26 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+from delfin.tools._keys import key
+
+_MLP_BACKENDS = ("ani2x", "aimnet2", "mace_off", "chgnet", "m3gnet",
+                 "schnetpack", "nequip", "alignn")
+_ENERGY_EV = DataKeySpec("energy_eV", "float", "eV", "ML potential energy")
+_MLP_BACKEND = ParamSpec("backend", "str", required=True, enum=_MLP_BACKENDS,
+                         description="ML potential backend")
 
 
 class MlpSinglePointAdapter(StepAdapter):
     name = "mlp_single_point"
     description = "Single-point energy/forces via ML potential (ANI-2x, MACE, CHGNet, ...)"
     produces_geometry = False
+    category = "ml"
+    consumes = ("geometry",)
+    requires_python = ("ase",)
+    params = (_MLP_BACKEND, key("charge", default=0), key("mult"),
+              ParamSpec("device", "str", default="cpu"))
+    data_keys = (_ENERGY_EV, DataKeySpec("backend", "str"), DataKeySpec("n_atoms", "int"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "backend" not in kwargs:
@@ -56,6 +70,15 @@ class MlpOptimizeAdapter(StepAdapter):
     name = "mlp_optimize"
     description = "Geometry optimization via ML potential"
     produces_geometry = True
+    category = "ml"
+    consumes = ("geometry",)
+    requires_python = ("ase",)
+    params = (_MLP_BACKEND, key("charge", default=0), key("mult"),
+              ParamSpec("fmax", "float", default=0.05, unit="eV/A"),
+              ParamSpec("steps", "int", default=200),
+              ParamSpec("optimizer", "str", default="LBFGS"),
+              ParamSpec("device", "str", default="cpu"))
+    data_keys = (DataKeySpec("converged", "bool"), _ENERGY_EV, DataKeySpec("n_steps", "int"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "backend" not in kwargs:
@@ -104,6 +127,16 @@ class MlpRankAdapter(StepAdapter):
     name = "mlp_rank"
     description = "Rank conformer ensemble by ML potential energy"
     produces_geometry = False
+    category = "ml"
+    consumes = ("ensemble",)
+    requires_python = ("ase",)
+    params = (_MLP_BACKEND,
+              ParamSpec("ensemble", "path", required=True,
+                        description="Multi-structure XYZ ensemble"),
+              key("charge", default=0), key("mult"),
+              ParamSpec("device", "str", default="cpu"))
+    data_keys = (DataKeySpec("ranking", "list", "", "Per-structure index + energy_eV"),
+                 DataKeySpec("n_structures", "int"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "backend" not in kwargs:

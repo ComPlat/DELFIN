@@ -24,6 +24,20 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+from delfin.tools._keys import key
+
+_ASE_CALCS = ("xtb", "orca", "emt", "eam", "lj", "mace", "ani")
+_ASE_COMMON = (
+    ParamSpec("calculator", "str", required=True, enum=_ASE_CALCS,
+              description="ASE calculator backend"),
+    ParamSpec("method", "str", default="GFN2-xTB",
+              description="Method for the xtb/orca calculator"),
+    key("charge", default=0), key("mult"),
+    ParamSpec("maxcore", "int", default=1000, unit="MB"),
+    ParamSpec("model", "str", default="medium", description="MACE model size"),
+)
+_ASE_ENERGY = DataKeySpec("energy_eV", "float", "eV", "Potential energy")
 
 
 def _get_calculator(name: str, work_dir: Path, cores: int, **kwargs: Any):
@@ -75,6 +89,16 @@ class AseOptimizeAdapter(StepAdapter):
     name = "ase_optimize"
     description = "Geometry optimization via ASE (any calculator: xTB, ORCA, MACE, …)"
     produces_geometry = True
+    category = "ml"
+    consumes = ("geometry",)
+    requires_python = ("ase",)
+    params = _ASE_COMMON + (
+        ParamSpec("optimizer", "str", default="BFGS"),
+        ParamSpec("fmax", "float", default=0.05, unit="eV/A"),
+        ParamSpec("max_steps", "int", default=500),
+    )
+    data_keys = (_ASE_ENERGY, DataKeySpec("converged", "bool"),
+                 DataKeySpec("n_steps", "int"), DataKeySpec("calculator", "str"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "calculator" not in kwargs:
@@ -129,6 +153,13 @@ class AseSinglePointAdapter(StepAdapter):
     name = "ase_single_point"
     description = "Single-point energy/forces via ASE (any calculator)"
     produces_geometry = False
+    category = "ml"
+    consumes = ("geometry",)
+    requires_python = ("ase",)
+    params = _ASE_COMMON
+    data_keys = (_ASE_ENERGY,
+                 DataKeySpec("max_force_eV_A", "float", "eV/A", "Max force"),
+                 DataKeySpec("calculator", "str"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "calculator" not in kwargs:
@@ -167,6 +198,17 @@ class AseMdAdapter(StepAdapter):
     name = "ase_md"
     description = "Molecular dynamics via ASE (any calculator)"
     produces_geometry = True
+    category = "ml"
+    consumes = ("geometry",)
+    requires_python = ("ase",)
+    params = _ASE_COMMON + (
+        ParamSpec("temperature_K", "int", default=300, unit="K"),
+        ParamSpec("timestep_fs", "float", default=1.0, unit="fs"),
+        ParamSpec("steps", "int", default=1000),
+    )
+    data_keys = (DataKeySpec("final_energy_eV", "float", "eV"),
+                 DataKeySpec("steps", "int"), DataKeySpec("temperature_K", "int", "K"),
+                 DataKeySpec("calculator", "str"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "calculator" not in kwargs:

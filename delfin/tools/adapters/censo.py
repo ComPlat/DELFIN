@@ -9,12 +9,30 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
+from delfin.tools._keys import key
 
 
 class CensoSortAdapter(StepAdapter):
     name = "censo_sort"
     description = "CENSO conformer ensemble sorting and ranking"
     produces_geometry = False
+    category = "semiempirical"
+    consumes = ("ensemble",)
+    requires_binaries = ("censo",)
+    params = (
+        ParamSpec("ensemble", "path", required=True, description="Conformer ensemble XYZ"),
+        key("charge", default=0),
+        ParamSpec("uhf", "int", default=0, description="Number of unpaired electrons"),
+        key("solvent"),
+        ParamSpec("functional", "str", default="r2scan-3c", description="CENSO functional"),
+        ParamSpec("prescreening", "bool", default=True),
+        ParamSpec("screening", "bool", default=True),
+        ParamSpec("optimization", "bool", default=False),
+        ParamSpec("omp", "int", description="OMP threads per worker"),
+        ParamSpec("threshold", "float", default=4.0, unit="kcal/mol"),
+        ParamSpec("timeout", "int", default=7200, unit="s"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "ensemble" not in kwargs:

@@ -9,12 +9,23 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+
+_OUTPUT_FILE = (ParamSpec("output_file", "path", required=True,
+                          description="ORCA output (.out) file to parse"),)
 
 
 class UvVisParseAdapter(StepAdapter):
     name = "uv_vis_parse"
     description = "Parse UV-Vis absorption spectrum from ORCA output"
     produces_geometry = False
+    category = "spectra"
+    params = _OUTPUT_FILE
+    consumes = ("qc_output",)
+    data_keys = (
+        DataKeySpec("n_transitions", "int"),
+        DataKeySpec("transitions", "list", "", "Electronic transitions (energy, λ, fosc)"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "output_file" not in kwargs:
@@ -59,6 +70,13 @@ class IrParseAdapter(StepAdapter):
     name = "ir_parse"
     description = "Parse IR vibrational spectrum from ORCA frequency output"
     produces_geometry = False
+    category = "spectra"
+    params = _OUTPUT_FILE
+    consumes = ("qc_output",)
+    data_keys = (
+        DataKeySpec("n_modes", "int"),
+        DataKeySpec("modes", "list", "", "Vibrational modes (freq, intensity)"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "output_file" not in kwargs:

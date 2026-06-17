@@ -100,11 +100,11 @@ def tool_info(name: str, kind: str) -> ToolInfo:
     if info is not None:
         return info
     if kind == "python":
-        return ToolInfo(name, "python", "auto", hint=f"pip install {name}", installer="pip")
+        return ToolInfo(name, "python", "auto", install_hint=f"pip install {name}", installer="pip")
     return ToolInfo(
         name, "binary", "manual",
-        hint=(f"'{name}' is required but was not found on PATH. Install it and add it "
-              f"to PATH, or place it where DELFIN's qm_tools resolver looks."),
+        install_hint=(f"'{name}' is required but was not found on PATH. Install it and add it "
+                      f"to PATH, or place it where DELFIN's qm_tools resolver looks."),
     )
 
 

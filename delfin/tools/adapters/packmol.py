@@ -9,12 +9,22 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import ParamSpec
 
 
 class PackmolSolvateAdapter(StepAdapter):
     name = "packmol_solvate"
     description = "Build solvation box via Packmol"
     produces_geometry = True
+    category = "solvation"
+    consumes = ("geometry",)
+    requires_binaries = ("packmol",)
+    params = (
+        ParamSpec("solvent_xyz", "path", required=True, description="Solvent molecule XYZ"),
+        ParamSpec("n_solvent", "int", default=50),
+        ParamSpec("box_side", "float", default=20.0, unit="A"),
+        ParamSpec("tolerance", "float", default=2.0, unit="A"),
+    )
 
     def validate_params(self, **kwargs: Any) -> None:
         if "solvent_xyz" not in kwargs:

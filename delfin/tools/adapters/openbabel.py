@@ -20,6 +20,7 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
 
 
 class ObabelConvertAdapter(StepAdapter):
@@ -28,6 +29,16 @@ class ObabelConvertAdapter(StepAdapter):
     name = "obabel_convert"
     description = "Convert molecular file formats via Open Babel (xyz, sdf, mol2, pdb, …)"
     produces_geometry = True
+    category = "structure"
+    requires_binaries = ("obabel",)
+    params = (
+        ParamSpec("output_format", "str", required=True,
+                  description="Target format (xyz/sdf/mol2/pdb/…)"),
+        ParamSpec("input_file", "path", description="Input file (else uses geometry)"),
+        ParamSpec("add_hydrogens", "bool", default=False),
+        ParamSpec("gen3d", "bool", default=False),
+    )
+    data_keys = (DataKeySpec("input_format", "str"), DataKeySpec("output_format", "str"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "output_format" not in kwargs:
@@ -103,6 +114,12 @@ class ObabelConformersAdapter(StepAdapter):
     name = "obabel_conformers"
     description = "Conformer generation via Open Babel (genetic algorithm / systematic)"
     produces_geometry = True
+    category = "structure"
+    consumes = ("geometry",)
+    produces = ("ensemble",)
+    requires_binaries = ("obabel",)
+    params = (ParamSpec("n_conformers", "int", default=50),)
+    data_keys = (DataKeySpec("n_conformers_requested", "int"),)
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None,
                 cores: int = 1, **kwargs: Any) -> StepResult:
@@ -144,6 +161,14 @@ class ObabelFromSmilesAdapter(StepAdapter):
     name = "obabel_from_smiles"
     description = "SMILES to 3D geometry via Open Babel (alternative to RDKit)"
     produces_geometry = True
+    category = "structure"
+    requires_binaries = ("obabel",)
+    params = (
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        ParamSpec("output_format", "str", default="xyz"),
+        ParamSpec("add_hydrogens", "bool", default=True),
+    )
+    data_keys = (DataKeySpec("smiles", "str"),)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "smiles" not in kwargs:

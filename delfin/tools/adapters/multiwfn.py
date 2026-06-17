@@ -9,12 +9,27 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
 
 
 class MultiwfnBondOrdersAdapter(StepAdapter):
     name = "multiwfn_bond_orders"
     description = "Bond order analysis via Multiwfn"
     produces_geometry = False
+    category = "analysis"
+    params = (
+        ParamSpec("input_file", "path", required=True,
+                  description="Wavefunction file (.molden/.wfn/.wfx/.fch/.gbw)"),
+        ParamSpec("method", "str", default="mayer", enum=("mayer", "wiberg", "fuzzy"),
+                  description="Bond-order method"),
+    )
+    consumes = ("molden", "wfn")
+    data_keys = (
+        DataKeySpec("bond_orders", "list", "", "Per-bond order list"),
+        DataKeySpec("output", "str", "", "Raw Multiwfn output"),
+        DataKeySpec("method", "str"),
+    )
+    requires_binaries = ("Multiwfn",)
 
     def validate_params(self, **kwargs: Any) -> None:
         if "input_file" not in kwargs:

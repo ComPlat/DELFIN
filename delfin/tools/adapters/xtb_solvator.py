@@ -10,12 +10,24 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
+from delfin.tools._spec import DataKeySpec, ParamSpec
+from delfin.tools._keys import key
 
 
 class XtbSolvatorAdapter(StepAdapter):
     name = "xtb_solvator"
     description = "Add explicit solvation shell via xTB SOLVATOR"
     produces_geometry = True
+    category = "solvation"
+    consumes = ("geometry",)
+    requires_binaries = ("orca",)
+    params = (
+        key("solvent", required=True),
+        key("charge", default=0), key("mult"),
+        ParamSpec("n_solvent", "int", default=12, description="Number of solvent molecules"),
+        ParamSpec("method", "str", default="GFN2-xTB", description="xTB method"),
+    )
+    data_keys = (DataKeySpec("solvent", "str"), DataKeySpec("n_solvent", "int"))
 
     def validate_params(self, **kwargs: Any) -> None:
         if "solvent" not in kwargs:
