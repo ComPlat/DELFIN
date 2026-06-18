@@ -542,6 +542,32 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
                 return False
     mi = next((i for i in range(n) if _bd._is_metal(syms[i])), None)
     donor_set = set(donors) if donors else None
+    # UNDER-coordination / decoordination guard (#324b, env DELFIN_FFFREE_COORD_INTEGRITY,
+    # default OFF -> byte-identical to the candidate; 2/1197 candidate base frames carry a
+    # decoordinated donor, so it MUST be opt-in to keep the OFF build bit-identical).
+    # A conformer/rotamer/backbone-reembed/seating frame that rotates a backbone torsion
+    # CARRYING a coordinating donor swings that donor OFF the metal (measured: ALAXOA
+    # scorpionate S 2.4->5.8 A in EVERY torsion frame; ALAHEB Ir-N 2.1->3.0-3.4 A in 11/23
+    # frames; ~14 % of all expansion frames pool-wide).  The over-coordination test below
+    # never catches it (a donor LEAVING the shell intrudes on nothing) and the cshm shape
+    # test silently re-selects a backbone carbon for the departed donor, so the broken frame
+    # passes and leaks into the manifold.  Reject when a KNOWN donor sits farther from the
+    # metal than its donor-TYPE ideal M-D (polyhedra.md_distance) + slack.  Donor-type-aware
+    # by construction: the same 3.0 A is decoordination for a 2.1 A Fe-N donor but legitimate
+    # stretch for a 2.7 A W-S donor.  The slack is generous (legit conformer spread is
+    # <= ideal+0.6 A at p95, decoordination is ideal+1.7 A at p98) so a valid frame is never
+    # rejected (verified: keeps AKEMUY's crystal-matching frame #13 and all clean frames,
+    # drops only the donor-off frames).  Geometry-only, deterministic, never raises.
+    if (donor_set is not None and mi is not None
+            and os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY", "0") == "1"):
+        _coord_slack = float(os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY_SLACK", "0.85"))
+        for _d in donor_set:
+            try:
+                _ideal_md = float(PLY.md_distance(syms[mi], syms[_d]))
+            except Exception:
+                _ideal_md = 2.2
+            if float(np.linalg.norm(P[_d] - P[mi])) > _ideal_md + _coord_slack:
+                return False
     # over-coordination / spurious intrusion into the metal's first shell.
     if cn and mi is not None:
         if donor_set is not None:
