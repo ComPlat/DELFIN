@@ -883,6 +883,70 @@ def _fffree_hapto_isomers(d, max_isomers):
     return [(_xyz(syms, P), f"{geom_tag}-hapto-1")]
 
 
+def _coord_filter(results):
+    """UNIVERSAL final decoordination filter (#324b coverage closure).
+
+    The per-build self-gate (_build_is_clean coord-integrity branch) only covers the
+    paths that route through it with the constructed donor set.  The DENSE generation
+    paths -- backbone re-embed, conformer-coverage, conformer-seating, chelate-backbone,
+    Cremer-Pople pucker, hapto-axis rotants, sigma-ensemble -- emit frames that bypass
+    it, so under the full dense stack ~43% of frames can carry a decoordinated donor
+    (a backbone torsion that carries a coordinating donor swung it off the metal).
+    This final pass re-checks EVERY emitted frame regardless of which path produced it:
+    a frame is dropped if any donor (the consistently-coordinated set, taken from the
+    BEST-coordinated frame as reference) sits farther than its donor-type ideal M-D
+    (polyhedra.md_distance) + slack.  Crystals pack TIGHT but stay COORDINATED, so this
+    NEVER drops a crystal-like frame (verified: keeps AKEMUY #13) -- it only removes the
+    ligand-flew-off junk (AGIPIT/ALAXOA).  Gated by DELFIN_FFFREE_COORD_INTEGRITY
+    (default OFF -> returns results unchanged -> byte-identical).  Geometry-only, never raises."""
+    if not results or os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY", "0") != "1":
+        return results
+    try:
+        slack = float(os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY_SLACK", "0.85"))
+
+        def _parse(xyz):
+            ls = xyz.splitlines(); n = int(ls[0]); sy = []; P = []
+            for ln in ls[2:2 + n]:
+                p = ln.split()
+                sy.append(p[0]); P.append([float(p[1]), float(p[2]), float(p[3])])
+            return sy, np.asarray(P, dtype=float)
+
+        # reference = the frame with the MOST donors within 2.75 A of the metal (the
+        # best-coordinated frame), so a decoordinated base frame cannot hide a donor.
+        ref_mi = ref_don = ref_n = None; best = -1
+        parsed = []
+        for xyz, lab in results:
+            try:
+                sy, P = _parse(xyz); parsed.append((sy, P, xyz, lab))
+            except Exception:
+                parsed.append((None, None, xyz, lab)); continue
+            mi = next((i for i in range(len(sy)) if _bd._is_metal(sy[i])), None)
+            if mi is None:
+                continue
+            don = [k for k in range(len(sy)) if k != mi and sy[k] != "H"
+                   and float(np.linalg.norm(P[mi] - P[k])) < 2.75]
+            if len(don) > best:
+                best = len(don); ref_mi = mi; ref_don = don; ref_n = len(sy)
+        if ref_mi is None or not ref_don:
+            return results
+        # threshold per donor (donor-type ideal M-D + slack), from the reference frame
+        rsy = next(s for s, _, _, _ in parsed if s is not None and len(s) == ref_n)
+        thr = {}
+        for k in ref_don:
+            try: thr[k] = float(PLY.md_distance(rsy[ref_mi], rsy[k])) + slack
+            except Exception: thr[k] = 3.05
+        kept = []
+        for sy, P, xyz, lab in parsed:
+            if sy is None or len(sy) != ref_n:
+                kept.append((xyz, lab)); continue          # can't check -> keep
+            if any(float(np.linalg.norm(P[ref_mi] - P[k])) > thr[k] for k in ref_don):
+                continue                                    # a donor decoordinated -> drop
+            kept.append((xyz, lab))
+        return kept or [results[0]]                         # never empty -> keep base
+    except Exception:
+        return results
+
+
 def _fffree_isomers(smiles: str, max_isomers: int = 50
                     ) -> Optional[List[Tuple[str, str]]]:
     d = DEC.decompose(smiles)
@@ -892,9 +956,9 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if geom_key is None or geom_key not in PIC._GROUPS:
         return None
     if d.get("has_eta"):
-        return _fffree_hapto_isomers(d, max_isomers)
+        return _coord_filter(_fffree_hapto_isomers(d, max_isomers))
     if d.get("has_chelate"):
-        return _fffree_chelate_isomers(d, geom_key, max_isomers)
+        return _coord_filter(_fffree_chelate_isomers(d, geom_key, max_isomers))
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
@@ -1040,7 +1104,7 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
-    return results or None
+    return _coord_filter(results) or None
 
 
 def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
