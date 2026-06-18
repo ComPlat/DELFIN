@@ -271,6 +271,73 @@ def _lig_groups_from_config(config, ligands):
     return groups
 
 
+# vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
+# A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
+# contact below this (a backbone folding into a NEIGHBOUR ligand collapses well
+# inside the vdW shell long before the 0.60·Σcov gross-overlap floor _build_is_clean
+# uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 A
+# inter-ligand C-C, base frame 2.07-2.38 A).
+_INTERLIG_VDW_FLOOR = 2.0
+_INTERLIG_VDW_TOL = 0.05
+
+
+def _interlig_vdw_gate_enabled() -> bool:
+    """vdW-level inter-ligand clash filter for the ADDITIONAL conformer frames
+    (backbone re-embed / conformer re-seating).  Active by default whenever those
+    frames exist; toggle off with DELFIN_FFFREE_INTERLIG_VDW_GATE=0.  Byte-identical
+    to the candidate when the reembed/seating flags themselves are off, because no
+    extra frame is produced for it to filter (no-op)."""
+    return os.environ.get("DELFIN_FFFREE_INTERLIG_VDW_GATE", "1") == "1"
+
+
+def _min_nonbonded_heavy(syms, P) -> float:
+    """Minimum NON-BONDED heavy-heavy distance (Å) in a frame.
+
+    A pair is BONDED (and skipped) when d < 1.30·(rcov_i + rcov_j) -- the same
+    graph-free covalent criterion as ``_bd._geometric_bonds`` -- so a genuine bond
+    is never mistaken for a clash.  Metal atoms (and any metal-donor pair) are
+    excluded: the metal is never a heavy-heavy partner here, so M-D contacts count
+    as bonded by construction.  Hydrogens are skipped (heavy-heavy only, matching the
+    vdW detector).  Returns +inf when no non-bonded heavy pair exists.  Pure geometry,
+    deterministic, never raises on finite input."""
+    P = np.asarray(P, dtype=float)
+    n = len(syms)
+    best = float("inf")
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        pi = P[i]
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            d = float(np.linalg.norm(pi - P[j]))
+            if d >= 1.30 * _bd._ideal_bond(syms[i], syms[j]):   # non-bonded only
+                if d < best:
+                    best = d
+    return best
+
+
+def _interlig_clash_ok(syms, P, base_min) -> bool:
+    """NEVER-WORSE inter-ligand vdW gate for a NEW conformer frame (re-embed/re-seat).
+
+    Reject the frame if its minimum non-bonded heavy-heavy distance is below
+    ``max(_INTERLIG_VDW_FLOOR, base_min·(1 - _INTERLIG_VDW_TOL))`` -- i.e. the new
+    conformer may NOT introduce an inter-ligand contact worse than the base frame
+    already has (within a 5 % tolerance), and never below the hard 2.0 A vdW floor.
+    ``base_min`` is the base (accepted) frame's own min non-bonded heavy-heavy
+    distance; when unavailable (None / non-finite) the hard floor alone applies.
+    This catches the per-ligand backbone-reembed collapse where one ligand folds into
+    a neighbour (the reembed step freezes the core + re-folds each ligand WITHOUT
+    inter-ligand awareness).  ``_build_is_clean``'s 0.60·Σcov gross-overlap floor
+    (~0.9 A for C-C) sits far below the vdW shell and never fires for these ~2 A
+    contacts.  Deterministic, geometry-only."""
+    new_min = _min_nonbonded_heavy(syms, P)
+    floor = _INTERLIG_VDW_FLOOR
+    if base_min is not None and np.isfinite(base_min):
+        floor = max(floor, float(base_min) * (1.0 - _INTERLIG_VDW_TOL))
+    return new_min >= floor
+
+
 def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
                     cn=None, geom=None, donors=None):
     """Backbone re-embed source (Task 2026-06-18, env DELFIN_FFFREE_BACKBONE_REEMBED).
@@ -288,11 +355,21 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
         frames = _BR.reembed_complex(metal, lig_groups, (list(base_syms), base_P))
     except Exception:
         return
+    # NEVER-WORSE inter-ligand vdW gate: each re-embedded frame re-folds every ligand
+    # independently with the core frozen, WITHOUT inter-ligand awareness, so a backbone
+    # can collapse into a neighbour ligand (~2 A C-C) — far above _build_is_clean's
+    # 0.60·Σcov gross-overlap floor (~0.9 A), so the self-gate misses it.  base_min is
+    # the accepted base frame's own min non-bonded heavy-heavy distance; a re-embedded
+    # frame must not introduce a worse (closer) inter-ligand contact.
+    _gate = _interlig_vdw_gate_enabled()
+    base_min = _min_nonbonded_heavy(base_syms, base_P) if _gate else None
     for fi, (syms, P) in enumerate(frames):
         try:
             syms, P = _maybe_relax(syms, P)
             if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
                 continue
+            if _gate and not _interlig_clash_ok(syms, P, base_min):
+                continue                    # new conformer collapses inter-ligand -> drop
             results.append((_xyz(syms, P), f"{base_label}-reembed{fi+1}"))
         except Exception:
             continue
@@ -343,11 +420,19 @@ def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
         frames = _BR.reembed_complex(metal, lig_groups, (list(base_syms), base_P))
     except Exception:
         return None
+    # The rigid build FAILED the self-gate, so there is no accepted base frame whose
+    # inter-ligand contact a re-seated fold must merely match -> apply the hard vdW
+    # floor alone (base_min unavailable).  Same per-ligand core-frozen re-fold as
+    # reembed: a seated fold can still drop a backbone into a neighbour ligand.
+    _gate = _interlig_vdw_gate_enabled()
     for syms, P in frames:
         try:
             syms, P = _maybe_relax(syms, P)
-            if _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
-                return syms, P
+            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
+                continue
+            if _gate and not _interlig_clash_ok(syms, P, None):
+                continue                    # seated fold collapses inter-ligand -> skip
+            return syms, P
         except Exception:
             continue
     return None
