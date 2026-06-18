@@ -1309,6 +1309,14 @@ def assemble_hapto(metal, geometry, d, variant=None):
     + deterministic; an absent/None variant reproduces the historic single build."""
     variant = variant or {}
     eta_var = variant.get("eta", {})
+    # Hebel A (DELFIN_FFFREE_HAPTO_AXIS_ROT): rigid rotation (rad) of every NON-
+    # primary-η atom block (the CO-tripod / co-ligands / a 2nd ring) about the
+    # PRIMARY η-face M→centroid axis.  The metal sits at the origin, so any rotation
+    # about an axis through the origin preserves every atom's distance to the metal
+    # (M-centroid + all M-D distances INVARIANT); only the ring-vs-rest azimuthal
+    # CLOCK changes — the η-ring internal geometry is untouched.  0.0 = byte-identical
+    # to the historic build (the rotation is skipped entirely).
+    _axis_rot = float(variant.get("axis_rot", 0.0) or 0.0)
     ref = MSB._ref_vectors(geometry)
     n_vert = len(ref)
     ligands = d["ligands"]
@@ -1329,6 +1337,11 @@ def assemble_hapto(metal, geometry, d, variant=None):
     pos = 1
     vi = 0
     fixed = {0}
+    # Hebel-A bookkeeping: per-η-face (atom-block-start, atom-block-end, centroid-unit-
+    # direction); and the contiguous atom blocks of every NON-η ligand (CO/σ co-ligands).
+    eta_blocks = []          # [(start, end, Vunit), ...] in emission (= placement) order
+    nonprimary_eta_blocks = []   # (start, end) of η faces 2..n  -> rotated with the rest
+    sigma_blocks = []        # (start, end) of σ ligands
 
     def _collect_exempt(frag_mol, lig_offset):
         """Local heavy-atom double/triple bonds -> global index pairs (the AddHs
@@ -1384,6 +1397,10 @@ def assemble_hapto(metal, geometry, d, variant=None):
             fixed.update(lig_offset + 1 + int(j) for j in _eta_idxs)
             relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
             _collect_exempt(lg["mol"], lig_offset)
+            _blk = (lig_offset + 1, lig_offset + 1 + len(lsyms))
+            eta_blocks.append((_blk[0], _blk[1], Vunit.copy()))
+            if len(eta_blocks) > 1:               # secondary η face -> rotates with rest
+                nonprimary_eta_blocks.append(_blk)
             pos += len(lsyms)
             vi += 1
         elif lg["denticity"] == 1:
@@ -1417,6 +1434,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
             fixed.add(lig_offset + 1 + di)
             relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
             _collect_exempt(lg["mol"], lig_offset)
+            sigma_blocks.append((lig_offset + 1, lig_offset + 1 + len(lsyms)))
             pos += len(lsyms)
             vi += 1
         else:
@@ -1457,9 +1475,29 @@ def assemble_hapto(metal, geometry, d, variant=None):
                 fixed.add(lig_offset + 1 + di)
             relax_frags.append((Chem.AddHs(lg["mol"]), lig_offset))
             _collect_exempt(lg["mol"], lig_offset)
+            sigma_blocks.append((lig_offset + 1, lig_offset + 1 + len(lsyms)))
             pos += len(lsyms)
             vi += dent
     P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+    # --- Hebel A: rigid η-axis rotation of the non-primary-η atoms --------------
+    # Rotate the CO-tripod / co-ligands / a secondary ring as ONE rigid body about
+    # the PRIMARY η-face M→centroid axis (through the metal at the origin).  This is
+    # the missing relative DOF for piano-stool / sandwich systems: the η-ring sits
+    # right but the tripod/2nd-ring CLOCK is not yet at the crystal rotamer.  Because
+    # the axis passes through the metal, every atom's metal distance is preserved
+    # (M-centroid + M-D INVARIANT); only the azimuth changes.  Strictly additive: the
+    # canonical build (axis_rot==0) is byte-identical (this block is skipped).
+    if abs(_axis_rot) > 1e-9 and eta_blocks:
+        prim_V = np.asarray(eta_blocks[0][2], float)
+        nV = np.linalg.norm(prim_V)
+        if nV > 1e-9:
+            prim_V = prim_V / nV
+            Rax = _rot_about_axis(prim_V, _axis_rot)
+            rot_blocks = list(sigma_blocks) + list(nonprimary_eta_blocks)
+            for (s, e) in rot_blocks:
+                P[s:e] = P[s:e] @ Rax.T            # metal at origin -> no recentre
+            if not np.all(np.isfinite(P)):
+                return None
     # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
     # ring + constructed coordination are preserved; periphery relaxes only).
     try:
@@ -1497,6 +1535,22 @@ def _ring_spins(eta_n):
     # sample the sector at nf sub-steps -> the substituent sweeps a full inter-carbon
     # gap; canonical 0 first so member[0] is the historic single build.
     return [sector * (k / float(nf)) for k in range(nf)]
+
+
+def _axis_rot_angles(n_rot, eta_n):
+    """Deterministic η-axis rotation angles (rad) for Hebel A: rotate the non-η
+    block (CO-tripod / co-ligands / 2nd ring) about the primary η M→centroid axis.
+
+    The canonical 0 is NOT included here (the base ensemble already carries it as
+    axis_rot==0); these are the ADDED frames.  We sweep the full 0–2π in ``n_rot``
+    equal steps and drop the 0 step, so the extra frames are a uniform azimuthal
+    sweep of the ring-vs-rest clock.  Bare-ring / symmetric duplicates are removed
+    downstream by the RMSD dedup; the sweep is intentionally NOT symmetry-reduced
+    here because the relevant symmetry is the PRODUCT of the ring C_n and the tripod
+    C_m (system-dependent), and over-reducing would skip the crystal rotamer."""
+    n_rot = max(2, int(n_rot))
+    step = 2.0 * np.pi / float(n_rot)
+    return [step * k for k in range(1, n_rot)]
 
 
 def _slip_modes(lg):
@@ -1595,21 +1649,16 @@ def _dedup_builds(builds, rmsd_tol=0.25):
     return kept
 
 
-def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
-    """Deterministic RIGID-hapto ENSEMBLE: enumerate η-ring rotamers (symmetry-
-    reduced spin), η/σ ring-slip isomers (valence-gated), and Cremer-Pople ring
-    pucker (non-aromatic faces), assembling each as a fully rigid build (no collapse),
-    then RMSD-deduplicate.  Returns a list of (syms, P, donors, exempt_pairs) builds
-    (canonical build first), or None on total failure.
-
-    Universal, graph-only, deterministic (fixed seeds; canonical ordering); the
-    canonical build (member 0) is byte-identical to ``assemble_hapto(...)``."""
+def _hapto_base_variants(d):
+    """Deterministic base variant grid for the rigid-hapto ensemble: η-ring rotamers
+    (symmetry-reduced spin), valence-gated η/σ ring-slip isomers, Cremer-Pople pucker
+    (non-aromatic faces).  Returns ([variant, ...], eta_lis) with the canonical
+    all-base variant first, or (None, None) if the decompose dict carries no η-face.
+    Graph-only, deterministic; factored out so Hebel A can reuse the same base grid."""
     ligands = d["ligands"]
     eta_lis = [i for i, lg in enumerate(ligands) if lg.get("is_eta")]
     if not eta_lis:
-        return None
-
-    # Per-η-ligand variation menus (deterministic, bounded).
+        return None, None
     per_eta_choices = {}
     for li in eta_lis:
         lg = ligands[li]
@@ -1623,10 +1672,7 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
                     choices.append({"spin": sp, "pucker": pk,
                                     "eta_idxs": eidx, "eta_n": en})
         per_eta_choices[li] = choices
-
-    # Build the variant grid.  To keep the count bounded + deterministic with multiple
-    # η-faces, vary ONE η-ligand at a time off the canonical base (the others stay at
-    # their canonical choice = first menu entry); the canonical all-base build leads.
+    # Vary ONE η-ligand at a time off the canonical base; canonical all-base leads.
     base_choice = {li: per_eta_choices[li][0] for li in eta_lis}
     variants = [{"eta": dict(base_choice)}]           # member 0 = canonical
     for li in eta_lis:
@@ -1634,6 +1680,21 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
             ev = dict(base_choice)
             ev[li] = ch
             variants.append({"eta": ev})
+    return variants, eta_lis
+
+
+def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
+    """Deterministic RIGID-hapto ENSEMBLE: enumerate η-ring rotamers (symmetry-
+    reduced spin), η/σ ring-slip isomers (valence-gated), and Cremer-Pople ring
+    pucker (non-aromatic faces), assembling each as a fully rigid build (no collapse),
+    then RMSD-deduplicate.  Returns a list of (syms, P, donors, exempt_pairs) builds
+    (canonical build first), or None on total failure.
+
+    Universal, graph-only, deterministic (fixed seeds; canonical ordering); the
+    canonical build (member 0) is byte-identical to ``assemble_hapto(...)``."""
+    variants, eta_lis = _hapto_base_variants(d)
+    if variants is None:
+        return None
 
     builds = []
     for var in variants:
@@ -1650,6 +1711,44 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
         return None
     builds = _dedup_builds(builds)
     return builds[:max_builds] if builds else None
+
+
+def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
+    """Hebel A (DELFIN_FFFREE_HAPTO_AXIS_ROT) — STRICTLY ADDITIVE η-axis rotamers.
+
+    For every base variant (same grid as ``assemble_hapto_ensemble``) emit the rigid
+    builds that additionally rotate the non-primary-η block (CO-tripod / co-ligands /
+    a 2nd ring) about the PRIMARY η M→centroid axis by a uniform 0–2π sweep (the
+    canonical 0 step is EXCLUDED — those are exactly the base ensemble builds, which
+    the caller emits separately).  The rotation axis runs through the metal at the
+    origin, so M-centroid + every M-D distance is INVARIANT and the η-ring internal
+    geometry is untouched; only the ring-vs-rest azimuthal clock changes.
+
+    Returns a list of (syms, P, donors, exempt_pairs) builds (NEW orientations only),
+    or [] if no η-face / no rotatable block.  RMSD-deduplicated.  Deterministic."""
+    variants, eta_lis = _hapto_base_variants(d)
+    if variants is None:
+        return []
+    prim_n = int(d["ligands"][eta_lis[0]].get("eta_n", 6))
+    angles = _axis_rot_angles(n_axis, prim_n)
+    builds = []
+    for var in variants:
+        if len(builds) >= max_builds * 3:
+            break
+        for a in angles:
+            v = {"eta": dict(var.get("eta", {})), "axis_rot": float(a)}
+            try:
+                b = assemble_hapto(metal, geometry, d, variant=v)
+            except Exception:
+                b = None
+            if b is not None:
+                builds.append(b)
+            if len(builds) >= max_builds * 3:
+                break
+    if not builds:
+        return []
+    builds = _dedup_builds(builds)
+    return builds[:max_builds]
 
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,

@@ -218,6 +218,25 @@ def _repair_carbene_carbons(em, carbene_idxs: List[int]):
         a.SetIsAromatic(False)          # carbene C is no longer ring-aromatic
 
 
+def _metal_has_carbonyl(mol, m: int, matom) -> bool:
+    """True if the metal carries ≥1 σ-bound CARBONYL (M-C≡O).  Graph-only: a metal-
+    bound carbon that itself bears a (double/triple-)bonded oxygen and no other heavy
+    neighbour beyond the metal + that O.  Universal (no metal/refcode hard-coding); the
+    carbonyl-tripod motif is the chemical signature of a half-sandwich, independent of
+    the metal block (3d is a correlate, not a condition)."""
+    for nb in matom.GetNeighbors():
+        if nb.GetAtomicNum() != 6:
+            continue
+        ci = nb.GetIdx()
+        for o in mol.GetAtomWithIdx(ci).GetNeighbors():
+            if o.GetIdx() == m or o.GetAtomicNum() != 8:
+                continue
+            b = mol.GetBondBetweenAtoms(ci, o.GetIdx())
+            if b is not None and b.GetBondTypeAsDouble() >= 2.0:   # C=O / C≡O
+                return True
+    return False
+
+
 def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     """Hapto-aware decomposition (DELFIN_FFFREE_RIGID_HAPTO=1 only).
 
@@ -230,6 +249,16 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     egroups = _eta_groups(mol, m)
     if not egroups:
         return None                                   # no η-face -> not our case
+    # Hebel B (DELFIN_FFFREE_HAPTO_HALFSANDWICH_GATE, default OFF): restrict the rigid-
+    # hapto path to GENUINE half-sandwich carbonyls (η-ring + ≥1 M-CO).  The rigid-η
+    # construction wins decisively on η-ring+carbonyl-tripod piano-stools but misfires
+    # on η-ring complexes WITHOUT a carbonyl tripod (arene-M-Cl/amine piano-stools,
+    # vinyl/allyl-Pt, polyene-Mo) — there it gives a net recall LOSS.  With the gate
+    # on, those fall back cleanly to the legacy hapto path.  Graph-based + universal:
+    # the discriminator is the chemical carbonyl motif, NOT the metal/refcode.
+    if (os.environ.get("DELFIN_FFFREE_HAPTO_HALFSANDWICH_GATE", "0") == "1"
+            and not _metal_has_carbonyl(mol, m, matom)):
+        return None                                   # not a carbonyl half-sandwich
     eta_atoms = set()
     for g in egroups:
         eta_atoms.update(g)

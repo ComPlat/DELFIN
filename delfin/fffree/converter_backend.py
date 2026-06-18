@@ -726,6 +726,36 @@ def _fffree_hapto_isomers(d, max_isomers):
                     break
             if len(results) >= cap:
                 break
+
+    # --- Hebel A (DELFIN_FFFREE_HAPTO_AXIS_ROT, default OFF) --------------------
+    # STRICTLY ADDITIVE: the baseline `results` above are emitted UNCHANGED (byte-id
+    # when the flag is off).  With the flag on, APPEND extra frames that rotate the
+    # CO-tripod / co-ligands / 2nd ring about the primary η M→centroid axis (a single
+    # discrete rotamer DOF the base ensemble does not vary).  Every appended frame is
+    # gated by the same never-worse ruler; the axis runs through the metal so M-D +
+    # M-centroid distances are invariant.  Appended AFTER the cap so the baseline
+    # (and its best-of-ensemble MIN) can never regress.
+    if results and os.environ.get("DELFIN_FFFREE_HAPTO_AXIS_ROT", "0") == "1":
+        n_axis = int(os.environ.get("DELFIN_FFFREE_HAPTO_AXIS_NROT", "8"))
+        axis_cap = int(os.environ.get("DELFIN_FFFREE_HAPTO_AXIS_CAP", str(2 * cap)))
+        try:
+            ax_builds = AC.assemble_hapto_axis_rotants(
+                d["metal"], geom, d, n_axis=n_axis, max_builds=axis_cap)
+        except Exception:
+            ax_builds = []
+        for ai, b in enumerate(ax_builds):
+            acc = _accept(b, None)
+            if acc is None:
+                continue
+            syms, P, _ = acc
+            rot = _xyz(syms, P)
+            if rot in seen_keys:
+                continue
+            seen_keys.add(rot)
+            results.append((rot, f"{geom_tag}-hapto-axis{ai+1}"))
+            if len(results) >= cap + axis_cap:
+                break
+
     if results:
         return results
 
