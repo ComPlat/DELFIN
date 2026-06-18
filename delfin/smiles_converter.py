@@ -27464,16 +27464,37 @@ def _rank_emitted_isomers(isomers):
         return isomers
 
 
+def _coord_integrity_filter(isomers):
+    """Final UNIVERSAL decoordination filter over the FULL emitted ensemble at the
+    public boundary -- covers BOTH the native fffree path AND the legacy generation
+    path (where the eye-flagged ligand-flew-off frames actually originate: the hard
+    kappa4/cage cases return None from _fffree_isomers and fall through to legacy,
+    whose dense conformer/pucker/see-saw frames bypass the native self-gate).
+    Drops a frame iff a coordinating donor has swung off the metal (donor-type ideal
+    M-D + slack); crystals pack TIGHT but stay COORDINATED so a crystal-like frame is
+    never dropped.  Gated DELFIN_FFFREE_COORD_INTEGRITY (default OFF -> identity ->
+    byte-identical to the candidate/legacy baselines).  Never raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY", "0") != "1":
+        return isomers
+    try:
+        from delfin.fffree.converter_backend import _coord_filter
+        return _coord_filter(isomers) or isomers
+    except Exception:
+        return isomers
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
-    contract (#36) over EVERY return path of the implementation, then ordering
-    the ensemble so the most crystal-like (least-clash) frame is first; otherwise
-    the (isomers, error) result passes through unchanged."""
+    contract (#36) over EVERY return path of the implementation, applying the
+    universal coordination-integrity filter (env-gated, byte-id OFF) over the full
+    native+legacy ensemble, then ordering the ensemble so the most crystal-like
+    (least-clash) frame is first; otherwise the (isomers, error) result passes
+    through unchanged."""
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_filter_nonfinite_isomers(r[0])), r[1]
+        return _rank_emitted_isomers(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_filter_nonfinite_isomers(r))
+        return _rank_emitted_isomers(_coord_integrity_filter(_filter_nonfinite_isomers(r)))
     return r
 
 
