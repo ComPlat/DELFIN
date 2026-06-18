@@ -19,6 +19,7 @@ from delfin.fffree import polya_isomer_count as PIC
 from delfin.fffree import assemble_complex as AC
 from delfin.fffree import polyhedra as PLY
 from delfin.fffree import ligand_relax as LR
+from delfin.fffree import backbone_reembed as _BR
 import delfin._bond_decollapse as _bd
 
 
@@ -130,6 +131,81 @@ def _xyz(syms, P) -> str:
     # evaluator prepends "{count}\n{comment}".
     return "\n".join(f"{s:4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}"
                      for s, (x, y, z) in zip(syms, P))
+
+
+def _lig_groups_from_vertex_specs(vertex_specs):
+    """Construction-order ligand layout for the MONODENTATE heteroleptic path.
+
+    The assembled frame is [metal] + AddHs(frag) blocks in vertex_specs order, so
+    ligand i occupies the contiguous global-index block starting at 1 + sum(prev
+    block sizes); its donor sits at block_start + donor_local_idx.  Returns the
+    lig_groups list backbone_reembed.reembed_complex consumes, or None on failure.
+    Universal, deterministic, graph-only (no coordinates needed)."""
+    from rdkit import Chem as _Chem
+    groups = []
+    pos = 1
+    for (frag, di) in vertex_specs:
+        try:
+            n = _Chem.AddHs(frag).GetNumAtoms()
+        except Exception:
+            return None
+        groups.append({"mol": frag, "global_idxs": list(range(pos, pos + n)),
+                       "donor_local": [int(di)]})
+        pos += n
+    return groups
+
+
+def _lig_groups_from_config(config, ligands):
+    """Construction-order ligand layout for the CHELATE assemble_from_config path.
+
+    assemble_from_config iterates `by_lig` (unique ligand-index order from config)
+    and appends AddHs(lg.mol) blocks; the donors are the ligand's donor_local_idxs.
+    Reproduce that ordering exactly so each ligand's global-index block + donor
+    locals map onto the native frame.  Returns lig_groups or None."""
+    from rdkit import Chem as _Chem
+    by_lig = {}
+    for v, (li, arm) in config.items():
+        by_lig.setdefault(li, []).append((v, arm))
+    groups = []
+    pos = 1
+    for li in by_lig:                       # dict preserves insertion order (py3.7+)
+        lg = ligands[li]
+        try:
+            n = _Chem.AddHs(lg["mol"]).GetNumAtoms()
+        except Exception:
+            return None
+        dons = [int(x) for x in lg["donor_local_idxs"]]
+        groups.append({"mol": lg["mol"], "global_idxs": list(range(pos, pos + n)),
+                       "donor_local": dons})
+        pos += n
+    return groups
+
+
+def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
+                    cn=None, geom=None, donors=None):
+    """Backbone re-embed source (Task 2026-06-18, env DELFIN_FFFREE_BACKBONE_REEMBED).
+
+    Given an ACCEPTED native base frame (base_syms, base_P) and its construction-order
+    lig_groups, generate core-preserving GLOBAL backbone re-embed frames (metal + ALL
+    donors frozen at their native positions; only the ligand BACKBONE re-folded via a
+    fresh ETKDG embed grafted by rigid donor-Kabsch) and APPEND the self-gate-clean
+    ones to `results`.  Additive: a re-embedded frame is only added on top of the
+    native frame, never replaces it, and each is self-gated so it is never worse than
+    legacy.  Default OFF -> no-op (byte-identical).  Never raises."""
+    if not _BR.enabled() or lig_groups is None:
+        return
+    try:
+        frames = _BR.reembed_complex(metal, lig_groups, (list(base_syms), base_P))
+    except Exception:
+        return
+    for fi, (syms, P) in enumerate(frames):
+        try:
+            syms, P = _maybe_relax(syms, P)
+            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
+                continue
+            results.append((_xyz(syms, P), f"{base_label}-reembed{fi+1}"))
+        except Exception:
+            continue
 
 
 def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
@@ -317,7 +393,16 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 built = None
             if not built:                                # ensemble failed -> use the single frame
                 results.append((_xyz(ssyms, sP), f"{geom_tag}-chelate-{k+1}"))
+                _append_reembed(results, d["metal"],
+                                _lig_groups_from_config(config, ligands),
+                                ssyms, sP, f"{geom_tag}-chelate-{k+1}",
+                                cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
                 continue
+            # re-embed off the canonical single frame (clash-minimal) for this config
+            _append_reembed(results, d["metal"],
+                            _lig_groups_from_config(config, ligands),
+                            ssyms, sP, f"{geom_tag}-chelate-{k+1}",
+                            cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
             for fi, (syms, P, donors) in enumerate(built):
                 syms, P = _maybe_relax(syms, P)
                 if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
@@ -337,7 +422,13 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                donors=donors):   # donor-aware self-gate -> skip config
             continue
-        results.append((_xyz(syms, P), f"{geom_tag}-chelate-{k+1}"))
+        _lab = f"{geom_tag}-chelate-{k+1}"
+        results.append((_xyz(syms, P), _lab))
+        # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
+        # core-preserving global-fold variants of this accepted chelate frame.
+        _append_reembed(results, d["metal"], _lig_groups_from_config(config, ligands),
+                        syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
+                        donors=donors)
     return results or None
 
 
@@ -515,6 +606,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     continue            # skip a bad frame; keep the clean ones
                 lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
                 results.append((_xyz(syms, P), lbl))
+                if fi == 0:             # re-embed off the canonical (clash-minimal) frame
+                    _append_reembed(results, d["metal"],
+                                    _lig_groups_from_vertex_specs(vertex_specs),
+                                    syms, P, lbl, cn=d.get("cn"), geom=d.get("geometry"))
                 kept += 1
             if kept == 0:               # whole coloring unbuildable -> legacy (never-worse)
                 return None
@@ -531,6 +626,11 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         label = base_label
         results.append((_xyz(syms, P), label))
+        # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
+        # core-preserving global-fold variants of THIS accepted native frame.
+        _append_reembed(results, d["metal"],
+                        _lig_groups_from_vertex_specs(vertex_specs), syms, P, label,
+                        cn=d.get("cn"), geom=d.get("geometry"))
     # CN5 polytopal completeness (#coverage): decompose defaults CN5 -> TBP-5, but SPY-5
     # is the Berry-pseudorotation partner — real CN5 complexes split between the two.
     # Additively enumerate SPY-5 too (best-effort; never bails the TBP-5 result).
