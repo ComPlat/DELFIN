@@ -145,13 +145,38 @@ def _is_metal(atomic_num: int) -> bool:
 
 
 def _parse_delfin_xyz(xyz: str) -> Tuple[List[str], List[Tuple[float, float, float]]]:
-    """Parse DELFIN-format XYZ (no atom-count header).
+    """Parse DELFIN-format XYZ.
 
     Returns (symbols, coords). Raises ``ValueError`` on malformed lines.
+
+    Tolerates BOTH the headerless DELFIN form (``Sym x y z`` per line) AND the
+    standard count-header form (line 1 = atom count, line 2 = comment, then
+    ``Sym x y z`` lines).  Header detection: the first non-empty line is a bare
+    integer whose value equals the number of remaining coordinate lines.  This
+    fixes the CONFORMER_REACHABILITY_2026_06_17 bug-1 — a count-header XYZ (the
+    format the pool archive / recall harness store) previously raised here,
+    making :func:`generate_conformer_pool` return only ``[(xyz, "base")]`` (0
+    conformers for ALL metal complexes).  Byte-identical for headerless input.
     """
+    raw_lines = [ln for ln in xyz.splitlines() if ln.strip()]
+    # Optional count-header tolerance: first non-empty line a bare int.  Takes
+    # exactly ``declared`` coordinate lines after the comment line, so a
+    # count-header (single- OR multi-frame concatenated) XYZ parses to its
+    # FIRST frame.  Headerless DELFIN input (first line ``Sym x y z``, 4 parts)
+    # is untouched -> byte-identical.
+    if len(raw_lines) >= 3:
+        first = raw_lines[0].strip().split()
+        if len(first) == 1:
+            try:
+                declared = int(first[0])
+            except ValueError:
+                declared = None
+            if declared is not None and 0 < declared <= len(raw_lines) - 2:
+                # line[0]=count, line[1]=comment, next ``declared`` = frame-0 coords
+                raw_lines = raw_lines[2:2 + declared]
     symbols: List[str] = []
     coords: List[Tuple[float, float, float]] = []
-    for line in xyz.splitlines():
+    for line in raw_lines:
         s = line.strip()
         if not s:
             continue
@@ -284,7 +309,9 @@ def _fragment_atoms_on_side(
     return out
 
 
-def identify_rotamer_dofs(graph: Dict, max_dofs: int = 6) -> List[Dict]:
+def identify_rotamer_dofs(
+    graph: Dict, max_dofs: int = 6, coverage: bool = False
+) -> List[Dict]:
     """Identify rotatable DOFs from a Python graph dict.
 
     A rotatable bond is a single, non-aromatic, non-ring bond between two
@@ -301,11 +328,30 @@ def identify_rotamer_dofs(graph: Dict, max_dofs: int = 6) -> List[Dict]:
     atom count so we get the cheap end. DOFs are ranked by **bulkiness**:
     heavy-atom count on the rotating side, descending — bulky rotors first.
 
+    Coverage mode (``coverage=True``, CONFORMER_REACHABILITY_2026_06_17 bug-2)
+    -----------------------------------------------------------------------
+    The default picker chooses the *cheaper* (fewer-heavy) side, which on a
+    methyl/tBu/terminal rotor moves only that rotor's own carbon (so 0 *other*
+    heavy atoms) — the rotating fragment displaces ~0 backbone heavy atoms and
+    the downstream heavy-RMSD diversity-dedup prunes it as a duplicate.  In
+    CIYROT 8/9 DOFs, ILUFOK 9/9, NUMBIH 4/4 were such methyl rotors → the
+    generator produced ~0 distinct *backbone* conformers.  With ``coverage``:
+
+    * ``backbone_heavy_moved`` is added = heavy atoms in the rotating fragment
+      EXCLUDING the pivot atom itself (a methyl rotor = 0; a phenyl/biaryl
+      rotation = 5+; a pincer arm = many) — the true backbone-fold leverage.
+    * Trivial rotors (``backbone_heavy_moved == 0`` AND ``is_methyl``) are
+      DROPPED — they only spin terminal H/CH3 and never move the backbone.
+    * DOFs are ranked by ``backbone_heavy_moved`` descending so the genuine
+      biaryl / ring-attachment / gerüst torsions occupy the (capped) grid
+      instead of being crowded out by methyls.
+
     Returns a list of dicts with keys:
         ``"pivot"``, ``"anchor"`` — atom indices defining the rotation axis
         ``"rotating"``           — atom indices to rotate
         ``"score"``              — bulkiness score (heavy atoms moved)
         ``"is_methyl"``          — True for terminal CH3 rotors
+        ``"backbone_heavy_moved"`` — heavy atoms moved excluding the pivot
     """
     n = int(graph.get("n_atoms", 0))
     if n == 0:
@@ -395,16 +441,42 @@ def identify_rotamer_dofs(graph: Dict, max_dofs: int = 6) -> List[Dict]:
         # bulkiness score: heavy atoms moved, then total atoms moved
         moved_heavy = sum(1 for idx in rotating_atoms if atomic_nums[idx] > 1)
         moved_total = len(rotating_atoms)
+        is_methyl = (rot_heavy == 0 and rot_h >= 3)
+        # Backbone leverage: heavy atoms moved EXCLUDING the rotor-root carbon
+        # itself.  A methyl/single-heavy terminal rotor -> 0 (it only spins its
+        # own C + H's, never displaces the backbone); a phenyl/biaryl/pincer-arm
+        # rotation -> >=1 (genuine backbone fold).  Coverage bug-2 signal.
+        backbone_heavy_moved = max(0, moved_heavy - 1)
 
         dofs.append({
             "pivot": rotating_root,
             "anchor": anchor,
             "rotating": rotating_atoms,
             "score": moved_heavy * 100 + moved_total,
-            "is_methyl": (rot_heavy == 0 and rot_h >= 3),
+            "is_methyl": is_methyl,
             "heavy_moved": moved_heavy,
             "total_moved": moved_total,
+            "backbone_heavy_moved": backbone_heavy_moved,
         })
+
+    if coverage:
+        # Bug-2 fix: keep only DOFs that genuinely re-fold the backbone (move at
+        # least one heavy atom beyond their own rotor-root carbon).  Drops the
+        # methyl/terminal rotors that move 0 backbone heavy atoms and get pruned
+        # by the heavy-RMSD diversity-dedup downstream (CIYROT 8/9, ILUFOK 9/9,
+        # NUMBIH 4/4 were such rotors -> ~0 distinct backbone conformers).  Rank
+        # by backbone leverage descending so the real folds fill the capped grid.
+        # If a molecule has NO backbone torsion (all rotors are methyls) the
+        # torsion layer contributes nothing here — ring-pucker / re-embed cover
+        # those — which is the honest, correct behaviour (no spurious frames).
+        bb = [d for d in dofs if d["backbone_heavy_moved"] >= 1]
+        bb.sort(
+            key=lambda d: (-d["backbone_heavy_moved"], -d["score"],
+                           d["pivot"], d["anchor"])
+        )
+        if len(bb) > max_dofs:
+            bb = bb[:max_dofs]
+        return bb
 
     # Rank: bulky DOFs first (tBu / iPr / NMe2 / PMe3), then methyls
     dofs.sort(key=lambda d: (-d["score"], d["pivot"], d["anchor"]))

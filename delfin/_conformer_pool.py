@@ -129,7 +129,19 @@ def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 10.0) -> 
 
 
 def _is_enabled() -> bool:
-    return _env_bool("DELFIN_5O_CONFORMER_POOL", False)
+    # Either the legacy 5o master switch OR the conformer-COVERAGE master switch
+    # (CONFORMER_REACHABILITY_2026_06_17) activates the per-isomer pool.
+    return _env_bool("DELFIN_5O_CONFORMER_POOL", False) or _coverage_enabled()
+
+
+def _coverage_enabled() -> bool:
+    """Master switch for the gas-phase backbone-CONFORMER-coverage offensive
+    (CONFORMER_REACHABILITY_2026_06_17).  Default ``0`` -> byte-identical: the
+    pool path is untouched (legacy 5o behaviour, off by default).  When ``1``
+    the pool runs in coverage mode: tolerant XYZ parse, backbone-heavy-moving
+    torsion DOFs (bug-2), dense Cremer-Pople ring-pucker templates (bug-3),
+    denser torsion grid, and a hard absolute core-freeze guard (+-0.05 A)."""
+    return _env_bool("DELFIN_FFFREE_CONFORMER_COVERAGE", False)
 
 
 # ---------------------------------------------------------------------------
@@ -261,13 +273,17 @@ def _layer1_torsion_candidates(
     n_states: int,
     max_dofs: int,
     grid_cap: int,
+    coverage: bool = False,
 ) -> List[Tuple[List[Coord], str]]:
     """Sample staggered torsion conformers around every rotatable DOF.
 
     Returns a list of ``(coords, mode_tag)`` candidates *excluding* the
     identity combination (which is the input ``base_coords``).
+
+    ``coverage=True`` selects backbone-heavy-moving torsions only (drops the
+    methyl/terminal rotors that produce 0 backbone diversity) — bug-2 fix.
     """
-    dofs = _rot.identify_rotamer_dofs(graph, max_dofs=max_dofs)
+    dofs = _rot.identify_rotamer_dofs(graph, max_dofs=max_dofs, coverage=coverage)
     if not dofs:
         return []
 
@@ -684,6 +700,44 @@ def _layer4_macrocycle_candidates(
 # ---------------------------------------------------------------------------
 
 
+def _core_frozen(
+    graph: Dict,
+    base_coords: Sequence[Coord],
+    new_coords: Sequence[Coord],
+    tol: float,
+) -> bool:
+    """Hard core-invariant guard (#82/#100): the metal AND every donor atom
+    (first-shell heavy neighbour of any metal) must stay at their NATIVE
+    absolute positions within *tol* Å.  Stricter than the M-D bond-length
+    invariant (which only checks distances) — this pins the coordination core
+    in space so the backbone re-folds around a fixed polyhedron.
+
+    Returns True iff the absolute displacement of every core atom is ≤ tol.
+    """
+    n = graph.get("n_atoms", 0)
+    if n == 0 or n != len(new_coords):
+        return False
+    atomic_nums = graph["atomic_nums"]
+    neighbours = graph["neighbours"]
+    is_metal = graph["is_metal"]
+    core: set = set()
+    for m_idx in range(n):
+        if not is_metal[m_idx]:
+            continue
+        core.add(m_idx)
+        for d_idx in neighbours[m_idx]:
+            if atomic_nums[d_idx] != 1:
+                core.add(d_idx)
+    tol2 = tol * tol
+    for i in core:
+        dx = new_coords[i][0] - base_coords[i][0]
+        dy = new_coords[i][1] - base_coords[i][1]
+        dz = new_coords[i][2] - base_coords[i][2]
+        if dx * dx + dy * dy + dz * dz > tol2:
+            return False
+    return True
+
+
 def _no_clash(
     symbols: Sequence[str],
     coords: Sequence[Coord],
@@ -820,6 +874,8 @@ def generate_conformer_pool(
     clash_hh: float = 1.7,
     clash_xh: float = 1.7,
     clash_xx: float = 1.5,
+    coverage: bool = False,
+    core_freeze_tol: float = 0.05,
 ) -> List[Tuple[str, str]]:
     """Return ``[(xyz, mode_tag), ...]`` of length ≤ ``k_target``.
 
@@ -864,6 +920,7 @@ def generate_conformer_pool(
                 n_torsion_states,
                 max_dofs,
                 torsion_grid_cap,
+                coverage=coverage,
             )
         )
     except Exception as exc:
@@ -871,16 +928,25 @@ def generate_conformer_pool(
     try:
         # Welle-5p-B: chemistry-template ring-conformer generator
         # supersedes the naive 2-atom Layer-2 pucker when its env-flag
-        # is set.  Default-OFF byte-identical fall-through.
-        use_5p_b_templates = _env_bool("DELFIN_5P_B_RING_TEMPLATES", False)
+        # is set.  Default-OFF byte-identical fall-through.  Coverage mode
+        # (bug-3, dense Cremer-Pople-style pucker) force-enables it so the
+        # ring-bound backbone (azamacrocycle/chelate-backbone/saturated rings
+        # where the rotatable-bond detector finds 0 backbone torsions) is
+        # actually re-folded — the chair/boat/twist/envelope + macrocycle
+        # saddle/ruffle/dome templates are the local-minima the torsion grid
+        # cannot reach (ILUFOK/NUMBIH/SEHXOU/KADYIA-class).
+        use_5p_b_templates = coverage or _env_bool(
+            "DELFIN_5P_B_RING_TEMPLATES", False
+        )
         if use_5p_b_templates:
             from delfin import _ring_conformer_templates as _ring_tpl
 
             k_per_ring = _env_int(
-                "DELFIN_5P_B_K_PER_RING", 3, lo=1, hi=20
+                "DELFIN_5P_B_K_PER_RING", 6 if coverage else 3, lo=1, hi=20
             )
             max_var = _env_int(
-                "DELFIN_5P_B_MAX_RING_VARIANTS", 6, lo=1, hi=64
+                "DELFIN_5P_B_MAX_RING_VARIANTS", 24 if coverage else 6,
+                lo=1, hi=64
             )
             amp_frac = _env_float(
                 "DELFIN_5P_B_AMPLITUDE_FRACTION",
@@ -954,6 +1020,14 @@ def generate_conformer_pool(
                 graph, base_coords, coords, tol=md_tol
             ):
                 continue
+            # Coverage hard core-freeze guard (#82/#100): metal + every donor
+            # pinned to native absolute positions within core_freeze_tol.  Any
+            # frame whose coordination core drifts is REJECTED (the backbone
+            # must re-fold around a FIXED polyhedron, not move the core).
+            if coverage and not _core_frozen(
+                graph, base_coords, coords, core_freeze_tol
+            ):
+                continue
             if not _no_clash(
                 symbols, coords, graph, clash_hh, clash_xh, clash_xx
             ):
@@ -1023,18 +1097,57 @@ def apply_if_enabled(xyz: str) -> List[Tuple[str, str]]:
     """
     if not _is_enabled():
         return [(xyz, "base")]
-    k = _env_int("DELFIN_5O_K_TARGET", 10, lo=1, hi=64)
-    rmsd_min = _env_float("DELFIN_5O_DIVERSITY_RMSD_MIN", 0.5, lo=0.0, hi=5.0)
-    n_states = _env_int("DELFIN_5O_K_TORSION_STATES", 3, lo=2, hi=12)
-    max_dofs = _env_int("DELFIN_5O_MAX_DOFS", 6, lo=1, hi=32)
-    grid_cap = _env_int("DELFIN_5O_TORSION_GRID_CAP", 64, lo=2, hi=4096)
+    coverage = _coverage_enabled()
+    # Coverage mode raises the density defaults (bug-3): more pool members,
+    # finer torsion grid, more DOFs/combinations, tighter dedup so genuine
+    # backbone folds survive.  Legacy 5o defaults preserved when coverage off.
+    k = _env_int(
+        "DELFIN_FFFREE_COV_K_TARGET" if coverage else "DELFIN_5O_K_TARGET",
+        24 if coverage else 10, lo=1, hi=128,
+    )
+    rmsd_min = _env_float(
+        "DELFIN_FFFREE_COV_DIVERSITY_RMSD_MIN" if coverage
+        else "DELFIN_5O_DIVERSITY_RMSD_MIN",
+        0.30 if coverage else 0.5, lo=0.0, hi=5.0,
+    )
+    n_states = _env_int(
+        "DELFIN_FFFREE_COV_TORSION_STATES" if coverage
+        else "DELFIN_5O_K_TORSION_STATES",
+        6 if coverage else 3, lo=2, hi=12,
+    )
+    max_dofs = _env_int(
+        "DELFIN_FFFREE_COV_MAX_DOFS" if coverage else "DELFIN_5O_MAX_DOFS",
+        8 if coverage else 6, lo=1, hi=32,
+    )
+    grid_cap = _env_int(
+        "DELFIN_FFFREE_COV_TORSION_GRID_CAP" if coverage
+        else "DELFIN_5O_TORSION_GRID_CAP",
+        512 if coverage else 64, lo=2, hi=4096,
+    )
     pucker_ampl = _env_float("DELFIN_5O_RING_PUCKER_AMPL", 0.35, lo=0.0, hi=2.0)
     macro_ampl = _env_float("DELFIN_5O_MACROCYCLE_AMPL", 0.40, lo=0.0, hi=2.0)
     twist_deg = _env_float("DELFIN_5O_CHELATE_TWIST_DEG", 30.0, lo=0.0, hi=180.0)
     md_tol = _env_float("DELFIN_5O_MD_TOL", 0.05, lo=0.0, hi=2.0)
-    clash_hh = _env_float("DELFIN_5O_CLASH_HH", 1.7, lo=0.5, hi=3.0)
-    clash_xh = _env_float("DELFIN_5O_CLASH_XH", 1.7, lo=0.5, hi=3.0)
-    clash_xx = _env_float("DELFIN_5O_CLASH_XX", 1.5, lo=0.5, hi=3.0)
+    core_freeze_tol = _env_float(
+        "DELFIN_FFFREE_COV_CORE_FREEZE_TOL", 0.05, lo=0.0, hi=2.0
+    )
+    # Coverage mode relaxes the non-bonded clash floors toward the physical
+    # fusion limit: crystal backbone folds (esp. crowded biaryl / o-terphenyl
+    # like CIYROT) legitimately adopt sterically TIGHT contacts that the
+    # conservative 1.5/1.7 A selection floors reject — and COVERAGE keeps the
+    # best-of-ensemble MIN, so admitting a tight-but-valid fold can only help,
+    # never hurt (a downstream local-opt relaxes residual strain).  Floors stay
+    # ABOVE the bond-fusion regime (heavy-heavy 1.35, X-H 1.35, H-H 1.45) so no
+    # atoms-on-top-of-each-other frame is ever emitted.
+    clash_hh = _env_float(
+        "DELFIN_5O_CLASH_HH", 1.45 if coverage else 1.7, lo=0.5, hi=3.0
+    )
+    clash_xh = _env_float(
+        "DELFIN_5O_CLASH_XH", 1.35 if coverage else 1.7, lo=0.5, hi=3.0
+    )
+    clash_xx = _env_float(
+        "DELFIN_5O_CLASH_XX", 1.35 if coverage else 1.5, lo=0.5, hi=3.0
+    )
     try:
         return generate_conformer_pool(
             xyz,
@@ -1050,6 +1163,8 @@ def apply_if_enabled(xyz: str) -> List[Tuple[str, str]]:
             clash_hh=clash_hh,
             clash_xh=clash_xh,
             clash_xx=clash_xx,
+            coverage=coverage,
+            core_freeze_tol=core_freeze_tol,
         )
     except Exception as exc:  # pragma: no cover - safety net
         logger.debug("Welle-5o conformer-pool failed: %s", exc)
