@@ -727,10 +727,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                 lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
                 results.append((_xyz(syms, P), lab))
             continue
-        try:
-            built = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
-        except Exception:
-            continue
+        built = _build_config_never_worse(d, config, ligands, geom_key)
         if built is None:
             continue
         syms, P, donors = built
@@ -759,6 +756,54 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
                         donors=donors)
     return results or None
+
+
+def _shell_cshm(d, built):
+    """Full coordination-shell CShM of a built frame vs the target geometry (lower =
+    closer to the ideal polyhedron).  Returns +inf on failure / unclean build, so a
+    failed alternative never wins the never-worse comparison."""
+    try:
+        syms, P, donors = built
+        M = P[0]
+        vecs = [P[i] - M for i in donors]
+        return float(PLY.cshm(vecs, d["geometry"]))
+    except Exception:
+        return float("inf")
+
+
+def _build_config_never_worse(d, config, ligands, geom_key):
+    """Build one chelate-isomer config.  For a RIGID PLANAR tridentate on CN5 (TBP-5 /
+    SPY-5) with DELFIN_FFFREE_PLANAR_MER_CN5=1, build the frame BOTH ways — with the
+    meridional bite constraint (planar_bite=True) and without (planar_bite=False, the
+    historic folded seating) — gate both, and KEEP the lower full-shell CShM.  The
+    meridional build wins where it opens the bite toward the ideal (ANUCOE 12.7->2.1);
+    the folded build survives where the forced bite would distort the shape WORSE
+    (strict never-worse).  Otherwise (flag off / not rigid-planar-CN5) this is the
+    plain single build -> byte-identical."""
+    metal, geom = d["metal"], d["geometry"]
+    _cn5_rp = (
+        os.environ.get("DELFIN_FFFREE_PLANAR_MER_CN5", "0") == "1"
+        and geom in ("TBP-5 trigonal bipyramid", "SPY-5 square pyramid")
+        and any(lg.get("rigid_planar") and lg.get("denticity") == 3 for lg in ligands))
+    if not _cn5_rp:
+        try:
+            return AC.assemble_from_config(metal, geom, config, ligands)
+        except Exception:
+            return None
+    # never-worse: compare meridional (bite-forced) vs folded (bite-off)
+    best = None
+    best_cshm = float("inf")
+    for pb in (True, False):
+        try:
+            b = AC.assemble_from_config(metal, geom, config, ligands, planar_bite=pb)
+        except Exception:
+            b = None
+        if b is None:
+            continue
+        c = _shell_cshm(d, b)
+        if c < best_cshm:
+            best_cshm, best = c, b
+    return best
 
 
 def _hapto_subst_rotamers(xyz, n_per=2):

@@ -51,8 +51,20 @@ def _kabsch_rot(Pobs: np.ndarray, Ptgt: np.ndarray) -> np.ndarray:
     return Vt.T @ np.diag([1.0, 1.0, dsign]) @ U.T
 
 
+def _planar_mer_cn5_enabled() -> bool:
+    """Geometry-aware MERIDIONAL bite for a RIGID PLANAR tridentate on CN5 (TBP-5 /
+    SPY-5).  The OC-6 meridional fix (DELFIN_FFFREE_PLANAR_MER) gives such a ligand the
+    correct meridional vertex ASSIGNMENT, but on CN5 the rigid-Kabsch orient cannot
+    OPEN the embed's ~110deg folded bite onto the meridional axis.  When enabled, the
+    metallacycle embed is forced through the distance-geometry bite constraint (pinning
+    donor-donor distances to the meridional vertices) so the embedded conformer ALREADY
+    carries the meridional ~150-165deg bite.  Default OFF -> byte-identical (the forced
+    bite is never applied; the SPY-5 trans-basal triples are never emitted)."""
+    return os.environ.get("DELFIN_FFFREE_PLANAR_MER_CN5", "0") == "1"
+
+
 def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
-                        harden=False):
+                        harden=False, force_bite=False):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
     donor atoms, so the metallacycle ring forms with correct ring geometry.  A
     free-ligand embed yields the (energetically preferred) extended/anti conformer
@@ -104,12 +116,16 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # harden == True only for the newly-admitted LARGE backbones (set by the caller,
         # per-arm > historic cap, flag-gated).  Existing chelates (harden=False) keep the
         # exact historic embed (k=6, hard donor-donor pins ONLY under CHELATE_BITE).
+        # force_bite (DELFIN_FFFREE_PLANAR_MER_CN5, rigid-planar CN5): activate the bite
+        # constraint for THIS embed regardless of the global CHELATE_BITE flag, so the
+        # rigid planar tridentate embeds with the meridional bite pinned to the assigned
+        # CN5 vertices (else the rigid-Kabsch orient keeps the folded ~110deg).
         _chel_bite = os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"
         if harden:
             k = max(int(k), int(os.environ.get("DELFIN_FFFREE_POLY_K_CONFS", "12")))
         _dd_tol = float(os.environ.get("DELFIN_FFFREE_POLY_BB_TOL", "0.4")) if harden else 0.05
         if (donor_target_pos is not None and len(donor_target_pos) == len(donor_idxs)
-                and (_chel_bite or harden)):
+                and (_chel_bite or harden or force_bite)):
             try:
                 from rdkit.Chem import rdDistGeom as _DG
                 from rdkit import DistanceGeometry as _DGs
@@ -1803,7 +1819,8 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
 
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
-                         n_frames=1, per_lig_confs=6, rmsd_dedup=0.5):
+                         n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
+                         planar_bite=None):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -1876,8 +1893,22 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             _nheavy_lg = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
             _harden = (os.environ.get("DELFIN_FFFREE_CHELATE_BACKBONE", "0") == "1"
                        and _nheavy_lg / max(_dent, 1) > 8.0)
+            # RIGID PLANAR tridentate on CN5 (TBP-5 / SPY-5): force the DG bite
+            # constraint so the embed carries the meridional bite (the rigid-Kabsch
+            # orient cannot open a folded ~110deg bite onto the TBP/SPY meridian).
+            # Scoped to CN5 + rigid_planar + dent 3.  planar_bite overrides the env
+            # gate (the never-worse caller builds BOTH ways); when None the env flag
+            # DELFIN_FFFREE_PLANAR_MER_CN5 decides (else byte-identical: force_bite False).
+            _eligible_rp_cn5 = bool(
+                lg.get("rigid_planar") and _dent == 3
+                and geometry in ("TBP-5 trigonal bipyramid", "SPY-5 square pyramid"))
+            if planar_bite is None:
+                _force_bite = bool(_eligible_rp_cn5 and _planar_mer_cn5_enabled())
+            else:
+                _force_bite = bool(_eligible_rp_cn5 and planar_bite)
             ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal,
-                                             donor_target_pos=_dtp, harden=_harden)
+                                             donor_target_pos=_dtp, harden=_harden,
+                                             force_bite=_force_bite)
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:

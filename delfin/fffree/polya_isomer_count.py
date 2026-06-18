@@ -305,6 +305,16 @@ def _meridional_triples(geometry: str, n: int):
         V = _PLY.ref_vectors(shape)
     except Exception:
         return []
+    # Outer-pair floor.  Default 170deg cleanly separates a true antipodal (180deg)
+    # outer pair from facial caps (which top out ~90-110deg).  SPY-5 has NO 180deg
+    # pair: its widest trans pair is the trans-BASAL arc (~163.9deg, central = the
+    # apical vertex, coplanar through the metal) — the meridian a flat tridentate
+    # binds in a square-pyramidal field.  Admit it ONLY under the CN5 rigid-planar
+    # flag (DELFIN_FFFREE_PLANAR_MER_CN5) so OC-6/TBP-5 stay byte-identical when off.
+    amax_floor = 170.0
+    if (shape == "SPY-5 square pyramid"
+            and os.environ.get("DELFIN_FFFREE_PLANAR_MER_CN5", "0") == "1"):
+        amax_floor = 155.0
     out = []
     for tri in itertools.combinations(range(n), 3):
         vv = [V[i] for i in tri]
@@ -314,9 +324,8 @@ def _meridional_triples(geometry: str, n: int):
                 c = float(np.clip(vv[a] @ vv[b], -1.0, 1.0))
                 angs.append(math.degrees(math.acos(c)))
         amax = max(angs)
-        # meridional: one near-antipodal (180deg) outer pair; facial caps top out near
-        # 90-110deg with NO antipodal pair, so the 170deg floor cleanly separates them.
-        if amax < 170.0:
+        # meridional: one near-antipodal outer pair; facial caps have NO such pair.
+        if amax < amax_floor:
             continue
         # coplanarity through the metal: the 3 unit vectors span a plane (rank-2), i.e.
         # the smallest singular value is ~0 (they pass through the origin = the metal).
