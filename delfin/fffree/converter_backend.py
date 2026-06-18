@@ -646,6 +646,9 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             "type": Chem.MolToSmiles(lg["mol"]),
             "denticity": lg["denticity"],
             "asym": len(set(lg.get("donor_elems", []))) > 1,
+            # geometry-aware meridional restriction (default OFF: rigid_planar is
+            # always False unless DELFIN_FFFREE_PLANAR_MER=1, so byte-identical)
+            "rigid_planar": bool(lg.get("rigid_planar")),
         })
     try:
         configs = PIC.enumerate_chelate_configs(geom_key, specs)

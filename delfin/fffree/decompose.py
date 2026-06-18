@@ -18,6 +18,117 @@ import delfin._bond_decollapse as bd
 _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
 
+def _planar_mer_enabled() -> bool:
+    """Geometry-aware MERIDIONAL vertex assignment for RIGID PLANAR tridentate
+    ligands (terpy / pincer / phenanthroline-extended).  Default OFF ->
+    byte-identical to the historic output (the branch is never entered)."""
+    return os.environ.get("DELFIN_FFFREE_PLANAR_MER", "0") == "1"
+
+
+def _is_rigid_planar_tridentate(fmol, donor_local_idxs) -> bool:
+    """Universal, graph+geometry-only test for a RIGID PLANAR tridentate ligand
+    (terpy / pincer / phenanthroline-extended: 3 coordinating donors held coplanar
+    by a conjugated/aromatic backbone).  Such a ligand physically CANNOT fold to a
+    facial vertex triple — it must bind MERIDIONALLY (the 3 donors coplanar through
+    the metal, outer-outer ~150-170deg).  No SMILES/refcode knowledge.
+
+    Criteria (all required):
+      (1) exactly 3 donor atoms;
+      (2) the donors are connected into ONE rigid backbone: the shortest path
+          between every donor pair runs ONLY through sp2/aromatic (conjugated) heavy
+          atoms — so the backbone is a flat conjugated framework, not a flexible
+          aliphatic chain (cyclam / dien-amine are NOT rigid-planar);
+      (3) the 3 donors are mutually-meridional in the rigid skeleton: an embedded
+          conformer has the 3 donors near-coplanar with the backbone AND a WIDE
+          natural outer-outer donor angle (the central donor flanked by the two
+          outer ones at ~120-180deg about the inter-donor centroid) — a flat
+          tridentate spans a meridional arc, not a facial cap.
+
+    Returns True only when all hold; any failure / exception -> False (the ligand
+    keeps the historic facial-or-meridional combinatorial freedom).  Deterministic."""
+    try:
+        dons = [int(x) for x in donor_local_idxs]
+        if len(dons) != 3:
+            return False
+        # (2) backbone conjugation: every donor-donor shortest path is all-sp2/aromatic.
+        path_atoms = set()
+        for a in range(3):
+            for b in range(a + 1, 3):
+                sp = Chem.GetShortestPath(fmol, dons[a], dons[b])
+                if not sp:
+                    return False
+                # interior atoms (exclude the two donor endpoints) must be conjugated
+                for idx in sp[1:-1]:
+                    at = fmol.GetAtomWithIdx(int(idx))
+                    if at.GetAtomicNum() <= 1:
+                        return False
+                    is_sp2 = str(at.GetHybridization()) == "SP2"
+                    if not (at.GetIsAromatic() or is_sp2):
+                        return False
+                path_atoms.update(int(i) for i in sp)
+        # the donors themselves must be aromatic/sp2 (conjugated lone-pair donors:
+        # pyridyl / imine N, etc.) — an sp3 amine arm is flexible, not rigid-planar.
+        for di in dons:
+            at = fmol.GetAtomWithIdx(di)
+            if not (at.GetIsAromatic() or str(at.GetHybridization()) == "SP2"):
+                return False
+        # (3) geometric coplanarity + wide span on an embedded conformer.
+        from rdkit.Chem import AllChem
+        import numpy as _np
+        mh = Chem.AddHs(fmol)
+        if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=False) != 0:
+            if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=True) != 0:
+                return False
+        try:
+            AllChem.MMFFOptimizeMolecule(mh)
+        except Exception:
+            pass
+        P = _np.array(mh.GetConformer().GetPositions(), float)
+        pa = sorted(path_atoms)
+        if len(pa) < 4:
+            return False
+        B = P[pa]
+        B = B - B.mean(axis=0)
+        # planarity: smallest SVD singular value (out-of-plane spread) must be small
+        try:
+            _, sv, Vt = _np.linalg.svd(B)
+        except Exception:
+            return False
+        # ratio of out-of-plane extent to in-plane extent (rotation/scale invariant)
+        if sv[0] < 1e-6:
+            return False
+        planar_ratio = float(sv[2] / sv[0])
+        if planar_ratio > 0.18:                     # not flat -> not a rigid planar tridentate
+            return False
+        # wide span: the donor that is "central" (closest to the donor centroid arc)
+        # should be flanked by the two outer donors at a WIDE angle about the metal-
+        # facing side.  Use the angle at the central donor's projection: a flat
+        # tridentate has outer..outer spanning a meridional arc.  Compute the angle
+        # subtended by the two outer donors at the inter-donor centroid; for a rigid
+        # planar terpy/pincer this is wide (mer), for a facial-capable cap it is ~60deg.
+        d3 = P[dons]
+        cen = d3.mean(axis=0)
+        # identify the central donor = the one whose removal leaves the widest pair
+        best_span = 0.0
+        for c in range(3):
+            outer = [dons[k] for k in range(3) if k != c]
+            v1 = P[outer[0]] - P[dons[c]]
+            v2 = P[outer[1]] - P[dons[c]]
+            n1 = _np.linalg.norm(v1); n2 = _np.linalg.norm(v2)
+            if n1 < 1e-6 or n2 < 1e-6:
+                continue
+            ang = _np.degrees(_np.arccos(_np.clip(float(v1 @ v2) / (n1 * n2), -1.0, 1.0)))
+            if ang > best_span:
+                best_span = ang
+        # a flat meridional tridentate has the outer donors at a wide angle as seen
+        # from the central donor (terpy ~ 110-130deg internal; a facial cap is sharper).
+        if best_span < 95.0:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
     if cn == 2:
         # iter-32f (DELFIN_FFFREE_CN_EXTEND): linear two-coordinate — the canonical
@@ -459,6 +570,13 @@ def decompose(smiles: str) -> Optional[Dict]:
         if len(fdonors) > 3:
             return None                               # >tridentate (rare) -> legacy
         local_donors = [orig.index(o) for o in fdonors]
+        # Geometry-aware meridional flag (env-gated, default OFF -> not computed, so
+        # byte-identical): a RIGID PLANAR tridentate (terpy / pincer) must bind
+        # MERIDIONALLY; tag it so enumeration restricts it to mer vertex triples and
+        # the assembler seats its 3 donors coplanar with the metal.
+        rigid_planar = False
+        if _planar_mer_enabled() and len(fdonors) == 3:
+            rigid_planar = _is_rigid_planar_tridentate(fmol, local_donors)
         ligands.append({
             "mol": fmol,
             "donor_local_idx": local_donors[0],       # primary (back-compat)
@@ -466,6 +584,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             "denticity": len(fdonors),
             "donor_elem": donor_elem[fdonors[0]],
             "donor_elems": [donor_elem[o] for o in fdonors],
+            "rigid_planar": rigid_planar,
         })
         n_chelate_bonds += len(fdonors)
     if n_chelate_bonds != cn:
@@ -506,6 +625,13 @@ def decompose(smiles: str) -> Optional[Dict]:
     _chel_bb = os.environ.get("DELFIN_FFFREE_CHELATE_BACKBONE", "0") == "1"
     _chel_cap = int(os.environ.get("DELFIN_FFFREE_CHELATE_HEAVY_CAP", "12")) if _chel_bb else 8
     for lg in ligands:
+        # A rigid-planar tridentate (terpy/pincer) is seated as one quasi-rigid
+        # meridional unit (its conjugated backbone holds the donors coplanar), so its
+        # per-arm heavy count — inflated by flanking aryl substituents — is not the
+        # placement-relevant complexity; exempt it (mirrors the η-face exemption).
+        # Only reachable when DELFIN_FFFREE_PLANAR_MER=1 (else rigid_planar is False).
+        if lg.get("rigid_planar"):
+            continue
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         # union of all three independent cap-raisers (each default OFF -> 8 -> byte-id):
         #   MAX_HEAVY_PER_DONOR : seating heavy-cap (raises EVERY arm)
@@ -518,8 +644,10 @@ def decompose(smiles: str) -> Optional[Dict]:
             cap = max(MAX_HEAVY_PER_DONOR, _chel_cap)
         if nheavy / max(lg["denticity"], 1) > cap:
             return None
+    has_rigid_planar = any(lg.get("rigid_planar") for lg in ligands)
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,
+            "has_rigid_planar": has_rigid_planar,
             "donor_elems": [lg["donor_elem"] for lg in ligands],
             "ligands": ligands}
 

@@ -187,6 +187,28 @@ def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     return False
 
 
+def _collapsed_heavy_bonds_strict(syms, P, factor=0.82):
+    """True if any BONDED heavy-heavy non-metal pair sits below ``factor`` × the
+    covalent-sum ideal — same logic as ``_has_collapsed_heavy_bonds`` but NOT env-
+    gated (always active).  Used to reject the few DG-metallacycle conformers of a
+    RIGID PLANAR tridentate that carry a collapsed donor-backbone bond, so a clean
+    conformer is selected from the pool.  Universal, geometry-only, deterministic."""
+    n = len(syms)
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            d = float(np.linalg.norm(P[i] - P[j]))
+            ideal = _bd._ideal_bond(syms[i], syms[j])
+            if d > 1.30 * ideal:                 # only check pairs that ARE bonded
+                continue
+            if d < factor * ideal:
+                return True
+    return False
+
+
 def _canonical_arm_order(lg, dent):
     """Return the chelate's donor-local indices reordered into a CANONICAL,
     instance-independent arm order so that the enumerator's arm index `i`
@@ -213,6 +235,18 @@ def _canonical_arm_order(lg, dent):
     dons = list(lg["donor_local_idxs"])[:dent]
     if os.environ.get("DELFIN_LEGACY_CHELATE_SEAT", "0") == "1":
         return dons
+    # RIGID PLANAR tridentate (terpy / pincer, DELFIN_FFFREE_PLANAR_MER): the
+    # enumerator seats arm index 1 on the meridian's CENTRAL vertex and arms 0/2 on
+    # the outer (antipodal) vertices.  So order the arms [outer, CENTRAL, outer]
+    # where the CENTRAL donor = the one lying on the backbone path between the other
+    # two (graph-central).  This makes the central pyridyl-N seat on the central
+    # vertex -> coplanar meridional placement, outer-outer ~158deg.  Only when the
+    # ligand was tagged rigid_planar (flag ON), else byte-identical below.
+    if lg.get("rigid_planar") and dent == 3:
+        c = _rigid_planar_central_arm(lg["mol"], dons)
+        if c is not None:
+            outer = [dons[i] for i in range(3) if i != c]
+            return [outer[0], dons[c], outer[1]]
     elems = lg.get("donor_elems") or [None] * len(dons)
     elems = list(elems)[:dent]
     try:
@@ -222,6 +256,23 @@ def _canonical_arm_order(lg, dent):
         return [dons[i] for i in order]
     except Exception:
         return dons
+
+
+def _rigid_planar_central_arm(mol, dons):
+    """Index (0/1/2) into ``dons`` of the CENTRAL donor of a rigid planar tridentate
+    = the donor that lies ON the backbone shortest path between the OTHER two donors
+    (terpy's central pyridyl-N, a pincer's central donor).  Graph-only,
+    deterministic; returns None if no single such donor (then the caller falls back
+    to the element-sorted order)."""
+    try:
+        for c in range(3):
+            others = [dons[i] for i in range(3) if i != c]
+            sp = Chem.GetShortestPath(mol, int(others[0]), int(others[1]))
+            if sp and int(dons[c]) in [int(x) for x in sp]:
+                return c
+    except Exception:
+        return None
+    return None
 
 
 def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True):
@@ -1870,6 +1921,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 # is the same isomer, so keep the best-fit (lower ring strain).
                 _de = [lsyms[di] for di in dons_d]
                 _asym = len(set(_de)) > 1
+                # RIGID PLANAR tridentate: the CENTRAL donor MUST seat on the central
+                # meridian vertex (arm 1 -> targets[1]); the best-fit permutation would
+                # scramble central/outer (a flat terpy is element-symmetric all-N), so
+                # force config-faithful seating to realise the meridional arrangement.
+                if lg.get("rigid_planar") and dent == 3:
+                    _asym = True
+                _rigid_planar = bool(lg.get("rigid_planar")) and dent == 3
                 Q = None
                 if ring_confs is not None:
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym)
@@ -1881,6 +1939,14 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     # fallback below picks up; for tridentate we skip the config (the
                     # build-gate would reject anyway).  Env-gated default OFF.
                     if Q is not None and _has_collapsed_heavy_bonds(lsyms, Q):
+                        Q = None
+                    # RIGID PLANAR tridentate (DELFIN_FFFREE_PLANAR_MER): the DG
+                    # metallacycle embed yields chelating conformers (outer-outer ~150-
+                    # 158deg) but a few carry a collapsed donor-backbone bond.  Reject
+                    # such conformers UNCONDITIONALLY (not env-gated) so a CLEAN one is
+                    # selected from the pool -> the meridional placement survives the
+                    # self-gate instead of bailing the whole complex to legacy.
+                    if Q is not None and _rigid_planar and _collapsed_heavy_bonds_strict(lsyms, Q):
                         Q = None
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])

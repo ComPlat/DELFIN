@@ -281,6 +281,54 @@ def _chelate_cis_edges(geometry: str, n: int):
     return [(i, j) for i in range(n) for j in range(i + 1, n) if anti[i] != j]
 
 
+def _meridional_triples(geometry: str, n: int):
+    """Vertex triples on which a RIGID PLANAR tridentate (terpy / pincer) can seat
+    MERIDIONALLY: 3 vertices that are coplanar through the metal with one antipodal
+    (~180deg) outer pair and the central vertex at ~90deg to both — the meridian arc
+    a flat conjugated tridentate physically requires.  A facial triple (3 mutually
+    ~90deg vertices, no antipodal pair) is EXCLUDED: a rigid flat ligand cannot fold
+    to it.  Derived GEOMETRICALLY from the same ideal vertex set the assembler places
+    into (delfin.fffree.polyhedra), so it is correct for any CN6 polyhedron (and
+    returns [] for geometries with no meridional triple).  Deterministic.
+
+    A meridional triple is detected as: the largest pairwise angle is ~180deg (a
+    near-antipodal outer pair) AND the three vertices are coplanar through the metal
+    (their normal is well-defined and the middle vertex lies in the outer plane)."""
+    import math
+    import itertools
+    import numpy as np
+    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    if shape is None:
+        return []
+    try:
+        from delfin.fffree import polyhedra as _PLY
+        V = _PLY.ref_vectors(shape)
+    except Exception:
+        return []
+    out = []
+    for tri in itertools.combinations(range(n), 3):
+        vv = [V[i] for i in tri]
+        angs = []
+        for a in range(3):
+            for b in range(a + 1, 3):
+                c = float(np.clip(vv[a] @ vv[b], -1.0, 1.0))
+                angs.append(math.degrees(math.acos(c)))
+        amax = max(angs)
+        # meridional: one near-antipodal (180deg) outer pair; facial caps top out near
+        # 90-110deg with NO antipodal pair, so the 170deg floor cleanly separates them.
+        if amax < 170.0:
+            continue
+        # coplanarity through the metal: the 3 unit vectors span a plane (rank-2), i.e.
+        # the smallest singular value is ~0 (they pass through the origin = the metal).
+        try:
+            _, sv, _ = np.linalg.svd(np.array(vv, float))
+        except Exception:
+            continue
+        if sv[0] > 1e-9 and (sv[2] / sv[0]) < 0.05:
+            out.append(tri)
+    return out
+
+
 def enumerate_chelate_configs(geometry: str, ligand_specs):
     """Universal isomer enumeration for a mix of chelating (bidentate) + monodentate
     ligands.  ligand_specs: one dict per ligand instance with keys ``type``
@@ -293,6 +341,13 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
     order = sorted(range(len(ligand_specs)),
                    key=lambda k: -ligand_specs[k]["denticity"])
     seen = set(); out = []
+    # Geometry-aware meridional restriction (DELFIN_FFFREE_PLANAR_MER): a RIGID PLANAR
+    # tridentate (terpy / pincer, spec["rigid_planar"] True) may occupy ONLY meridional
+    # vertex triples (coplanar through the metal, outer-outer ~180deg) — never a facial
+    # cap.  Computed once; empty if any rigid-planar spec is present but the geometry
+    # has no meridional triple (the caller then yields no config -> legacy fallback).
+    _need_mer = any(s.get("rigid_planar") and s["denticity"] == 3 for s in ligand_specs)
+    _mer_triples = _meridional_triples(geometry, n) if _need_mer else None
 
     def canon_key(assign):
         best = None
@@ -335,6 +390,42 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
                 a = dict(assign); a[v1] = (k, 0); a[v2] = (k, 1); place(a)
                 if spec.get("asym"):
                     b = dict(assign); b[v1] = (k, 1); b[v2] = (k, 0); place(b)
+        elif dent == 3 and spec.get("rigid_planar") and _mer_triples is not None:
+            # RIGID PLANAR tridentate (terpy / pincer): occupy ONLY meridional vertex
+            # triples (a flat conjugated tridentate cannot fold to a facial cap).  Seat
+            # the CENTRAL donor (canonical arm index 1) on the meridian's central
+            # (~90deg) vertex and the two OUTER donors (arms 0,2) on the antipodal
+            # (~180deg) outer pair, so the placed donors are coplanar with the metal.
+            import numpy as _np
+            from delfin.fffree import polyhedra as _PLY2
+            try:
+                _V = _PLY2.ref_vectors(_GEOM_KEY_TO_SHAPE[geometry])
+            except Exception:
+                _V = None
+            for tri in _mer_triples:
+                if any(v in assign for v in tri):
+                    continue
+                # identify the central vertex = the one NOT in the ~180deg outer pair
+                central = tri[0]
+                if _V is not None:
+                    worst = (-1.0, (tri[0], tri[1]))
+                    for ia in range(3):
+                        for ib in range(ia + 1, 3):
+                            ang = -float(_np.clip(_V[tri[ia]] @ _V[tri[ib]], -1.0, 1.0))
+                            if ang > worst[0]:
+                                worst = (ang, (tri[ia], tri[ib]))
+                    outer = set(worst[1])
+                    central = next(v for v in tri if v not in outer)
+                outer_v = [v for v in tri if v != central]
+                # arm 1 = central donor -> central vertex; arms 0,2 = outer donors ->
+                # outer vertices (both orientations enumerated for asym backbones).
+                a = dict(assign)
+                a[outer_v[0]] = (k, 0); a[central] = (k, 1); a[outer_v[1]] = (k, 2)
+                place(a)
+                if spec.get("asym"):
+                    b = dict(assign)
+                    b[outer_v[1]] = (k, 0); b[central] = (k, 1); b[outer_v[0]] = (k, 2)
+                    place(b)
         else:
             # tridentate+ (kappa>=3): occupy any d-vertex subset.  Assembly seats the
             # ligand on the matching mer/fac arrangement (metallacycle embed + best-
