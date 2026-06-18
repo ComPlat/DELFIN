@@ -208,6 +208,61 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
             continue
 
 
+def _seating_enabled() -> bool:
+    """Conformer-aware seating for large ligands (env DELFIN_FFFREE_CONFORMER_SEATING,
+    default OFF -> byte-identical).  When ON, the decompose heavy-cap is raised so
+    large-ligand complexes reach this build, and large ligands whose rigid placement
+    fails the self-gate are re-seated by sampling conformers (core frozen ±0.05 A) and
+    keeping the first clean fold (else legacy fallback)."""
+    return os.environ.get("DELFIN_FFFREE_CONFORMER_SEATING", "0") == "1"
+
+
+def _has_large_ligand(lig_groups) -> bool:
+    """True if any ligand carries more heavy atoms / donor arm than the DEFAULT cap (8)
+    — i.e. it is a complex that only reached this build because seating raised the cap.
+    Conformer re-seating is engaged ONLY for these (cheap ligands seat fine rigidly)."""
+    if not lig_groups:
+        return False
+    for lg in lig_groups:
+        try:
+            nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
+            dent = max(len(lg.get("donor_local", [1])), 1)
+        except Exception:
+            continue
+        if nheavy / dent > DEC._HEAVY_CAP_DEFAULT:
+            return True
+    return False
+
+
+def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
+                         cn=None, geom=None, donors=None):
+    """Conformer-aware seating fallback for a large-ligand build that FAILED the
+    self-gate under rigid placement (Task 2026-06-18, the dominant reach lever).
+
+    Reuses the core-preserving conformer machinery (backbone_reembed.reembed_complex):
+    metal + ALL donors are FROZEN on their native (ideal-polyhedron) vertices and only
+    the ligand backbone is re-folded via a fresh global ETKDG/DG embed grafted by rigid
+    donor-Kabsch.  Returns the FIRST re-seated fold that passes the self-gate (clash-
+    free, non-collapsed, in-shell), or None if no conformer seats cleanly -> the caller
+    bails to legacy (never-worse).  FF-free (geometry sampling, no metal-core relax),
+    deterministic (fixed ETKDG seeds), core frozen ±0.05 A (reembed_complex hard guard).
+    Never raises."""
+    if lig_groups is None:
+        return None
+    try:
+        frames = _BR.reembed_complex(metal, lig_groups, (list(base_syms), base_P))
+    except Exception:
+        return None
+    for syms, P in frames:
+        try:
+            syms, P = _maybe_relax(syms, P)
+            if _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
+                return syms, P
+        except Exception:
+            continue
+    return None
+
+
 def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
@@ -419,14 +474,27 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
+        _clg = _lig_groups_from_config(config, ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors):   # donor-aware self-gate -> skip config
-            continue
+                               donors=donors):   # donor-aware self-gate
+            # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
+            # a large-arm chelate config whose rigid build fails the self-gate is
+            # re-seated (donors frozen on the native vertices; backbone re-folded).
+            # On success the clean fold is used for THIS config; on failure the config
+            # is SKIPPED as before (never-worse).  Byte-identical when off (skip).
+            reseated = None
+            if _seating_enabled() and _has_large_ligand(_clg):
+                reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
+                                                cn=d.get("cn"), geom=d.get("geometry"),
+                                                donors=donors)
+            if reseated is None:
+                continue                          # skip this config
+            syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
-        _append_reembed(results, d["metal"], _lig_groups_from_config(config, ligands),
+        _append_reembed(results, d["metal"], _clg,
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
                         donors=donors)
     return results or None
@@ -622,14 +690,27 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             return None
         syms, P = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier -> legacy
-            return None
+        _lg = _lig_groups_from_vertex_specs(vertex_specs)
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry")):   # self-gate: destroyed/over-coord/shape-outlier
+            # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
+            # large ligands (raised heavy-cap) often FAIL the rigid placement self-gate
+            # because their backbone folds into the coordination shell.  Re-seat them by
+            # sampling conformers with the metal + donors FROZEN on the ideal vertices
+            # (±0.05 A guard) and keep the first clean fold; only large-ligand complexes
+            # are re-seated (cheap ligands seat fine rigidly).  No clean fold -> legacy
+            # (never-worse).  Byte-identical when the flag is off (this branch returns).
+            if not (_seating_enabled() and _has_large_ligand(_lg)):
+                return None
+            reseated = _seat_via_conformers(d["metal"], _lg, syms, P,
+                                            cn=d.get("cn"), geom=d.get("geometry"))
+            if reseated is None:
+                return None                 # no conformer seats cleanly -> legacy
+            syms, P = reseated
         label = base_label
         results.append((_xyz(syms, P), label))
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of THIS accepted native frame.
-        _append_reembed(results, d["metal"],
-                        _lig_groups_from_vertex_specs(vertex_specs), syms, P, label,
+        _append_reembed(results, d["metal"], _lg, syms, P, label,
                         cn=d.get("cn"), geom=d.get("geometry"))
     # CN5 polytopal completeness (#coverage): decompose defaults CN5 -> TBP-5, but SPY-5
     # is the Berry-pseudorotation partner — real CN5 complexes split between the two.

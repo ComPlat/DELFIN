@@ -50,6 +50,38 @@ def _rigid_hapto_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_RIGID_HAPTO", "0") == "1"
 
 
+# Heavy-atom per-donor-arm complexity cap (decompose ligand-complexity gate).  At the
+# default cap (8) a ligand with >8 heavy atoms / donor is REJECTED -> the whole complex
+# bails to legacy (0 enumerated isomers).  The isomer-completeness audit
+# (ISOMER_COMPLETENESS_AUDIT_2026_06_18 §4/§6) measured this single gate as the DOMINANT
+# reach gap (~51.5 % of the pool: large/conjugated ligands — phosphines with big
+# substituents, polypyridyl, large arene systems).  Conformer-aware SEATING
+# (DELFIN_FFFREE_CONFORMER_SEATING, default OFF) raises this cap so those complexes
+# reach the FF-free build, where the conformer/backbone-re-embed machinery seats the
+# large ligand and the self-gate keeps the never-worse guarantee.
+_HEAVY_CAP_DEFAULT = 8
+
+
+def _seating_enabled() -> bool:
+    """Conformer-aware seating for large ligands (default OFF -> byte-identical):
+    when ON, the per-arm heavy-atom cap is raised so large-ligand complexes enter the
+    FF-free path instead of bailing to legacy at decompose()."""
+    return os.environ.get("DELFIN_FFFREE_CONFORMER_SEATING", "0") == "1"
+
+
+def _heavy_cap() -> int:
+    """Effective per-donor-arm heavy-atom cap.  Default 8 (byte-identical).  Raised to
+    DELFIN_FFFREE_SEATING_HEAVY_CAP (default 24) when conformer seating is enabled, so
+    realistic TMC ligands (polypyridyl, substituted phosphines, large arenes) reach the
+    FF-free build; the conformer seating + self-gate enforce never-worse downstream."""
+    if not _seating_enabled():
+        return _HEAVY_CAP_DEFAULT
+    try:
+        return int(os.environ.get("DELFIN_FFFREE_SEATING_HEAVY_CAP", "24"))
+    except Exception:
+        return 24
+
+
 def _eta_groups(mol, m: int) -> List[List[int]]:
     """Detect η (hapto) groups among the metal's carbon neighbours: maximal sets
     of ≥2 metal-bound carbons that are mutually contiguous through C-C bonds
@@ -219,7 +251,7 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
         return None
     # Ligand-complexity gate (mirror of the Werner path), but EXEMPT η-faces: an
     # η-ring is placed rigidly as one unit, so its heavy-atom count is irrelevant.
-    MAX_HEAVY_PER_DONOR = 8
+    MAX_HEAVY_PER_DONOR = _heavy_cap()    # raised under conformer-seating (default 8)
     for lg in ligands:
         if lg.get("is_eta"):
             continue
@@ -329,10 +361,13 @@ def decompose(smiles: str) -> Optional[Dict]:
     has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
     # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
     # small/simple ligands place cleanly; very large conjugated ligands need
-    # conformer work the rigid placement doesn't do, so bail to None for those.
-    # Per-arm (not per-ligand) so a polydentate chelate (e.g. citrate, 13 heavy
-    # over 6 donors ~ 2/arm) is not unfairly rejected for its total size.
-    MAX_HEAVY_PER_DONOR = 8
+    # conformer work the rigid placement doesn't do, so the DEFAULT bails to None
+    # for those.  Per-arm (not per-ligand) so a polydentate chelate (e.g. citrate,
+    # 13 heavy over 6 donors ~ 2/arm) is not unfairly rejected for its total size.
+    # Conformer seating (DELFIN_FFFREE_CONFORMER_SEATING) raises the cap so the large
+    # ligand reaches the build, where the conformer-aware seating (+ backbone re-embed)
+    # places it and the self-gate enforces never-worse.  Default OFF -> cap 8 (byte-id).
+    MAX_HEAVY_PER_DONOR = _heavy_cap()
     for lg in ligands:
         nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
         if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
