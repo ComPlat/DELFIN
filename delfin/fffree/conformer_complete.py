@@ -435,10 +435,16 @@ def topology_preserved(
         for m in metals:
             shell = base_donor_min.get(m, h_to_metal_min)
             for h in range(n):
-                if nums[h] != 1 or h in exempt_h:
+                if nums[h] != 1:
                     continue
                 dh = _dist(new_coords, m, h)
-                if dh < h_to_metal_min or dh < shell - 1e-3:
+                # Absolute floor applies to EVERY H (even a donor's own alpha-H):
+                # nothing should collapse essentially onto the metal.  The
+                # RELATIVE "inside the donor shell" check is waived only for
+                # exempt alpha/agostic H (they sit legitimately near the metal).
+                if dh < h_to_metal_min:
+                    return False
+                if h not in exempt_h and dh < shell - 1e-3:
                     return False
 
     # 3. no spurious heavy-heavy bond (group crashed into another ligand).
