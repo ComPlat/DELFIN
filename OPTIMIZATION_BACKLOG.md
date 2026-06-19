@@ -107,6 +107,21 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Context-scaled tool-output elision budget** (trace-mined from fork-178,
+  ka_xn0397: a 262-tool-call refactor read ONE 77k file **149×** — 164/167 reads
+  were small paged windows, 0 exact dupes). Root cause: the fixed 60k-char
+  (~15k-token) elision budget threw away earlier reads at ~6% of a 262k-context
+  model's window, so the agent kept re-paging (~$50/turn). Fix:
+  `_tool_context_char_budget(caps)` lets tool output use ~45% of the real window
+  (~4 chars/token), floored at 60k so small models are unchanged; the loop
+  computes it once and passes it to `_elide_old_tool_results`. Live (KIT qwen
+  262k): loop budget 471859 (was 60000); reading a 24k file 3× elides nothing.
+- [ ] **CANDIDATE — agent under-uses the task list on big refactors.** Same
+  fork-178 trace: only 1 task_create + 1 task_update across 262 tool calls for a
+  multi-file refactor (Jerome has repeatedly noted the agent "forgets to check
+  off / track tasks"). The per-turn open-tasks reminder exists; consider a
+  stronger nudge to CREATE a plan up front on multi-file work, not just to close
+  open ones. Needs care not to spam single-step turns.
 - [x] **PNG viewing for KIT qwen + stale-cache flush** (bugs 20260617-140214
   "Agent kann keine PNGs anzeigen/lesen" + 20260618-172931 "Files nur nach
   Chat-Upload sichtbar"). Root cause: kit.qwen3.5-397b-A17b IS vision-capable
