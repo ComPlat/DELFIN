@@ -288,8 +288,21 @@ def _base_bond_set(
     return out
 
 
-def _md_pairs(graph: Dict) -> List[Tuple[int, int]]:
-    """Metal -> first-shell heavy donor pairs from the graph (M first)."""
+def _md_pairs(
+    graph: Dict,
+    coords: Optional[Sequence[Tuple[float, float, float]]] = None,
+    bond_tol: float = 1.30,
+) -> List[Tuple[int, int]]:
+    """Metal -> first-shell heavy donor pairs (M first).
+
+    Donors are the UNION of (a) the metal's OB-perceived heavy neighbours and
+    (b) -- when ``coords`` is supplied -- every heavy atom within
+    ``bond_tol * (cov_M + cov_d)`` of the metal in those coordinates.  The
+    geometric union is essential: OB bond perception is UNRELIABLE for long /
+    distorted M-C(carbanion) and dative bonds (AYOZIX Y-CH(SiMe3)2: OB perceives
+    NO Y-C bond on some frames), which would leave the coordination shell
+    undefended.  Deterministic.
+    """
     n = graph.get("n_atoms", 0)
     nums = graph["atomic_nums"]
     nbrs = graph["neighbours"]
@@ -298,9 +311,20 @@ def _md_pairs(graph: Dict) -> List[Tuple[int, int]]:
     for m in range(n):
         if not is_metal[m]:
             continue
+        seen = set()
         for d in nbrs[m]:
-            if nums[d] != 1:
+            if nums[d] != 1 and d not in seen:
+                seen.add(d)
                 out.append((m, d))
+        if coords is not None:
+            rm = _cov(nums[m])
+            for d in range(n):
+                if d == m or nums[d] == 1 or is_metal[d] or d in seen:
+                    continue
+                t = bond_tol * (rm + _cov(nums[d]))
+                if _dist(coords, m, d) <= t:
+                    seen.add(d)
+                    out.append((m, d))
     return out
 
 
@@ -558,7 +582,7 @@ def complete_frame(
         return [xyz]
 
     base_bonds = _base_bond_set(graph, base_coords)
-    md_pairs = _md_pairs(graph)
+    md_pairs = _md_pairs(graph, base_coords)
     ring_bonds = _ring_bonds(graph)
 
     step_rad = 2.0 * math.pi / float(max(2, n_states))
