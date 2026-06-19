@@ -28179,6 +28179,145 @@ def _rank_emitted_isomers(isomers):
         return isomers
 
 
+def _topology_gate_filter(isomers):
+    """Final UNIVERSAL topology-preservation gate over the FULL emitted ensemble.
+
+    SPEC
+    ----
+    Root cause it cures: some conformer/pucker frames of a flexible complex let a
+    NON-bonded heavy-atom pair fall to bonding distance, forging a SPURIOUS bond
+    (a topology break).  Example: ACEBOB (Re tris-carbonyl macrocycle) -- in some
+    frames a carbonyl C penetrates the macrocyclic cavity and lands ~1.47 A from a
+    ligand C/N.  At 1.47 A this reads as a perfectly normal covalent bond, so the
+    existing clash/coord self-gates are BLIND to it.  We must reject ONLY the
+    broken frames and KEEP the clean ones (never collapse the ensemble).
+
+    Method (consensus-based, NO reference/SMILES alignment needed):
+      All emitted frames for one structure share atom order.  A GENUINE covalent
+      bond is rigid -- present in ALL frames; a SPURIOUS contact appears in only a
+      minority.  So for every heavy-heavy NON-metal atom pair (i,j) we measure the
+      fraction of frames in which dist(i,j) < bond_thr(elem_i, elem_j), with
+      bond_thr = 1.15 * (cov_i + cov_j) (Cordero covalent radii; ~1.75 A for C-C).
+      A pair is a "real bond" iff that fraction >= 0.80 (bonded in the clear
+      majority).  A frame has a TOPOLOGY BREAK iff it contains a pair that is at
+      bonding distance in THIS frame yet is NOT a real bond.  Such frames are
+      dropped.  Metal-involving pairs are excluded (M-donor distances vary
+      legitimately and must never be treated as breakable bonds).
+
+    Guarantees:
+      * Geometry-only and graph-free -- no per-SMILES / per-refcode special case.
+      * NEVER-WORSE: if every frame would be dropped (or the result would be
+        empty) the ORIGINAL list is returned unchanged.
+      * Identity (returns input untouched) unless DELFIN_FFFREE_TOPOLOGY_GATE=1,
+        so output is BYTE-IDENTICAL to the baseline when off.
+      * Deterministic; never raises.
+    """
+    if not isomers or os.environ.get("DELFIN_FFFREE_TOPOLOGY_GATE", "0") != "1":
+        return isomers
+    if len(isomers) < 2:
+        # Consensus is undefined with a single frame; nothing to compare against.
+        return isomers
+    try:
+        def _radius(sym):
+            return _COVALENT_RADII.get(sym, 0.76)
+
+        # Parse every frame into (symbols, coords) sharing one atom order.
+        frames = []
+        n_atoms = None
+        for item in isomers:
+            xyz = item[0] if isinstance(item, (tuple, list)) and item else item
+            syms, xs, ys, zs = [], [], [], []
+            for ln in str(xyz).splitlines():
+                p = ln.split()
+                if len(p) >= 4:
+                    try:
+                        x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    except ValueError:
+                        continue
+                    syms.append(p[0])
+                    xs.append(x)
+                    ys.append(y)
+                    zs.append(z)
+            if n_atoms is None:
+                n_atoms = len(syms)
+            if len(syms) != n_atoms or n_atoms == 0:
+                # Frames disagree on atom count -> consensus is ill-defined; bail
+                # out safely (identity) rather than risk an unsound drop.
+                return isomers
+            frames.append((syms, xs, ys, zs))
+
+        nf = len(frames)
+        ref_syms = frames[0][0]
+
+        # Heavy (non-H), non-metal atom indices -- consensus is only meaningful
+        # for the rigid covalent backbone; H and the metal are excluded.
+        heavy = [
+            k for k in range(n_atoms)
+            if ref_syms[k] != 'H' and ref_syms[k] not in _METAL_SET
+        ]
+
+        # Precompute per-pair bond threshold (squared) once.
+        # near[(i,j)] = count of frames where dist(i,j) < bond_thr.
+        near = {}
+        thr2 = {}
+        for a in range(len(heavy)):
+            i = heavy[a]
+            ri = _radius(ref_syms[i])
+            for b in range(a + 1, len(heavy)):
+                j = heavy[b]
+                t = 1.15 * (ri + _radius(ref_syms[j]))
+                thr2[(i, j)] = t * t
+                near[(i, j)] = 0
+
+        for (syms, xs, ys, zs) in frames:
+            for a in range(len(heavy)):
+                i = heavy[a]
+                xi, yi, zi = xs[i], ys[i], zs[i]
+                for b in range(a + 1, len(heavy)):
+                    j = heavy[b]
+                    dx = xi - xs[j]
+                    dy = yi - ys[j]
+                    dz = zi - zs[j]
+                    if dx * dx + dy * dy + dz * dz < thr2[(i, j)]:
+                        near[(i, j)] += 1
+
+        # A pair is a "real bond" if bonded in the clear majority (>= 80%).
+        real_bond = set()
+        for key, cnt in near.items():
+            if cnt >= 0.80 * nf:
+                real_bond.add(key)
+
+        # Drop a frame iff any pair is bonding in THIS frame but is not a real bond.
+        kept = []
+        for item, (syms, xs, ys, zs) in zip(isomers, frames):
+            broken = False
+            for a in range(len(heavy)):
+                i = heavy[a]
+                xi, yi, zi = xs[i], ys[i], zs[i]
+                for b in range(a + 1, len(heavy)):
+                    j = heavy[b]
+                    key = (i, j)
+                    if key in real_bond:
+                        continue
+                    dx = xi - xs[j]
+                    dy = yi - ys[j]
+                    dz = zi - zs[j]
+                    if dx * dx + dy * dy + dz * dz < thr2[key]:
+                        broken = True
+                        break
+                if broken:
+                    break
+            if not broken:
+                kept.append(item)
+
+        # NEVER-WORSE: empty or all-dropped -> keep original ensemble.
+        if not kept:
+            return isomers
+        return kept
+    except Exception:
+        return isomers
+
+
 def _coord_integrity_filter(isomers):
     """Final UNIVERSAL decoordination filter over the FULL emitted ensemble at the
     public boundary -- covers BOTH the native fffree path AND the legacy generation
@@ -28201,15 +28340,15 @@ def _coord_integrity_filter(isomers):
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
-    universal coordination-integrity filter (env-gated, byte-id OFF) over the full
-    native+legacy ensemble, then ordering the ensemble so the most crystal-like
-    (least-clash) frame is first; otherwise the (isomers, error) result passes
-    through unchanged."""
+    universal coordination-integrity filter then the universal topology-preservation
+    gate (both env-gated, byte-id OFF) over the full native+legacy ensemble, then
+    ordering the ensemble so the most crystal-like (least-clash) frame is first;
+    otherwise the (isomers, error) result passes through unchanged."""
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))), r[1]
+        return _rank_emitted_isomers(_topology_gate_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_coord_integrity_filter(_filter_nonfinite_isomers(r)))
+        return _rank_emitted_isomers(_topology_gate_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r))))
     return r
 
 
