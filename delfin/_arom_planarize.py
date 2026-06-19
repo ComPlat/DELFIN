@@ -303,8 +303,6 @@ def correct_xyz(xyz: str) -> str:
     if not rings:
         return xyz
 
-    metals = [i for i, s in enumerate(syms) if _is_metal_sym(s)]
-
     components = _fuse_components(list(rings))
     pre_md = _snapshot_md_bonds(pts, syms)
     # Anchors = every atom the M-D invariant guard protects (any donor within
