@@ -211,14 +211,108 @@ def test_wuxqak_no_metal_short_circuit(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# SP2N-PLANARIZE — sp2-N / nitro planarisation fixer
+# --------------------------------------------------------------------------
+
+def _build_broken_nitromethane() -> Tuple[object, str]:
+    """Return (mol, xyz) for CH3-NO2 with a deliberately broken nitro:
+    N pushed out of the C-O-O plane, N-O desymmetrised (1.43 / 1.12 A) --
+    the AVIDAM-class defect."""
+    m = Chem.AddHs(Chem.MolFromSmiles("CN(=O)=O"))
+    AllChem.EmbedMolecule(m, randomSeed=42)
+    AllChem.MMFFOptimizeMolecule(m)
+    from delfin._fix_sp2n_planarize import (_parse_xyz, _format_xyz,
+                                            detect_nitro_groups)
+    xyz = _mol_to_xyz(m)
+    syms, pts, orig = _parse_xyz(xyz)
+    groups = detect_nitro_groups(m)
+    assert groups, "test fixture must contain a detectable nitro group"
+    g = groups[0]
+    ni, c = g["n_idx"], g["c_idx"]
+    o1, o2 = g["o_idxs"]
+    # Normal of the original (good) C-O-O plane.
+    nrm = np.cross(pts[o1] - pts[c], pts[o2] - pts[c])
+    nrm = nrm / np.linalg.norm(nrm)
+    # Push N a full 1.0 A out of plane along the plane normal (keep O fixed),
+    # then desymmetrise the two N-O bonds about the displaced N.
+    pts[ni] = pts[ni] + 1.0 * nrm
+    pts[o1] = pts[ni] + (pts[o1] - pts[ni]) / np.linalg.norm(
+        pts[o1] - pts[ni]) * 1.43                  # stretch one N-O
+    pts[o2] = pts[ni] + (pts[o2] - pts[ni]) / np.linalg.norm(
+        pts[o2] - pts[ni]) * 1.12                  # shorten the other
+    return m, _format_xyz(orig, syms, pts)
+
+
+def _nitro_metrics(mol, xyz):
+    from delfin._fix_sp2n_planarize import (_parse_xyz, detect_nitro_groups,
+                                            _angle_deg, _oop_distance)
+    syms, P, _ = _parse_xyz(xyz)
+    g = detect_nitro_groups(mol)[0]
+    ni, c = g["n_idx"], g["c_idx"]
+    o1, o2 = g["o_idxs"]
+    return (
+        float(np.linalg.norm(P[ni] - P[o1])),
+        float(np.linalg.norm(P[ni] - P[o2])),
+        _angle_deg(P[ni], P[o1], P[o2]),
+        _oop_distance(P[ni], P[o1], P[o2], P[c]),
+    )
+
+
+def test_sp2n_default_off_bit_exact(monkeypatch):
+    monkeypatch.delenv("DELFIN_FFFREE_SP2N_PLANARIZE", raising=False)
+    mol, xyz = _build_broken_nitromethane()
+    results = [(xyz, "test")]
+    out = sc._apply_fixer_sp2n_planarize_if_enabled(
+        mol, results, dual_parse_done=False)
+    assert out == results, "SP2N default-OFF must be bit-exact"
+
+
+def test_sp2n_active_planarizes_nitro(monkeypatch):
+    monkeypatch.setenv("DELFIN_FFFREE_SP2N_PLANARIZE", "1")
+    mol, xyz = _build_broken_nitromethane()
+    no1_b, no2_b, _ono_b, oop_b = _nitro_metrics(mol, xyz)
+    assert oop_b > 0.3 and abs(no1_b - no2_b) > 0.15  # fixture is broken
+    results = [(xyz, "test")]
+    out = sc._apply_fixer_sp2n_planarize_if_enabled(
+        mol, results, dual_parse_done=False)
+    new_xyz, lbl = out[0]
+    assert lbl == "test"
+    assert new_xyz != xyz, "SP2N must transform a broken nitro"
+    no1_a, no2_a, ono_a, oop_a = _nitro_metrics(mol, new_xyz)
+    assert oop_a < 0.05, f"N must become planar (oop={oop_a})"
+    assert abs(no1_a - no2_a) < 0.02, "N-O must symmetrise"
+    assert abs(no1_a - 1.22) < 0.03 and abs(no2_a - 1.22) < 0.03
+    assert abs(ono_a - 125.0) < 2.0, f"O-N-O must reach ~125 (got {ono_a})"
+
+
+def test_sp2n_dual_parse_bypass(monkeypatch):
+    monkeypatch.setenv("DELFIN_FFFREE_SP2N_PLANARIZE", "1")
+    mol, xyz = _build_broken_nitromethane()
+    results = [(xyz, "test")]
+    out = sc._apply_fixer_sp2n_planarize_if_enabled(
+        mol, results, dual_parse_done=True)
+    assert out == results, "dual_parse_done must short-circuit dispatcher"
+
+
+def test_sp2n_mol_none_safe(monkeypatch):
+    monkeypatch.setenv("DELFIN_FFFREE_SP2N_PLANARIZE", "1")
+    _mol, xyz = _build_broken_nitromethane()
+    results = [(xyz, "test")]
+    out = sc._apply_fixer_sp2n_planarize_if_enabled(
+        None, results, dual_parse_done=False)
+    assert out == results, "mol=None must return input unchanged"
+
+
+# --------------------------------------------------------------------------
 # Pipeline wiring — call-site smoke test
 # --------------------------------------------------------------------------
 
 def test_dispatchers_callable_from_module():
-    """All three dispatchers exist and are call-compatible."""
+    """All four dispatchers exist and are call-compatible."""
     for name in (
         "_apply_fixer_f19_if_enabled",
         "_apply_fixer_f25_if_enabled",
+        "_apply_fixer_sp2n_planarize_if_enabled",
         "_apply_fixer_wuxqak_if_enabled",
     ):
         fn = getattr(sc, name, None)
