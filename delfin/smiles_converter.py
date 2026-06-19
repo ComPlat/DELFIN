@@ -1705,6 +1705,43 @@ def _apply_aromatic_planarity_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_arom_planarize_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-33 (2026-06-19) dispatch — universal aromatic ring-SYSTEM
+    planarisation (heteroaromatic + fused/polycyclic + coordinated).
+
+    The Iter-24 ``_aromatic_ring_flattener`` deliberately skips coordinated
+    rings and only fuses pendant rings, so M-bound heteroaromatic donor rings
+    and partly-coordinated polycyclic chelates (the worst pucker offenders,
+    e.g. AXAGOY's C5N donor rings @ 0.13-0.16 Å OOP) stay bent.  This pass
+    flattens EVERY aromatic ring-system as one rigid unit onto its best-fit
+    plane while preserving the M-D invariant: coordinated ring atoms are
+    anchored (never moved), the plane is constrained through them, and only
+    non-anchor atoms + ring-H + first substituents are projected.
+
+    Default-OFF, byte-identical to the build commit when
+    ``DELFIN_FFFREE_AROM_PLANARIZE`` is unset (or 0).  Universal (geometric
+    aromatic-ring perception, no SMILES specialisation).  Per-system +
+    frame-level never-worse + hard M-D-invariant rollback inside the module.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_FFFREE_AROM_PLANARIZE", mol, default=0,
+    ):
+        return results
+    try:
+        from delfin._arom_planarize import correct_results as _ap_correct
+        return _ap_correct(mol, results)
+    except Exception as _ap_exc:
+        try:
+            logger.debug("Iter-33 arom-planarize skipped: %s", _ap_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_hapto_clearance_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-21 (2026-05-19): Welle-5f-F 81f8a1f-style M-X clearance final post-pass.
 
@@ -30307,6 +30344,15 @@ def _smiles_to_xyz_isomers_impl(
     # the M-ring distance / M-D invariant is untouched; ring-H dragged.
     # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
     results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-33 (2026-06-19): universal aromatic ring-SYSTEM planarisation ──
+    # Flatten EVERY aromatic ring-system (heteroaromatic + fused/polycyclic +
+    # coordinated) onto its best-fit plane — closes the Iter-24 gaps where
+    # M-bound heteroaromatic donor rings + partly-coordinated chelates stayed
+    # puckered (AXAGOY C5N donor rings 0.13-0.16 Å).  Coordinated ring atoms
+    # are anchored (M-D invariant), only non-anchor atoms + ring-H + first
+    # substituents projected.  Default-OFF byte-id (DELFIN_FFFREE_AROM_PLANARIZE).
+    results = _apply_arom_planarize_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-25 (2026-05-20): final bond-decollapse corrector ───────────────
     # Spring-relax the non-metal heavy graph to physical bond lengths + repel
