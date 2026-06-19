@@ -28337,18 +28337,49 @@ def _coord_integrity_filter(isomers):
         return isomers
 
 
+def _conf_complete_filter(isomers):
+    """UNIVERSAL conformer-completeness pass over the FULL emitted ensemble.
+
+    Root cause it cures (user eye-validation): the conformer search is INCOMPLETE
+    (bulky pendant rotors -- tBu / biaryl / pincer arms -- never rotate, ATIDEM /
+    ABUSEY), some FREE rotations BREAK topology (tear an M-D bond / put an H on the
+    M-C axis / forge a spurious inter-ligand bond, AYOZIX), and symmetry-equivalent
+    rotamers are DUPLICATED (ATOSAE).  This pass enumerates every heavy-moving
+    rotatable axis as HINDERED rotations on a deterministic staggered grid, hard-
+    gates each rotamer for topology preservation (M-D intact, ring intact, no
+    spurious bond, no H invading the metal sphere), then RMSD-dedups -- complete
+    coverage without bloat.
+
+    Identity (returns input untouched) unless DELFIN_FFFREE_CONF_COMPLETE=1, so
+    output is BYTE-IDENTICAL to baseline when off.  FF-free, deterministic, never
+    raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_CONF_COMPLETE", "0") != "1":
+        return isomers
+    try:
+        from delfin.fffree.conformer_complete import apply_to_ensemble
+        return apply_to_ensemble(isomers) or isomers
+    except Exception:
+        return isomers
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
-    universal coordination-integrity filter then the universal topology-preservation
-    gate (both env-gated, byte-id OFF) over the full native+legacy ensemble, then
-    ordering the ensemble so the most crystal-like (least-clash) frame is first;
-    otherwise the (isomers, error) result passes through unchanged."""
+    universal coordination-integrity filter, the conformer-completeness pass, then
+    the universal topology-preservation gate (all env-gated, byte-id OFF) over the
+    full native+legacy ensemble, then ordering the ensemble so the most crystal-like
+    (least-clash) frame is first; otherwise the (isomers, error) result passes
+    through unchanged.
+
+    Order rationale: completeness runs AFTER coord-integrity (so it expands only
+    coordinated frames) and BEFORE the topology gate (so every newly-generated
+    conformer is additionally vetted by the consensus topology gate as defence in
+    depth), and ranking runs last over the full expanded set."""
     r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_topology_gate_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))), r[1]
+        return _rank_emitted_isomers(_topology_gate_filter(_conf_complete_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_topology_gate_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r))))
+        return _rank_emitted_isomers(_topology_gate_filter(_conf_complete_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))
     return r
 
 
