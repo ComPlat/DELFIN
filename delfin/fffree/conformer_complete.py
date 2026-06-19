@@ -682,19 +682,129 @@ def complete_frame(
     return out_xyz
 
 
+def gated_rotamers(
+    xyz: str,
+    n_states: int = 3,
+    max_dofs: int = 5,
+    grid_cap: int = 96,
+    md_tol: float = 0.45,
+    couple: bool = True,
+) -> Optional[Tuple[List[str], List[List[Tuple[float, float, float]]]]]:
+    """Return ``(symbols, [base_coords, rot_coords, ...])`` -- every topology-gated
+    rotamer of ONE input frame, WITHOUT per-frame RMSD-dedup or cap (those run at
+    the ENSEMBLE level so duplicates collapse and the cap bounds the WHOLE
+    structure, not each base frame).  ``base_coords`` is always element 0.
+
+    Returns ``None`` on failure / no DOFs (the caller keeps the base frame as-is).
+    Deterministic.
+    """
+    ob_mol = _build_ob_mol_from_xyz(xyz)
+    if ob_mol is None:
+        return None
+    graph = _graph_from_ob(ob_mol)
+    if not graph:
+        return None
+    try:
+        symbols, base_coords = _parse_delfin_xyz(xyz)
+    except Exception:
+        return None
+    if len(symbols) != graph["n_atoms"]:
+        return None
+    dofs = identify_complete_dofs(graph, max_dofs=max_dofs)
+    if not dofs:
+        return None
+
+    base_bonds = _base_bond_set(graph, base_coords)
+    md_pairs = _md_pairs(graph, base_coords)
+    ring_bonds = _ring_bonds(graph)
+    step_rad = 2.0 * math.pi / float(max(2, n_states))
+
+    accepted: List[Tuple[Tuple[int, ...], List[Tuple[float, float, float]]]] = []
+    accepted.append((tuple([0] * len(dofs)), list(base_coords)))
+
+    for combo in _grid_iter(len(dofs), n_states, grid_cap):
+        if all(s == 0 for s in combo):
+            continue
+        coords = list(base_coords)
+        for di, state in enumerate(combo):
+            if state == 0:
+                continue
+            dof = dofs[di]
+            ax, ay, az = coords[dof["anchor"]]
+            px, py, pz = coords[dof["pivot"]]
+            axis = (px - ax, py - ay, pz - az)
+            coords = _rodrigues_rotate(
+                coords, (ax, ay, az), axis, step_rad * state, dof["rotating"]
+            )
+        if topology_preserved(
+            graph, base_coords, coords, base_bonds, md_pairs, ring_bonds,
+            md_tol=md_tol,
+        ):
+            accepted.append((combo, coords))
+
+    if couple and len(dofs) >= 2:
+        moved_single = {di for (combo, _c) in accepted
+                        for di in range(len(dofs)) if combo[di] != 0
+                        and sum(1 for s in combo if s != 0) == 1}
+        stuck = [di for di in range(len(dofs)) if di not in moved_single]
+        for di in stuck[:max_dofs]:
+            dj = (di + 1) % len(dofs)
+            if dj == di:
+                continue
+            for si in range(1, n_states):
+                for sj in range(0, n_states):
+                    coords = list(base_coords)
+                    for (dd, st) in ((di, si), (dj, sj)):
+                        if st == 0:
+                            continue
+                        dof = dofs[dd]
+                        ax, ay, az = coords[dof["anchor"]]
+                        px, py, pz = coords[dof["pivot"]]
+                        axis = (px - ax, py - ay, pz - az)
+                        coords = _rodrigues_rotate(
+                            coords, (ax, ay, az), axis,
+                            step_rad * st, dof["rotating"]
+                        )
+                    if topology_preserved(
+                        graph, base_coords, coords, base_bonds, md_pairs,
+                        ring_bonds, md_tol=md_tol,
+                    ):
+                        combo = [0] * len(dofs)
+                        combo[di] = si
+                        combo[dj] = sj
+                        accepted.append((tuple(combo), coords))
+
+    # deterministic ordering: identity first, then by combo radix
+    accepted.sort(key=lambda ac: (sum(1 for s in ac[0] if s != 0), ac[0]))
+    return symbols, [c for (_combo, c) in accepted]
+
+
 # ---------------------------------------------------------------------------
 # Public ensemble-level wire-in.
 # ---------------------------------------------------------------------------
 
 
 def apply_to_ensemble(isomers):
-    """Expand each emitted ``(xyz, label)`` frame with completeness conformers.
+    """Expand the emitted ``(xyz, label)`` ensemble of ONE structure with
+    completeness conformers, with ENSEMBLE-GLOBAL dedup and an ENSEMBLE-GLOBAL
+    cap (so symmetry-equivalent rotamers from DIFFERENT base frames collapse and
+    the total frame count is bounded for the whole structure, not per base frame
+    -- the ATOSAE bloat fix).
 
     Identity (returns *isomers* untouched) unless
     ``DELFIN_FFFREE_CONF_COMPLETE=1`` -> output BYTE-IDENTICAL when off.
 
-    Each input frame ``(xyz, label)`` becomes ``(base_xyz, label)`` followed by
-    ``(conf_xyz, "<label>_conf-N")`` for each accepted, deduped rotamer.
+    Contract:
+      * Every ORIGINAL base frame is kept, in order, under its original label
+        (a distinct coordination isomer the upstream chose must never be dropped).
+      * Generated conformers are RMSD-deduped against ALL kept frames (base
+        frames + already-accepted conformers across the whole ensemble), keep
+        first; symmetry-equivalent / near-identical rotamers collapse.
+      * A global cap (``DELFIN_FFFREE_CONF_MAX_PER_STRUCT``) bounds the TOTAL
+        emitted frame count for the structure.
+      * Frames share atom order (one structure) so heavy-atom Kabsch RMSD is a
+        valid cross-frame comparison.
+
     Deterministic; never raises (falls back to *isomers* on error).
     """
     if not isomers or not _is_enabled():
@@ -704,33 +814,76 @@ def apply_to_ensemble(isomers):
         max_dofs = _env_int("DELFIN_FFFREE_CONF_MAX_DOFS", 5, lo=1, hi=32)
         grid_cap = _env_int("DELFIN_FFFREE_CONF_GRID_CAP", 96, lo=2, hi=8192)
         rmsd_dedup = _env_float("DELFIN_FFFREE_CONF_RMSD", 0.5, lo=0.0, hi=5.0)
-        max_per = _env_int("DELFIN_FFFREE_CONF_MAX_PER_STRUCT", 24, lo=1, hi=512)
+        max_total = _env_int("DELFIN_FFFREE_CONF_MAX_PER_STRUCT", 24, lo=1, hi=512)
         md_tol = _env_float("DELFIN_FFFREE_CONF_MD_TOL", 0.45, lo=0.0, hi=3.0)
         couple = _env_bool("DELFIN_FFFREE_CONF_COUPLE", True)
     except Exception:
         return isomers
 
-    out = []
     try:
+        # ---- 1. keep ALL base frames verbatim; seed the global dedup pool. ----
+        out = []
+        kept_coords: List[List[Tuple[float, float, float]]] = []
+        kept_syms: List[List[str]] = []
+        base_meta = []  # (out_index, symbols, base_coords) per parseable base frame
         for item in isomers:
             if isinstance(item, (tuple, list)) and len(item) >= 2:
                 xyz, label = item[0], item[1]
                 rest = tuple(item[2:])
             else:
                 xyz, label, rest = item, "", ()
-            frames = complete_frame(
-                xyz, n_states=n_states, max_dofs=max_dofs, grid_cap=grid_cap,
-                rmsd_dedup=rmsd_dedup, max_emit=max_per, md_tol=md_tol,
-                couple=couple,
-            )
-            if not frames:
-                out.append(item)
+            out.append((xyz, label) + rest if rest else (xyz, label))
+            try:
+                syms, co = _parse_delfin_xyz(xyz)
+            except Exception:
+                base_meta.append(None)
                 continue
-            # frame 0 keeps the original label verbatim
-            out.append((frames[0], label) + rest if rest else (frames[0], label))
-            for k, fxyz in enumerate(frames[1:], start=1):
-                clbl = f"{label}_conf-{k}" if label else f"conf-{k}"
-                out.append((fxyz, clbl) + rest if rest else (fxyz, clbl))
+            kept_coords.append([tuple(c) for c in co])
+            kept_syms.append(syms)
+            base_meta.append((len(out) - 1, label, rest, xyz, syms, co))
+
+        # ---- 2. generate gated rotamers per base frame; global dedup + cap. ----
+        n_added = 0
+        appended = []  # (after_out_index, xyz, label, rest)
+        for meta in base_meta:
+            if meta is None:
+                continue
+            if n_added >= max_total:
+                break
+            _oi, label, rest, xyz, syms, _co = meta
+            gr = gated_rotamers(
+                xyz, n_states=n_states, max_dofs=max_dofs, grid_cap=grid_cap,
+                md_tol=md_tol, couple=couple,
+            )
+            if not gr:
+                continue
+            g_syms, coord_sets = gr
+            kc = 0  # per-base-frame conformer counter (label suffix)
+            # coord_sets[0] is the base (already in the pool as a base frame);
+            # generated rotamers start at index 1.
+            for coords in coord_sets[1:]:
+                if n_added >= max_total:
+                    break
+                dup = False
+                for ks, kcrd in zip(kept_syms, kept_coords):
+                    if len(ks) == len(g_syms) and \
+                            _kabsch_rmsd_heavy(g_syms, kcrd, coords) < rmsd_dedup:
+                        dup = True
+                        break
+                if dup:
+                    continue
+                kept_syms.append(g_syms)
+                kept_coords.append([tuple(c) for c in coords])
+                kc += 1
+                clbl = f"{label}_conf-{kc}" if label else f"conf-{kc}"
+                fxyz = _format_delfin_xyz(g_syms, coords)
+                appended.append((fxyz, clbl, rest))
+                n_added += 1
+
+        for (fxyz, clbl, rest) in appended:
+            out.append((fxyz, clbl) + rest if rest else (fxyz, clbl))
+        if n_added >= max_total:
+            logger.debug("conf-complete global cap %d hit", max_total)
     except Exception as exc:  # pragma: no cover — safety net
         logger.debug("conf-complete ensemble pass failed: %s", exc)
         return isomers
