@@ -107,6 +107,19 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Dir grant holds for the session** (bug 20260617-065503, ka_ew7404: "doppelt
+  auf Erlauben tippen" — really once per file). KitConfirmBroker kept no session
+  allowlist, so every read in a just-allowed directory re-prompted. A plain
+  "Erlauben (1×)" on an outside-workspace access now adds that dir to the LIVE
+  perms (non-persisted) via a new `extra_dir_session` persist-kind →
+  `add_kit_workspace_dir(persist=False)`; Dauerhaft still persists, deny/bash
+  grant nothing. Live (KIT qwen): two reads in an outside dir → ONE approval, not
+  two. Unit tests cover all four button/kind paths.
+- [x] **Session dropdown shows "Code" not "solo"** (bug 20260617-152728,
+  ka_ew7404). The status mode/role badges already mapped via `_mode_label`/
+  `_format_role_label`, but the session-picker still formatted the raw id →
+  "[solo, N msgs]". Mapped it through `_mode_label`; verified "[Code, 90 msgs]".
+  (Both ew7404 reports now fixed — ready for Solved.)
 - [x] **Context-scaled tool-output elision budget** (trace-mined from fork-178,
   ka_xn0397: a 262-tool-call refactor read ONE 77k file **149×** — 164/167 reads
   were small paged windows, 0 exact dupes). Root cause: the fixed 60k-char
