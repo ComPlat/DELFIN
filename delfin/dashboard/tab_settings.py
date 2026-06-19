@@ -410,6 +410,14 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
         description='Out tokens',
         layout=widgets.Layout(width='200px', height='28px'),
     )
+    # Per-turn tool-round budget (agent.max_tool_rounds). High default so
+    # long multi-file tasks finish in one turn; 0 → uncapped (cost cap +
+    # consecutive-fail abort remain the real stops).
+    max_tool_rounds_input = widgets.BoundedIntText(
+        value=500, min=0, max=5000, step=50,
+        description='Tool rounds',
+        layout=widgets.Layout(width='190px', height='28px'),
+    )
     agentopt_save_btn = widgets.Button(
         description='Save agent extras', button_style='primary',
         layout=widgets.Layout(width='160px', height='28px'),
@@ -442,6 +450,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'max_output_tokens': int(subagent_tokens_input.value or 16000),
             })
             payload['agent']['subagents'] = subs
+            payload['agent']['max_tool_rounds'] = int(
+                max_tool_rounds_input.value)
             save_settings(payload, settings_path)
             agentopt_save_status.value = (
                 '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
@@ -1027,6 +1037,10 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
             subagent_tokens_input.value = int(subagents_payload.get('max_output_tokens', 16000) or 16000)
         except Exception:
             subagent_tokens_input.value = 16000
+        try:
+            max_tool_rounds_input.value = int(agent_payload.get('max_tool_rounds', 500))
+        except Exception:
+            max_tool_rounds_input.value = 500
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -3266,6 +3280,18 @@ def create_tab(ctx, calc_refs=None, archive_refs=None):
                 'investigate/research longer before reporting back (more '
                 'tokens/time). Defaults: 300&nbsp;s wall · 40 tool calls · '
                 '16k output tokens. Empty/0 → default.'
+                '</div>'
+            ),
+            widgets.HTML('<b style="margin-top:6px; display:block;">'
+                         '🔁 Agent run limit (per turn)</b>'),
+            widgets.HBox([max_tool_rounds_input], layout=_row_layout),
+            widgets.HTML(
+                '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
+                'How many tool-call rounds the agent runs in a single turn '
+                'before pausing with a "send continue" notice. Default '
+                '500 — high enough that long multi-file tasks finish in one '
+                'turn. The cost circuit-breaker and the repeated-error abort '
+                'stay the real safety nets. 0 → uncapped.'
                 '</div>'
             ),
             widgets.HBox(

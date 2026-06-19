@@ -2784,6 +2784,23 @@ _TOOL_KEEP_RECENT = 8               # most recent tool results kept verbatim
 _ELIDED_PREFIX = "[earlier tool output elided to free context"
 
 
+def _resolve_max_tool_rounds() -> int:
+    """Per-turn tool-round budget (``agent.max_tool_rounds``, default 500).
+
+    A value of 0 (or negative) disables the round cap — the per-turn cost
+    circuit-breaker and the consecutive-failure abort then remain the only
+    stops. Reads defensively so a missing/corrupt settings file falls back
+    to the 500 default rather than throwing inside the stream loop.
+    """
+    try:
+        from delfin import user_settings
+        val = int((user_settings.load_settings().get("agent", {}) or {})
+                  .get("max_tool_rounds", 500))
+    except Exception:
+        return 500
+    return 100_000 if val <= 0 else val
+
+
 def _elide_old_tool_results(
     api_messages: list[dict],
     *,
@@ -6088,11 +6105,14 @@ class OpenAIClient(_BaseClient):
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
         # install easily eats 20+ rounds before the model can wrap up,
-        # leading to silent mid-task stops. 50 is generous enough that
-        # most long tasks finish; if a turn truly needs more, the
-        # message_delta below surfaces "max_tool_rounds" and the user
-        # can resume with a "continue" message.
-        _MAX_TOOL_ROUNDS = 50
+        # leading to silent mid-task stops. The default is now 500
+        # (agent.max_tool_rounds) so genuine multi-file work finishes in a
+        # single turn instead of forcing manual "continue" nudges; the
+        # per-turn cost circuit-breaker and the consecutive-failure abort
+        # below remain the real safety nets. 0 → uncapped. If a turn still
+        # exhausts the budget, the message_delta below surfaces
+        # "max_tool_rounds" and the user can resume with a "continue".
+        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds()
 
         # Consecutive identical-error abort.
         # Some weaker models (qwen3.5 on KIT vllm) occasionally produce a

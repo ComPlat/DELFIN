@@ -101,6 +101,14 @@ DEFAULT_SETTINGS = {
         # Soft warning when cumulative session cost crosses this USD
         # mark. The agent shows a banner; nothing is blocked.
         "cost_soft_limit_usd": 5.0,
+        # Per-turn tool-round budget for the OpenAI/KIT/Ollama agent loop.
+        # The agent runs up to this many tool-call rounds in ONE user turn
+        # before stopping with a "send continue" notice. 500 is high enough
+        # that real multi-file work finishes in a single turn instead of
+        # forcing manual nudges; the per-turn cost circuit-breaker
+        # (cost_hard_limit_usd) and the consecutive-failure abort remain
+        # the actual safety nets. 0 → uncapped (cost/fail-abort only).
+        "max_tool_rounds": 500,
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE
