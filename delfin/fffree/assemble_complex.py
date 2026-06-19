@@ -551,6 +551,95 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
     return moved, a
 
 
+def _diatomic_orient_enabled() -> bool:
+    """DELFIN_FFFREE_DIATOMIC_ORIENT — post-placement orientation guard for linear
+    diatomic donors (M-C#O carbonyl, M-C#N cyanide, M-N=O nitrosyl).  Default OFF
+    => the guard is never invoked => byte-identical."""
+    return os.environ.get("DELFIN_FFFREE_DIATOMIC_ORIENT", "0") == "1"
+
+
+def _diatomic_donor_partner(lg):
+    """For a strictly diatomic (exactly TWO heavy atoms) monodentate ligand, return
+    ``(donor_elem, partner_elem)`` where the DONOR is the atom the SMILES bonds to the
+    metal (``lg['donor_local_idxs'][0]`` in the ligand graph) and the PARTNER is the
+    other heavy atom — but ONLY when the two heavy atoms are DIFFERENT elements (so the
+    correct orientation is unambiguous: C#O, C#N, N=O).  Returns ``None`` otherwise
+    (not diatomic, polydentate, or homonuclear N#N/etc. where no flip is detectable).
+
+    CONNECTIVITY-ONLY: the donor element comes from the molecular graph, never from a
+    hardcoded "C is the donor" rule -> covers C-donor carbonyl/cyanide AND N-donor
+    nitrosyl correctly.  Used by the post-placement diatomic-orientation guard."""
+    try:
+        mol = lg["mol"]
+        dons = lg.get("donor_local_idxs", [])
+        if int(lg.get("denticity", 0)) != 1 or len(dons) != 1:
+            return None
+        heavy = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
+        if len(heavy) != 2:
+            return None                       # not a diatomic
+        di = int(dons[0])
+        if di not in heavy:
+            return None
+        partner = heavy[0] if heavy[1] == di else heavy[1]
+        de = mol.GetAtomWithIdx(di).GetSymbol()
+        pe = mol.GetAtomWithIdx(partner).GetSymbol()
+        if de == pe:
+            return None                       # homonuclear -> orientation symmetric
+        return de, pe
+    except Exception:
+        return None
+
+
+def _orient_diatomic_block(Q, lsyms, donor_elem, partner_elem, metal_pos, vertex):
+    """Re-orient a placed diatomic ligand block ``Q`` (atoms ordered by ``lsyms``) so
+    the SMILES-bonded DONOR atom faces the metal: donor at the coordination vertex,
+    partner pointing OUTWARD along the metal->vertex axis.
+
+    The donor / partner atoms are located in the placed block BY ELEMENT (the diatomic
+    is heteronuclear, see ``_diatomic_donor_partner``), so the guard is robust even when
+    the placed-block atom ordering differs from the ligand-graph ordering (e.g. a shared
+    conformer-cache entry built from another instance of the same ligand type — the
+    actual root cause of the M-O-C isocarbonyl flip).
+
+    No-op (returns ``Q`` unchanged) when the donor is ALREADY closer to the metal than
+    the partner.  Rigid: the donor-partner bond length is preserved exactly.  Pure
+    geometry, deterministic, never raises (returns ``Q`` on any failure)."""
+    try:
+        di = [i for i, s in enumerate(lsyms) if s == donor_elem]
+        pi = [i for i, s in enumerate(lsyms) if s == partner_elem]
+        if len(di) != 1 or len(pi) != 1:
+            return Q                          # ambiguous (extra atoms) -> leave as built
+        di, pi = di[0], pi[0]
+        d_pos = np.asarray(Q[di], float)
+        p_pos = np.asarray(Q[pi], float)
+        m = np.asarray(metal_pos, float)
+        if not (np.all(np.isfinite(d_pos)) and np.all(np.isfinite(p_pos))):
+            return Q
+        d_md = float(np.linalg.norm(d_pos - m))
+        p_md = float(np.linalg.norm(p_pos - m))
+        if d_md <= p_md:
+            return Q                          # already donor-bound -> byte-identical
+        # flipped (partner closer to metal): rebuild the rigid 2-atom unit with the
+        # donor at the vertex and the partner outward along the metal->vertex axis.
+        bond = float(np.linalg.norm(p_pos - d_pos))
+        if bond < 1e-6:
+            return Q
+        vtx = np.asarray(vertex, float)
+        axis = vtx - m
+        na = float(np.linalg.norm(axis))
+        if na < 1e-6:
+            return Q
+        out = axis / na                       # metal -> vertex = outward direction
+        newQ = np.array(Q, float)
+        newQ[di] = vtx                         # donor seats on the vertex
+        newQ[pi] = vtx + out * bond            # partner points outward, bond preserved
+        if not np.all(np.isfinite(newQ)):
+            return Q
+        return newQ
+    except Exception:
+        return Q
+
+
 def assemble_monodentate(metal: str, ligand_smiles: str, donor_idx: int,
                          geometry: str, thetas=None) -> Tuple[List[str], np.ndarray]:
     """Assemble; thetas[i] = rotation of ligand i about its own M-D axis (free DOF
@@ -887,6 +976,14 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                 lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
                 R = _rot_align(lp, -Vunit)
                 Q = (lPv - lPv[di]) @ R.T + vertex
+                # diatomic-orientation guard (env-gated, default OFF -> byte-identical):
+                # keep the SMILES-bonded donor atom (not its partner) at the vertex.
+                if _diatomic_orient_enabled():
+                    _dp = _diatomic_donor_partner(
+                        {"mol": frag, "donor_local_idxs": [di], "denticity": 1})
+                    if _dp is not None:
+                        Q = _orient_diatomic_block(
+                            Q, lsyms, _dp[0], _dp[1], np.zeros(3), vertex)
             cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
@@ -990,6 +1087,13 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
                 lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
                 R = _rot_align(lp, -Vunit)
                 Q = (lPv - lPv[di]) @ R.T + vertex
+                # diatomic-orientation guard (env-gated, default OFF -> byte-identical)
+                if _diatomic_orient_enabled():
+                    _dp = _diatomic_donor_partner(
+                        {"mol": frag, "donor_local_idxs": [di], "denticity": 1})
+                    if _dp is not None:
+                        Q = _orient_diatomic_block(
+                            Q, lsyms, _dp[0], _dp[1], np.zeros(3), vertex)
             if not np.all(np.isfinite(Q)):
                 continue
             cl = _clash_count(Q, metal_P, lsyms, metal_sym)
@@ -1935,6 +2039,19 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 else:
                     lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, dons[0])
                     Q = (lPv - lPv[dons[0]]) @ _rot_align(lp, -Vunit).T + Vunit * md
+                    # Post-placement diatomic-orientation guard (env-gated, default OFF
+                    # => byte-identical): for a linear diatomic donor (M-C#O carbonyl /
+                    # M-C#N cyanide / M-N=O nitrosyl) make sure the SMILES-bonded DONOR
+                    # atom — not its partner — sits at the vertex.  A shared conformer
+                    # cache (keyed by canonical SMILES) can hand back a block whose atom
+                    # ordering differs from this ligand's graph, flipping the unit to an
+                    # M-O-C isocarbonyl; the guard reflects it donor-first.  Connectivity-
+                    # derived donor element, no per-case logic.
+                    if _diatomic_orient_enabled():
+                        _dp = _diatomic_donor_partner(lg)
+                        if _dp is not None:
+                            Q = _orient_diatomic_block(
+                                Q, lsyms, _dp[0], _dp[1], np.zeros(3), Vunit * md)
             else:
                 # chelate (bi-/tri-dentate): the d assigned vertices host the d donors;
                 # arm index i (config order) seats on verts[i] in FIXED correspondence
