@@ -344,17 +344,22 @@ def topology_preserved(
     3.  NO SPURIOUS BOND: no heavy-heavy pair that was NON-bonded in the base
         falls below ``spurious_tol * (cov_i + cov_j)`` (a forged bond / a group
         crashing into another ligand).
-    4.  NO H ON / IN THE METAL: no hydrogen is closer to a metal than
-        ``h_to_metal_min`` Angstrom, and no H is closer to its metal than the
-        nearest carbon/heavy donor on that metal (the AYOZIX H-on-M-C-axis
-        artifact).  This is geometry-only: an H must not invade the coordination
-        sphere.
+    4.  NO H ON / IN THE METAL: a hydrogen that is NOT bonded to a coordinating
+        donor atom (i.e. not a legitimate alpha / agostic H) must not invade the
+        metal coordination sphere -- it must stay no closer than the metal's
+        nearest-heavy-donor distance MEASURED ON THE BASE FRAME (minus a tiny
+        epsilon), and never closer than an absolute floor.  This catches the
+        AYOZIX artifact where an SiMe3 methyl H swings onto the M-C axis / into
+        the metal.  alpha-H's (bonded directly to a donor carbon, e.g. the
+        Y-CH(SiMe3)2 methine H) are exempt because they ARE legitimately near
+        the metal in the base structure.  Geometry-only.
 
     Pure geometry, deterministic.
     """
     n = graph.get("n_atoms", 0)
     nums = graph["atomic_nums"]
     is_metal = graph["is_metal"]
+    nbrs = graph.get("neighbours", [[] for _ in range(n)])
 
     # 1. M-D intact
     for (m, d) in md_pairs:
@@ -366,24 +371,36 @@ def topology_preserved(
         if abs(_dist(new_coords, i, j) - _dist(base_coords, i, j)) > ring_tol:
             return False
 
-    # 4. no H invading a metal coordination sphere (AYOZIX).  Precompute the
-    #    nearest heavy-donor distance per metal in the NEW frame; any H closer
-    #    than min(h_to_metal_min, that donor distance) is a violation.
+    # 4. no peripheral H invading a metal coordination sphere (AYOZIX).
     metals = [m for m in range(n) if is_metal[m]]
     if metals:
-        # nearest heavy donor distance per metal (base coordination shell)
-        donor_min = {}
+        # donor atoms per metal + nearest-donor distance on the BASE frame (the
+        # reference shell the rotation must not penetrate).
+        donors_of = {m: [] for m in metals}
         for (m, d) in md_pairs:
-            dd = _dist(new_coords, m, d)
-            if m not in donor_min or dd < donor_min[m]:
-                donor_min[m] = dd
+            if m in donors_of:
+                donors_of[m].append(d)
+        base_donor_min = {}
         for m in metals:
-            floor = donor_min.get(m, h_to_metal_min)
+            base_donor_min[m] = min(
+                (_dist(base_coords, m, d) for d in donors_of[m]),
+                default=h_to_metal_min,
+            )
+        # an H is "exempt" if it is bonded to ANY coordinating donor atom (alpha
+        # / agostic H -- legitimately close to the metal already in the base).
+        donor_atoms = {d for ds in donors_of.values() for d in ds}
+        exempt_h = set()
+        for d in donor_atoms:
+            for h in nbrs[d]:
+                if 0 <= h < n and nums[h] == 1:
+                    exempt_h.add(h)
+        for m in metals:
+            shell = base_donor_min.get(m, h_to_metal_min)
             for h in range(n):
-                if nums[h] != 1:
+                if nums[h] != 1 or h in exempt_h:
                     continue
                 dh = _dist(new_coords, m, h)
-                if dh < h_to_metal_min or dh < floor - 0.15:
+                if dh < h_to_metal_min or dh < shell - 1e-3:
                     return False
 
     # 3. no spurious heavy-heavy bond (group crashed into another ligand).
