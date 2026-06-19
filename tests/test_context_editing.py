@@ -72,4 +72,56 @@ def test_called_each_round_in_source():
            / "delfin" / "agent" / "api_client.py").read_text(encoding="utf-8")
     i = src.find("for _round in range(_MAX_TOOL_ROUNDS")
     assert i != -1
-    assert "_elide_old_tool_results(api_messages)" in src[i:i + 600]
+    # Called each round with the context-scaled budget (bug 172455).
+    assert "_elide_old_tool_results(api_messages, char_budget=" in src[i:i + 600]
+
+
+# ---------------------------------------------------------------------------
+# Context-scaled elision budget (bug 172455: a 262k model must keep far more
+# tool output than the fixed 60k-char default, so it stops re-paging files)
+# ---------------------------------------------------------------------------
+
+from delfin.agent.api_client import (
+    _tool_context_char_budget, _TOOL_CONTEXT_CHAR_BUDGET,
+)
+
+
+class _Caps:
+    def __init__(self, ctx):
+        self.context_window = ctx
+
+
+def test_budget_floor_when_caps_missing_or_small():
+    # None caps, zero/None window, and small models all keep the 60k floor.
+    assert _tool_context_char_budget(None) == _TOOL_CONTEXT_CHAR_BUDGET
+    assert _tool_context_char_budget(_Caps(0)) == _TOOL_CONTEXT_CHAR_BUDGET
+    assert _tool_context_char_budget(_Caps(None)) == _TOOL_CONTEXT_CHAR_BUDGET
+    # 8k model: 8192*0.45*4 = 14745 < 60000 → floor, never smaller than today.
+    assert _tool_context_char_budget(_Caps(8192)) == _TOOL_CONTEXT_CHAR_BUDGET
+
+
+def test_budget_scales_up_for_big_context():
+    big = _tool_context_char_budget(_Caps(262_144))
+    assert big == int(262_144 * 0.45 * 4)        # ~471k chars
+    assert big > _TOOL_CONTEXT_CHAR_BUDGET * 5   # far more than the fixed default
+
+
+def test_big_budget_keeps_what_small_budget_elides():
+    # 12 tool results of 8000 chars = 96000 total.
+    def _mk():
+        m = [{"role": "system", "content": "s"}]
+        for i in range(12):
+            m.append({"role": "assistant", "content": f"r{i}",
+                      "tool_calls": [{"id": f"c{i}"}]})
+            m.append({"role": "tool", "tool_call_id": f"c{i}",
+                      "content": "X" * 8000})
+        return m
+    small = _mk()
+    big = _mk()
+    # Default (small) budget elides; a 262k-scaled budget (~471k) keeps all.
+    n_small = _elide_old_tool_results(
+        small, char_budget=_tool_context_char_budget(_Caps(8192)))
+    n_big = _elide_old_tool_results(
+        big, char_budget=_tool_context_char_budget(_Caps(262_144)))
+    assert n_small >= 1            # 96k > 60k floor → some elided
+    assert n_big == 0              # 96k < 471k → nothing elided, no re-paging

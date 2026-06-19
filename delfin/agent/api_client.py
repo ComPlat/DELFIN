@@ -2804,6 +2804,28 @@ def _resolve_max_tool_rounds() -> int:
     return 100_000 if val <= 0 else val
 
 
+def _tool_context_char_budget(caps) -> int:
+    """Char budget for accumulated tool output before the OLDEST results are
+    elided, scaled to the model's real context window.
+
+    The fixed 60k-char (~15k-token) default elides aggressively — fine for an
+    8k local model, but on a 262k-context model (e.g. KIT qwen) it throws away
+    earlier file reads at ~6% of the window, forcing the agent to re-page the
+    same large file dozens of times during a refactor (bug 172455: 149 reads of
+    one 77k file, ~$50/turn). Allow tool output to use ~45% of the window
+    (~4 chars/token), leaving room for system + conversation + generation. Never
+    drop below today's 60k floor, so small models are unaffected.
+    """
+    floor = _TOOL_CONTEXT_CHAR_BUDGET
+    try:
+        ctx = int(getattr(caps, "context_window", 0) or 0)
+    except Exception:
+        ctx = 0
+    if ctx <= 0:
+        return floor
+    return max(floor, int(ctx * 0.45 * 4))
+
+
 def _elide_old_tool_results(
     api_messages: list[dict],
     *,
@@ -6149,12 +6171,18 @@ class OpenAIClient(_BaseClient):
         _last_error_signature: str | None = None
         _consecutive_failure_count = 0
 
+        # Scale the tool-output elision budget to the model's real context
+        # window so a big-context model keeps its earlier file reads instead
+        # of re-paging them (bug 172455). Computed once — caps don't change
+        # mid-turn.
+        _tool_budget = _tool_context_char_budget(_caps)
+
         for _round in range(_MAX_TOOL_ROUNDS + 1):
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn
             # doesn't blow the input-token budget. No-op under budget.
-            _elide_old_tool_results(api_messages)
+            _elide_old_tool_results(api_messages, char_budget=_tool_budget)
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": api_messages,
