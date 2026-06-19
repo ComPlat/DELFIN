@@ -57,6 +57,12 @@ _LEGACY_WINDOW = 100_000
 
 _CACHE_TTL_S = 24 * 3600
 _CACHE_PATH = Path.home() / ".delfin" / "model_capabilities_cache.json"
+# Bump when the MEANING of a cached field changes so stale entries are
+# discarded on load instead of lingering for the 24h TTL. v2: live vision
+# is now read from KIT's info.meta.capabilities.vision — pre-v2 live entries
+# wrongly cached supports_vision=False for vision-capable KIT models
+# (bug 20260617-140214 / 20260618-172931), so they must be flushed.
+_CACHE_VERSION = 2
 
 # KIT Toolbox hosts many models; only a few are worth driving the agent
 # (strong agentic tool use, large window). Selecting a weak one should warn
@@ -492,8 +498,15 @@ def _load_disk_cache() -> None:
         raw = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
     except Exception:
         return
+    # Versioned envelope: {"_v": N, "entries": {...}}. A missing/mismatched
+    # version means an older schema whose cached fields may now be wrong —
+    # discard the whole file rather than serve stale entries (e.g. pre-v2
+    # live records with supports_vision=False for vision-capable KIT models).
+    if not isinstance(raw, dict) or raw.get("_v") != _CACHE_VERSION:
+        return
+    entries = raw.get("entries") or {}
     now = time.time()
-    for key, rec in (raw or {}).items():
+    for key, rec in entries.items():
         try:
             if now - float(rec.get("discovered_at", 0)) > _CACHE_TTL_S:
                 continue
@@ -505,7 +518,8 @@ def _load_disk_cache() -> None:
 def _save_disk_cache() -> None:
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        out = {k: v.__dict__ for k, v in _CACHE.items() if v.source == "live"}
+        entries = {k: v.__dict__ for k, v in _CACHE.items() if v.source == "live"}
+        out = {"_v": _CACHE_VERSION, "entries": entries}
         _CACHE_PATH.write_text(json.dumps(out), encoding="utf-8")
     except Exception:
         pass

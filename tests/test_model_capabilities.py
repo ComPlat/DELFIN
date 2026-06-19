@@ -16,6 +16,7 @@ payloads. Covers the core "full potential" guarantees:
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -350,3 +351,55 @@ def test_preflight_kit_best_model_clean(monkeypatch):
     ok, msg = mc.preflight("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE)
     assert ok is True
     assert msg == ""
+
+
+# ---------------------------------------------------------------------------
+# Disk-cache schema versioning (bug 140214/172931: flush pre-v2 live entries
+# that wrongly cached supports_vision=False for vision-capable KIT models)
+# ---------------------------------------------------------------------------
+
+
+def test_disk_cache_version_envelope_roundtrips(monkeypatch, tmp_path):
+    p = tmp_path / "caps.json"
+    monkeypatch.setattr(mc, "_CACHE_PATH", p)
+    mc._CACHE.clear()
+    key = mc._cache_key("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE, True)
+    mc._CACHE[key] = mc.ModelCapabilities(
+        model="kit.qwen3.5-397b-A17b", provider="kit",
+        context_window=262_144, supports_vision=True, source="live",
+        discovered_at=time.time(),
+    )
+    mc._save_disk_cache()
+    raw = json.loads(p.read_text())
+    assert raw["_v"] == mc._CACHE_VERSION and "entries" in raw
+    mc._CACHE.clear()
+    mc._load_disk_cache()
+    assert key in mc._CACHE and mc._CACHE[key].supports_vision is True
+
+
+def test_disk_cache_old_flat_format_is_discarded(monkeypatch, tmp_path):
+    # Pre-v2 flat file (no "_v" envelope) holding a stale vision=False live
+    # entry — must be dropped wholesale so a fresh live resolve can fix vision.
+    p = tmp_path / "caps.json"
+    monkeypatch.setattr(mc, "_CACHE_PATH", p)
+    key = mc._cache_key("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE, True)
+    stale = {"model": "kit.qwen3.5-397b-A17b", "provider": "kit",
+             "context_window": 262_144, "supports_vision": False,
+             "source": "live", "discovered_at": time.time()}
+    p.write_text(json.dumps({key: stale}))      # old flat shape, no "_v"
+    mc._CACHE.clear()
+    mc._load_disk_cache()
+    assert key not in mc._CACHE
+
+
+def test_disk_cache_version_mismatch_is_discarded(monkeypatch, tmp_path):
+    p = tmp_path / "caps.json"
+    monkeypatch.setattr(mc, "_CACHE_PATH", p)
+    key = mc._cache_key("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE, True)
+    rec = {"model": "kit.qwen3.5-397b-A17b", "provider": "kit",
+           "context_window": 262_144, "supports_vision": True,
+           "source": "live", "discovered_at": time.time()}
+    p.write_text(json.dumps({"_v": mc._CACHE_VERSION - 1, "entries": {key: rec}}))
+    mc._CACHE.clear()
+    mc._load_disk_cache()
+    assert key not in mc._CACHE
