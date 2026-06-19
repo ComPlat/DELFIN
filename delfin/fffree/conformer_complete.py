@@ -54,8 +54,9 @@ Env-flags (all read once per call)
 ``DELFIN_FFFREE_CONF_GRID_CAP``      (default ``96``) — combinatorial grid cap.
 ``DELFIN_FFFREE_CONF_RMSD``          (default ``0.5``) — Angstrom heavy-RMSD
                                        dedup threshold.
-``DELFIN_FFFREE_CONF_MAX_PER_STRUCT`` (default ``24``) — emitted-frame cap per
-                                       input structure (incl. its base frame).
+``DELFIN_FFFREE_CONF_MAX_PER_STRUCT`` (default ``24``) — cap on the number of
+                                       ADDED conformers per structure (every
+                                       original base frame is always kept on top).
 ``DELFIN_FFFREE_CONF_MD_TOL``        (default ``0.45``) — Angstrom M-D distance
                                        slack vs the base frame (coordinated
                                        range; crystals pack tight but stay
