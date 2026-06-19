@@ -17,6 +17,64 @@ import delfin._bond_decollapse as bd
 # d8 square-planar-preferring metals (else CN4 -> tetrahedral)
 _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
 
+# Metalloid / heavier-pnictogen-chalcogen / post-transition elements that
+# ``_bond_decollapse._is_metal`` flags as "metals" but which, when bonded to a true
+# transition/lanthanide metal, act as coordinating DONORS — not coordination centres.
+# Sb (stibine), As (arsine), Bi (bismuthine), Te/Se (telluro/seleno-ether), Ge/Sn/Pb
+# (heavy-tetrel donors / metal-metal bonds).  Used ONLY by the donor-aware metal-centre
+# resolver below (DELFIN_FFFREE_METALLOID_DONOR=1); the default code path is untouched.
+_METALLOID_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+
+def _metalloid_donor_enabled() -> bool:
+    """Donor-aware metal-centre resolution for complexes whose coordinating donor is a
+    metalloid (stibine Sb, arsine As, bismuthine Bi, telluro/seleno-ether Te/Se, heavy
+    tetrel Ge/Sn/Pb).  Default OFF -> byte-identical (the resolver below is never used,
+    so the metal count / centre selection is exactly the historic ``bd._is_metal`` set)."""
+    return os.environ.get("DELFIN_FFFREE_METALLOID_DONOR", "0") == "1"
+
+
+def _resolve_metal_center(mol) -> Optional[int]:
+    """Resolve the single coordination CENTRE of a mononuclear complex, treating a
+    metalloid donor (Sb/As/Bi/Te/Se/Ge/Sn/Pb) as a DONOR — not a co-centre — when it
+    coordinates a true transition/lanthanide metal.
+
+    Root cause (eye-flagged ATOQUV, a Pd bis(distibine)): the historic centre test
+    ``[a for a in atoms if bd._is_metal(a.symbol)]`` flags BOTH the real metal AND every
+    metalloid donor as "metals", so a Pd coordinated by four Sb donors counts as FIVE
+    "metals" -> ``len(metals) != 1`` -> ``decompose`` bails to legacy and the donors are
+    never seated (eye: ligands float free at M-Sb ~3.2 Å, CN 0).  The SAME two distibine
+    ligands on a Pt centre are seated correctly by a metal-dependent legacy branch -> the
+    classification was inconsistent across central metals.
+
+    This resolver makes the classification CONSISTENT and chemically correct, independent
+    of the central metal: among the ``bd._is_metal`` atoms, the unique non-metalloid
+    member (a genuine d-/f-block metal) is the coordination CENTRE; metalloid members are
+    donors and stay in their ligand fragment.  Graph/element-rule based, no refcode.
+
+    Returns the centre atom index when EXACTLY ONE true (non-metalloid) metal is present
+    AND every other metal-flagged atom is a metalloid donor bonded (directly) to that
+    centre; otherwise returns None (polynuclear / metalloid-only / unbonded metalloid ->
+    keep the historic legacy fallback).  Deterministic."""
+    metal_idx = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
+    true_centers = [i for i in metal_idx
+                    if mol.GetAtomWithIdx(i).GetSymbol() not in _METALLOID_DONORS]
+    if len(true_centers) != 1:
+        return None                                   # 0 or >1 real metals -> legacy
+    c = true_centers[0]
+    catom = mol.GetAtomWithIdx(c)
+    cnbrs = {n.GetIdx() for n in catom.GetNeighbors()}
+    # every OTHER metal-flagged atom must be a metalloid DONOR bonded to the centre
+    # (a metalloid floating free / bridging two metals is not a simple donor -> legacy).
+    for i in metal_idx:
+        if i == c:
+            continue
+        if mol.GetAtomWithIdx(i).GetSymbol() not in _METALLOID_DONORS:
+            return None                               # a second real metal -> polynuclear
+        if i not in cnbrs:
+            return None                               # metalloid not bonded to centre
+    return c
+
 
 def _planar_mer_enabled() -> bool:
     """Geometry-aware MERIDIONAL vertex assignment for RIGID PLANAR tridentate
@@ -488,7 +546,19 @@ def decompose(smiles: str) -> Optional[Dict]:
         return None
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
     if len(metals) != 1:
-        return None                                   # mononuclear only (v1)
+        # Donor-aware metal-centre resolution (DELFIN_FFFREE_METALLOID_DONOR=1, default
+        # OFF -> byte-identical: this branch is never entered, the function returns None
+        # exactly as before).  A mononuclear complex whose donor is a metalloid (Sb/As/
+        # Bi/Te/Se/Ge/Sn/Pb) has the metalloid mis-counted as a co-metal, inflating the
+        # metal count past 1.  Resolve the real (non-metalloid) transition/lanthanide
+        # centre; the metalloid donors then go through the normal Werner cleave below.
+        if _metalloid_donor_enabled():
+            c = _resolve_metal_center(mol)
+            if c is None:
+                return None                           # not a clean metalloid-donor case
+            metals = [c]
+        else:
+            return None                               # mononuclear only (v1)
     m = metals[0]
     matom = mol.GetAtomWithIdx(m)
     # Rigid-hapto path (env-gated, default OFF): if the metal carries a contiguous

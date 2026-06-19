@@ -212,6 +212,31 @@ def _sigma_shorten(atom, mol) -> float:
     return 0.0
 
 
+# Pyykkö & Atsumi (Chem. Eur. J. 2009, 15, 186) single-bond COVALENT radii (Å) for
+# the heavy metalloid / post-transition DONOR elements that are ABSENT from ``COV``
+# (so the bare ``COV.get(donor, 0.75)`` fallback gives an unphysically short M–D bond,
+# e.g. Pd–Sb 2.14 instead of ~2.8 Å).  PUBLISHED open reference values (no CSD/CCDC
+# data).  Used ONLY when DELFIN_FFFREE_METALLOID_DONOR=1 (default OFF -> byte-id, this
+# table is never consulted).  Sb/As/Te/Se have published values; Bi/Ge/Sn/Pb included
+# so every metalloid donor enabled by the resolver has a finite, realistic radius.
+_METALLOID_COV = {
+    "Sb": 1.40, "As": 1.21, "Bi": 1.51, "Te": 1.38, "Se": 1.16,
+    "Ge": 1.20, "Sn": 1.39, "Pb": 1.46,
+}
+
+
+def _donor_cov(donor: str) -> float:
+    """Donor covalent radius (Å) for the M–D distance.  Byte-identical default
+    (``COV.get(donor, 0.75)``) unless DELFIN_FFFREE_METALLOID_DONOR=1 AND the donor is a
+    heavy metalloid MISSING from COV — then use the published Pyykkö radius so the M–D
+    bond has a realistic length instead of the 0.75 Å placeholder."""
+    if donor in COV:
+        return COV[donor]
+    if os.environ.get("DELFIN_FFFREE_METALLOID_DONOR", "0") == "1" and donor in _METALLOID_COV:
+        return _METALLOID_COV[donor]
+    return COV.get(donor, 0.75)
+
+
 def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     """Metal–donor placement distance (Å).
 
@@ -230,19 +255,19 @@ def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     azide-N (short) from pyridine-N (unchanged) that the bare element sum cannot
     (#305 / GIXFIF).  Universal (graph-only, never SMILES-specific), deterministic."""
     if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
-        return COV.get(metal, 1.5) + COV.get(donor, 0.75)
+        return COV.get(metal, 1.5) + _donor_cov(donor)
     try:
         sym = atom.GetSymbol()
         # Base = historic single-bond covalent radius -> neutral dative donors
         # NEVER regress; only the short anionic σ-donor classes shorten.  (PYYKKO
         # bond-order radii + _pyykko_radius/_max_heavy_bond_order are retained above
         # as reference for a future explicit M=O / M≡N multiple-bond layer.)
-        r_d = COV.get(sym, 0.75) - _sigma_shorten(atom, mol)
+        r_d = _donor_cov(sym) - _sigma_shorten(atom, mol)
         md = COV.get(metal, 1.5) + r_d
         if not math.isfinite(md):
-            md = COV.get(metal, 1.5) + COV.get(donor, 0.75)
+            md = COV.get(metal, 1.5) + _donor_cov(donor)
     except Exception:
-        md = COV.get(metal, 1.5) + COV.get(donor, 0.75)
+        md = COV.get(metal, 1.5) + _donor_cov(donor)
     # Final guard: never non-finite or absurd.
     return float(min(4.0, max(0.8, md)))
 
