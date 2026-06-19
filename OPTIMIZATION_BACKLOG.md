@@ -116,12 +116,19 @@ in this priority order and appends new findings back here.
   (~4 chars/token), floored at 60k so small models are unchanged; the loop
   computes it once and passes it to `_elide_old_tool_results`. Live (KIT qwen
   262k): loop budget 471859 (was 60000); reading a 24k file 3× elides nothing.
-- [ ] **CANDIDATE — agent under-uses the task list on big refactors.** Same
-  fork-178 trace: only 1 task_create + 1 task_update across 262 tool calls for a
-  multi-file refactor (Jerome has repeatedly noted the agent "forgets to check
-  off / track tasks"). The per-turn open-tasks reminder exists; consider a
-  stronger nudge to CREATE a plan up front on multi-file work, not just to close
-  open ones. Needs care not to spam single-step turns.
+- [~] **TRIED & REVERTED — mid-loop "create a plan" nudge.** Built a one-shot
+  nudge that injects a `task_create` reminder into the tool loop after 3 distinct
+  files are edited in a turn with no task plan (well-gated: one-shot, skipped if
+  any task exists, never on 1–2-file turns; pure `_plan_nudge_due` helper +
+  unit tests). The gate fired **exactly once, correctly**, in two live KIT-qwen
+  runs — but the model **ignored** the reminder both times (0 tasks created),
+  including on a substantial 7-file refactor. So it was pure context noise with
+  no behaviour change → reverted (not shipped). **Lesson:** kit.qwen3.5-397b does
+  NOT respond to soft mid-loop planning nudges; it completes multi-file work
+  fine without a plan. If revisited, try a system-prompt-level discipline (and
+  prove the behaviour change live) rather than a reactive in-loop message — but
+  first confirm the under-use actually causes failures, not just stylistic
+  divergence from how Claude Code plans.
 - [x] **PNG viewing for KIT qwen + stale-cache flush** (bugs 20260617-140214
   "Agent kann keine PNGs anzeigen/lesen" + 20260618-172931 "Files nur nach
   Chat-Upload sichtbar"). Root cause: kit.qwen3.5-397b-A17b IS vision-capable
