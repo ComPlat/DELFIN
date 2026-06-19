@@ -297,11 +297,15 @@ def _md_pairs(
 
     Donors are the UNION of (a) the metal's OB-perceived heavy neighbours and
     (b) -- when ``coords`` is supplied -- every heavy atom within
-    ``bond_tol * (cov_M + cov_d)`` of the metal in those coordinates.  The
-    geometric union is essential: OB bond perception is UNRELIABLE for long /
+    ``bond_tol * (cov_M + cov_d)`` of the metal in those coordinates THAT IS NOT
+    a second-shell atom (i.e. not bonded to an already-accepted, closer donor).
+    The geometric union is essential: OB bond perception is UNRELIABLE for long /
     distorted M-C(carbanion) and dative bonds (AYOZIX Y-CH(SiMe3)2: OB perceives
     NO Y-C bond on some frames), which would leave the coordination shell
-    undefended.  Deterministic.
+    undefended.  The second-shell exclusion stops large-covalent-radius metals
+    (Y, lanthanides) from pulling a ligand's beta-atom (e.g. the SiMe3 Si bonded
+    to the real C donor, ~3.3 A from Y) into the "donor" set, which would freeze
+    a rotatable substituent.  Deterministic.
     """
     n = graph.get("n_atoms", 0)
     nums = graph["atomic_nums"]
@@ -318,13 +322,23 @@ def _md_pairs(
                 out.append((m, d))
         if coords is not None:
             rm = _cov(nums[m])
+            # candidate (distance, idx), nearest first, so a real first-shell
+            # donor is accepted before its own beta-atoms are tested.
+            cands = []
             for d in range(n):
                 if d == m or nums[d] == 1 or is_metal[d] or d in seen:
                     continue
-                t = bond_tol * (rm + _cov(nums[d]))
-                if _dist(coords, m, d) <= t:
-                    seen.add(d)
-                    out.append((m, d))
+                dd = _dist(coords, m, d)
+                if dd <= bond_tol * (rm + _cov(nums[d])):
+                    cands.append((dd, d))
+            cands.sort()
+            for _dd, d in cands:
+                # skip if d is bonded to an already-accepted (closer) donor ->
+                # it is a second-shell beta-atom, not a coordinating donor.
+                if any((nb in seen) for nb in nbrs[d]):
+                    continue
+                seen.add(d)
+                out.append((m, d))
     return out
 
 
