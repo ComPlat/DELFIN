@@ -107,6 +107,22 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **PNG viewing for KIT qwen + stale-cache flush** (bugs 20260617-140214
+  "Agent kann keine PNGs anzeigen/lesen" + 20260618-172931 "Files nur nach
+  Chat-Upload sichtbar"). Root cause: kit.qwen3.5-397b-A17b IS vision-capable
+  (KIT `info.meta.capabilities.vision: true`; live-verified — it reads
+  "HELLO-7731" out of a PNG), but (a) the static table marked it text-only and
+  (b) the live resolver caches results 24h, and entries written before this
+  session's vision-parsing cached `supports_vision=False` as source=live → the
+  vision gate kept stripping view_image. Chat-upload bypasses the gate, hence
+  "only after upload". Fix: cache schema version (`_CACHE_VERSION=2`,
+  `{"_v","entries"}` envelope) — a missing/mismatched version discards the whole
+  file so everyone re-resolves live at once. Live-proven: stale flat
+  vision=False entry flushed → re-resolves vision=True → agent reads a workspace
+  PNG via the tool path (not chat upload). Reports ready for Solved.
+- [x] **Triage: bug 20260617-110702** ("Tasks-Nummerierung fängt bei 51 an im
+  neuen Chat → sollte bei 1") — resolved by the session-relative `seq` fix
+  below: a new chat = new session_id → seq starts at 1. Ready for Solved.
 - [x] **Session-relative task numbering** (bug 20260619-172400, ka_xn0397, the
   "tasks werden absolut weitergezählt / bin bei task 90" half). The global task
   `id` is a per-workspace monotonic counter that never resets. Added opt-in
