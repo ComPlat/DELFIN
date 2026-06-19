@@ -28362,6 +28362,17 @@ def _conf_complete_filter(isomers):
         return isomers
 
 
+# Re-entrancy guard for the conformer-completeness pass.  ``_smiles_to_xyz_isomers_impl``
+# recurses through this PUBLIC wrapper for the dual-parse augmentation; the
+# completeness pass must run EXACTLY ONCE at the OUTERMOST public boundary over the
+# final union (otherwise the inner call expands the alt-parse set and the outer call
+# re-expands the union -- doubling conformers and over-running the per-structure cap).
+# A simple non-reentrant flag suppresses the pass on inner re-entries.  All OTHER
+# finalisation filters keep running on every level (unchanged base behaviour ->
+# byte-identical when off).
+_CONF_COMPLETE_ACTIVE = threading.local()
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
@@ -28374,12 +28385,23 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     Order rationale: completeness runs AFTER coord-integrity (so it expands only
     coordinated frames) and BEFORE the topology gate (so every newly-generated
     conformer is additionally vetted by the consensus topology gate as defence in
-    depth), and ranking runs last over the full expanded set."""
-    r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+    depth), and ranking runs last over the full expanded set.  The completeness pass
+    is suppressed on dual-parse re-entries so it runs once at the outermost level."""
+    outermost = not getattr(_CONF_COMPLETE_ACTIVE, "value", False)
+    if outermost:
+        _CONF_COMPLETE_ACTIVE.value = True
+    try:
+        r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+    finally:
+        if outermost:
+            _CONF_COMPLETE_ACTIVE.value = False
+    # Conformer-completeness runs only at the OUTERMOST public call (over the final,
+    # dual-parse-unioned ensemble); identity on inner re-entries.
+    _conf = _conf_complete_filter if outermost else (lambda x: x)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_topology_gate_filter(_conf_complete_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))), r[1]
+        return _rank_emitted_isomers(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_topology_gate_filter(_conf_complete_filter(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))
+        return _rank_emitted_isomers(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))
     return r
 
 
