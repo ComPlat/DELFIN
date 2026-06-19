@@ -107,6 +107,19 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Per-turn tool-round cap is now a setting** (bug 20260619-172400,
+  ka_xn0397, "nach 50 turns stoppt der agent automatisch" — the auto-stop half).
+  `api_client._MAX_TOOL_ROUNDS` was a hard-coded 50; long multi-file work hit it
+  mid-task and forced manual "continue". New `_resolve_max_tool_rounds()` reads
+  `agent.max_tool_rounds` (default **500**, 0 → uncapped); exposed in the
+  Settings tab (Agent extras → "🔁 Agent run limit"). The per-turn cost
+  circuit-breaker + consecutive-fail abort stay the real stops. Live-proven on
+  KIT qwen3.5-397b: cap forced to 1 → a 2-round task stops at round 1 with
+  `stop_reason='max_tool_rounds'` + the budget notice. Report 172400 also has a
+  SECOND half (task ids counted absolutely → "task 90"); still open — next.
+  Gotcha logged: standalone `/tmp` live scripts import the stale editable
+  checkout (`ComPlat/DELFIN`, was 291 behind), not the working tree — use
+  `python -m`/`PYTHONPATH=repo`.
 - [x] **Auto-allow: per-segment + versioned interpreters** (bug 20260616-183359,
   friction half) — `matches_bash_auto_allow` now splits on unquoted `||`/`&&`/
   `;`/`|`/newline and requires EVERY segment to be safe, instead of trusting a
