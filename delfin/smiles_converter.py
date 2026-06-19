@@ -1742,6 +1742,45 @@ def _apply_arom_planarize_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_pi_coplanar_m_if_enabled(mol, results, dual_parse_done: bool):
+    """Iter-34 (2026-06-19) dispatch — coordinated planar π-donor co-planar-M
+    orienter (eye-flagged ABIZIW).
+
+    A coordinated, internally-planar aromatic π-donor that binds through an
+    in-plane sp2 σ lone pair (pyridine-type ring N, amidinate, …) must lie so
+    its ring mean-plane CONTAINS the metal.  Iter-33 ``AROM_PLANARIZE`` flattens
+    the ring internally but does NOT rotate the coordinated ring plane through
+    the metal, so the ring sits tilted with M out of its plane (ABIZIW C5N donor
+    rings: M out-of-plane 0.9-1.4 Å).  This pass rotates the RIGID ring about
+    the FIXED donor so the donor's in-plane lone-pair points at M (M brought
+    into the ring plane).  Hapto / η π-face donors (which bind perpendicular)
+    are excluded by a geometric face-on test.  Donor + metal frozen → M-D bond
+    preserved exactly; per-ring never-worse on M-out-of-plane and inter-ligand
+    clash; hard M-D invariant rollback.
+
+    Default-OFF, byte-identical to the build commit when
+    ``DELFIN_FFFREE_PI_COPLANAR_M`` is unset (or 0).  Universal (geometric
+    perception, no SMILES specialisation).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_FFFREE_PI_COPLANAR_M", mol, default=0,
+    ):
+        return results
+    try:
+        from delfin._pi_coplanar_m import correct_results as _pcm_correct
+        return _pcm_correct(mol, results)
+    except Exception as _pcm_exc:
+        try:
+            logger.debug("Iter-34 pi-coplanar-M skipped: %s", _pcm_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_hapto_clearance_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-21 (2026-05-19): Welle-5f-F 81f8a1f-style M-X clearance final post-pass.
 
@@ -28480,6 +28519,12 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             _ff = None
         if _ff:
+            # Iter-34: co-planar-M orient for coordinated in-plane σ π-donors on
+            # the FF-free path too (ABIZIW builds here).  No parsed ``mol`` is
+            # available at this early return; the corrector is geometry-only and
+            # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
+            # byte-identical (the dispatch returns _ff unchanged when unset).
+            _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
             return _ff, None
 
     # Resolve the quality profile once per call so the seed count,
@@ -30545,6 +30590,16 @@ def _smiles_to_xyz_isomers_impl(
     # are anchored (M-D invariant), only non-anchor atoms + ring-H + first
     # substituents projected.  Default-OFF byte-id (DELFIN_FFFREE_AROM_PLANARIZE).
     results = _apply_arom_planarize_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Iter-34 (2026-06-19): coordinated planar π-donor co-planar-M orient ──
+    # Rotate each coordinated in-plane σ aromatic π-donor RIGID ring about its
+    # FIXED donor so the donor's in-plane lone-pair points at the metal — i.e.
+    # the ring mean-plane CONTAINS the metal (closes the Iter-33 gap where the
+    # internally-flat ring still sat tilted, M out-of-plane).  Hapto / η π-face
+    # donors excluded (they bind perpendicular).  Donor + metal frozen → M-D
+    # preserved; per-ring never-worse + clash never-worse + M-D rollback.
+    # Default-OFF byte-id (DELFIN_FFFREE_PI_COPLANAR_M).
+    results = _apply_pi_coplanar_m_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-25 (2026-05-20): final bond-decollapse corrector ───────────────
     # Spring-relax the non-metal heavy graph to physical bond lengths + repel
