@@ -944,6 +944,18 @@ class PromptLoader:
                 injected.append("honesty_addendum")
         except Exception:
             pass
+        # Memory: tell the agent to PROACTIVELY save durable facts via the
+        # `remember` tool (so it carries knowledge across sessions, like a human
+        # collaborator would), with the same typed/one-fact discipline.
+        try:
+            _memory = self._cached_read(
+                self.agent_dir / "shared" / "memory_addendum.md"
+            )
+            if _memory:
+                sections.append(_memory)
+                injected.append("memory_addendum")
+        except Exception:
+            pass
 
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)

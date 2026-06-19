@@ -792,6 +792,8 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Structured UX & planning.
     "ask_user_question",
     "task_create", "task_update", "task_list", "task_get",
+    # Persistent memory — remember durable user facts/preferences across sessions.
+    "remember",
 })
 
 # Tools advertised to weak local models (gemma-7b, llama-8b, qwen-7b,
@@ -1331,6 +1333,48 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": (
+                "Save a DURABLE fact to persistent project memory — it is "
+                "recalled automatically at the start of future sessions, so use "
+                "it proactively the moment you learn something worth keeping "
+                "(don't make the user repeat themselves). type='user' (who they "
+                "are / preferences), 'feedback' (how to work — a correction or "
+                "confirmed approach; add why + how-to-apply), 'project' (an "
+                "ongoing goal/decision/constraint NOT in the code or git), "
+                "'reference' (an external URL/ticket). Do NOT save transient "
+                "task details, secrets, or anything already in the code / "
+                "CLAUDE.md / git. One fact per memory; before saving, prefer "
+                "updating a similar existing memory over duplicating it; link "
+                "related ones in the text with [[their-slug]]."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "The fact to remember (one fact). For feedback/"
+                            "project, follow with why + how to apply it."
+                        ),
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["user", "feedback", "project", "reference"],
+                        "description": "Memory type (default 'project').",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Optional short title; auto-derived if omitted.",
+                    },
+                },
+                "required": ["text"],
             },
         },
     },
@@ -3155,6 +3199,8 @@ class _DocToolExecutor:
             return self._execute_read_file(arguments, permissions)
         elif name == "view_image":
             return self._execute_view_image(arguments, permissions)
+        elif name == "remember":
+            return self._execute_remember(arguments, permissions)
         elif name == "grep_file":
             return self._execute_grep_file(arguments, permissions)
         elif name == "list_files":
@@ -3333,6 +3379,29 @@ class _DocToolExecutor:
             "bytes": img.size_bytes(),
             "note": ("The image is shown to you in the next message — look at "
                      "it and describe / use what you SEE."),
+        })
+
+    def _execute_remember(
+        self, arguments: dict, perms: Optional["KitToolPermissions"] = None
+    ) -> str:
+        text = (arguments.get("text") or "").strip()
+        if not text:
+            return json.dumps({"error": "text is required"})
+        memory_type = (arguments.get("type") or "").strip().lower() or None
+        title = (arguments.get("title") or "").strip() or None
+        root = perms.workspace if perms is not None else self._repo_root()
+        try:
+            from .memory_store import save_typed_memory
+            path, slug, mtype = save_typed_memory(
+                text, repo_root=root, memory_type=memory_type, title=title)
+        except Exception as exc:
+            return json.dumps({"error": f"could not save memory: {exc}"})
+        return json.dumps({
+            "status": "ok",
+            "type": mtype,
+            "slug": slug,
+            "note": (f"Saved a '{mtype}' memory. It will be recalled "
+                     "automatically at the start of future sessions."),
         })
 
     def _execute_grep_file(
