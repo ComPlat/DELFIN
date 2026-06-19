@@ -1151,6 +1151,19 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         elif d["geometry"] == "T-3 T-shape":
             results += _enumerate_geometry(d, "trigonal_planar", "SP-3 trigonal planar",
                                            lig_ref, lab_elem, spec, max_isomers)
+    # Iter-32g (User 2026-06-19, eye-flagged ATENET): CN3 trigonal-PYRAMIDAL isomer.
+    # decompose only ever emits SP-3 (planar, 120deg) or T-3 (T-shape, 90/180deg) for
+    # CN3 — the third real CN3 geometry, the trigonal PYRAMID (3 donors on one
+    # hemisphere, metal at the apex above the donor plane, ~107deg donor-M-donor; the
+    # "vacant tetrahedron" / NH3 lone-pair shape), was never enumerated.  Additively
+    # build it on the TPY-3 polyhedron alongside whatever the primary picked.  Env-gated
+    # default OFF -> byte-identical when unset (the new geometry never appears).  Same
+    # additive, best-effort, never-bails pattern as CN5 SPY-5 / CN6 TPR-6 / dual-CN4.
+    if d.get("cn") == 3 and os.environ.get("DELFIN_FFFREE_CN3_PYRAMIDAL", "0") == "1" \
+            and d["geometry"] != "TPY-3 trigonal pyramidal":
+        results += _enumerate_geometry(d, "trigonal_pyramidal",
+                                       "TPY-3 trigonal pyramidal",
+                                       lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
     return _coord_filter(results) or None
 

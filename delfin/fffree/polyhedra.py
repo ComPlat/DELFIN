@@ -33,6 +33,26 @@ def _ref_polyhedra():
          [-0.5, -math.sqrt(3) / 2, 0.0]])
     R[("CN3", "T-3 T-shape")] = np.array(
         [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    # CN3 (iter-32g, User 2026-06-19 ATENET: V/N3O complex missing the
+    # trigonal-PYRAMIDAL CN3 isomer — 3 donors forming the base of a pyramid with
+    # the metal at the apex ABOVE the donor plane, i.e. the "vacant tetrahedron" /
+    # NH3 lone-pair geometry, distinct from the planar 120deg SP-3 and the 90/180deg
+    # T-3).  C3v: C3 axis along +z, donors at azimuth 0/120/240, polar angle 68.16deg
+    # from the -z axis -> all three M->donor vectors point into ONE hemisphere (z<0),
+    # giving 107.0deg donor-M-donor angles (ammonia-like; between the 109.47deg ideal
+    # vacant-tetrahedron and a flatter pyramid).  Index order 0,1,2 = the three base
+    # vertices in 120deg-cyclic order so the proper-rotation C3 in
+    # polya_isomer_count._trigonal_pyramidal_group (0->1->2->0) is a real geometric
+    # symmetry of this vertex set (same contract as SP-3/T-3 above).  ADDITIVE only:
+    # never replaces SP-3/T-3; reached solely via the additive enumerator under
+    # DELFIN_FFFREE_CN3_PYRAMIDAL=1 (default OFF -> byte-identical).
+    _tpy_theta = math.radians(68.158)
+    _tpy_z = -math.cos(_tpy_theta)
+    _tpy_s = math.sin(_tpy_theta)
+    R[("CN3", "TPY-3 trigonal pyramidal")] = np.array(
+        [[_tpy_s * math.cos(math.radians(120 * k)),
+          _tpy_s * math.sin(math.radians(120 * k)), _tpy_z] for k in range(3)],
+        float)
     R[("CN4", "T-4 tetrahedron")] = np.array(
         [[t, t, t], [t, -t, -t], [-t, t, -t], [-t, -t, t]])
     R[("CN4", "SP-4 square planar")] = np.array(

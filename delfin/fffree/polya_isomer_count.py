@@ -65,6 +65,17 @@ def _tshape_group():
     return _close_group([C2], 3)
 
 
+def _trigonal_pyramidal_group():
+    # CN3 TPY-3 trigonal pyramidal: 3 donors at the base of a pyramid with the metal
+    # at the apex above the donor plane (vacant-tetrahedron / NH3 lone-pair geometry).
+    # Point group C3v; its PROPER rotation subgroup is C3 (order 3): the C3 about the
+    # pyramid axis (0->1->2->0).  Unlike the PLANAR SP-3 (D3), the pyramid has NO
+    # in-plane C2 (the apex breaks it) and no horizontal mirror as a proper rotation,
+    # so only the 3-fold survives.  iter-32g (User 2026-06-19 ATENET).
+    C3 = (1, 2, 0)
+    return _close_group([C3], 3)
+
+
 def _octahedron_group():
     # vertices 0=+x 1=-x 2=+y 3=-y 4=+z 5=-z
     Rz = (2, 3, 1, 0, 4, 5)   # +x->+y,+y->-x,-x->-y,-y->+x
@@ -139,6 +150,7 @@ _GROUPS = {
     "linear": (_linear_group(), 2),
     "trigonal_planar": (_trigonal_planar_group(), 3),
     "tshape": (_tshape_group(), 3),
+    "trigonal_pyramidal": (_trigonal_pyramidal_group(), 3),
     "octahedron": (_octahedron_group(), 6),
     "square_planar": (_square_group(), 4),
     "tetrahedron": (_tetrahedron_group(), 4),
