@@ -107,6 +107,14 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Verified already complete — live `available_models` into routing.**
+  Re-investigated as a candidate; it's done: the dashboard `route_model` call
+  (tab_agent.py ~12915) already feeds `available_models=_avail` from the live
+  model dropdown (/v1/models or /api/tags), the guard (`candidate not in
+  available_models → fall back to user model`) is tested (test_model_routing.py),
+  and the tier names match the dropdown VALUES (`sonnet`/`haiku`/`gpt-5.4`/
+  `qwen…:Nb`) so there's no alias-mismatch that would wrongly block routing.
+  Nothing to build. Routing is dashboard-only + opt-in (`agent.routing.enabled`).
 - [x] **Dir grant holds for the session** (bug 20260617-065503, ka_ew7404: "doppelt
   auf Erlauben tippen" — really once per file). KitConfirmBroker kept no session
   allowlist, so every read in a just-allowed directory re-prompted. A plain
