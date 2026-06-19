@@ -4349,8 +4349,10 @@ def create_tab(ctx):
             mode = s.get("mode", "")
             n_msgs = s.get("message_count", 0)
             sid = s.get("session_id", "")
-            # Format: "title (mode, N msgs)"
-            label = f"{title}  [{mode}, {n_msgs} msgs]"
+            # Format: "title (mode, N msgs)" — map the internal id to its
+            # user-facing label so the dropdown shows "Code", not "solo"
+            # (bug 20260617-152728: "paar stellen mit Solo nicht Code").
+            label = f"{title}  [{_mode_label(mode)}, {n_msgs} msgs]"
             options.append((label, sid))
 
         session_dropdown.options = options

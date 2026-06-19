@@ -26,3 +26,6 @@ def test_no_user_facing_solo_label_leaks():
     assert "Switch the Mode dropdown to **solo**" not in src
     assert "In **solo mode**" not in src
     assert 'mode-badge">{_html.escape(_mode_label(mode))}' in src
+    # Session dropdown label must map the id too: "[Code, N msgs]", not "[solo…".
+    assert 'f"{title}  [{_mode_label(mode)}, {n_msgs} msgs]"' in src
+    assert 'f"{title}  [{mode}, {n_msgs} msgs]"' not in src
