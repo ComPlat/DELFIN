@@ -3395,6 +3395,13 @@ def create_tab(ctx):
                         if not hasattr(eng, "add_kit_workspace_dir"):
                             return False, "add_kit_workspace_dir fehlt"
                         return eng.add_kit_workspace_dir(value, persist=True)
+                    if kind == "extra_dir_session":
+                        # Session-only grant (bug 065503): add to live perms
+                        # without writing settings.json, so the agent stops
+                        # re-prompting per file in a just-allowed directory.
+                        if not hasattr(eng, "add_kit_workspace_dir"):
+                            return False, "add_kit_workspace_dir fehlt"
+                        return eng.add_kit_workspace_dir(value, persist=False)
                     return False, f"unbekannter persist-kind: {kind}"
                 broker.set_persist_callback(_persist)
                 panel = broker.build_widget()

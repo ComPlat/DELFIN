@@ -45,6 +45,10 @@ class _ConfirmRequest:
     remember_pattern: Optional[str] = None
     persist_pattern: Optional[str] = None  # value for ~/.delfin/settings.json
     persist_kind: Optional[str] = None     # 'allow_pattern' or 'extra_dir'
+    # Directory to grant for THIS session (non-persisted) when a plain
+    # "Erlauben (1×)" approves an outside-workspace access — so the agent
+    # can keep reading in that dir without re-prompting per file (bug 065503).
+    session_dir: Optional[str] = None
 
 
 class KitConfirmBroker:
@@ -117,6 +121,7 @@ class KitConfirmBroker:
             persist_cb = self._persist_callback
             persist_pat = req.persist_pattern
             persist_kind = req.persist_kind
+            session_dir = req.session_dir
 
         # If the user clicked "Erlauben + Dauerhaft", forward the value
         # to the engine's persist hook so it lands in settings.json AND
@@ -134,6 +139,18 @@ class KitConfirmBroker:
                 ok, msg = False, f"persist failed: {exc}"
             self._set_toast(
                 f"{'OK' if ok else 'FAIL'} dauerhaft: {msg}"
+            )
+        # Plain "Erlauben (1×)" on an outside-workspace access: grant the
+        # directory for THIS session only (live perms, not persisted) so the
+        # agent doesn't re-prompt for every file in it (bug 065503). Skipped
+        # when 'Dauerhaft' was used — that already added + persisted the dir.
+        elif persist_cb and req.decision and session_dir:
+            try:
+                ok, msg = persist_cb("extra_dir_session", session_dir)
+            except Exception as exc:
+                ok, msg = False, f"session grant failed: {exc}"
+            self._set_toast(
+                f"{'OK' if ok else 'FAIL'} für diese Session: {msg}"
             )
 
         self._refresh_panel()
@@ -354,8 +371,9 @@ class KitConfirmBroker:
         # ---- 5. Buttons --------------------------------------------
         approve = widgets.Button(
             description="Erlauben (1×)", button_style="success",
-            tooltip="Diese eine Aktion durchführen, in zukünftigen "
-                    "Sessions wieder fragen.",
+            tooltip="Erlauben — bei Ordner-Zugriff gilt der Ordner für DIESE "
+                    "Session (keine erneute Nachfrage pro Datei), sonst diese "
+                    "eine Aktion. In zukünftigen Sessions wird wieder gefragt.",
         )
         approve_persist = widgets.Button(
             description="Erlauben + Dauerhaft",
@@ -371,6 +389,13 @@ class KitConfirmBroker:
         def _decide(ok: bool, persist: bool = False):
             with self._lock:
                 req.decision = ok
+                # Approving an outside-workspace access grants its directory
+                # for the rest of this session (live perms, not persisted) so
+                # the agent stops re-prompting per file (bug 065503). The
+                # request() handler skips this when 'Dauerhaft' was clicked —
+                # that path already adds the dir AND persists it.
+                if ok and persist_kind == "extra_dir" and persist_pat:
+                    req.session_dir = persist_pat
                 if persist and persist_pat:
                     req.persist_pattern = persist_pat
                     req.persist_kind = persist_kind
