@@ -114,7 +114,9 @@ def test_open_tasks_block_lists_open_and_nudges_completion(tmp_path, monkeypatch
     )
     block = eng._build_open_tasks_block()
     assert "Open tasks" in block
-    assert "[in_progress] #" in block and "Wire parser" in block
+    # Session-relative number for display, global id kept for task_update
+    # (bug 172400): "[in_progress] task 1 (id 1) Wire parser…".
+    assert "[in_progress] task 1 (id 1)" in block and "Wire parser" in block
     assert "[pending]" in block and "Add regression test" in block
     # An in_progress task present → an explicit completion nudge fires.
     assert "status='completed'" in block

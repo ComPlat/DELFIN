@@ -64,7 +64,7 @@ def render_html(
 ) -> str:
     """Return an HTML fragment listing tasks, ready for ipywidgets HTML."""
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False, session_id=session_id)
+    raw = store.list(include_deleted=False, session_id=session_id, with_seq=True)
     if not show_completed:
         raw = [t for t in raw if t.get("status") != "completed"]
     if not raw:
@@ -83,9 +83,10 @@ def render_html(
         active = escape(str(t.get("active_form", "")))
         label = active if status == "in_progress" and active else subject
         decorate = "text-decoration:line-through;" if status == "completed" else ""
+        num = t.get("seq") if t.get("seq") is not None else t.get("id")
         rows.append(
             f"<div style='font-family:monospace;font-size:13px;"
-            f"color:{colour};{decorate}'>{glyph} #{t.get('id')} {label}</div>"
+            f"color:{colour};{decorate}'>{glyph} #{num} {label}</div>"
         )
     summary = (
         f"&#9658; {counts.get('in_progress', 0)} &nbsp; "
@@ -114,7 +115,7 @@ def render_text(
 ) -> str:
     """Plain-text rendering for logs / headless contexts."""
     store = get_store(Path(workspace))
-    raw = store.list(include_deleted=False, session_id=session_id)
+    raw = store.list(include_deleted=False, session_id=session_id, with_seq=True)
     if not raw:
         return "(no tasks)"
     lines: list[str] = []
@@ -122,7 +123,8 @@ def render_text(
         status = str(t.get("status", "pending"))
         glyph = _TEXT_GLYPHS.get(status, "[?]")
         subject = str(t.get("subject", ""))
-        lines.append(f"{glyph} #{t.get('id')} {subject}")
+        num = t.get("seq") if t.get("seq") is not None else t.get("id")
+        lines.append(f"{glyph} #{num} {subject}")
     return "\n".join(lines)
 
 

@@ -1884,7 +1884,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                 "via "
                 "<workspace>/.delfin/session_tasks.json. Status starts "
                 "at 'pending'; switch to 'in_progress' when you start "
-                "work and 'completed' when done."
+                "work and 'completed' when done. Each task has a small "
+                "session-relative number `seq` (1, 2, 3 …) for talking to "
+                "the user, plus a global `id` — always pass the `id` (not "
+                "`seq`) to task_update/task_get."
             ),
             "parameters": {
                 "type": "object",
@@ -5445,12 +5448,28 @@ class _DocToolExecutor:
             return json.dumps({"error": str(exc)})
         except Exception as exc:
             return json.dumps({"error": f"task_create failed: {exc}"})
+        # Session-relative display number (bug 172400): the new task is the
+        # latest in its session, so annotate it with its `seq`. The global
+        # `id` stays the key the agent must pass to task_update/task_get.
+        sid = getattr(perms, "task_session_id", "") or ""
+        try:
+            annotated = self._task_store(perms).list(
+                session_id=sid if sid else None, with_seq=True)
+            seq = next((t.get("seq") for t in annotated
+                        if int(t.get("id", 0)) == int(task["id"])), None)
+        except Exception:
+            seq = None
+        if seq is not None:
+            task = {**task, "seq": seq}
+        label = f"task {seq}" if seq is not None else f"task #{task['id']}"
         return json.dumps({
             "status": "created",
             "task": task,
             "hint": (
-                f"task #{task['id']} added. Mark in_progress when you "
-                "start, completed when done."
+                f"{label} added (id {task['id']}). Refer to it as "
+                f"\"{label}\" when talking to the user; pass id "
+                f"{task['id']} to task_update/task_get. Mark in_progress "
+                "when you start, completed when done."
             ),
         }, ensure_ascii=False)
 
@@ -5492,6 +5511,7 @@ class _DocToolExecutor:
             tasks = self._task_store(perms).list(
                 include_deleted=include_deleted,
                 session_id=_sid if _sid else None,
+                with_seq=True,
             )
         except Exception as exc:
             return json.dumps({"error": f"task_list failed: {exc}"})

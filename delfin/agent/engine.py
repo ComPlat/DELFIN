@@ -685,7 +685,8 @@ class AgentEngine:
                 return ""
             from delfin.agent.agent_tasks import get_store
             sid = getattr(perms, "task_session_id", "") or ""
-            tasks = get_store(perms.workspace).list(session_id=sid if sid else None)
+            tasks = get_store(perms.workspace).list(
+                session_id=sid if sid else None, with_seq=True)
         except Exception:
             return ""
         open_tasks = [
@@ -699,13 +700,19 @@ class AgentEngine:
         lines = ["# Open tasks (auto-injected each turn — keep this list honest)"]
         shown = 0
         _CAP = 8
+        def _label(t: dict) -> str:
+            # Show the session-relative number to the user; keep the global id
+            # in parentheses because task_update/task_get key off it.
+            _seq = t.get("seq")
+            _id = t.get("id")
+            return f"task {_seq} (id {_id})" if _seq is not None else f"#{_id}"
         for t in in_prog:
-            lines.append(f"- [in_progress] #{t.get('id')} {str(t.get('subject', ''))[:80]}")
+            lines.append(f"- [in_progress] {_label(t)} {str(t.get('subject', ''))[:80]}")
             shown += 1
         for t in pending:
             if shown >= _CAP:
                 break
-            lines.append(f"- [pending]     #{t.get('id')} {str(t.get('subject', ''))[:80]}")
+            lines.append(f"- [pending]     {_label(t)} {str(t.get('subject', ''))[:80]}")
             shown += 1
         remainder = len(open_tasks) - shown
         if remainder > 0:

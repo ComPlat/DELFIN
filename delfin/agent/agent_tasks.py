@@ -231,7 +231,8 @@ class TaskStore:
         return out
 
     def list(
-        self, *, include_deleted: bool = False, session_id: str | None = None
+        self, *, include_deleted: bool = False, session_id: str | None = None,
+        with_seq: bool = False,
     ) -> list[dict]:
         with self._lock:
             data = self._load()
@@ -241,6 +242,20 @@ class TaskStore:
                 tasks = []
             else:
                 tasks = [t for t in tasks if t.get("session_id", "") == session_id]
+        if with_seq:
+            # Session-relative 1-based ordinal in creation order (id asc), so
+            # the user sees a small "task 3" instead of the global, ever-rising
+            # id ("task 90" — bug 20260619-172400). The global id stays the
+            # reference for task_update/task_get/blocked_by; seq is display-only
+            # and stable as tasks complete (completed tasks keep their slot).
+            ordered = sorted(tasks, key=lambda t: int(t.get("id", 0) or 0))
+            seq_by_id = {
+                int(t.get("id", 0) or 0): i for i, t in enumerate(ordered, 1)
+            }
+            tasks = [
+                {**t, "seq": seq_by_id.get(int(t.get("id", 0) or 0))}
+                for t in tasks
+            ]
         if not include_deleted:
             tasks = [t for t in tasks if t.get("status") != "deleted"]
         return tasks
