@@ -219,11 +219,20 @@ def _flatten_system(
     anchors: Set[int],
     nbrs: List[List[int]],
     syms: List[str],
+    frozen: Set[int],
+    all_ring_atoms: Set[int],
 ) -> bool:
     """Project the (fused-)aromatic heavy atoms of ``atoms`` onto their
     anchor-constrained best-fit plane, plus drag ring-attached H and first
     substituent heavy atoms rigidly with their parent.  Anchors are never
     moved.  Mutates ``pts`` in place.  Returns True if any atom moved.
+
+    ``frozen`` is the global set of atoms the M-D invariant guard protects
+    (every metal-bonded donor anywhere in the molecule).  No ``frozen`` atom
+    is EVER moved — not as a ring atom, not as a dragged substituent — so the
+    M-D distance is preserved exactly by construction.  ``anchors`` ⊆
+    ``frozen`` and are the frozen atoms that lie inside THIS system (used to
+    constrain the best-fit plane).
 
     The plane is well-defined only for ≥3 non-collinear atoms; tiny / linear
     systems are skipped.  Centroid-preserving for anchor-free systems
@@ -239,35 +248,32 @@ def _flatten_system(
 
     aset = set(atoms)
     moved = False
-    # Project every NON-anchor ring-system atom onto the plane along ``normal``.
+    # Project every NON-frozen ring-system atom onto the plane along ``normal``.
     for idx in atoms:
-        if idx in anchors:
-            continue  # fixed — preserves M-D distance exactly
+        if idx in frozen:
+            continue  # M-D-protected — never move (preserves M-D exactly)
         v = pts[idx] - origin
         shift = float(np.dot(v, normal)) * normal
         if np.linalg.norm(shift) > 1e-9:
             pts[idx] = pts[idx] - shift
             moved = True
 
-    # Drag ring-attached H and first (non-ring, non-metal) substituent heavy
-    # atoms onto the plane, rigidly with their parent.  A substituent atom is
-    # projected the SAME signed distance as if it lived in the ring plane:
-    # we simply project it onto the plane along ``normal`` too (keeps the
-    # in-plane radial vector, removes only the out-of-plane wiggle).  H on
-    # anchors are dragged as well (their parent did not move, but the H may
-    # still be off-plane).
+    # Drag ring-attached H and first (non-ring, non-metal, non-frozen)
+    # substituent heavy atoms onto the plane, rigidly with their parent.  We
+    # project the substituent onto the plane along ``normal`` (keeps the
+    # in-plane radial vector, removes only the out-of-plane wiggle).  Frozen
+    # (M-D-protected) substituents and metals are never moved.
     for ring_atom in atoms:
         for j in nbrs[ring_atom]:
             if j in aset:
                 continue
             if _is_metal_sym(syms[j]):
                 continue  # never move a metal
-            if j in anchors:
-                continue
-            # Only drag atoms that are genuinely bonded substituents (H, or a
-            # first heavy substituent atom).  Heavy substituents are dragged
-            # only if they themselves carry no further ring membership outside
-            # this system — first-shell only.
+            if j in frozen:
+                continue  # M-D-protected substituent — never move
+            if j in all_ring_atoms:
+                continue  # belongs to ANOTHER aromatic system — its own pass
+                          # handles it; dragging it here corrupts that system
             v = pts[j] - origin
             shift = float(np.dot(v, normal)) * normal
             if np.linalg.norm(shift) > 1e-9:
@@ -299,18 +305,24 @@ def correct_xyz(xyz: str) -> str:
 
     metals = [i for i, s in enumerate(syms) if _is_metal_sym(s)]
 
-    def _anchors_for(atoms: Set[int]) -> Set[int]:
-        """Ring-system atoms within M-D bonding distance of any metal."""
-        out: Set[int] = set()
-        for a in atoms:
-            for m in metals:
-                if float(np.linalg.norm(pts[a] - pts[m])) < _M_COORD_DIST:
-                    out.add(a)
-                    break
-        return out
-
     components = _fuse_components(list(rings))
     pre_md = _snapshot_md_bonds(pts, syms)
+    # Anchors = every atom the M-D invariant guard protects (any donor within
+    # the snapshot's 1.30·Σr_cov of a metal).  Deriving anchors from the SAME
+    # set the guard tracks guarantees no protected M-D atom is ever moved, so
+    # the M-D distance is preserved exactly and the hard rollback cannot trip
+    # on a flattened snapshot atom.  This is strictly ⊇ the M_COORD_DIST set,
+    # so it also covers second-sphere coordinated ring carbons (e.g. AXAGOY's
+    # fused-ring C at 2.69-2.76 Å of Os) that a naive 2.60 Å cutoff misses.
+    _md_atoms: Set[int] = {d for (_m, d) in pre_md.keys()}
+
+    def _anchors_for(atoms: Set[int]) -> Set[int]:
+        """Ring-system atoms that the M-D invariant guard protects."""
+        return {a for a in atoms if a in _md_atoms}
+
+    # Union of all aromatic ring atoms — a substituent drag must never move an
+    # atom belonging to ANOTHER aromatic system (its own pass owns it).
+    _all_ring_atoms: Set[int] = {a for r in rings for a in r}
     work = pts.copy()
     any_moved = False
 
@@ -324,13 +336,22 @@ def correct_xyz(xyz: str) -> str:
         if worst_before <= _OOP_TOL or worst_before > _PUCKER_CAP:
             continue
         anchors = _anchors_for(aset)
+        oop_before = {r: _ring_oop(work, r) for r in rings_here}
         before = work.copy()
-        moved = _flatten_system(work, atoms, anchors, nbrs, syms)
+        moved = _flatten_system(
+            work, atoms, anchors, nbrs, syms, _md_atoms, _all_ring_atoms,
+        )
         if not moved:
             continue
         worst_after = _system_worst_oop(work, rings_here)
-        # per-system never-worse: keep only if this system got flatter
-        if worst_after >= worst_before - 1e-3:
+        # per-system never-worse: keep only if (a) the system's worst ring got
+        # strictly flatter AND (b) no individual ring of the system worsened
+        # beyond a small slack.  (b) blocks a fused-fold from trading one
+        # ring's pucker for another's; (a) ensures a net gain.
+        worsened = any(
+            _ring_oop(work, r) > oop_before[r] + 1e-2 for r in rings_here
+        )
+        if worst_after >= worst_before - 1e-3 or worsened:
             # revert this system's atoms + their dragged substituents
             touched = set(atoms)
             for ra in atoms:
