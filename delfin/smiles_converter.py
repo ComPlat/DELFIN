@@ -2095,6 +2095,72 @@ def _apply_fixer_f25_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done: bool):
+    """SP2N-PLANARIZE sp2-N planarisation fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect acyclic sp2 nitrogen that the
+    assembly/relax has pyramidalised + desymmetrised — primarily the broken
+    C-nitro group (N bonded to exactly 2 O + 1 C, total degree 3) where the
+    AVIDAM-class defect appears (N pushed ~1 Å out of the C-O-O plane, N-O
+    desymmetrised to ~1.43/1.12 Å, O-N-O collapsed to ~107°).  Rebuilds a
+    symmetric **planar** NO2 (N + 2 O + C coplanar, N-O = ``no_target`` Å,
+    O-N-O = ``ono_target`` °) while keeping the C skeleton + C-N bond rigid.
+
+    Optional ``DELFIN_FIX_SP2N_AMIDE_IMINE=1`` extends to acyclic amide/imine
+    N (geometry-only plane projection; no bond retarget).
+
+    Env-flags:
+        DELFIN_FFFREE_SP2N_PLANARIZE=0    (default OFF — bit-exact when disabled)
+        DELFIN_FIX_SP2N_OOP_DEG_A=0.20    (out-of-plane trigger, Å)
+        DELFIN_FIX_SP2N_NO_A=1.22         (target N-O bond length, Å)
+        DELFIN_FIX_SP2N_ONO_DEG=125.0     (target O-N-O angle, °)
+        DELFIN_FIX_SP2N_AMIDE_IMINE=0     (extend to amide/imine N)
+        DELFIN_FFFREE_SP2N_PLANARIZE_CLASSES=  (optional class allow-list)
+
+    Insertion order: AFTER F25 (sp3-N pyramidality).  F25 pyramidalises
+    over-flat sp3 N; this is the inverse (it flattens pyramidalised sp2 N) —
+    they touch disjoint N (RDKit sp3 vs sp2 / no-H vs H), so order is benign.
+    Skips metal-bonded N; per-group rollback on new clash; per-frame fallback
+    to input on any failure.  Bit-exact when the flag is 0.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FFFREE_SP2N_PLANARIZE", mol,
+                                   default=0):
+        return results
+    if mol is None:
+        return results
+    try:
+        from delfin._fix_sp2n_planarize import planarize_sp2_nitrogen
+        oop_thr = _delfin_env_float("DELFIN_FIX_SP2N_OOP_DEG_A", 0.20)
+        no_t = _delfin_env_float("DELFIN_FIX_SP2N_NO_A", 1.22)
+        ono_t = _delfin_env_float("DELFIN_FIX_SP2N_ONO_DEG", 125.0)
+        amide_imine = (os.environ.get("DELFIN_FIX_SP2N_AMIDE_IMINE", "0")
+                       == "1")
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, _report = planarize_sp2_nitrogen(
+                    xyz, mol,
+                    oop_threshold_A=oop_thr,
+                    no_target_A=no_t,
+                    ono_target_deg=ono_t,
+                    include_amide_imine=amide_imine,
+                )
+                new_results.append((new_xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _sp2n_exc:
+        try:
+            logger.debug("Fixer SP2N-PLANARIZE skipped: %s", _sp2n_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_fixer_wuxqak_if_enabled(mol, results, dual_parse_done: bool):
     """WUXQAK sp3-C linear-collapse fixer dispatch helper.
 
@@ -29610,10 +29676,14 @@ def _smiles_to_xyz_isomers_impl(
     # the post-optimization heavy-atom frame.  Each is opt-in via its own
     # env flag and is bit-exact when its flag is 0 (default OFF).
     # Insertion order: F19 (sp3-H tetrahedrality) → F25 (sp3-N pyramidality)
-    # → WUXQAK (sp3-C linear collapse) → bridging-anion (μ-X M-X-M angle
-    # for bimetallic complexes).  See ``_apply_fixer_*`` docstrings.
+    # → SP2N-PLANARIZE (sp2-N/nitro planarity, inverse of F25) → WUXQAK
+    # (sp3-C linear collapse) → bridging-anion (μ-X M-X-M angle for
+    # bimetallic complexes).  See ``_apply_fixer_*`` docstrings.
     results = _apply_fixer_f19_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_f25_if_enabled(mol, results, _dual_parse_done)
+    results = _apply_fixer_sp2n_planarize_if_enabled(
+        mol, results, _dual_parse_done,
+    )
     results = _apply_fixer_wuxqak_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_bridging_anion_if_enabled(
         mol, results, _dual_parse_done,
