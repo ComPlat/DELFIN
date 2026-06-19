@@ -22524,6 +22524,301 @@ def _snap_fused_aromatic_groups_to_plane(
         return False
 
 
+def _scale_aromatic_rings_to_ideal_cc(
+    mol,
+    conf_id: int = 0,
+    target_cc: float = 1.39,
+    lo: float = 1.34,
+    hi: float = 1.44,
+) -> bool:
+    """Rescale squashed/stretched aromatic 5/6 rings to ideal aromatic C-C.
+
+    The rigid/legacy assembly paths sometimes emit aromatic rings with
+    in-ring C-C bond lengths well below the physical ~1.39 Å (observed
+    1.20-1.30 Å on ATABOM/AFALOK), which crushes the ring-attached H toward
+    each other (H-H < 0.9 Å) and trips the declash gate.  Declash cannot fix
+    this — the ring bonds are rigid, zero DOF — because the *size* is wrong,
+    not the rotation.
+
+    This pass uniformly rescales each affected ring about its own centroid so
+    the mean in-ring bond length becomes ``target_cc``.  Each ring atom and
+    its entire pendant substituent *branch* (everything reachable through that
+    ring atom, not crossing another ring atom or a metal) move rigidly by the
+    same per-atom displacement, so substituent bond lengths/angles and ring-H
+    are preserved exactly — only the ring breathes.
+
+    Universal (RDKit aromaticity / ring perception, never SMILES-specific):
+
+    * Rings of size 5 or 6 only.
+    * >= 2 unsaturated (aromatic/double/triple) in-ring bonds, matching the
+      planarity gate's definition (skips chair/boat saturated rings).
+    * Rings containing a metal or an H ring-member are skipped (metallacycles
+      and hapto faces have their own handling).
+    * **M-D invariant:** any ring with a branch atom bonded to a metal is
+      skipped entirely so the metal-coordination geometry is never disturbed.
+    * **NEVER-WORSE:** a ring whose mean in-ring C-C already lies in
+      ``[lo, hi]`` is left untouched.
+
+    Returns True if any ring was modified.
+    """
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        try:
+            Chem.GetSymmSSSR(mol)
+        except Exception:
+            pass
+        ri = mol.GetRingInfo()
+        if ri is None:
+            return False
+
+        n_atoms = mol.GetNumAtoms()
+        metal_idx = {
+            a.GetIdx()
+            for a in mol.GetAtoms()
+            if a.GetSymbol() in _METAL_SET
+        }
+
+        def _pos(i):
+            p = conf.GetAtomPosition(int(i))
+            return np.array([p.x, p.y, p.z], dtype=float)
+
+        changed = False
+        for ring in ri.AtomRings():
+            eta = len(ring)
+            if eta < 5 or eta > 6:
+                continue
+            ring_set = set(ring)
+            if any(
+                mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
+                for i in ring
+            ):
+                continue
+            # count unsaturated in-ring bonds (same definition as the gate)
+            unsat = 0
+            for i in range(eta):
+                a, b = ring[i], ring[(i + 1) % eta]
+                bond = mol.GetBondBetweenAtoms(a, b)
+                if bond is None:
+                    continue
+                if bond.GetBondType() != Chem.BondType.SINGLE or bond.GetIsAromatic():
+                    unsat += 1
+            if unsat < 2:
+                continue
+
+            # in-ring bond lengths
+            lens = []
+            for i in range(eta):
+                a, b = ring[i], ring[(i + 1) % eta]
+                if mol.GetBondBetweenAtoms(a, b) is None:
+                    continue
+                lens.append(float(np.linalg.norm(_pos(a) - _pos(b))))
+            if not lens:
+                continue
+            mean_cc = float(np.mean(lens))
+            min_cc = float(np.min(lens))
+            max_cc = float(np.max(lens))
+            if mean_cc < 1e-6:
+                continue
+            # NEVER-WORSE: leave physically-sized AND undistorted rings alone.
+            # A ring is "good" only when its mean sits in [lo, hi] AND every
+            # individual bond is within a tolerance band of the ideal (so a
+            # ring whose mean is coincidentally ~1.39 but is badly distorted —
+            # min 0.5 / max 2.7 — is still reconstructed).
+            good = (lo <= mean_cc <= hi) and (min_cc >= lo - 0.05) \
+                and (max_cc <= hi + 0.10)
+            if good:
+                continue
+
+            # Build each ring atom's rigid branch (BFS into the fragment, not
+            # crossing other ring atoms; STOP before stepping onto a metal so
+            # we never carry the metal in a branch).  A ring atom whose branch
+            # reaches a metal is "anchored": it bears the M-coordination and
+            # must NOT move (M-D invariant).  Pendant aryls on P/donors are the
+            # common case — exactly one anchored (ipso) atom.
+            branches = {}
+            anchored = set()
+            for ai in ring:
+                visited = set(ring_set)
+                br = []
+                queue = []
+                for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in metal_idx:
+                        anchored.add(ai)
+                        continue  # do not traverse into / move the metal
+                    if ni not in visited:
+                        visited.add(ni)
+                        queue.append(ni)
+                while queue:
+                    cur = queue.pop(0)
+                    br.append(cur)
+                    for nbr in mol.GetAtomWithIdx(cur).GetNeighbors():
+                        ni = nbr.GetIdx()
+                        if ni in metal_idx:
+                            anchored.add(ai)
+                            continue  # stop at the metal boundary
+                        if ni not in visited:
+                            visited.add(ni)
+                            queue.append(ni)
+                branches[ai] = br
+            # >=2 anchored atoms: reshaping would move an M-coordinating bond;
+            # too risky, skip (chelating diaryl, fused metallacycle, …).
+            if len(anchored) >= 2:
+                continue
+
+            # --- Reconstruct ring as a regular polygon at ideal C-C ---
+            # Uniform scaling cannot repair a ring whose bonds range from 0.5
+            # to 2.7 Å (build-distorted).  Instead lay out a regular eta-gon of
+            # side ``target_cc`` in the ring's own best-fit plane, centred on
+            # the current centroid, and assign each ring atom to consecutive
+            # polygon vertices following the ring's bond connectivity so the
+            # in-ring topology (and substituent attachment order) is preserved.
+            pts = np.array([_pos(a) for a in ring], dtype=float)
+            centroid = pts.mean(axis=0)
+            centered = pts - centroid
+            try:
+                _, _, vh = np.linalg.svd(centered, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            normal = vh[-1]
+            nn = float(np.linalg.norm(normal))
+            if nn < 1e-9:
+                continue
+            normal = normal / nn
+            # in-plane orthonormal basis
+            ref = np.array([1.0, 0.0, 0.0]) if abs(normal[0]) < 0.9 \
+                else np.array([0.0, 1.0, 0.0])
+            u = np.cross(normal, ref)
+            un = float(np.linalg.norm(u))
+            if un < 1e-9:
+                continue
+            u = u / un
+            v = np.cross(normal, u)
+
+            # connectivity traversal order around the ring
+            idx_map = {a: k for k, a in enumerate(ring)}
+            adj = [[] for _ in range(eta)]
+            for ai in ring:
+                for nbr in mol.GetAtomWithIdx(ai).GetNeighbors():
+                    ni = nbr.GetIdx()
+                    if ni in ring_set and ni != ai:
+                        adj[idx_map[ai]].append(idx_map[ni])
+            order = []
+            visited_r = [False] * eta
+            cur, prev = 0, -1
+            for _ in range(eta):
+                order.append(cur)
+                visited_r[cur] = True
+                nxt = -1
+                for nb in adj[cur]:
+                    if nb != prev and not visited_r[nb]:
+                        nxt = nb
+                        break
+                if nxt == -1:
+                    break
+                prev, cur = cur, nxt
+            if len(order) != eta:
+                # connectivity incomplete -> fall back to angular order so we
+                # still emit a sane polygon rather than skipping
+                rel = centered
+                ang = np.arctan2(rel @ v, rel @ u)
+                order = list(np.argsort(ang))
+
+            # circumradius for regular polygon with side = target_cc
+            R = target_cc / (2.0 * np.sin(np.pi / eta))
+            # anchor the polygon's starting angle to the current angular
+            # position of the first traversed atom -> minimal in-plane rotation
+            rel0 = centered[order[0]]
+            start_angle = float(np.arctan2(np.dot(rel0, v), np.dot(rel0, u)))
+
+            # Lay out the ideal polygon (per ring atom).
+            poly = {}
+            ok = True
+            for k, loc in enumerate(order):
+                ai = ring[loc]
+                angle = start_angle + 2.0 * np.pi * k / eta
+                p = centroid + R * np.cos(angle) * u + R * np.sin(angle) * v
+                if not np.all(np.isfinite(p)):
+                    ok = False
+                    break
+                poly[ai] = p
+            if not ok:
+                continue
+
+            # M-D invariant: if one ring atom is anchored (its branch carries an
+            # M-coordinating bond), translate the whole polygon in-plane so that
+            # anchored atom lands exactly on its current position.  Then it (and
+            # its metal-bearing branch) stay put while the rest of the ring +
+            # their non-metal branches move.
+            if anchored:
+                anc = next(iter(anchored))
+                shift = _pos(anc) - poly[anc]
+                for ai in ring:
+                    poly[ai] = poly[ai] + shift
+
+            new_positions = {}
+            for ai in ring:
+                if ai in anchored:
+                    continue  # frozen: keeps the M-D bond intact
+                new_p = poly[ai]
+                delta = new_p - _pos(ai)
+                new_positions[ai] = new_p
+                for bi in branches.get(ai, ()):  # rigid branch translation
+                    bp = _pos(bi) + delta
+                    if not np.all(np.isfinite(bp)):
+                        ok = False
+                        break
+                    new_positions[bi] = bp
+                if not ok:
+                    break
+            if not ok or not new_positions:
+                continue
+
+            # --- per-ring NEVER-WORSE guard ---
+            # Reconstructing one ring must not shove its atoms into the rest of
+            # the structure: compute the closest contact between any MOVED atom
+            # and any non-moved atom before and after.  Keep the move only if it
+            # does not introduce a new sub-0.9 Å clash that is worse than what
+            # was there before.  Pure ring-size repair always passes; a move
+            # that would create a fresh inter-fragment crash is reverted.
+            moved = list(new_positions.keys())
+            moved_set = set(moved)
+            others = [j for j in range(n_atoms) if j not in moved_set]
+            if others:
+                old_moved = np.array([_pos(j) for j in moved])
+                new_moved = np.array([new_positions[j] for j in moved])
+                oth = np.array([_pos(j) for j in others])
+
+                def _min_contact(mpos):
+                    mn = np.inf
+                    for k in range(mpos.shape[0]):
+                        dd = np.linalg.norm(oth - mpos[k], axis=1)
+                        if dd.size:
+                            mn = min(mn, float(dd.min()))
+                    return mn
+                before = _min_contact(old_moved)
+                after = _min_contact(new_moved)
+                CLASH = 0.90
+                if after < before and after < CLASH:
+                    continue  # revert: would create a worse clash
+            for idx, p in new_positions.items():
+                conf.SetAtomPosition(
+                    int(idx), (float(p[0]), float(p[1]), float(p[2]))
+                )
+            changed = True
+        return changed
+    except Exception as exc:
+        logger.debug("_scale_aromatic_rings_to_ideal_cc failed: %s", exc)
+        return False
+
+
 def _snap_aromatic_rings_to_plane(
     mol,
     conf_id: int = 0,
@@ -22752,16 +23047,25 @@ def _snap_aromatic_rings_in_xyz(
                 i, (float(parts[1]), float(parts[2]), float(parts[3]))
             )
         cid = mol_use.AddConformer(conf, assignId=True)
-        # Fused-group snap FIRST (collective plane for carbazole-style
-        # fused aromatics), then per-ring snap as a second pass so any
-        # residual single-ring buckle is also removed.
+        # Aryl-ring-size pass FIRST (env-gated, default OFF, byte-identical
+        # when unset): the rigid/legacy build paths can emit aromatic rings
+        # with crushed in-ring C-C (~1.20-1.30 Å) that squeeze ring-H into a
+        # < 0.9 Å clash the declash gate cannot resolve (ring bonds are
+        # rigid).  Rescaling each ring to the ideal aromatic C-C before the
+        # plane snap fixes the root cause (ring SIZE, not rotation).
+        changed_size = False
+        if _delfin_env_int("DELFIN_FFFREE_ARYL_RING_SIZE", 0):
+            changed_size = _scale_aromatic_rings_to_ideal_cc(mol_use, cid)
+        # Fused-group snap (collective plane for carbazole-style fused
+        # aromatics), then per-ring snap as a second pass so any residual
+        # single-ring buckle is also removed.
         changed_fused = _snap_fused_aromatic_groups_to_plane(
             mol_use, cid, rms_threshold=rms_threshold,
         )
         changed_rings = _snap_aromatic_rings_to_plane(
             mol_use, cid, rms_threshold=rms_threshold
         )
-        changed = bool(changed_fused or changed_rings)
+        changed = bool(changed_size or changed_fused or changed_rings)
         if not changed:
             return xyz_str
         new_conf = mol_use.GetConformer(cid)
@@ -22775,6 +23079,314 @@ def _snap_aromatic_rings_in_xyz(
         return '\n'.join(out) + '\n'
     except Exception as exc:
         logger.debug("_snap_aromatic_rings_in_xyz failed: %s", exc)
+        return xyz_str
+
+
+def _scale_aromatic_rings_in_xyz_from_smiles(xyz_str: str, smiles: str) -> str:
+    """Universal aryl-ring-size finalizer for a finished XYZ.
+
+    Delegates to :func:`_scale_aromatic_rings_in_xyz_geom`, which perceives
+    rings purely from the geometry.  The metal / hapto build path mutates the
+    molecule (dative-bond rewrites, charge/H adjustments) so a SMILES-rebuilt
+    mol no longer maps 1:1 onto the emitted geometry — geometry-only perception
+    is the only path-independent way to reach those squashed rings.  The
+    ``smiles`` argument is retained for call-site compatibility but unused.
+
+    Env-gated default OFF (``DELFIN_FFFREE_ARYL_RING_SIZE``).
+    """
+    return _scale_aromatic_rings_in_xyz_geom(xyz_str)
+
+
+def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
+    """Geometry-only aromatic 5/6-ring size normalization on a finished XYZ.
+
+    This is the universal, path-independent finalizer.  The metal / hapto build
+    path mutates the molecule (dative-bond rewrites, charge/H adjustments) so a
+    SMILES-rebuilt mol no longer maps 1:1 onto the emitted geometry — the only
+    thing we can trust is the XYZ itself.  This pass therefore perceives bonds
+    purely from interatomic distances (covalent radii + tolerance), finds
+    near-planar 5/6 carbon rings, and reconstructs any whose in-ring C-C is
+    crushed/stretched to a regular polygon at the ideal aromatic C-C (1.39 Å),
+    rigidly dragging each ring atom's substituent branch.
+
+    Universal (never SMILES-specific).  M-D safe: a ring atom whose branch
+    reaches a metal is "anchored" (frozen) so the M-coordination bond is never
+    moved; rings with >= 2 anchors are skipped.  NEVER-WORSE: physically-sized,
+    undistorted rings are left untouched.  Env-gated (default OFF); returns the
+    input unchanged on any failure or non-finite result.
+    """
+    if not xyz_str:
+        return xyz_str
+    if not _delfin_env_int("DELFIN_FFFREE_ARYL_RING_SIZE", 0):
+        return xyz_str
+    try:
+        import numpy as np
+        target_cc = 1.39
+        lo, hi = 1.34, 1.44
+
+        raw = [l for l in xyz_str.splitlines() if l.strip()]
+        # tolerate an optional XYZ header (count + comment)
+        coord_lines = []
+        for l in raw:
+            p = l.split()
+            if len(p) >= 4:
+                try:
+                    float(p[1]); float(p[2]); float(p[3])
+                except ValueError:
+                    continue
+                coord_lines.append(l)
+        n = len(coord_lines)
+        if n < 5:
+            return xyz_str
+        syms = []
+        coords = np.zeros((n, 3), dtype=float)
+        for i, l in enumerate(coord_lines):
+            p = l.split()
+            syms.append(p[0])
+            coords[i] = (float(p[1]), float(p[2]), float(p[3]))
+
+        metal_set = _METAL_SET
+        metal_idx = {i for i, s in enumerate(syms) if s in metal_set}
+
+        # --- bond graph from covalent radii (heavy + H), exclude metals ---
+        def _rad(s):
+            return _COVALENT_RADII.get(s, 0.76)
+
+        adj = [[] for _ in range(n)]
+        heavy = [i for i in range(n) if syms[i] != 'H' and i not in metal_idx]
+        # pairwise within a generous cutoff
+        for ii in range(len(heavy)):
+            i = heavy[ii]
+            for jj in range(ii + 1, len(heavy)):
+                j = heavy[jj]
+                d = float(np.linalg.norm(coords[i] - coords[j]))
+                cut = _rad(syms[i]) + _rad(syms[j]) + 0.40
+                if 0.4 < d <= cut:
+                    adj[i].append(j)
+                    adj[j].append(i)
+        # H bonds (for branch dragging only; H not part of ring search)
+        for i in range(n):
+            if syms[i] != 'H':
+                continue
+            best, bestd = -1, 1e9
+            for j in heavy:
+                d = float(np.linalg.norm(coords[i] - coords[j]))
+                cut = _rad('H') + _rad(syms[j]) + 0.40
+                if d <= cut and d < bestd:
+                    best, bestd = j, d
+            if best >= 0:
+                adj[i].append(best)
+                adj[best].append(i)
+        # metal-coordination edges (so branch BFS can detect "reaches metal")
+        for m in metal_idx:
+            for j in heavy:
+                d = float(np.linalg.norm(coords[m] - coords[j]))
+                cut = _COVALENT_RADII.get(syms[m], 1.35) + _rad(syms[j]) + 0.55
+                if d <= cut:
+                    adj[m].append(j)
+                    adj[j].append(m)
+
+        # --- find carbon 5/6 rings via bounded DFS over the carbon subgraph ---
+        carbons = [i for i in heavy if syms[i] == 'C']
+        cset = set(carbons)
+        cadj = {i: [j for j in adj[i] if j in cset] for i in carbons}
+        rings = set()
+
+        def _dfs(start, cur, path, depth):
+            if depth > 6:
+                return
+            for nb in cadj[cur]:
+                if nb == start and len(path) in (5, 6):
+                    rings.add(frozenset(path))
+                elif nb not in path and len(path) < 6:
+                    _dfs(start, nb, path + [nb], depth + 1)
+
+        for s in carbons:
+            _dfs(s, s, [s], 1)
+
+        # keep rings where every member has exactly 2 in-ring C neighbours
+        clean_rings = []
+        for r in rings:
+            rl = list(r)
+            if all(len([x for x in cadj[m] if x in r]) == 2 for m in rl):
+                clean_rings.append(rl)
+
+        def _pos(i):
+            return coords[i]
+
+        changed = False
+        for ring in clean_rings:
+            eta = len(ring)
+            ring_set = set(ring)
+            # ordered ring traversal via connectivity
+            radj = {m: [x for x in cadj[m] if x in ring_set] for m in ring}
+            order = []
+            visited = set()
+            cur, prev = ring[0], -1
+            for _ in range(eta):
+                order.append(cur)
+                visited.add(cur)
+                nxt = -1
+                for nb in radj[cur]:
+                    if nb != prev and nb not in visited:
+                        nxt = nb
+                        break
+                if nxt == -1:
+                    break
+                prev, cur = cur, nxt
+            if len(order) != eta:
+                continue
+
+            lens = [float(np.linalg.norm(_pos(order[k]) - _pos(order[(k + 1) % eta])))
+                    for k in range(eta)]
+            mean_cc = float(np.mean(lens))
+            min_cc = float(np.min(lens))
+            max_cc = float(np.max(lens))
+            if mean_cc < 1e-6:
+                continue
+
+            # Aromatic (sp2) vs saturated (sp3) discriminator that survives a
+            # collapsed geometry (where loose distance cutoffs would create
+            # spurious "bonds").  A benzene-type ring carbon carries at most ONE
+            # substituent — either a single H (aromatic C-H) or a single heavy
+            # group — while a cyclohexane CH2 carries TWO hydrogens.  Counting
+            # substituents with a STRICT covalent cutoff (immune to the crush
+            # contacts) and requiring <= 1 H and <= 1 heavy substituent per ring
+            # member excludes chair/boat saturated rings (which must never be
+            # flattened) without a planarity test that a distorted aromatic ring
+            # would itself fail.  The reconstruction re-planarizes the ring.
+            def _strict_subs(m):
+                nh = 0
+                nheavy = 0
+                pm = _pos(m)
+                for nb in adj[m]:
+                    if nb in ring_set or nb in metal_idx:
+                        continue
+                    d = float(np.linalg.norm(pm - _pos(nb)))
+                    cut = rad(syms[m]) + rad(syms[nb]) + 0.18
+                    if d > cut:
+                        continue  # spurious crush contact, not a real bond
+                    if syms[nb] == 'H':
+                        nh += 1
+                    else:
+                        nheavy += 1
+                return nh, nheavy
+            saturated = False
+            for m in ring:
+                nh, nheavy = _strict_subs(m)
+                if nh >= 2 or nheavy >= 2 or (nh + nheavy) >= 2:
+                    saturated = True
+                    break
+            if saturated:
+                continue
+
+            rp = np.array([_pos(m) for m in ring])
+            rc = rp.mean(axis=0)
+            rcent = rp - rc
+            try:
+                _, _, rvh = np.linalg.svd(rcent, full_matrices=False)
+            except np.linalg.LinAlgError:
+                continue
+            rnormal = rvh[-1]
+            rnn = float(np.linalg.norm(rnormal))
+            if rnn < 1e-9:
+                continue
+            rnormal = rnormal / rnn
+
+            # NEVER-WORSE: physically-sized AND undistorted -> leave alone
+            good = (lo <= mean_cc <= hi) and (min_cc >= lo - 0.05) \
+                and (max_cc <= hi + 0.10)
+            if good:
+                continue
+
+            # branches (BFS into fragment, stop before metals); anchored atoms
+            branches = {}
+            anchored = set()
+            for ai in ring:
+                seen = set(ring_set)
+                br = []
+                q = []
+                for nb in adj[ai]:
+                    if nb in metal_idx:
+                        anchored.add(ai)
+                        continue
+                    if nb not in seen:
+                        seen.add(nb)
+                        q.append(nb)
+                while q:
+                    c = q.pop(0)
+                    br.append(c)
+                    for nb in adj[c]:
+                        if nb in metal_idx:
+                            anchored.add(ai)
+                            continue
+                        if nb not in seen:
+                            seen.add(nb)
+                            q.append(nb)
+                branches[ai] = br
+            if len(anchored) >= 2:
+                continue
+
+            # in-plane basis + ideal polygon at ideal C-C
+            ref = np.array([1.0, 0.0, 0.0]) if abs(rnormal[0]) < 0.9 \
+                else np.array([0.0, 1.0, 0.0])
+            u = np.cross(rnormal, ref)
+            un = float(np.linalg.norm(u))
+            if un < 1e-9:
+                continue
+            u = u / un
+            v = np.cross(rnormal, u)
+            R = target_cc / (2.0 * np.sin(np.pi / eta))
+            rel0 = rcent[ring.index(order[0])]
+            start_angle = float(np.arctan2(np.dot(rel0, v), np.dot(rel0, u)))
+
+            poly = {}
+            ok = True
+            for k, ai in enumerate(order):
+                angle = start_angle + 2.0 * np.pi * k / eta
+                p = rc + R * np.cos(angle) * u + R * np.sin(angle) * v
+                if not np.all(np.isfinite(p)):
+                    ok = False
+                    break
+                poly[ai] = p
+            if not ok:
+                continue
+            if anchored:
+                anc = next(iter(anchored))
+                shift = _pos(anc) - poly[anc]
+                for ai in ring:
+                    poly[ai] = poly[ai] + shift
+
+            updates = {}
+            for ai in ring:
+                if ai in anchored:
+                    continue
+                new_p = poly[ai]
+                delta = new_p - _pos(ai)
+                updates[ai] = new_p
+                for bi in branches.get(ai, ()):
+                    bp = _pos(bi) + delta
+                    if not np.all(np.isfinite(bp)):
+                        ok = False
+                        break
+                    updates[bi] = bp
+                if not ok:
+                    break
+            if not ok or not updates:
+                continue
+            for idx, p in updates.items():
+                coords[idx] = p
+            changed = True
+
+        if not changed:
+            return xyz_str
+        out = []
+        for i in range(n):
+            out.append(f"{syms[i]:4s} {coords[i,0]:12.6f} "
+                       f"{coords[i,1]:12.6f} {coords[i,2]:12.6f}")
+        return '\n'.join(out) + '\n'
+    except Exception as exc:
+        logger.debug("_scale_aromatic_rings_in_xyz_geom failed: %s", exc)
         return xyz_str
 
 
@@ -30425,6 +31037,12 @@ def _topology_hard_gate_check(
     """
     if xyz is None:
         return None, None
+    # Universal aryl-ring-size finalizer (env-gated, default OFF, byte-identical
+    # when unset).  Runs here because this is the single post-processor every
+    # meaningful build path returns through, including the metal / multi-strategy
+    # builders that bypass _snap_aromatic_rings_in_xyz.  Strict no-op unless the
+    # SMILES maps 1:1 onto the geometry.
+    xyz = _scale_aromatic_rings_in_xyz_from_smiles(xyz, smiles)
     mode = _delfin_env_int("DELFIN_TOPOLOGY_HARD_GATE", 0)
     if mode == 0:
         return xyz, None
@@ -31027,6 +31645,9 @@ def smiles_to_xyz(
 
             if best_mol is None:
                 if legacy_hapto_xyz:
+                    legacy_hapto_xyz = _scale_aromatic_rings_in_xyz_from_smiles(
+                        legacy_hapto_xyz, smiles
+                    )
                     if output_path:
                         Path(output_path).write_text(legacy_hapto_xyz, encoding='utf-8')
                     return legacy_hapto_xyz, None
@@ -31066,12 +31687,26 @@ def smiles_to_xyz(
                             "Iter-23 multihapto ETKDG-seed42 fallback recovered "
                             "topology (%s)", smiles[:48],
                         )
+                        _i23_fb_xyz = _scale_aromatic_rings_in_xyz_from_smiles(
+                            _i23_fb_xyz, smiles
+                        )
                         if output_path:
                             Path(output_path).write_text(_i23_fb_xyz, encoding='utf-8')
                         return _i23_fb_xyz, None
             # ---- Iter-23 MULTIHAPTO_ETKDG_FALLBACK (END) -------------------
 
             mol = best_mol
+            # Universal aryl-ring-size finalizer (env-gated, default OFF).  The
+            # hapto / multi-hapto emit returns here without passing through
+            # _topology_hard_gate_check.  Operate on best_mol's conformer so we
+            # use its reliable bond topology (atoms match the geometry 1:1),
+            # then emit.  M-D safe: rings reaching the metal are frozen.
+            if _delfin_env_int("DELFIN_FFFREE_ARYL_RING_SIZE", 0):
+                try:
+                    if mol.GetNumConformers() > 0:
+                        _scale_aromatic_rings_to_ideal_cc(mol, 0)
+                except Exception as _exc:
+                    logger.debug("aryl-ring-size (hapto emit) skipped: %s", _exc)
             xyz_content = _mol_to_xyz(mol)
             if output_path:
                 Path(output_path).write_text(xyz_content, encoding='utf-8')
