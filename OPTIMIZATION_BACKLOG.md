@@ -107,6 +107,17 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Session-relative task numbering** (bug 20260619-172400, ka_xn0397, the
+  "tasks werden absolut weitergezählt / bin bei task 90" half). The global task
+  `id` is a per-workspace monotonic counter that never resets. Added opt-in
+  `TaskStore.list(with_seq=True)` → a 1-based, id-ordered, completion-stable
+  session-local `seq`. Ticker (`#seq`), per-turn open-tasks reminder
+  (`task N (id M)`) and task_create hint (`task N added (id M)`) now lead with
+  seq; the global id stays the key for task_update/task_get/blocked_by and the
+  tool doc tells the agent to narrate seq but pass id. Live (KIT qwen): new
+  session shows `task 1` for global id 6, agent narrates "task number 1" yet
+  completes id 6 correctly, old id-1 untouched. Report 172400 now fully fixed
+  (both halves) — awaiting user `mv` to Solved (auto-mode blocked the shared mv).
 - [x] **Per-turn tool-round cap is now a setting** (bug 20260619-172400,
   ka_xn0397, "nach 50 turns stoppt der agent automatisch" — the auto-stop half).
   `api_client._MAX_TOOL_ROUNDS` was a hard-coded 50; long multi-file work hit it
