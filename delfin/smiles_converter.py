@@ -28451,10 +28451,20 @@ def _clean_gate_filter(isomers):
         if not n_atoms:
             return isomers
 
+        def _mark(item):
+            """Annotate a fallback frame as the cleanest available (not certified
+            clean) so downstream knows it is a must-fix-to-build case."""
+            if isinstance(item, (tuple, list)) and len(item) >= 2:
+                lab = item[1]
+                if "cleanest-available" not in str(lab):
+                    lab = f"{lab}|cleanest-available"
+                return (item[0],) + (lab,) + tuple(item[2:])
+            return item
+
         ref = next((f for f in frames if f[4]), None)
         if ref is None:
-            # No structurally-valid frame at all -> never-empty: keep one.
-            return [isomers[0]]
+            # No structurally-valid frame at all -> never-empty: keep one, marked.
+            return [_mark(isomers[0])]
         ref_syms = ref[0]
         valid = [f for f in frames if f[4]]
         nf = len(valid)
@@ -28468,10 +28478,38 @@ def _clean_gate_filter(isomers):
             dz = f[3][i] - f[3][j]
             return dx * dx + dy * dy + dz * dz
 
+        # ---- best-intact reference frame ----------------------------------
+        # The structurally-valid frame whose metal first shell is the most fully
+        # occupied (most non-metal heavy atoms within md_shell of ANY metal) is
+        # our best single guess at the CORRECT, intact topology.  Used to (a)
+        # rescue genuine bonds that a MINORITY of broken frames would otherwise
+        # declassify from the pure consensus (critical for small ensembles, e.g.
+        # 2 frames where one break would drop the bond), and (b) anchor the donor
+        # set.  With no metal it is simply the first valid frame.
+        def _shell_count(f):
+            if not metal_idx:
+                return 0
+            c = 0
+            for k in range(n_atoms):
+                if k in metal_set or f[0][k] == "H":
+                    continue
+                if any(math.sqrt(_d2(f, mi, k)) < md_shell for mi in metal_idx):
+                    c += 1
+            return c
+        best_ref = valid[0]
+        best_ref_sc = _shell_count(best_ref)
+        for f in valid[1:]:
+            sc_ = _shell_count(f)
+            if sc_ > best_ref_sc:
+                best_ref_sc = sc_
+                best_ref = f
+
         # ---- consensus bond graph (non-metal pairs, all heavy + H) --------
         # A pair (i,j) is a REAL BOND iff at bonding distance in >= consensus
-        # fraction of the structurally-valid frames (rigid covalent skeleton).
-        # Metal pairs are NEVER bonds here (M-D varies legitimately).
+        # fraction of the structurally-valid frames (rigid covalent skeleton)
+        # OR at bonding distance in the best-intact reference frame (so a single
+        # broken minority frame cannot declassify a genuine bond and then flag the
+        # GOOD frames for it).  Metal pairs are NEVER bonds here (M-D varies).
         bond_thr2 = {}
         for i in range(n_atoms):
             if i in metal_set:
@@ -28489,6 +28527,9 @@ def _clean_gate_filter(isomers):
                     near[key] += 1
         thr_cnt = bond_consensus * nf
         real_bond = {key for key, c in near.items() if c >= thr_cnt}
+        for key, t2 in bond_thr2.items():
+            if _d2(best_ref, key[0], key[1]) < t2:
+                real_bond.add(key)
 
         # ideal heavy-heavy bond length per real bond (covalent sum) for the
         # destroyed-geometry band.
@@ -28603,12 +28644,7 @@ def _clean_gate_filter(isomers):
         if kept:
             return kept
         # NEVER-EMPTY: every frame is dirty -> keep the single cleanest, marked.
-        if isinstance(best_item, (tuple, list)) and len(best_item) >= 2:
-            lab = best_item[1]
-            if "cleanest-available" not in str(lab):
-                lab = f"{lab}|cleanest-available"
-            return [(best_item[0],) + (lab,) + tuple(best_item[2:])]
-        return [best_item if best_item is not None else isomers[0]]
+        return [_mark(best_item if best_item is not None else isomers[0])]
     except Exception:
         return isomers
 
