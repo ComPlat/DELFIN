@@ -454,6 +454,62 @@ def _donor_bend_angle(mol, atom):
     return float(deg)
 
 
+def _donor_c_angle(mol, atom):
+    """Ideal M-D-R angle (deg) for a SINGLE-heavy-substituent donor ``atom`` whose
+    correct local geometry is TETRAHEDRAL or TRIGONAL but which is otherwise built
+    LINEAR (180 deg) -- the carbon-donor (and general sp3/sp2 donor) analogue of
+    ``_donor_bend_angle``.  Returns ``None`` to keep the linear placement.
+
+    Root cause this addresses: an alkyl / Grignard-type carbanion donor ``M-CH2-R``
+    (and ``M-CH3``) loses its donor-carbon hydrogens in the placement graph (the
+    fragment is ``[H]C([H])([H])[C]`` with the donor carbon carrying ZERO H and a
+    single heavy neighbour), so the donor carbon reaches ``_vsepr_reconstruct`` as a
+    k==1 atom and falls through to the linear branch -> a near-linear M-C-C angle
+    where VSEPR demands ~109.5 deg.  ``_donor_bend_angle`` only rescues 2-coordinate
+    chalcogen / pnictogen donors; this fills the gap for CARBON and any other donor
+    whose hybridisation says the metal must sit off the substituent axis.
+
+    Hybridisation-only (graph-derived, no coordinates):
+      * sp3 single-substituent donor  -> 109.47 deg (tetrahedral vacancy)
+      * sp2 single-substituent donor  -> 120.0  deg (trigonal vacancy)
+      * sp  donor                     -> None  (genuinely linear: M-C#O carbonyl,
+                                                M-C#N isocyanide, allene/cumulene C,
+                                                kept antiperiplanar at 180 deg)
+    The genuinely-linear discriminator is HYBRIDISATION (sp), not bond order: a
+    kekulised sigma-vinyl donor ``[H]C([H])=[C]`` is sp2 and trigonal (120 deg)
+    even though its single substituent is reached by a double bond.  Only an sp3
+    donor double/triple-bonded to its substituent is held linear (the double bond
+    contradicts sp3 -> ambiguous, keep the conservative 180 deg).  Donors already
+    handled by ``_donor_bend_angle`` (chalcogen / pnictogen) return ``None`` here
+    so the two helpers never both fire on the same donor."""
+    sym = atom.GetSymbol()
+    if sym in _CHALCOGENS or sym in _PNICTOGENS:
+        return None                       # owned by _donor_bend_angle
+    nbrs = list(atom.GetNeighbors())
+    if len(nbrs) != 1:
+        return None                       # only the M + one-substituent (k==1) case
+    bond = mol.GetBondBetweenAtoms(atom.GetIdx(), nbrs[0].GetIdx())
+    bt = bond.GetBondTypeAsDouble() if bond is not None else 1.0
+    hyb = str(atom.GetHybridization())
+    # The genuinely-linear case is SP hybridisation: a cumulene / vinylidene donor
+    # carbon (M=C=CR2), an isocyanide carbon (M-C#N-R), a terminal carbyne.  These
+    # keep the metal on the substituent axis (180 deg).
+    if hyb == "SP":
+        return None
+    if hyb == "SP2":
+        # trigonal donor (sigma-vinyl/aryl carbanion, sp2 carbene): 120 deg.  A
+        # double bond to the *substituent* (kekulised sigma-vinyl [H]C([H])=[C]) is
+        # fine -- the donor is still trigonal, only the metal-facing vacancy moves.
+        return 120.0
+    if hyb in ("SP3", "UNSPECIFIED", "S"):
+        # tetrahedral donor (alkyl carbanion).  A double/triple bond to the single
+        # substituent contradicts sp3 -> defer to the linear default (do not bend).
+        if bt >= 2.0:
+            return None
+        return 109.47
+    return None                           # hypervalent / unknown -> keep linear
+
+
 def _vsepr_reconstruct(lsyms, lP, lmol, di):
     """Re-pyramidalise the donor's LOCAL geometry to ideal VSEPR with one
     coordination vacancy for the metal, rigidly dragging each substituent's
@@ -508,6 +564,31 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
                     th = np.radians(bend)
                     # vacancy a with angle(a, s) == theta: cos(theta) along s,
                     # sin(theta) along the perpendicular p.
+                    a = np.cos(th) * s + np.sin(th) * p
+                    na = np.linalg.norm(a)
+                    if na > 1e-6 and np.all(np.isfinite(a)):
+                        return lP, a / na
+        # DELFIN_FFFREE_DONOR_C_ANGLE=1: the CARBON-donor (and general sp3/sp2
+        # single-heavy-substituent donor) analogue of DONOR_BEND.  An alkyl /
+        # Grignard carbanion donor M-CH2-R (fragment [H]C([H])([H])[C], donor C
+        # with 0 H + 1 heavy neighbour) reaches here as k==1 and would otherwise be
+        # placed LINEAR (M-C-C 180 deg) -- VSEPR demands ~109.5 deg (sp3) / 120 deg
+        # (sp2).  Offset the metal vacancy off the substituent axis by the
+        # hybridisation-ideal angle, IDENTICAL technique to DONOR_BEND above: the
+        # substituent subtree stays put on the donor vertex, the caller's
+        # _rot_align(lp, -Vunit) makes M-C-R == theta.  Genuinely-linear sp donors
+        # (M-C#O carbonyl, M-C#N isocyanide, =C= cumulene) return None -> 180 deg.
+        if os.environ.get("DELFIN_FFFREE_DONOR_C_ANGLE", "0") == "1":
+            cbend = _donor_c_angle(lmol, atom)
+            if cbend is not None:
+                s = u[0]                       # donor->substituent unit vector
+                tmp = (np.array([1.0, 0.0, 0.0]) if abs(s[0]) < 0.9
+                       else np.array([0.0, 1.0, 0.0]))
+                p = tmp - s * float(np.dot(tmp, s))
+                np_c = np.linalg.norm(p)
+                if np_c > 1e-6:
+                    p = p / np_c
+                    th = np.radians(cbend)
                     a = np.cos(th) * s + np.sin(th) * p
                     na = np.linalg.norm(a)
                     if na > 1e-6 and np.all(np.isfinite(a)):
