@@ -67,12 +67,44 @@ Design constraints
   ``dedup_ensemble`` is the identity (returns the input list untouched).
 * NEVER raises.  Any failure returns the input unchanged.
 
+Asymmetric "only-TRUE-duplicates" tuning (governing invariant: drop a frame
+ONLY when it is CERTAINLY a duplicate; in doubt KEEP)
+----------------------------------------------------------------------------
+The merge test was de-aggressed so it removes only genuinely-identical frames,
+never geometrically-distinct conformers that a large symmetry group could make
+LOOK equal under some relabelling:
+
+* TIGHTER base threshold (``0.5`` -> ``0.25`` Angstrom).  A true duplicate is
+  near-identical; a real distinct conformer of a small/rigid complex differs by
+  clearly more than this even at the best symmetry alignment.
+* HIGH-SYMMETRY = MORE CONSERVATIVE.  The more automorphisms a frame's graph has
+  (the more relabellings available to spuriously align two distinct geometries),
+  the SMALLER the effective threshold becomes — the exact regime where the old
+  fixed 0.5 over-merged small high-symmetry systems (CN7 cyanides, peroxo cages).
+  ``eff = max(min_rmsd, rmsd / (1 + symw * log2(max(1, n_autos))))``.
+* UNAMBIGUOUS-MATCH requirement.  A genuine duplicate is the SAME geometry, so its
+  identity (fixed-order) RMSD is already small; the symmetry relabelling only
+  removes a tiny labelling artefact.  If the best-automorphism RMSD is far BELOW
+  the identity RMSD (a permutation "rescued" two otherwise-distinct geometries),
+  that is a symmetry coincidence, not a duplicate -> KEEP.  Required:
+  ``best_auto_rmsd <= eff`` AND ``best_auto_rmsd >= ambig * identity_rmsd``
+  (the permutation may only modestly improve on identity).
+
 Env-flags (read once per call)
 ------------------------------
 ``DELFIN_FFFREE_PERMUTE_DEDUP``        (default ``0``) — master switch.
-``DELFIN_FFFREE_PERMUTE_DEDUP_RMSD``   (default ``0.5``) — Angstrom heavy-RMSD
-                                         duplicate threshold (matches the existing
-                                         ``DELFIN_FFFREE_CONF_RMSD`` default).
+``DELFIN_FFFREE_PERMUTE_DEDUP_RMSD``   (default ``0.25``) — Angstrom heavy-RMSD
+                                         base duplicate threshold (tightened from
+                                         0.5: only near-identical frames merge).
+``DELFIN_FFFREE_PERMUTE_DEDUP_MINRMSD``(default ``0.10``) — floor for the
+                                         symmetry-scaled effective threshold.
+``DELFIN_FFFREE_PERMUTE_DEDUP_SYMW``   (default ``0.35``) — symmetry-conservatism
+                                         weight; larger -> stricter as symmetry
+                                         grows (0 disables the symmetry scaling).
+``DELFIN_FFFREE_PERMUTE_DEDUP_AMBIG``  (default ``0.30``) — minimum ratio
+                                         best-auto-RMSD / identity-RMSD for a merge;
+                                         a permutation may only modestly beat
+                                         identity (0 disables the check).
 ``DELFIN_FFFREE_PERMUTE_DEDUP_MAXPERM``(default ``4096``) — cap on enumerated
                                          automorphisms; above it, fall back to the
                                          identity permutation (= current behaviour)
@@ -416,15 +448,89 @@ def _coords_array(xyz: str):
         return None
 
 
+def _effective_threshold(n_autos: int, rmsd: float, min_rmsd: float, symw: float) -> float:
+    """Symmetry-scaled effective duplicate threshold.
+
+    The more automorphisms exist (the more relabellings available to spuriously
+    align two distinct geometries), the SMALLER the threshold becomes — high
+    symmetry is exactly where a fixed threshold over-merges.  Monotone decreasing
+    in ``n_autos``; floored at ``min_rmsd``; identity-group (n_autos<=1) keeps the
+    full base threshold.  Deterministic, pure function."""
+    try:
+        if symw <= 0.0 or n_autos <= 1:
+            return rmsd
+        scale = 1.0 + symw * math.log2(max(1, n_autos))
+        return max(min_rmsd, rmsd / scale)
+    except Exception:
+        return rmsd
+
+
+def _is_dup_pair(
+    A,
+    B,
+    autos,
+    heavy,
+    rmsd: float,
+    min_rmsd: float,
+    symw: float,
+    ambig: float,
+) -> bool:
+    """ASYMMETRIC duplicate decision for one (kept A, candidate B) pair.
+
+    True ONLY when B is CERTAINLY a duplicate of A:
+      * best-over-automorphisms heavy-Kabsch RMSD <= symmetry-scaled threshold
+        (smaller threshold when the graph is highly symmetric), AND
+      * EITHER the match is a CERTAIN duplicate (best <= min_rmsd: a sub-floor
+        alignment after a VALID graph automorphism is the same structure, even if
+        the atom labels were permuted -- a relabeled exact duplicate), OR the match
+        is UNAMBIGUOUS in the borderline zone (the best automorphism may only
+        MODESTLY improve on the identity (fixed-order) RMSD; a permutation that
+        turns a clearly-distinct geometry into a borderline-threshold one is a
+        symmetry coincidence -> KEEP).
+    In every doubt / error path -> False (KEEP).  Deterministic; never raises."""
+    try:
+        eff = _effective_threshold(len(autos), rmsd, min_rmsd, symw)
+        # identity permutation RMSD (fixed atom order) — the "same-labelling" cost.
+        ident = list(range(A.shape[0]))
+        ident_r = _kabsch_rmsd_perm(heavy, A, B, ident)
+        best = 1e9
+        for perm in autos:
+            r = _kabsch_rmsd_perm(heavy, A, B, perm)
+            if r < best:
+                best = r
+        if best > eff:
+            return False
+        # CERTAIN-duplicate floor: a sub-floor (<= min_rmsd) alignment under a
+        # valid automorphism IS the same structure (a relabeled exact duplicate),
+        # so it merges regardless of the identity ratio — the ambiguity guard
+        # below would otherwise wrongly KEEP genuine relabeled duplicates of
+        # high-symmetry frames (best≈0 but identity large).
+        if best <= min_rmsd:
+            return True
+        # unambiguous-match guard (borderline zone only): forbid a permutation
+        # "rescuing" two distinct geometries into the (min_rmsd, eff] band.  best
+        # must be within [ambig*ident, eff].  ambig<=0 disables.
+        if ambig > 0.0 and ident_r < 1e8 and best < ambig * ident_r:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def is_permutation_duplicate(
     xyz_a: str,
     xyz_b: str,
-    rmsd: float = 0.5,
+    rmsd: float = 0.25,
     use_chirality: bool = True,
     max_perm: int = 4096,
+    min_rmsd: float = 0.10,
+    symw: float = 0.35,
+    ambig: float = 0.30,
 ) -> bool:
-    """Public single-pair test: True iff frame B is a permutation-duplicate of A
-    (min over graph automorphisms of heavy-RMSD(A, π(B)) < ``rmsd``).
+    """Public single-pair test: True iff frame B is CERTAINLY a permutation-
+    duplicate of A under the asymmetric rule (see ``_is_dup_pair``): best-over-
+    automorphisms heavy-RMSD below a symmetry-scaled threshold AND the match is
+    unambiguous (a permutation may only modestly beat the identity alignment).
 
     Deterministic; never raises (returns False on any error so distinct frames
     are never wrongly merged)."""
@@ -438,14 +544,7 @@ def is_permutation_duplicate(
             return False
         if len(symbols) != A.shape[0]:
             return False
-        best = 1e9
-        for perm in autos:
-            r = _kabsch_rmsd_perm(heavy, A, B, perm)
-            if r < best:
-                best = r
-            if best < rmsd:
-                return True
-        return best < rmsd
+        return _is_dup_pair(A, B, autos, heavy, rmsd, min_rmsd, symw, ambig)
     except Exception:
         return False
 
@@ -486,7 +585,10 @@ def dedup_ensemble(isomers):
     if not isomers or not _is_enabled():
         return isomers
     try:
-        rmsd = _env_float("DELFIN_FFFREE_PERMUTE_DEDUP_RMSD", 0.5, lo=0.0, hi=10.0)
+        rmsd = _env_float("DELFIN_FFFREE_PERMUTE_DEDUP_RMSD", 0.25, lo=0.0, hi=10.0)
+        min_rmsd = _env_float("DELFIN_FFFREE_PERMUTE_DEDUP_MINRMSD", 0.10, lo=0.0, hi=10.0)
+        symw = _env_float("DELFIN_FFFREE_PERMUTE_DEDUP_SYMW", 0.35, lo=0.0, hi=100.0)
+        ambig = _env_float("DELFIN_FFFREE_PERMUTE_DEDUP_AMBIG", 0.30, lo=0.0, hi=1.0)
         max_perm = _env_int("DELFIN_FFFREE_PERMUTE_DEDUP_MAXPERM", 4096, lo=1, hi=1 << 22)
         use_chirality = _env_bool("DELFIN_FFFREE_PERMUTE_DEDUP_CHIRAL", True)
     except Exception:
@@ -543,14 +645,9 @@ def dedup_ensemble(isomers):
                             heavy = list(range(key))
                         auto_cache[kidx] = (autos, heavy)
                     autos, heavy = auto_cache[kidx]
-                    best = 1e9
-                    for perm in autos:
-                        r = _kabsch_rmsd_perm(heavy, A, B, perm)
-                        if r < best:
-                            best = r
-                        if best < rmsd:
-                            break
-                    if best < rmsd:
+                    # ASYMMETRIC: drop B only if it is CERTAINLY a duplicate of the
+                    # kept frame A (symmetry-scaled threshold + unambiguous match).
+                    if _is_dup_pair(A, B, autos, heavy, rmsd, min_rmsd, symw, ambig):
                         is_dup = True
                         break
                 if is_dup:

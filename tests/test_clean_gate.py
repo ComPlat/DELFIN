@@ -72,20 +72,23 @@ def test_clean_ensemble_untouched():
 # donor reference are well-defined (matching real multi-frame ensembles).
 
 
-def test_drops_decoordinated_frame_keeps_clean():
+def test_keeps_single_donor_off_metal_still_coordinated():
+    # ASYMMETRIC contract: one donor swinging off while the metal stays otherwise
+    # coordinated is NOT certainly bad -> KEEP (the old consensus/reference donor
+    # check wrongly dropped this; a surviving good-enough structure > removing a
+    # borderline one).  Only TOTAL decoordination (bare metal) is dropped, which
+    # is covered by test_drops_bare_metal_total_decoordination.
     os.environ["DELFIN_FFFREE_CLEAN_GATE"] = "1"
     clean_atoms = _clean_octahedron()
-    # Dirty: swing the +x donor N (index 1) + its C (index 2) far off (8 A) ->
-    # decoordination.  Two clean frames give a fully-coordinated reference.
-    dirty = list(clean_atoms)
-    dirty[1] = ("N", 8.0, 0.0, 0.0)
-    dirty[2] = ("C", 9.47, 0.0, 0.0)
+    one_off = list(clean_atoms)
+    one_off[1] = ("N", 8.0, 0.0, 0.0)
+    one_off[2] = ("C", 9.47, 0.0, 0.0)
     iso = [(_xyz(clean_atoms), "clean1"),
            (_xyz(clean_atoms), "clean2"),
-           (_xyz(dirty), "dirty")]
+           (_xyz(one_off), "one_off")]
     out = sc._clean_gate_filter(iso)
     labels = [lbl for _, lbl in out]
-    assert "dirty" not in labels
+    assert "one_off" in labels  # kept: metal still has 5 donors
     assert "clean1" in labels and "clean2" in labels
 
 
@@ -107,53 +110,57 @@ def test_drops_interligand_clash_keeps_clean():
     assert "clean1" in labels and "clean2" in labels
 
 
-def test_never_empty_marks_cleanest_available():
+def test_asymmetric_keeps_modestly_decoordinated_frame():
+    # Governing invariant: drop ONLY the certainly-bad, KEEP the borderline.
+    # A frame whose metal is still coordinated (donors in the shell) but where a
+    # single donor swung modestly off is NOT certainly bad -> it must be KEPT
+    # (the old consensus/reference donor-distance check wrongly dropped it).
     os.environ["DELFIN_FFFREE_CLEAN_GATE"] = "1"
     clean_atoms = _clean_octahedron()
-    # Every frame is dirty (each decoordinates a donor) but one less so -> the
-    # never-empty fallback keeps the least-violating frame, marked.  A clean
-    # reference frame is included so the gate KNOWS the full donor set (otherwise
-    # a partly-coordinated frame would define the reference and read as clean).
-    d1 = list(clean_atoms)
-    d1[1] = ("N", 8.0, 0.0, 0.0); d1[2] = ("C", 9.47, 0.0, 0.0)
-    d2 = list(clean_atoms)
-    d2[1] = ("N", 8.0, 0.0, 0.0); d2[2] = ("C", 9.47, 0.0, 0.0)
-    d2[3] = ("N", -8.0, 0.0, 0.0); d2[4] = ("C", -9.47, 0.0, 0.0)
-    # Reference comes from the fully-coordinated frame; both d1,d2 are dirty.
-    iso = [(_xyz(clean_atoms), "ref"), (_xyz(d2), "worse"), (_xyz(d1), "lessbad")]
-    # Remove the clean frame from emission AFTER the reference is learned by
-    # making it the LAST so we still test fallback: instead, build a set where
-    # the ONLY clean frame is dropped is impossible; so test the fallback on a
-    # set whose every frame is dirty but whose reference (best-coordinated)
-    # frame still defines all six donors -- d1 itself keeps 5 donors so it is the
-    # reference and reads clean.  To force all-dirty we therefore drop the clean
-    # ref and assert against the two-dirty case directly:
-    iso_all_dirty = [(_xyz(d2), "worse"), (_xyz(d1), "lessbad")]
-    out = sc._clean_gate_filter(iso_all_dirty)
-    # With d1 as the (best-coordinated) reference, d1 has 5 donors all in range
-    # -> d1 reads clean and is kept WITHOUT the fallback marker; d2 (which moves
-    # a donor that IS in d1's reference set) is dropped.  Result is non-empty.
-    assert len(out) >= 1
-    labels = [o[1] for o in out]
-    assert "worse" not in labels  # the strictly-worse frame is removed
-    assert any("lessbad" in l for l in labels)
+    # Move ONE donor N (and its C) from 2.0 to ~2.6 A (still inside the 2.95 A
+    # shell -> still coordinated); the rest of the octahedron is intact.
+    borderline = list(clean_atoms)
+    borderline[1] = ("N", 2.6, 0.0, 0.0)
+    borderline[2] = ("C", 4.07, 0.0, 0.0)
+    iso = [(_xyz(clean_atoms), "clean"), (_xyz(borderline), "borderline")]
+    out = sc._clean_gate_filter(iso)
+    labels = [lbl for _, lbl in out]
+    assert "clean" in labels and "borderline" in labels  # both kept
 
 
-def test_never_empty_truly_all_dirty():
+def test_drops_bare_metal_total_decoordination():
+    # The ONLY decoordination test the asymmetric gate applies: a metal with ZERO
+    # heavy donors in its shell (the complex fell completely apart) IS certainly
+    # bad and is dropped.
     os.environ["DELFIN_FFFREE_CLEAN_GATE"] = "1"
     clean_atoms = _clean_octahedron()
-    # Genuinely all-dirty set: EVERY frame is structurally invalid (a non-finite
-    # coordinate) -- the strongest "destroyed" defect, independent of any
-    # reference.  The never-empty fallback must still return exactly one frame,
-    # marked |cleanest-available (so the manifold never collapses to zero even for
-    # the must-fix-to-build cases).  (The clash/decoordination all-dirty paths are
-    # exercised on real data -- e.g. IMUTAM 48 frames all-dirty -> 1 marked.)
+    # Blow every donor far off the metal -> bare metal.
+    bare = list(clean_atoms)
+    for di in (1, 3, 5, 7, 9, 11):
+        s, x, y, z = bare[di]
+        bare[di] = (s, x * 6.0, y * 6.0, z * 6.0)
+    for ci in (2, 4, 6, 8, 10, 12):
+        s, x, y, z = bare[ci]
+        bare[ci] = (s, x * 6.0, y * 6.0, z * 6.0)
+    iso = [(_xyz(clean_atoms), "clean1"), (_xyz(clean_atoms), "clean2"),
+           (_xyz(bare), "bare")]
+    out = sc._clean_gate_filter(iso)
+    labels = [lbl for _, lbl in out]
+    assert "bare" not in labels
+    assert "clean1" in labels and "clean2" in labels
+
+
+def test_all_bad_keeps_input_unchanged_no_marker():
+    # In-doubt-keep / never-collapse: when EVERY frame is certainly bad the gate
+    # returns the input UNCHANGED (no fabricated "cleanest-available" marker, no
+    # collapse to zero).  Use structurally-invalid (non-finite) frames.
+    os.environ["DELFIN_FFFREE_CLEAN_GATE"] = "1"
+    clean_atoms = _clean_octahedron()
     bad1 = _xyz(clean_atoms).replace("3.4700", "nan", 1)
     bad2 = _xyz(clean_atoms).replace("3.4700", "inf", 1)
     iso = [(bad1, "a"), (bad2, "b")]
     out = sc._clean_gate_filter(iso)
-    assert len(out) == 1
-    assert "cleanest-available" in out[0][1]
+    assert out is iso  # unchanged; nothing dropped, no marker added
 
 
 def test_deterministic():

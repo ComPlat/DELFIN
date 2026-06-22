@@ -28358,61 +28358,70 @@ def _topology_gate_filter(isomers):
 
 
 def _clean_gate_filter(isomers):
-    """UNIFIED, UNIVERSAL, HARD final clean-manifold emission gate.
+    """UNIVERSAL, ASYMMETRIC, PER-FRAME final clean-manifold emission gate.
 
-    The capstone quality arbiter at the public emission chokepoint.  Principle
-    (user): "nur topologisch reine erhaltene Strukturen dürfen im Manifold landen
-    -- keine mit Liganden-Clashes, zerstörten Geometrien oder kaputten Topologien."
-    It UNIFIES the scattered partial checks (clash / topology / coord-integrity)
-    into one authoritative per-frame arbiter so that ONLY clean, realistic,
-    topologically-intact coordination frames survive into the emitted manifold.
+    Governing invariant (user, verbatim): "nur die SCHLECHTEN aussortieren, nicht
+    die guten".  The gate is ASYMMETRIC: it drops a frame ONLY when that frame is
+    CERTAINLY bad on its OWN geometry; in any doubt it KEEPS the frame.  A
+    surviving good structure matters more than removing a borderline one
+    (false-negative acceptable; false-positive -- dropping a good frame --
+    forbidden).
 
-    A frame is REJECTED if ANY of the following hold (all graph+geometry only,
-    NO SMILES / refcode / element special-casing):
+    Each frame is judged ABSOLUTELY on its own coordinates -- NO ensemble
+    consensus, NO best-coordinated-reference donor set, NO minority/majority vote
+    (all of which over-reject on small/few-frame ensembles by letting one frame's
+    geometry condemn another's).  Bonds are perceived PER FRAME from that frame's
+    own interatomic distances.  A frame is REJECTED only if ANY DEFINITE defect is
+    present with a CLEAR margin (all graph+geometry only, NO SMILES / refcode /
+    element special-casing):
 
-      1. INTER-LIGAND CLASH -- two non-bonded heavy atoms belonging to DIFFERENT
-         ligand connected-components fall closer than ``clash`` x (cov_i + cov_j),
-         or any non-bonded H involving pair falls below a sane vdW floor.
-      2. BROKEN TOPOLOGY / SPURIOUS BOND -- a non-bonded heavy-heavy pair (NOT a
-         consensus real bond) sits at bonding distance: a penetration that forged a
-         spurious bond (re-uses the topology-gate consensus idea -- a real covalent
-         bond is present in >=80% of frames, a spurious contact in a minority).
-      3. DESTROYED GEOMETRY -- a consensus real bond collapsed (heavy-heavy below
-         0.6 x ideal), grossly over/under-stretched beyond a generous band, or any
-         non-finite coordinate.
-      4. DECOORDINATION -- a consistently-coordinated donor (within the metal's
-         first shell in the best-coordinated reference frame) has swung farther than
-         its metal-aware ideal M-D distance + tolerance (the donor flew off).
+      1. STRUCTURALLY INVALID -- a non-finite coordinate, empty frame, or atom
+         count mismatch (a destroyed frame).
+      2. REAL INTER-LIGAND CLASH -- two heavy atoms in DIFFERENT per-frame ligand
+         connected-components overlap clearly below ``clash`` x (cov_i + cov_j),
+         or an H-involving non-bonded pair sits below a hard vdW floor (deep
+         interpenetration, not a soft contact).
+      3. COLLAPSED BOND -- a per-frame covalent bond fused below ``collapse`` x its
+         ideal covalent length (two atoms on top of each other).
+      4. BARE METAL / TOTAL DECOORDINATION -- a metal with ZERO heavy donors
+         anywhere inside its first shell (the complex fell completely apart).  This
+         is the only decoordination test that needs no cross-frame reference, so it
+         is the only one applied: a single donor wandering a little is NOT certainly
+         bad and is KEPT.
 
-    Thresholds derive from covalent radii (Cordero) + a metal-aware M-D table
-    (``polyhedra.md_distance`` / ``_COVALENT_RADII``); all universal, env-tunable.
+    Deliberately NOT rejected (these over-rejected good frames before): consensus
+    "spurious bond" (a close contact is judged per-frame, only a true collapse or a
+    clear clash counts), bond OVER-stretch (a long contact is simply not a bond in
+    that frame -- topology, not a defect for this gate), and a single donor that
+    swung modestly past an ideal M-D distance (handled, if at all, only by the
+    dedicated coord-integrity filter).
 
-    NEVER-WORSE / NEVER-EMPTY (per STRUCTURE = one SMILES = the full frame set
-    handed to this filter): the gate drops dirty frames, but if EVERY frame would
-    be rejected it KEEPS the single least-violating frame (so the manifold never
-    collapses to zero -- those all-dirty cases are the "must-fix-to-build" set).
-    The kept fallback frame is annotated (label suffix ``|cleanest-available``) so
-    downstream knows it is the cleanest available rather than certified clean.
+    NEVER-EMPTY without keeping a broken frame: the old "cleanest-available"
+    fallback that retained a broken frame is REMOVED.  Frames that are not
+    certainly bad simply stay (no consensus needed).  In the degenerate case where
+    EVERY frame is certainly bad, the input is returned UNCHANGED (keep all rather
+    than fabricate a marked broken survivor) -- in doubt, keep.
 
-    Identity (returns input untouched) unless DELFIN_FFFREE_CLEAN_GATE=1, so output
-    is BYTE-IDENTICAL to baseline when off.  Deterministic; never raises; returns
-    the input unchanged on any error.
+    Thresholds derive from covalent radii (Cordero, ``_COVALENT_RADII``); all
+    universal, env-tunable.  Identity (returns input untouched) unless
+    DELFIN_FFFREE_CLEAN_GATE=1, so output is BYTE-IDENTICAL to baseline when off.
+    Deterministic; never raises; returns the input unchanged on any error.
     """
     if not isomers or os.environ.get("DELFIN_FFFREE_CLEAN_GATE", "0") != "1":
         return isomers
     try:
         # ---- tunables (env, sane universal defaults) -----------------------
-        clash_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_CLASH", "0.75"))
-        vdw_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_VDW", "0.70"))
-        md_tol = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_MDTOL", "0.90"))
-        bond_consensus = float(
-            os.environ.get("DELFIN_FFFREE_CLEAN_GATE_CONSENSUS", "0.80"))
-        # covalent multiplier defining "at bonding distance" (matches the
-        # topology-gate consensus convention: 1.15 * (r_i + r_j)).
+        # clash_f: heavy-heavy inter-ligand overlap fraction that is CERTAINLY a
+        #          clash (clear margin below the covalent sum).
+        clash_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_CLASH", "0.70"))
+        # vdw_f: H-involving non-bonded deep-interpenetration floor (hard).
+        vdw_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_VDW", "0.55"))
+        # bond_mult: covalent multiplier defining "at bonding distance" PER FRAME.
         bond_mult = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_BONDMULT", "1.15"))
-        collapse_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_COLLAPSE", "0.60"))
-        stretch_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_STRETCH", "1.70"))
-        md_shell = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_SHELL", "2.75"))
+        # collapse_f: a per-frame bond shorter than this fraction of ideal = fused.
+        collapse_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_COLLAPSE", "0.55"))
+        # md_shell: metal first-shell radius (heavy donor within this = coordinated).
+        md_shell = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_SHELL", "2.95"))
 
         def _radius(sym):
             return _COVALENT_RADII.get(sym, 0.76)
@@ -28443,34 +28452,12 @@ def _clean_gate_filter(isomers):
                     zs.append(z)
             if n_atoms is None:
                 n_atoms = len(syms)
-            # Frames that disagree on atom count, are empty, or carry non-finite
-            # coords cannot share a consensus graph -> they are inherently dirty.
+            # Structurally invalid iff non-finite coord, empty, or count mismatch.
             frames.append((syms, xs, ys, zs, ok and len(syms) == n_atoms
                            and n_atoms > 0))
 
         if not n_atoms:
             return isomers
-
-        def _mark(item):
-            """Annotate a fallback frame as the cleanest available (not certified
-            clean) so downstream knows it is a must-fix-to-build case."""
-            if isinstance(item, (tuple, list)) and len(item) >= 2:
-                lab = item[1]
-                if "cleanest-available" not in str(lab):
-                    lab = f"{lab}|cleanest-available"
-                return (item[0],) + (lab,) + tuple(item[2:])
-            return item
-
-        ref = next((f for f in frames if f[4]), None)
-        if ref is None:
-            # No structurally-valid frame at all -> never-empty: keep one, marked.
-            return [_mark(isomers[0])]
-        ref_syms = ref[0]
-        valid = [f for f in frames if f[4]]
-        nf = len(valid)
-
-        metal_idx = [k for k in range(n_atoms) if _is_metal(ref_syms[k])]
-        metal_set = set(metal_idx)
 
         def _d2(f, i, j):
             dx = f[1][i] - f[1][j]
@@ -28478,117 +28465,44 @@ def _clean_gate_filter(isomers):
             dz = f[3][i] - f[3][j]
             return dx * dx + dy * dy + dz * dz
 
-        # ---- best-intact reference frame ----------------------------------
-        # The structurally-valid frame whose metal first shell is the most fully
-        # occupied (most non-metal heavy atoms within md_shell of ANY metal) is
-        # our best single guess at the CORRECT, intact topology.  Used to (a)
-        # rescue genuine bonds that a MINORITY of broken frames would otherwise
-        # declassify from the pure consensus (critical for small ensembles, e.g.
-        # 2 frames where one break would drop the bond), and (b) anchor the donor
-        # set.  With no metal it is simply the first valid frame.
-        def _shell_count(f):
-            if not metal_idx:
-                return 0
-            c = 0
-            for k in range(n_atoms):
-                if k in metal_set or f[0][k] == "H":
-                    continue
-                if any(math.sqrt(_d2(f, mi, k)) < md_shell for mi in metal_idx):
-                    c += 1
-            return c
-        best_ref = valid[0]
-        best_ref_sc = _shell_count(best_ref)
-        for f in valid[1:]:
-            sc_ = _shell_count(f)
-            if sc_ > best_ref_sc:
-                best_ref_sc = sc_
-                best_ref = f
-
-        # ---- consensus bond graph (non-metal pairs, all heavy + H) --------
-        # A pair (i,j) is a REAL BOND iff at bonding distance in >= consensus
-        # fraction of the structurally-valid frames (rigid covalent skeleton)
-        # OR at bonding distance in the best-intact reference frame (so a single
-        # broken minority frame cannot declassify a genuine bond and then flag the
-        # GOOD frames for it).  Metal pairs are NEVER bonds here (M-D varies).
-        bond_thr2 = {}
-        for i in range(n_atoms):
-            if i in metal_set:
-                continue
-            ri = _radius(ref_syms[i])
-            for j in range(i + 1, n_atoms):
-                if j in metal_set:
-                    continue
-                t = bond_mult * (ri + _radius(ref_syms[j]))
-                bond_thr2[(i, j)] = t * t
-        near = {key: 0 for key in bond_thr2}
-        for f in valid:
-            for key, t2 in bond_thr2.items():
-                if _d2(f, key[0], key[1]) < t2:
-                    near[key] += 1
-        thr_cnt = bond_consensus * nf
-        real_bond = {key for key, c in near.items() if c >= thr_cnt}
-        for key, t2 in bond_thr2.items():
-            if _d2(best_ref, key[0], key[1]) < t2:
-                real_bond.add(key)
-
-        # ideal heavy-heavy bond length per real bond (covalent sum) for the
-        # destroyed-geometry band.
-        ideal_len = {}
-        for (i, j) in real_bond:
-            ideal_len[(i, j)] = _radius(ref_syms[i]) + _radius(ref_syms[j])
-
-        # ---- ligand connected-components (consensus graph, metal excluded) -
-        # Different components = different ligands -> inter-ligand clash domain.
-        # Union-find over real_bond edges (which already exclude the metal).
-        parent = list(range(n_atoms))
-
-        def _find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        def _union(a, b):
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[ra] = rb
-        for (i, j) in real_bond:
-            _union(i, j)
-        comp = [_find(k) for k in range(n_atoms)]
-
-        # ---- reference coordination shell: donors consistently on the metal -
-        # Pick, per metal, the donor set from the BEST-coordinated valid frame
-        # (most non-metal heavy atoms inside md_shell) so a decoordinated base
-        # frame cannot hide a real donor.  M-D ideal distance is metal-aware.
-        donors = {}            # metal_idx -> {donor_idx: max_allowed_dist}
-        for mi in metal_idx:
-            best_set = None
-            best_n = -1
-            for f in valid:
-                shell = [k for k in range(n_atoms)
-                         if k not in metal_set and f[0][k] != "H"
-                         and math.sqrt(_d2(f, mi, k)) < md_shell]
-                if len(shell) > best_n:
-                    best_n = len(shell)
-                    best_set = shell
-            dd = {}
-            for k in (best_set or []):
-                try:
-                    ideal = float(PLY.md_distance(ref_syms[mi], ref_syms[k]))
-                except Exception:
-                    ideal = _radius(ref_syms[mi]) + _radius(ref_syms[k])
-                dd[k] = ideal + md_tol
-            donors[mi] = dd
-
-        # ---- per-frame violation count -----------------------------------
-        def _violations(f):
-            """Return number of clean-gate violations in frame f (0 = clean).
-            A structurally-invalid frame is maximally dirty."""
+        # ---- PER-FRAME absolute certainly-bad test ------------------------
+        def _certainly_bad(f):
+            """True iff frame f is CERTAINLY bad on its OWN geometry (a definite
+            defect with a clear margin).  In any doubt -> False (KEEP)."""
+            # 1. structurally invalid.
             if not f[4]:
-                return 10 ** 9
-            v = 0
+                return True
             syms = f[0]
-            # 1+2+3: heavy-pair geometry (clash / spurious bond / destroyed bond)
+            metal_idx = [k for k in range(n_atoms) if _is_metal(syms[k])]
+            metal_set = set(metal_idx)
+
+            # per-frame bond graph over non-metal pairs (this frame's own dists).
+            parent = list(range(n_atoms))
+
+            def _find(a):
+                while parent[a] != a:
+                    parent[a] = parent[parent[a]]
+                    a = parent[a]
+                return a
+
+            def _union(a, b):
+                ra, rb = _find(a), _find(b)
+                if ra != rb:
+                    parent[ra] = rb
+
+            for i in range(n_atoms):
+                if i in metal_set:
+                    continue
+                ri = _radius(syms[i])
+                for j in range(i + 1, n_atoms):
+                    if j in metal_set:
+                        continue
+                    t = bond_mult * (ri + _radius(syms[j]))
+                    if _d2(f, i, j) < t * t:
+                        _union(i, j)
+            comp = [_find(k) for k in range(n_atoms)]
+
+            # 2+3: per-frame heavy/H pair geometry.
             for i in range(n_atoms):
                 if i in metal_set:
                     continue
@@ -28599,52 +28513,44 @@ def _clean_gate_filter(isomers):
                     if j in metal_set:
                         continue
                     sj = syms[j]
-                    key = (i, j)
                     d = math.sqrt(_d2(f, i, j))
                     rsum = ri + _radius(sj)
-                    is_bond = key in real_bond
-                    if is_bond:
-                        # 3. destroyed geometry on a genuine bond.
-                        il = ideal_len[key]
-                        if d < collapse_f * il or d > stretch_f * il:
-                            v += 1
+                    hj = (sj == "H")
+                    bonded = d < bond_mult * rsum
+                    if bonded:
+                        # 3. collapsed bond (fused atoms) -> certainly bad.
+                        if d < collapse_f * rsum:
+                            return True
                         continue
                     # non-bonded pair:
-                    hj = (sj == "H")
                     if hi or hj:
-                        # H-involving non-bonded vdW floor.
+                        # deep H interpenetration floor (hard).
                         if d < vdw_f * rsum:
-                            v += 1
+                            return True
                     else:
-                        # heavy-heavy non-bonded.
-                        # 2. spurious bond / penetration (at bonding distance).
-                        if d * d < bond_thr2[key]:
-                            v += 1
-                        # 1. inter-ligand clash (different components only).
-                        elif comp[i] != comp[j] and d < clash_f * rsum:
-                            v += 1
-            # 4. decoordination: a consistently-coordinated donor flew off.
+                        # 2. real inter-ligand clash (different per-frame ligands,
+                        # clear overlap).  Same-component close contacts are NOT
+                        # flagged (a tight intra-ligand contact is not a defect).
+                        if comp[i] != comp[j] and d < clash_f * rsum:
+                            return True
+            # 4. bare metal / total decoordination (clear margin: ZERO donors).
             for mi in metal_idx:
-                for k, maxd in donors[mi].items():
-                    if math.sqrt(_d2(f, mi, k)) > maxd:
-                        v += 1
-            return v
+                has_donor = False
+                for k in range(n_atoms):
+                    if k in metal_set or syms[k] == "H":
+                        continue
+                    if math.sqrt(_d2(f, mi, k)) < md_shell:
+                        has_donor = True
+                        break
+                if not has_donor:
+                    return True
+            return False
 
-        kept = []
-        best_item = None
-        best_v = None
-        for item, f in zip(isomers, frames):
-            v = _violations(f)
-            if best_v is None or v < best_v:
-                best_v = v
-                best_item = item
-            if v == 0:
-                kept.append(item)
-
-        if kept:
-            return kept
-        # NEVER-EMPTY: every frame is dirty -> keep the single cleanest, marked.
-        return [_mark(best_item if best_item is not None else isomers[0])]
+        kept = [item for item, f in zip(isomers, frames) if not _certainly_bad(f)]
+        # In-doubt-keep: if (and only if) EVERY frame is certainly bad, keep the
+        # input unchanged rather than dropping all or fabricating a broken
+        # survivor (the removed "cleanest-available" fallback behaviour).
+        return kept if kept else isomers
     except Exception:
         return isomers
 
