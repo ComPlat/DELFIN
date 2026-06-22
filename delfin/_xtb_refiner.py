@@ -35,15 +35,12 @@ logger = logging.getLogger(__name__)
 # Resolved at import time so we do not pay the os.path.exists cost on every
 # call.  None when the binary is unavailable.
 #
-# The default candidate list orders binaries by working-version preference:
-# the base micromamba install (xtb 6.7.1, compiled 2025-09) optimises
-# correctly while the older xtb_env build (2025-04) crashes with a
-# Fortran format-string runtime error during ``--opt``.  $PATH is the
-# final fallback for non-Helix installs.
+# Binary resolution order: the ``DELFIN_XTB_BINARY`` env var (explicit
+# override), then a plain ``$PATH`` lookup (``shutil.which``) which covers
+# the vast majority of installs.  No personal/absolute paths are baked in.
 # ---------------------------------------------------------------------------
-_XTB_BINARY_CANDIDATES = (
-    "/home/qmchem_max/micromamba/bin/xtb",
-    "/home/qmchem_max/micromamba/envs/xtb_env/bin/xtb",
+_XTB_BINARY_CANDIDATES = tuple(
+    p for p in (os.environ.get("DELFIN_XTB_BINARY"),) if p
 )
 
 

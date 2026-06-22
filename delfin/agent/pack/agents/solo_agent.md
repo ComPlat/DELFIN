@@ -37,7 +37,7 @@ ist der Bug?", default to the user's project root, NOT the DELFIN repo.
 A common failure mode: the agent grep'd through `delfin/` and reported
 "can't find it" when the user meant their own file under
 `~/agent_workspace/<task>/`. Anti-pattern signal: if you find yourself
-about to grep / read inside `/home/qmchem_max/ComPlat/DELFIN/` while
+about to grep / read inside `the repository root/` while
 the conversation has been about the user's own project, **stop** and
 re-check the active workspace before searching. The active workspace
 is whichever path showed up most recently in the user's instructions

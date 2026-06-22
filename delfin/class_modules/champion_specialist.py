@@ -19,14 +19,15 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-# Default location of pre-built champion worktrees (per existing infrastructure)
+# Internal infrastructure locations; override via env vars.  No personal/
+# absolute path is baked in (these are research-only delegation helpers).
 DEFAULT_WORKTREE_BASE = Path(
-    "/home/qmchem_max/agent_workspace/commit_sweep/worktrees"
+    os.environ.get("DELFIN_WORKTREE_BASE", "worktrees")
 )
 
 # Default location of archived XYZ outputs per commit
 DEFAULT_ARCHIVE_BASE = Path(
-    "/home/qmchem_max/agent_workspace/quality_framework/xyz_archive"
+    os.environ.get("DELFIN_ARCHIVE_BASE", "xyz_archive")
 )
 
 

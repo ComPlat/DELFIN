@@ -18,8 +18,12 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+import os
+
+# Internal pool location; override via the DELFIN_POOLS_DIR env var.  No
+# personal/absolute path is baked in (defaults to a repo-relative folder).
 DEFAULT_POOLS_DIR = Path(
-    "/home/qmchem_max/agent_workspace/quality_framework/pools"
+    os.environ.get("DELFIN_POOLS_DIR", "pools")
 )
 
 
