@@ -465,11 +465,15 @@ def dedup_ensemble(isomers):
     Contract:
       * Frames are grouped by atom-count signature (different N -> different
         structure -> never compared / never merged).
-      * Within a group, the molecular-graph automorphisms are computed ONCE from
-        the first frame (all frames of one structure share atom order +
-        connectivity).  For each subsequent frame, it is dropped iff it is a
-        permutation-duplicate (min-over-automorphisms heavy-Kabsch-RMSD <
-        threshold) of an ALREADY-KEPT frame.
+      * Within a group, a candidate frame is dropped iff it is a permutation-
+        duplicate (min-over-automorphisms heavy-Kabsch-RMSD < threshold) of an
+        ALREADY-KEPT frame.  The automorphism group is taken from the KEPT frame
+        being compared against (cached per kept frame), NOT from a single group
+        representative: perceived connectivity is geometry-dependent (a bent
+        chelate / close contact can be perceived as bonded in one conformer but
+        not another), so different frames legitimately expose different symmetry,
+        and the kept frame's own group is the correct relabelling set for that
+        comparison.
       * The FIRST member of every cluster is kept; deterministic input order is
         preserved among kept frames.
       * Distinct geometric isomers / conformers / stereoisomers have geometries
@@ -511,16 +515,11 @@ def dedup_ensemble(isomers):
         import numpy as np  # noqa: F401 — ensures numpy path is active
 
         removed = 0
+        auto_cache: Dict[int, Tuple[object, object]] = {}  # kept-frame idx -> (autos, heavy)
         for key in sorted(groups.keys()):
             members = groups[key]
             if key < 0 or len(members) < 2:
                 continue  # unparseable group or singleton -> nothing to dedup
-            # automorphisms from the FIRST member of the group (shared graph)
-            rep_xyz = items[members[0]][0]
-            symbols, autos, heavy = _automorphisms_for_xyz(rep_xyz, use_chirality, max_perm)
-            if symbols is None or autos is None:
-                autos = [list(range(key))]
-                heavy = list(range(key))
             kept_in_group: List[int] = []
             for idx in members:
                 B = coords_cache[idx]
@@ -532,6 +531,18 @@ def dedup_ensemble(isomers):
                     A = coords_cache[kidx]
                     if A is None or A.shape != B.shape:
                         continue
+                    # automorphisms from the KEPT frame A (its own perceived graph),
+                    # cached per kept frame.  Perceived connectivity is geometry-
+                    # dependent, so the kept frame's own symmetry group is the
+                    # correct relabelling set for the A-vs-B comparison.
+                    if kidx not in auto_cache:
+                        _s, autos, heavy = _automorphisms_for_xyz(
+                            items[kidx][0], use_chirality, max_perm)
+                        if autos is None:
+                            autos = [list(range(key))]
+                            heavy = list(range(key))
+                        auto_cache[kidx] = (autos, heavy)
+                    autos, heavy = auto_cache[kidx]
                     best = 1e9
                     for perm in autos:
                         r = _kabsch_rmsd_perm(heavy, A, B, perm)
