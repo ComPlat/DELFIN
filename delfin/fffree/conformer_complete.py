@@ -159,6 +159,52 @@ def _ringguard_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
+# Guard-local covalent radii — the base ``_COV`` deliberately lacks transition
+# metals (it feeds the OFF-path topology gate / dedup and must stay frozen for
+# byte-identity).  The metallacycle guard, however, needs to recognise LONG
+# dative M-D bonds (Ru-O phosphite ~2.5-2.9 A, Ir-P ~2.3 A, lanthanide-N ~2.6 A)
+# as coordination so it can both close the chelate ring AND protect a donor on a
+# rotating arm.  These radii (Cordero 2008, full periodic set for metals) are
+# used ONLY inside the env-gated guard path, so OFF behaviour is unchanged.
+_GUARD_COV: Dict[int, float] = {
+    1: 0.31, 5: 0.84, 6: 0.76, 7: 0.71, 8: 0.66, 9: 0.57, 14: 1.11,
+    15: 1.07, 16: 1.05, 17: 1.02, 33: 1.21, 34: 1.20, 35: 1.20, 52: 1.38,
+    53: 1.39,
+    # alkali / alkaline earth
+    3: 1.28, 11: 1.66, 19: 2.03, 37: 2.20, 55: 2.44,
+    4: 0.96, 12: 1.41, 20: 1.76, 38: 1.95, 56: 2.15,
+    # 3d (Sc-Zn)
+    21: 1.70, 22: 1.60, 23: 1.53, 24: 1.39, 25: 1.50, 26: 1.42,
+    27: 1.38, 28: 1.24, 29: 1.32, 30: 1.22,
+    # 4d (Y-Cd)
+    39: 1.90, 40: 1.75, 41: 1.64, 42: 1.54, 43: 1.47, 44: 1.46,
+    45: 1.42, 46: 1.39, 47: 1.45, 48: 1.44,
+    # 5d (Hf-Hg)
+    72: 1.75, 73: 1.70, 74: 1.62, 75: 1.51, 76: 1.44, 77: 1.41,
+    78: 1.36, 79: 1.36, 80: 1.32,
+    # lanthanides (representative ~1.9-2.1)
+    57: 2.07, 58: 2.04, 59: 2.03, 60: 2.01, 62: 1.98, 63: 1.98,
+    64: 1.96, 65: 1.94, 66: 1.92, 67: 1.92, 68: 1.89, 69: 1.90,
+    70: 1.87, 71: 1.87,
+    # main-group metals
+    13: 1.21, 31: 1.22, 49: 1.42, 50: 1.39, 81: 1.45, 82: 1.46, 83: 1.48,
+    # actinides
+    89: 2.15, 90: 2.06, 91: 2.00, 92: 1.96, 93: 1.90, 94: 1.87,
+}
+_GUARD_COV_DEFAULT = 1.50  # generous default for an unknown metal
+
+
+def _gcov(z: int) -> float:
+    return _GUARD_COV.get(int(z), _GUARD_COV_DEFAULT)
+
+
+# Coordination ceiling multiplier for the guard's geometric M-D union.  Dative
+# M-D bonds run noticeably longer than the covalent-radius sum (a Ru-O phosphite
+# at 2.9 A sits at ~1.35x of cov(Ru)+cov(O)); 1.45 keeps genuine first-shell
+# donors in while excluding clear second-shell atoms.  Used ONLY in the guard.
+_GUARD_MD_MULT = 1.45
+
+
 def _coord_donor_edges(
     graph: Dict,
     coords: Optional[Sequence[Tuple[float, float, float]]] = None,
@@ -168,11 +214,14 @@ def _coord_donor_edges(
     A coordination edge is the SAME notion the topology gate defends: a metal
     and a first-shell heavy donor.  We take the UNION of (a) the metal's
     OB-perceived heavy neighbours and (b) -- when ``coords`` is given -- every
-    heavy atom within ``1.30*(cov_M+cov_d)`` of the metal that is NOT a
-    second-shell beta-atom (mirrors :func:`_md_pairs`).  The geometric union is
-    essential because OB bond perception is unreliable for long / dative /
-    carbanion M-D bonds (a metallacycle whose M-D edge OB drops would otherwise
-    look like an open chain and its backbone bonds would be wrongly rotated).
+    heavy atom within ``_GUARD_MD_MULT*(gcov_M+gcov_d)`` of the metal that is NOT
+    a second-shell beta-atom (mirrors :func:`_md_pairs` but with the guard-local
+    metal-aware radii ``_gcov`` so LONG dative bonds count as coordination).
+    The geometric union is essential because OB bond perception is unreliable for
+    long / dative / carbanion M-D bonds (a metallacycle whose M-D edge OB drops
+    would otherwise look like an open chain, and a phosphite-O on a rotating arm
+    would otherwise look uncoordinated -> both would be wrongly rotated).
+    GUARD-ONLY (env-gated callers); never affects OFF behaviour.
     Returns sorted ``(min,max)`` pairs, deterministic, never raises.
     """
     n = int(graph.get("n_atoms", 0))
@@ -191,13 +240,13 @@ def _coord_donor_edges(
                 seen.add(d)
                 edges.add((min(m, d), max(m, d)))
         if coords is not None:
-            rm = _cov(nums[m])
+            rm = _gcov(nums[m])
             cands = []
             for d in range(n):
                 if d == m or nums[d] == 1 or is_metal[d] or d in seen:
                     continue
                 dd = _dist(coords, m, d)
-                if dd <= 1.30 * (rm + _cov(nums[d])):
+                if dd <= _GUARD_MD_MULT * (rm + _gcov(nums[d])):
                     cands.append((dd, d))
             cands.sort()
             for _dd, d in cands:

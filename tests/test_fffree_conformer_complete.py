@@ -206,3 +206,106 @@ def test_ensemble_dedup_no_near_identical(monkeypatch):
             sj, cj = coords[j]
             if len(si) == len(sj):
                 assert CC._kabsch_rmsd_heavy(si, ci, cj) >= 0.5 - 1e-9
+
+
+# --- metallacycle-rotation guard (DELFIN_FFFREE_METALLACYCLE_ROT_GUARD) ----
+#
+# Synthetic graphs (no build) exercise the graph-only metallacycle detection
+# and the env-gated DOF exclusion directly.  See conformer_complete docstrings.
+
+def _chelate_graph():
+    """Ni ethylenediamine chelate: M(0)-N(1)-C(2)-C(3)-N(4) closed through M.
+    Backbone bonds (1,2),(2,3),(3,4) are metallacycle-internal."""
+    return {
+        "n_atoms": 5,
+        "atomic_nums": [28, 7, 6, 6, 7],
+        "is_metal": [True, False, False, False, False],
+        "neighbours": [[1, 4], [0, 2], [1, 3], [2, 4], [0, 3]],
+        "bonds": [
+            (0, 1, 1, False, False), (1, 2, 1, False, False),
+            (2, 3, 1, False, False), (3, 4, 1, False, False),
+            (0, 4, 1, False, False),
+        ],
+    }
+
+
+def _pendant_arm_graph():
+    """Monodentate pendant arm M(0)-N(1)-C(2)-C(3)-C(4): no ring through M."""
+    return {
+        "n_atoms": 5,
+        "atomic_nums": [28, 7, 6, 6, 6],
+        "is_metal": [True, False, False, False, False],
+        "neighbours": [[1], [0, 2], [1, 3], [2, 4], [3]],
+        "bonds": [
+            (0, 1, 1, False, False), (1, 2, 1, False, False),
+            (2, 3, 1, False, False), (3, 4, 1, False, False),
+        ],
+    }
+
+
+def test_metallacycle_bonds_flags_chelate_backbone():
+    g = _chelate_graph()
+    mc = CC.metallacycle_bonds(g, None)
+    assert mc == {(1, 2), (2, 3), (3, 4)}
+
+
+def test_metallacycle_bonds_ignores_pendant_arm():
+    g = _pendant_arm_graph()
+    assert CC.metallacycle_bonds(g, None) == set()
+
+
+def test_metallacycle_bonds_empty_without_metal():
+    g = {
+        "n_atoms": 3, "atomic_nums": [6, 6, 6], "is_metal": [False] * 3,
+        "neighbours": [[1], [0, 2], [1]],
+        "bonds": [(0, 1, 1, False, False), (1, 2, 1, False, False)],
+    }
+    assert CC.metallacycle_bonds(g, None) == set()
+
+
+def test_guard_off_byte_identical_dof_set(monkeypatch):
+    """Flag unset / '0' -> the DOF set is the base behaviour (no exclusion)."""
+    g = _chelate_graph()
+    monkeypatch.delenv("DELFIN_FFFREE_METALLACYCLE_ROT_GUARD", raising=False)
+    dofs_unset = CC.identify_complete_dofs(g, max_dofs=8, coords=None)
+    monkeypatch.setenv("DELFIN_FFFREE_METALLACYCLE_ROT_GUARD", "0")
+    dofs_zero = CC.identify_complete_dofs(g, max_dofs=8, coords=None)
+    keys_unset = [(d["pivot"], d["anchor"]) for d in dofs_unset]
+    keys_zero = [(d["pivot"], d["anchor"]) for d in dofs_zero]
+    assert keys_unset == keys_zero  # flag '0' identical to unset
+
+
+def test_guard_on_excludes_metallacycle_keeps_peripheral(monkeypatch):
+    """Chelate ring + a peripheral ethyl arm: ON drops the ring bonds but keeps
+    the peripheral rotor (coverage preserved)."""
+    # M(0)-N(1)-C(2)-C(3)-N(4) chelate, with a peripheral C5-C6 ethyl on C2.
+    g = {
+        "n_atoms": 7,
+        "atomic_nums": [28, 7, 6, 6, 7, 6, 6],
+        "is_metal": [True, False, False, False, False, False, False],
+        "neighbours": [[1, 4], [0, 2], [1, 3, 5], [2, 4], [0, 3], [2, 6], [5]],
+        "bonds": [
+            (0, 1, 1, False, False), (1, 2, 1, False, False),
+            (2, 3, 1, False, False), (3, 4, 1, False, False),
+            (0, 4, 1, False, False), (2, 5, 1, False, False),
+            (5, 6, 1, False, False),
+        ],
+    }
+    mc = CC.metallacycle_bonds(g, None)
+    assert (2, 3) in mc and (1, 2) in mc and (3, 4) in mc
+    assert (2, 5) not in mc  # peripheral arm is NOT a metallacycle bond
+    monkeypatch.setenv("DELFIN_FFFREE_METALLACYCLE_ROT_GUARD", "1")
+    on = CC.identify_complete_dofs(g, max_dofs=8, coords=None)
+    on_keys = {(d["pivot"], d["anchor"]) for d in on}
+    # no metallacycle bond survives as a DOF
+    assert not (on_keys & {(2, 3), (3, 2), (1, 2), (2, 1), (3, 4), (4, 3)})
+    # the peripheral C2-C5 rotor (moving C5+C6, heavy beyond root) is kept
+    assert (5, 2) in on_keys or (2, 5) in on_keys
+
+
+def test_guard_deterministic(monkeypatch):
+    monkeypatch.setenv("DELFIN_FFFREE_METALLACYCLE_ROT_GUARD", "1")
+    g = _chelate_graph()
+    a = CC.metallacycle_bonds(g, None)
+    b = CC.metallacycle_bonds(g, None)
+    assert a == b
