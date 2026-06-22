@@ -143,12 +143,203 @@ def _is_enabled() -> bool:
     return _env_bool("DELFIN_FFFREE_CONF_COMPLETE", False)
 
 
+def _ringguard_enabled() -> bool:
+    """Metallacycle-rotation guard master switch.
+
+    Default ``0`` -> when unset/``0`` the rotatable-bond enumeration is
+    BYTE-IDENTICAL to the base behaviour (no bond is excluded by this guard).
+    Only when set to a truthy value does the guard remove metallacycle-internal
+    bonds from the DOF set.
+    """
+    return _env_bool("DELFIN_FFFREE_METALLACYCLE_ROT_GUARD", False)
+
+
+# ---------------------------------------------------------------------------
+# Metallacycle (metal-containing ring / chelate ring) detection.
+# ---------------------------------------------------------------------------
+
+
+def _coord_donor_edges(
+    graph: Dict,
+    coords: Optional[Sequence[Tuple[float, float, float]]] = None,
+) -> List[Tuple[int, int]]:
+    """Metal<->donor coordination edges (undirected), graph + geometry union.
+
+    A coordination edge is the SAME notion the topology gate defends: a metal
+    and a first-shell heavy donor.  We take the UNION of (a) the metal's
+    OB-perceived heavy neighbours and (b) -- when ``coords`` is given -- every
+    heavy atom within ``1.30*(cov_M+cov_d)`` of the metal that is NOT a
+    second-shell beta-atom (mirrors :func:`_md_pairs`).  The geometric union is
+    essential because OB bond perception is unreliable for long / dative /
+    carbanion M-D bonds (a metallacycle whose M-D edge OB drops would otherwise
+    look like an open chain and its backbone bonds would be wrongly rotated).
+    Returns sorted ``(min,max)`` pairs, deterministic, never raises.
+    """
+    n = int(graph.get("n_atoms", 0))
+    if n == 0:
+        return []
+    nums = graph["atomic_nums"]
+    nbrs = graph["neighbours"]
+    is_metal = graph["is_metal"]
+    edges = set()
+    for m in range(n):
+        if not is_metal[m]:
+            continue
+        seen = set()
+        for d in nbrs[m]:
+            if nums[d] != 1:
+                seen.add(d)
+                edges.add((min(m, d), max(m, d)))
+        if coords is not None:
+            rm = _cov(nums[m])
+            cands = []
+            for d in range(n):
+                if d == m or nums[d] == 1 or is_metal[d] or d in seen:
+                    continue
+                dd = _dist(coords, m, d)
+                if dd <= 1.30 * (rm + _cov(nums[d])):
+                    cands.append((dd, d))
+            cands.sort()
+            for _dd, d in cands:
+                # skip second-shell beta-atoms (bonded to an accepted closer donor)
+                if any((nb in seen) for nb in nbrs[d]):
+                    continue
+                seen.add(d)
+                edges.add((min(m, d), max(m, d)))
+    return sorted(edges)
+
+
+def metallacycle_bonds(
+    graph: Dict,
+    coords: Optional[Sequence[Tuple[float, float, float]]] = None,
+) -> set:
+    """Set of covalent single bonds that lie on a metal-containing ring.
+
+    A *metallacycle* is any cycle in the molecular graph whose atom set
+    includes a metal -- the chelate ring closed through the metal's two (or
+    more) M-D coordination edges (M-D-backbone-...-D-M), a fused pincer ring,
+    a macrocycle threaded onto the metal, etc.  Rotating a single bond that
+    lies ON such a ring is NOT a free rotation: it pries a donor off the metal
+    or ruptures the ring.
+
+    Algorithm (UNIVERSAL, graph-only, deterministic):
+
+    A covalent single bond ``(a,b)`` lies on a metal-containing ring iff, after
+    cutting the ``a-b`` covalent edge, the two resulting fragments EACH still
+    coordinate the SAME metal.  Concretely: cut ``a-b``; BFS the connected
+    covalent fragment containing ``a`` (``F_a``) and the one containing ``b``
+    (``F_b``) -- metals are NOT in the covalent graph, so a fragment cannot leak
+    across the metal centre.  If for some metal ``M`` a donor in ``F_a`` and a
+    donor in ``F_b`` both coordinate ``M``, then the chelate ring
+    M-...-(F_a)-a-b-(F_b)-...-M is closed THROUGH ``M``; rotating ``a-b`` swings
+    the two donors relative to the rigid metal -> decoordination / ring rupture.
+    This is exactly the metallacycle / chelate-ring condition and needs TWO
+    distinct coordination edges into the same metal (one per side), so a
+    degenerate in-and-out spur on a single M-D bond is NOT flagged (that is an
+    ordinary pendant arm and stays freely rotatable).
+
+    Coordination edges come from :func:`_coord_donor_edges` (OB-perceived UNION
+    geometric, so an OB-missed dative M-D edge still closes the ring).  Pure
+    organic rings (no metal threaded) are NOT flagged: cutting one of their bonds
+    leaves both ends in the SAME fragment (the ring re-closes covalently), so the
+    two-sided test is vacuously false -- and such bonds carry the OB ``ring``
+    flag and are excluded upstream regardless.
+
+    Returns a set of ``(min,max)`` covalent-bond index pairs.  Empty when the
+    structure has no metal.  Never raises.
+    """
+    n = int(graph.get("n_atoms", 0))
+    if n == 0:
+        return set()
+    is_metal = graph["is_metal"]
+    if not any(is_metal):
+        return set()
+    bonds = graph["bonds"]
+    nbrs = graph["neighbours"]
+
+    # Covalent adjacency (undirected) with METALS EXCLUDED: an M-X bond is not a
+    # covalent backbone edge, and leaving the metal in the covalent graph would
+    # let a fragment leak across the metal centre and merge the two donor arms,
+    # defeating the two-sided test.  Coordination (M-D) is carried separately so
+    # the metal is only ever reached through a genuine dative edge.
+    cov_adj: List[set] = [set() for _ in range(n)]
+    for (a, b, _order, _arom, _ring) in bonds:
+        if is_metal[a] or is_metal[b]:
+            continue
+        cov_adj[a].add(b)
+        cov_adj[b].add(a)
+    for i in range(n):
+        if is_metal[i]:
+            continue
+        for j in nbrs[i]:
+            if is_metal[j]:
+                continue
+            cov_adj[i].add(j)
+            cov_adj[j].add(i)
+
+    coord_edges = _coord_donor_edges(graph, coords)
+    donor_metals: Dict[int, set] = {}  # donor -> set of metals it coordinates
+    for (i, j) in coord_edges:
+        if is_metal[i] and not is_metal[j]:
+            donor_metals.setdefault(j, set()).add(i)
+        elif is_metal[j] and not is_metal[i]:
+            donor_metals.setdefault(i, set()).add(j)
+    if not donor_metals:
+        return set()
+
+    def _fragment(seed: int, ba: int, bb: int) -> set:
+        """Covalent fragment reachable from ``seed`` WITHOUT crossing the
+        ``(ba,bb)`` edge.  Metal-free (metals are absent from cov_adj)."""
+        comp = {seed}
+        stack = [seed]
+        while stack:
+            cur = stack.pop()
+            for w in cov_adj[cur]:
+                if (cur == ba and w == bb) or (cur == bb and w == ba):
+                    continue
+                if w in comp:
+                    continue
+                comp.add(w)
+                stack.append(w)
+        return comp
+
+    def _metals_of(frag: set) -> set:
+        ms: set = set()
+        for atom in frag:
+            for m in donor_metals.get(atom, ()):
+                ms.add(m)
+        return ms
+
+    out: set = set()
+    for (a, b, order, arom, _ring) in bonds:
+        if order != 1 or arom:
+            continue
+        if is_metal[a] or is_metal[b]:
+            continue
+        key = (min(a, b), max(a, b))
+        if key in out:
+            continue
+        frag_a = _fragment(a, a, b)
+        if b in frag_a:
+            # a and b re-connect covalently -> bond is on a pure-covalent ring
+            # (or is not a bridge); cutting it does not separate two donor arms.
+            continue
+        frag_b = _fragment(b, a, b)
+        if _metals_of(frag_a) & _metals_of(frag_b):
+            out.add(key)  # same metal coordinated from BOTH sides = metallacycle
+    return out
+
+
 # ---------------------------------------------------------------------------
 # DOF identification — COMPLETE coverage (rotate the heavy-bearing subtree).
 # ---------------------------------------------------------------------------
 
 
-def identify_complete_dofs(graph: Dict, max_dofs: int = 5) -> List[Dict]:
+def identify_complete_dofs(
+    graph: Dict,
+    max_dofs: int = 5,
+    coords: Optional[Sequence[Tuple[float, float, float]]] = None,
+) -> List[Dict]:
     """Identify EVERY rotatable single bond that moves >= 1 heavy atom.
 
     Differs from :func:`delfin._rotamer_diversity.identify_rotamer_dofs` in two
@@ -172,6 +363,25 @@ def identify_complete_dofs(graph: Dict, max_dofs: int = 5) -> List[Dict]:
         freely rotated open),
       * bonds whose movable subtree wraps back onto a metal (multi-metal bridge).
 
+    METALLACYCLE-ROTATION GUARD (env ``DELFIN_FFFREE_METALLACYCLE_ROT_GUARD``,
+    default OFF -> when unset this branch is skipped and the returned DOF set is
+    BYTE-IDENTICAL to the base behaviour).  When ON, additionally reject:
+      * any bond that lies on a METAL-CONTAINING RING (a metallacycle / chelate
+        ring closed through the metal's M-D coordination edges -- see
+        :func:`metallacycle_bonds`); rotating it would pry a donor off the metal
+        or break the ring, and
+      * any bond whose chosen rotating subtree CARRIES a coordinating donor whose
+        metal is on the FIXED (anchor) side -- rotating it would swing that donor
+        relative to the frozen metal (decoordination), even when the ring does
+        not formally re-close (e.g. a monodentate donor on a flexible arm).
+    This is the root-cause fix for LOFBUE / IPUJOU / LOPDAY: the conformer engine
+    must never spin a bond inside a ring that contains the metal.  Peripheral /
+    pendant rotors that carry NO coordinating donor and are not in a metallacycle
+    are still produced -> coverage preserved.  ``coords`` (the frame's
+    coordinates) feed the geometric M-D union so an OB-missed dative edge still
+    closes the ring; if ``coords`` is None only OB-perceived coordination is
+    used (still correct, just less robust to OB perception gaps).
+
     Returns a list of DOF dicts: ``pivot``, ``anchor`` (axis = anchor->pivot),
     ``rotating`` (atom indices to rotate, EXCLUDING anchor/metal),
     ``moved_heavy``.  Ranked by heavy atoms moved descending (bulky / backbone
@@ -184,6 +394,30 @@ def identify_complete_dofs(graph: Dict, max_dofs: int = 5) -> List[Dict]:
     neighbours = graph["neighbours"]
     is_metal = graph["is_metal"]
     bonds = graph["bonds"]
+
+    # --- metallacycle-rotation guard pre-compute (env-gated, default OFF) ----
+    guard_on = _ringguard_enabled()
+    mc_bonds: set = set()
+    coord_donor_set: set = set()      # heavy atoms that coordinate a metal
+    donor_metals: Dict[int, set] = {}  # donor -> set of metals it coordinates
+    if guard_on and any(is_metal):
+        try:
+            mc_bonds = metallacycle_bonds(graph, coords)
+            for (mi, di) in _coord_donor_edges(graph, coords):
+                # _coord_donor_edges yields sorted (min,max); one end is the metal
+                if is_metal[mi] and not is_metal[di]:
+                    m, d = mi, di
+                elif is_metal[di] and not is_metal[mi]:
+                    m, d = di, mi
+                else:
+                    continue
+                coord_donor_set.add(d)
+                donor_metals.setdefault(d, set()).add(m)
+        except Exception:  # pragma: no cover — guard must never break the build
+            guard_on = False
+            mc_bonds = set()
+            coord_donor_set = set()
+            donor_metals = {}
 
     dofs: List[Dict] = []
     seen: set = set()
@@ -198,6 +432,11 @@ def identify_complete_dofs(graph: Dict, max_dofs: int = 5) -> List[Dict]:
         if key in seen:
             continue
         seen.add(key)
+
+        # Metallacycle-rotation guard: a bond on a metal-containing ring is NOT
+        # freely rotatable (it would break the ring / decoordinate a donor).
+        if guard_on and key in mc_bonds:
+            continue
 
         # BFS the two subtrees (each excludes the partner endpoint).
         side_a = _fragment_atoms_on_side(neighbours, a, b)  # includes a
@@ -231,6 +470,30 @@ def identify_complete_dofs(graph: Dict, max_dofs: int = 5) -> List[Dict]:
             cand.append(("b", side_b, b, a, b_heavy, b_beyond, len(side_b)))
         if not cand:
             continue
+
+        # Metallacycle-rotation guard (env-gated): forbid rotating a side that
+        # CARRIES a coordinating donor whose metal sits on the OTHER (fixed)
+        # side -- spinning it swings the donor relative to the frozen metal and
+        # tears the M-D bond.  A side is allowed only if every coordinating
+        # donor it contains keeps ALL of its metals on the SAME (moving) side
+        # (a rigid-body rotation then carries metal+donor together = no
+        # decoordination; rare but valid for a wholly-pendant chelate).
+        if guard_on and coord_donor_set:
+            def _side_safe(side_set: set) -> bool:
+                for d in side_set:
+                    if d in coord_donor_set:
+                        for m in donor_metals.get(d, ()):  # donor's metals
+                            if m not in side_set:
+                                return False  # metal on fixed side -> tears M-D
+                return True
+            filtered = []
+            for c in cand:
+                _tag, side, root, anchor, h_, by_, tot_ = c
+                if _side_safe(set(side)):
+                    filtered.append(c)
+            cand = filtered
+            if not cand:
+                continue
 
         # Pick the CHEAPER side that still moves heavy structure: fewer total
         # atoms wins (cheap to rotate), tie-break fewer-heavy, then lower root
@@ -598,7 +861,7 @@ def complete_frame(
     if len(symbols) != graph["n_atoms"]:
         return [xyz]
 
-    dofs = identify_complete_dofs(graph, max_dofs=max_dofs)
+    dofs = identify_complete_dofs(graph, max_dofs=max_dofs, coords=base_coords)
     if not dofs:
         return [xyz]
 
@@ -731,7 +994,7 @@ def gated_rotamers(
         return None
     if len(symbols) != graph["n_atoms"]:
         return None
-    dofs = identify_complete_dofs(graph, max_dofs=max_dofs)
+    dofs = identify_complete_dofs(graph, max_dofs=max_dofs, coords=base_coords)
     if not dofs:
         return None
 
