@@ -1,0 +1,1286 @@
+"""Load agent role prompts and shared context from DELFIN_AGENT packs."""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class PromptSection:
+    """A labelled section of the system prompt.
+
+    Used by the hierarchical layer system and context usage tracker.
+    """
+
+    name: str       # "role_prompt", "playbook", "repo_map", "briefing", etc.
+    layer: int      # 0=always, 1=task-aware, 2=on-demand, 3=handoff
+    content: str
+    char_count: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.char_count:
+            object.__setattr__(self, "char_count", len(self.content))
+
+
+# Critical rules repeated at the END of the system prompt (recency bias).
+# Keyed by role category: "write" (solo/builder), "review" (critic/reviewer),
+# "plan" (session_manager).
+_CRITICAL_RULES: dict[str, list[str]] = {
+    "write": [
+        "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
+        "Grep before Read — search first, then read only the relevant lines.",
+        "Run tests after every code edit: python -m pytest tests/ -x -q",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry it or any variation.",
+        "Communicate with the user in German. Code, commits, and artifacts in English.",
+    ],
+    "review": [
+        "NEVER execute destructive actions without explicit user confirmation.",
+        "Do NOT use Edit or Write — you are a review/analysis role.",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry.",
+        "Focus on critical and major issues. Skip style nits.",
+    ],
+    "plan": [
+        "NEVER execute destructive actions without explicit user confirmation.",
+        "Lock the real goal — do not let it drift during planning.",
+        "Break non-trivial work into small stage gates with exit evidence.",
+        "If a Bash command is BLOCKED/DENIED, STOP. Do not retry.",
+    ],
+}
+
+_ROLE_TO_RULE_CATEGORY: dict[str, str] = {
+    "solo_agent": "write",
+    "builder_agent": "write",
+    "session_manager": "plan",
+    "chief_agent": "plan",
+    "critic_agent": "review",
+    "reviewer_agent": "review",
+    "runtime_agent": "review",
+    "research_agent": "review",
+    "test_agent": "review",
+    "dashboard_agent": "write",
+}
+
+# Sections that can be requested on demand via NEED_CONTEXT: protocol.
+AVAILABLE_ON_DEMAND = ("playbook", "repo_map", "profile", "memory", "prior_outputs")
+
+try:
+    import yaml
+except ImportError:
+    try:
+        from delfin.agent.api_client import _auto_install
+        _auto_install("pyyaml")
+        import yaml
+    except Exception:
+        yaml = None  # type: ignore[assignment]
+
+
+def _read_text(path: Path) -> str:
+    """Read a text file, return empty string if missing."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _parse_yaml(path: Path) -> dict[str, Any]:
+    """Parse a YAML file. Falls back to empty dict."""
+    if yaml is None:
+        raise ImportError(
+            "PyYAML is required for agent mode loading. "
+            "Install it with: pip install pyyaml"
+        )
+    text = _read_text(path)
+    if not text.strip():
+        return {}
+    return yaml.safe_load(text) or {}
+
+
+class PromptLoader:
+    """Load and cache markdown prompt files from the DELFIN agent packs.
+
+    Packs live next to this module at ``delfin/agent/pack/`` and
+    ``delfin/agent/pack_lite/``.  An optional *repo_dir* override is
+    accepted for tests that build a temporary directory tree.
+    """
+
+    _MODULE_DIR = Path(__file__).resolve().parent
+
+    def __init__(self, repo_dir: Path | None = None):
+        if repo_dir is not None:
+            # Test / override path: expect pack/ and pack_lite/ inside
+            base = Path(repo_dir)
+            self.agent_dir = base / "pack"
+            self.agent_lite_dir = base / "pack_lite"
+            self.repo_root = base
+        else:
+            self.agent_dir = self._MODULE_DIR / "pack"
+            self.agent_lite_dir = self._MODULE_DIR / "pack_lite"
+            self.repo_root = self._MODULE_DIR.parent.parent
+        self._cache: dict[str, str] = {}
+        self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
+        self._context_tracker: Any = None  # set by AgentEngine
+        self._progressive_disclosure: bool = False  # set by AgentEngine
+        # Track which sections were injected in the last build (for usage tracking)
+        self._last_injected_sections: list[str] = []
+
+    def reset_session_prompt_state(self, session_key: str) -> None:
+        """Forget prompt-injection state for a session."""
+        if not session_key:
+            return
+        stale = [key for key in self._prompt_state if key[0] == session_key]
+        for key in stale:
+            self._prompt_state.pop(key, None)
+
+    def _cached_read(self, path: Path) -> str:
+        key = str(path)
+        if key not in self._cache:
+            self._cache[key] = _read_text(path)
+        return self._cache[key]
+
+    def _load_profile_context(self, mode_id: str = "") -> str:
+        """Load provider profile context for prompt injection."""
+        try:
+            from delfin.agent.provider_profile import format_profile_context
+            provider = getattr(self, "_active_provider", "claude")
+            profile_path = getattr(self, "_profile_path", None)
+            return format_profile_context(provider, profile_path, mode_id=mode_id)
+        except Exception:
+            return ""
+
+    def _load_relevant_playbook_context(self, task_text: str) -> str:
+        """Load a task-specific playbook from the learned provider profile."""
+        try:
+            from delfin.agent.provider_profile import (
+                format_relevant_playbook_context,
+            )
+
+            provider = getattr(self, "_active_provider", "claude")
+            profile_path = getattr(self, "_profile_path", None)
+            playbooks_path = getattr(self, "_playbooks_path", None)
+            return format_relevant_playbook_context(
+                provider,
+                task_text,
+                profile_path,
+                playbooks_path=playbooks_path,
+            )
+        except Exception:
+            return ""
+
+    def _load_external_memory_context(
+        self,
+        max_chars: int = 6000,
+        memory_root: Path | None = None,
+    ) -> str:
+        """Load the user's per-project memory for the current repo.
+
+        Looks at ``~/.claude/projects/<slug>/memory/MEMORY.md`` and the
+        ``[Title](file.md)`` references inside it.  Returns a flat
+        markdown string suitable for prompt injection, capped at
+        ``max_chars`` so it can never blow up the context.
+
+        The repo is mapped to a slug by replacing ``/`` with ``-`` —
+        the ``~/.claude/projects/`` directory is the .delfin on-disk
+        slug convention. Empty string if nothing is found.
+
+        Failures (no home dir, missing files, encoding issues) degrade
+        silently to an empty string — this is best-effort context.
+        """
+        try:
+            home = Path.home()
+        except Exception:
+            return ""
+        repo_root = Path(self.repo_root).resolve()
+        slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+        base = (
+            memory_root if memory_root is not None
+            else home / ".claude" / "projects" / slug / "memory"
+        )
+        index = base / "MEMORY.md"
+        if not index.exists():
+            return ""
+
+        try:
+            index_text = index.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+        # Resolve [[name]] wiki-style cross-links to inline markdown links
+        # so the agent sees concrete targets instead of opaque braces.
+        try:
+            from .memory_store import resolve_wikilinks as _resolve_wl
+            index_text = _resolve_wl(index_text, base)
+        except Exception:
+            pass
+
+        chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
+        # Pull in every "[Title](file.md)" target referenced from MEMORY.md
+        import re as _re
+        seen: set[str] = set()
+        for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
+            title, rel = match.group(1), match.group(2).strip()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            target = (base / rel).resolve()
+            try:
+                if not target.is_file():
+                    continue
+                # Defence-in-depth: don't read outside the memory dir
+                target.relative_to(base.resolve())
+                body = target.read_text(encoding="utf-8", errors="replace").strip()
+            except (OSError, ValueError):
+                continue
+            # Also resolve wiki-links *inside* the body so the recursive
+            # references the user wrote in memory_X.md don't stay as raw
+            # "[[Y]]" tokens in the agent's prompt.
+            try:
+                from .memory_store import resolve_wikilinks as _resolve_wl
+                body = _resolve_wl(body, base)
+            except Exception:
+                pass
+            chunks.append(f"# {title} ({rel})\n{body}")
+
+        joined = "\n\n".join(chunks).strip()
+        if len(joined) <= max_chars:
+            return joined
+        return joined[:max_chars] + f"\n\n... [truncated, {len(joined) - max_chars} chars omitted]"
+
+    def _build_session_env_block(self) -> str:
+        """Build a CLI-style environment summary for the system prompt.
+
+        Standard CLI-style orientation injected at session start:
+        cwd, git branch, short status, and recent commits.  Keeps the
+        block under ~12 lines so it doesn't crowd the prompt.
+
+        Failures (no git, detached HEAD, etc.) are degraded gracefully.
+        """
+        repo = self.repo_root
+        lines: list[str] = [f"cwd: {repo}"]
+
+        def _git(*args: str) -> str:
+            try:
+                out = subprocess.run(
+                    ["git", *args], cwd=str(repo),
+                    capture_output=True, text=True, timeout=2.0,
+                )
+                if out.returncode == 0:
+                    return out.stdout.strip()
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                pass
+            return ""
+
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch and branch != "HEAD":
+            lines.append(f"branch: {branch}")
+
+        status = _git("status", "--porcelain")
+        if status:
+            entries = [ln for ln in status.splitlines() if ln.strip()]
+            preview = ", ".join(entries[:5])
+            tail = f" (+{len(entries) - 5} more)" if len(entries) > 5 else ""
+            lines.append(f"status: {len(entries)} change(s) — {preview}{tail}")
+        else:
+            lines.append("status: clean")
+
+        commits = _git("log", "--oneline", "-5")
+        if commits:
+            lines.append("recent commits:")
+            for line in commits.splitlines()[:5]:
+                lines.append(f"  {line}")
+
+        return "\n".join(lines)
+
+    def _load_repo_map_context(self, task_text: str) -> str:
+        """Load a compact task-scoped repository map."""
+        try:
+            from delfin.agent.repo_map import format_repo_map_context
+
+            provider = getattr(self, "_active_provider", "claude")
+            profile_path = getattr(self, "_profile_path", None)
+            playbooks_path = getattr(self, "_playbooks_path", None)
+            return format_repo_map_context(
+                self.repo_root,
+                task_text,
+                provider=provider,
+                profile_path=profile_path,
+                playbooks_path=playbooks_path,
+            )
+        except Exception:
+            return ""
+
+    def _load_chemistry_reminder(self, task_text: str) -> str:
+        """Generate a chemistry-specific reminder for doc-first approach.
+
+        Triggered when the task contains chemistry keywords.  Code-enforced
+        rather than prompt-only to ensure compliance.
+        """
+        try:
+            from delfin.agent.briefing import classify_task
+            if classify_task(task_text) != "chemistry":
+                return ""
+            return (
+                "CHEMISTRY TASK DETECTED — mandatory doc-first protocol:\n"
+                "1. Use search_docs (ORCA manual, xTB docs) BEFORE answering.\n"
+                "2. Cite doc_id + section when quoting methods or keywords.\n"
+                "3. Give concrete ORCA input snippets when possible.\n"
+                "4. State method limitations explicitly (e.g. DFT vs post-HF).\n"
+                "5. If no doc hits after 2 searches, state uncertainty — do NOT guess."
+            )
+        except Exception:
+            return ""
+
+    def _load_decomposition_context(self, task_text: str) -> str:
+        """Load goal decomposition rules for complex tasks.
+
+        Only injects rules when the task is classified as complex,
+        to avoid wasting tokens on simple tasks.
+        """
+        try:
+            from delfin.agent.engine import AgentEngine
+            complexity = AgentEngine.classify_task_complexity(task_text)
+            if complexity != "complex":
+                return ""
+            return self._cached_read(
+                self.agent_dir / "shared" / "goal_decomposition_rules.md"
+            )
+        except Exception:
+            return ""
+
+    def _load_briefing_context(self, task_text: str) -> str:
+        """Load pre-task briefing from outcome history analysis."""
+        try:
+            from delfin.agent.briefing import generate_briefing
+
+            provider = getattr(self, "_active_provider", "claude")
+            return generate_briefing(provider, task_text)
+        except Exception:
+            return ""
+
+    def _briefing_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {
+            "solo_agent", "session_manager", "builder_agent", "critic_agent",
+        }
+
+    def _should_inject_briefing(
+        self,
+        role_id: str,
+        session_key: str,
+        briefing_ctx: str,
+    ) -> bool:
+        if not self._briefing_injection_allowed(role_id):
+            return False
+        return self._should_inject_context(
+            role_id, session_key, "briefing", briefing_ctx,
+        )
+
+    def _profile_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {"solo_agent", "session_manager", "builder_agent"}
+
+    def _repo_map_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {
+            "solo_agent",
+            "session_manager",
+            "builder_agent",
+            "critic_agent",
+            "reviewer_agent",
+        }
+
+    def _memory_injection_allowed(self, role_id: str) -> bool:
+        return role_id in {"solo_agent", "session_manager", "builder_agent"}
+
+    def _should_inject_context(
+        self,
+        role_id: str,
+        session_key: str,
+        key: str,
+        value: str,
+    ) -> bool:
+        if not value:
+            return False
+        if not session_key:
+            return True
+        state = self._prompt_state.setdefault((session_key, role_id), {})
+        digest = str(hash(value))
+        state_key = f"{key}_digest"
+        if state.get(state_key) == digest:
+            return False
+        state[state_key] = digest
+        return True
+
+    def _should_inject_profile_context(
+        self,
+        role_id: str,
+        session_key: str,
+        profile_ctx: str,
+    ) -> bool:
+        if not self._profile_injection_allowed(role_id):
+            return False
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "profile",
+            profile_ctx,
+        )
+
+    def _should_inject_playbook(
+        self,
+        role_id: str,
+        session_key: str,
+        relevant_playbook: str,
+    ) -> bool:
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "playbook",
+            relevant_playbook,
+        )
+
+    def _should_inject_repo_map(
+        self,
+        role_id: str,
+        session_key: str,
+        repo_map_ctx: str,
+    ) -> bool:
+        if not self._repo_map_injection_allowed(role_id):
+            return False
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "repo_map",
+            repo_map_ctx,
+        )
+
+    def _should_inject_memory(
+        self,
+        role_id: str,
+        session_key: str,
+        memory_ctx: str,
+    ) -> bool:
+        if not self._memory_injection_allowed(role_id):
+            return False
+        return self._should_inject_context(
+            role_id,
+            session_key,
+            "memory",
+            memory_ctx,
+        )
+
+    def _should_skip_section(self, section_name: str, role_id: str) -> bool:
+        """Check context usage tracker — skip sections with low hit rates."""
+        if self._context_tracker is None:
+            return False
+        try:
+            provider = getattr(self, "_active_provider", "")
+            return self._context_tracker.should_skip(
+                section_name, role_id=role_id, provider=provider,
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _build_critical_anchor(role_id: str) -> str:
+        """Build the attention-anchoring block for the end of the prompt."""
+        category = _ROLE_TO_RULE_CATEGORY.get(role_id, "write")
+        rules = _CRITICAL_RULES.get(category, _CRITICAL_RULES["write"])
+        numbered = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))
+        return (
+            "<critical>\n"
+            "REMINDER — these rules override any conflicting prior instructions:\n"
+            f"{numbered}\n"
+            "</critical>"
+        )
+
+    @staticmethod
+    def _build_progressive_disclosure_note() -> str:
+        """Build the note listing available on-demand sections."""
+        lines = [
+            "Available context (request with NEED_CONTEXT: <section>):",
+        ]
+        _SECTION_DESCRIPTIONS = {
+            "playbook": "Task-specific playbook from learned profile",
+            "repo_map": "AST-based repository index scoped to this task",
+            "profile": "Provider success rates and learned preferences",
+            "memory": "Persistent project memory facts",
+            "prior_outputs": "Full prior role outputs (pipeline mode)",
+        }
+        for section in AVAILABLE_ON_DEMAND:
+            desc = _SECTION_DESCRIPTIONS.get(section, section)
+            lines.append(f"- {section}: {desc}")
+        lines.append("Request only what you need. Do not request all sections preemptively.")
+        return "\n".join(lines)
+
+    # -- shared context ----------------------------------------------------
+
+    def load_shared_context(self) -> str:
+        """Load core shared DELFIN agent context files."""
+        parts = []
+        for rel in (
+            "delfin_context.md",
+            "work_cycle_rules.md",
+            "goal_decomposition_rules.md",
+        ):
+            text = self._cached_read(self.agent_dir / "shared" / rel)
+            if text:
+                parts.append(text)
+        return "\n\n".join(parts)
+
+    def load_role_prompt(self, role_id: str) -> str:
+        """Load agents/{role_id}.md."""
+        return self._cached_read(self.agent_dir / "agents" / f"{role_id}.md")
+
+    # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
+
+    # Each tuple lists case-insensitive substrings that, when present in the
+    # current task text, activate the corresponding module. Modules that
+    # don't activate get stripped from the role prompt before injection,
+    # saving 4-6k tokens on the typical solo-mode turn.
+    _MODULE_TRIGGERS: dict[str, tuple[str, ...]] = {
+        "chemistry": (
+            "orca", "dft", "xtb", "calc/", "archive/", ".out",
+            "frequencies", "orbital", "imag", "homo", "lumo",
+            "tddft", "uv/vis", "dipole", "scf", "mulliken", "loewdin",
+            "extract_", "search_calcs", "search_docs",
+            "explain_delfin_feature", "thermochem", "vibrational",
+            "molecule", "complex", "ligand", "ml potential",
+        ),
+        "web": (
+            "http://", "https://", "web_search", "web_fetch",
+            "url", "duckduckgo", "google", "stackoverflow",
+            "documentation online", "look up online",
+        ),
+        "notebook": (
+            ".ipynb", "notebook_read", "notebook_edit", "jupyter",
+            "notebook cell",
+        ),
+        "project_dev": (
+            "pyproject.toml", "package.json", "cargo.toml", "go.mod",
+            "venv", "pip install", "npm ", "pnpm", "yarn",
+            " cargo ", "requirements.txt", "build script",
+        ),
+        "kit": (
+            "kit-toolbox", "kit_coding", "mcp__kit-coding__",
+            "remember_permission", "extra_dir", "kit mode",
+        ),
+        "bash_bg": (
+            "bash_background", "long running", "long-running",
+            "in the background", "background job", "watch progress",
+        ),
+    }
+
+    _MODULE_MARKER_RE = __import__("re").compile(
+        r"^<!--\s*module:([a-zA-Z0-9_-]+)\s*-->\s*$",
+        __import__("re").MULTILINE,
+    )
+
+    def _detect_active_modules(
+        self, task_text: str, mode_id: str = "",
+    ) -> set[str]:
+        """Pick which lazy modules survive stripping for this task.
+
+        Solo + plan mode honour the trigger heuristic; other modes get
+        everything (they're pipeline roles that usually need the full
+        context anyway and are sensitive to subtle prompt changes).
+        """
+        if mode_id not in ("solo", "plan"):
+            return set(self._MODULE_TRIGGERS)
+        s = (task_text or "").lower()
+        active: set[str] = set()
+        for name, triggers in self._MODULE_TRIGGERS.items():
+            if any(t in s for t in triggers):
+                active.add(name)
+        return active
+
+    # Models whose attention degrades quickly past 4 k of system prompt.
+    # Auto-trigger ``compact_prompt`` for these + any explicit
+    # ``agent.compact_prompt: true`` setting. The shape is family-
+    # prefix + (\W.*?)? + size-suffix, so names with arbitrary middles
+    # like "qwen2.5-coder:7b" still match. Conservative — only the
+    # small / weak-tier; larger MoE models (qwen3.5-397b, gpt-oss-
+    # 120b, etc.) handle the regular slim prompt fine.
+    _WEAK_MODEL_PATTERNS = (
+        r"gemma.*?(?:^|[^0-9])(?:1|2|3|4|7|9)b\b",
+        r"llama.*?(?:^|[^0-9])(?:3|7|8)b\b",
+        r"qwen.*?(?:^|[^0-9])(?:1\.5|3|7|14)b\b",
+        r"phi.*?(?:^|[^0-9])(?:1\.5|2|3|4)b\b",
+        r"phi-?\d(?![0-9])",                   # phi-1 / phi-2 / phi-3 (bare)
+        r"mistral.*?(?:^|[^0-9])(?:3|7)b\b",
+        r"deepseek.*?(?:lite|(?:^|[^0-9])(?:6|7)b\b)",
+        r"codellama.*?(?:^|[^0-9])(?:7|13)b\b",
+        r"\bsmall[lm]?\b",                      # generic "small" marker
+    )
+    _COMPACT_LINE_MAX = 80   # collapse paragraphs longer than this when compact
+    _COMPACT_TARGET_TOKENS = 3000
+
+    def _is_weak_model(self, model: str = "") -> bool:
+        """Heuristic — does the active model need the compact prompt?"""
+        if not model:
+            return False
+        m = model.lower()
+        import re as _re_wm
+        return any(_re_wm.search(p, m) for p in self._WEAK_MODEL_PATTERNS)
+
+    def _compact_prose(self, text: str) -> str:
+        """Aggressively shrink long prose sections for weak models.
+
+        Strategy: walk the text paragraph-by-paragraph (paragraph =
+        block of consecutive non-blank lines that aren't headers /
+        bullets / code-fences / table rows). For each prose paragraph,
+        join its lines, keep only the FIRST sentence (up to the first
+        period+space), drop the rest. Headers, bullets, code blocks,
+        and tables pass through untouched — those are structural signal
+        the model leans on for navigation.
+        """
+        if not text:
+            return text
+
+        def _is_structural(stripped: str) -> bool:
+            return (
+                stripped.startswith("#")          # header
+                or stripped.startswith("-")        # bullet
+                or stripped.startswith("*")        # bullet
+                or stripped.startswith("|")        # table row
+                or stripped.startswith("> ")       # blockquote
+                or stripped.startswith(">")        # blockquote
+                or stripped.startswith("```")      # code fence
+                or stripped == "---"               # hr / frontmatter
+                or (len(stripped) > 1 and stripped[0].isdigit()
+                    and stripped[1] in ".)")        # 1. / 1)
+            )
+
+        lines = text.splitlines()
+        out: list[str] = []
+        in_code = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_code = not in_code
+                out.append(line)
+                i += 1
+                continue
+            if in_code:
+                out.append(line)
+                i += 1
+                continue
+            if not stripped or _is_structural(stripped):
+                out.append(line)
+                i += 1
+                continue
+            # Collect the full paragraph (run of prose lines)
+            paragraph: list[str] = [line]
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j].strip()
+                if not nxt or _is_structural(nxt) or nxt.startswith("```"):
+                    break
+                paragraph.append(lines[j])
+                j += 1
+            joined = " ".join(p.strip() for p in paragraph).strip()
+            # Keep only the first sentence
+            end = joined.find(". ")
+            if end > 30:
+                kept = joined[: end + 1]
+            elif len(joined) > 200:
+                # Long unpunctuated prose — cap at 200 chars
+                kept = joined[:200].rstrip() + " …"
+            else:
+                kept = joined
+            indent_len = len(line) - len(line.lstrip())
+            out.append(" " * indent_len + kept)
+            i = j
+        # Collapse runs of empty lines to a single one
+        result: list[str] = []
+        blank = False
+        for ln in out:
+            if ln.strip():
+                result.append(ln)
+                blank = False
+            elif not blank:
+                result.append(ln)
+                blank = True
+        return "\n".join(result)
+
+    def _strip_lazy_modules(
+        self, text: str, *, task_text: str, mode_id: str,
+        model: str = "",
+    ) -> str:
+        """Drop ``<!-- module:X -->``-marked sections whose triggers
+        didn't match the current task text.
+
+        Each marker starts the module; the module extends until the next
+        ``<!-- module:Y -->`` marker OR the next ``## `` H2 header (so
+        non-module headers between modules are NOT swallowed). The
+        marker line itself is always removed; surviving sections come
+        through unchanged.
+
+        For weak models (gemma-* / llama-*8b / qwen-*7b / phi-* /
+        mistral-7b / etc.) OR when ``agent.compact_prompt: true`` is
+        set, the surviving prose is run through ``_compact_prose`` to
+        cut prompt size to ~3 k tokens. Small models attend much
+        better to a compact pinpoint prompt than a verbose 10 k one.
+        """
+        if not text or "<!-- module:" not in text:
+            return text
+        try:
+            from delfin.user_settings import load_settings as _load_settings
+            _agent_cfg = (_load_settings() or {}).get("agent", {}) or {}
+            _enabled = bool(_agent_cfg.get("slim_prompt", True))
+            _compact_setting = bool(_agent_cfg.get("compact_prompt", False))
+        except Exception:
+            _enabled = True
+            _compact_setting = False
+        if not _enabled:
+            # Just strip the marker comments but keep all content
+            return self._MODULE_MARKER_RE.sub("", text)
+
+        # Compact-mode decision (priority):
+        # 1. Explicit user setting ``agent.compact_prompt``
+        # 2. Per-model profile's ``compact_prompt`` flag (centralised)
+        # 3. Weak-model heuristic on the model name (legacy fallback)
+        _profile_compact = False
+        try:
+            from .model_profiles import get_profile as _get_profile
+            _profile_compact = bool(_get_profile(model).compact_prompt)
+        except Exception:
+            pass
+        _compact = (
+            _compact_setting
+            or _profile_compact
+            or self._is_weak_model(model)
+        )
+
+        active = self._detect_active_modules(task_text, mode_id)
+        lines = text.splitlines(keepends=True)
+        out: list[str] = []
+        i = 0
+        n = len(lines)
+        while i < n:
+            line = lines[i]
+            m = self._MODULE_MARKER_RE.match(line)
+            if not m:
+                out.append(line)
+                i += 1
+                continue
+            mod = m.group(1)
+            i += 1  # always swallow the marker line itself
+            if mod in active:
+                # Active module: pass through content unchanged.
+                continue
+            # Inactive module — skip the immediately-following section
+            # header (## or ### that lives right after the marker) plus
+            # the body until the NEXT ## H2 header or the next module
+            # marker, whichever comes first.
+            saw_header = False
+            while i < n:
+                nxt = lines[i]
+                if self._MODULE_MARKER_RE.match(nxt):
+                    # Next module marker — let the outer loop re-handle
+                    break
+                stripped = nxt.lstrip()
+                if not saw_header:
+                    # The first non-empty line after the marker is the
+                    # section header we want to also drop. Skip blank
+                    # lines until we find it.
+                    if stripped.startswith("### ") or stripped.startswith("## "):
+                        saw_header = True
+                    i += 1
+                    continue
+                # We've already consumed the header — stop at the next
+                # H2 header (boundary into a different section).
+                if stripped.startswith("## "):
+                    break
+                i += 1
+        result = "".join(out)
+        if _compact:
+            result = self._compact_prose(result)
+        return result
+
+    def load_input_template(self) -> str:
+        """Load universal_input_template.md."""
+        return self._cached_read(
+            self.agent_dir / "shared" / "universal_input_template.md"
+        )
+
+    def load_verdict_template(self) -> str:
+        """Load minimal_final_verdict.md."""
+        return self._cached_read(
+            self.agent_dir / "shared" / "minimal_final_verdict.md"
+        )
+
+    def load_routing_rules(self) -> str:
+        """Load routing/*.md files."""
+        parts = []
+        routing_dir = self.agent_dir / "routing"
+        if routing_dir.is_dir():
+            for md_file in sorted(routing_dir.glob("*.md")):
+                text = self._cached_read(md_file)
+                if text:
+                    parts.append(text)
+        return "\n\n".join(parts)
+
+    # -- mode loading ------------------------------------------------------
+
+    def load_lite_manifest(self) -> dict[str, Any]:
+        """Parse DELFIN_AGENT_LITE/manifest.yaml."""
+        return _parse_yaml(self.agent_lite_dir / "manifest.yaml")
+
+    def load_mode(self, mode_id: str) -> dict[str, Any]:
+        """Load a LITE mode definition.
+
+        Returns a dict with keys:
+        - ``route``: list of role IDs (e.g. ['session_manager', 'builder_agent', 'test_agent'])
+        - ``description``: the mode markdown text
+        """
+        manifest = self.load_lite_manifest()
+        modes = manifest.get("modes", [])
+        mode_entry = None
+        for m in modes:
+            if m.get("id") == mode_id:
+                mode_entry = m
+                break
+        if mode_entry is None:
+            raise ValueError(
+                f"Unknown agent mode '{mode_id}'. "
+                f"Available: {[m.get('id') for m in modes]}"
+            )
+        route = mode_entry.get("route", [])
+        mode_file = mode_entry.get("file", "")
+        description = ""
+        if mode_file:
+            description = self._cached_read(self.agent_lite_dir / mode_file)
+        return {"route": route, "description": description}
+
+    def available_modes(self) -> list[str]:
+        """Return list of available mode IDs."""
+        manifest = self.load_lite_manifest()
+        return [m.get("id", "") for m in manifest.get("modes", []) if m.get("id")]
+
+    # -- system prompt composition -----------------------------------------
+
+    def build_system_prompt(
+        self,
+        role_id: str,
+        mode_id: str,
+        mode_description: str = "",
+        route: list[str] | None = None,
+        role_index: int = 0,
+        prior_outputs: dict[str, str] | None = None,
+        memory_context: str = "",
+        task_text: str = "",
+        session_key: str = "",
+        live_state: str = "",
+        model: str = "",
+    ) -> str:
+        """Compose the full system prompt for a given role.
+
+        Parameters
+        ----------
+        role_id : str
+            Current agent role (e.g. 'builder_agent').
+        mode_id : str
+            Active mode (e.g. 'default').
+        mode_description : str
+            The mode's markdown description.
+        route : list[str], optional
+            Full route for the mode.
+        role_index : int
+            Current position in the route (0-based).
+        prior_outputs : dict[str, str], optional
+            Outputs from previous roles in this cycle.
+        memory_context : str
+            Persistent memory to inject.
+        task_text : str
+            Current task text used to select a relevant profile playbook.
+        """
+        sections = []
+        injected: list[str] = []  # track which sections we inject
+
+        relevant_playbook = self._load_relevant_playbook_context(task_text)
+        repo_map_ctx = self._load_repo_map_context(task_text)
+        briefing_ctx = self._load_briefing_context(task_text)
+        decomposition_ctx = self._load_decomposition_context(task_text)
+        chemistry_reminder = self._load_chemistry_reminder(task_text)
+        include_playbook = self._should_inject_playbook(
+            role_id,
+            session_key,
+            relevant_playbook,
+        )
+        progressive = self._progressive_disclosure
+
+        # Solo mode: role prompt + project context — behave like terminal CLI
+        if role_id == "solo_agent":
+            # Layer 0: Role identity (always)
+            role_prompt = self.load_role_prompt(role_id)
+            if role_prompt:
+                # Progressive disclosure: strip lazy-module sections (chemistry
+                # decision tree, web-research, notebook handling, KIT sandbox,
+                # etc.) when the task text doesn't signal that they're needed.
+                # Saves 4-6k tokens on the typical turn. Falls back to the
+                # full prompt for any task signal the regex can't classify.
+                try:
+                    role_prompt = self._strip_lazy_modules(
+                        role_prompt, task_text=task_text, mode_id=mode_id,
+                        model=model,
+                    )
+                except Exception:
+                    pass
+                sections.append(role_prompt)
+
+            # Plan mode addendum: when the dashboard locked us into "plan"
+            # the agent must investigate first and finalise via ExitPlanMode.
+            # Mode-stable so it stays high in the prompt where the prefix
+            # cache benefits most.
+            if mode_id == "plan":
+                plan_addendum = self._cached_read(
+                    self.agent_dir / "shared" / "plan_mode_addendum.md"
+                )
+                if plan_addendum:
+                    sections.append(plan_addendum)
+                    injected.append("plan_mode_addendum")
+
+            # Project context (delfin_context.md) is static — keep near the
+            # top so it caches with the role prompt. Env block + live state
+            # move to the END of this branch (just before the anchor) so
+            # their per-turn variability doesn't invalidate the cached
+            # prefix every send.
+            ctx_text = self._cached_read(
+                self.agent_dir / "shared" / "delfin_context.md"
+            )
+            if ctx_text:
+                sections.append(f"--- Project Context ---\n{ctx_text}")
+
+            # Layer 1: Task-aware (briefing + decomposition for complex tasks)
+            if self._should_inject_briefing(role_id, session_key, briefing_ctx):
+                if not self._should_skip_section("briefing", role_id):
+                    sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                    injected.append("briefing")
+            if decomposition_ctx:
+                sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+            if chemistry_reminder:
+                sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+
+            # Layer 2: On-demand (repo_map, playbook, profile)
+            if progressive:
+                # Only inject if agent requests via NEED_CONTEXT
+                sections.append(self._build_progressive_disclosure_note())
+            else:
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
+                profile_ctx = self._load_profile_context(mode_id)
+                if self._should_inject_profile_context(role_id, session_key, profile_ctx):
+                    if not self._should_skip_section("profile", role_id):
+                        sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                        injected.append("profile")
+                if include_playbook:
+                    if not self._should_skip_section("playbook", role_id):
+                        sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
+                        injected.append("playbook")
+
+            # Layer 3: Memory
+            if self._should_inject_memory(role_id, session_key, memory_context):
+                if not self._should_skip_section("memory", role_id):
+                    sections.append(f"--- Project Memory ---\n{memory_context}")
+                    injected.append("memory")
+
+            # Layer 3b: External Memory — bridge to the user's
+            # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
+            # solo mode inherits the same memories the terminal CLI uses.
+            try:
+                ext_mem = self._load_external_memory_context()
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
+
+            # ----- Variable tail (changes per turn — kept at the bottom
+            # so the cached prefix above doesn't get invalidated when
+            # git status / live state / context_status drift) -----
+
+            # CLI-style environment block: cwd, branch, status, recent
+            # commits. Moved from the top of the prompt to the bottom
+            # because the git status line changes after every commit /
+            # uncommitted edit, which would otherwise break the prefix
+            # cache for everything that came after it.
+            env_block = self._build_session_env_block()
+            if env_block:
+                sections.append(f"--- Session Environment ---\n{env_block}")
+
+            # Live state (dashboard widgets, calc folder, jobs, the
+            # context-status block) — highest per-turn churn, must be
+            # last before the anchor.
+            if live_state:
+                sections.append(f"--- Live state ---\n{live_state}")
+                injected.append("live_state")
+
+            # Attention anchor (always last — recency bias)
+            sections.append(self._build_critical_anchor(role_id))
+
+            self._last_injected_sections = injected
+            return "\n\n".join(sections)
+
+        # 1. Role prompt (highest attention)
+        role_prompt = self.load_role_prompt(role_id)
+        if role_prompt:
+            sections.append(role_prompt)
+
+        # 2. Shared DELFIN context (full only for roles that modify code
+        #    or make strategic decisions; brief summary for read-only roles)
+        _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent", "builder_agent", "critic_agent"}
+        _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
+        shared = self.load_shared_context()
+        if shared:
+            if role_id in _FULL_CONTEXT_ROLES:
+                sections.append(shared)
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
+                if role_id in _PLAYBOOK_ROLES:
+                    playbooks = self._cached_read(
+                        self.agent_dir / "shared" / "playbooks.md"
+                    )
+                    if playbooks:
+                        sections.append(playbooks)
+                    if include_playbook:
+                        if not self._should_skip_section("playbook", role_id):
+                            sections.append(
+                                f"--- Relevant Playbook ---\n{relevant_playbook}"
+                            )
+                            injected.append("playbook")
+            else:
+                # Brief context: short intro only. Detailed guidance comes from
+                # the relevant playbook and repo map to keep prompts cheap.
+                lines = shared.split("\n")
+                brief = "\n".join(lines[:16])
+                brief += (
+                    "\n\n(Full DELFIN context omitted for this role. "
+                    "Key paths: delfin/dashboard/, delfin/orca/, "
+                    "delfin/slurm/, delfin/agent/, tests/)"
+                )
+                sections.append(brief)
+                if include_playbook:
+                    if not self._should_skip_section("playbook", role_id):
+                        sections.append(
+                            f"--- Relevant Playbook ---\n{relevant_playbook}"
+                        )
+                        injected.append("playbook")
+                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
+                    if not self._should_skip_section("repo_map", role_id):
+                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        injected.append("repo_map")
+
+        # 3. Mode description (only for session_manager / chief who need it
+        #    for routing/strategic decisions; other roles get their
+        #    instructions from the role prompt itself)
+        _MODE_DESC_ROLES = {"session_manager", "chief_agent"}
+        if mode_description:
+            if role_id in _MODE_DESC_ROLES:
+                sections.append(mode_description)
+            # Others skip mode_description — their role prompt is sufficient
+
+        # 4. Routing rules (only for session_manager)
+        if role_id == "session_manager":
+            routing = self.load_routing_rules()
+            if routing:
+                sections.append(routing)
+
+        # 5. Input/output templates (only for session_manager — others don't need them)
+        if role_id == "session_manager":
+            input_tmpl = self.load_input_template()
+            if input_tmpl:
+                sections.append(input_tmpl)
+            verdict_tmpl = self.load_verdict_template()
+            if verdict_tmpl:
+                sections.append(verdict_tmpl)
+
+        # 6. Cycle context + efficiency rules + collaboration protocol
+        if route:
+            total = len(route)
+            cycle_info = (
+                f"---\n"
+                f"Current mode: {mode_id}\n"
+                f"Route: {' -> '.join(route)}\n"
+                f"Current role: {role_id} (step {role_index + 1} of {total})\n"
+                f"---\n"
+                f"Collaboration protocol:\n"
+                f"- You are part of an automated multi-agent pipeline.\n"
+                f"- Read the prior agent outputs carefully before starting your work.\n"
+                f"- Produce your output in the MANDATORY structured format from your role prompt.\n"
+                f"- The next agent in the route will parse your output. Be precise.\n"
+                f"- Do NOT silently redefine the task, success metric, or scope.\n"
+                f"- If you believe the goal or metric is wrong, raise QUESTION instead of drifting.\n"
+                f"- Prefer small stage gates with explicit exit evidence over broad implementation claims.\n"
+                f"- If you are the Builder: address all critical/major Critic/Runtime findings.\n"
+                f"- If you are the Test Agent: run pytest and verify acceptance criteria.\n"
+                f"---\n"
+                f"Efficiency rules (CRITICAL — every file read costs money):\n"
+                f"- Working directory is the repo root. Run `git diff` directly — never `cd` or `git -C`.\n"
+                f"- Use `git diff --stat` for overviews, only full diff for specific files.\n"
+                f"- Never retry a command in a different syntax if it already succeeded.\n"
+                f"- If a Bash command is BLOCKED/DENIED by the permission system, STOP IMMEDIATELY. "
+                f"Do NOT retry it or any variation — it will always be denied. "
+                f"Use Python alternatives (ast.parse for syntax, importlib for imports) "
+                f"or tell the user what commands to run manually.\n"
+                f"- Read only the lines you need (use offset/limit), not entire large files.\n"
+                f"- Do NOT spawn sub-agents (Agent tool) for simple questions. Only for complex multi-step tasks.\n"
+                f"- For overview/info questions, read README.md first. Only read more files if truly needed.\n"
+                f"- Prefer Grep over Read for searching. For implementation tasks, read as many files as needed.\n"
+                f"- Keep responses concise. No preamble, no restating what the user said.\n"
+                f"- NEVER run real ORCA, xTB, or SLURM computations. Only pytest unit tests.\n"
+                f"---\n"
+                f"Directory permissions (enforced at code level):\n"
+                f"- agent_workspace → Full access (agent sandbox)\n"
+                f"- calculations → Read freely, mutate with user confirmation\n"
+                f"- repo (DELFIN source) → Code agents: full access. Dashboard: no access.\n"
+                f"- archive → READ-ONLY (hard block, no exceptions)\n"
+                f"- remote_archive → READ-ONLY (hard block, no exceptions)\n"
+                f"- Always ask the user before any destructive action."
+            )
+
+            # Tool isolation per role
+            _READ_ONLY_ROLES = {
+                "critic_agent", "reviewer_agent", "runtime_agent",
+                "chief_agent", "session_manager", "test_agent",
+                "dashboard_agent", "research_agent",
+            }
+            _WRITE_ROLES = {"builder_agent", "solo_agent"}
+            if role_id in _READ_ONLY_ROLES:
+                if role_id == "test_agent":
+                    cycle_info += (
+                        f"\n---\n"
+                        f"Tool restrictions:\n"
+                        f"- You may use: Read, Grep, Glob, Bash (for pytest and git commands ONLY).\n"
+                        f"- You may use Edit/Write ONLY to create or modify test files in tests/.\n"
+                        f"- Do NOT modify production code. That is the Builder's job."
+                    )
+                elif role_id == "dashboard_agent":
+                    cycle_info += (
+                        f"\n---\n"
+                        f"Tool access:\n"
+                        f"- Read, Grep, Glob: read DELFIN source code, calculation data, archives (anywhere).\n"
+                        f"- Write: ONLY to agent_workspace/ (analysis scripts, CSVs, reports).\n"
+                        f"- Bash: ONLY to run scripts in agent_workspace/ (ask user first!).\n"
+                        f"- WebSearch, WebFetch: literature research for methods and parameters.\n"
+                        f"- Doc-search tools (search_docs, read_section, list_docs, list_sections): "
+                        f"search indexed PDFs (ORCA manual, xTB docs, papers). ALWAYS use these BEFORE WebSearch.\n"
+                        f"- Calc-search tools (search_calcs, get_calc_info, calc_summary): "
+                        f"search calculation metadata across calc/, archive/, remote_archive/. "
+                        f"Use search_calcs for content-based search (method, basis, solvent), /calc search for filename globs.\n"
+                        f"- No Edit. Use Write to create/replace entire files in agent_workspace/.\n"
+                        f"- Dashboard control via ACTION: slash commands.\n"
+                        f"- calc/archive file changes ONLY through ACTION: commands (never Write/Bash).\n"
+                        f"- Data directories are READ-ONLY for Write/Bash tools (CLI enforced via --add-dir)."
+                    )
+                else:
+                    cycle_info += (
+                        f"\n---\n"
+                        f"Tool restrictions:\n"
+                        f"- You may use: Read, Grep, Glob, Bash (for git commands ONLY).\n"
+                        f"- Do NOT use Edit or Write. You are a review/analysis role.\n"
+                        f"- If you find something that needs changing, describe it precisely\n"
+                        f"  so the Builder can fix it."
+                    )
+            elif role_id in _WRITE_ROLES:
+                cycle_info += (
+                    f"\n---\n"
+                    f"Tool access: Full (Read, Edit, Write, Bash, Grep, Glob).\n"
+                    f"You are the only role allowed to modify production code."
+                )
+
+            # Self-reflection instruction
+            cycle_info += (
+                f"\n---\n"
+                f"Self-reflection (mandatory before submitting output):\n"
+                f"Before producing your final output, ask yourself:\n"
+                f"1. Did I address everything from the plan/prior outputs?\n"
+                f"2. Did I miss any edge cases or requirements?\n"
+                f"3. Is my output complete and in the correct structured format?\n"
+                f"If anything is missing, fix it before submitting."
+            )
+
+            sections.append(cycle_info)
+
+        # 6b. Pre-task briefing (outcome-based insights)
+        if self._should_inject_briefing(role_id, session_key, briefing_ctx):
+            if not self._should_skip_section("briefing", role_id):
+                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                injected.append("briefing")
+
+        # 6c. Goal decomposition for complex tasks (Feature 3)
+        if decomposition_ctx and role_id in (
+            "session_manager", "builder_agent", "solo_agent",
+        ):
+            sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+
+        # 6d. Chemistry doc-first protocol (Feature 6)
+        if chemistry_reminder and role_id in (
+            "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
+        ):
+            sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+
+        # 7. Prior role outputs (role-aware truncation)
+        # SM plan is critical for Builder/Test — keep most of it
+        _PRIOR_LIMITS = {
+            "session_manager": 6000,
+            "critic_agent": 4000,
+            "runtime_agent": 3000,
+            "reviewer_agent": 3000,
+            "research_agent": 3000,
+            "builder_agent": 4000,
+        }
+        if prior_outputs:
+            parts = ["--- Prior Role Outputs ---"]
+            for rid, output in prior_outputs.items():
+                limit = _PRIOR_LIMITS.get(rid, 2000)
+                truncated = output[:limit]
+                if len(output) > limit:
+                    truncated += "\n... [truncated]"
+                parts.append(f"## {rid}\n{truncated}")
+            sections.append("\n\n".join(parts))
+            injected.append("prior_outputs")
+
+        # 8. Memory context
+        if self._should_inject_memory(role_id, session_key, memory_context):
+            if not self._should_skip_section("memory", role_id):
+                sections.append(f"--- Project Memory ---\n{memory_context}")
+                injected.append("memory")
+
+        # 8b. External Memory bridge — same source the terminal CLI reads
+        # (~/.claude/projects/<slug>/memory/MEMORY.md). Solo gets the full
+        # 6 KB cap; dashboard gets a tighter 2 KB cap because its turns are
+        # short and we don't want to drown a haiku-class model in memos.
+        if role_id == "dashboard_agent":
+            try:
+                ext_mem = self._load_external_memory_context(max_chars=2000)
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                sections.append(f"--- External Memory ---\n{ext_mem}")
+                injected.append("external_memory")
+
+        # 9. Provider profile (success rates, failures, playbooks)
+        profile_ctx = self._load_profile_context(mode_id)
+        if self._should_inject_profile_context(role_id, session_key, profile_ctx):
+            if not self._should_skip_section("profile", role_id):
+                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                injected.append("profile")
+
+        # 9b. Live state (per-turn UI snapshot, e.g. Dashboard widgets +
+        # active calc folder). Placed before the attention anchor so it's
+        # the last domain content the model sees.
+        if live_state:
+            sections.append(f"--- Live state ---\n{live_state}")
+            injected.append("live_state")
+
+        # 10. Attention anchor (always last — recency bias)
+        sections.append(self._build_critical_anchor(role_id))
+
+        self._last_injected_sections = injected
+        return "\n\n".join(sections)

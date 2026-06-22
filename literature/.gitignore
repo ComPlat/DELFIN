@@ -1,0 +1,8 @@
+# Proprietary documentation - do NOT commit
+# Users must download these separately and place them here locally
+
+# All PDF files (ORCA manual, papers, etc.)
+*.pdf
+
+# Word documents
+*.docx

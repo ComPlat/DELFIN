@@ -1,0 +1,213 @@
+===========================================================================
+  CSP Tools Setup Guide — Genarris in DELFIN
+===========================================================================
+
+Genarris (https://github.com/Yi5817/Genarris) is a random molecular
+crystal structure generator used for Crystal Structure Prediction (CSP).
+This guide explains how to install it within the DELFIN environment.
+
+
+1. SYSTEM PREREQUISITES
+---------------------------------------------------------------------------
+
+You need three system-level packages before installing Genarris:
+
+  a) OpenMPI (C compiler + runtime)
+     Ubuntu/Debian:  sudo apt install libopenmpi-dev openmpi-bin
+     Conda:          conda install -c conda-forge openmpi
+
+  b) SWIG (C extension wrapper generator)
+     Ubuntu/Debian:  sudo apt install swig
+     Conda:          conda install -c conda-forge swig
+
+  c) Git (to clone the repository + submodules)
+     Usually pre-installed on Linux systems.
+
+Verify:
+  mpicc --version       # should print gcc version info
+  swig -version         # should print SWIG version
+  mpicc -showme         # should mention "openmpi" (NOT Intel MPI)
+
+
+2. PYTHON PREREQUISITES
+---------------------------------------------------------------------------
+
+These must be installed in the SAME Python environment as DELFIN:
+
+  a) mpi4py — MUST be linked against the SAME MPI as the system mpicc.
+
+     IMPORTANT: If you use conda/micromamba, it may install Intel MPI
+     (impi_rt) instead of OpenMPI. This causes the error:
+
+       ImportError: undefined symbol: ompi_mpi_char
+
+     Solution — install mpi4py via pip with the system compiler:
+
+       # Remove conda Intel MPI if present
+       conda remove impi_rt mpi          # or: micromamba remove ...
+
+       # Install mpi4py compiled against system OpenMPI
+       MPICC=/usr/bin/mpicc pip install mpi4py
+
+     Verify:
+       python -c "import mpi4py; print('OK')"
+       ldd $(python -c "import mpi4py.MPI; print(mpi4py.MPI.__file__)") | grep libmpi
+       # Should show: libmpi.so.40 => /lib/x86_64-linux-gnu/libmpi.so.40
+       # Must NOT show a conda path like .../envs/.../lib/libmpi.so.12
+
+  b) Cython — needed during build:
+       pip install Cython
+
+
+3. INSTALLATION
+---------------------------------------------------------------------------
+
+Option A — Automated installer (recommended):
+
+  bash delfin/csp_tools/install_csp_tools.sh
+
+  This will:
+  - Check all prerequisites
+  - Verify MPI consistency (mpi4py vs mpicc)
+  - Clone Genarris from GitHub
+  - Initialize the cgenarris C submodule
+  - Clean any stale build artifacts
+  - Build and install with the correct MPI compiler
+  - Verify the C extension loads
+  - Link the gnrs CLI
+
+Option B — Via pip (simpler, but needs prerequisites in place):
+
+  pip install delfin-complat[csp]
+
+  Note: This uses pip's build isolation which pulls numpy>=2.0 during
+  build. DELFIN requires numpy<2. After install, downgrade:
+
+    pip install "numpy>=1.26,<2"
+
+  Genarris works fine with numpy 1.26 despite declaring >=2.0.
+
+Option C — Manual installation:
+
+  git clone https://github.com/Yi5817/Genarris.git
+  cd Genarris
+  git submodule update --init --recursive
+
+  # Clean previous artifacts (critical if rebuilding!)
+  rm -rf build/ dist/ *.egg-info
+  find gnrs/ -name "*.so" -delete
+  find gnrs/ -name "*_wrap.c" -delete
+
+  # Install with correct MPI compiler
+  MPICC=/usr/bin/mpicc CC=/usr/bin/mpicc \
+    pip install . --no-build-isolation --no-deps --no-cache-dir
+
+Option D — Via DELFIN Dashboard:
+
+  Open the dashboard Settings tab and click "Install csp_tools".
+
+
+4. VERIFICATION
+---------------------------------------------------------------------------
+
+  # CLI check
+  delfin csp_check
+
+  # Python check
+  python -c "
+  import gnrs
+  print('gnrs version:', gnrs.__version__)
+  from gnrs.cgenarris import pygenarris_mpi
+  print('C extension OK')
+  "
+
+  # Full diagnostics
+  python -c "
+  from delfin.runtime_setup import collect_runtime_diagnostics
+  for d in collect_runtime_diagnostics({'backend':'local'}, backend='local'):
+      print(f'{d[\"name\"]:20s} {d[\"status\"]:8s} {d[\"detail\"]}')
+  "
+
+
+5. COMMON PROBLEMS AND SOLUTIONS
+---------------------------------------------------------------------------
+
+Problem: ImportError: undefined symbol: ompi_mpi_char
+Cause:   Genarris C extension compiled against OpenMPI headers, but
+         linked at runtime against Intel MPI (conda impi_rt).
+Fix:     Remove conda Intel MPI, reinstall mpi4py with system OpenMPI,
+         then reinstall Genarris (see Section 2a and 3).
+
+Problem: ImportError: libmpi.so.12 => not found
+Cause:   The conda Intel MPI was removed after Genarris was compiled
+         against it. The .so still references the old library.
+Fix:     Reinstall Genarris with clean artifacts (see Section 3, Option C).
+
+Problem: Building wheel fails with "Please install mpi4py"
+Cause:   mpi4py not installed in the current Python environment.
+Fix:     MPICC=/usr/bin/mpicc pip install mpi4py
+
+Problem: SWIG errors during build
+Cause:   SWIG not installed or wrong version.
+Fix:     apt install swig  OR  conda install -c conda-forge swig
+
+Problem: numpy version conflict (gnrs wants >=2.0, delfin wants <2)
+Cause:   pip pulls numpy 2.x when installing Genarris with build isolation.
+Fix:     After installing Genarris: pip install "numpy>=1.26,<2"
+         Genarris works fine with numpy 1.26.x at runtime.
+
+Problem: Genarris import works but C extension fails
+Cause:   Build artifacts from a previous MPI were cached.
+Fix:     Clean and rebuild:
+           cd <genarris-source>
+           rm -rf build/ dist/ *.egg-info
+           find gnrs/ -name "*.so" -delete
+           find gnrs/ -name "*_wrap.c" -delete
+           MPICC=/usr/bin/mpicc pip install . --no-build-isolation \
+             --no-deps --no-cache-dir --force-reinstall
+
+
+6. USING GENARRIS IN DELFIN WORKFLOWS
+---------------------------------------------------------------------------
+
+Python API (recommended for workflows):
+
+  from delfin.csp_tools.genarris_wrapper import generate_random_structures
+
+  output_dir = generate_random_structures(
+      "molecule.xyz",
+      num_structures=100,
+      space_groups=[2, 14, 19, 61],
+      Z=4,
+      np=4,   # MPI processes
+  )
+
+CLI usage:
+
+  mpirun -np 4 gnrs --config my_config.ini
+
+Check availability in code:
+
+  from delfin.csp_tools import genarris_available, require_genarris
+
+  if genarris_available():
+      # use Genarris
+      ...
+  else:
+      # graceful fallback
+      ...
+
+  # Or raise an informative error if missing:
+  require_genarris("Crystal structure prediction")
+
+
+7. ENVIRONMENT VARIABLES
+---------------------------------------------------------------------------
+
+  DELFIN_CSP_TOOLS_ROOT   Override csp_tools root directory
+  MPICC                   Path to MPI C compiler (default: auto-detect)
+  GENARRIS_REPO           Git clone URL (default: GitHub Yi5817/Genarris)
+  GENARRIS_BRANCH         Branch to clone (default: main)
+  FORCE_REINSTALL         Set to 1 to force reinstallation
+
+===========================================================================

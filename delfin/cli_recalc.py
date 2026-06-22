@@ -1,0 +1,183 @@
+# cli_recalc.py
+# Recalc mode wrapper functions for DELFIN CLI
+
+from pathlib import Path
+from typing import Optional, Set
+
+from delfin.common.logging import get_logger
+from delfin.common.paths import resolve_path
+from delfin import smart_recalc
+
+logger = get_logger(__name__)
+
+
+def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
+    """Set up recalc mode wrappers for computational functions.
+
+    Returns:
+        tuple: (wrapper functions dict, real functions dict)
+    """
+    # Import the real functions
+    from .orca import run_orca as _run_orca_real
+    from .xtb_crest import XTB as _XTB_real, XTB_GOAT as _XTB_GOAT_real, run_crest_workflow as _CREST_real, XTB_SOLVATOR as _SOLV_real
+
+    def _normalize_extra_deps(inp_path: Path, copy_files):
+        deps = []
+        for dep in copy_files or ():
+            try:
+                dep_path = Path(dep)
+                if not dep_path.is_absolute():
+                    dep_path = inp_path.parent / dep_path
+                deps.append(dep_path.resolve())
+            except Exception:
+                continue
+        return deps
+
+    def _bootstrap_required_outputs(inp_path: Path):
+        expected = {
+            "XTB.inp": ("XTB.xyz",),
+            "XTB_GOAT.inp": ("XTB_GOAT.globalminimum.xyz",),
+            "XTB_SOLVATOR.inp": ("XTB_SOLVATOR.solvator.xyz",),
+        }.get(inp_path.name, ())
+        return [inp_path.parent / name for name in expected]
+
+    def _maybe_bootstrap_fingerprint(inp_path: Path, out_path: Path, extra_deps, smart_mode: bool, required_outputs):
+        if not smart_mode:
+            return False
+        if inp_path.with_suffix(inp_path.suffix + ".fprint").exists():
+            return False
+
+        bootstrap_outputs = list(required_outputs or ())
+        if not bootstrap_outputs:
+            bootstrap_outputs = _bootstrap_required_outputs(inp_path)
+        if not bootstrap_outputs:
+            bootstrap_outputs = smart_recalc.required_orca_outputs(inp_path=inp_path, out_path=out_path)
+        if not smart_recalc.outputs_complete(inp_path, out_path, required_outputs=bootstrap_outputs):
+            return False
+
+        smart_recalc.store_fingerprint(inp_path, extra_deps=extra_deps)
+        logger.info(
+            "[smart_recalc] skipping ORCA; %s output complete and missing fingerprint bootstrapped.",
+            out_path.name,
+        )
+        return True
+
+    def _run_orca_wrapper(inp_file, out_file, *args, **kwargs):
+        force_targets = {resolve_path(p).resolve() for p in (force_outputs or set())}
+
+        inp_path = resolve_path(inp_file)
+        out_path = resolve_path(out_file)
+        out_resolved = out_path.resolve()
+        force_run = out_resolved in force_targets
+        smart_mode = smart_recalc.smart_mode_enabled()
+        extra_deps = _normalize_extra_deps(inp_path, kwargs.get("copy_files"))
+        required_outputs = kwargs.pop("required_outputs", None)
+
+        # First check
+        if not force_run and smart_recalc.should_skip(
+            inp_path,
+            out_path,
+            extra_deps=extra_deps,
+            required_outputs=required_outputs,
+        ):
+            if smart_mode:
+                logger.info("[smart_recalc] skipping ORCA; %s inp+deps unchanged and output complete.", out_file)
+            else:
+                logger.info("[recalc] skipping ORCA; %s output complete (classic mode).", out_file)
+            return True  # Already complete = success
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode, required_outputs):
+            return True
+
+        if force_run:
+            logger.info("[recalc] forcing ORCA rerun for %s (--occupier-override)", out_file)
+            # Remove the existing OUT file to force a complete re-run
+            # This is important because the override may have changed the input geometry/wavefunction
+            if out_path.exists():
+                try:
+                    out_path.unlink()
+                    logger.info("[recalc] removed existing %s to force clean re-run", out_file)
+                except Exception as exc:
+                    logger.warning("[recalc] could not remove %s: %s (will overwrite)", out_file, exc)
+        else:
+            logger.info("[recalc] (re)running ORCA for %s", out_file)
+
+        # Second check right before execution (race condition protection)
+        if not force_run and smart_recalc.should_skip(
+            inp_path,
+            out_path,
+            extra_deps=extra_deps,
+            required_outputs=required_outputs,
+        ):
+            if smart_mode:
+                logger.info("[smart_recalc] skipping ORCA; %s completed by another process.", out_file)
+            else:
+                logger.info("[recalc] skipping ORCA; %s completed by another process (classic mode).", out_file)
+            return True  # Already complete = success
+        if not force_run and _maybe_bootstrap_fingerprint(inp_path, out_path, extra_deps, smart_mode, required_outputs):
+            return True
+
+        return _run_orca_real(inp_file, out_file, *args, **kwargs)
+
+    def _xtb_wrapper(multiplicity, charge, config):
+        return _XTB_real(multiplicity, charge, config)
+
+    def _goat_wrapper(multiplicity, charge, config):
+        return _XTB_GOAT_real(multiplicity, charge, config)
+
+    def _crest_wrapper(PAL, solvent, charge, multiplicity):
+        return _CREST_real(PAL, solvent, charge, multiplicity)
+
+    def _solv_wrapper(input_path, multiplicity, charge, solvent, n_solv, config):
+        return _SOLV_real(input_path, multiplicity, charge, solvent, n_solv, config)
+
+    wrappers = {
+        'run_orca': _run_orca_wrapper,
+        'XTB': _xtb_wrapper,
+        'XTB_GOAT': _goat_wrapper,
+        'run_crest_workflow': _crest_wrapper,
+        'XTB_SOLVATOR': _solv_wrapper
+    }
+
+    reals = {
+        'run_orca': _run_orca_real,
+        'XTB': _XTB_real,
+        'XTB_GOAT': _XTB_GOAT_real,
+        'run_crest_workflow': _CREST_real,
+        'XTB_SOLVATOR': _SOLV_real
+    }
+
+    return wrappers, reals
+
+
+def patch_modules_for_recalc(wrappers):
+    """Patch modules that have captured their own function references."""
+    from . import orca as _orca_mod
+    from . import occupier as _occupier_mod
+    from . import cli as _cli_mod
+    from . import xtb_crest as _xtb_crest_mod
+    from . import guppy_sampling as _guppy_sampling_mod
+    from . import pipeline as _pipeline_mod
+    from . import parallel_classic_manually as _parallel_classic_mod
+    from . import parallel_occupier as _parallel_occupier_mod
+    from . import esd_module as _esd_module
+
+    _orca_mod.run_orca = wrappers['run_orca']
+    _occupier_mod.run_orca = wrappers['run_orca']
+    _cli_mod.run_orca = wrappers['run_orca']
+    _cli_mod.XTB = wrappers['XTB']
+    _cli_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _cli_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _cli_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
+    _xtb_crest_mod.run_orca = wrappers['run_orca']
+    _xtb_crest_mod.XTB = wrappers['XTB']
+    _xtb_crest_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _xtb_crest_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _xtb_crest_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
+    _guppy_sampling_mod.run_orca = wrappers['run_orca']
+    _pipeline_mod.XTB = wrappers['XTB']
+    _pipeline_mod.XTB_GOAT = wrappers['XTB_GOAT']
+    _pipeline_mod.run_crest_workflow = wrappers['run_crest_workflow']
+    _pipeline_mod.XTB_SOLVATOR = wrappers['XTB_SOLVATOR']
+    _parallel_classic_mod.run_orca = wrappers['run_orca']
+    _parallel_occupier_mod.run_orca = wrappers['run_orca']
+    _esd_module.run_orca = wrappers['run_orca']

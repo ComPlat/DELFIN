@@ -1,0 +1,1794 @@
+import ast
+import os
+import re
+import signal
+import subprocess
+import sys
+import threading
+import time
+import socket
+import shutil
+import uuid
+from pathlib import Path
+from shutil import which
+import tempfile
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+try:
+    import psutil
+except ImportError:
+    psutil = None  # type: ignore
+
+from delfin.common.logging import get_logger
+from delfin.common.progress_display import ProgressDisplay
+from delfin.global_manager import get_global_manager
+from .qm_runtime import find_tool_executable
+from delfin.orca_recovery import (
+    OrcaErrorDetector,
+    OrcaErrorType,
+    OrcaInputModifier,
+    RecoveryStrategy,
+    RetryStateTracker,
+)
+from . import smart_recalc
+
+logger = get_logger(__name__)
+
+_OVERRIDE_KEY_RE = re.compile(r"^(keyword|addition|additions)\s*:\s*(.+)$", re.IGNORECASE)
+_BASE_LINE_RE = re.compile(r'^\s*%base\s+"([^"]+)"', re.IGNORECASE)
+_BASE_LINE_FALLBACK_RE = re.compile(r"^\s*%base\s+(\S+)", re.IGNORECASE)
+_CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[float, Dict[str, List[str]], Dict[str, List[str]]]] = {}
+_CONTROL_OVERRIDE_LOCK = threading.Lock()
+_CONTROL_FILE_LOCATION_CACHE: Dict[str, Optional[Path]] = {}
+
+# Compile regex patterns at module level for performance
+_CPHF_PATTERN = re.compile(r'ITERATION\s+(\d+):.*?\(\s*[\d.]+\s+sec\s+(\d+)/(\d+)\s+done\)')
+_FREQ_PATTERN = re.compile(r'(\d+)\s+\(of\s+(\d+)\)')
+
+ORCA_PLOT_INPUT_TEMPLATE = (
+    "1\n"
+    "1\n"
+    "4\n"
+    "70\n"
+    "5\n"
+    "7\n"
+    "2\n"
+    "{index}\n"
+    "10\n"
+    "11\n"
+)
+
+
+def _is_nmr_input_file(input_path: Path) -> bool:
+    try:
+        return "EPRNMR" in input_path.read_text(encoding="utf-8", errors="replace").upper()
+    except Exception:
+        logger.exception("Failed to inspect ORCA input for NMR markers: %s", input_path)
+        return False
+
+
+def _auto_generate_nmr_report(input_path: Path, output_path: Path) -> bool:
+    if not _is_nmr_input_file(input_path):
+        return True
+
+    png_path = output_path.parent / f"NMR_{output_path.stem}.png"
+    if png_path.is_file():
+        logger.info("NMR report already present: %s", png_path)
+        return True
+
+    if not output_path.is_file():
+        logger.error("Cannot generate NMR report; ORCA output is missing: %s", output_path)
+        return False
+
+    try:
+        os.environ.setdefault("MPLBACKEND", "Agg")
+        from delfin.nmr_spectrum import parse_nmr_orca
+        from delfin.reporting.nmr_report import create_nmr_report
+
+        result = parse_nmr_orca(output_path)
+        if not result.h_shieldings:
+            logger.error("Automatic NMR report generation found no H shieldings in %s", output_path)
+            return False
+
+        title = output_path.stem.replace("_", " ")
+        create_nmr_report(
+            result,
+            output_png=png_path,
+            title=f"Calculated 1H NMR: {title}",
+        )
+        if not png_path.is_file():
+            logger.error("Automatic NMR report generation finished without PNG: %s", png_path)
+            return False
+        logger.info("NMR report saved to %s", png_path)
+        return True
+    except Exception:
+        logger.exception("Automatic NMR report generation failed for %s", output_path)
+        return False
+
+
+def _normalize_override_target(raw: str) -> str:
+    """Normalize override target names (base labels or input stems)."""
+    text = str(raw or "").strip().strip('"').strip("'")
+    text = Path(text).name
+    if text.lower().endswith(".inp"):
+        text = text[:-4]
+    return text.strip().lower()
+
+
+def _target_aliases(raw: str) -> List[str]:
+    """Return aliases to make OCCUPIER name matching robust."""
+    norm = _normalize_override_target(raw)
+    if not norm:
+        return []
+    aliases = {norm}
+    if norm.endswith("_occupier"):
+        aliases.add(norm[:-9])
+    else:
+        aliases.add(norm + "_occupier")
+    return [a for a in aliases if a]
+
+
+def _find_control_file(start_dir: Path) -> Optional[Path]:
+    """Find CONTROL.txt by walking from start_dir to parent directories.
+
+    Results are cached for the lifetime of the process since CONTROL.txt
+    does not move during a delfin run.
+    """
+    key = str(start_dir)
+    if key in _CONTROL_FILE_LOCATION_CACHE:
+        return _CONTROL_FILE_LOCATION_CACHE[key]
+
+    current = start_dir.resolve()
+    result: Optional[Path] = None
+    for _ in range(10):
+        candidate = current / "CONTROL.txt"
+        if candidate.exists():
+            result = candidate
+            break
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    _CONTROL_FILE_LOCATION_CACHE[key] = result
+    return result
+
+
+def _parse_override_value(lines: List[str], start_idx: int, initial_value: str) -> Tuple[Any, int]:
+    """Parse one override value; supports multiline list literals."""
+    value = initial_value.strip()
+    if value.startswith("["):
+        buffer = value + "\n"
+        depth = value.count("[") - value.count("]")
+        idx = start_idx + 1
+        while idx < len(lines) and depth > 0:
+            line = lines[idx]
+            buffer += line
+            depth += line.count("[") - line.count("]")
+            idx += 1
+        try:
+            return ast.literal_eval(buffer), idx
+        except Exception:
+            # Fallback for relaxed syntax like:
+            # addition:initial=[%moinp
+            #   file.gbw
+            # end]
+            raw = buffer.strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                inner = raw[1:-1].strip()
+                if not inner:
+                    return [], idx
+                return [inner], idx
+            return value, idx
+
+    try:
+        return ast.literal_eval(value), start_idx + 1
+    except Exception:
+        return value, start_idx + 1
+
+
+def _flatten_text_values(value: Any) -> List[str]:
+    """Flatten scalar/list override values into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        out: List[str] = []
+        for item in value:
+            out.extend(_flatten_text_values(item))
+        return out
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _parse_control_overrides(control_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """Parse keyword:/addition: overrides from CONTROL.txt."""
+    try:
+        mtime = control_path.stat().st_mtime
+    except Exception:
+        return {}, {}
+
+    with _CONTROL_OVERRIDE_LOCK:
+        cached = _CONTROL_OVERRIDE_CACHE.get(control_path)
+        if cached and cached[0] == mtime:
+            return cached[1], cached[2]
+
+    try:
+        lines = control_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except Exception:
+        return {}, {}
+
+    keyword_map: Dict[str, List[str]] = {}
+    addition_map: Dict[str, List[str]] = {}
+
+    idx = 0
+    total = len(lines)
+    while idx < total:
+        raw_line = lines[idx]
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            idx += 1
+            continue
+
+        key_raw, value_raw = raw_line.split("=", 1)
+        key = key_raw.strip()
+        match = _OVERRIDE_KEY_RE.match(key)
+        if not match:
+            idx += 1
+            continue
+
+        kind = match.group(1).lower()
+        target = _normalize_override_target(match.group(2))
+        if not target:
+            idx += 1
+            continue
+
+        parsed_value, next_idx = _parse_override_value(lines, idx, value_raw)
+        values = _flatten_text_values(parsed_value)
+        if values:
+            target_map = keyword_map if kind == "keyword" else addition_map
+            target_map.setdefault(target, []).extend(values)
+        idx = next_idx
+
+    with _CONTROL_OVERRIDE_LOCK:
+        _CONTROL_OVERRIDE_CACHE[control_path] = (mtime, keyword_map, addition_map)
+
+    return keyword_map, addition_map
+
+
+def _extract_base_label(section_lines: List[str]) -> Optional[str]:
+    """Extract %base label from one ORCA job section."""
+    for line in section_lines:
+        m = _BASE_LINE_RE.match(line)
+        if m:
+            return m.group(1).strip()
+        m = _BASE_LINE_FALLBACK_RE.match(line)
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return None
+
+
+def _append_keyword_to_bang_line(bang_line: str, additions: List[str]) -> str:
+    """Append keyword snippets to ORCA ! line without duplicates."""
+    updated = bang_line.rstrip("\n")
+    for add in additions:
+        token = " ".join(add.split())
+        if not token:
+            continue
+        if token in updated:
+            continue
+        if not updated.endswith(" "):
+            updated += " "
+        updated += token
+    return updated + "\n"
+
+
+def _normalize_addition_lines(additions: List[str]) -> List[str]:
+    """Normalize additional block lines for insertion after !."""
+    lines: List[str] = []
+    for add in additions:
+        for part in str(add).splitlines():
+            stripped = part.rstrip()
+            if stripped:
+                lines.append(stripped + "\n")
+    return lines
+
+
+def _split_job_sections(lines: List[str]) -> List[Tuple[List[str], Optional[str]]]:
+    """Split ORCA input into job sections and $new_job separators."""
+    parts: List[Tuple[List[str], Optional[str]]] = []
+    current: List[str] = []
+    for line in lines:
+        if line.strip().lower() == "$new_job":
+            parts.append((current, None))
+            parts.append(([line], "$new_job"))
+            current = []
+        else:
+            current.append(line)
+    parts.append((current, None))
+    return parts
+
+
+def _apply_overrides_to_section(
+    section_lines: List[str],
+    *,
+    file_stem: str,
+    keyword_map: Dict[str, List[str]],
+    addition_map: Dict[str, List[str]],
+) -> Tuple[List[str], bool]:
+    """Apply matching keyword/addition overrides to one ORCA job section."""
+    if not section_lines:
+        return section_lines, False
+
+    base_label = _extract_base_label(section_lines)
+    # Prefer %base-scoped overrides whenever a base label is present.
+    # Fall back to file-stem matching only for sections without %base.
+    if base_label:
+        candidates: List[str] = _target_aliases(base_label)
+    else:
+        candidates = _target_aliases(file_stem)
+
+    seen = set()
+    ordered_candidates: List[str] = []
+    for cand in candidates:
+        if cand and cand not in seen:
+            seen.add(cand)
+            ordered_candidates.append(cand)
+
+    keyword_values: List[str] = []
+    addition_values: List[str] = []
+    for cand in ordered_candidates:
+        keyword_values.extend(keyword_map.get(cand, []))
+        addition_values.extend(addition_map.get(cand, []))
+
+    if not keyword_values and not addition_values:
+        return section_lines, False
+
+    bang_idx: Optional[int] = None
+    for idx, line in enumerate(section_lines):
+        if line.lstrip().startswith("!"):
+            bang_idx = idx
+            break
+    if bang_idx is None:
+        return section_lines, False
+
+    updated = list(section_lines)
+    changed = False
+
+    if keyword_values:
+        new_bang = _append_keyword_to_bang_line(updated[bang_idx], keyword_values)
+        if new_bang != updated[bang_idx]:
+            updated[bang_idx] = new_bang
+            changed = True
+
+    if addition_values:
+        block_lines = _normalize_addition_lines(addition_values)
+        if block_lines:
+            block_text = "".join(block_lines)
+            section_text = "".join(updated)
+            if block_text not in section_text:
+                insert_idx = bang_idx + 1
+                updated = updated[:insert_idx] + block_lines + updated[insert_idx:]
+                changed = True
+
+    return updated, changed
+
+
+def _apply_control_overrides_to_input(input_path: Path, working_dir: Optional[Path]) -> None:
+    """
+    Apply CONTROL-based keyword/addition overrides directly to an ORCA input file.
+
+    Supported keys in CONTROL.txt:
+    - keyword:<BASE_OR_NAME> = [...]
+    - addition:<BASE_OR_NAME> = [...]
+    """
+    if not input_path.exists():
+        return
+
+    search_start = (working_dir or input_path.parent) if isinstance(working_dir, Path) else input_path.parent
+    control_path = _find_control_file(search_start)
+    if not control_path:
+        return
+
+    keyword_map, addition_map = _parse_control_overrides(control_path)
+    if not keyword_map and not addition_map:
+        return
+
+    try:
+        lines = input_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to read %s for override patching: %s", input_path, exc)
+        return
+
+    parts = _split_job_sections(lines)
+    updated_lines: List[str] = []
+    changed_any = False
+    file_stem = input_path.stem
+
+    for part_lines, marker in parts:
+        if marker == "$new_job":
+            updated_lines.extend(part_lines)
+            continue
+        updated_part, changed = _apply_overrides_to_section(
+            part_lines,
+            file_stem=file_stem,
+            keyword_map=keyword_map,
+            addition_map=addition_map,
+        )
+        updated_lines.extend(updated_part)
+        changed_any = changed_any or changed
+
+    if not changed_any:
+        return
+
+    try:
+        input_path.write_text("".join(updated_lines), encoding="utf-8")
+        logger.info("Applied CONTROL input overrides to %s", input_path.name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write overrides for %s: %s", input_path, exc)
+
+
+def _env_truthy(value: Optional[str]) -> Optional[bool]:
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _should_monitor_orca_progress() -> bool:
+    """Decide if ORCA progress monitoring should run.
+
+    Defaults to disabled in batch environments to avoid extra filesystem I/O.
+    """
+    override = _env_truthy(os.getenv("DELFIN_ORCA_PROGRESS"))
+    if override is not None:
+        return override
+    if os.getenv("SLURM_JOB_ID") or os.getenv("PBS_JOBID") or os.getenv("LSB_JOBID"):
+        return False
+    return True
+
+_RUN_SCRATCH_DIR: Optional[Path] = None
+
+
+
+def _ensure_openmpi_subdir(base_path: Path) -> None:
+    """Create the OpenMPI-specific scratch subdirectory expected by ORCA."""
+    if base_path is None:
+        return
+    try:
+        hostname = os.environ.get("ORCA_MPI_HOST") or socket.gethostname()
+    except Exception:
+        hostname = "localhost"
+    uid = None
+    if hasattr(os, "getuid"):
+        try:
+            uid = os.getuid()
+        except Exception:
+            uid = None
+    if uid is None:
+        uid = os.environ.get("ORCA_MPI_UID") or os.environ.get("UID")
+    if uid is None:
+        uid = os.getpid()
+    subdir = base_path / f"ompi.{hostname}.{uid}"
+    try:
+        subdir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        logger.debug("Could not create OpenMPI scratch subdir %s", subdir, exc_info=True)
+
+
+def _ensure_orca_scratch_dir() -> Path:
+    """Create (once) and return a run-specific scratch directory for ORCA."""
+    global _RUN_SCRATCH_DIR
+    if _RUN_SCRATCH_DIR is not None:
+        return _RUN_SCRATCH_DIR
+
+    slurm_tmp = os.environ.get("SLURM_TMPDIR")
+    slurm_job = os.environ.get("SLURM_JOB_ID")
+    slurm_fallback = None
+    if slurm_job:
+        candidate = Path(f"/scratch/slurm_tmpdir/job_{slurm_job}")
+        if candidate.exists():
+            slurm_fallback = str(candidate)
+
+    base_candidates = [
+        os.environ.get("ORCA_SCRDIR"),
+        os.environ.get("ORCA_TMPDIR"),
+        os.environ.get("DELFIN_SCRATCH"),
+        slurm_tmp,
+        slurm_fallback,
+    ]
+
+    for candidate in base_candidates:
+        if candidate:
+            base_path = Path(candidate).expanduser()
+            break
+    else:
+        base_path = Path(tempfile.gettempdir()).joinpath("delfin_orca_scratch")
+
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    run_label = os.environ.get("DELFIN_RUN_TOKEN")
+    if not run_label:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        cwd_name = Path.cwd().name or "delfin"
+        run_label = f"{cwd_name}_{os.getpid()}_{timestamp}"
+
+    scratch_dir = base_path / run_label
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_openmpi_subdir(scratch_dir)
+    _RUN_SCRATCH_DIR = scratch_dir
+    return scratch_dir
+
+
+def get_orca_scratch_dir() -> Optional[Path]:
+    """Return the active ORCA scratch directory for this run, if any."""
+    return _RUN_SCRATCH_DIR
+
+
+def cleanup_orca_scratch_dir() -> Optional[Path]:
+    """Remove the active ORCA scratch directory created for this run."""
+    global _RUN_SCRATCH_DIR
+    target = _RUN_SCRATCH_DIR
+    _RUN_SCRATCH_DIR = None
+    if target is None:
+        return None
+
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+            logger.info("Removed ORCA scratch directory %s", target)
+    except Exception:
+        logger.warning("Failed to remove ORCA scratch directory %s", target, exc_info=True)
+    return target
+
+
+def _prepare_orca_environment(extra_scratch: Optional[Path] = None) -> Dict[str, str]:
+    """Return a subprocess environment with isolated ORCA scratch settings.
+
+    Args:
+        extra_scratch: Optional subdirectory appended to the run scratch path.
+    """
+    env = os.environ.copy()
+    scratch_dir = _ensure_orca_scratch_dir()
+    if extra_scratch is not None:
+        scratch_dir = scratch_dir / extra_scratch
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_openmpi_subdir(scratch_dir)
+
+    scratch_str = str(scratch_dir)
+    env["ORCA_SCRDIR"] = scratch_str
+    env["ORCA_TMPDIR"] = scratch_str
+    env.setdefault("TMPDIR", scratch_str)
+    env.setdefault("DELFIN_RUN_TOKEN", scratch_dir.name)
+    return env
+
+def _validate_candidate(candidate: str) -> Optional[str]:
+    """Return a usable executable path when candidate points to a file."""
+    if not candidate:
+        return None
+
+    expanded = Path(candidate.strip()).expanduser()
+    if not expanded.is_file():
+        return None
+
+    if not os.access(expanded, os.X_OK):
+        return None
+
+    return str(expanded.resolve())
+
+
+def _iter_orca_candidates() -> Iterable[str]:
+    """Yield potential ORCA paths from environment and helper tools."""
+    env_keys = ("ORCA_BINARY", "ORCA_PATH")
+    for key in env_keys:
+        value = os.environ.get(key)
+        if value:
+            yield value
+
+    which_targets = ["orca"]
+    if sys.platform.startswith("win"):
+        which_targets.append("orca.exe")
+
+    for target in which_targets:
+        located = which(target)
+        if located:
+            yield located
+
+    locator = which("orca_locate")
+    if locator:
+        try:
+            result = subprocess.run([locator], check=False, capture_output=True, text=True)
+        except Exception as exc:
+            logger.debug(f"Failed to query orca_locate: {exc}")
+        else:
+            if result.returncode != 0:
+                logger.debug(
+                    "orca_locate returned non-zero exit status %s with stderr: %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+            else:
+                for line in result.stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        yield stripped
+
+
+def find_orca_executable() -> Optional[str]:
+    """Locate ORCA using the shared DELFIN QM runtime resolver."""
+    valid_path = find_tool_executable("orca")
+    if valid_path:
+        return valid_path
+    logger.error("ORCA executable not found. Please ensure ORCA is installed and in your PATH.")
+    return None
+
+
+def _run_orca_subprocess(
+    orca_path: str,
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
+) -> bool:
+    """Run ORCA subprocess and capture output. Returns True when successful."""
+    process = None
+    monitor_thread = None
+    stop_event = threading.Event()
+    manager = None
+    registration_token: Optional[str] = None
+
+    # Get manager early so we can check shutdown status
+    try:
+        manager = get_global_manager()
+    except Exception:
+        logger.debug("Failed to get global manager", exc_info=True)
+
+    try:
+        with open(output_log, "w") as output_file:
+            # Use Popen with process group to ensure all child processes can be killed
+            # start_new_session creates a new process group, making cleanup easier
+            process = subprocess.Popen(
+                [orca_path, input_file_path],
+                stdout=output_file,
+                stderr=output_file,
+                env=_prepare_orca_environment(scratch_subdir),
+                start_new_session=True,  # Create new process group
+                cwd=str(working_dir) if working_dir is not None else None,
+            )
+
+            # Register subprocess for signal-based cleanup
+            if manager:
+                try:
+                    try:
+                        cwd_hint = Path(input_file_path).resolve().parent
+                    except Exception:
+                        cwd_hint = Path.cwd()
+                    registration_token = manager.register_subprocess(
+                        process,
+                        label=input_file_path,
+                        cwd=str(cwd_hint),
+                    )
+                except Exception:
+                    logger.debug("Failed to register ORCA subprocess for tracking", exc_info=True)
+
+            # Start progress monitoring thread (disabled by default in batch jobs)
+            if _should_monitor_orca_progress():
+                input_name = Path(input_file_path).stem
+                monitor_thread = threading.Thread(
+                    target=_monitor_orca_progress,
+                    args=(output_log, stop_event, input_name),
+                    daemon=True,
+                )
+                monitor_thread.start()
+
+            # Wait for completion (check for shutdown request periodically)
+            # This allows Ctrl+C to interrupt even when waiting for ORCA
+            shutdown_check_interval = 0.5  # Check every 500ms
+            remaining_timeout = timeout if timeout else float('inf')
+            start_time = time.time()
+
+            while True:
+                try:
+                    # Check if shutdown was requested (e.g., Ctrl+C)
+                    if manager and manager._shutdown_requested.is_set():
+                        logger.info("Shutdown requested - terminating ORCA process")
+                        _kill_process_group(process)
+                        raise KeyboardInterrupt("Shutdown requested")
+
+                    # Wait for process with short timeout
+                    wait_timeout = min(shutdown_check_interval, remaining_timeout) if timeout else shutdown_check_interval
+                    return_code = process.wait(timeout=wait_timeout)
+                    break  # Process finished
+                except subprocess.TimeoutExpired:
+                    # Process still running, check if we should keep waiting
+                    if timeout:
+                        elapsed = time.time() - start_time
+                        remaining_timeout = timeout - elapsed
+                        if remaining_timeout <= 0:
+                            # Overall timeout expired
+                            raise
+                    # Otherwise, loop and check again
+                    continue
+
+            # Stop progress monitor
+            stop_event.set()
+            if monitor_thread:
+                monitor_thread.join(timeout=2)
+
+            # Always ensure MPI processes are terminated, even on failure
+            def _cleanup_process_group():
+                time.sleep(0.5)  # Brief grace period for clean MPI shutdown
+                try:
+                    _ensure_process_group_terminated(process, grace_timeout=2.0)
+                except Exception as e:
+                    logger.debug(f"Process cleanup: {e}")
+
+            if return_code != 0:
+                _SIGNAL_NAMES = {
+                    6: 'SIGABRT', 9: 'SIGKILL (likely OOM-killer)',
+                    11: 'SIGSEGV (segfault)', 15: 'SIGTERM (timeout/cancelled)',
+                }
+                # Detect OOM-kill: SIGKILL via cgroup OOM-killer surfaces as
+                # exit code 137 (= 128 + 9) for the wrapped process or as
+                # negative -9 if Python observes the signal directly.
+                signal_num = None
+                if return_code > 128:
+                    signal_num = return_code - 128
+                    sig_name = _SIGNAL_NAMES.get(signal_num, f'signal {signal_num}')
+                    logger.error(f"ORCA killed by {sig_name} (exit code {return_code}) for {input_file_path}")
+                elif return_code < 0:
+                    signal_num = -return_code
+                    sig_name = _SIGNAL_NAMES.get(signal_num, f'signal {signal_num}')
+                    logger.error(f"ORCA killed by {sig_name} for {input_file_path}")
+                else:
+                    logger.error(f"ORCA failed with exit code {return_code} for {input_file_path}")
+                logger.error(f"Check {output_log} for details")
+
+                # OOM hint: if the kill looks like cgroup-OOM (SIGKILL/9), tell
+                # the user how to lower the SLURM memory headroom in the
+                # Dashboard Settings tab → "Scheduling" so the next run doesn't
+                # repeat the same crash.
+                if signal_num == 9:
+                    try:
+                        from delfin.workflows.scheduling.manager import _resolve_slurm_mem_headroom
+                        current_headroom = _resolve_slurm_mem_headroom()
+                        suggested = max(0.50, round(current_headroom - 0.05, 2))
+                        logger.warning(
+                            "OOM-HINT: ORCA was SIGKILL'd — most likely the Linux "
+                            "cgroup OOM-killer (SLURM allocation exceeded). Current "
+                            "SLURM memory headroom is %.0f%% of SLURM_MEM_PER_NODE; "
+                            "lowering it to %.0f%% in Dashboard Settings → "
+                            "'Scheduling (SLURM memory headroom)' will sequence "
+                            "parallel jobs more aggressively and prevent repeated "
+                            "OOM-kills. (Or set env DELFIN_SLURM_MEM_HEADROOM=%.2f "
+                            "for a one-shot override.)",
+                            current_headroom * 100, suggested * 100, suggested,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not emit OOM hint", exc_info=True)
+
+                _cleanup_process_group()
+                return False
+
+            # Check if ORCA actually terminated normally
+            success_marker = _check_orca_success(output_log)
+            if not success_marker:
+                logger.error(f"ORCA did not terminate normally for {input_file_path}")
+                logger.error(f"Check {output_log} for error messages")
+                _cleanup_process_group()
+                return False
+
+            _copy_densitiesinfo(input_file_path, scratch_subdir, working_dir)
+
+            _cleanup_process_group()
+
+            return True
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"ORCA timeout after {timeout}s")
+        stop_event.set()
+        if process:
+            _kill_process_group(process)
+        return False
+    except KeyboardInterrupt:
+        logger.warning("ORCA interrupted by user (Ctrl+C)")
+        stop_event.set()
+        if process:
+            _kill_process_group(process)
+        raise
+    except Exception as e:
+        logger.error(f"ORCA subprocess error: {e}")
+        stop_event.set()
+        if process:
+            _kill_process_group(process)
+        return False
+    finally:
+        # Ensure monitor thread is stopped
+        stop_event.set()
+        if monitor_thread and monitor_thread.is_alive():
+            monitor_thread.join(timeout=1)
+        if manager and registration_token:
+            try:
+                manager.unregister_subprocess(registration_token)
+            except Exception:
+                logger.debug("Failed to unregister ORCA subprocess %s", registration_token, exc_info=True)
+
+
+def _copy_densitiesinfo(input_file_path: str, scratch_subdir: Optional[Path], working_dir: Optional[Path]) -> None:
+    """Copy ORCA .densitiesinfo from scratch to the working directory if available."""
+    try:
+        scratch_dir = get_orca_scratch_dir()
+        if scratch_dir is None:
+            return
+        if scratch_subdir is not None:
+            scratch_dir = scratch_dir / scratch_subdir
+        input_path = Path(input_file_path)
+        target_dir = Path(working_dir) if working_dir is not None else input_path.parent
+        src = scratch_dir / f"{input_path.stem}.densitiesinfo"
+        dest = target_dir / src.name
+        if src.exists() and not dest.exists():
+            try:
+                shutil.copy2(src, dest)
+                logger.info("Copied %s to %s", src.name, target_dir)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Failed to copy %s: %s", src, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed to copy densitiesinfo: %s", exc)
+
+
+def _check_orca_success(output_file: str) -> bool:
+    """Check if ORCA terminated normally by looking for success marker.
+
+    Only reads the last 8 KB since the marker always appears near the end.
+    """
+    try:
+        size = os.path.getsize(output_file)
+        with open(output_file, 'r', errors='replace') as f:
+            if size > 8192:
+                f.seek(size - 8192)
+            return 'ORCA TERMINATED NORMALLY' in f.read()
+    except Exception as e:
+        logger.debug(f"Could not check ORCA success marker: {e}")
+        return False
+
+
+def _monitor_orca_progress(output_file: str, stop_event: threading.Event, input_name: str):
+    """Monitor ORCA output file and display progress updates.
+
+    Runs in a background thread and displays/logs interesting progress markers:
+    - CPHF/POPLE solver iterations (numerical frequencies)
+    - Numerical frequency displacements
+    - Convergence markers
+
+    Automatically detects TTY and uses live updates when available,
+    falls back to logging in batch environments (SLURM, PBS, etc.).
+
+    Args:
+        output_file: Path to ORCA output file to monitor
+        stop_event: Threading event to signal monitoring should stop
+        input_name: Name of input file (for display purposes)
+    """
+    # Initialize progress display (auto-detects TTY)
+    progress = ProgressDisplay()
+
+    last_size = 0
+    last_update_time = time.time()
+    update_interval = 300  # Update every 5 minutes (optimized for cluster I/O)
+
+    # Track last displayed progress to avoid redundant updates
+    last_progress_state = None
+
+    while not stop_event.is_set():
+        try:
+            # Wait for output file to exist
+            if not os.path.exists(output_file):
+                time.sleep(30)
+                continue
+
+            current_size = os.path.getsize(output_file)
+            current_time = time.time()
+
+            # Check if file is growing
+            if current_size > last_size:
+                # Only check for updates if enough time has passed
+                if (current_time - last_update_time) >= update_interval:
+                    try:
+                        with open(output_file, 'r', errors='replace') as f:
+                            # Read last 5000 bytes for recent activity
+                            f.seek(max(0, current_size - 5000))
+                            recent_content = f.read()
+                            recent_lines = recent_content.split('\n')[-50:]
+
+                            progress_message = None
+                            progress_key = None  # To detect duplicates
+                            is_persistent = False
+
+                            # Check patterns in priority order (most specific first)
+                            # Process lines in reverse to get most recent match
+                            for line in reversed(recent_lines):
+
+                                # Priority 1: CPHF/POPLE solver progress (numerical frequencies)
+                                # Example: "ITERATION   5:  (  3.47 sec  162/162 done)"
+                                if 'ITERATION' in line and 'done)' in line:
+                                    match = _CPHF_PATTERN.search(line)
+                                    if match:
+                                        iteration, current, total = match.groups()
+                                        percent = (int(current) / int(total)) * 100
+                                        progress_message = (
+                                            f"[{input_name}] CPHF/POPLE iteration {iteration}: "
+                                            f"{current}/{total} ({percent:.1f}%)"
+                                        )
+                                        progress_key = f"cphf_{iteration}_{current}"
+                                        break
+
+                                # Priority 2: Frequency displacement progress
+                                # Example: "Calculating gradient on displaced geometry 24 (of 162)"
+                                elif 'displaced geometry' in line:
+                                    match = _FREQ_PATTERN.search(line)
+                                    if match:
+                                        current, total = match.groups()
+                                        percent = (int(current) / int(total)) * 100
+                                        progress_message = (
+                                            f"[{input_name}] Frequency calculation: "
+                                            f"displaced geometry {current}/{total} ({percent:.1f}%)"
+                                        )
+                                        progress_key = f"freq_{current}"
+                                        break
+
+                                # Priority 3: Optimization convergence (persistent message)
+                                elif 'THE OPTIMIZATION HAS CONVERGED' in line:
+                                    progress_message = f"[{input_name}] Geometry optimization converged"
+                                    progress_key = "opt_converged"
+                                    is_persistent = True
+                                    break
+
+                                # Priority 4: SCF convergence (persistent message)
+                                elif 'SCF CONVERGED' in line:
+                                    progress_message = f"[{input_name}] SCF converged"
+                                    progress_key = "scf_converged"
+                                    is_persistent = True
+                                    break
+
+                            # Only update display if we found NEW progress (different from last state)
+                            # This ensures no output when nothing has changed
+                            if progress_message and progress_key and progress_key != last_progress_state:
+                                progress.update(progress_message, persistent=is_persistent)
+                                last_update_time = current_time
+                                last_progress_state = progress_key
+
+                    except OSError as e:
+                        logger.debug(f"Could not read ORCA output file {output_file}: {e}")
+                    except Exception as e:
+                        logger.debug(f"Error processing ORCA output: {e}")
+
+                # Always update last_size when file grows
+                last_size = current_size
+
+            # Sleep between checks
+            time.sleep(60)
+
+        except Exception as e:
+            logger.debug(f"Progress monitor error: {e}")
+            time.sleep(60)
+
+    # Finalize progress display when stopping
+    # This ensures clean output (newline in TTY mode)
+    progress.finalize()
+
+
+def _ensure_process_group_terminated(process: subprocess.Popen, grace_timeout: float = 2.0) -> None:
+    """Ensure all processes in the process group are terminated, even orphaned children.
+
+    ORCA sometimes leaves MPI worker processes running even after the main process exits.
+    This function checks for such orphans and cleans them up.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except (ProcessLookupError, OSError):
+        # Process group already gone
+        return
+
+    if psutil is None:
+        # psutil not available, use fallback
+        logger.debug("psutil not available, using process group kill fallback")
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            time.sleep(grace_timeout)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        return
+
+    try:
+        # Find all processes in this process group
+        orphans = []
+        for proc in psutil.process_iter(['pid', 'name', 'status']):
+            try:
+                if os.getpgid(proc.pid) == pgid and proc.pid != process.pid:
+                    orphans.append(proc)
+            except (psutil.NoSuchProcess, ProcessLookupError, OSError):
+                continue
+
+        if not orphans:
+            return  # All clean
+
+        logger.debug(f"Found {len(orphans)} orphaned processes in group {pgid}")
+
+        # Try graceful termination first
+        for proc in orphans:
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, ProcessLookupError):
+                pass
+
+        # Wait for grace period
+        gone, alive = psutil.wait_procs(orphans, timeout=grace_timeout)
+
+        # Force kill any survivors
+        for proc in alive:
+            try:
+                logger.warning(f"Force killing orphaned ORCA process {proc.pid} ({proc.name()})")
+                proc.kill()
+            except (psutil.NoSuchProcess, ProcessLookupError):
+                pass
+
+    except Exception as e:
+        # If psutil fails, fall back to process group kill
+        logger.debug(f"Orphan cleanup via psutil failed: {e}, using fallback")
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+            import time
+            time.sleep(grace_timeout)
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    """Kill entire process group including all child processes (like mpirun)."""
+    if process.poll() is None:  # Process still running
+        try:
+            # Send SIGTERM to entire process group
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            logger.info(f"Sent SIGTERM to process group {os.getpgid(process.pid)}")
+
+            # Wait a bit for graceful shutdown
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Force kill if still running
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                logger.warning(f"Sent SIGKILL to process group {os.getpgid(process.pid)}")
+                process.wait()
+        except ProcessLookupError:
+            # Process already terminated
+            pass
+        except Exception as e:
+            logger.error(f"Error killing process group: {e}")
+
+def _run_orca_isolated(
+    orca_path: str,
+    input_path: Path,
+    output_path: Path,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+    copy_files: Optional[Iterable[str]] = None,
+) -> bool:
+    """Run ORCA in an isolated subdirectory to prevent race conditions.
+
+    Creates a temporary subdirectory, copies necessary files there, runs ORCA,
+    and copies results back. This is essential for parallel ORCA execution on
+    distributed filesystems like Lustre where file operations have latency.
+
+    Args:
+        orca_path: Path to ORCA executable
+        input_path: Absolute path to input file
+        output_path: Absolute path for output file
+        timeout: Optional timeout in seconds
+        scratch_subdir: Optional scratch subdirectory
+        copy_files: Specific files to copy (e.g., ["S1.gbw", "T1.xyz"]).
+                   If None, copies files with same basename as input.
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    basename = input_path.stem
+    parent_dir = input_path.parent
+
+    # Remove legacy empty isolation directory names from older releases
+    # (e.g. ".orca_iso_initial") so they don't accumulate in work folders.
+    legacy_iso_dir = parent_dir / f".orca_iso_{basename}"
+    if legacy_iso_dir.exists():
+        try:
+            if legacy_iso_dir.is_dir() and not any(legacy_iso_dir.iterdir()):
+                legacy_iso_dir.rmdir()
+                logger.debug(f"Removed legacy empty isolation directory: {legacy_iso_dir}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Could not remove legacy isolation directory {legacy_iso_dir}: {exc}")
+
+    # Verify all required dependency files exist before creating isolated directory
+    if copy_files:
+        missing_files = [f for f in copy_files if not (parent_dir / f).exists()]
+        if missing_files:
+            logger.error(
+                f"Cannot run isolated ORCA for '{input_path.name}': "
+                f"missing dependency files: {missing_files}"
+            )
+            return False
+
+    # Place iso_dir on scratch when available to avoid HOME filesystem I/O.
+    scratch_env = os.environ.get("DELFIN_SCRATCH") or os.environ.get("ORCA_SCRDIR")
+    if scratch_env:
+        iso_base = Path(scratch_env)
+        iso_base.mkdir(parents=True, exist_ok=True)
+    else:
+        iso_base = parent_dir
+
+    # Ensure uniqueness even when multiple jobs run in parallel threads.
+    run_token = uuid.uuid4().hex[:8]
+    thread_id = threading.get_ident()
+    iso_dir = iso_base / f".orca_iso_{basename}_{os.getpid()}_{thread_id}_{run_token}"
+
+    try:
+        # Create isolated directory
+        iso_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Created isolated ORCA directory: {iso_dir}")
+
+        # Copy input file only (dependencies are accessed via ../ paths)
+        iso_input = iso_dir / input_path.name
+        shutil.copy2(input_path, iso_input)
+
+        # Rewrite file references in the copied input to use absolute paths.
+        # This avoids copying large files (GBW can be GB!) while maintaining
+        # isolation — and works regardless of where iso_dir is located
+        # (scratch or parent_dir subdirectory).
+        try:
+            iso_inp_content = iso_input.read_text(encoding='utf-8', errors='replace')
+            modified = False
+
+            # Rewrite %moinp paths to absolute
+            # - Already absolute paths (/scratch/...) stay unchanged
+            # - Relative paths (file.gbw) become absolute to parent_dir
+            def rewrite_moinp(m):
+                filename = m.group(1)
+                if filename.startswith('/'):
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'%moinp "{abs_path}"'
+            new_content, n = re.subn(r'%moinp\s+"([^"]+)"', rewrite_moinp, iso_inp_content, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_content
+                modified = True
+                logger.debug(f"Rewrote {n} %moinp reference(s) to absolute path")
+
+            # Rewrite "* xyzfile charge mult file.xyz" (only first job, not after $new_job)
+            new_job_match = re.search(r'\$new_job', iso_inp_content, re.IGNORECASE)
+            first_job_end = new_job_match.start() if new_job_match else len(iso_inp_content)
+            first_job = iso_inp_content[:first_job_end]
+            rest = iso_inp_content[first_job_end:]
+
+            def rewrite_xyzfile(m):
+                prefix, charge, mult, filename = m.group(1), m.group(2), m.group(3), m.group(4)
+                if filename.startswith('/'):
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'{prefix}xyzfile {charge} {mult} {abs_path}'
+            new_first_job, n = re.subn(r'(\*\s*)xyzfile\s+(\S+)\s+(\S+)\s+(\S+)', rewrite_xyzfile, first_job, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_first_job + rest
+                modified = True
+                logger.debug(f"Rewrote {n} xyzfile reference(s) to absolute path")
+
+            # Rewrite "file.hess" -> absolute path
+            def rewrite_hess(m):
+                filename = m.group(1)
+                if filename.startswith('/'):
+                    return m.group(0)
+                abs_path = str(parent_dir / filename)
+                return f'"{abs_path}"'
+            new_content, n = re.subn(r'"([^"]+\.hess)"', rewrite_hess, iso_inp_content, flags=re.IGNORECASE)
+            if n > 0:
+                iso_inp_content = new_content
+                modified = True
+                logger.debug(f"Rewrote {n} .hess reference(s) to absolute path")
+
+            # Write back if modified
+            if modified:
+                iso_input.write_text(iso_inp_content, encoding='utf-8')
+        except Exception as e:
+            logger.debug(f"Could not rewrite paths in input: {e}")
+
+        # Run ORCA in the isolated directory.
+        # Each isolated job gets its own scratch subdirectory to prevent
+        # temp file collisions (e.g., V-matrix) between parallel ORCA jobs.
+        #
+        # IMPORTANT: ORCA's main output (.out) is written DIRECTLY to
+        # parent_dir/<output_name>, NOT to iso_dir. This way:
+        #   1. The output file is visible in /calc/ via periodic sync from
+        #      the very first ORCA write (header, basis-set echo, SCF iters).
+        #   2. If iso_dir disappears mid-run (ORCA's own scratch cleanup,
+        #      Lustre/NFS glitch, MPI fault), the captured stdout/stderr
+        #      survives — we have a real diagnosis instead of "[Errno 2]
+        #      No such file or directory" with nothing to look at.
+        # Temp files (.gbw, .tmp, .densities, scratch artefacts) still land
+        # in iso_dir via working_dir, preserving the race-condition isolation
+        # between parallel ORCA jobs that the iso_dir was designed for.
+        # output_path is unique per workflow job (S0.out, S1.out, …) so writing
+        # directly to it cannot create a cross-job race.
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as mkdir_exc:  # noqa: BLE001
+            logger.debug(f"Could not pre-create parent dir {output_path.parent}: {mkdir_exc}")
+        effective_scratch = scratch_subdir if scratch_subdir else Path(iso_dir.name)
+        success = _run_orca_subprocess(
+            orca_path,
+            str(iso_input),
+            str(output_path),
+            timeout,
+            scratch_subdir=effective_scratch,
+            working_dir=iso_dir,
+        )
+
+        # Copy auxiliary files (.gbw, .densities, .opt, .engrad, .hess, …)
+        # from iso_dir back to parent_dir. The .out file is already there
+        # (written directly above). Defensive against iso_dir disappearing
+        # mid-iteration: each file copy is independently try/excepted, and
+        # the iterdir() itself is wrapped — if iso_dir is gone we still
+        # have the main .out from the direct write above.
+        try:
+            iso_entries = list(iso_dir.iterdir())
+        except OSError as iter_exc:
+            logger.debug(f"Could not list isolated dir {iso_dir} for aux-file copy: {iter_exc}")
+            iso_entries = []
+        for src in iso_entries:
+            try:
+                if not src.is_file():
+                    continue
+            except OSError:
+                continue
+            if src == iso_input:
+                continue
+            dest = parent_dir / src.name
+            try:
+                shutil.copy2(src, dest)
+                logger.debug(f"Copied result {src.name} back from isolated directory")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"Could not copy {src} back to {dest}: {exc}")
+
+        if success:
+            logger.info(f"ORCA run successful for '{input_path.name}' (isolated)")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"Error in isolated ORCA execution: {e}")
+        return False
+
+    finally:
+        # ORCA stdout is now written directly to output_path (parent_dir),
+        # so no separate rescue copy is needed before cleanup. The aux-file
+        # copy-back above is best-effort and tolerates iso_dir vanishing.
+        _cleanup_isolated_dir(iso_dir)
+
+
+def _cleanup_isolated_dir(iso_dir: Path, initial_delay: float = 0.5) -> None:
+    """Remove an isolated ORCA working directory.
+
+    Uses multiple retry attempts with increasing delays to handle
+    distributed filesystems (Lustre, NFS) where file handles may
+    not be released immediately after process termination.
+
+    Args:
+        iso_dir: Path to the isolated directory to remove.
+        initial_delay: Seconds to wait before first deletion attempt,
+                       allowing MPI processes and file handles to close.
+    """
+    if not iso_dir.exists():
+        return
+
+    # Initial delay to let MPI processes and file handles close
+    if initial_delay > 0:
+        time.sleep(initial_delay)
+
+    last_exc: Optional[Exception] = None
+    # More attempts with longer delays for distributed filesystems
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        try:
+            shutil.rmtree(iso_dir)
+            logger.debug(f"Cleaned up isolated directory: {iso_dir}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            # Try to fix permissions before next attempt
+            try:
+                for root, dirs, files in os.walk(iso_dir, topdown=False):
+                    for name in files:
+                        try:
+                            os.chmod(Path(root) / name, 0o600)
+                        except Exception:
+                            pass
+                    for name in dirs:
+                        try:
+                            os.chmod(Path(root) / name, 0o700)
+                        except Exception:
+                            pass
+                try:
+                    os.chmod(iso_dir, 0o700)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            if attempt < max_attempts - 1:
+                # Exponential backoff: 1s, 2s, 4s, 8s
+                delay = min(1.0 * (2 ** attempt), 10.0)
+                logger.debug(
+                    f"Cleanup attempt {attempt + 1} failed for {iso_dir}, "
+                    f"retrying in {delay:.1f}s: {exc}"
+                )
+                time.sleep(delay)
+
+    # Some filesystems intermittently fail rmtree but leave an empty directory.
+    # In that case, try a final plain rmdir so no empty .orca_iso_* folder remains.
+    try:
+        if iso_dir.exists() and iso_dir.is_dir() and not any(iso_dir.iterdir()):
+            iso_dir.rmdir()
+            logger.debug(f"Removed empty isolated directory via fallback rmdir: {iso_dir}")
+            return
+    except Exception as exc:  # noqa: BLE001
+        last_exc = exc
+
+    if last_exc is not None:
+        logger.warning(f"Could not clean up isolated directory {iso_dir}: {last_exc}")
+
+
+def run_orca(
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
+    isolate: bool = False,
+    copy_files: Optional[Iterable[str]] = None,
+) -> bool:
+    """Execute ORCA calculation with specified input file.
+
+    Runs ORCA subprocess with input file and captures output to log file.
+    Logs success/failure and handles subprocess errors.
+
+    Args:
+        input_file_path: Path to ORCA input file (.inp)
+        output_log: Path for ORCA output file (.out)
+        timeout: Optional timeout in seconds for ORCA calculation
+        scratch_subdir: Optional subdirectory for ORCA scratch files
+        working_dir: Optional working directory for ORCA execution
+        isolate: If True, run ORCA in an isolated temporary subdirectory.
+                 This prevents race conditions when multiple ORCA jobs run
+                 in parallel (e.g., on Lustre filesystems). Input files are
+                 copied to the isolated directory, ORCA runs there, and
+                 results are copied back.
+        copy_files: When isolate=True, specific dependency files to copy
+                   (e.g., ["S1.gbw", "T1.xyz"]). If None, copies files with
+                   same basename as input.
+
+    Returns:
+        bool: True if ORCA completed successfully, False otherwise
+    """
+    orca_path = find_orca_executable()
+    if not orca_path:
+        return False
+
+    input_path = Path(input_file_path)
+    output_path = Path(output_log)
+
+    if working_dir is not None:
+        working_dir = Path(working_dir)
+        if not input_path.is_absolute():
+            input_path = (Path.cwd() / input_path).resolve()
+        if not output_path.is_absolute():
+            output_path = (Path.cwd() / output_path).resolve()
+    else:
+        if not input_path.is_absolute():
+            input_path = input_path.resolve()
+        if not output_path.is_absolute():
+            output_path = output_path.resolve()
+
+    # Apply CONTROL overrides like keyword:<base>=... / addition:<base>=...
+    _apply_control_overrides_to_input(input_path, working_dir)
+
+    extra_deps = []
+    if copy_files:
+        for dep in copy_files:
+            try:
+                dep_path = Path(dep)
+                if not dep_path.is_absolute():
+                    dep_path = input_path.parent / dep_path
+                extra_deps.append(dep_path)
+            except Exception:
+                continue
+
+    # Smart recalc: skip execution when inp+deps are unchanged and output is complete.
+    # The check runs *after* overrides are applied so any override-induced change is
+    # captured in the fingerprint.
+    if smart_recalc.should_skip(input_path, output_path, extra_deps=extra_deps):
+        logger.info(
+            "[smart_recalc] Skipping ORCA for '%s'; inp+deps unchanged and output complete.",
+            input_file_path,
+        )
+        return _auto_generate_nmr_report(input_path, output_path)
+
+    # Legacy completed runs may predate the .fprint sidecar. Bootstrap it here so
+    # recalc can resume deterministically for xTB/GOAT/GUPPY and regular ORCA jobs.
+    fp_path = input_path.with_suffix(input_path.suffix + ".fprint")
+    required_outputs = smart_recalc.required_orca_outputs(inp_path=input_path, out_path=output_path)
+    if (
+        smart_recalc.recalc_enabled()
+        and smart_recalc.smart_mode_enabled()
+        and not fp_path.exists()
+        and smart_recalc.outputs_complete(
+            input_path,
+            output_path,
+            required_outputs=required_outputs,
+        )
+    ):
+        smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
+        logger.info(
+            "[smart_recalc] Skipping ORCA for '%s'; complete output found and missing fingerprint bootstrapped.",
+            input_file_path,
+        )
+        return _auto_generate_nmr_report(input_path, output_path)
+
+    # Isolated execution: run ORCA in a separate subdirectory to avoid
+    # race conditions on parallel filesystems (Lustre)
+    if isolate:
+        result = _run_orca_isolated(
+            orca_path,
+            input_path,
+            output_path,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            copy_files=copy_files,
+        )
+        if result:
+            smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
+            return _auto_generate_nmr_report(input_path, output_path)
+        return False
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Directory might already exist or creation could fail due to permissions;
+        # defer handling to the subprocess call / open().
+        pass
+
+    if _run_orca_subprocess(
+        orca_path,
+        str(input_path),
+        str(output_path),
+        timeout,
+        scratch_subdir=scratch_subdir,
+        working_dir=working_dir,
+    ):
+        logger.info(f"ORCA run successful for '{input_file_path}'")
+        smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
+        return _auto_generate_nmr_report(input_path, output_path)
+    return False
+
+
+
+
+def run_orca_with_intelligent_recovery(
+    input_file_path: str,
+    output_log: str,
+    timeout: Optional[int] = None,
+    *,
+    scratch_subdir: Optional[Path] = None,
+    working_dir: Optional[Path] = None,
+    isolate: bool = False,
+    copy_files: Optional[Iterable[str]] = None,
+    config: Optional[Dict] = None,
+) -> bool:
+    """Execute ORCA with intelligent error detection and automatic recovery.
+
+    This function combines transient error retry logic with intelligent
+    error-specific recovery strategies. It detects specific ORCA failures
+    (SCF convergence, TRAH crashes, etc.) and automatically modifies the
+    input file with appropriate fixes, using MOREAD to continue from the
+    last successful state.
+
+    Recovery features:
+    - Automatic error classification (SCF, TRAH, geometry, MPI, etc.)
+    - Progressive escalation of fixes across retry attempts
+    - MOREAD-based continuation from last .gbw state
+    - Preservation of basis sets and geometry
+    - State tracking to prevent infinite loops
+
+    Args:
+        input_file_path: Path to ORCA input file (.inp)
+        output_log: Path for ORCA output file (.out)
+        timeout: Optional timeout in seconds
+        scratch_subdir: Optional scratch subdirectory
+        working_dir: Optional working directory
+        isolate: If True, run ORCA in isolated subdirectory (for parallel execution)
+        copy_files: When isolate=True, specific dependency files to copy
+        config: Configuration dict with recovery settings
+
+    Returns:
+        bool: True if ORCA completed successfully, False otherwise
+
+    Configuration options (in CONTROL.txt):
+        enable_auto_recovery: Enable intelligent error recovery (yes/no, default: yes)
+        max_recovery_attempts: Maximum recovery attempts per error type (default: 2)
+    """
+    config = config or {}
+
+    # Check if intelligent recovery is enabled
+    # Support both new and old config parameter names for backward compatibility
+    recovery_enabled = (
+        _parse_bool_config(config.get('enable_auto_recovery', 'no'))
+        or _parse_bool_config(config.get('orca_retry_enabled', 'no'))  # Old parameter
+    )
+
+    manager = get_global_manager()
+
+    def _shutdown_requested() -> bool:
+        try:
+            return bool(getattr(manager, "_shutdown_requested", None) and manager._shutdown_requested.is_set())
+        except Exception:
+            return False
+
+    if not recovery_enabled:
+        # Fall back to direct ORCA execution (no retry, no recovery)
+        return run_orca(
+            input_file_path,
+            output_log,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            working_dir=working_dir,
+            isolate=isolate,
+            copy_files=copy_files,
+        )
+
+    # Intelligent recovery is enabled
+    inp_path = Path(input_file_path)
+    out_path = Path(output_log)
+    work_dir = working_dir or inp_path.parent
+
+    # Initialize recovery components
+    detector = OrcaErrorDetector()
+    state_file = work_dir / ".delfin_recovery_state.json"
+    tracker = RetryStateTracker(state_file)
+
+    # Support both new and old config parameter names
+    max_recovery_attempts = int(
+        config.get('max_recovery_attempts')
+        or config.get('orca_retry_max_attempts', 3)  # Old parameter
+    )
+
+    job_name = inp_path.stem
+    current_inp = inp_path
+
+    logger.info(f"Starting ORCA with intelligent recovery enabled for {job_name}")
+
+    # Track all attempted error types to prevent loops
+    attempted_errors = set()
+
+    for overall_attempt in range(1, max_recovery_attempts + 2):  # +1 for initial attempt
+        if _shutdown_requested():
+            logger.warning("Shutdown requested; aborting recovery for %s", job_name)
+            raise KeyboardInterrupt
+
+        # Run ORCA
+        success = run_orca(
+            str(current_inp),
+            output_log,
+            timeout,
+            scratch_subdir=scratch_subdir,
+            working_dir=working_dir,
+            isolate=isolate,
+            copy_files=copy_files,
+        )
+
+        if success:
+            if overall_attempt > 1:
+                logger.info(
+                    f"✓ ORCA succeeded after {overall_attempt - 1} recovery attempt(s) for {job_name}"
+                )
+            return True
+
+        # Job failed - analyze error
+        if _shutdown_requested():
+            logger.warning("Shutdown requested after failure; aborting recovery for %s", job_name)
+            raise KeyboardInterrupt
+
+        error_type = detector.analyze_output(out_path)
+
+        if not error_type or error_type == OrcaErrorType.UNKNOWN:
+            logger.error(f"ORCA failed with unrecoverable error for {job_name}")
+            return False
+
+        # Check if we've already tried to recover from this error type
+        error_key = f"{job_name}_{error_type.value}"
+        if error_key in attempted_errors:
+            logger.error(
+                f"Error type {error_type.value} persists after recovery attempt for {job_name}"
+            )
+            return False
+
+        # Check if we should attempt recovery
+        if not tracker.should_retry(job_name, error_type, max_recovery_attempts):
+            logger.error(
+                f"Max recovery attempts ({max_recovery_attempts}) reached "
+                f"for {error_type.value} in {job_name}"
+            )
+            return False
+
+        # Get recovery strategy
+        attempt = tracker.get_attempt(job_name, error_type) + 1
+        strategy = RecoveryStrategy(error_type, attempt, config)
+
+        # Get modifications to check for backoff delay
+        mods = strategy.get_modifications()
+
+        logger.warning(
+            f"⚠ ORCA failed with {error_type.value} for {job_name}. "
+            f"Applying recovery strategy (attempt {attempt}/{max_recovery_attempts})..."
+        )
+
+        # Handle exponential backoff for transient errors
+        if "backoff_delay" in mods:
+            delay = mods["backoff_delay"]
+            logger.warning(
+                f"Transient system error detected. Waiting {delay}s before retry (exponential backoff)..."
+            )
+            time.sleep(delay)
+
+        # Modify input file
+        modifier = OrcaInputModifier(current_inp, config)
+        new_inp = modifier.apply_recovery(strategy)
+
+        if new_inp == current_inp:
+            logger.error(f"Failed to create recovery input for {job_name}")
+            return False
+
+        # Prepare the new input for continuation (update geometry from xyz, ensure GBW backup)
+        # This is already done by OrcaInputModifier, but we ensure it's applied
+        # Note: The modifier already calls _update_geometry_from_xyz and _add_moread internally
+
+        # Update tracking
+        tracker.increment_attempt(job_name, error_type)
+        attempted_errors.add(error_key)
+
+        # Backup the failed output file before retry (for debugging)
+        if out_path.exists():
+            backup_num = attempt
+            backup_path = out_path.with_suffix(f'.old{backup_num}.out')
+            try:
+                shutil.copy2(out_path, backup_path)
+                logger.info(f"Backed up failed output: {backup_path.name}")
+            except Exception as e:
+                logger.warning(f"Failed to backup output file: {e}")
+
+        # Use modified input for next attempt
+        current_inp = new_inp
+
+        logger.info(f"Retrying with recovery input: {new_inp.name}")
+
+    # All recovery attempts exhausted
+    logger.error(
+        f"ORCA failed after {max_recovery_attempts} recovery attempts for {job_name}"
+    )
+    return False
+
+
+
+
+def _parse_bool_config(value) -> bool:
+    """Parse boolean value from config."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ('yes', 'true', '1', 'on')
+    return bool(value)
+
+
+def run_orca_IMAG(
+    input_file_path: str,
+    iteration: int,
+    *,
+    working_dir: Optional[Path] = None,
+    isolate: bool = True,
+    copy_files: Optional[Iterable[str]] = None,
+) -> bool:
+    """Execute ORCA calculation for imaginary frequency workflow.
+
+    Specialized ORCA runner for IMAG workflow with iteration-specific
+    output naming and enhanced error handling.
+
+    Args:
+        input_file_path: Path to ORCA input file
+        iteration: Iteration number for output file naming
+        working_dir: Directory in which ORCA should be executed
+        isolate: If True, run in an isolated subdirectory
+        copy_files: Optional dependency files to copy when isolating
+    """
+    orca_path = find_orca_executable()
+    if not orca_path:
+        logger.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
+        sys.exit(1)
+
+    input_path = Path(input_file_path)
+    if working_dir is not None:
+        working_dir = Path(working_dir)
+        output_log_path = working_dir / f"output_{iteration}.out"
+        if not input_path.is_absolute():
+            # Provide ORCA with an absolute path when running inside working_dir
+            input_path = (Path.cwd() / input_path).resolve()
+    else:
+        output_log_path = Path(f"output_{iteration}.out")
+        if not input_path.is_absolute():
+            input_path = input_path.resolve()
+
+    if not output_log_path.is_absolute():
+        output_log_path = output_log_path.resolve()
+
+    if isolate:
+        success = _run_orca_isolated(
+            orca_path,
+            input_path,
+            output_log_path,
+            copy_files=copy_files,
+        )
+    else:
+        success = _run_orca_subprocess(
+            orca_path,
+            str(input_path),
+            str(output_log_path),
+            working_dir=working_dir,
+        )
+
+    if success:
+        logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log_path}'")
+        return True
+
+    logger.error(f"ORCA IMAG calculation failed for '{input_file_path}'. See '{output_log_path}' for details.")
+    return False
+
+def run_orca_plot(homo_index: int) -> None:
+    """Generate molecular orbital plots around HOMO using orca_plot.
+
+    Creates orbital plots for orbitals from HOMO-10 to HOMO+10
+    using ORCA's orca_plot utility with automated input.
+
+    Args:
+        homo_index: Index of the HOMO orbital
+    """
+    for index in range(homo_index - 10, homo_index + 11):
+        success, stderr_output = _run_orca_plot_for_index(index)
+        if success:
+            logger.info(f"orca_plot ran successfully for index {index}")
+        else:
+            logger.error(f"orca_plot encountered an error for index {index}: {stderr_output}")
+
+
+def _run_orca_plot_for_index(index: int) -> tuple[bool, str]:
+    """Run orca_plot for a single orbital index and return success flag and stderr."""
+    process = subprocess.Popen(
+        ["orca_plot", "input.gbw", "-i"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _, stderr = process.communicate(input=_prepare_orca_plot_input(index))
+    return process.returncode == 0, stderr.decode()
+
+
+def _prepare_orca_plot_input(index: int) -> bytes:
+    """Build the scripted user input for orca_plot."""
+    return ORCA_PLOT_INPUT_TEMPLATE.format(index=index).encode()

@@ -1,0 +1,177 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "delfin-complat"
+version = "1.2.0"
+description = "DELFIN is a modular computational chemistry platform that automates end-to-end molecular workflows — from SMILES input to realistic property predictions. It combines structure generation, DFT, semi-empirical methods, ML potentials, and AI tools behind a unified interface with an interactive browser-based dashboard."
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10,<3.12"
+authors = [{ name = "Maximilian Hartmann" }]
+license = {text = "LGPL-3.0-or-later"}
+urls = { "Homepage" = "https://github.com/ComPlat/DELFIN", "Repository" = "https://github.com/ComPlat/DELFIN" }
+keywords = ["quantum-chemistry", "orca", "xtb", "redox", "spin-state", "workflow", "dashboard", "smiles"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+dependencies = [
+    "mendeleev>=0.14,<1.0",
+    "psutil",
+    "ase>=3.22.0",
+    "numpy>=1.26,<2",
+    "scipy>=1.6.0",
+    "matplotlib>=3.3.4",
+    "rdkit>=2023.3.1",
+    "stk",
+    "openbabel-wheel>=3.1.0",
+    "ipykernel>=6.0",
+    "ipywidgets>=8.0",
+    "py3Dmol>=2.0.4",
+    "python-docx>=0.8.11",
+    "pymol-open-source",
+    "voila>=0.5",
+    "Pillow",
+    "mammoth",
+    "pexpect",
+    "umap-learn",
+    "scikit-learn"
+]
+
+[project.optional-dependencies]
+csp = [
+    "mpi4py",
+]
+mlp = [
+    "torchani",
+]
+mlp-full = [
+    "torchani",
+    "mace-torch",
+    "chgnet",
+    "matgl",
+    "schnetpack",
+    "nequip",
+    "alignn",
+]
+mlp-materials = [
+    "chgnet",
+    "matgl",
+]
+analysis = [
+    "morfeus-ml",
+    "cclib",
+    "nglview",
+    "plotly",
+]
+ai-foundation = [
+    "transformers",
+    "torch",
+]
+ai-retro = [
+    "aizynthfinder",
+    "rxnmapper",
+]
+ai-screening = [
+    "deepchem",
+]
+ai-complex = [
+    "molSimplify",
+    "architector",
+]
+agent = [
+    "anthropic>=0.40",
+    "openai>=1.0",
+    "pyyaml",
+]
+docs = [
+    "mcp>=1.0",
+    "pypdf>=4.0",
+]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "ruff",
+]
+
+[project.scripts]
+delfin = "delfin.main:main"
+delfin_ESD = "delfin.cli_esd_report:main"
+delfin_IR = "delfin.cli_ir_report:main"
+delfin_NMR = "delfin.cli_nmr_report:main"
+delfin-json = "delfin.cli_delfin_collect:main"
+delfin-build = "delfin.build_up_complex:main"
+delfin-guppy = "delfin.guppy_sampling:main"
+delfin-guppy-batch = "delfin.guppy_batch:main"
+delfin-fukui = "delfin.cli_fukui:main"
+delfin-voila = "delfin.cli_voila:main"
+delfin-step = "delfin.cli_step:main"
+delfin-pipeline = "delfin.cli_pipeline:main"
+delfin-docs-index = "delfin.doc_server.indexer:main"
+delfin-docs-server = "delfin.doc_server.__main__:main"
+delfin-ops-server = "delfin.ops_server.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["delfin*"]
+
+[tool.setuptools.package-data]
+"delfin" = [
+    "installers/*.sh",
+    "logo/*.png",
+    "logo/*.PNG",
+    "qm_tools/*.txt",
+    "qm_tools/*.sh",
+    "qm_tools/bin/stda_v1.6.1",
+    "qm_tools/bin/xtb4stda",
+    "qm_tools/share/xtb4stda/*",
+    "csp_tools/*.sh",
+    "mlp_tools/*.sh",
+    "analysis_tools/*.sh",
+    "analysis_tools/*.txt",
+    "ai_tools/*.sh",
+    "ai_tools/*.txt",
+    "submit_templates/*.sh",
+]
+"delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
+"delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
+"delfin.notebooks" = ["*.ipynb"]
+
+[tool.setuptools.exclude-package-data]
+"delfin" = [
+    "qm_tools/bin/crest",
+    "qm_tools/bin/dftb+",
+    "qm_tools/bin/std2",
+    "qm_tools/bin/stda",
+    "qm_tools/bin/xtb",
+    "qm_tools/downloads/*",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501", # handled by black (line length)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["delfin"]

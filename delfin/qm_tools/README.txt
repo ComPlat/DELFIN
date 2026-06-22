@@ -1,0 +1,57 @@
+QM Tools Bundle
+Date: 2026-03-11
+
+Purpose
+- Provide one local entry point for the QM stack needed by DELFIN and ChemDarwin.
+- Keep everything accessible from a single PATH prefix under:
+  delfin/qm_tools/bin
+- Keep installer scripts and notes in git, but leave local binaries/build products untracked.
+
+What is inside
+- Native local binaries downloaded into qm_tools/bin:
+  - xtb4stda
+  - stda_v1.6.1
+  - stda -> stda_v1.6.1
+- Runtime support files downloaded into qm_tools/share/xtb4stda:
+  - .xtb4stdarc
+  - .param_stda1.xtb
+  - .param_stda2.xtb
+  - GBSA parameter files used by xtb4stda
+- Local entry points to already verified system tools:
+  - xtb
+  - crest
+  - std2
+  - dftb+
+
+Why some tools are symlinked instead of copied
+- CREST, xTB, std2, and DFTB+ are already installed and working on this server.
+- Repackaging those binaries here adds no value and makes updates harder to track.
+- The local bin directory still gives DELFIN one stable tool location to target.
+
+Activation
+- source delfin/qm_tools/env.sh
+- env.sh may create/use a short compatibility link at ~/.delfin_xtb4stda
+  because xtb4stda can fail with very long runtime paths.
+- The sTDA-xTB workflow also needs the Python package dependencies from DELFIN
+  itself in the active interpreter, especially RDKit.
+
+Installer
+- delfin/qm_tools/install_qm_tools.sh
+- The installer downloads the freely available tools and installs xtb/crest/dftb+ into a local micromamba/conda environment if needed.
+- ORCA is intentionally not managed in qm_tools.
+- Examples:
+  - reuse system tools when available:
+    USE_SYSTEM_TOOLS=1 delfin/qm_tools/install_qm_tools.sh
+  - force a local std2 source build:
+    INSTALL_STD2_FROM_SOURCE=1 delfin/qm_tools/install_qm_tools.sh
+
+Health check
+- delfin/qm_tools/check_qm_tools.sh
+- This check validates both the binary bundle and the active Python
+  interpreter for `rdkit`.
+- For the full TADF workflow preflight, run:
+  python -m delfin.cli tadf_xtb --check
+
+Relevant notes
+- DELFIN integration notes:
+  delfin/qm_tools/DELFIN_INTEGRATION_NOTES.txt

@@ -1,0 +1,50 @@
+
+                     *******************
+                     *     OCCUPIER    *
+                     *******************
+
+      #####################################################
+      #                     -***-                         #
+      #         Program written by :  M. Hartmann         #
+      #         Automates ORCA 6.1.0 calculations         #
+      #                 Version 1.0.0                     #
+      #                     -***-                         #
+      #####################################################
+
+Method: PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(Acetonitrile) OPT PAL30
+        Zn def2-TZVP
+
+Charge: 1     
+-------------  
+FINAL SINGLE POINT ENERGY (1)   = -3953.362 (H) <-- PREFERRED VALUE
+multiplicity 2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.010
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (2)   = -3953.341 (H)
+multiplicity 2, BrokenSym 2,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.010
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -7435.29 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (3)   = -3953.343 (H)
+multiplicity 2, BrokenSym 3,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.010
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -5957.50 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (4)   = -3953.264 (H)
+multiplicity 4
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.055
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (5)   = -3953.212 (H)
+multiplicity 4, BrokenSym 4,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.041
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -4236.45 cm**-1
+----------------------------------------------------------------
+
+
+TOTAL RUN TIME: 10 hours 37 minutes 06.14 seconds
+
+LOWEST FINAL SINGLE POINT ENERGY: -3953.362 (H)
+
+(Selection: tolerance, APmethod 2, dev_max none, precision=3, epsilon=0.0005)
+(Preferred Index: 1)
+(Electron number: is_odd)

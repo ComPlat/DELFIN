@@ -1,0 +1,167 @@
+===========================================================================
+  MLP Tools Setup Guide — ML Potentials in DELFIN
+===========================================================================
+
+ML Potentials (MLPs) provide DFT-quality energies and forces at a
+fraction of the computational cost.  DELFIN integrates three backends:
+
+  ANI-2x    — Fast, accurate for organic molecules (H,C,N,O,S,F,Cl)
+  AIMNet2   — Broader element coverage (14 elements), charge support
+  MACE-OFF  — State-of-the-art equivariant potential, broad coverage
+
+
+1. QUICK INSTALL
+---------------------------------------------------------------------------
+
+Option A — Via DELFIN installer (recommended):
+
+  bash delfin/mlp_tools/install_mlp_tools.sh
+
+  By default installs ANI-2x + AIMNet2.  To also install MACE-OFF:
+
+  INSTALL_MACE=1 bash delfin/mlp_tools/install_mlp_tools.sh
+
+Option B — Via pip extras:
+
+  pip install delfin-complat[mlp]
+
+Option C — Individual packages:
+
+  pip install torchani          # ANI-2x
+  pip install aimnet2calc       # AIMNet2
+  pip install mace-torch        # MACE-OFF
+
+Option D — Via DELFIN Dashboard:
+
+  Settings tab → "Install mlp_tools" button
+
+
+2. GPU ACCELERATION
+---------------------------------------------------------------------------
+
+All three backends support CUDA GPU acceleration.  Install PyTorch
+with CUDA support for significant speedups on large systems:
+
+  pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+Then use device="cuda" when creating calculators:
+
+  calc = create_calculator("ani2x", device="cuda")
+
+
+3. ELEMENT COVERAGE
+---------------------------------------------------------------------------
+
+  Backend    Elements supported
+  ─────────  ──────────────────────────────────────────
+  ANI-2x     H, C, N, O, S, F, Cl  (7 elements)
+  AIMNet2    H, B, C, N, O, F, Si, P, S, Cl,
+             As, Se, Br, I  (14 elements)
+  MACE-OFF   Most organic elements (broad coverage)
+
+  IMPORTANT: None of these support transition metals.
+  For transition metal complexes, use xTB or ORCA instead.
+
+
+4. USAGE IN PYTHON
+---------------------------------------------------------------------------
+
+Basic single-point energy:
+
+  from delfin.mlp_tools.calculators import create_calculator
+  from ase import Atoms
+
+  atoms = Atoms('H2O', positions=[[0,0,0], [0.96,0,0], [0.24,0.93,0]])
+  calc = create_calculator("ani2x")
+  atoms.calc = calc
+  energy = atoms.get_potential_energy()   # eV
+  forces = atoms.get_forces()            # eV/Angstrom
+
+Convenience functions:
+
+  from delfin.mlp_tools.calculators import single_point, optimize_geometry
+
+  # Single point
+  result = single_point(atoms, backend="aimnet2", charge=0)
+  print(result["energy"])  # eV
+
+  # Geometry optimization
+  result = optimize_geometry(atoms, backend="ani2x", fmax=0.05, steps=200)
+  print(result["converged"], result["energy"])
+
+  # Rank multiple structures
+  from delfin.mlp_tools.calculators import rank_structures
+  ranking = rank_structures(list_of_atoms, backend="aimnet2")
+  best_idx, best_energy = ranking[0]
+
+For charged molecules (only AIMNet2):
+
+  calc = create_calculator("aimnet2", charge=-1, mult=1)
+
+
+5. VERIFICATION
+---------------------------------------------------------------------------
+
+CLI:
+
+  delfin mlp_check
+
+Python:
+
+  from delfin.mlp_tools import available_backends
+  print(available_backends())   # e.g. ['ani2x', 'aimnet2']
+
+  from delfin.mlp_tools.calculators import create_calculator
+  calc = create_calculator("ani2x")
+  print("ANI-2x OK")
+
+
+6. CHOOSING A BACKEND
+---------------------------------------------------------------------------
+
+  Use case                              Recommended backend
+  ────────────────────────────────────  ───────────────────
+  Fast screening of organic molecules   ANI-2x
+  Charged molecules                     AIMNet2
+  Halogenated / P / Si / Se compounds   AIMNet2
+  Highest accuracy needed               MACE-OFF (large)
+  GPU available, large batch            Any (all support CUDA)
+  Transition metals                     NOT SUPPORTED — use xTB
+
+  ANI-2x is typically fastest for small organic molecules.
+  AIMNet2 covers more elements and handles charges.
+  MACE-OFF is most accurate but also heaviest.
+
+
+7. COMMON ISSUES
+---------------------------------------------------------------------------
+
+Problem: ModuleNotFoundError: No module named 'torchani'
+Fix:     pip install torchani
+
+Problem: RuntimeError: CUDA out of memory
+Fix:     Use device="cpu" or reduce batch size
+
+Problem: ANI-2x error "Element not supported"
+Cause:   Molecule contains elements outside H,C,N,O,S,F,Cl
+Fix:     Switch to AIMNet2 or MACE-OFF
+
+Problem: AIMNet2 import error
+Fix:     pip install aimnet2calc
+         If that fails: pip install aimnet
+
+Problem: torch not found
+Fix:     pip install torch
+         For GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+
+8. ENVIRONMENT VARIABLES
+---------------------------------------------------------------------------
+
+  DELFIN_MLP_TOOLS_ROOT   Override mlp_tools root directory
+  INSTALL_ANI2X            Set to 0 to skip ANI-2x   (default: 1)
+  INSTALL_AIMNET2          Set to 0 to skip AIMNet2   (default: 1)
+  INSTALL_MACE             Set to 1 to install MACE   (default: 0)
+  FORCE_REINSTALL          Set to 1 to force reinstall
+
+===========================================================================

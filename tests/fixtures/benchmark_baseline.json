@@ -1,0 +1,154 @@
+{
+  "Cd(OMe)2(Cl)2(thiadiazole)2": {
+    "labels": [
+      "Cl-trans",
+      "N-trans",
+      "O-trans",
+      "all-cis",
+      "all-trans",
+      "trigonal-prismatic top-ClClN/bot-NOO",
+      "trigonal-prismatic top-ClClO/bot-NNO",
+      "trigonal-prismatic top-ClNN/bot-ClOO",
+      "trigonal-prismatic top-ClNO/bot-ClNO"
+    ],
+    "mean_geom_score": 272.615,
+    "mean_topo_penalty": 22.877,
+    "n_distinct_base": 9,
+    "n_output": 18,
+    "quality_weighted_coverage": 0.08,
+    "wall_seconds": 32
+  },
+  "Cd-histidine(H2O)3": {
+    "labels": [
+      "N-N-ax",
+      "N-O-ax",
+      "N-O2-ax",
+      "O2-O2-ax",
+      "capped-octahedral cap-N/N-O2,O1-O1,O1-O2",
+      "capped-octahedral cap-O1/N-N,O1-O1,O2-O2",
+      "capped-octahedral cap-O1/N-N,O1-O2,O1-O2",
+      "capped-octahedral cap-O1/N-O1,N-O2,O1-O2",
+      "capped-octahedral cap-O1/N-O2,N-O2,O1-O1"
+    ],
+    "mean_geom_score": 365.416,
+    "mean_topo_penalty": 16.959,
+    "n_distinct_base": 9,
+    "n_output": 27,
+    "quality_weighted_coverage": 0.09,
+    "wall_seconds": 61
+  },
+  "Fe(CO)3(NHC)2": {
+    "labels": [
+      "C0-C0-ax",
+      "C0-C1-ax",
+      "C1-C1-ax",
+      "Isomer 1",
+      "square-pyramidal ap-C0/C0-C0,C1-C1",
+      "square-pyramidal ap-C1/C0-C0,C0-C1"
+    ],
+    "mean_geom_score": 165.387,
+    "mean_topo_penalty": 16.49,
+    "n_distinct_base": 6,
+    "n_output": 9,
+    "quality_weighted_coverage": 0.06,
+    "wall_seconds": 7
+  },
+  "Fe(pyOMe)(CO)3(SAr)(Br)": {
+    "labels": [
+      "Isomer 1",
+      "Isomer 2",
+      "Isomer 3",
+      "Isomer 4"
+    ],
+    "mean_geom_score": 430.454,
+    "mean_topo_penalty": 22.142,
+    "n_distinct_base": 4,
+    "n_output": 4,
+    "quality_weighted_coverage": 0.01,
+    "wall_seconds": 44
+  },
+  "Fe(salen)(N-im)": {
+    "labels": [
+      "all-cis",
+      "fac",
+      "mer"
+    ],
+    "mean_geom_score": 353.071,
+    "mean_topo_penalty": 24.678,
+    "n_distinct_base": 3,
+    "n_output": 4,
+    "quality_weighted_coverage": 0.012,
+    "wall_seconds": 1045.1
+  },
+  "Fe(tBuPOCOP)Br2": {
+    "labels": [
+      "Br-N-ax",
+      "Br-P-ax",
+      "Isomer 1",
+      "Isomer 2",
+      "P-P-ax",
+      "square-pyramidal ap-Br/Br-N,P-P",
+      "square-pyramidal ap-N/Br-Br,P-P"
+    ],
+    "mean_geom_score": 250.342,
+    "mean_topo_penalty": 10.535,
+    "n_distinct_base": 7,
+    "n_output": 8,
+    "quality_weighted_coverage": 0.04,
+    "wall_seconds": 272
+  },
+  "Fe-Sc(OTf)3(OH)(mu-O)(cyclam)": {
+    "error": "",
+    "labels": [
+      "Isomer 1",
+      "Isomer 2",
+      "Isomer 3",
+      "Isomer 4",
+      "Isomer 5",
+      "Isomer 6",
+      "Isomer 7",
+      "Isomer 8",
+      "multi-TPR/TBP"
+    ],
+    "mean_geom_score": 630.817,
+    "mean_topo_penalty": 23.237,
+    "n_distinct_base": 9,
+    "n_output": 8,
+    "quality_weighted_coverage": 0.02,
+    "wall_seconds": 365.0
+  },
+  "Fe2(mu-O)(bipy-macrocycle)": {
+    "error": "",
+    "n_output": 30,
+    "wall_seconds": 583.4
+  },
+  "Fe3(mu-O)3(salen-like)": {
+    "error": "timeout",
+    "n_output": 0
+  },
+  "Ir(ppy)2(acac)": {
+    "labels": [
+      "C-trans",
+      "N-trans",
+      "all-cis"
+    ],
+    "mean_geom_score": 385.522,
+    "mean_topo_penalty": 23.112,
+    "n_distinct_base": 3,
+    "n_output": 3,
+    "quality_weighted_coverage": 0.01,
+    "wall_seconds": 111
+  },
+  "Mn(CO)3(CO2Me)(dppe)": {
+    "labels": [
+      "mer-cis",
+      "trigonal-prismatic top-CCP/bot-COP"
+    ],
+    "mean_geom_score": 475.854,
+    "mean_topo_penalty": 35.082,
+    "n_distinct_base": 2,
+    "n_output": 2,
+    "quality_weighted_coverage": 0.0,
+    "wall_seconds": 316
+  }
+}

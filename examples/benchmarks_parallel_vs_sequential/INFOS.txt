@@ -1,0 +1,30 @@
+Calculations have no physical meaning and serve only for quick benchmarks and testing.
+
+DELFIN EXECUTION TIME COMPARISONS:
+
+=== Benzol Classic ===
+Parallel:   00h 19m 37.95s (1177.95 seconds)
+Sequential: 00h 24m 52.73s (1492.73 seconds)
+Speedup:    1.27x (21% faster with parallel)
+
+=== Benzol Manually ===
+Parallel:   00h 19m 43.91s (1183.91 seconds)
+Sequential: 00h 24m 58.99s (1498.99 seconds)
+Speedup:    1.27x (21% faster with parallel)
+
+=== Benzol OCCUPIER ===
+Parallel:   00h 28m 04.06s (1684.06 seconds)
+Sequential: 00h 46m 07.41s (2767.41 seconds)
+Speedup:    1.64x (39% faster with parallel)
+
+=== Fc (Ferrocene) OCCUPIER ===
+Parallel:   01h 28m 29.73s (5309.73 seconds)
+Sequential: 01h 58m 23.20s (7103.20 seconds)
+Speedup:    1.34x (25% faster with parallel)
+
+SUMMARY:
+- Classic method: 21% speedup with parallel execution
+- Manually method: 21% speedup with parallel execution
+- Benzol OCCUPIER method: 39% speedup with parallel execution
+- Ferrocene OCCUPIER method: 25% speedup with parallel execution
+- OCCUPIER parallel processing shows significant performance improvements, especially for complex calculations

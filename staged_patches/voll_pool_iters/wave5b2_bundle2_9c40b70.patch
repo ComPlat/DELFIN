@@ -1,0 +1,206 @@
+diff --git a/delfin/smiles_converter.py b/delfin/smiles_converter.py
+index f0c7900..112f074 100644
+--- a/delfin/smiles_converter.py
++++ b/delfin/smiles_converter.py
+@@ -15767,6 +15767,74 @@ def _metal_donor_distances_realistic(
+         return False
+ 
+ 
++def _md_invariant_violated(
++    xyz_pre: str,
++    xyz_post: str,
++    mol_template,
++    tol_frac: float = 0.10,
++    tol_abs: float = 0.05,
++) -> bool:
++    """Strict M-D invariant rollback gate (Wave-5 P-MD-1).
++
++    Per ``feedback_md_invariant.md`` (Iter-15 doctrine): UFF must NOT shift
++    any defined metal-donor bond by more than ``max(tol_abs, tol_frac *
++    ideal)``.  Returns ``True`` (= rollback) if any template M-D pair
++    satisfies::
++
++        |d_post - d_pre| > max(tol_abs, tol_frac * ideal)
++
++    where ``ideal = _get_ml_bond_length(M_sym, D_sym)``.  Universal —
++    driven by template graph + global covalent-radius table; no SMILES /
++    refcode hardcodes (passes ``feedback_no_smiles_specific.md``).
++    """
++    if not RDKIT_AVAILABLE or mol_template is None:
++        return False
++    try:
++        lines_pre = [l for l in xyz_pre.strip().splitlines() if l.strip()]
++        lines_post = [l for l in xyz_post.strip().splitlines() if l.strip()]
++        n_atoms = mol_template.GetNumAtoms()
++        if len(lines_pre) != n_atoms or len(lines_post) != n_atoms:
++            return False
++        coords_pre: List[Tuple[float, float, float]] = []
++        coords_post: List[Tuple[float, float, float]] = []
++        for lp, lq in zip(lines_pre, lines_post):
++            p = lp.split()
++            q = lq.split()
++            if len(p) < 4 or len(q) < 4:
++                return False
++            coords_pre.append((float(p[1]), float(p[2]), float(p[3])))
++            coords_post.append((float(q[1]), float(q[2]), float(q[3])))
++        for atom in mol_template.GetAtoms():
++            if atom.GetSymbol() not in _METAL_SET:
++                continue
++            m_idx = atom.GetIdx()
++            m_sym = atom.GetSymbol()
++            for nbr in atom.GetNeighbors():
++                if nbr.GetAtomicNum() <= 1 or nbr.GetSymbol() in _METAL_SET:
++                    continue
++                d_idx = nbr.GetIdx()
++                d_sym = nbr.GetSymbol()
++                ideal = float(_get_ml_bond_length(m_sym, d_sym))
++                if ideal <= 0:
++                    continue
++                mx0, my0, mz0 = coords_pre[m_idx]
++                dx0, dy0, dz0 = coords_pre[d_idx]
++                d_pre = math.sqrt(
++                    (mx0 - dx0) ** 2 + (my0 - dy0) ** 2 + (mz0 - dz0) ** 2
++                )
++                mx1, my1, mz1 = coords_post[m_idx]
++                dx1, dy1, dz1 = coords_post[d_idx]
++                d_post = math.sqrt(
++                    (mx1 - dx1) ** 2 + (my1 - dy1) ** 2 + (mz1 - dz1) ** 2
++                )
++                tol = max(float(tol_abs), float(tol_frac) * ideal)
++                if abs(d_post - d_pre) > tol:
++                    return True
++        return False
++    except Exception:
++        return False
++
++
+ def _verify_metal_connectivity(
+     xyz_delfin: str,
+     mol_template,
+@@ -17409,6 +17477,43 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
+                 any_moved = True
+         if not any_moved:
+             break
++    # Wave-5 O MULTIHAPTO_MM_ENFORCE: pull graph-declared M-M bonds toward
++    # crystallographic target.  Fires only on direct M-M edges; universal
++    # (non-metal classes have no M-M edges, single-metal classes likewise).
++    # Disable via DELFIN_MULTIHAPTO_MM_ENFORCE=0.
++    if _delfin_env_int("DELFIN_MULTIHAPTO_MM_ENFORCE", 1):
++        try:
++            for mi in metal_indices:
++                mi_atom = mol.GetAtomWithIdx(mi)
++                mi_sym = mi_atom.GetSymbol()
++                for nbr in mi_atom.GetNeighbors():
++                    ni = nbr.GetIdx()
++                    if ni <= mi:
++                        continue
++                    if nbr.GetSymbol() not in _METAL_SET:
++                        continue
++                    mm_key = frozenset({mi_sym, nbr.GetSymbol()})
++                    target = _METAL_METAL_BOND_LENGTHS.get(mm_key)
++                    if target is None:
++                        r1 = _COVALENT_RADII.get(mi_sym)
++                        r2 = _COVALENT_RADII.get(nbr.GetSymbol())
++                        if r1 is None or r2 is None:
++                            continue
++                        target = r1 + r2 + 0.4
++                    pos_i = _gp(mi)
++                    pos_j = _gp(ni)
++                    vec = pos_j - pos_i
++                    cur = float(np.linalg.norm(vec))
++                    if cur < 1e-6 or abs(cur - target) <= 0.20:
++                        continue
++                    unit = vec / cur
++                    shift = (target - cur) * 0.5
++                    _sp(mi, pos_i - unit * shift)
++                    _sp(ni, pos_j + unit * shift)
++        except Exception:
++            pass
++
++
+ def _segment_distance_sq(p1, p2, p3, p4) -> float:
+     """Squared minimum distance between 3D line segments P1-P2 and P3-P4.
+ 
+@@ -22658,7 +22763,10 @@ def _generate_alternative_binding_modes(
+                 _cls = _classify_complex_class(mol)
+             except Exception:
+                 _cls = "sigma"
+-            _alt_budget_s = 0.0 if _cls in ("multi_sigma", "multi_hapto") else 60.0
++            # Wave-5L: 300s for multi_sigma/multi_hapto (Phase 4D successful
++            # runs took 30-60s alt-mode out of 444-591s total; Bundle 1's
++            # 0=unlimited regressed 5 SMILES by overrunning outer 600s kill).
++            _alt_budget_s = 300.0 if _cls in ("multi_sigma", "multi_hapto") else 60.0
+     except Exception:
+         _alt_budget_s = 60.0
+     _alt_t0 = _time_mod.monotonic() if _alt_budget_s > 0 else None
+@@ -22749,9 +22857,22 @@ def _generate_alternative_binding_modes(
+                             )
+                             continue
+                         if apply_uff:
++                            xyz_pre_uff = xyz
+                             xyz = _optimize_xyz_openbabel_safe(
+                                 xyz, mol_template=alt_mol
+                             )
++                            # Wave-5 P-MD-3: verify alt-mode UFF against
++                            # ORIGINAL mol (not rewired alt_mol). Rollback
++                            # to pre-UFF if original M-D pairs broke.
++                            # Env DELFIN_ALT_MODE_ORIG_MD_CHECK=0 = legacy.
++                            if (RDKIT_AVAILABLE and xyz and xyz != xyz_pre_uff
++                                    and _delfin_env_int(
++                                        "DELFIN_ALT_MODE_ORIG_MD_CHECK", 1)):
++                                try:
++                                    if not _verify_metal_connectivity(xyz, mol):
++                                        xyz = xyz_pre_uff
++                                except Exception:
++                                    pass
+                         results.append((xyz, label))
+                         accepted = True
+                         break
+@@ -26210,7 +26331,21 @@ def smiles_to_xyz(
+             # aligned ligand fragments. This avoids global ETKDG on the full
+             # metal graph where multi-hapto systems are most brittle.
+             try:
+-                hybrid_variant_plans = _secondary_metal_variant_plans(mol, hapto_groups)
++                # Wave-5 O MULTIHAPTO_SIMPLE_PATH: bypass variant-plan +
++                # seq-builder for multi_hapto class. ETKDG seeds + sphere-
++                # scaffold-fallback below still run. Disable via
++                # DELFIN_MULTIHAPTO_SIMPLE_PATH=0.
++                if _class_conditional_flag(
++                    "DELFIN_MULTIHAPTO_SIMPLE_PATH", mol, default=0,
++                    default_classes=("multi_hapto",),
++                ):
++                    logger.debug(
++                        "multi_hapto SIMPLE_PATH: skipping seq-builder, "
++                        "ETKDG-seeds+scaffold fallback handle this SMILES"
++                    )
++                    hybrid_variant_plans = []
++                else:
++                    hybrid_variant_plans = _secondary_metal_variant_plans(mol, hapto_groups)
+                 seen_hybrid_xyz: set = set()
+                 for plan_idx, (hybrid_label, variant_plan) in enumerate(hybrid_variant_plans):
+                     hybrid_mol = _build_hybrid_hapto_complex(
+@@ -27983,6 +28118,24 @@ def _optimize_xyz_openbabel_safe(
+     if mol_template is not None and RDKIT_AVAILABLE:
+         xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol_template)
+ 
++    # Wave-5 P-MD-1: strict M-D invariant rollback (default ON).
++    # Per feedback_md_invariant.md any UFF call shifting a defined M-D bond
++    # beyond max(tol_abs, tol_frac * ideal) is rolled back to pre-UFF.
++    # Set DELFIN_MD_INVARIANT_STRICT=0 to fall back to legacy ±60% window.
++    if (mol_template is not None and RDKIT_AVAILABLE
++            and _delfin_env_int("DELFIN_MD_INVARIANT_STRICT", 1)):
++        _tol_frac = _delfin_env_float("DELFIN_MD_INVARIANT_TOL_FRAC", 0.10)
++        _tol_abs = _delfin_env_float("DELFIN_MD_INVARIANT_TOL_ABS", 0.05)
++        if _md_invariant_violated(
++            xyz_delfin, xyz_opt, mol_template,
++            tol_frac=_tol_frac, tol_abs=_tol_abs,
++        ):
++            logger.debug(
++                "Discarding UFF geometry: M-D invariant violated "
++                "(tol_frac=%.3f, tol_abs=%.3f).", _tol_frac, _tol_abs,
++            )
++            return xyz_delfin
++
+     # Fundamental check: UFF must not change the metal-donor connectivity.
+     # If a donor drifted away or a non-donor collapsed onto the metal,
+     # discard the UFF result and keep the original XYZ.

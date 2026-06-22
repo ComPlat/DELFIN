@@ -1,0 +1,1847 @@
+"""Runtime configuration helpers for DELFIN dashboard and install scripts."""
+
+from __future__ import annotations
+
+import ast
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+from contextlib import contextmanager
+from pathlib import Path
+
+from delfin.qm_runtime import (
+    binary_env_var_name,
+    canonical_tool_name,
+    check_tools,
+    get_csp_tools_root,
+    get_mlp_tools_root,
+    resolve_tool,
+    settings_selectable_tools,
+)
+from delfin.system_tools import available_modules, discover_system_tool_candidates
+
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None  # type: ignore
+
+
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+_ORCA_VERSION_RE = re.compile(r"orca[_-]?(\d+(?:[_\.-]\d+)*)", re.IGNORECASE)
+_XTB4STDA_RUNTIME_FILES = (".xtb4stdarc", ".param_stda1.xtb", ".param_stda2.xtb")
+_TURBOMOLE_COMMAND_NAMES = ("ridft", "dscf", "define")
+
+# xtb4stda is a Fortran binary with an 80-character path limit for
+# XTB4STDAHOME.  If the real path exceeds 60 characters we create a
+# short symlink at ~/.delfin_xtb4stda to stay within the limit.
+_XTB4STDA_PATH_LIMIT = 60
+
+
+def _iter_runtime_ancestors(path_value: str | Path | None) -> list[Path]:
+    normalized = normalize_runtime_path(path_value)
+    if not normalized:
+        return []
+    path = Path(normalized).expanduser()
+    try:
+        path = path.resolve()
+    except Exception:
+        pass
+    seen: set[str] = set()
+    ancestors: list[Path] = []
+    for candidate in path.parents:
+        candidate_text = str(candidate)
+        if candidate_text in seen:
+            continue
+        seen.add(candidate_text)
+        ancestors.append(candidate)
+    return ancestors
+
+
+def _infer_runtime_root_from_binary(binary_path: str | Path | None) -> str:
+    for ancestor in _iter_runtime_ancestors(binary_path):
+        if ancestor.name == "bin":
+            return str(ancestor.parent)
+    return ""
+
+
+def _has_xtb4stda_runtime(candidate: Path) -> bool:
+    return all((candidate / filename).is_file() for filename in _XTB4STDA_RUNTIME_FILES)
+
+
+def _shorten_xtb4stda_path(long_path: str) -> str:
+    """Return a short alias for *long_path* if it exceeds the Fortran limit.
+
+    xtb4stda is compiled with fixed-length Fortran strings (~80 chars).
+    If *long_path* is too long, create a symlink ``~/.delfin_xtb4stda``
+    that points to it and return the symlink path instead.
+    """
+    if len(long_path) <= _XTB4STDA_PATH_LIMIT:
+        return long_path
+    short_home = Path.home() / ".delfin_xtb4stda"
+    try:
+        if short_home.is_dir() and (short_home / ".param_stda1.xtb").exists():
+            return str(short_home)
+        if not short_home.exists() or short_home.is_symlink():
+            if short_home.is_symlink() or short_home.exists():
+                short_home.unlink()
+            short_home.symlink_to(long_path)
+            return str(short_home)
+    except OSError as exc:
+        _logger.debug("Failed to create short xtb4stda symlink: %s", exc)
+    return long_path
+
+
+def _infer_xtb4stda_runtime_home(binary_paths: list[str]) -> str:
+    for binary_path in binary_paths:
+        for ancestor in _iter_runtime_ancestors(binary_path):
+            share_candidate = ancestor / "share" / "xtb4stda"
+            if _has_xtb4stda_runtime(share_candidate):
+                return str(share_candidate)
+            if _has_xtb4stda_runtime(ancestor):
+                return str(ancestor)
+    return ""
+
+
+def _infer_turbomole_root(binary_path: str | Path | None) -> str:
+    root = _infer_runtime_root_from_binary(binary_path)
+    if root:
+        return root
+    for ancestor in _iter_runtime_ancestors(binary_path):
+        bin_dir = ancestor / "bin"
+        if not bin_dir.is_dir():
+            continue
+        if any((bin_dir / name).is_file() for name in _TURBOMOLE_COMMAND_NAMES):
+            return str(ancestor)
+        try:
+            subdirs = [item for item in bin_dir.iterdir() if item.is_dir()]
+        except Exception:
+            subdirs = []
+        for subdir in subdirs:
+            if any((subdir / name).is_file() for name in _TURBOMOLE_COMMAND_NAMES):
+                return str(ancestor)
+    return ""
+
+
+def _tool_environment_overrides(tool_binaries: dict[str, str] | None) -> tuple[dict[str, str], list[str]]:
+    env_updates: dict[str, str] = {}
+    path_entries: list[str] = []
+    xtb_runtime_sources: list[str] = []
+    for raw_name, raw_value in (tool_binaries or {}).items():
+        tool_name = canonical_tool_name(raw_name)
+        binary_path = normalize_runtime_path(raw_value)
+        if not binary_path:
+            continue
+        env_updates[binary_env_var_name(tool_name)] = binary_path
+        parent_dir = str(Path(binary_path).expanduser().parent)
+        if parent_dir and parent_dir not in path_entries:
+            path_entries.append(parent_dir)
+        if tool_name in {"std2", "stda", "xtb4stda"}:
+            xtb_runtime_sources.append(binary_path)
+        if tool_name == "turbomole":
+            turbodir = _infer_turbomole_root(binary_path)
+            if turbodir:
+                env_updates["TURBODIR"] = turbodir
+
+    xtb_runtime_home = _infer_xtb4stda_runtime_home(xtb_runtime_sources)
+    if xtb_runtime_home:
+        env_updates["XTB4STDAHOME"] = _shorten_xtb4stda_path(xtb_runtime_home)
+        std2_root = _infer_runtime_root_from_binary(xtb_runtime_sources[0])
+        if not std2_root:
+            runtime_path = Path(xtb_runtime_home)
+            if runtime_path.name == "xtb4stda" and runtime_path.parent.name == "share":
+                std2_root = str(runtime_path.parent.parent)
+        if std2_root:
+            env_updates["STD2HOME"] = std2_root
+    elif xtb_runtime_sources:
+        std2_root = _infer_runtime_root_from_binary(xtb_runtime_sources[0])
+        if std2_root:
+            env_updates["STD2HOME"] = std2_root
+
+    return env_updates, path_entries
+
+
+def normalize_runtime_path(path_value: str | Path | None) -> str:
+    text = str(path_value or "").strip()
+    if not text:
+        return ""
+    return str(Path(text).expanduser())
+
+
+def detect_local_runtime_limits() -> tuple[int, int]:
+    cpu_count = os.cpu_count() or 1
+    memory_mb = 8_192
+    if psutil is not None:
+        try:
+            memory_mb = max(1, int(psutil.virtual_memory().total // (1024 * 1024)))
+        except Exception:
+            memory_mb = 8_192
+    return max(1, int(cpu_count)), memory_mb
+
+
+def normalize_orca_base(path_value: str | Path | None) -> str:
+    normalized = normalize_runtime_path(path_value)
+    if not normalized:
+        return ""
+    path = Path(normalized)
+    if path.is_file():
+        if path.name.lower().startswith("orca"):
+            return str(path.parent.resolve())
+        return str(path.resolve().parent)
+    candidate = path / "orca"
+    if candidate.is_file():
+        return str(path.resolve())
+    return str(path.resolve())
+
+
+def describe_orca_installation(path_value: str | Path | None) -> str:
+    normalized = normalize_orca_base(path_value)
+    if not normalized:
+        return "ORCA"
+    name = Path(normalized).name
+    match = _ORCA_VERSION_RE.search(name)
+    if match:
+        version = match.group(1).replace("_", ".").replace("-", ".")
+        return f"ORCA {version}"
+    return f"ORCA ({name})"
+
+
+def discover_orca_installations(
+    *,
+    seed_candidates: list[str] | None = None,
+    search_roots: list[str | Path] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add_candidate(raw_value: str | Path | None) -> None:
+        normalized = normalize_orca_base(raw_value)
+        if not normalized:
+            return
+        resolved = str(Path(normalized).expanduser().resolve())
+        if resolved in seen:
+            return
+        orca_binary = Path(resolved) / "orca"
+        if not orca_binary.is_file():
+            return
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    for env_key in ("DELFIN_ORCA_BASE", "ORCA_BINARY", "ORCA_PATH"):
+        _add_candidate(os.environ.get(env_key))
+
+    _add_candidate(shutil.which("orca"))
+
+    for candidate in seed_candidates or []:
+        _add_candidate(candidate)
+
+    roots = []
+    for root in search_roots or []:
+        normalized = normalize_runtime_path(root)
+        if normalized:
+            roots.append(Path(normalized))
+
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except Exception:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            if "orca" not in entry.name.lower():
+                continue
+            _add_candidate(entry)
+
+    for candidate in discover_system_tool_candidates(
+        ("orca", "orca.exe"),
+        base_dirs=("/opt/orca", "/opt/bwhpc/common/chem/orca"),
+        module_patterns=("chem/orca", "orca"),
+        module_env_hints=("ORCA_BIN_DIR", "ORCA_PATH", "ORCA_HOME", "EBROOTORCA"),
+        max_depth=6,
+    ):
+        _add_candidate(candidate.path)
+
+    def _version_sort_key(value: str) -> tuple:
+        """Sort ORCA installations by version number, highest first."""
+        desc = describe_orca_installation(value)
+        match = _ORCA_VERSION_RE.search(desc)
+        if match:
+            parts = match.group(1).replace("_", ".").replace("-", ".").split(".")
+            nums = []
+            for p in parts:
+                try:
+                    nums.append(int(p))
+                except ValueError:
+                    nums.append(0)
+            while len(nums) < 4:
+                nums.append(0)
+            return tuple(-n for n in nums)
+        return (0, 0, 0, 0)
+
+    return sorted(candidates, key=_version_sort_key)
+
+
+def resolve_backend_choice(
+    explicit_backend: str | None,
+    configured_backend: str | None,
+    *,
+    slurm_available: bool,
+) -> str:
+    requested = str(explicit_backend or "").strip().lower()
+    if requested and requested != "auto":
+        return requested
+
+    configured = str(configured_backend or "").strip().lower()
+    if configured and configured != "auto":
+        return configured
+
+    return "slurm" if slurm_available else "local"
+
+
+def resolve_orca_base(
+    explicit_orca_base: str | None,
+    runtime_settings: dict | None,
+    backend: str,
+    *,
+    auto_candidates: list[str] | None = None,
+    local_default: str = "",
+) -> str:
+    runtime_settings = runtime_settings or {}
+    local_settings = runtime_settings.get("local", {}) or {}
+    slurm_settings = runtime_settings.get("slurm", {}) or {}
+
+    candidates = []
+    if explicit_orca_base:
+        candidates.append(explicit_orca_base)
+    if backend == "local":
+        candidates.append(local_settings.get("orca_base", ""))
+    if backend == "slurm":
+        candidates.append(slurm_settings.get("orca_base", ""))
+    candidates.append(runtime_settings.get("orca_base", ""))
+
+    for env_key in ("DELFIN_ORCA_BASE", "ORCA_BINARY", "ORCA_PATH"):
+        env_value = os.environ.get(env_key)
+        if env_value:
+            candidates.append(env_value)
+
+    candidates.extend(auto_candidates or [])
+
+    if not candidates:
+        candidates.extend(
+            discover_orca_installations(
+                search_roots=[Path.home() / "software", Path.home() / "apps", Path.home() / "local", Path("/opt")],
+            )
+        )
+
+    which_orca = shutil.which("orca")
+    if which_orca:
+        candidates.append(str(Path(which_orca).resolve().parent))
+
+    if backend == "local" and local_default:
+        candidates.append(local_default)
+
+    for candidate in candidates:
+        normalized = normalize_orca_base(candidate)
+        if not normalized:
+            continue
+        path = Path(normalized)
+        if path.is_file():
+            return str(path.parent)
+        return str(path)
+
+    return ""
+
+
+def describe_installation_source(path_value: str | Path | None) -> str:
+    if not path_value:
+        return "auto"
+    try:
+        resolved = Path(path_value).expanduser().resolve()
+    except Exception:
+        resolved = Path(path_value).expanduser()
+
+    home = Path.home().expanduser()
+    resolved_str = str(resolved)
+    if resolved == home or home in resolved.parents:
+        return "local"
+    if resolved_str.startswith("/opt/bwhpc"):
+        return "cluster"
+    if resolved_str.startswith("/opt"):
+        return "system"
+    return "external"
+
+
+def _path_looks_system(path_value: str | Path | None) -> bool:
+    source = describe_installation_source(path_value)
+    return source in {"cluster", "system", "external"}
+
+
+def _resolved_tool_status(resolved, *, missing_detail: str = "not found") -> tuple[str, str]:
+    if resolved is None:
+        return "missing", missing_detail
+
+    source = str(getattr(resolved, "source", "") or "")
+    detail = str(getattr(resolved, "path", "") or "")
+    if source.startswith("module:"):
+        module_name = source.split(":", 1)[1]
+        return "module", f"{detail} via {module_name}"
+    if source in {"qm_tools", "csp_tools"}:
+        return "ok", detail
+    if _path_looks_system(detail):
+        return "system", detail
+    return "ok", detail
+
+
+def resolve_submit_templates_dir(runtime_settings: dict | None, fallback_dir: str | Path) -> Path:
+    runtime_settings = runtime_settings or {}
+    slurm_settings = runtime_settings.get("slurm", {}) or {}
+    configured = normalize_runtime_path(slurm_settings.get("submit_templates_dir", ""))
+    return Path(configured) if configured else Path(fallback_dir)
+
+
+def get_packaged_submit_templates_dir() -> Path:
+    return (Path(__file__).resolve().parent / "submit_templates").resolve()
+
+
+def get_packaged_qm_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "qm_tools").resolve()
+
+
+def get_packaged_csp_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "csp_tools").resolve()
+
+
+def get_packaged_mlp_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "mlp_tools").resolve()
+
+
+def get_packaged_analysis_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "analysis_tools").resolve()
+
+
+def get_packaged_ai_tools_dir() -> Path:
+    return (Path(__file__).resolve().parent / "ai_tools").resolve()
+
+
+def get_packaged_installers_dir() -> Path:
+    return (Path(__file__).resolve().parent / "installers").resolve()
+
+
+def get_user_qm_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "qm_tools").expanduser()
+
+
+def get_user_csp_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "csp_tools").expanduser()
+
+
+def get_user_mlp_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "mlp_tools").expanduser()
+
+
+def get_user_analysis_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "analysis_tools").expanduser()
+
+
+def get_user_ai_tools_dir(target_dir: str | Path | None = None) -> Path:
+    if target_dir:
+        return Path(target_dir).expanduser()
+    return (Path.home() / ".delfin" / "ai_tools").expanduser()
+
+
+def get_repo_submit_templates_dir(repo_dir: str | Path | None) -> Path | None:
+    if not repo_dir:
+        return None
+    repo_path = Path(repo_dir).expanduser()
+    candidate = repo_path / "delfin" / "submit_templates"
+    return candidate if candidate.is_dir() else None
+
+
+def get_repo_qm_tools_dir(repo_dir: str | Path | None) -> Path | None:
+    if not repo_dir:
+        return None
+    repo_path = Path(repo_dir).expanduser()
+    candidate = repo_path / "delfin" / "qm_tools"
+    return candidate if candidate.is_dir() else None
+
+
+def get_repo_bwunicluster_install_script(repo_dir: str | Path | None) -> Path | None:
+    if not repo_dir:
+        return None
+    repo_path = Path(repo_dir).expanduser()
+    candidate = repo_path / "scripts" / "install_delfin_bwu.sh"
+    return candidate if candidate.is_file() else None
+
+
+def get_packaged_bwunicluster_install_script() -> Path | None:
+    candidate = get_packaged_installers_dir() / "install_delfin_bwu.sh"
+    return candidate if candidate.is_file() else None
+
+
+def write_delfin_env_file(
+    *,
+    repo_dir: str | Path | None = None,
+    orca_base: str = "",
+    qm_tools_root: str = "",
+    tool_binaries: dict[str, str] | None = None,
+    env_path: str | Path | None = None,
+) -> Path:
+    target = Path(env_path).expanduser() if env_path else (Path.home() / ".delfin_env.sh")
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
+    orca_root = normalize_orca_base(orca_base)
+    qm_root = normalize_runtime_path(qm_tools_root)
+    tool_env_updates, selected_tool_path_entries = _tool_environment_overrides(tool_binaries)
+
+    def _sq(value: str | Path) -> str:
+        """Shell-quote a value for safe embedding in a shell script."""
+        return shlex.quote(str(value))
+
+    lines = [
+        "# Auto-generated by DELFIN Runtime Setup",
+    ]
+    if repo_path:
+        lines.append(f'export DELFIN_REPO={_sq(repo_path)}')
+    if orca_root:
+        lines.extend(
+            [
+                f'export ORCA_DIR={_sq(orca_root)}',
+                f'export ORCA_BASE={_sq(orca_root)}',
+                f'export ORCA_PATH={_sq(orca_root)}',
+            ]
+        )
+        orca_plot = Path(orca_root) / "orca_plot"
+        if orca_plot.exists():
+            lines.append(f'export ORCA_PLOT={_sq(orca_plot)}')
+    if qm_root:
+        lines.extend(
+            [
+                f'export DELFIN_QM_ROOT={_sq(qm_root)}',
+                f'export DELFIN_QM_TOOLS_ROOT={_sq(qm_root)}',
+                f'export STD2HOME={_sq(qm_root)}',
+            ]
+        )
+        xtb4stda_share = Path(qm_root) / "share" / "xtb4stda"
+        if xtb4stda_share.exists():
+            lines.append(f'export XTB4STDAHOME={_sq(xtb4stda_share)}')
+
+    for env_key, env_value in tool_env_updates.items():
+        lines.append(f'export {env_key}={_sq(env_value)}')
+
+    path_entries = []
+    for path_entry in selected_tool_path_entries:
+        if path_entry and path_entry not in path_entries:
+            path_entries.append(path_entry)
+    if qm_root and (Path(qm_root) / "bin").is_dir() and str(Path(qm_root) / "bin") not in path_entries:
+        path_entries.append(str(Path(qm_root) / "bin"))
+    if orca_root and orca_root not in path_entries:
+        path_entries.append(orca_root)
+    if path_entries:
+        joined = ":".join(path_entries)
+        lines.append(f'export PATH={_sq(joined)}":$PATH"')
+
+    if repo_path and (repo_path / ".venv").is_dir():
+        venv_dir = _sq(repo_path / ".venv")
+        activate = _sq(repo_path / ".venv" / "bin" / "activate")
+        lines.extend(
+            [
+                'export DELFIN_AUTO_ACTIVATE_VENV="${DELFIN_AUTO_ACTIVATE_VENV:-1}"',
+                'if [ "${DELFIN_AUTO_ACTIVATE_VENV}" = "1" ] '
+                '&& [ -z "${VIRTUAL_ENV:-}" ] '
+                f'&& [ -d {venv_dir} ] '
+                '&& [ -z "${VSCODE_PID:-}" ] '
+                '&& [ "${TERM_PROGRAM:-}" != "vscode" ]; then',
+                f'  source {activate}',
+                'fi',
+            ]
+        )
+
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        target.chmod(0o600)
+    except Exception:
+        pass
+    return target
+
+
+def ensure_shell_sources_delfin_env(
+    shell_rc_paths: list[str | Path] | None = None,
+    *,
+    env_path: str | Path | None = None,
+) -> list[Path]:
+    target_env = Path(env_path).expanduser() if env_path else (Path.home() / ".delfin_env.sh")
+    source_line = f'source "{target_env}"'
+    updated: list[Path] = []
+    for candidate in shell_rc_paths or [Path.home() / ".bashrc", Path.home() / ".profile"]:
+        path = Path(candidate).expanduser()
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        if source_line not in existing:
+            if existing and not existing.endswith("\n"):
+                existing += "\n"
+            existing += f"\n# DELFIN environment\n{source_line}\n"
+            path.write_text(existing, encoding="utf-8")
+            updated.append(path)
+        elif path.exists():
+            updated.append(path)
+    return updated
+
+
+def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | None]:
+    if not repo_dir:
+        return None, None
+    repo_path = Path(repo_dir).expanduser()
+    venv_dir = repo_path / ".venv"
+    if not venv_dir.is_dir():
+        return None, None
+
+    tar_path = repo_path / "delfin_venv.tar"
+    if tar_path.exists():
+        tar_path.unlink()
+    with tarfile.open(tar_path, "w") as tar_handle:
+        tar_handle.add(venv_dir, arcname=".venv")
+
+    cache_dir = repo_path / ".runtime_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return tar_path, cache_dir
+
+
+def _python_version_ok(python_bin: str, min_ver: tuple[int, ...] = (3, 10),
+                       max_ver: tuple[int, ...] = (3, 12)) -> bool:
+    """Return True if *python_bin* reports a version in [min_ver, max_ver)."""
+    try:
+        out = subprocess.run(
+            [python_bin, "-c", "import sys; print(sys.version_info[:2])"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        major, minor = ast.literal_eval(out.stdout.strip())
+        return min_ver <= (major, minor) < max_ver
+    except Exception:
+        return False
+
+
+def _find_system_python(current_executable: str) -> str:
+    """Find a Python >=3.10,<3.12 binary outside any venv.
+
+    Resolution order:
+      1. base_prefix of the running interpreter (if version matches)
+      2. Well-known HPC module paths (bwUniCluster)
+      3. ``python3`` on PATH (if version matches)
+      4. Fall back to *current_executable* as last resort
+    """
+    import sys
+
+    # 1. base_prefix — the Python that created the current venv
+    in_venv = (
+        getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+        or getattr(sys, "real_prefix", None) is not None
+    )
+    if in_venv:
+        base = getattr(sys, "base_prefix", None) or getattr(sys, "real_prefix", None)
+        if base:
+            candidate = str(Path(base) / "bin" / "python3")
+            if Path(candidate).is_file() and _python_version_ok(candidate):
+                return candidate
+
+    # 2. HPC module paths (bwUniCluster) — prefer 3.11 over 3.10
+    import glob as _glob
+    for pattern in (
+        "/opt/bwhpc/common/devel/python/3.11*/bin/python3",
+        "/opt/bwhpc/common/devel/python/3.10*/bin/python3",
+    ):
+        hits = sorted(_glob.glob(pattern), reverse=True)
+        for hit in hits:
+            if _python_version_ok(hit):
+                return hit
+
+    # 3. python3 on PATH
+    python3 = shutil.which("python3")
+    if python3 and _python_version_ok(python3):
+        return python3
+
+    return current_executable
+
+
+def rebuild_venv(
+    repo_dir: str | Path | None = None,
+    *,
+    voila_port: int | None = None,
+) -> Path:
+    """Spawn a detached background process that rebuilds ``.venv``.
+
+    Because the dashboard itself runs inside the venv, deleting it will kill
+    the running Voilà/Jupyter process.  We therefore write a small shell
+    script and launch it via ``setsid`` + ``nohup`` so it survives the parent
+    process dying.
+
+    If *voila_port* is given the script will restart ``delfin-voila`` on that
+    port after the rebuild so the user only needs to reload the browser tab.
+
+    Returns the path to the log file so the caller can display it.
+    """
+    import sys
+
+    repo_root = Path(repo_dir) if repo_dir else Path(__file__).resolve().parent.parent
+    repo_root = repo_root.expanduser()
+
+    log_file = repo_root / ".venv_rebuild.log"
+    done_marker = repo_root / ".venv_rebuild_done"
+    script_path = repo_root / ".venv_rebuild.sh"
+
+    # Resolve a Python >= 3.10 binary *outside* any venv.
+    # sys.executable may point into a venv that we are about to delete.
+    python_bin = _find_system_python(sys.executable)
+
+    # Clean up any previous marker
+    if done_marker.exists():
+        done_marker.unlink()
+
+    # Optional: restart voilà after rebuild
+    restart_block = ""
+    if voila_port is not None:
+        venv_delfin_voila = repo_root / ".venv" / "bin" / "delfin-voila"
+        restart_block = f"""
+echo "Restarting delfin-voila on port {voila_port} ..."
+exec "{venv_delfin_voila}" --port {voila_port}
+"""
+
+    bashrc = Path.home() / ".bashrc"
+    repo_venv = str(repo_root / ".venv")
+
+    script = f"""\
+#!/usr/bin/env bash
+set -e
+exec >> "{log_file}" 2>&1
+echo "=== venv rebuild started at $(date) ==="
+echo "Python: {python_bin}"
+echo "Repo:   {repo_root}"
+
+# --- Consolidate to single venv in the repo directory ---
+BASHRC="{bashrc}"
+DELFIN_VENV="{repo_venv}"
+if [ -f "$BASHRC" ]; then
+    # Replace any old venv activation block with a robust one
+    if grep -q '.venv/bin/activate' "$BASHRC"; then
+        echo "Patching .bashrc venv activation block ..."
+        # Remove old block (between marker comments or the simple if-fi block)
+        sed -i '/# Auto-activate.*venv/,/^unset _DELFIN_VENV$/d' "$BASHRC"
+        sed -i '/# Auto-activate.*venv/,/^fi$/d' "$BASHRC"
+        # Append robust activation block
+        cat >> "$BASHRC" << 'BASHRC_BLOCK'
+
+# Auto-activate DELFIN venv (skip if already the correct one)
+_DELFIN_VENV="{repo_venv}"
+if [ "$VIRTUAL_ENV" != "$_DELFIN_VENV" ] && [ -f "$_DELFIN_VENV/bin/activate" ]; then
+    type deactivate &>/dev/null && deactivate
+    source "$_DELFIN_VENV/bin/activate"
+fi
+unset _DELFIN_VENV
+BASHRC_BLOCK
+        echo ".bashrc updated."
+    fi
+fi
+
+# Remove old HOME-level venv if it exists (replaced by repo venv)
+if [ -d "$HOME/.venv" ]; then
+    echo "Removing old \\$HOME/.venv (consolidated into repo) ..."
+    rm -rf "$HOME/.venv"
+    echo "Old \\$HOME/.venv removed."
+fi
+
+echo "Removing old repo .venv ..."
+rm -rf "{repo_root / '.venv'}"
+
+echo "Creating fresh venv ..."
+"{python_bin}" -m venv "{repo_root / '.venv'}"
+
+echo "Upgrading pip + wheel ..."
+"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install --upgrade pip wheel
+
+echo "Installing DELFIN (pip install -e .[agent,docs]) ..."
+"{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}[agent,docs]"
+
+echo "Packaging delfin_venv.tar ..."
+rm -f "{repo_root / 'delfin_venv.tar'}"
+tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
+mkdir -p "{repo_root / '.runtime_cache'}"
+
+echo "=== venv rebuild finished at $(date) ==="
+touch "{done_marker}"
+{restart_block}"""
+    script_path.write_text(script)
+    script_path.chmod(0o755)
+
+    # Truncate old log
+    log_file.write_text("")
+
+    # Launch detached — survives parent (Voilà) dying
+    subprocess.Popen(
+        ["setsid", "nohup", str(script_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    return log_file
+
+
+def run_bwunicluster_installer(
+    *,
+    repo_dir: str | Path | None,
+    orca_base: str = "",
+    calc_dir: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    installer = get_repo_bwunicluster_install_script(repo_dir)
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
+    if installer is None:
+        installer = get_packaged_bwunicluster_install_script()
+    if installer is None:
+        raise FileNotFoundError("BwUniCluster installer script not found in repo or packaged resources.")
+
+    env = os.environ.copy()
+    if repo_path is not None:
+        env["DELFIN_REPO"] = str(repo_path)
+    if calc_dir:
+        env["DELFIN_CALC_DIR"] = str(Path(calc_dir).expanduser())
+    if archive_dir:
+        env["DELFIN_ARCHIVE_DIR"] = str(Path(archive_dir).expanduser())
+    normalized_orca = normalize_orca_base(orca_base)
+    if normalized_orca:
+        env["ORCA_DIR"] = normalized_orca
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    shell_command = (
+        'if ! command -v module >/dev/null 2>&1; then '
+        'for init in /etc/profile.d/modules.sh /usr/share/Modules/init/bash /etc/profile.d/lmod.sh; do '
+        '[ -f "$init" ] && source "$init" && break; '
+        'done; '
+        'fi; '
+        f'bash {shlex.quote(str(installer))}'
+    )
+    return subprocess.run(
+        ["bash", "-lc", shell_command],
+        cwd=str(repo_path or Path.home()),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=1800,
+    )
+
+
+def _find_openmpi_mpirun() -> Path:
+    """Find mpirun in ~/software/openmpi-*/bin/ or fall back to PATH."""
+    software_dir = Path.home() / "software"
+    if software_dir.is_dir():
+        candidates = sorted(software_dir.glob("openmpi-*/bin/mpirun"), reverse=True)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+    which_mpirun = shutil.which("mpirun")
+    if which_mpirun:
+        return Path(which_mpirun)
+    return software_dir / "openmpi" / "bin" / "mpirun"
+
+
+def collect_bwunicluster_verification(
+    *,
+    repo_dir: str | Path | None = None,
+    orca_base: str = "",
+    calc_dir: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+) -> list[dict[str, str]]:
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
+    calc_path = Path(calc_dir).expanduser() if calc_dir else (Path.home() / "calc")
+    archive_path = Path(archive_dir).expanduser() if archive_dir else (Path.home() / "archive")
+    openmpi_path = _find_openmpi_mpirun()
+    submit_dir = get_repo_submit_templates_dir(repo_path) or get_packaged_submit_templates_dir()
+    install_script = get_repo_bwunicluster_install_script(repo_path) or get_packaged_bwunicluster_install_script()
+
+    effective_orca = normalize_orca_base(orca_base)
+    if not effective_orca:
+        discovered = discover_orca_installations(
+            search_roots=[Path.home() / "software", Path.home() / "apps", Path.home() / "local", Path("/opt")]
+        )
+        effective_orca = discovered[0] if discovered else ""
+
+    return [
+        {
+            "name": "install-script",
+            "status": "ok" if install_script and Path(install_script).is_file() else "missing",
+            "detail": str(install_script) if install_script else "not found",
+        },
+        {
+            "name": "repo",
+            "status": "ok" if (repo_path and repo_path.exists()) else "missing",
+            "detail": str(repo_path) if repo_path else "no repo checkout configured",
+        },
+        {
+            "name": "venv",
+            "status": "ok" if (repo_path and (repo_path / ".venv").is_dir()) else "missing",
+            "detail": str((repo_path / ".venv") if repo_path else Path.home() / "software" / "delfin" / ".venv"),
+        },
+        {
+            "name": "openmpi",
+            "status": "ok" if openmpi_path.is_file() else "missing",
+            "detail": str(openmpi_path),
+        },
+        {
+            "name": "orca",
+            "status": "ok" if effective_orca and (Path(effective_orca) / "orca").is_file() else "missing",
+            "detail": str(Path(effective_orca) / "orca") if effective_orca else "not found",
+        },
+        {
+            "name": "orca_plot",
+            "status": "ok" if effective_orca and (Path(effective_orca) / "orca_plot").is_file() else "missing",
+            "detail": str(Path(effective_orca) / "orca_plot") if effective_orca else "not found",
+        },
+        {
+            "name": "calc",
+            "status": "ok" if calc_path.exists() else "missing",
+            "detail": str(calc_path),
+        },
+        {
+            "name": "archive",
+            "status": "ok" if archive_path.exists() else "missing",
+            "detail": str(archive_path),
+        },
+        {
+            "name": "submit-templates",
+            "status": "ok" if (submit_dir / "submit_delfin.sh").is_file() else "missing",
+            "detail": str(submit_dir),
+        },
+        {
+            "name": "sbatch",
+            "status": "ok" if shutil.which("sbatch") else "missing",
+            "detail": shutil.which("sbatch") or "sbatch not found in PATH",
+        },
+    ]
+
+
+def prepare_bwunicluster_user_setup(
+    *,
+    repo_dir: str | Path | None = None,
+    calc_dir: str | Path | None = None,
+    archive_dir: str | Path | None = None,
+    orca_base: str = "",
+    qm_tools_root: str = "",
+    install_qm_tools: bool = True,
+) -> dict[str, object]:
+    detected_cores, detected_ram_mb = detect_local_runtime_limits()
+    effective_calc_dir = Path(calc_dir).expanduser() if calc_dir else (Path.home() / "calc")
+    effective_archive_dir = Path(archive_dir).expanduser() if archive_dir else (Path.home() / "archive")
+    effective_calc_dir.mkdir(parents=True, exist_ok=True)
+    effective_archive_dir.mkdir(parents=True, exist_ok=True)
+
+    repo_path = Path(repo_dir).expanduser() if repo_dir else None
+    submit_templates_dir = get_repo_submit_templates_dir(repo_path) or get_packaged_submit_templates_dir()
+
+    effective_orca = normalize_orca_base(orca_base)
+    if not effective_orca:
+        discovered = discover_orca_installations(
+            seed_candidates=[],
+            search_roots=[Path.home() / "software", Path.home() / "apps", Path("/opt")],
+        )
+        effective_orca = discovered[0] if discovered else ""
+
+    qm_root = normalize_runtime_path(qm_tools_root)
+    installer_result = None
+    if install_qm_tools:
+        target, installer_result = run_qm_tools_installer(qm_root or None)
+        if installer_result and installer_result.returncode != 0:
+            _logger.warning("QM tools installer exited with code %d", installer_result.returncode)
+        qm_root = str(target)
+    elif not qm_root:
+        repo_qm_root = get_repo_qm_tools_dir(repo_path)
+        if repo_qm_root:
+            qm_root = str(repo_qm_root)
+        else:
+            qm_root = str(stage_packaged_qm_tools())
+
+    tar_path, cache_dir = package_repo_venv(repo_path)
+    env_file = write_delfin_env_file(
+        repo_dir=repo_path,
+        orca_base=effective_orca,
+        qm_tools_root=qm_root,
+    )
+    shell_files = ensure_shell_sources_delfin_env(env_path=env_file)
+
+    runtime_payload = {
+        "backend": "slurm",
+        "orca_base": effective_orca,
+        "qm_tools_root": qm_root,
+        "local": {
+            "orca_base": effective_orca,
+            "max_cores": detected_cores,
+            "max_ram_mb": detected_ram_mb,
+        },
+        "slurm": {
+            "orca_base": effective_orca,
+            "submit_templates_dir": str(submit_templates_dir),
+            "profile": "bwunicluster3",
+        },
+    }
+
+    return {
+        "runtime": runtime_payload,
+        "paths": {
+            "calculations_dir": str(effective_calc_dir),
+            "archive_dir": str(effective_archive_dir),
+        },
+        "env_file": str(env_file),
+        "shell_files": [str(path) for path in shell_files],
+        "submit_templates_dir": str(submit_templates_dir),
+        "orca_base": effective_orca,
+        "qm_tools_root": qm_root,
+        "venv_tarball": str(tar_path) if tar_path else "",
+        "runtime_cache_dir": str(cache_dir) if cache_dir else "",
+        "qm_tools_installer_output": (installer_result.stdout if installer_result else ""),
+        "qm_tools_installer_returncode": (installer_result.returncode if installer_result else 0),
+    }
+
+
+def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_qm_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged qm_tools directory not found: {source}")
+
+    target = get_user_qm_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
+    )
+    return target
+
+
+def run_qm_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+    tools: list[str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_qm_tools(target_dir)
+    installer = target / "install_qm_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"qm_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_QM_ROOT"] = str(target)
+    env["DELFIN_QM_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    cmd = ["bash", str(installer)]
+    if tools:
+        cmd.extend(tools)
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
+def stage_packaged_csp_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_csp_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged csp_tools directory not found: {source}")
+
+    target = get_user_csp_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".build"),
+    )
+    return target
+
+
+def run_csp_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_csp_tools(target_dir)
+    installer = target / "install_csp_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"csp_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_CSP_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=1200,
+    )
+    return target, result
+
+
+def stage_packaged_mlp_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_mlp_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged mlp_tools directory not found: {source}")
+
+    target = get_user_mlp_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_mlp_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_mlp_tools(target_dir)
+    installer = target / "install_mlp_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"mlp_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_MLP_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
+def stage_packaged_analysis_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_analysis_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged analysis_tools directory not found: {source}")
+
+    target = get_user_analysis_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_analysis_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_analysis_tools(target_dir)
+    installer = target / "install_analysis_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"analysis_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
+def stage_packaged_ai_tools(target_dir: str | Path | None = None) -> Path:
+    source = get_packaged_ai_tools_dir()
+    if not source.is_dir():
+        raise FileNotFoundError(f"Packaged ai_tools directory not found: {source}")
+
+    target = get_user_ai_tools_dir(target_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        target,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+    )
+    return target
+
+
+def run_ai_tools_installer(
+    target_dir: str | Path | None = None,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    target = stage_packaged_ai_tools(target_dir)
+    installer = target / "install_ai_tools.sh"
+    if not installer.is_file():
+        raise FileNotFoundError(f"ai_tools installer not found: {installer}")
+
+    env = os.environ.copy()
+    env["DELFIN_AI_TOOLS_ROOT"] = str(target)
+    if extra_env:
+        env.update({str(key): str(value) for key, value in extra_env.items()})
+
+    result = subprocess.run(
+        ["bash", str(installer)],
+        cwd=str(target),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    return target, result
+
+
+def run_pip_install_editable() -> subprocess.CompletedProcess[str]:
+    """Run ``pip install -e .`` in the DELFIN repo root using the current Python.
+
+    Detects the Python interpreter that is running DELFIN and the repository
+    root (the directory containing ``pyproject.toml``).  This ensures that
+    editable-mode install happens in the correct environment (venv / conda /
+    system) so that new CLI entry-points become available immediately.
+    """
+    import sys
+
+    python_bin = sys.executable
+    # Walk upward from this file to find the repo root (contains pyproject.toml)
+    repo_root = Path(__file__).resolve().parent.parent
+    pyproject = repo_root / "pyproject.toml"
+    if not pyproject.is_file():
+        raise FileNotFoundError(
+            f"Cannot locate pyproject.toml — expected at {pyproject}. "
+            "Make sure DELFIN is installed from a source checkout."
+        )
+
+    return subprocess.run(
+        [python_bin, "-m", "pip", "install", "-e", ".[agent,docs]"],
+        cwd=str(repo_root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+
+
+def _prepend_path_env_once(path_entry: str) -> None:
+    normalized = str(Path(path_entry).expanduser())
+    current_entries = [item for item in os.environ.get("PATH", "").split(os.pathsep) if item]
+    if normalized in current_entries:
+        return
+    os.environ["PATH"] = (
+        normalized
+        if not current_entries
+        else f"{normalized}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
+
+
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
+    qm_root = normalize_runtime_path(qm_tools_root)
+    if qm_root:
+        os.environ["DELFIN_QM_ROOT"] = qm_root
+        os.environ["DELFIN_QM_TOOLS_ROOT"] = qm_root
+        bin_dir = Path(qm_root) / "bin"
+        if bin_dir.exists():
+            _prepend_path_env_once(str(bin_dir))
+        xtb4stda_share = Path(qm_root) / "share" / "xtb4stda"
+        if xtb4stda_share.exists():
+            os.environ.setdefault("XTB4STDAHOME", str(xtb4stda_share))
+        os.environ.setdefault("STD2HOME", qm_root)
+
+    csp_root = normalize_runtime_path(csp_tools_root)
+    if csp_root:
+        os.environ["DELFIN_CSP_TOOLS_ROOT"] = csp_root
+        csp_bin = Path(csp_root) / "bin"
+        if csp_bin.exists():
+            _prepend_path_env_once(str(csp_bin))
+
+    orca_root = normalize_runtime_path(orca_base)
+    if orca_root:
+        os.environ["DELFIN_ORCA_BASE"] = orca_root
+        os.environ["ORCA_PATH"] = orca_root
+        _prepend_path_env_once(orca_root)
+        orca_plot = Path(orca_root) / "orca_plot"
+        if orca_plot.exists():
+            os.environ["ORCA_PLOT"] = str(orca_plot)
+
+    configured_tool_binaries = {
+        canonical_tool_name(name): value
+        for name, value in (tool_binaries or {}).items()
+    }
+    tool_env_updates, tool_path_entries = _tool_environment_overrides(configured_tool_binaries)
+    for tool_name in settings_selectable_tools():
+        env_key = binary_env_var_name(tool_name)
+        binary_path = tool_env_updates.get(env_key, "")
+        if binary_path:
+            os.environ[env_key] = binary_path
+        else:
+            os.environ.pop(env_key, None)
+    for path_entry in tool_path_entries:
+        _prepend_path_env_once(path_entry)
+    if tool_env_updates.get("TURBODIR"):
+        os.environ["TURBODIR"] = tool_env_updates["TURBODIR"]
+    if tool_env_updates.get("XTB4STDAHOME"):
+        os.environ["XTB4STDAHOME"] = tool_env_updates["XTB4STDAHOME"]
+    if tool_env_updates.get("STD2HOME"):
+        os.environ["STD2HOME"] = tool_env_updates["STD2HOME"]
+
+    # Suppress noisy but harmless third-party warnings in the dashboard
+    os.environ.setdefault("TORCHANI_NO_WARN_EXTENSIONS", "1")
+
+
+@contextmanager
+def temporary_environment(updates: dict[str, str | None]):
+    previous = {key: os.environ.get(key) for key in updates}
+    try:
+        for key, value in updates.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def collect_runtime_diagnostics(
+    runtime_settings: dict | None,
+    *,
+    backend: str,
+    effective_orca_base: str = "",
+    submit_templates_dir: str | Path | None = None,
+) -> list[dict[str, str]]:
+    runtime_settings = runtime_settings or {}
+    diagnostics: list[dict[str, str]] = [
+        {"name": "backend", "status": "ok", "detail": backend}
+    ]
+
+    orca_root = normalize_runtime_path(effective_orca_base)
+    qm_tools_root = normalize_runtime_path(runtime_settings.get("qm_tools_root", ""))
+    env_updates: dict[str, str] = {}
+    if qm_tools_root:
+        env_updates["DELFIN_QM_ROOT"] = qm_tools_root
+        env_updates["DELFIN_QM_TOOLS_ROOT"] = qm_tools_root
+    if orca_root:
+        env_updates["ORCA_PATH"] = orca_root
+        env_updates["DELFIN_ORCA_BASE"] = orca_root
+    for tool_name, binary_path in ((runtime_settings.get("tool_binaries", {}) or {}).items()):
+        normalized_binary = normalize_runtime_path(binary_path)
+        if normalized_binary:
+            env_updates[binary_env_var_name(tool_name)] = normalized_binary
+
+    with temporary_environment(env_updates):
+        orca_resolved = resolve_tool("orca")
+
+    orca_status, orca_detail = _resolved_tool_status(
+        orca_resolved,
+        missing_detail=orca_root or "not found",
+    )
+    diagnostics.append(
+        {
+            "name": "orca",
+            "status": orca_status,
+            "detail": orca_detail,
+        }
+    )
+
+    if backend == "slurm":
+        submit_dir = Path(submit_templates_dir) if submit_templates_dir else None
+        sbatch_path = shutil.which("sbatch")
+        diagnostics.append(
+            {
+                "name": "sbatch",
+                "status": "ok" if sbatch_path else "missing",
+                "detail": sbatch_path or "sbatch not found in PATH",
+            }
+        )
+        if submit_dir:
+            diagnostics.append(
+                {
+                    "name": "slurm-templates",
+                    "status": (
+                        "ok"
+                        if (submit_dir / "submit_delfin.sh").exists()
+                        and (submit_dir / "submit_turbomole.sh").exists()
+                        else "missing"
+                    ),
+                    "detail": str(submit_dir),
+                }
+            )
+    else:
+        diagnostics.append(
+            {
+                "name": "local-runner",
+                "status": "ok",
+                "detail": "bundled Python local runner",
+            }
+        )
+
+    qm_tools_root = normalize_runtime_path(runtime_settings.get("qm_tools_root", ""))
+    env_updates: dict[str, str] = {}
+    if qm_tools_root:
+        env_updates["DELFIN_QM_ROOT"] = qm_tools_root
+        env_updates["DELFIN_QM_TOOLS_ROOT"] = qm_tools_root
+    if orca_root:
+        env_updates["ORCA_PATH"] = orca_root
+        env_updates["DELFIN_ORCA_BASE"] = orca_root
+
+    with temporary_environment(env_updates):
+        qm_results = check_tools(
+            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+"]
+        )
+    for name, resolved in qm_results:
+        status, detail = _resolved_tool_status(resolved)
+        diagnostics.append(
+            {
+                "name": name,
+                "status": status,
+                "detail": detail,
+            }
+        )
+
+    if qm_tools_root:
+        diagnostics.append(
+            {
+                "name": "qm_tools_root",
+                "status": "ok" if Path(qm_tools_root).exists() else "missing",
+                "detail": qm_tools_root,
+            }
+        )
+
+    # -- CSP tools (Genarris) diagnostics ---------------------------------
+    csp_tools_root = normalize_runtime_path(runtime_settings.get("csp_tools_root", ""))
+    try:
+        from delfin.csp_tools import genarris_available, get_genarris_version
+
+        genarris_ok = genarris_available()
+        genarris_ver = get_genarris_version() or ""
+        diagnostics.append(
+            {
+                "name": "genarris",
+                "status": "ok" if genarris_ok else "missing",
+                "detail": f"gnrs v{genarris_ver}" if genarris_ok else "not installed (pip install delfin-complat[csp])",
+            }
+        )
+        if genarris_ok:
+            try:
+                # Verify the C extension in a subprocess. Importing it directly
+                # can abort the current interpreter on MPI-misconfigured hosts.
+                probe = subprocess.run(
+                    [sys.executable, "-c", "import gnrs.cgenarris"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=10,
+                )
+                if probe.returncode == 0:
+                    diagnostics.append(
+                        {"name": "cgenarris", "status": "ok", "detail": "C extension OK"}
+                    )
+                else:
+                    detail = (probe.stdout or "").strip() or "C extension probe failed"
+                    diagnostics.append(
+                        {"name": "cgenarris", "status": "missing", "detail": detail}
+                    )
+            except (ImportError, OSError, subprocess.SubprocessError) as exc:
+                diagnostics.append(
+                    {"name": "cgenarris", "status": "missing", "detail": f"C extension failed: {exc}"}
+                )
+    except ImportError:
+        pass
+
+    csp_env_updates: dict[str, str] = {}
+    if csp_tools_root:
+        csp_env_updates["DELFIN_CSP_TOOLS_ROOT"] = csp_tools_root
+    with temporary_environment(csp_env_updates):
+        gnrs_results = check_tools(["gnrs"])
+    for name, resolved in gnrs_results:
+        diagnostics.append(
+            {
+                "name": "gnrs-cli",
+                "status": "ok" if resolved else "missing",
+                "detail": resolved.path if resolved else "not found",
+            }
+        )
+
+    if csp_tools_root:
+        diagnostics.append(
+            {
+                "name": "csp_tools_root",
+                "status": "ok" if Path(csp_tools_root).exists() else "missing",
+                "detail": csp_tools_root,
+            }
+        )
+
+    # -- External QM programs (auto-detect) --------------------------------
+    import shutil as _shutil_diag
+
+    _EXT_QM_PROGRAMS = [
+        # ── QM engines (ab initio / DFT / semiempirical) ──
+        (["turbomole", "ridft", "dscf", "define"], "turbomole"),
+        (["g16", "g09", "gaussian"], "gaussian"),
+        (["nwchem"], "nwchem"),
+        (["qchem"], "qchem"),
+        (["gamess", "rungms"], "gamess"),
+        (["molpro", "molpro.exe"], "molpro"),
+        (["dalton", "dalton.x"], "dalton"),
+        (["psi4"], "psi4"),
+        (["cfour", "xcfour"], "cfour"),
+        (["mrcc", "dmrcc"], "mrcc"),
+        # ── Periodic DFT / solid state ──
+        (["vasp", "vasp_std", "vasp_gam", "vasp_ncl"], "vasp"),
+        (["pw.x", "pw", "quantum-espresso"], "quantum-espresso"),
+        (["cp2k", "cp2k.popt", "cp2k.psmp", "cp2k.sopt"], "cp2k"),
+        (["aims.x", "FHIaims", "aims"], "fhi-aims"),
+        (["crystal", "crystal17", "crystal23", "Pcrystal"], "crystal"),
+        (["siesta"], "siesta"),
+        (["gpaw", "gpaw-python"], "gpaw"),
+        (["fleur", "fleur_MPI"], "fleur"),
+        (["wien2k", "run_lapw", "runsp_lapw"], "wien2k"),
+        (["elk"], "elk"),
+        (["abinit"], "abinit"),
+        # ── Multireference / correlated ──
+        (["pymolcas", "molcas", "OpenMolcas"], "openmolcas"),
+        (["bagel", "BAGEL"], "bagel"),
+        (["columbus", "COLUMBUS"], "columbus"),
+        # ── Semiempirical ──
+        (["mopac", "MOPAC", "mopac2016"], "mopac"),
+        (["sparrow"], "sparrow"),
+        # ── MD engines ──
+        (["gmx", "gmx_mpi", "gromacs", "mdrun"], "gromacs"),
+        (["lmp", "lmp_mpi", "lammps", "lmp_serial"], "lammps"),
+        (["sander", "pmemd", "pmemd.cuda"], "amber"),
+        (["namd2", "namd3", "namd"], "namd"),
+        (["openmmrun"], "openmm"),
+        # ── Visualization / editors ──
+        (["vmd"], "vmd"),
+        (["avogadro", "avogadro2"], "avogadro"),
+        (["jmol"], "jmol"),
+        (["chimera", "chimerax", "ChimeraX"], "chimerax"),
+        (["iqmol", "IQmol"], "iqmol"),
+        # ── Analysis / post-processing ──
+        (["orca_2mkl"], "orca_2mkl"),
+        (["nbo7", "nbo6", "gennbo"], "nbo"),
+        (["aimall", "aimqb"], "aimall"),
+        (["critic2"], "critic2"),
+        (["chargemol"], "chargemol"),
+        (["lobster", "LOBSTER"], "lobster"),
+        (["phonopy"], "phonopy"),
+        (["ase"], "ase-cli"),
+    ]
+    # Also check Python-only tools that may not have CLI binaries
+    _EXT_PYTHON_MODULES = [
+        ("openmm", "openmm"),
+        ("pyscf", "pyscf"),
+        ("pymatgen", "pymatgen"),
+        ("qcengine", "qcengine"),
+        ("MDAnalysis", "mdanalysis"),
+        ("plams", "plams"),
+    ]
+    import importlib.util as _ilu_diag
+    for mod_name, label in _EXT_PYTHON_MODULES:
+        try:
+            found = _ilu_diag.find_spec(mod_name) is not None
+        except (ModuleNotFoundError, ValueError):
+            found = False
+        # Don't duplicate if already found via binary check
+        if any(d["name"] == label for d in diagnostics):
+            continue
+        diagnostics.append(
+            {
+                "name": label,
+                "status": "ok" if found else "missing",
+                "detail": f"Python module '{mod_name}'" if found else "not installed",
+            }
+        )
+    # -- bwHPC / HPC cluster fallback paths ----------------------------------
+    # Map diagnostic label -> (env_var, base_dirs, binary_name_or_glob_pattern)
+    # Used when shutil.which() fails (programs behind 'module load').
+    _BWHPC_ROOTS = ["/opt/bwhpc/common/chem", "/opt/bwhpc/common/phys",
+                    "/opt/bwhpc/common/bio"]
+    _CLUSTER_FALLBACKS: dict[str, tuple[str, list[str], str]] = {
+        "turbomole": ("TURBODIR", ["/opt/bwhpc/common/chem/turbomole"], "ridft"),
+        "gaussian":  ("g16root",  ["/opt/bwhpc/common/chem/gaussian"], "g16"),
+        "vasp":      ("VASP_DIR", ["/opt/bwhpc/common/chem/vasp"], "vasp_std"),
+        "nwchem":    ("NWCHEM_TOP", ["/opt/bwhpc/common/chem/nwchem"], "nwchem"),
+        "cp2k":      ("CP2K_DIR", ["/opt/bwhpc/common/chem/cp2k"], "cp2k.psmp"),
+        "gromacs":   ("GMXBIN",   ["/opt/bwhpc/common/chem/gromacs",
+                                    "/opt/bwhpc/common/bio/gromacs"], "gmx"),
+        "lammps":    ("LAMMPS_DIR", ["/opt/bwhpc/common/chem/lammps"], "lmp"),
+        "amber":     ("AMBERHOME", ["/opt/bwhpc/common/chem/amber",
+                                     "/opt/bwhpc/common/bio/amber"], "sander"),
+        "namd":      ("NAMDDIR",  ["/opt/bwhpc/common/chem/namd",
+                                    "/opt/bwhpc/common/bio/namd"], "namd2"),
+        "quantum-espresso": ("ESPRESSO_ROOT", ["/opt/bwhpc/common/chem/quantum-espresso",
+                                               "/opt/bwhpc/common/phys/quantum-espresso"], "pw.x"),
+        "abinit":    ("ABINIT_DIR", ["/opt/bwhpc/common/phys/abinit",
+                                      "/opt/bwhpc/common/chem/abinit"], "abinit"),
+        "molpro":    ("MOLPRO_DIR", ["/opt/bwhpc/common/chem/molpro"], "molpro"),
+        "openmolcas": ("MOLCAS",   ["/opt/bwhpc/common/chem/openmolcas",
+                                     "/opt/bwhpc/common/chem/molcas"], "pymolcas"),
+    }
+
+    def _find_binary_recursive(base_dir: Path, binary_name: str, max_depth: int = 5) -> str | None:
+        """Walk up to *max_depth* levels under *base_dir* looking for *binary_name*."""
+        if not base_dir.is_dir():
+            return None
+        try:
+            for item in sorted(base_dir.iterdir(), reverse=True):
+                if item.is_file() and item.name == binary_name and os.access(str(item), os.X_OK):
+                    return str(item)
+                if item.is_dir() and max_depth > 0:
+                    # Prioritise bin/ directories
+                    if item.name == "bin":
+                        result = _find_binary_recursive(item, binary_name, max_depth - 1)
+                        if result:
+                            return result
+            # Second pass: recurse into non-bin dirs
+            for item in sorted(base_dir.iterdir(), reverse=True):
+                if item.is_dir() and item.name != "bin" and max_depth > 0:
+                    result = _find_binary_recursive(item, binary_name, max_depth - 1)
+                    if result:
+                        return result
+        except PermissionError:
+            pass
+        return None
+
+    # -- Detect HPC modules via 'module avail' (cached, one call) ----------
+    # Maps diagnostic label -> module name pattern found via 'module avail'
+    _MODULE_LABEL_MAP: dict[str, list[str]] = {
+        "turbomole": ["chem/turbomole", "turbomole"],
+        "gaussian":  ["chem/gaussian", "gaussian"],
+        "vasp":      ["chem/vasp", "vasp"],
+        "nwchem":    ["chem/nwchem", "nwchem"],
+        "cp2k":      ["chem/cp2k", "cp2k"],
+        "gromacs":   ["chem/gromacs", "bio/gromacs", "gromacs"],
+        "lammps":    ["chem/lammps", "lammps"],
+        "amber":     ["chem/amber", "bio/amber", "amber"],
+        "namd":      ["chem/namd", "bio/namd", "namd"],
+        "quantum-espresso": ["chem/quantum-espresso", "chem/quantumespresso",
+                             "phys/quantum-espresso", "quantum-espresso"],
+        "abinit":    ["phys/abinit", "chem/abinit", "abinit"],
+        "molpro":    ["chem/molpro", "molpro"],
+        "openmolcas": ["chem/openmolcas", "chem/molcas", "openmolcas", "molcas"],
+        "psi4":      ["chem/psi4", "psi4"],
+        "dalton":    ["chem/dalton", "dalton"],
+        "gamess":    ["chem/gamess", "gamess"],
+        "cfour":     ["chem/cfour", "cfour"],
+    }
+    _available_modules = {module_name.lower() for module_name in available_modules()}
+
+    for binaries, label in _EXT_QM_PROGRAMS:
+        found_path = None
+        resolved_external = resolve_tool(label)
+        if resolved_external is not None:
+            found_path = resolved_external.path
+        for name in binaries:
+            if found_path:
+                break
+            path = _shutil_diag.which(name)
+            if path:
+                found_path = path
+                break
+        # Fallback: check environment variables and known HPC cluster paths
+        if not found_path and label in _CLUSTER_FALLBACKS:
+            env_var, base_dirs, target_bin = _CLUSTER_FALLBACKS[label]
+            # Check environment variable first
+            env_val = os.environ.get(env_var, "")
+            if env_val:
+                result = _find_binary_recursive(Path(env_val), target_bin)
+                if result:
+                    found_path = result
+            # Then check known cluster paths
+            if not found_path:
+                for bdir in base_dirs:
+                    result = _find_binary_recursive(Path(bdir), target_bin)
+                    if result:
+                        found_path = result
+                        break
+        # Last fallback: check if available as HPC module
+        _module_hint = ""
+        if not found_path and label in _MODULE_LABEL_MAP:
+            for pattern in _MODULE_LABEL_MAP[label]:
+                _matched_mods = sorted(
+                    (m for m in _available_modules if m.startswith(pattern.lower())),
+                    reverse=True,
+                )
+                if _matched_mods:
+                    # Use the latest version (sorted descending)
+                    _module_hint = f"available via 'module load {_matched_mods[0]}'"
+                    break
+        status = "missing"
+        if found_path:
+            status = "system" if _path_looks_system(found_path) else "ok"
+        elif _module_hint:
+            status = "module"
+        diagnostics.append(
+            {
+                "name": label,
+                "status": status,
+                "detail": found_path or _module_hint or "not found",
+            }
+        )
+
+    # -- MLP tools diagnostics --------------------------------------------
+    try:
+        from delfin.mlp_tools import (
+            torchani_available,
+            aimnet2_available,
+            mace_available,
+            chgnet_available,
+            matgl_available,
+            schnetpack_available,
+            nequip_available,
+            alignn_available,
+            get_torchani_version,
+            get_aimnet2_version,
+            get_mace_version,
+            get_chgnet_version,
+            get_matgl_version,
+            get_schnetpack_version,
+            get_nequip_version,
+            get_alignn_version,
+        )
+
+        for check_fn, ver_fn, label in [
+            (torchani_available, get_torchani_version, "ani2x"),
+            (aimnet2_available, get_aimnet2_version, "aimnet2"),
+            (mace_available, get_mace_version, "mace-off"),
+            (chgnet_available, get_chgnet_version, "chgnet"),
+            (matgl_available, get_matgl_version, "m3gnet"),
+            (schnetpack_available, get_schnetpack_version, "schnetpack"),
+            (nequip_available, get_nequip_version, "nequip"),
+            (alignn_available, get_alignn_version, "alignn"),
+        ]:
+            ok = check_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label,
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
+
+    # -- Analysis tools diagnostics ----------------------------------------
+    try:
+        from delfin.analysis_tools import (
+            multiwfn_available,
+            censo_available,
+            anmr_available,
+            c2anmr_available,
+            nmrplot_available,
+            morfeus_available,
+            cclib_available,
+            nglview_available,
+            packmol_available,
+            get_multiwfn_version,
+            get_censo_version,
+            get_anmr_version,
+            get_c2anmr_version,
+            get_nmrplot_version,
+            get_morfeus_version,
+            get_cclib_version,
+            get_nglview_version,
+            get_packmol_version,
+        )
+
+        for check_fn, ver_fn, label in [
+            (multiwfn_available, get_multiwfn_version, "multiwfn"),
+            (censo_available, get_censo_version, "censo"),
+            (anmr_available, get_anmr_version, "anmr"),
+            (c2anmr_available, get_c2anmr_version, "c2anmr"),
+            (nmrplot_available, get_nmrplot_version, "nmrplot"),
+            (morfeus_available, get_morfeus_version, "morfeus"),
+            (cclib_available, get_cclib_version, "cclib"),
+            (nglview_available, get_nglview_version, "nglview"),
+            (packmol_available, get_packmol_version, "packmol"),
+        ]:
+            ok = check_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label,
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
+
+    # -- AI tools diagnostics -----------------------------------------------
+    try:
+        from delfin.ai_tools import _TOOL_REGISTRY
+
+        for label, category, avail_fn, ver_fn, description, install_hint in _TOOL_REGISTRY:
+            ok = avail_fn()
+            ver = ver_fn() or ""
+            diagnostics.append(
+                {
+                    "name": label.lower().replace(" ", "-"),
+                    "status": "ok" if ok else "missing",
+                    "detail": f"v{ver}" if ok else "not installed",
+                }
+            )
+    except ImportError:
+        pass
+
+    return diagnostics

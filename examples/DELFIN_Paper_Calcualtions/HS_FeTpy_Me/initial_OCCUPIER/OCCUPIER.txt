@@ -1,0 +1,72 @@
+
+                     *******************
+                     *     OCCUPIER    *
+                     *******************
+
+      #####################################################
+      #                     -***-                         #
+      #         Program written by :  M. Hartmann         #
+      #         Automates ORCA 6.1.0 calculations         #
+      #                 Version 1.0.0                     #
+      #                     -***-                         #
+      #####################################################
+
+Method: PBE0 def2-SVP D4 RIJCOSX def2/J CPCM(Acetonitrile) OPT PAL30
+        Fe def2-TZVP
+
+Charge: 2     
+-------------  
+FINAL SINGLE POINT ENERGY (1)   = -3437.622 (H)
+multiplicity 1
+Spin Contamination (⟨S²⟩ - S(S+1))   : N/A
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (2)   = -3437.622 (H)
+multiplicity 1, BrokenSym 1,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.186
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -1586.50 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (3)   = -3437.622 (H)
+multiplicity 1, BrokenSym 2,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.185
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -913.98 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (4)   = -3437.617 (H)
+multiplicity 3
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.035
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (5)   = -3437.620 (H)
+multiplicity 3, BrokenSym 3,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.028
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : 707.73 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (6)   = -3437.608 (H)
+multiplicity 3, BrokenSym 4,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.035
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -1231.52 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (7)   = -3437.637 (H) <-- PREFERRED VALUE
+multiplicity 5
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.019
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (8)   = -3437.600 (H)
+multiplicity 5, BrokenSym 5,1
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.039
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -2285.38 cm**-1
+----------------------------------------------------------------
+FINAL SINGLE POINT ENERGY (9)   = -3437.585 (H)
+multiplicity 5, BrokenSym 6,2
+Spin Contamination (⟨S²⟩ - S(S+1))   : 0.028
+J(Yamaguchi)=-(E[HS]-E[BS])/(<S**2>HS-<S**2>BS) : -2540.65 cm**-1
+----------------------------------------------------------------
+
+
+TOTAL RUN TIME: 00 hours 00 minutes 00.10 seconds
+
+LOWEST FINAL SINGLE POINT ENERGY: -3437.637 (H)
+
+(Selection: tolerance, APmethod 2, precision=3, epsilon=0.0005)
+(Energy-bias: energy_bias_window_h=0.002, mismatch_bias_window=0.05 -> prefer lower E only when qualities are similar)
+(Clean-bias: clean_bias_window_h=0.003, quality_bias_window=0.05 -> prefer cleaner when energies are close)
+(Clean-override: clean_override_window_h=0.003, clean_quality_improvement=0.05, clean_quality_good=0.05)
+(Preferred Index: 7)
+(Electron number: is_even)

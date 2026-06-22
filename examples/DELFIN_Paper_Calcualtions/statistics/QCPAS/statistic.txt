@@ -1,0 +1,31 @@
+Removed outliers (5 largest absolute errors):
+==================================================
+1. Calc=2.806, Exp=3.550, Error=0.744
+2. Calc=1.196, Exp=1.950, Error=0.754
+3. Calc=2.673, Exp=1.910, Error=0.763
+4. Calc=1.631, Exp=2.450, Error=0.819
+5. Calc=2.064, Exp=2.920, Error=0.856
+
+==========================================================================================
+Statistical Analysis:
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+------------------------------------------------------------------------------------------
+Initial Values                      253   -0.1075  0.1799   0.2152   0.8558   0.9132   0.9129  
+Initial Values (-5 outliers)        248   -0.0999  0.1677   0.1910   0.6696   0.9286   0.9283  
+
+Number of complete data points: 253
+Number after removing outliers: 248
+
+Linear fit (adjusted data, fixed slope=1.0): y = 1.0000x + -0.0999
+R²: 0.9440, R-value: 0.9716
+Intercept removed from calculated values: -0.0999
+
+==========================================================================================
+Final Statistical Analysis (including adjusted calculated values):
+==========================================================================================
+Dataset                             N     MD       MAD      SD       AMAX     R²       Adj. R² 
+------------------------------------------------------------------------------------------
+Initial Values                      253   -0.1075  0.1799   0.2152   0.8558   0.9132   0.9129  
+Initial Values (-5 outliers)        248   -0.0999  0.1677   0.1910   0.6696   0.9286   0.9283  
+Adjusted Calc Values (-5 outliers)  248   0.0000   0.1442   0.1910   0.7695   0.9440   0.9438  

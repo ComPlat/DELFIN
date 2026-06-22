@@ -1,0 +1,115 @@
+{
+  "shared": {
+    "task_performance": {
+      "build_up_complex": {
+        "success_rate": 0.85,
+        "thinking_budget_mult": 1.0
+      },
+      "pipeline_orchestration": {
+        "success_rate": 0.7,
+        "thinking_budget_mult": 1.5
+      },
+      "config_validation": {
+        "success_rate": 0.75,
+        "thinking_budget_mult": 1.2
+      },
+      "test_writing": {
+        "success_rate": 0.8,
+        "thinking_budget_mult": 1.0
+      },
+      "git_workflow": {
+        "success_rate": 0.9,
+        "thinking_budget_mult": 0.8
+      },
+      "coding": {
+        "success_rate": 0.84,
+        "thinking_budget_mult": 1.1
+      },
+      "chemistry": {
+        "success_rate": 0.78,
+        "thinking_budget_mult": 1.2
+      },
+      "dashboard": {
+        "success_rate": 0.9,
+        "thinking_budget_mult": 1.0
+      }
+    },
+    "common_failures": [
+      "generic QM answers without search_docs",
+      "reading large DELFIN modules without grep-first narrowing",
+      "under-specifying verification after Python edits",
+      "overexplaining instead of file:line + impact"
+    ],
+    "communication": {
+      "rules": [
+        "Default to very short, efficient answers. No decorative prose.",
+        "German for user-facing conversation, exact, with numbers (Å, eV, s)",
+        "file:line + change, one sentence — no prose",
+        "No confirmation questions on clear tasks",
+        "After every 3rd tool call in a sequence, emit a one-line progress status"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Grep before Read — never >200 lines at once",
+        "Read(offset, limit) after Grep, never whole file",
+        "Independent tool calls always in parallel",
+        "Run pytest plus syntax check after every Python edit",
+        "For chemistry questions: search_docs before answering"
+      ]
+    }
+  },
+  "claude": {
+    "communication": {
+      "rules": [
+        "No Co-Authored-By in commits",
+        "Dashboard actions: ACTION line + max 5 words explanation"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "pytest in background after every code change",
+        "Agent subprocesses for research spanning >3 files"
+      ]
+    }
+  },
+  "openai": {
+    "thinking_budget_mult": 1.1,
+    "communication": {
+      "rules": [
+        "State plan briefly before touching >1 DELFIN file",
+        "Verify provider/module wiring with rg before editing agent, dashboard, or provider paths",
+        "For backend_slurm.py, runtime_setup.py, qm_runtime.py, parallel_classic_manually.py, orca_recovery.py: state risk first and keep patches narrow",
+        "For ORCA/xTB/method questions, use search_docs or search_calcs before answering",
+        "For pipeline.py, config.py, and parallel_classic_manually.py: grep first, then read only the narrowed region"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "Max 40 tool calls per task; after that, stop and summarize current findings",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files",
+        "If the same command fails twice, explain the failure and move on instead of retrying"
+      ]
+    }
+  },
+  "kit": {
+    "communication": {
+      "rules": [
+        "German for user-facing conversation (matches KIT user base)",
+        "State plan briefly before touching >1 DELFIN file",
+        "Verify provider/module wiring with Grep before editing agent, dashboard, or provider paths",
+        "For backend_slurm.py, runtime_setup.py, qm_runtime.py, parallel_classic_manually.py, orca_recovery.py: state risk first and keep patches narrow",
+        "For ORCA/xTB/method questions, use search_docs or search_calcs before answering"
+      ]
+    },
+    "tool_usage": {
+      "rules": [
+        "CRITICAL TOOL ROUTING: search_docs is ONLY for chemistry documentation (ORCA manual, DELFIN manual, methodology). For ANY file inside this repo (including delfin/agent/learned_profiles.json, .py, .md, .json, .ipynb) use Read or Bash — NEVER search_docs.",
+        "CRITICAL LOOP-GUARD: Maximum 3 search_docs calls per question. After 3 calls with no exact match, STOP searching and SYNTHESIZE an answer from sections already read + ORCA manual general knowledge. State uncertainty explicitly. Continuing to search past 3 calls is a documented failure mode for this provider.",
+        "CRITICAL ORDER OF OPERATIONS: If the user prompt says \"read X first\" or \"lies zuerst X\", the FIRST tool call MUST be Read(X) — not search_docs, not list_docs, not anything else. File-editing tasks come BEFORE chemistry questions unless explicitly reversed.",
+        "Max 40 tool calls per task; after that, stop and summarize current findings",
+        "Never attempt git commit or push; always say \"I'll leave the commit to the user\" and list the changed files"
+      ]
+    }
+  }
+}

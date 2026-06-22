@@ -1,0 +1,751 @@
+"""User-local DELFIN settings stored outside the git repo."""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import psutil  # type: ignore
+except ImportError:
+    psutil = None  # type: ignore
+
+SETTINGS_FILE_NAME = ".delfin_settings.json"
+LEGACY_TRANSFER_CONFIG_NAME = ".delfin_transfer_target.json"
+
+
+def _detect_default_local_limits():
+    cpu_count = os.cpu_count() or 1
+    memory_mb = 1_400_000
+    if psutil is not None:
+        try:
+            memory_mb = max(1, int(psutil.virtual_memory().total // (1024 * 1024)))
+        except Exception:
+            memory_mb = 1_400_000
+    return max(1, int(cpu_count)), memory_mb
+
+
+_DEFAULT_LOCAL_CORES, _DEFAULT_LOCAL_RAM_MB = _detect_default_local_limits()
+DEFAULT_SETTINGS = {
+    "transfer": {
+        "ssh_control_path": "",
+    },
+    "paths": {},
+    "runtime": {
+        "backend": "auto",
+        "orca_base": "",
+        "qm_tools_root": "",
+        "csp_tools_root": "",
+        "mlp_tools_root": "",
+        "tool_binaries": {},
+        "local": {
+            "orca_base": "",
+            "max_cores": _DEFAULT_LOCAL_CORES,
+            "max_ram_mb": _DEFAULT_LOCAL_RAM_MB,
+            "allow_oversubscribe": False,
+            "oversubscribe_factor": 1.0,
+            "allow_live_load_bypass": False,
+            "live_cpu_target_factor": 0.95,
+            "live_min_free_ram_mb": 64_000,
+        },
+        "slurm": {
+            "orca_base": "",
+            "submit_templates_dir": "",
+            "profile": "",
+        },
+    },
+    "features": {
+        "remote_archive_enabled": False,
+    },
+    "scheduling": {
+        # Fraction of SLURM_MEM_PER_NODE the pool may promise. Default 0.90.
+        # Above 0.99 risks OOM-SIGKILL (Linux cgroup is unforgiving), below
+        # 0.50 wastes resources. Set lower (0.85) for correlation methods
+        # (DLPNO-CC, MP2) where ORCA's real RSS may exceed %maxcore. Set
+        # higher (0.95) for pure DFT-OPT setups where Fritz' archive shows
+        # real RSS = 80-82 % of promised.
+        # Historical context: 5edfb89 (2026-05-05) introduced the cap at
+        # 0.85 after JEW-R465 OOM (312 GB / 351 GB SLURM, two parallel
+        # OCCUPIER jobs SIGKILL after 48 h). Default raised to 0.90 on
+        # 2026-05-12 after Fritz-archive analysis.
+        "slurm_mem_headroom": 0.90,
+    },
+    "ui": {
+        "tabs": {
+            "order": [],
+            "hidden": [],
+        },
+        "viewer": {
+            "enabled": True,
+            "quality": "high",
+        },
+    },
+    "docs": {
+        "enabled": False,
+        "literature_path": "",
+        "index_path": "",
+    },
+    "agent": {
+        "backend": "cli",
+        "model": "sonnet",
+        "max_tokens": 4096,
+        # When mid-conversation compaction triggers (>12 messages on
+        # solo/dashboard), should we tear down the CLI subprocess and
+        # restart it with the trimmed history? Default True preserves
+        # the original behaviour (compaction actually shrinks the API
+        # request size). Set False to keep the subprocess + session
+        # cache alive and accept that compaction is local-RAM only.
+        "compact_resets_cli": True,
+        # Soft warning when cumulative session cost crosses this USD
+        # mark. The agent shows a banner; nothing is blocked.
+        "cost_soft_limit_usd": 5.0,
+        "role_models": {
+            "dashboard_agent": "auto",
+            "session_manager": "auto",
+            "critic_agent": "auto",
+            "runtime_agent": "auto",
+            "reviewer_agent": "auto",
+            "builder_agent": "auto",
+            "test_agent": "auto",
+            "solo_agent": "auto",
+        },
+    },
+}
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def normalize_ssh_transfer_settings(host, user, remote_path, port):
+    """Validate and normalize SSH transfer settings."""
+    host = str(host or "").strip()
+    if not host or any(ch.isspace() for ch in host) or "@" in host:
+        raise ValueError("Provide a valid SSH host or IP address.")
+
+    user = str(user or "").strip()
+    if not user or any(ch.isspace() for ch in user) or any(ch in user for ch in "@:"):
+        raise ValueError("Provide a valid remote account name.")
+
+    remote_path = str(remote_path or "").strip()
+    if not remote_path:
+        raise ValueError("Provide a remote destination folder.")
+    if "\x00" in remote_path or "\n" in remote_path or "\r" in remote_path:
+        raise ValueError("Remote destination contains unsupported control characters.")
+
+    try:
+        port = int(port)
+    except Exception as exc:
+        raise ValueError("SSH port must be a number.") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("SSH port must be between 1 and 65535.")
+
+    return host, user, remote_path, port
+
+
+def normalize_local_directory_setting(path_value, label):
+    """Validate and normalize an optional local directory setting."""
+    path_value = str(path_value or "").strip()
+    if not path_value:
+        return ""
+    if "\x00" in path_value or "\n" in path_value or "\r" in path_value:
+        raise ValueError(f"{label} contains unsupported control characters.")
+    return str(Path(path_value).expanduser())
+
+
+def normalize_choice_setting(value, label, allowed_values, default):
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return default
+    if normalized not in allowed_values:
+        allowed = ", ".join(sorted(allowed_values))
+        raise ValueError(f"{label} must be one of: {allowed}.")
+    return normalized
+
+
+def normalize_positive_int_setting(value, label, default, minimum=1):
+    if value in ("", None):
+        return int(default)
+    try:
+        normalized = int(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a whole number.") from exc
+    if normalized < minimum:
+        raise ValueError(f"{label} must be at least {minimum}.")
+    return normalized
+
+
+def normalize_positive_float_setting(value, label, default, minimum=1.0):
+    if value in ("", None):
+        return float(default)
+    try:
+        normalized = float(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if normalized < minimum:
+        raise ValueError(f"{label} must be at least {minimum}.")
+    return float(normalized)
+
+
+def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
+    """Validate a float setting that must lie within a closed [min, max] range."""
+    if value in ("", None):
+        return float(default)
+    try:
+        normalized = float(value)
+    except Exception as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if normalized < minimum or normalized > maximum:
+        raise ValueError(f"{label} must be between {minimum} and {maximum}.")
+    return float(normalized)
+
+
+def normalize_bool_setting(value, default=False):
+    if value in ("", None):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enable", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    return bool(default)
+
+
+def normalize_string_list_setting(value, label):
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a JSON array.")
+    normalized = []
+    seen = set()
+    for item in value:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def get_settings_path(base_path=None):
+    return Path(base_path).expanduser() if base_path else (Path.home() / SETTINGS_FILE_NAME)
+
+
+def _read_json(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _write_json_atomic(path, payload):
+    target = Path(path)
+    tmp_path = target.with_suffix(target.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    try:
+        tmp_path.chmod(0o600)
+    except Exception:
+        pass
+    tmp_path.replace(target)
+    try:
+        target.chmod(0o600)
+    except Exception:
+        pass
+
+
+def _normalized_settings_dict(payload):
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise ValueError("Settings file must contain a JSON object.")
+    normalized = dict(payload)
+    transfer = normalized.get("transfer", {})
+    if transfer is None:
+        transfer = {}
+    if not isinstance(transfer, dict):
+        raise ValueError("Settings key 'transfer' must be a JSON object.")
+    normalized["transfer"] = dict(transfer)
+    paths = normalized.get("paths", {})
+    if paths is None:
+        paths = {}
+    if not isinstance(paths, dict):
+        raise ValueError("Settings key 'paths' must be a JSON object.")
+    normalized_paths = {}
+    for key, label in (
+        ("calculations_dir", "Calculations path"),
+        ("archive_dir", "Archive path"),
+    ):
+        normalized_paths[key] = normalize_local_directory_setting(
+            paths.get(key, ""),
+            label,
+        )
+    normalized["paths"] = normalized_paths
+    runtime = normalized.get("runtime", {})
+    if runtime is None:
+        runtime = {}
+    if not isinstance(runtime, dict):
+        raise ValueError("Settings key 'runtime' must be a JSON object.")
+    local_runtime = runtime.get("local", {})
+    if local_runtime is None:
+        local_runtime = {}
+    if not isinstance(local_runtime, dict):
+        raise ValueError("Settings key 'runtime.local' must be a JSON object.")
+    slurm_runtime = runtime.get("slurm", {})
+    if slurm_runtime is None:
+        slurm_runtime = {}
+    if not isinstance(slurm_runtime, dict):
+        raise ValueError("Settings key 'runtime.slurm' must be a JSON object.")
+    tool_binaries = runtime.get("tool_binaries", {})
+    if tool_binaries is None:
+        tool_binaries = {}
+    if not isinstance(tool_binaries, dict):
+        raise ValueError("Settings key 'runtime.tool_binaries' must be a JSON object.")
+    normalized_tool_binaries = {}
+    for key, value in tool_binaries.items():
+        tool_name = str(key or "").strip().lower()
+        if not tool_name:
+            continue
+        normalized_tool_binaries[tool_name] = normalize_local_directory_setting(
+            value,
+            f"{tool_name} binary",
+        )
+    normalized["runtime"] = {
+        "backend": normalize_choice_setting(
+            runtime.get("backend", DEFAULT_SETTINGS["runtime"]["backend"]),
+            "Runtime backend",
+            {"auto", "local", "slurm"},
+            DEFAULT_SETTINGS["runtime"]["backend"],
+        ),
+        "orca_base": normalize_local_directory_setting(
+            runtime.get("orca_base", ""),
+            "Global ORCA path",
+        ),
+        "qm_tools_root": normalize_local_directory_setting(
+            runtime.get("qm_tools_root", ""),
+            "qm_tools root",
+        ),
+        "csp_tools_root": normalize_local_directory_setting(
+            runtime.get("csp_tools_root", ""),
+            "csp_tools root",
+        ),
+        "mlp_tools_root": normalize_local_directory_setting(
+            runtime.get("mlp_tools_root", ""),
+            "mlp_tools root",
+        ),
+        "tool_binaries": normalized_tool_binaries,
+        "local": {
+            "orca_base": normalize_local_directory_setting(
+                local_runtime.get("orca_base", ""),
+                "Local ORCA path",
+            ),
+            "max_cores": normalize_positive_int_setting(
+                local_runtime.get("max_cores", DEFAULT_SETTINGS["runtime"]["local"]["max_cores"]),
+                "Local max cores",
+                DEFAULT_SETTINGS["runtime"]["local"]["max_cores"],
+            ),
+            "max_ram_mb": normalize_positive_int_setting(
+                local_runtime.get("max_ram_mb", DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"]),
+                "Local max RAM (MB)",
+                DEFAULT_SETTINGS["runtime"]["local"]["max_ram_mb"],
+            ),
+            "allow_oversubscribe": normalize_bool_setting(
+                local_runtime.get(
+                    "allow_oversubscribe",
+                    DEFAULT_SETTINGS["runtime"]["local"]["allow_oversubscribe"],
+                ),
+                DEFAULT_SETTINGS["runtime"]["local"]["allow_oversubscribe"],
+            ),
+            "oversubscribe_factor": normalize_positive_float_setting(
+                local_runtime.get(
+                    "oversubscribe_factor",
+                    DEFAULT_SETTINGS["runtime"]["local"]["oversubscribe_factor"],
+                ),
+                "Local oversubscribe factor",
+                DEFAULT_SETTINGS["runtime"]["local"]["oversubscribe_factor"],
+                minimum=1.0,
+            ),
+            "allow_live_load_bypass": normalize_bool_setting(
+                local_runtime.get(
+                    "allow_live_load_bypass",
+                    DEFAULT_SETTINGS["runtime"]["local"]["allow_live_load_bypass"],
+                ),
+                DEFAULT_SETTINGS["runtime"]["local"]["allow_live_load_bypass"],
+            ),
+            "live_cpu_target_factor": normalize_positive_float_setting(
+                local_runtime.get(
+                    "live_cpu_target_factor",
+                    DEFAULT_SETTINGS["runtime"]["local"]["live_cpu_target_factor"],
+                ),
+                "Local live CPU target factor",
+                DEFAULT_SETTINGS["runtime"]["local"]["live_cpu_target_factor"],
+                minimum=0.1,
+            ),
+            "live_min_free_ram_mb": normalize_positive_int_setting(
+                local_runtime.get(
+                    "live_min_free_ram_mb",
+                    DEFAULT_SETTINGS["runtime"]["local"]["live_min_free_ram_mb"],
+                ),
+                "Local live minimum free RAM (MB)",
+                DEFAULT_SETTINGS["runtime"]["local"]["live_min_free_ram_mb"],
+                minimum=1,
+            ),
+        },
+        "slurm": {
+            "orca_base": normalize_local_directory_setting(
+                slurm_runtime.get("orca_base", ""),
+                "SLURM ORCA path",
+            ),
+            "submit_templates_dir": normalize_local_directory_setting(
+                slurm_runtime.get("submit_templates_dir", ""),
+                "SLURM submit templates path",
+            ),
+            "profile": str(slurm_runtime.get("profile", "") or "").strip(),
+        },
+    }
+    features = normalized.get("features", {})
+    if features is None:
+        features = {}
+    if not isinstance(features, dict):
+        raise ValueError("Settings key 'features' must be a JSON object.")
+    normalized_features = dict(features)
+    if "remote_archive_enabled" in normalized_features:
+        normalized_features["remote_archive_enabled"] = bool(normalized_features["remote_archive_enabled"])
+    normalized["features"] = normalized_features
+    scheduling = normalized.get("scheduling", {})
+    if scheduling is None:
+        scheduling = {}
+    if not isinstance(scheduling, dict):
+        raise ValueError("Settings key 'scheduling' must be a JSON object.")
+    scheduling_defaults = DEFAULT_SETTINGS.get("scheduling", {}) or {}
+    headroom_default = scheduling_defaults.get("slurm_mem_headroom", 0.90)
+    normalized["scheduling"] = {
+        "slurm_mem_headroom": normalize_fraction_setting(
+            scheduling.get("slurm_mem_headroom", headroom_default),
+            "SLURM memory headroom",
+            headroom_default,
+            minimum=0.50,
+            maximum=0.99,
+        ),
+    }
+    docs = normalized.get("docs", {})
+    if docs is None:
+        docs = {}
+    if not isinstance(docs, dict):
+        raise ValueError("Settings key 'docs' must be a JSON object.")
+    # Read the docs defaults defensively: DEFAULT_SETTINGS may be mocked
+    # (tests) or come from an older version that predates the 'docs' section.
+    docs_defaults = DEFAULT_SETTINGS.get("docs", {}) or {}
+    docs_enabled_default = docs_defaults.get("enabled", False)
+    normalized["docs"] = {
+        "enabled": normalize_bool_setting(
+            docs.get("enabled", docs_enabled_default),
+            docs_enabled_default,
+        ),
+        "literature_path": normalize_local_directory_setting(
+            docs.get("literature_path", ""),
+            "Literature path",
+        ),
+        "index_path": normalize_local_directory_setting(
+            docs.get("index_path", ""),
+            "Doc index path",
+        ),
+    }
+    ui = normalized.get("ui", {})
+    if ui is None:
+        ui = {}
+    if not isinstance(ui, dict):
+        raise ValueError("Settings key 'ui' must be a JSON object.")
+    tabs = ui.get("tabs", {})
+    if tabs is None:
+        tabs = {}
+    if not isinstance(tabs, dict):
+        raise ValueError("Settings key 'ui.tabs' must be a JSON object.")
+    default_ui = DEFAULT_SETTINGS.get("ui", {}) or {}
+    default_tabs = default_ui.get("tabs", {}) or {}
+    normalized_ui = dict(ui)
+    normalized_ui["tabs"] = {
+        "order": normalize_string_list_setting(
+            tabs.get("order", default_tabs.get("order", [])),
+            "Tab order",
+        ),
+        "hidden": normalize_string_list_setting(
+            tabs.get("hidden", default_tabs.get("hidden", [])),
+            "Hidden tabs",
+        ),
+    }
+    viewer = ui.get("viewer", {})
+    if viewer is None:
+        viewer = {}
+    if not isinstance(viewer, dict):
+        raise ValueError("Settings key 'ui.viewer' must be a JSON object.")
+    default_viewer = default_ui.get("viewer", {}) or {}
+    normalized_ui["viewer"] = {
+        "enabled": normalize_bool_setting(
+            viewer.get("enabled", default_viewer.get("enabled", True)),
+            default_viewer.get("enabled", True),
+        ),
+        "quality": normalize_choice_setting(
+            viewer.get("quality", default_viewer.get("quality", "high")),
+            "3D viewer quality",
+            {"low", "medium", "high"},
+            default_viewer.get("quality", "high"),
+        ),
+    }
+    normalized["ui"] = normalized_ui
+    return normalized
+
+
+def _merge_missing_defaults(payload, defaults):
+    merged = dict(payload)
+    for key, default_value in dict(defaults or {}).items():
+        if key not in merged:
+            merged[key] = default_value if not isinstance(default_value, dict) else dict(default_value)
+            continue
+        if isinstance(default_value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_missing_defaults(merged.get(key) or {}, default_value)
+    return merged
+
+
+def _legacy_transfer_path(settings_path):
+    return Path(settings_path).with_name(LEGACY_TRANSFER_CONFIG_NAME)
+
+
+def load_settings(settings_path=None):
+    path = get_settings_path(settings_path)
+    if path.exists():
+        normalized = _normalized_settings_dict(_read_json(path))
+        merged = _merge_missing_defaults(normalized, DEFAULT_SETTINGS)
+        if merged != normalized:
+            _write_json_atomic(path, merged)
+        return merged
+
+    legacy_path = _legacy_transfer_path(path)
+    if legacy_path.exists():
+        legacy = _read_json(legacy_path)
+        host, user, remote_path, port = normalize_ssh_transfer_settings(
+            legacy.get("host", ""),
+            legacy.get("user", ""),
+            legacy.get("remote_path", ""),
+            legacy.get("port", 22),
+        )
+        migrated = {
+            "transfer": {
+                "host": host,
+                "user": user,
+                "remote_path": remote_path,
+                "port": port,
+                "updated_at": utc_now_iso(),
+            }
+        }
+        save_settings(migrated, path)
+        return _merge_missing_defaults(migrated, DEFAULT_SETTINGS)
+
+    return _merge_missing_defaults({}, DEFAULT_SETTINGS)
+
+
+def save_settings(settings, settings_path=None):
+    path = get_settings_path(settings_path)
+    normalized = _merge_missing_defaults(_normalized_settings_dict(settings), DEFAULT_SETTINGS)
+    _write_json_atomic(path, normalized)
+    return normalized
+
+
+def load_transfer_settings(settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    payload = settings.get("transfer", {}) or {}
+    if not payload:
+        return None
+    host, user, remote_path, port = normalize_ssh_transfer_settings(
+        payload.get("host", ""),
+        payload.get("user", ""),
+        payload.get("remote_path", ""),
+        payload.get("port", 22),
+    )
+    return {
+        "host": host,
+        "user": user,
+        "remote_path": remote_path,
+        "port": port,
+        "settings_path": str(path),
+    }
+
+
+def load_runtime_settings(settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    return settings.get("runtime", {}) or _merge_missing_defaults({}, DEFAULT_SETTINGS["runtime"])
+
+
+def save_transfer_settings(host, user, remote_path, port, settings_path=None):
+    path = get_settings_path(settings_path)
+    host, user, remote_path, port = normalize_ssh_transfer_settings(host, user, remote_path, port)
+    settings = load_settings(path)
+    settings["transfer"] = {
+        "host": host,
+        "user": user,
+        "remote_path": remote_path,
+        "port": port,
+        "updated_at": utc_now_iso(),
+    }
+    save_settings(settings, path)
+    return {
+        "host": host,
+        "user": user,
+        "remote_path": remote_path,
+        "port": port,
+        "settings_path": str(path),
+    }
+
+
+def load_remote_archive_enabled(settings_path=None):
+    path = get_settings_path(settings_path)
+    try:
+        settings = load_settings(path)
+    except Exception:
+        return bool(DEFAULT_SETTINGS.get("features", {}).get("remote_archive_enabled", False))
+    features = settings.get("features", {}) or {}
+    return bool(features.get("remote_archive_enabled", DEFAULT_SETTINGS["features"]["remote_archive_enabled"]))
+
+
+def save_remote_archive_enabled(enabled, settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    features = settings.get("features", {}) or {}
+    features["remote_archive_enabled"] = bool(enabled)
+    settings["features"] = features
+    save_settings(settings, path)
+    return bool(features["remote_archive_enabled"])
+
+
+def load_viewer_settings(settings_path=None):
+    """Return the ``ui.viewer`` dict ({enabled: bool, quality: str})."""
+    default_viewer = DEFAULT_SETTINGS["ui"]["viewer"]
+    try:
+        settings = load_settings(settings_path)
+    except Exception:
+        return dict(default_viewer)
+    viewer = (settings.get("ui", {}) or {}).get("viewer", {}) or {}
+    return {
+        "enabled": bool(viewer.get("enabled", default_viewer["enabled"])),
+        "quality": str(viewer.get("quality", default_viewer["quality"])),
+    }
+
+
+def save_viewer_settings(enabled, quality, settings_path=None):
+    path = get_settings_path(settings_path)
+    settings = load_settings(path)
+    ui = settings.get("ui", {}) or {}
+    viewer = ui.get("viewer", {}) or {}
+    viewer["enabled"] = normalize_bool_setting(enabled, True)
+    viewer["quality"] = normalize_choice_setting(
+        quality, "3D viewer quality", {"low", "medium", "high"}, "high"
+    )
+    ui["viewer"] = viewer
+    settings["ui"] = ui
+    save_settings(settings, path)
+    return {"enabled": viewer["enabled"], "quality": viewer["quality"]}
+
+
+READ_MARKERS_DIR_NAME = ".delfin_meta"
+READ_MARKERS_FILE_NAME = "read_markers.json"
+
+
+def _read_markers_path(base_path=None):
+    if base_path is not None:
+        return Path(base_path).expanduser()
+    return Path.home() / READ_MARKERS_DIR_NAME / READ_MARKERS_FILE_NAME
+
+
+def load_read_markers(markers_path=None):
+    """Return the per-folder read-marker dict, preserving sentinel keys.
+
+    Ordinary entries are ``{folder_path: completion_ts_iso}``. Sentinel keys
+    (e.g. ``__seeded_dirs__``) start and end with ``__`` and may carry list
+    values — they are kept intact and ignored by the unread comparison.
+    """
+    path = _read_markers_path(markers_path)
+    if not path.exists():
+        return {}
+    try:
+        payload = _read_json(path)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    out = {}
+    for k, v in payload.items():
+        if not k:
+            continue
+        key = str(k)
+        if key.startswith("__") and key.endswith("__"):
+            out[key] = v
+        else:
+            out[key] = str(v)
+    return out
+
+
+def save_read_markers(markers, markers_path=None):
+    path = _read_markers_path(markers_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(path, dict(markers or {}))
+    return dict(markers or {})
+
+
+_LAST_RUNNING_KEY = "__last_running__"
+_PENDING_UNREAD_KEY = "__pending_unread__"
+
+
+def _load_str_set(markers, key):
+    raw = markers.get(key)
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if item}
+
+
+def update_calc_running_transitions(current_running, markers_path=None):
+    """Update transition state and return the new set of unread folder paths.
+
+    ``current_running`` is the set of folder-path strings currently observed as
+    RUNNING. Any folder that was in the previously-observed running set but is
+    no longer running becomes "unread" (regardless of whether it shows a green
+    checkmark). The unread set is preserved until ``mark_calc_as_read`` is
+    called for each folder.
+    """
+    current = {str(p) for p in (current_running or []) if p}
+    markers = load_read_markers(markers_path)
+    last_running = _load_str_set(markers, _LAST_RUNNING_KEY)
+    pending = _load_str_set(markers, _PENDING_UNREAD_KEY)
+
+    new_transitions = last_running - current
+    pending |= new_transitions
+
+    markers[_LAST_RUNNING_KEY] = sorted(current)
+    markers[_PENDING_UNREAD_KEY] = sorted(pending)
+    save_read_markers(markers, markers_path)
+    return pending
+
+
+def is_calc_unread(folder_path, markers_path=None):
+    """Return True iff ``folder_path`` is in the pending-unread set."""
+    folder_key = str(folder_path or "").strip()
+    if not folder_key:
+        return False
+    markers = load_read_markers(markers_path)
+    return folder_key in _load_str_set(markers, _PENDING_UNREAD_KEY)
+
+
+def mark_calc_as_read(folder_path, markers_path=None):
+    """Remove ``folder_path`` from the pending-unread set."""
+    folder_key = str(folder_path or "").strip()
+    if not folder_key:
+        return
+    markers = load_read_markers(markers_path)
+    pending = _load_str_set(markers, _PENDING_UNREAD_KEY)
+    if folder_key in pending:
+        pending.discard(folder_key)
+        markers[_PENDING_UNREAD_KEY] = sorted(pending)
+        save_read_markers(markers, markers_path)
+
+

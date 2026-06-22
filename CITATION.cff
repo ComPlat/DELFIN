@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: Hartmann
+  given-names: Maximilian
+  orcid: "0009-0007-0973-3605"
+title: "DELFIN: Automated prediction of preferred spin states and associated redox potentials"
+version: "v1.1.1"
+date-released: "2026-03-03"
+url: "https://github.com/ComPlat/DELFIN"
+repository-code: "https://github.com/ComPlat/DELFIN"
+license: LGPL-3.0-or-later
+doi: "10.5281/zenodo.17208145"
