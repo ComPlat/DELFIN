@@ -219,6 +219,93 @@ def _rigid_hapto_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_RIGID_HAPTO", "0") == "1"
 
 
+def _donor_protonation_enabled() -> bool:
+    """Honour the SMILES-implied protonation on coordinating atoms when a ligand is
+    cleaved off the metal (default OFF -> byte-identical: the normalization is never
+    applied)."""
+    return os.environ.get("DELFIN_FFFREE_DONOR_PROTONATION", "0") == "1"
+
+
+# Standard NEUTRAL valences for the light p-block donor/π-face elements.  Used only to
+# derive the SMILES-implied H of a coordinating atom whose explicit ``[X+]`` charge is a
+# dative-bond ENCODING artifact (not a real cation) — graph-only, never extended to the
+# metal itself.
+_NEUTRAL_VALENCE = {6: 4, 7: 3, 8: 2, 15: 3, 16: 2, 5: 3}
+
+
+def _restore_donor_protonation(mol, m: int, donor_idx: List[int]):
+    """Normalize the protonation of metal-coordinating atoms to the SMILES-implied
+    valence BEFORE the ligand fragments are cleaved + re-sanitized.
+
+    Root cause (eye: IRECIT under-protonated, IPOSOW over-protonated):
+    a metal-donor bond written explicitly in the SMILES forces an ENCODING ARTIFACT
+    on the donor atom so the parser accepts the M-X valence — most often a ``[C+]``/
+    ``[O+]`` formal charge plus ``noImplicit``.  When the M-X bond is later cleaved
+    and the freed fragment re-sanitized, that artifact survives and the donor keeps
+    the WRONG hydrogen count:
+
+      * a π-face donor carbon (``[C+]=[C+]`` η²-alkene, ``[C+]`` η-ring/arene) keeps
+        its artifact ``+`` and ``noImplicit`` -> RDKit adds ZERO H -> the C=C / ring
+        CH protons vanish (IRECIT: ``[C+]=[C+]`` should be ethylene H2C=CH2, 2 H/C);
+        the bare ``[C+]`` cation also blocks kekulization, so the whole cleave fails
+        and the system silently falls back to legacy.
+      * a σ lone-pair donor (N/O/P/S, carbene-C, carbonyl-C in ``[C]#[O+]``) is a
+        DIFFERENT animal: its open coordination slot is a LONE PAIR, not an H, so it
+        must NOT gain a proton when freed.  Naively neutralizing every ``[X+]`` would
+        ADD a spurious H here (the IPOSOW-class over-protonation).
+
+    The fix is therefore asymmetric and graph-derived (never refcode/element-special):
+    only a π-DONOR CARBON — a metal-bound carbon whose remaining (non-metal) bonds are
+    an unsaturated C=C / C≡C / aromatic-C face (a multiple/aromatic bond to another
+    carbon) and which carries an artifact ``+`` with no H — has its artifact charge +
+    radical dropped and its explicit-H set to the neutral sp/sp²/sp³ valence implied
+    by its non-metal bond orders (``valence(C)=4`` minus the non-metal bond sum).
+    Every σ lone-pair donor (heteroatom, carbene-C, carbonyl-C) is LEFT EXACTLY AS-IS,
+    so no proton is added where the SMILES does not imply one.
+
+    Operates in place on an ``RWMol``; idempotent; graph-only; deterministic; never
+    raises (any failure leaves the atom untouched).  Returns the count of atoms whose
+    protonation was restored (for diagnostics)."""
+    restored = 0
+    for d in donor_idx:
+        try:
+            a = mol.GetAtomWithIdx(int(d))
+        except Exception:
+            continue
+        if a.GetAtomicNum() != 6:
+            continue                          # only π-donor CARBON is restored
+        if a.GetFormalCharge() <= 0:
+            continue                          # no encoding artifact to undo
+        if a.GetTotalNumHs() > 0:
+            continue                          # already protonated -> nothing to do
+        # Non-metal bond order sum + is this an unsaturated/aromatic CARBON π-face?
+        nonmetal_bo = 0.0
+        is_pi_carbon = False
+        for b in a.GetBonds():
+            other = b.GetOtherAtom(a)
+            if bd._is_metal(other.GetSymbol()):
+                continue                      # the dative M-C bond contributes nothing
+            bo = b.GetBondTypeAsDouble()
+            nonmetal_bo += bo
+            if other.GetAtomicNum() == 6 and (bo >= 2.0 or b.GetIsAromatic()
+                                              or a.GetIsAromatic()):
+                is_pi_carbon = True           # C=C / C#C / aromatic-C face
+        if not is_pi_carbon:
+            continue                          # σ lone-pair / carbonyl C -> leave as-is
+        nh = int(round(_NEUTRAL_VALENCE[6] - nonmetal_bo))
+        if nh <= 0:
+            continue                          # valence already full -> add nothing
+        try:
+            a.SetFormalCharge(0)              # drop the dative-encoding [C+] artifact
+            a.SetNumRadicalElectrons(0)
+            a.SetNoImplicit(True)
+            a.SetNumExplicitHs(nh)
+            restored += 1
+        except Exception:
+            continue
+    return restored
+
+
 # Heavy-atom per-donor-arm complexity cap (decompose ligand-complexity gate).  At the
 # default cap (8) a ligand with >8 heavy atoms / donor is REJECTED -> the whole complex
 # bails to legacy (0 enumerated isomers).  The isomer-completeness audit
@@ -449,6 +536,12 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     # Cleave: break every M-σ-donor bond AND every M-(η-carbon) bond, then split
     # into sanitized fragment mols (indices stay stable inside each fragment).
     em = Chem.RWMol(mol)
+    # Donor-protonation normalization (DELFIN_FFFREE_DONOR_PROTONATION=1; default OFF
+    # -> not called, byte-identical): restore the SMILES-implied H on π-donor carbons
+    # (η-faces written as [C+]) BEFORE the sanitize-fragment cleave, so the freed face
+    # kekulizes and carries the correct CH protons; σ donors are left untouched.
+    if _donor_protonation_enabled():
+        _restore_donor_protonation(em, m, nbr_idx)
     for d in nbr_idx:
         if em.GetBondBetweenAtoms(m, d) is not None:
             em.RemoveBond(m, d)
@@ -599,6 +692,12 @@ def decompose(smiles: str) -> Optional[Dict]:
     # break metal-donor bonds (keep atom indices stable), then split into
     # sanitized fragment mols (sanitize fixes valences -> N regains its H etc.).
     em = Chem.RWMol(mol)
+    # Donor-protonation normalization (DELFIN_FFFREE_DONOR_PROTONATION=1; default OFF
+    # -> not called, byte-identical): restore the SMILES-implied H on π-donor carbons
+    # whose [C+] dative-encoding artifact would otherwise leave them under-protonated
+    # (and unkekulizable).  σ lone-pair donors are left untouched (no over-protonation).
+    if _donor_protonation_enabled():
+        _restore_donor_protonation(em, m, donor_idx)
     for d in donor_idx:
         if em.GetBondBetweenAtoms(m, d) is not None:
             em.RemoveBond(m, d)
