@@ -1501,6 +1501,98 @@ def _rot_about_axis(axis, theta):
     return np.eye(3) * c + s * K + (1.0 - c) * np.outer(axis, axis)
 
 
+def _piano_leg_tilt_enabled() -> bool:
+    """Piano-stool σ-leg TILT correction (default OFF -> byte-identical).
+
+    A half-sandwich / piano-stool (ONE η-face + a small set of σ-legs) is NOT a
+    regular tetrahedron: the η-ring is a fat 3-electron-pair FACE donor, and the legs
+    splay DOWN, away from the ring, so the real (ring-centroid)-M-L angle is ~120-130
+    deg (not the ~90-110 deg a generic CN4/CN5 polyhedron places the legs at).  When
+    ON, the legs are rigidly tilted to that piano-stool angle; OFF, the block is
+    skipped and the build is byte-identical to the historic polyhedron placement."""
+    return os.environ.get("DELFIN_FFFREE_PIANO_LEG_TILT", "0") == "1"
+
+
+def _piano_leg_target_deg() -> float:
+    """Target (η-ring-centroid)-M-(σ-leg) tilt angle in degrees for the piano-stool
+    leg-tilt correction.  Default 125 deg -- the canonical crystallographic value for
+    half-sandwich piano-stools: (arene)Cr(CO)3 centroid-Cr-C ~125.7 deg, CpMn(CO)3
+    centroid-Mn-C ~125 deg, CpFe(CO)2X ~121-126 deg.  Override via
+    DELFIN_FFFREE_PIANO_LEG_DEG; the legs splay DOWN (away from the ring), so values
+    >90 deg point the legs to the FAR hemisphere from the centroid axis."""
+    try:
+        v = float(os.environ.get("DELFIN_FFFREE_PIANO_LEG_DEG", "125.0"))
+    except (TypeError, ValueError):
+        return 125.0
+    # clamp to a sane piano-stool window so a bad env value can never flip the tripod
+    return min(160.0, max(95.0, v))
+
+
+def _tilt_piano_legs(P, prim_V, sigma_blocks, target_deg):
+    """Rigidly tilt each σ-leg block to the piano-stool (ring-centroid)-M-L angle.
+
+    ``P`` is the assembled coordinate array with the metal at the origin (row 0).
+    ``prim_V`` is the UNIT M->(primary η-ring centroid) direction.  ``sigma_blocks``
+    is the list of (start, end) atom-row half-open ranges of the σ-co-ligand blocks
+    (the legs).  ``target_deg`` is the desired centroid-M-L angle.
+
+    For each leg, the representative donor (the block atom CLOSEST to the metal) gives
+    the leg's current M->L direction.  The whole leg block is rotated RIGIDLY about an
+    axis through the metal (the origin) that is PERPENDICULAR to the plane spanned by
+    ``prim_V`` and the leg direction, by exactly the angle needed to bring the
+    centroid-M-L angle to ``target_deg``.  Because the rotation passes through the
+    metal it preserves every atom's metal distance (M-L INVARIANT) and the leg's
+    internal geometry; it only swings the leg DOWN, away from the η-ring.  Each leg
+    keeps its own azimuth about ``prim_V`` (the rotation axis is radial-tangential),
+    so a 3-fold-symmetric tripod stays 3-fold symmetric.  The η-ring is never touched.
+
+    Universal over leg count (1..n) and ring type; geometry-only, deterministic,
+    never raises (returns ``P`` unchanged on any degeneracy).  Returns the modified
+    array (in-place edits applied to ``P``)."""
+    prim_V = np.asarray(prim_V, float)
+    nV = np.linalg.norm(prim_V)
+    if nV < 1e-9 or not sigma_blocks:
+        return P
+    prim_V = prim_V / nV
+    tgt = np.radians(float(target_deg))
+    M = P[0]
+    for (s, e) in sigma_blocks:
+        if e <= s:
+            continue
+        blk = P[s:e]
+        # representative leg donor = block atom nearest the metal (the σ-donor).
+        rel = blk - M
+        dists = np.linalg.norm(rel, axis=1)
+        di = int(np.argmin(dists))
+        L = rel[di]
+        nL = np.linalg.norm(L)
+        if nL < 1e-9:
+            continue
+        Lu = L / nL
+        cur = float(np.arccos(np.clip(np.dot(prim_V, Lu), -1.0, 1.0)))
+        delta = tgt - cur
+        if abs(delta) < 1e-6:
+            continue
+        # rotation axis = prim_V x leg-direction (perpendicular to the swing plane).
+        # Sign of `delta` then moves the leg toward/away from the centroid axis; a
+        # positive delta (target > current) opens the angle -> legs splay DOWN.
+        ax = np.cross(prim_V, Lu)
+        nax = np.linalg.norm(ax)
+        if nax < 1e-8:
+            # leg is (anti)parallel to the centroid axis -> tilt direction undefined;
+            # use any axis perpendicular to prim_V (deterministic) so it still splays.
+            ref = np.array([1.0, 0.0, 0.0]) if abs(prim_V[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+            ax = np.cross(prim_V, ref)
+            nax = np.linalg.norm(ax)
+            if nax < 1e-8:
+                continue
+        ax = ax / nax
+        R = _rot_about_axis(ax, delta)
+        # rotate the WHOLE leg block about the metal at the origin (no recentre).
+        P[s:e] = blk @ R.T
+    return P
+
+
 def _place_eta_ring(metal, lsyms, lP, eta_idxs, Vunit, mc_dist,
                     spin=0.0, pucker=0.0):
     """Rigidly seat an η-face so its ring CENTROID sits on the polyhedron vertex
@@ -1788,6 +1880,22 @@ def assemble_hapto(metal, geometry, d, variant=None):
                 P[s:e] = P[s:e] @ Rax.T            # metal at origin -> no recentre
             if not np.all(np.isfinite(P)):
                 return None
+    # --- Piano-stool σ-leg TILT (DELFIN_FFFREE_PIANO_LEG_TILT, default OFF) -------
+    # A half-sandwich (EXACTLY one η-face + σ-legs, no second ring) is not a regular
+    # polyhedron: the η-ring is a fat FACE donor and the legs splay DOWN, so the real
+    # (ring-centroid)-M-L angle is ~125 deg, not the ~110 deg (T-4) / ~90 deg (SP-4)
+    # the generic CNn polyhedron places them at.  Rigidly tilt each σ-leg block about
+    # the metal so that angle is correct; the η-ring + every M-L distance are invariant.
+    # Skipped (byte-identical) when the flag is off, when there is not exactly one
+    # η-face (full sandwich / metallocene untouched), or when there are no σ-legs.
+    if (_piano_leg_tilt_enabled() and len(eta_blocks) == 1 and sigma_blocks):
+        try:
+            prim_V = np.asarray(eta_blocks[0][2], float)
+            P = _tilt_piano_legs(P, prim_V, sigma_blocks, _piano_leg_target_deg())
+        except Exception:
+            pass
+        if not np.all(np.isfinite(P)):
+            return None
     # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
     # ring + constructed coordination are preserved; periphery relaxes only).
     try:
