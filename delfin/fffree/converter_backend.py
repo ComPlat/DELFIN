@@ -151,6 +151,42 @@ _GEOM_TO_POLYA = {
 }
 
 
+# --- CN4 dual-geometry (Td <-> SP-4) completeness ----------------------------
+# For CN4 the crystal can be tetrahedral (T-4, ~109.5 deg donor-M-donor) OR square
+# planar (SP-4, 90 deg x4 / 180 deg x2).  decompose() picks exactly ONE per metal
+# (_default_geometry: SP-4 for the d8 set, else T-4), so the manifold previously held
+# only one of the two CN4 shapes -- the crystal's actual geometry was MISSING whenever
+# it disagreed with the metal's default (eye: QAKTOO is Td but Au->SP-4; INICIR misses
+# both Td and a clean SP-4).  The legacy DELFIN_FFFREE_DUAL_CN4 flag added the opposite
+# geometry on the MONODENTATE path only; CN4 CHELATE complexes (the bulk of real CN4
+# phosphine/phosphite cages, incl. QAKTOO/INICIR) had NO dual-geometry pass at all and
+# always emitted just the single decompose-chosen shape.
+#
+# DELFIN_FFFREE_CN4_BOTH=1 (default OFF -> byte-identical) makes CN4 enumeration ALWAYS
+# emit BOTH the T-4 tetrahedron AND the SP-4 square-planar isomers whenever CN==4 and the
+# donor set permits both -- covering the monodentate AND the chelate paths -- so the
+# manifold contains whichever geometry the crystal picks.  Strictly ADDITIVE (never
+# removes the primary geometry); the opposite-geometry pass is best-effort and never
+# bails the primary result.  Universal / graph-only, deterministic, never raises.
+_CN4_GEOMS = ("T-4 tetrahedron", "SP-4 square planar")
+
+
+def _cn4_both_enabled() -> bool:
+    """CN4 dual-geometry completeness: emit BOTH Td and SP-4 for plausible CN4
+    (default OFF -> byte-identical when unset)."""
+    return os.environ.get("DELFIN_FFFREE_CN4_BOTH", "0") == "1"
+
+
+def _cn4_opposite_geometry(geom_name: str) -> Optional[str]:
+    """The OTHER CN4 polyhedron name (T-4 <-> SP-4), or None if `geom_name` is not a
+    CN4 geometry.  Used to additively enumerate the partner shape."""
+    if geom_name == "T-4 tetrahedron":
+        return "SP-4 square planar"
+    if geom_name == "SP-4 square planar":
+        return "T-4 tetrahedron"
+    return None
+
+
 # antipodal vertex pairs per geometry (polya vertex ordering) — for universal
 # cis/trans/fac/mer classification from the coloring.  Iter-32d (User 2026-05-28
 # GUVZIH "fac koord fehlt"): extended to CN5 (TBP/SPY) + CN3 (T-shape).
@@ -1006,7 +1042,26 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     if d.get("has_eta"):
         return _coord_filter(_fffree_hapto_isomers(d, max_isomers))
     if d.get("has_chelate"):
-        return _coord_filter(_fffree_chelate_isomers(d, geom_key, max_isomers))
+        chel = _fffree_chelate_isomers(d, geom_key, max_isomers) or []
+        # CN4 dual-geometry completeness (DELFIN_FFFREE_CN4_BOTH, default OFF ->
+        # byte-identical): the chelate path builds only on the single decompose-chosen
+        # CN4 shape, so the partner geometry (the one the crystal may actually have --
+        # e.g. QAKTOO is Td but Au defaults to SP-4) was never emitted.  Additively
+        # enumerate the OTHER CN4 polyhedron's chelate isomers on top.  Best-effort:
+        # the opposite-geometry pass never bails the primary result.
+        if (_cn4_both_enabled() and d.get("cn") == 4
+                and _cn4_opposite_geometry(d["geometry"]) is not None):
+            opp = _cn4_opposite_geometry(d["geometry"])
+            opp_key = _GEOM_TO_POLYA.get(opp)
+            if opp_key is not None and opp_key in PIC._GROUPS:
+                d_opp = dict(d)
+                d_opp["geometry"] = opp
+                try:
+                    extra = _fffree_chelate_isomers(d_opp, opp_key, max_isomers) or []
+                except Exception:
+                    extra = []
+                chel = chel + extra
+        return _coord_filter(chel or None)
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
@@ -1135,12 +1190,15 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # _PREFERRED_CN4_GEOMETRY ('SQ' or 'TH') but real CN4 complexes can be either — esp.
     # Cu²⁺ where both T-4 (Cu(I)-like) and SP-4 (Cu(II) Jahn-Teller) exist.  Additive,
     # env-gated default OFF.  Adds the OPPOSITE of whichever the primary picked.
-    if d.get("cn") == 4 and os.environ.get("DELFIN_FFFREE_DUAL_CN4", "0") == "1":
-        if d["geometry"] == "SP-4 square planar":
-            results += _enumerate_geometry(d, "tetrahedron", "T-4 tetrahedron",
-                                           lig_ref, lab_elem, spec, max_isomers)
-        elif d["geometry"] == "T-4 tetrahedron":
-            results += _enumerate_geometry(d, "square_planar", "SP-4 square planar",
+    # DELFIN_FFFREE_CN4_BOTH (default OFF) generalises the same additive dual-geometry to
+    # ALWAYS emit both CN4 shapes (and is also wired on the chelate path above) so the
+    # crystal's geometry is never absent from the manifold; either flag triggers the add.
+    if d.get("cn") == 4 and (os.environ.get("DELFIN_FFFREE_DUAL_CN4", "0") == "1"
+                             or _cn4_both_enabled()):
+        opp = _cn4_opposite_geometry(d["geometry"])
+        if opp is not None:
+            opp_key = _GEOM_TO_POLYA.get(opp)
+            results += _enumerate_geometry(d, opp_key, opp,
                                            lig_ref, lab_elem, spec, max_isomers)
     # Iter-32c: CN3 dual SP-3 trigonal-planar / T-3 T-shape (mirror of dual-CN4).
     # decompose picks ONE (d⁸ → T-shape, else SP-3); dual flag adds the other.
