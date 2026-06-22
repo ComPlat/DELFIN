@@ -807,6 +807,36 @@ def _shell_cshm(d, built):
         return float("inf")
 
 
+def _planar_polydentate_place_enabled() -> bool:
+    """Gate for the in-plane (metal-COPLANAR) PLACEMENT of a rigid planar polydentate
+    (DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE, default OFF => byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE", "0") == "1"
+
+
+def _coplanar_not_worse(d, base, cand):
+    """NEVER-WORSE accept test for a coplanar-placed candidate frame ``cand`` vs the
+    historic ``base`` frame.  Accept only if the candidate (a) builds, (b) does NOT
+    increase full coordination-shell CShM beyond a hair (1e-3 tolerance), and (c) does
+    NOT worsen the minimum non-bonded heavy-heavy (inter-ligand) distance below the
+    base's own (within the standard 5 % vdW tolerance / 2.0 A floor).  Geometry-only,
+    deterministic; any failure => reject (keep base)."""
+    if cand is None:
+        return False
+    if base is None:
+        # no historic frame at all (the folded build itself failed the gate later) —
+        # accept the coplanar candidate only on its own merit (finite CShM).
+        return np.isfinite(_shell_cshm(d, cand))
+    try:
+        if _shell_cshm(d, cand) > _shell_cshm(d, base) + 1e-3:
+            return False
+        bsyms, bP, _ = base
+        csyms, cP, _ = cand
+        base_min = _min_nonbonded_heavy(bsyms, bP)
+        return _interlig_clash_ok(csyms, cP, base_min)
+    except Exception:
+        return False
+
+
 def _build_config_never_worse(d, config, ligands, geom_key):
     """Build one chelate-isomer config.  For a RIGID PLANAR tridentate on CN5 (TBP-5 /
     SPY-5) with DELFIN_FFFREE_PLANAR_MER_CN5=1, build the frame BOTH ways — with the
@@ -814,31 +844,58 @@ def _build_config_never_worse(d, config, ligands, geom_key):
     historic folded seating) — gate both, and KEEP the lower full-shell CShM.  The
     meridional build wins where it opens the bite toward the ideal (ANUCOE 12.7->2.1);
     the folded build survives where the forced bite would distort the shape WORSE
-    (strict never-worse).  Otherwise (flag off / not rigid-planar-CN5) this is the
-    plain single build -> byte-identical."""
+    (strict never-worse).
+
+    RIGID PLANAR polydentate IN-PLANE PLACEMENT (DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE,
+    default OFF): the folded metallacycle embed lifts the metal ~1.0 A OUT of the
+    donors' own plane (a flat tridentate physically requires the metal IN that plane).
+    When enabled and the config carries a rigid_planar dent>=3 ligand, ALSO build a
+    metal-COPLANAR frame (planar_coplanar=True) and keep it over the historic frame iff
+    it does not worsen CShM or the minimum inter-ligand distance (``_coplanar_not_worse``
+    — strict never-worse).  Universal (any CN/geometry the chelate path reaches), graph
+    /geometry-only.  Otherwise (flags off / not rigid-planar) this is the plain single
+    build -> byte-identical."""
     metal, geom = d["metal"], d["geometry"]
+    _has_rp = any(lg.get("rigid_planar") and lg.get("denticity") >= 3 for lg in ligands)
     _cn5_rp = (
         os.environ.get("DELFIN_FFFREE_PLANAR_MER_CN5", "0") == "1"
         and geom in ("TBP-5 trigonal bipyramid", "SPY-5 square pyramid")
         and any(lg.get("rigid_planar") and lg.get("denticity") == 3 for lg in ligands))
-    if not _cn5_rp:
+    _cop = _planar_polydentate_place_enabled() and _has_rp
+    if not _cn5_rp and not _cop:
         try:
             return AC.assemble_from_config(metal, geom, config, ligands)
         except Exception:
             return None
-    # never-worse: compare meridional (bite-forced) vs folded (bite-off)
-    best = None
-    best_cshm = float("inf")
-    for pb in (True, False):
+    # base build: either the CN5 meridional-vs-folded never-worse pick, or the plain
+    # historic single build (when only the coplanar flag is on).
+    if _cn5_rp:
+        best = None
+        best_cshm = float("inf")
+        for pb in (True, False):                  # meridional (bite-forced) vs folded
+            try:
+                b = AC.assemble_from_config(metal, geom, config, ligands, planar_bite=pb)
+            except Exception:
+                b = None
+            if b is None:
+                continue
+            c = _shell_cshm(d, b)
+            if c < best_cshm:
+                best_cshm, best = c, b
+    else:
         try:
-            b = AC.assemble_from_config(metal, geom, config, ligands, planar_bite=pb)
+            best = AC.assemble_from_config(metal, geom, config, ligands)
         except Exception:
-            b = None
-        if b is None:
-            continue
-        c = _shell_cshm(d, b)
-        if c < best_cshm:
-            best_cshm, best = c, b
+            best = None
+    if not _cop:
+        return best
+    # coplanar in-plane placement candidate (metal solved INTO the rigid donor plane)
+    try:
+        cand = AC.assemble_from_config(metal, geom, config, ligands, planar_coplanar=True)
+    except Exception:
+        cand = None
+    if _coplanar_not_worse(d, best, cand):
+        return cand
     return best
 
 

@@ -211,6 +211,156 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         return None
 
 
+def _planar_polydentate_place_enabled() -> bool:
+    """In-plane (coplanar-metal) PLACEMENT for a RIGID PLANAR polydentate.
+
+    A rigid (aromatic/conjugated) planar polydentate — terpyridine-class tridentate,
+    pincer — holds its >=3 donors coplanar in the ligand's own flat plane, so the
+    coordinated metal physically MUST lie IN that donor plane (donors + M coplanar =
+    a meridional in-plane arrangement; that is what a planar tridentate demands).
+
+    The historic metallacycle embed (``_embed_metallacycle``) places M bonded to all
+    donors but lets the rigid backbone FOLD so the metal lifts ~1.0 A OUT of the
+    donors' own plane (a tripod buckle).  A post-hoc rigid rotation of a frozen
+    non-coplanar donor set CANNOT fix this — rotating a rigid body never changes the
+    metal's signed distance to the donor plane (``DELFIN_FFFREE_PI_COPLANAR_M``
+    proved this).  So the fix is at PLACEMENT time (this flag): construct a
+    metal-centered conformer in which the metal is solved INTO the rigid donor plane
+    before orienting onto the assigned meridional vertices.
+
+    Default OFF -> byte-identical (the coplanar conformer is never built; the
+    historic folded embed is used)."""
+    return os.environ.get("DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE", "0") == "1"
+
+
+def _coplanar_metal_centered_conformer(mol, donor_idxs, metal_sym, mds, k=8):
+    """Build a metal-centered conformer of a RIGID PLANAR polydentate in which the
+    metal is COPLANAR with the donor set (the in-plane meridional pose a flat
+    conjugated tridentate physically requires), returning the SAME contract as
+    ``_embed_metallacycle``: ``(lsyms, [coords, ...])`` where ``lsyms`` + each
+    ``coords`` exclude the placeholder metal, match ``AddHs(mol)`` atom order
+    (donor indices preserved), and are RECENTERED so the metal sits at the ORIGIN
+    (donor positions are then the M->donor vectors).  Returns ``None`` on failure.
+
+    Method (universal, geometry/graph-only, no SMILES/refcode knowledge):
+      1. Embed FREE-ligand conformers (the rigid backbone keeps the donors flat) and
+         MMFF-optimise the organic internals.  The free embed gives the ligand's
+         NATURAL flat donor geometry (~150-165 deg outer-outer span), NOT the
+         metallacycle's folded ~110 deg.
+      2. For each near-planar conformer, fit the donor/backbone mean-plane (normal
+         ``n``) and solve, by 2-D Gauss-Newton IN that plane, for the metal position
+         that best matches every ideal M-donor distance ``mds[i]`` simultaneously.
+         The solution is IN the plane by construction => M is coplanar with the
+         donors (out-of-plane = 0 exactly).
+      3. Pick the conformer with the SMALLEST distance residual (the least-splayed
+         flat pose — the donors that can be reached at ~equal M-D bonds), recenter so
+         M is at the origin, and emit it.
+
+    The downstream rigid Kabsch-orient + per-donor RADIAL rescale
+    (``_orient_chelate_to_vertices``) then seats the donors on the assigned in-plane
+    meridional vertices and sets each M-D to exactly its ideal — radial rescale moves
+    each donor only ALONG its (in-plane) M->donor ray, so the metal stays coplanar
+    and the meridional span is preserved.  Deterministic (fixed seed, single thread);
+    never raises."""
+    try:
+        mh = Chem.AddHs(mol)
+        cids = list(AllChem.EmbedMultipleConfs(
+            mh, numConfs=max(int(k), 1), randomSeed=SEED,
+            numThreads=1, useRandomCoords=False))
+        if not cids:
+            if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
+                return None
+            cids = [0]
+        try:
+            AllChem.MMFFOptimizeMoleculeConfs(mh, numThreads=1)
+        except Exception:
+            pass
+        dons = [int(x) for x in donor_idxs]
+        if len(dons) < 3 or len(mds) != len(dons):
+            return None
+        # backbone atoms = the heavy atoms on every donor-donor shortest path (the
+        # rigid conjugated framework that holds the donors coplanar)
+        ring = set()
+        for a in range(len(dons)):
+            for b in range(a + 1, len(dons)):
+                sp = Chem.GetShortestPath(mol, dons[a], dons[b])
+                if not sp:
+                    return None
+                ring.update(int(i) for i in sp)
+        ring = sorted(ring)
+        if len(ring) < 4:
+            return None
+
+        def _lp_in(P, di, nrm):
+            nbrs = [nb.GetIdx() for nb in mol.GetAtomWithIdx(di).GetNeighbors()
+                    if nb.GetAtomicNum() > 1]
+            if not nbrs:
+                return None
+            v = P[di] - np.mean([P[n] for n in nbrs], axis=0)
+            w = v - float(np.dot(v, nrm)) * nrm
+            nn = float(np.linalg.norm(w))
+            return w / nn if nn > 1e-6 else None
+
+        best = None                       # (residual, recentered coords)
+        keep = list(range(mh.GetNumAtoms()))
+        for cid in cids:
+            P = np.array(mh.GetConformer(cid).GetPositions(), float)
+            cen = P[ring].mean(axis=0)
+            B = P[ring] - cen
+            try:
+                _, sv, Vt = np.linalg.svd(B)
+            except Exception:
+                continue
+            if sv[0] < 1e-9 or (sv[2] / sv[0]) > 0.18:   # backbone not flat -> skip
+                continue
+            nrm = Vt[2]; e1 = Vt[0]; e2 = Vt[1]
+
+            def _to2d(p):
+                q = p - cen
+                return np.array([float(np.dot(q, e1)), float(np.dot(q, e2))])
+
+            D2 = [_to2d(P[di]) for di in dons]
+            # initial M guess = mean of (donor + md * inward in-plane lone-pair)
+            seeds = []
+            for i, di in enumerate(dons):
+                lp = _lp_in(P, di, nrm)
+                if lp is None:
+                    lp = -D2[i] / max(np.linalg.norm(D2[i]), 1e-6)  # fallback: toward 2-D centroid
+                    lp3 = e1 * lp[0] + e2 * lp[1]
+                    lp = np.array([float(np.dot(lp3, e1)), float(np.dot(lp3, e2))])
+                    seeds.append(D2[i] + mds[i] * lp)
+                    continue
+                lp2 = np.array([float(np.dot(lp, e1)), float(np.dot(lp, e2))])
+                seeds.append(D2[i] + mds[i] * lp2)
+            u = np.mean(seeds, axis=0)
+            for _ in range(200):           # 2-D Gauss-Newton: f_i = |u - D2_i| - md_i
+                J = []; r = []
+                for i in range(len(dons)):
+                    diff = u - D2[i]; nn = max(float(np.linalg.norm(diff)), 1e-9)
+                    r.append(nn - mds[i]); J.append(diff / nn)
+                J = np.array(J); r = np.array(r)
+                try:
+                    step = np.linalg.lstsq(J, -r, rcond=None)[0]
+                except Exception:
+                    break
+                u = u + step
+                if float(np.linalg.norm(step)) < 1e-9:
+                    break
+            resid = float(np.linalg.norm(r))
+            M = cen + u[0] * e1 + u[1] * e2          # metal IN the donor plane
+            coords = P[keep] - M                     # recenter: M -> origin
+            if not np.all(np.isfinite(coords)):
+                continue
+            if best is None or resid < best[0]:
+                best = (resid, coords)
+        if best is None:
+            return None
+        lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
+        return lsyms, [best[1]]
+    except Exception:
+        return None
+
+
 def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     """True if any heavy-heavy non-metal bonded pair sits below `factor` × the
     covalent-sum ideal — catches the YILNUF-class oxalate-embed failure where the
@@ -2151,7 +2301,7 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
-                         planar_bite=None):
+                         planar_bite=None, planar_coplanar=None):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -2240,6 +2390,26 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             ring_confs = _embed_metallacycle(lg["mol"], _dons_d, metal,
                                              donor_target_pos=_dtp, harden=_harden,
                                              force_bite=_force_bite)
+            # RIGID PLANAR polydentate (terpy / pincer, dent >= 3): the metallacycle
+            # embed FOLDS the rigid backbone so the metal lifts ~1.0 A OUT of the
+            # donors' own plane.  When enabled, build a metal-COPLANAR conformer
+            # (the metal solved INTO the rigid donor plane) so the in-plane meridional
+            # pose is realised at placement time.  planar_coplanar overrides the env
+            # gate (the never-worse caller builds BOTH ways); when None the env flag
+            # DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE decides (else byte-identical:
+            # the coplanar conformer is never built).  Scoped to rigid_planar dent>=3;
+            # falls back to the folded metallacycle embed if the coplanar solve fails.
+            _eligible_rp_cop = bool(lg.get("rigid_planar") and _dent >= 3
+                                    and _dtp is not None)
+            _use_cop = (bool(_eligible_rp_cop and _planar_polydentate_place_enabled())
+                        if planar_coplanar is None
+                        else bool(_eligible_rp_cop and planar_coplanar))
+            if _use_cop:
+                _mds = [float(np.linalg.norm(p)) for p in _dtp]
+                _cop = _coplanar_metal_centered_conformer(
+                    lg["mol"], _dons_d, metal, _mds)
+                if _cop is not None:
+                    ring_confs = _cop
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
