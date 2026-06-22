@@ -121,32 +121,70 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # rigid planar tridentate embeds with the meridional bite pinned to the assigned
         # CN5 vertices (else the rigid-Kabsch orient keeps the folded ~110deg).
         _chel_bite = os.environ.get("DELFIN_FFFREE_CHELATE_BITE", "0") == "1"
+        # OC-6 mixed-donor vertex fix (DELFIN_FFFREE_OC6_VERTEX, default OFF -> byte-id):
+        # ROOT CAUSE — the metallacycle DG embed bonds the placeholder metal ONLY to the
+        # donor atoms, so a NON-DONOR heavy atom that shares a donor's parent (the canonical
+        # case: a carboxylate's non-coordinating carbonyl O in an N,O-glycinate/amino-acid
+        # chelate, but also any pendant heteroatom on a donor's first shell) has NO lower
+        # bound to the metal and DG happily collapses it ONTO the metal (~0.7-1.1 A).  That
+        # in-shell intruder makes _build_is_clean reject the whole complex (over-coordination
+        # / overlap) -> it falls back to legacy UFF, whose mixed-donor OC-6 buckles the donors
+        # together ("kein OC-6 Polyeder, donors bunched" — eye-flagged ADOHOT/ADOROD/ZUSBEU/
+        # ASEBAC class).  The donor VERTEX assignment itself is already a perfect octahedron
+        # (12 cis 90deg / 3 trans 180deg, verified); only the embed's non-donor collapse
+        # poisons it.  Fix: a metal->non-donor-heavy EXCLUSION floor in the DG bounds matrix
+        # (no non-donor heavy atom may enter the metal's coordination shell), applied via the
+        # constrained-DG path -- and turned on for EVERY chelate embed (not just the
+        # bite-pinned ones) so the collapse is prevented at construction.  Universal,
+        # graph/geometry-only (donor set comes from the cleave), deterministic, never raises.
+        _oc6_vertex = os.environ.get("DELFIN_FFFREE_OC6_VERTEX", "0") == "1"
+        # exclusion floor: keep non-donor heavy atoms outside the donor shell.  Default 2.4 A
+        # (~ the shortest realistic non-bonded M...heavy contact, above any M-D bond) so a
+        # genuine bridging/agostic contact is not forced but the carbonyl-O collapse is barred.
+        _excl = float(os.environ.get("DELFIN_FFFREE_OC6_NONDONOR_EXCL", "2.4"))
         if harden:
             k = max(int(k), int(os.environ.get("DELFIN_FFFREE_POLY_K_CONFS", "12")))
         _dd_tol = float(os.environ.get("DELFIN_FFFREE_POLY_BB_TOL", "0.4")) if harden else 0.05
-        if (donor_target_pos is not None and len(donor_target_pos) == len(donor_idxs)
-                and (_chel_bite or harden or force_bite)):
+        # The bite-pinned DG path needs donor targets; the OC6_VERTEX exclusion path does not
+        # (it only adds metal->non-donor lower bounds, leaving donor distances to RDKit's own
+        # covalent bounds, which the downstream per-donor radial rescale re-sets exactly).
+        _have_targets = (donor_target_pos is not None
+                         and len(donor_target_pos) == len(donor_idxs))
+        _use_bm = (_have_targets and (_chel_bite or harden or force_bite)) or _oc6_vertex
+        if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
                 from rdkit import DistanceGeometry as _DGs
                 nA = mh.GetNumAtoms()
                 bm = _DG.GetMoleculeBoundsMatrix(mh)
                 dset = {int(d) for d in donor_idxs}
-                tp = [np.asarray(p, float) for p in donor_target_pos]
+                tp = ([np.asarray(p, float) for p in donor_target_pos]
+                      if _have_targets else None)
 
                 def _setb(i, j, dist, tol=0.05):
                     lo, hi = (i, j) if i < j else (j, i)
                     bm[lo][hi] = float(dist + tol)
                     bm[hi][lo] = float(max(dist - tol, 0.0))
-                for i in range(nA):                       # reset metal->non-donor permissive
+                # metal->non-donor lower bound.  Without OC6_VERTEX this is the historic
+                # permissive 1.2 A (byte-identical); with it the exclusion floor (no
+                # non-donor heavy atom inside the coordination shell).  H atoms keep the
+                # permissive floor (an X-H may legitimately point near the metal).
+                _md_lo = _excl if _oc6_vertex else 1.2
+                for i in range(nA):                       # reset metal->non-donor bounds
                     if i != mi and i not in dset:
-                        bm[min(i, mi)][max(i, mi)] = 100.0
-                        bm[max(i, mi)][min(i, mi)] = 1.2
-                for a, da in enumerate(donor_idxs):       # M-D HARD; donor-donor (soft for backbone)
-                    _setb(mi, int(da), float(np.linalg.norm(tp[a])))
-                    for b in range(a + 1, len(donor_idxs)):
-                        _setb(int(da), int(donor_idxs[b]),
-                              float(np.linalg.norm(tp[a] - tp[b])), tol=_dd_tol)
+                        is_h = mh.GetAtomWithIdx(i).GetAtomicNum() == 1
+                        lo, hi = min(i, mi), max(i, mi)
+                        this_lo = 1.2 if is_h else _md_lo
+                        # raise the UPPER bound above the floor so lo<=hi stays consistent
+                        bm[lo][hi] = max(float(bm[lo][hi]), this_lo + 0.1, 100.0
+                                         if not _oc6_vertex else this_lo + 2.0)
+                        bm[hi][lo] = float(this_lo)
+                if tp is not None:
+                    for a, da in enumerate(donor_idxs):   # M-D HARD; donor-donor (soft for backbone)
+                        _setb(mi, int(da), float(np.linalg.norm(tp[a])))
+                        for b in range(a + 1, len(donor_idxs)):
+                            _setb(int(da), int(donor_idxs[b]),
+                                  float(np.linalg.norm(tp[a] - tp[b])), tol=_dd_tol)
                 if _DGs.DoTriangleSmoothing(bm):
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
