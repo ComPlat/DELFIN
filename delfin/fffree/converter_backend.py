@@ -869,12 +869,16 @@ def _build_config_never_worse(d, config, ligands, geom_key):
             return None
     # base build: either the CN5 meridional-vs-folded never-worse pick, or the plain
     # historic single build (when only the coplanar flag is on).
+    # The base build must be the HISTORIC folded build regardless of the env flag, so
+    # explicitly pass planar_coplanar=False (else assemble_from_config would honour the
+    # env flag and the "base" would itself be coplanar -> no never-worse reference).
     if _cn5_rp:
         best = None
         best_cshm = float("inf")
         for pb in (True, False):                  # meridional (bite-forced) vs folded
             try:
-                b = AC.assemble_from_config(metal, geom, config, ligands, planar_bite=pb)
+                b = AC.assemble_from_config(metal, geom, config, ligands,
+                                            planar_bite=pb, planar_coplanar=False)
             except Exception:
                 b = None
             if b is None:
@@ -884,7 +888,8 @@ def _build_config_never_worse(d, config, ligands, geom_key):
                 best_cshm, best = c, b
     else:
         try:
-            best = AC.assemble_from_config(metal, geom, config, ligands)
+            best = AC.assemble_from_config(metal, geom, config, ligands,
+                                           planar_coplanar=False)
         except Exception:
             best = None
     if not _cop:
