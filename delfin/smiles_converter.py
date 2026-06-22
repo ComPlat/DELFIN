@@ -28401,6 +28401,33 @@ def _conf_complete_filter(isomers):
         return isomers
 
 
+def _permute_dedup_filter(isomers):
+    """UNIVERSAL permutation-invariant duplicate removal over the FULL emitted
+    ensemble.
+
+    Root cause it cures (#1 user request): the existing ensemble dedup compares
+    frames by FIXED-ORDER heavy-atom Kabsch RMSD, so two structures identical up
+    to relabeling of indistinguishable atoms (identical ligands swapped /
+    symmetry-equivalent atoms / any molecular-graph automorphism) are NOT seen as
+    duplicates and BOTH survive -> "sehr viele gleiche Strukturen im Pool".  This
+    pass adds the missing layer: two frames are duplicates iff the MIN over graph
+    automorphisms of their heavy Kabsch RMSD is below the threshold.  Atoms are
+    permuted ONLY within their graph-symmetry orbit, so genuinely-different
+    geometric isomers / conformers / stereoisomers (whose geometry differs by more
+    than the threshold even after the best symmetry relabelling) are KEPT.
+
+    Identity (returns input untouched) unless DELFIN_FFFREE_PERMUTE_DEDUP=1, so
+    output is BYTE-IDENTICAL to baseline when off.  FF-free, deterministic, never
+    raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_PERMUTE_DEDUP", "0") != "1":
+        return isomers
+    try:
+        from delfin.fffree.permute_dedup import dedup_ensemble
+        return dedup_ensemble(isomers) or isomers
+    except Exception:
+        return isomers
+
+
 # Re-entrancy guard for the conformer-completeness pass.  ``_smiles_to_xyz_isomers_impl``
 # recurses through this PUBLIC wrapper for the dual-parse augmentation; the
 # completeness pass must run EXACTLY ONCE at the OUTERMOST public boundary over the
@@ -28434,13 +28461,17 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     finally:
         if outermost:
             _CONF_COMPLETE_ACTIVE.value = False
-    # Conformer-completeness runs only at the OUTERMOST public call (over the final,
-    # dual-parse-unioned ensemble); identity on inner re-entries.
+    # Conformer-completeness AND permutation-dedup run only at the OUTERMOST public
+    # call (over the final, dual-parse-unioned ensemble); identity on inner
+    # re-entries.  Permutation-dedup runs LAST over the expanded union (after
+    # completeness has generated conformers and the topology gate has vetted them),
+    # so it strips permutation-equivalent duplicates from the whole final pool.
     _conf = _conf_complete_filter if outermost else (lambda x: x)
+    _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))), r[1]
+        return _rank_emitted_isomers(_pdedup(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))
+        return _rank_emitted_isomers(_pdedup(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))
     return r
 
 
