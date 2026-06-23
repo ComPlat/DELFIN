@@ -107,6 +107,30 @@ in this priority order and appends new findings back here.
   Fan-out-writers → review → merge flow is now complete.
 
 ### Done (recent, for context)
+- [x] **Containment hardening (security-by-default, functionality preserved).**
+  Guiding rule from the user: *max security is the top priority, but the user's
+  (Jerome's) functionality must NOT change.* Five layers, all live-proven on KIT
+  qwen, all with neutral "update" commit messages (public repo — don't advertise
+  the gaps):
+  (1) Self-mod protected-glob set extended to the whole permission/sandbox layer
+      + persisted config (`sandbox.py`, `kit_settings.py`, `user_settings.py`,
+      `.delfin/settings.json`) — the agent can't quietly re-arm itself. `17d48c6d`
+  (2) The deny-list + secret-path scan now also inspect the CONTENTS of any
+      script a bash command runs (closes `write payload.py; python payload.py`),
+      reusing the curated patterns so ordinary code is untouched. `d4156bdc`
+  (3) `bash_isolation` default `off`→`auto`: bwrap engages for the unattended
+      bypassPermissions mode only (no human in the loop), functional-probed with
+      graceful fallback. Interactive coding stays plain bash → Jerome unaffected;
+      `bwrap` (everywhere) and `off` (escape hatch) remain. `1ba7685a`
+  (4) Visible containment panel: every block/flag is recorded + shown in the
+      agent tab (answers "how would a breakout become visible"). `99c73bad`
+  (5) Outbound data-transfer (exfiltration) detection — curl/wget uploads, nc,
+      /dev/tcp, scp/rsync-to-remote — surfaced always, hard-blocked unattended;
+      ordinary downloads never flagged. `cc0bbdc9`
+  Honest residual: bwrap keeps network open (pip/git), so egress detection is
+  heuristic (obfuscation can evade); today's real risk is low (KIT models aren't
+  adversarial). Architecture principle (Goodhart paper 2510.02840): safety must
+  not depend on the model being benign — it comes from the external gate.
 - [x] **Verified already complete — live `available_models` into routing.**
   Re-investigated as a candidate; it's done: the dashboard `route_model` call
   (tab_agent.py ~12915) already feeds `available_models=_avail` from the live
