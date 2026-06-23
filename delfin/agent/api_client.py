@@ -3635,6 +3635,92 @@ class _DocToolExecutor:
                 return tok
         return None
 
+    # Interpreters that run a script file given as an argument. A command like
+    # ``python payload.py`` passes the plain bash deny-list (the dangerous part
+    # lives in the file, not the command line), so we resolve the referenced
+    # script and apply the SAME deny-list + secret-path scan to its contents.
+    _SCRIPT_INTERP_RE = re.compile(
+        r"^(?:python(?:3(?:\.\d+)?)?|pypy3?|bash|sh|zsh|ksh|"
+        r"node|deno|bun|perl|ruby|php|Rscript|lua)$"
+    )
+
+    def _referenced_script_paths(self, cmd: str) -> list[str]:
+        """Best-effort list of script files a command would execute."""
+        import shlex
+        out: list[str] = []
+        for seg in _split_shell_segments(cmd):
+            try:
+                toks = shlex.split(seg)
+            except Exception:
+                continue
+            i = 0
+            while i < len(toks):
+                tok = toks[i]
+                base = tok.rsplit("/", 1)[-1]
+                if self._SCRIPT_INTERP_RE.match(base):
+                    j = i + 1
+                    inline = False
+                    while j < len(toks):
+                        nt = toks[j]
+                        if nt in ("-m", "-c", "-e", "-"):  # module / inline → no file
+                            inline = True
+                            break
+                        if nt.startswith("-"):
+                            j += 1
+                            continue
+                        break
+                    if not inline and j < len(toks):
+                        out.append(toks[j])
+                    i = j + 1
+                    continue
+                # Direct execution: ./script or an absolute path with a basename
+                if tok.startswith("./") or (tok.startswith("/") and "." in base):
+                    out.append(tok)
+                i += 1
+        return out
+
+    def _scan_bash_script_payloads(
+        self, cmd: str, args: dict, perms: "KitToolPermissions"
+    ) -> Optional[str]:
+        """Apply the deny-list + secret-path scan to the CONTENTS of any script
+        the command runs. Reuses the curated patterns (so legitimate code using
+        subprocess/etc. is untouched — only a literal ``rm -rf /`` / ``sudo`` /
+        ``curl|sh`` or a ``.ssh``/credentials path reference trips it). The
+        obfuscated case (base64-then-exec) is left to filesystem isolation.
+        Returns a reason string, or None. Never raises."""
+        try:
+            cwd_arg = str(args.get("cwd") or "").strip()
+            base_dir = Path(cwd_arg) if cwd_arg else Path(perms.workspace)
+        except Exception:
+            base_dir = Path(perms.workspace)
+        for ref in self._referenced_script_paths(cmd):
+            try:
+                p = Path(ref)
+                if not p.is_absolute():
+                    p = base_dir / p
+                p = p.expanduser()
+                if not p.is_file() or p.stat().st_size > 512_000:
+                    continue
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            hit = perms.matches_bash_deny(text)
+            if hit:
+                return f"{ref} contains deny-pattern {hit!r}"
+            for tok in set(re.findall(
+                r"(?<![A-Za-z0-9_])(?:~|\$HOME|/)[^\s;|&<>()`'\"]+", text)):
+                try:
+                    rp = Path(tok.replace("$HOME", "~")).expanduser().resolve(
+                        strict=False)
+                except Exception:
+                    continue
+                root = perms.find_root_for(rp)
+                rel = (str(rp.relative_to(root)).replace("\\", "/")
+                       if root is not None else str(rp).replace("\\", "/"))
+                if perms.matches_path_deny(rel):
+                    return f"{ref} references a secret path ({tok!r})"
+        return None
+
     def _check_read_access(
         self, perms: "KitToolPermissions", path: Path, label: str = ""
     ) -> Optional[str]:
@@ -3771,6 +3857,14 @@ class _DocToolExecutor:
                     f"bash command references a secret-deny path ({secret_hit!r}). "
                     "Reading or touching .ssh/.env/*.key/credentials via the "
                     "shell is blocked — the read deny-list applies to bash too."
+                )
+            payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
+            if payload_hit is not None:
+                return (
+                    f"bash refuses to run a script whose contents trip the "
+                    f"safety scan: {payload_hit}. The deny-list + secret scan "
+                    "apply to executed script files too, not just the command "
+                    "line."
                 )
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
