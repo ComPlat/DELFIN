@@ -2410,6 +2410,24 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     lg["mol"], _dons_d, metal, _mds)
                 if _cop is not None:
                     ring_confs = _cop
+            elif (_dent >= 2 and _dtp is not None
+                  and os.environ.get("DELFIN_FFFREE_PI_RIGID_PLACE", "0") == "1"):
+                # PHASE 2 — FLEXIBLE multi-arm polydentate (NOT rigid_planar, e.g. a
+                # tripodal with pyridyl arms on an sp3 backbone = 91 % of the metal-
+                # out-of-plane defects).  Choose the backbone conformer that lets the
+                # metal sit COPLANAR with EVERY aromatic arm's ring (per-ring solve;
+                # _multiarm_coplanar.best_conformer).  Self-gating: returns None when
+                # the donors are not in aromatic rings -> falls back to the metallacycle
+                # embed.  Default-OFF / byte-identical when the flag is unset.
+                try:
+                    from delfin._multiarm_coplanar import best_conformer as _ma_best
+                    _ma = _ma_best(
+                        lg["mol"], _dons_d,
+                        [float(np.linalg.norm(p)) for p in _dtp])
+                    if _ma is not None:
+                        ring_confs = _ma
+                except Exception:
+                    pass
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
