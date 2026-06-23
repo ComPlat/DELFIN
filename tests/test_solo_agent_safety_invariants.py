@@ -76,6 +76,13 @@ def test_safe_bash_is_allowed(perms, cmd):
     "delfin/agent/engine.py",
     "delfin/dashboard/tab_agent.py",
     "delfin/agent/kit_confirm.py",
+    # The rest of the permission/sandbox layer + persisted config that
+    # decides what runs unattended must be guarded too.
+    "delfin/agent/sandbox.py",
+    "delfin/agent/kit_settings.py",
+    "delfin/user_settings.py",
+    ".delfin/settings.json",
+    "myproj/.delfin/settings.json",
 ])
 def test_core_files_are_protected(perms, path):
     assert perms.matches_path_protected(path) is True, f"NOT protected: {path}"
@@ -83,6 +90,8 @@ def test_core_files_are_protected(perms, path):
 
 def test_ordinary_file_is_not_protected(perms):
     assert perms.matches_path_protected("agent_workspace/task/notes.md") is False
+    # A normal source file the user works on stays freely editable.
+    assert perms.matches_path_protected("delfin/agent/model_routing.py") is False
 
 
 # ---------------------------------------------------------------------------

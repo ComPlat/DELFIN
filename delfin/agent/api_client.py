@@ -883,6 +883,14 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/agent/kit_confirm.py",
     "delfin/agent/engine.py",
     "delfin/dashboard/tab_agent.py",
+    # Also guard the rest of the permission/sandbox layer and the persisted
+    # config that decides what runs unattended — so a single edit can't widen
+    # the agent's own boundaries without an explicit user confirmation.
+    "delfin/agent/sandbox.py",
+    "delfin/agent/kit_settings.py",
+    "delfin/user_settings.py",
+    ".delfin/settings.json",
+    "**/.delfin/settings.json",
 )
 
 
