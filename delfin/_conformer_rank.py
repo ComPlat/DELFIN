@@ -300,6 +300,13 @@ def _coord_ideal_penalty(atoms: List[Tuple[str, float, float, float]]) -> float:
 # σ-aromatic donor ring plane.  Pure geometry, deterministic.
 
 _PI_COPLANAR_BUCKET = 0.5   # Å of clash penalty grouped as a tie before π decides
+_PI_COORD_BUCKET = 5.0      # deg of coord-angle deviation grouped as a tie (composite)
+# Pareto-gated π promotion thresholds (eye-root 2026-06-23): promote the coplanar
+# frame ONLY when it gives a real π gain AND worsens nothing else vs the lead frame.
+_PI_PROMOTE_MIN_GAIN = 0.3   # Å of π-oop improvement required (rejects marginal cases)
+_PI_PROMOTE_COORD_TOL = 1.0  # deg coord-angle worsening tolerated (rejects ZULSAC/XIMHAD)
+_PI_PROMOTE_MIND_TOL = 0.06  # Å non-bonded contact tightening tolerated (rejects CUXWAV/XIMHAD)
+_PI_PROMOTE_CLASH_TOL = 0.05  # clash-penalty worsening tolerated
 
 
 def _clash_components(atoms: List[Tuple[str, float, float, float]]) -> Tuple[int, float]:
@@ -384,6 +391,7 @@ def _pi_coplanar_penalty(atoms: List[Tuple[str, float, float, float]]) -> float:
     for s in sphere:
         dfs(s, [s], {s})
     total = 0.0
+    any_found = False
     for m in metal_idxs:
         M = xyz[m]; D = _np.linalg.norm(xyz - M, axis=1)
         worst = 0.0; found = False
@@ -399,8 +407,30 @@ def _pi_coplanar_penalty(atoms: List[Tuple[str, float, float, float]]) -> float:
             if oop > worst:
                 worst = oop; found = True
         if found:
-            total += worst
-    return total
+            total += worst; any_found = True
+    return (total, any_found)
+
+
+def _min_nonbonded_heavy(atoms: List[Tuple[str, float, float, float]]) -> float:
+    """Smallest non-bonded heavy-heavy distance (Å) — a collateral-contact signal
+    more sensitive than the clash penalty (catches contacts that tighten but stay
+    above the clash floor).  Returns 9.9 if <2 heavy atoms."""
+    heavy = [(a[1], a[2], a[3], a[0]) for a in atoms if a[0] != "H"]
+    n = len(heavy)
+    if n < 2:
+        return 9.9
+    mind = 9.9
+    for i in range(n):
+        xi, yi, zi, si = heavy[i]
+        ri = _cov(si)
+        for j in range(i + 1, n):
+            xj, yj, zj, sj = heavy[j]
+            d = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2)
+            if d < 1.30 * (ri + _cov(sj)):
+                continue  # bonded
+            if d < mind:
+                mind = d
+    return mind
 
 
 def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -440,27 +470,40 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     _default_parse = _parse_xyz_tolerant if rank_fix else _parse_xyz
     try:
         if pi_cop:
-            # Among non-corrupt frames bucketed by soft clash (0.5 Å), prefer the
-            # frame whose metal lies most IN the σ-aromatic donor ring plane.
-            # Uses the header-tolerant parser (the public emitter is headerless).
-            # Hard-veto frames (atom overlap / M-donor fusion) sort last; π term is
-            # a strict no-op for non-π structures → those order by clash only.
-            parsed = []
+            # Pareto-gated π promotion (eye-root 2026-06-23): move the most-coplanar
+            # frame to the FRONT only when it gives a meaningful π gain AND worsens
+            # NOTHING else (coordination angle, non-bonded contact, clash) vs the
+            # original lead frame.  The earlier Goodhart failure (rank by π-oop alone
+            # → 6 wins / 6 regressions) is fixed because the eye-regressions all fail
+            # exactly one of these guards (marginal π gain, or worse coord/contact),
+            # while the 6 eye-wins all pass.  Otherwise: enumeration order (byte-id
+            # to flag-OFF).  No-op for non-π / no-metal structures (has_pi False).
+            feats = []
             for idx, item in enumerate(isomers):
                 xyz = item[0] if isinstance(item, (tuple, list)) and item else ""
                 atoms = _parse_xyz_tolerant(xyz) if isinstance(xyz, str) else []
-                veto, pen = _clash_components(atoms) if atoms else (0, 0.0)
-                pio = _pi_coplanar_penalty(atoms) if atoms else 0.0
-                parsed.append((idx, veto, pen, pio, item))
-            minpen = min((p[2] for p in parsed if p[1] == 0), default=0.0)
-
-            def _pi_key(e):
-                idx, veto, pen, pio, _item = e
-                bucket = round((pen - minpen) / _PI_COPLANAR_BUCKET)
-                return (1 if veto > 0 else 0, bucket, pio, idx)
-
-            parsed.sort(key=_pi_key)
-            return [e[4] for e in parsed]
+                if atoms:
+                    veto, clash = _clash_components(atoms)
+                    coord = _coord_ideal_penalty(atoms)
+                    pio, has_pi = _pi_coplanar_penalty(atoms)
+                    mind = _min_nonbonded_heavy(atoms)
+                else:
+                    veto, clash, coord, pio, has_pi, mind = 1, 0.0, 0.0, 0.0, False, 9.9
+                feats.append({"idx": idx, "veto": veto, "clash": clash,
+                              "coord": coord, "pio": pio, "has_pi": has_pi,
+                              "mind": mind, "item": item})
+            base = next((f for f in feats if f["veto"] == 0 and f["has_pi"]), None)
+            pi_frames = [f for f in feats if f["veto"] == 0 and f["has_pi"]]
+            if base is not None and pi_frames:
+                cand = min(pi_frames, key=lambda f: (f["pio"], f["idx"]))
+                if (cand["idx"] != base["idx"]
+                        and (base["pio"] - cand["pio"]) >= _PI_PROMOTE_MIN_GAIN
+                        and (cand["coord"] - base["coord"]) <= _PI_PROMOTE_COORD_TOL
+                        and (cand["mind"] - base["mind"]) >= -_PI_PROMOTE_MIND_TOL
+                        and (cand["clash"] - base["clash"]) <= _PI_PROMOTE_CLASH_TOL):
+                    return ([cand["item"]]
+                            + [f["item"] for f in feats if f["idx"] != cand["idx"]])
+            return [f["item"] for f in feats]
         if not coord_ideal:
             # Default path.  Parser choice is the ONLY change: strict (flag-OFF
             # → byte-identical, ranker is a no-op on headerless frames) vs
