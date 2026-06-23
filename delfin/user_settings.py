@@ -132,13 +132,18 @@ DEFAULT_SETTINGS = {
         # namespace makes ONLY the workspace roots (workspace + granted extra
         # dirs) writable — closing the "a subprocess writes outside the sandbox"
         # gap regardless of how the command is obfuscated.
-        #   "auto" (default) — isolate ONLY in the unattended bypassPermissions
-        #                      mode (no human approving each command), and only
-        #                      when bwrap actually works here; interactive modes
-        #                      run plain bash so HPC coding is unaffected.
+        #   "auto" (default) — isolate the unattended bypassPermissions mode
+        #                      (no human approving commands) when bwrap actually
+        #                      works here (probed; a broken bwrap falls back to
+        #                      plain bash). Interactive modes run plain bash, so
+        #                      the user's normal coding workflow (pip into any
+        #                      venv, multi-dir projects) is fully preserved — the
+        #                      user IS the control there, approving each command.
+        #   "bwrap"          — force isolation in EVERY mode (max containment;
+        #                      may need explicit dir grants for out-of-workspace
+        #                      writes).
         #   "off"            — explicit escape hatch: never isolate (e.g. an HPC
         #                      node whose MPI/module workflow needs raw bash).
-        #   "bwrap"          — force isolation in every mode (when functional).
         "bash_isolation": "auto",
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The

@@ -28,6 +28,7 @@ _KINDS = {
     "outside_ws":     ("📁", "Outside-workspace access"),
     "denied_by_user": ("✋", "User denied"),
     "isolation":      ("🔒", "Filesystem isolation active"),
+    "egress":         ("🌐", "Outbound data transfer"),
 }
 
 

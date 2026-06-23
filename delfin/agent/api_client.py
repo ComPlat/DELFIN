@@ -3732,6 +3732,31 @@ class _DocToolExecutor:
                     return f"{ref} references a secret path ({tok!r})"
         return None
 
+    # Outbound data-transfer signatures. These flag EXFILTRATION shapes
+    # (uploading data to a remote), NOT ordinary downloads — `curl/wget URL`
+    # (a GET, e.g. pip/git) is untouched, so normal workflows are unaffected.
+    _EGRESS_PATTERNS = (
+        (r"\b(?:curl|wget)\b[^|;&\n]*?\s"
+         r"(?:-d|--data(?:-binary|-raw|-urlencode)?|-F|--form|-T|"
+         r"--upload-file|--data\b|-X\s*POST|--request\s+POST|"
+         r"--post-file|--post-data|--body-file|--body-data|--method[=\s]*POST)\b",
+         "data upload via curl/wget"),
+        (r"\b(?:nc|ncat|netcat)\b\s+\S", "raw socket transfer (nc)"),
+        (r"/dev/(?:tcp|udp)/", "bash /dev/tcp network redirect"),
+        (r"\b(?:scp|rsync)\b[^|;&\n]*\s\S+@\S+:", "copy to a remote host"),
+    )
+
+    def _scan_bash_egress(self, cmd: str) -> Optional[str]:
+        """Detect an outbound data-transfer (exfiltration) command. Returns a
+        short reason, or None. Pure regex over the command; never raises."""
+        try:
+            for pat, label in self._EGRESS_PATTERNS:
+                if re.search(pat, cmd, re.IGNORECASE):
+                    return label
+        except Exception:
+            return None
+        return None
+
     def _check_read_access(
         self, perms: "KitToolPermissions", path: Path, label: str = ""
     ) -> Optional[str]:
@@ -3883,6 +3908,22 @@ class _DocToolExecutor:
                     "apply to executed script files too, not just the command "
                     "line."
                 )
+            # Outbound data-transfer (exfiltration) detection. Always surfaced
+            # in the containment panel; hard-blocked in the unattended mode and
+            # routed through the normal user approval otherwise (so an
+            # interactive user stays in control — ordinary downloads, GET
+            # curl/git/pip, are never flagged).
+            egress = self._scan_bash_egress(cmd)
+            if egress is not None:
+                _record_security_event(
+                    "egress", "bash", f"{egress}: {cmd[:80]}",
+                    blocked=(mode == "bypassPermissions"))
+                if mode == "bypassPermissions":
+                    return (
+                        f"outbound data-transfer blocked in unattended mode "
+                        f"({egress}). Sending data to a remote host is not "
+                        "allowed without a human in the loop."
+                    )
             if mode == "bypassPermissions":
                 # Bypass: only the deny-list still applies; everything else
                 # runs unattended. Use this only inside trusted workflows.
