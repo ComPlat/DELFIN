@@ -2011,6 +2011,51 @@ def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_hydroxyl_geom_if_enabled(mol, results, dual_parse_done: bool):
+    """#329 pendant-hydroxyl C-O-H angle fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect pendant (non-coordinating) hydroxyl O
+    (bonded to exactly one H and one C, no metal contact) whose C-O-H angle is
+    too wide (>115°) or too narrow (<100°), and rotate ONLY that H about O to
+    108.5° (O-H length preserved; 1-3 H···C contact correctly excluded from the
+    clash test).  Never moves heavy atoms or metals; per-hydroxyl clash
+    rollback; topology unchanged by construction.
+
+    Data (2026-06-23, V2R): C-O-H >115° 46%→2%, median 113→108.5°, ideal band
+    33%→80%, real (1-3-aware) clashes 170→167 (none new), deterministic.  The
+    C-O length leg is default-OFF (geometric hybridisation classification
+    unreliable; much of the "C-O too short" signal was correct phenols at 1.36).
+
+    Env-flag:
+        DELFIN_FFFREE_HYDROXYL_GEOM=0   (default OFF — bit-exact when disabled)
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if os.environ.get("DELFIN_FFFREE_HYDROXYL_GEOM", "0") != "1":
+        return results
+    try:
+        from delfin._fix_hydroxyl_geometry import fix_hydroxyl_geometry
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, report = fix_hydroxyl_geometry(xyz, mol)
+                if report.get("topology_preserved", True):
+                    new_results.append((new_xyz, label))
+                else:
+                    new_results.append((xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _hyd_exc:
+        try:
+            logger.debug("Hydroxyl-geom fixer (#329) skipped: %s", _hyd_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_f19_to_fallback_xyz(xyz_content, mol):
     """Stream-B Fix 2 (batch-2 = FULL): repair sp3-H tetrahedrality on a RAW
     XYZ produced by ``_smiles_to_xyz_unsanitized_fallback`` (and the sigma
@@ -30847,6 +30892,7 @@ def _smiles_to_xyz_isomers_impl(
     # (sp3-C linear collapse) → bridging-anion (μ-X M-X-M angle for
     # bimetallic complexes).  See ``_apply_fixer_*`` docstrings.
     results = _apply_fixer_f19_if_enabled(mol, results, _dual_parse_done)
+    results = _apply_hydroxyl_geom_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_f25_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_sp2n_planarize_if_enabled(
         mol, results, _dual_parse_done,
