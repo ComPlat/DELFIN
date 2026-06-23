@@ -28422,6 +28422,16 @@ def _clean_gate_filter(isomers):
         collapse_f = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_COLLAPSE", "0.55"))
         # md_shell: metal first-shell radius (heavy donor within this = coordinated).
         md_shell = float(os.environ.get("DELFIN_FFFREE_CLEAN_GATE_SHELL", "2.95"))
+        # md_collapse_on: also reject a frame whose heavy donor has fused ONTO the
+        #          metal (M-D below collapse_f x covalent-sum).  Independent, default
+        #          OFF -> byte-identical to the prior CLEAN_GATE behaviour when unset.
+        #          Closes a blindspot: the per-frame pair tests (2/3) SKIP every metal
+        #          pair, so a donor collapsed onto the metal is otherwise invisible
+        #          here (and to the ligcollapse/geomfault detectors, which exempt the
+        #          M-D pair too).  Asymmetric-safe: no real M-D bond is anywhere near
+        #          this short (shortest M-heavy-donor bonds ~1.5A).
+        md_collapse_on = (os.environ.get(
+            "DELFIN_FFFREE_CLEAN_GATE_MD_COLLAPSE", "0") == "1")
 
         def _radius(sym):
             return _COVALENT_RADII.get(sym, 0.76)
@@ -28544,6 +28554,21 @@ def _clean_gate_filter(isomers):
                         break
                 if not has_donor:
                     return True
+            # 5. DONOR COLLAPSED ONTO METAL (blindspot; only when explicitly on).
+            #    The pair tests above skip every metal pair, so a heavy donor fused
+            #    onto the metal escapes them.  A metal-to-heavy-donor distance below
+            #    collapse_f x covalent-sum is a fused atom = certainly bad (reuses
+            #    the same collapse fraction as the bond test).  H excluded (M-H /
+            #    agostic / bridging H can be legitimately short).
+            if md_collapse_on:
+                for mi in metal_idx:
+                    rm = _radius(syms[mi])
+                    for k in range(n_atoms):
+                        if k in metal_set or syms[k] == "H":
+                            continue
+                        if math.sqrt(_d2(f, mi, k)) < collapse_f * (
+                                rm + _radius(syms[k])):
+                            return True
             return False
 
         kept = [item for item, f in zip(isomers, frames) if not _certainly_bad(f)]
