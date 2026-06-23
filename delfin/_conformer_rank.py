@@ -48,6 +48,10 @@ _METALS = frozenset({
 
 _DONORS = frozenset({"N", "O", "P", "S", "Cl", "Br", "I", "C", "B", "F", "Se", "Te"})
 
+# σ-aromatic donor elements whose ring plane should contain the metal (in-plane
+# lone pair).  Used by the π-coplanarity ranking term (DELFIN_RANK_PI_COPLANAR).
+_PI_DONORS = frozenset({"N", "O", "S", "P", "Se"})
+
 # Weights — cross-validated (see module docstring).  Hard vetoes dominate so a
 # genuinely corrupt frame never ranks first; the continuous clash penalty is the
 # primary discriminator among valid frames.
@@ -283,6 +287,122 @@ def _coord_ideal_penalty(atoms: List[Tuple[str, float, float, float]]) -> float:
     return total
 
 
+# ---------------------------------------------------------------------------
+# π-coplanarity ranking term (DELFIN_RANK_PI_COPLANAR, default-OFF → byte-id)
+# ---------------------------------------------------------------------------
+# Data-driven root finding (2026-06-23) over 229 π-donor smoke structures: 50%
+# already emit a coplanar primary frame, 17% have a coplanar pose IN the manifold
+# that is simply not frame 0 (the RANKING root), 34% have none (a construction
+# root, addressed elsewhere).  Simulation of the rule below recovered the full 17%
+# (f0 metal-out-of-plane 0.786→0.508 Å, bad-count 115→77) with ZERO clash cost
+# (mean −0.001) and zero completeness loss (reorder only).  So: among non-corrupt
+# frames bucketed by clash (0.5 Å), prefer the one whose metal lies most in the
+# σ-aromatic donor ring plane.  Pure geometry, deterministic.
+
+_PI_COPLANAR_BUCKET = 0.5   # Å of clash penalty grouped as a tie before π decides
+
+
+def _clash_components(atoms: List[Tuple[str, float, float, float]]) -> Tuple[int, float]:
+    """Return (hard_veto_count, soft_clash_penalty) — same thresholds as
+    :func:`_frame_score` but split so the π term can bucket on the soft clash
+    while corrupt frames (literal overlap / M-donor fusion) are sorted last.
+    Kept SEPARATE from ``_frame_score`` so the default ranking path is untouched."""
+    n = len(atoms)
+    if n < 2:
+        return (0, 0.0)
+    syms = [a[0] for a in atoms]
+    rs = [_cov(s) for s in syms]
+    veto = 0
+    pen = 0.0
+    for i in range(n):
+        xi, yi, zi = atoms[i][1], atoms[i][2], atoms[i][3]
+        si = syms[i]
+        for j in range(i + 1, n):
+            dx = xi - atoms[j][1]; dy = yi - atoms[j][2]; dz = zi - atoms[j][3]
+            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if d < 0.001:
+                continue
+            sj = syms[j]
+            sum_r = rs[i] + rs[j]
+            if sum_r > 0 and d < 0.75 * sum_r:
+                pen += 0.75 * sum_r - d
+            if d < 0.40:
+                veto += 1
+            is_md = (si in _METALS and sj in _DONORS) or (sj in _METALS and si in _DONORS)
+            if is_md and sum_r > 0 and d < 0.65 * sum_r:
+                veto += 1
+    return (veto, pen)
+
+
+def _pi_coplanar_penalty(atoms: List[Tuple[str, float, float, float]]) -> float:
+    """Sum, over every metal centre, of the worst metal-out-of-plane distance (Å)
+    for its σ-aromatic donor rings — the metal should lie IN each coordinating
+    aromatic donor's ring plane (in-plane sp² lone pair).  0.0 when nothing
+    qualifies (no metal / no coordinating aromatic donor ring) so it is a strict
+    no-op there.  Restricted to the coordination sphere (heavy atoms within 5 Å of
+    a metal) for speed; deterministic pure geometry, no force field."""
+    n = len(atoms)
+    if n < 5:
+        return 0.0
+    try:
+        import numpy as _np
+    except Exception:
+        return 0.0
+    syms = [a[0] for a in atoms]
+    xyz = _np.array([[a[1], a[2], a[3]] for a in atoms], dtype=float)
+    metal_idxs = [i for i in range(n) if syms[i] in _METALS]
+    if not metal_idxs:
+        return 0.0
+    # coordination-sphere subgraph: heavy non-metal atoms within 5 Å of any metal
+    in_sphere = [False] * n
+    for j in range(n):
+        if j in metal_idxs or syms[j] == "H":
+            continue
+        for m in metal_idxs:
+            if float(_np.linalg.norm(xyz[j] - xyz[m])) < 5.0:
+                in_sphere[j] = True
+                break
+    adj = [[] for _ in range(n)]
+    sphere = [j for j in range(n) if in_sphere[j]]
+    for ai in range(len(sphere)):
+        a = sphere[ai]
+        for bi in range(ai + 1, len(sphere)):
+            b = sphere[bi]
+            if float(_np.linalg.norm(xyz[a] - xyz[b])) < 1.25 * (_cov(syms[a]) + _cov(syms[b])):
+                adj[a].append(b); adj[b].append(a)
+    R = []; seen = set()
+
+    def dfs(s, cur, sn):
+        last = cur[-1]
+        for nb in adj[last]:
+            if nb == s and 5 <= len(cur) <= 6:
+                k = frozenset(cur)
+                if k not in seen:
+                    seen.add(k); R.append(list(cur))
+            elif nb not in sn and len(cur) < 6:
+                dfs(s, cur + [nb], sn | {nb})
+    for s in sphere:
+        dfs(s, [s], {s})
+    total = 0.0
+    for m in metal_idxs:
+        M = xyz[m]; D = _np.linalg.norm(xyz - M, axis=1)
+        worst = 0.0; found = False
+        for rg in R:
+            near = [k for k in rg if D[k] < 2.5]
+            if len(near) != 1 or syms[near[0]] not in _PI_DONORS:
+                continue
+            pts = xyz[rg]; c = pts.mean(0)
+            _, _, vt = _np.linalg.svd(pts - c)
+            if _np.abs((pts - c) @ vt[2]).max() > 0.35:
+                continue  # ring itself not flat → not a clean aromatic donor
+            oop = abs(float((M - c) @ vt[2]))
+            if oop > worst:
+                worst = oop; found = True
+        if found:
+            total += worst
+    return total
+
+
 def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     """Re-order ``[(xyz_string, label), ...]`` best (most crystal-like) first.
 
@@ -315,8 +435,32 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     coord_ideal = os.environ.get("DELFIN_RANK_COORD_IDEAL", "0") == "1"
     # Fix B: header-tolerant parsing in the default path, gated default-OFF.
     rank_fix = os.environ.get("DELFIN_FRAME_RANK_FIX", "0") == "1"
+    # π-coplanarity ranking (default-OFF → byte-identical order).
+    pi_cop = os.environ.get("DELFIN_RANK_PI_COPLANAR", "0") == "1"
     _default_parse = _parse_xyz_tolerant if rank_fix else _parse_xyz
     try:
+        if pi_cop:
+            # Among non-corrupt frames bucketed by soft clash (0.5 Å), prefer the
+            # frame whose metal lies most IN the σ-aromatic donor ring plane.
+            # Uses the header-tolerant parser (the public emitter is headerless).
+            # Hard-veto frames (atom overlap / M-donor fusion) sort last; π term is
+            # a strict no-op for non-π structures → those order by clash only.
+            parsed = []
+            for idx, item in enumerate(isomers):
+                xyz = item[0] if isinstance(item, (tuple, list)) and item else ""
+                atoms = _parse_xyz_tolerant(xyz) if isinstance(xyz, str) else []
+                veto, pen = _clash_components(atoms) if atoms else (0, 0.0)
+                pio = _pi_coplanar_penalty(atoms) if atoms else 0.0
+                parsed.append((idx, veto, pen, pio, item))
+            minpen = min((p[2] for p in parsed if p[1] == 0), default=0.0)
+
+            def _pi_key(e):
+                idx, veto, pen, pio, _item = e
+                bucket = round((pen - minpen) / _PI_COPLANAR_BUCKET)
+                return (1 if veto > 0 else 0, bucket, pio, idx)
+
+            parsed.sort(key=_pi_key)
+            return [e[4] for e in parsed]
         if not coord_ideal:
             # Default path.  Parser choice is the ONLY change: strict (flag-OFF
             # → byte-identical, ranker is a no-op on headerless frames) vs
