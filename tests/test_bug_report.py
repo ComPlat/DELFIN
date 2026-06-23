@@ -99,6 +99,26 @@ def test_reports_do_not_collide(tmp_path):
     assert d1.name != d2.name
 
 
+def test_many_rapid_reports_all_unique(tmp_path):
+    # Same user+session, created back-to-back (same second) → only the random
+    # suffix differs. The atomic-create + retry must keep every dir unique so a
+    # report never silently overwrites an earlier one.
+    names = [_write(tmp_path).name for _ in range(40)]
+    assert len(set(names)) == 40
+
+
+def test_unique_even_when_suffix_repeats(monkeypatch, tmp_path):
+    # Worst case: the random suffix is identical every time (forced here). The
+    # atomic create + attempt-counter must STILL yield distinct dirs rather than
+    # overwriting — a bug report must never clobber an earlier one.
+    monkeypatch.setattr(br.uuid, "uuid4",
+                        lambda: type("U", (), {"hex": "deadbeef" * 4})())
+    dirs = [_write(tmp_path) for _ in range(5)]
+    assert len({d.name for d in dirs}) == 5
+    for d in dirs:
+        assert d.is_dir()
+
+
 def test_dirname_is_sortable_and_tagged(tmp_path):
     d = _write(tmp_path, session_id="zzzzzzzzzzzz")
     # <UTC-ts>_<user>_<session8>_<rand>

@@ -362,8 +362,27 @@ def write_bug_report(
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
-    report_dir = root / _report_dirname(user, session_id)
-    report_dir.mkdir(parents=True, exist_ok=True)
+    # Collision-free: two reports in the same second (same user+session) share
+    # everything but the random suffix, so create the dir ATOMICALLY
+    # (exist_ok=False) and retry with a fresh suffix on a clash — otherwise the
+    # second report would silently overwrite the first.
+    report_dir = None
+    for _attempt in range(12):
+        name = _report_dirname(user, session_id)
+        if _attempt:
+            name = f"{name}-{_attempt}"          # unique even if the suffix repeats
+        candidate = root / name
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
+            report_dir = candidate
+            break
+        except FileExistsError:
+            continue
+    if report_dir is None:
+        # Pathological — guarantee uniqueness with a full uuid suffix.
+        report_dir = root / (_report_dirname(user, session_id) + "-"
+                             + uuid.uuid4().hex)
+        report_dir.mkdir(parents=True, exist_ok=True)
 
     meta: dict[str, Any] = {
         "schema": "delfin-bug-report/1",
