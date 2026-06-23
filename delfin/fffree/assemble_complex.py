@@ -2420,10 +2420,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 # the donors are not in aromatic rings -> falls back to the metallacycle
                 # embed.  Default-OFF / byte-identical when the flag is unset.
                 try:
-                    from delfin._multiarm_coplanar import best_conformer as _ma_best
-                    _ma = _ma_best(
-                        lg["mol"], _dons_d,
-                        [float(np.linalg.norm(p)) for p in _dtp])
+                    from delfin._multiarm_coplanar import embed_coplanar_multiarm as _ma_emb
+                    _ma = _ma_emb(
+                        lg["mol"], _dons_d, metal,
+                        [float(np.linalg.norm(p)) for p in _dtp],
+                        donor_target_pos=_dtp)
                     if _ma is not None:
                         ring_confs = _ma
                 except Exception:

@@ -24,6 +24,9 @@ into the polydentate placement path of ``assemble_complex`` (default-OFF, byte-i
 falls back to the current placement on any infeasibility — in-doubt-keep).
 """
 
+import math
+import os
+
 import numpy as np
 
 SEED = 42
@@ -80,6 +83,144 @@ def solve_metal(D, centroids, normals, md, has_plane=None, w=1.0, iters=200):
     cop_res = float(np.sqrt(np.mean([(np.dot(M - C[i], N[i])) ** 2
                                      for i in pl]))) if pl else 1e9
     return M, dist_res, cop_res
+
+
+def embed_coplanar_multiarm(mol, donor_idxs, metal_sym, mds,
+                            donor_target_pos=None, k=24):
+    """Effective Phase 2: metal-CENTERED CONSTRAINED embed.
+
+    A free-ligand embed does NOT pre-organise a flexible tripodal (donors not
+    around a common metal point), so we embed the ligand WITH a placeholder metal
+    bonded to every donor (pre-organises the donor sphere) AND add, per aromatic
+    σ-donor, a COPLANARITY constraint in the DG bounds matrix: pin the metal's
+    distances to the donor's two ring neighbours to their IN-PLANE values (metal
+    at md along the donor's external in-plane lone-pair bisector).  With M-D and
+    M-to-both-ring-neighbours pinned, the metal is forced INTO each arm's ring
+    plane at construction.  Returns (lsyms, [coords]) with the placeholder metal
+    EXCLUDED and recentred so the metal is at the origin — the same contract as
+    ``_coplanar_metal_centered_conformer`` — or None on failure.
+
+    Universal, geometry/graph-only, deterministic (fixed seed, single thread).
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import AllChem, rdDistGeom as _DG
+        from rdkit import DistanceGeometry as _DGs
+    except Exception:
+        return None
+    try:
+        dons = [int(x) for x in donor_idxs]
+        if len(dons) < 2 or len(mds) != len(dons):
+            return None
+        ri = mol.GetRingInfo()
+        rings = [_ring_of_donor(mol, d, ri) for d in dons]
+        if not any(rg is not None for rg in rings):
+            return None
+        rw = Chem.RWMol(mol)
+        mi = rw.AddAtom(Chem.Atom(metal_sym))
+        for di in dons:
+            rw.AddBond(int(di), mi, Chem.BondType.DATIVE)
+        m = rw.GetMol()
+        try:
+            Chem.SanitizeMol(m, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+        except Exception:
+            pass
+        mh = Chem.AddHs(m)
+        nA = mh.GetNumAtoms()
+        bm = _DG.GetMoleculeBoundsMatrix(mh)
+
+        def _bond(i, j):                       # current bounds midpoint (bonded ideal)
+            lo, hi = (i, j) if i < j else (j, i)
+            return 0.5 * (float(bm[lo][hi]) + float(bm[hi][lo]))
+
+        def _setb(i, j, dist, tol=0.08):
+            lo, hi = (i, j) if i < j else (j, i)
+            bm[lo][hi] = float(dist + tol)
+            bm[hi][lo] = float(max(dist - tol, 0.0))
+
+        # 1. M-D hard pins
+        for a, da in enumerate(dons):
+            _setb(mi, int(da), float(mds[a]), tol=0.05)
+        # 2. donor-donor (coordination bite) if target vertices given
+        if donor_target_pos is not None and len(donor_target_pos) == len(dons):
+            tp = [np.asarray(p, float) for p in donor_target_pos]
+            for a in range(len(dons)):
+                for b in range(a + 1, len(dons)):
+                    _setb(int(dons[a]), int(dons[b]),
+                          float(np.linalg.norm(tp[a] - tp[b])), tol=0.25)
+        # 3. per-arm coplanarity: pin M to the donor's two ring neighbours at the
+        #    in-plane (external-bisector) pose -> metal coplanar with each ring.
+        n_constrained = 0
+        for a, (d, rg) in enumerate(zip(dons, rings)):
+            if rg is None:
+                continue
+            nbrs = [nb.GetIdx() for nb in mol.GetAtomWithIdx(d).GetNeighbors()
+                    if nb.GetIdx() in rg]
+            if len(nbrs) < 2:
+                continue
+            x, y = nbrs[0], nbrs[1]
+            ra, rb = _bond(d, x), _bond(d, y)
+            dab = _bond(x, y)                  # 1-3 distance (RDKit fills it)
+            if ra < 1e-3 or rb < 1e-3:
+                continue
+            cth = (ra * ra + rb * rb - dab * dab) / (2.0 * ra * rb)
+            cth = max(-1.0, min(1.0, cth))
+            half = 0.5 * math.acos(cth)        # half the a-D-b angle
+            md = float(mds[a])
+            # M on the EXTERNAL bisector: angle(M-D-x) = 180° - half
+            cos_ext = math.cos(math.pi - half)
+            m_x = math.sqrt(max(md * md + ra * ra - 2 * md * ra * cos_ext, 0.0))
+            m_y = math.sqrt(max(md * md + rb * rb - 2 * md * rb * cos_ext, 0.0))
+            _setb(mi, int(x), m_x, tol=0.10)
+            _setb(mi, int(y), m_y, tol=0.10)
+            n_constrained += 1
+        if n_constrained == 0:
+            return None
+        if not _DGs.DoTriangleSmoothing(bm):
+            return None
+        ep = _DG.EmbedParameters()
+        ep.randomSeed = SEED
+        ep.useRandomCoords = True
+        ep.SetBoundsMat(bm)
+        cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=max(int(k), 1), params=ep))
+        if not cids:
+            return None
+        keep = [i for i in range(nA) if i != mi]
+        lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
+        # score each conformer by per-arm metal out-of-plane; pick the best
+        best = None
+        for cid in cids:
+            P = np.array(mh.GetConformer(cid).GetPositions(), float)
+            M = P[mi]
+            oops = []
+            for d, rg in zip(dons, rings):
+                if rg is None:
+                    continue
+                pts = P[rg]
+                cen = pts.mean(axis=0)
+                try:
+                    _, sv, Vt = np.linalg.svd(pts - cen)
+                except Exception:
+                    oops = None
+                    break
+                oops.append(abs(float(np.dot(M - cen, Vt[2]))))
+            if not oops:
+                continue
+            score = float(np.sqrt(np.mean(np.square(oops))))
+            coords = P[keep] - M
+            if not np.all(np.isfinite(coords)):
+                continue
+            if best is None or score < best[0]:
+                best = (score, coords)
+        if best is None:
+            return None
+        return lsyms, [best[1]]
+    except Exception:
+        if os.environ.get("_PI_DEBUG"):
+            import traceback
+            traceback.print_exc()
+        return None
 
 
 def _ring_of_donor(mol, donor, ring_info):
