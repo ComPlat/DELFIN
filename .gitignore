@@ -62,3 +62,6 @@ delfin/agent/*.local.json
 # Solver run logs (large, regenerated per run)
 censo.log
 *.log
+
+# Internal self-paced optimization loop work-queue — local only, not for the public repo
+OPTIMIZATION_BACKLOG.md
