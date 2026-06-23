@@ -5720,6 +5720,45 @@ class _DocToolExecutor:
 _doc_executor = _DocToolExecutor()
 
 
+_BWRAP_FUNCTIONAL: Optional[bool] = None
+_AUTO_ISOLATION_ANNOUNCED = False
+
+
+def _bwrap_functional() -> bool:
+    """True only if bwrap is installed AND actually works here (some CI/HPC
+    containers ship bwrap but forbid the user-namespace it needs). Probed once
+    and cached so the per-command path stays cheap. Never raises."""
+    global _BWRAP_FUNCTIONAL
+    if _BWRAP_FUNCTIONAL is not None:
+        return _BWRAP_FUNCTIONAL
+    ok = False
+    try:
+        if shutil.which("bwrap"):
+            r = subprocess.run(
+                ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "true"],
+                capture_output=True, timeout=5,
+            )
+            ok = r.returncode == 0
+    except Exception:
+        ok = False
+    _BWRAP_FUNCTIONAL = ok
+    return ok
+
+
+def _announce_auto_isolation() -> None:
+    """Surface (once) that filesystem isolation auto-engaged, so it's visible
+    that an unattended run is sandboxed."""
+    global _AUTO_ISOLATION_ANNOUNCED
+    if _AUTO_ISOLATION_ANNOUNCED:
+        return
+    _AUTO_ISOLATION_ANNOUNCED = True
+    _record_security_event(
+        "isolation", "bash",
+        "filesystem isolation auto-engaged for this unattended (bypass) run",
+        blocked=False,
+    )
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -5745,10 +5784,23 @@ def _bash_isolation_argv(
         try:
             from delfin.user_settings import load_settings
             mode = str(((load_settings() or {}).get("agent") or {})
-                       .get("bash_isolation", "off") or "off")
+                       .get("bash_isolation", "auto") or "auto")
         except Exception:
-            mode = "off"
-    if mode.strip().lower() != "bwrap" or not shutil.which("bwrap"):
+            mode = "auto"
+    mode = mode.strip().lower()
+    # "auto" (default): hard-isolate ONLY in the unattended/permissive
+    # permission mode (bypassPermissions) where no human approves each
+    # command — that's where containment matters most. Interactive modes keep
+    # plain bash, so HPC coding workflows are unaffected. "off" is the explicit
+    # escape hatch (truly no isolation); "bwrap" forces it everywhere.
+    if mode == "auto":
+        perm_mode = str(getattr(perms, "mode", "") or "").strip()
+        if perm_mode == "bypassPermissions" and _bwrap_functional():
+            mode = "bwrap"
+            _announce_auto_isolation()
+        else:
+            return plain
+    if mode != "bwrap" or not shutil.which("bwrap"):
         return plain
 
     try:

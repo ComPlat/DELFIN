@@ -128,13 +128,18 @@ DEFAULT_SETTINGS = {
         # off because the failure diagnosis costs tokens. The watch loop
         # itself is LLM-free; auto_diagnose=False keeps monitoring entirely
         # free (notification only, no LLM turn).
-        # Filesystem isolation for the agent's bash tool (Stufe 5). "bwrap"
-        # wraps every bash call in a bubblewrap namespace where ONLY the
-        # workspace roots (workspace + granted extra dirs) are writable —
-        # closes the "subprocess writes outside the sandbox" gap. Opt-in
-        # ("off" default): HPC environments may need unrestricted bash
-        # (MPI, module system), and bwrap may not be installed.
-        "bash_isolation": "off",
+        # Filesystem isolation for the agent's bash tool (Stufe 5). A bubblewrap
+        # namespace makes ONLY the workspace roots (workspace + granted extra
+        # dirs) writable — closing the "a subprocess writes outside the sandbox"
+        # gap regardless of how the command is obfuscated.
+        #   "auto" (default) — isolate ONLY in the unattended bypassPermissions
+        #                      mode (no human approving each command), and only
+        #                      when bwrap actually works here; interactive modes
+        #                      run plain bash so HPC coding is unaffected.
+        #   "off"            — explicit escape hatch: never isolate (e.g. an HPC
+        #                      node whose MPI/module workflow needs raw bash).
+        #   "bwrap"          — force isolation in every mode (when functional).
+        "bash_isolation": "auto",
         # Eval loop (Stufe 4): mine outcome history for recurring failure
         # patterns, scaffold draft benchmark tasks, write a report. The
         # default pass is LLM-free (0 tokens); a live benchmark run stays

@@ -27,6 +27,7 @@ _KINDS = {
     "self_mod":       ("🛡", "Self-modification guarded"),
     "outside_ws":     ("📁", "Outside-workspace access"),
     "denied_by_user": ("✋", "User denied"),
+    "isolation":      ("🔒", "Filesystem isolation active"),
 }
 
 

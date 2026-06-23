@@ -266,9 +266,48 @@ def test_bash_isolation_off_is_plain_bash(tmp_path):
         "/bin/bash", "-c", "echo hi"]
 
 
-def test_bash_isolation_default_setting_is_off():
+def test_bash_isolation_default_setting_is_auto():
     from delfin.user_settings import DEFAULT_SETTINGS
-    assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "off"
+    assert DEFAULT_SETTINGS["agent"]["bash_isolation"] == "auto"
+
+
+def test_auto_isolation_is_plain_in_interactive_mode(tmp_path):
+    # "auto" must NOT isolate interactive (ask-per-action) modes — HPC coding
+    # workflows stay on raw bash there.
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    perms = KitToolPermissions(workspace=str(tmp_path), mode="default")
+    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
+        "/bin/bash", "-c", "echo hi"]
+
+
+def test_auto_isolation_engages_in_bypass_mode(monkeypatch, tmp_path):
+    # In the unattended bypassPermissions mode "auto" engages bwrap (when it
+    # works). Mock the probe + presence so the test is deterministic.
+    import delfin.agent.api_client as A
+    A._BWRAP_FUNCTIONAL = None
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(A.shutil, "which", lambda _x: "/usr/bin/bwrap")
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    argv = A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto")
+    assert argv[0] == "bwrap"
+    assert argv[-3:] == ["/bin/bash", "-c", "echo hi"]
+
+
+def test_auto_isolation_falls_back_when_bwrap_unavailable(monkeypatch, tmp_path):
+    import delfin.agent.api_client as A
+    A._BWRAP_FUNCTIONAL = None
+    monkeypatch.setattr(A, "_bwrap_functional", lambda: False)
+    perms = A.KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    assert A._bash_isolation_argv("echo hi", tmp_path, perms, mode="auto") == [
+        "/bin/bash", "-c", "echo hi"]
+
+
+def test_isolation_off_is_escape_hatch_even_in_bypass(tmp_path):
+    # Explicit "off" must defeat auto-isolation everywhere (the HPC opt-out).
+    from delfin.agent.api_client import _bash_isolation_argv, KitToolPermissions
+    perms = KitToolPermissions(workspace=str(tmp_path), mode="bypassPermissions")
+    assert _bash_isolation_argv("echo hi", tmp_path, perms, mode="off") == [
+        "/bin/bash", "-c", "echo hi"]
 
 
 @pytest.mark.skipif(not _bwrap_functional(),
