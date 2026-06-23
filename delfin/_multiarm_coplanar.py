@@ -86,7 +86,7 @@ def solve_metal(D, centroids, normals, md, has_plane=None, w=1.0, iters=200):
 
 
 def embed_coplanar_multiarm(mol, donor_idxs, metal_sym, mds,
-                            donor_target_pos=None, k=24):
+                            donor_target_pos=None, k=24, cop_tol=0.6):
     """Effective Phase 2: metal-CENTERED CONSTRAINED embed.
 
     A free-ligand embed does NOT pre-organise a flexible tripodal (donors not
@@ -313,7 +313,10 @@ def best_conformer(mol, donor_idxs, mds, k=40, w=2.0, dist_tol=0.25):
                 continue
             if best is None or cres < best[0]:
                 best = (cres, coords)
-        if best is None:
+        # accept-if-better: only return a conformer that is GENUINELY coplanar
+        # (best per-ring metal-out-of-plane below cop_tol).  Otherwise None -> the
+        # caller keeps the existing ensemble (no regression from forcing a bad pose).
+        if best is None or best[0] > cop_tol:
             return None
         lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
         return lsyms, [best[1]]

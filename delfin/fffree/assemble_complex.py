@@ -2426,7 +2426,16 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         [float(np.linalg.norm(p)) for p in _dtp],
                         donor_target_pos=_dtp)
                     if _ma is not None:
-                        ring_confs = _ma
+                        # ADD the coplanar-M conformer to the ensemble (preserve
+                        # completeness — do NOT replace the existing conformers;
+                        # V16 ADD-not-REPLACE lesson).  _ma is only returned when
+                        # genuinely coplanar (accept-if-better gate in the module),
+                        # so no regression: ranking/clean-gate pick the best frame.
+                        if (ring_confs is not None and ring_confs[0] == _ma[0]):
+                            ring_confs = (ring_confs[0],
+                                          list(ring_confs[1]) + list(_ma[1]))
+                        else:
+                            ring_confs = _ma
                 except Exception:
                     pass
         if ring_confs is not None:
