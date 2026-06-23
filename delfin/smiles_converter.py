@@ -28580,6 +28580,28 @@ def _clean_gate_filter(isomers):
         return isomers
 
 
+def _apply_pi_inplane_final(isomers):
+    """FINAL post-conformer monodentate aromatic σ-donor metal-in-plane re-assertion.
+
+    A σ aromatic donor binds through an IN-PLANE sp² lone pair, so the metal must lie
+    IN the donor ring's plane.  ``assemble_complex`` seats it there correctly, but the
+    conformer/reembed passes (``_conf``) run AFTER the mid-pipeline coplanar-M pass
+    (``DELFIN_FFFREE_PI_COPLANAR_M``) and re-tilt the ring (metal ends 0.6-2.8 Å out of
+    plane in ~44 % of σ-aromatic-donor complexes).  This re-asserts the in-plane pose on
+    the FINAL ensemble for TRULY MONODENTATE ligands (one donor in the ligand) via a
+    rigid rotation about the fixed donor (M-D preserved; clash never-worse).  Multi-arm
+    polydentates (the larger remainder) need a coupled backbone relaxation (Phase 2, not
+    this pass).  Default-OFF / byte-identical unless ``DELFIN_FFFREE_PI_RIGID_PLACE=1``.
+    """
+    if not isomers or os.environ.get("DELFIN_FFFREE_PI_RIGID_PLACE", "0") != "1":
+        return isomers
+    try:
+        from delfin._pi_inplane_final import correct_results
+        return correct_results(isomers)
+    except Exception:
+        return isomers
+
+
 def _coord_integrity_filter(isomers):
     """Final UNIVERSAL decoordination filter over the FULL emitted ensemble at the
     public boundary -- covers BOTH the native fffree path AND the legacy generation
@@ -28697,9 +28719,9 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     _conf = _conf_complete_filter if outermost else (lambda x: x)
     _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))), r[1]
+        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))
+        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))
     return r
 
 
