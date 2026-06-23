@@ -3907,6 +3907,21 @@ def create_tab(ctx):
         except Exception:
             tool_trace_panel_html.value = ""
 
+    # Containment panel: prominently shows any blocked/flagged action so an
+    # attempt to break out is visible, not buried in the audit log. Hidden
+    # while clean (empty value), turns into a red feed once anything fires.
+    security_panel_html = widgets.HTML(
+        value="", layout=widgets.Layout(margin="2px 0 0 0"),
+    )
+
+    def _refresh_security_panel():
+        try:
+            from delfin.agent import security_events as _se
+            security_panel_html.value = (
+                _se.format_panel_html(12) if _se.counts()["total"] else "")
+        except Exception:
+            security_panel_html.value = ""
+
     def _refresh_status_line():
         try:
             from delfin.agent.status_line import (
@@ -4320,7 +4335,8 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
-         status_line_html, subagent_panel_html, tool_trace_panel_html],
+         status_line_html, subagent_panel_html, tool_trace_panel_html,
+         security_panel_html],
     )
 
     if not _yaml_ok:
@@ -5703,6 +5719,7 @@ def create_tab(ctx):
             pass
         try:
             _refresh_tool_trace_panel()
+            _refresh_security_panel()
         except Exception:
             pass
         engine = state["engine"]
@@ -12515,6 +12532,7 @@ def create_tab(ctx):
                     # Live tool-trace panel: reflect every tool call as it lands.
                     try:
                         _refresh_tool_trace_panel()
+                        _refresh_security_panel()
                     except Exception:
                         pass
                     # Truncate for display

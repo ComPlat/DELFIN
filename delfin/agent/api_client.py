@@ -2812,6 +2812,17 @@ def _resolve_max_tool_rounds() -> int:
     return 100_000 if val <= 0 else val
 
 
+def _record_security_event(kind: str, tool: str, detail: str,
+                           *, blocked: bool = True) -> None:
+    """Surface a containment decision to the visible security-event panel.
+    Lazy + best-effort: never affects the gate's behaviour."""
+    try:
+        from . import security_events
+        security_events.record(kind, tool, detail, blocked=blocked)
+    except Exception:
+        pass
+
+
 def _tool_context_char_budget(caps) -> int:
     """Char budget for accumulated tool output before the OLDEST results are
     elided, scaled to the model's real context window.
@@ -3814,6 +3825,8 @@ class _DocToolExecutor:
                 rel_str = path_arg.replace("\\", "/")
             is_protected = perms.matches_path_protected(rel_str)
             if is_protected:
+                _record_security_event("self_mod", name, rel_str,
+                                       blocked=perms.confirm_callback is None)
                 # Self-Modification Guard: editing the agent's own safety
                 # layer (api_client.py / kit_confirm.py / engine.py /
                 # tab_agent.py) ALWAYS requires explicit user confirmation,
@@ -3850,9 +3863,12 @@ class _DocToolExecutor:
                 return "command is required"
             denied = perms.matches_bash_deny(cmd)
             if denied:
+                _record_security_event("deny_pattern", "bash",
+                                       f"{cmd[:80]} → {denied}")
                 return f"command rejected by deny-pattern {denied!r}: refusing to run."
             secret_hit = self._scan_bash_for_secrets(cmd, perms)
             if secret_hit is not None:
+                _record_security_event("secret_path", "bash", str(secret_hit))
                 return (
                     f"bash command references a secret-deny path ({secret_hit!r}). "
                     "Reading or touching .ssh/.env/*.key/credentials via the "
@@ -3860,6 +3876,7 @@ class _DocToolExecutor:
                 )
             payload_hit = self._scan_bash_script_payloads(cmd, args, perms)
             if payload_hit is not None:
+                _record_security_event("script_payload", "bash", str(payload_hit))
                 return (
                     f"bash refuses to run a script whose contents trip the "
                     f"safety scan: {payload_hit}. The deny-list + secret scan "
@@ -3888,6 +3905,7 @@ class _DocToolExecutor:
                     return f"confirm_callback raised: {exc}"
                 if ok:
                     return None
+                _record_security_event("denied_by_user", "bash", cmd[:80])
                 return (
                     f"user denied the bash command '{cmd[:120]}'. Do NOT retry "
                     "it or work around it — ask the user what to do instead."
