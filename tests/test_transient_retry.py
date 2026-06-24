@@ -77,14 +77,17 @@ class BadRequestError(Exception):
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    caps = mc.ModelCapabilities(model="m", provider="kit",
+    # provider="ollama" needs no API key (the retry path is provider-agnostic),
+    # so this runs in CI's key-free, fully-mocked environment. Using "kit" here
+    # would error at construction when KIT_TOOLBOX_API_KEY is absent.
+    caps = mc.ModelCapabilities(model="m", provider="ollama",
                                 context_window=200_000, supports_tools=True)
     monkeypatch.setattr(mc, "resolve", lambda *a, **k: caps)
     monkeypatch.setattr(M, "get_registry", lambda *a, **k: _FakeRegistry())
     import delfin.agent.api_client as A
     monkeypatch.setattr(A.time, "sleep", lambda *a, **k: None)  # skip real backoff
-    return A.create_client(backend="api", provider="kit", api_key="",
-                           model="kit.qwen3.5-397b-A17b", cwd=str(tmp_path))
+    return A.create_client(backend="api", provider="ollama",
+                           model="qwen2.5-coder:7b", cwd=str(tmp_path))
 
 
 def _drive(client):
