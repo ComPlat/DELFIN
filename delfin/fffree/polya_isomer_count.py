@@ -350,6 +350,54 @@ def _meridional_triples(geometry: str, n: int):
     return out
 
 
+def _equatorial_squares(geometry: str, n: int):
+    """Vertex 4-sets on which a RIGID PLANAR tetradentate (porphyrin / phthalocyanine /
+    planar Schiff-base macrocycle) can seat as an EQUATORIAL SQUARE: 4 vertices
+    coplanar through the metal forming a square (two ~180deg antipodal diagonals +
+    four ~90deg sides) — the equatorial plane of OC-6 (axial sites left free for
+    axial ligands) or the full SP-4 square.  A flat conjugated macrocycle physically
+    requires its 4 donors coplanar with the metal; any non-coplanar 4-subset (a
+    folded / cis-bent arrangement) is EXCLUDED.  Derived GEOMETRICALLY from the same
+    ideal vertex set the assembler places into (delfin.fffree.polyhedra), so it is
+    correct for any CN>=4 polyhedron (and returns [] for geometries with no
+    equatorial square, e.g. TBP-5 / SPY-5).  Deterministic."""
+    import math
+    import itertools
+    import numpy as np
+    shape = _GEOM_KEY_TO_SHAPE.get(geometry)
+    if shape is None:
+        return []
+    try:
+        from delfin.fffree import polyhedra as _PLY
+        V = _PLY.ref_vectors(shape)
+    except Exception:
+        return []
+    out = []
+    for quad in itertools.combinations(range(n), 4):
+        vv = [V[i] for i in quad]
+        # coplanar through the metal: the 4 unit vectors span a plane (rank-2), i.e.
+        # the smallest singular value is ~0 (they pass through the origin = the metal).
+        try:
+            _, sv, _ = np.linalg.svd(np.array(vv, float))
+        except Exception:
+            continue
+        if not (sv[0] > 1e-9 and (sv[2] / sv[0]) < 0.05):
+            continue
+        # square signature: of the 6 pairwise angles, exactly TWO are ~180deg (the
+        # diagonals) and the remaining FOUR are ~90deg (the sides).  A coplanar but
+        # non-square 4-set (e.g. trapezoidal) is rejected.
+        angs = []
+        for a in range(4):
+            for b in range(a + 1, 4):
+                c = float(np.clip(vv[a] @ vv[b], -1.0, 1.0))
+                angs.append(math.degrees(math.acos(c)))
+        n180 = sum(1 for x in angs if x >= 170.0)
+        n90 = sum(1 for x in angs if 75.0 <= x <= 105.0)
+        if n180 == 2 and n90 == 4:
+            out.append(quad)
+    return out
+
+
 def enumerate_chelate_configs(geometry: str, ligand_specs):
     """Universal isomer enumeration for a mix of chelating (bidentate) + monodentate
     ligands.  ligand_specs: one dict per ligand instance with keys ``type``
@@ -369,6 +417,14 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
     # has no meridional triple (the caller then yields no config -> legacy fallback).
     _need_mer = any(s.get("rigid_planar") and s["denticity"] == 3 for s in ligand_specs)
     _mer_triples = _meridional_triples(geometry, n) if _need_mer else None
+    # Geometry-aware EQUATORIAL-SQUARE restriction (DELFIN_FFFREE_KAPPA4): a RIGID
+    # PLANAR tetradentate (porphyrin / phthalocyanine, spec["rigid_planar"] True) may
+    # occupy ONLY a coplanar-through-the-metal square (the OC-6 equatorial plane /
+    # SP-4 square), leaving any axial vertices free — never a folded 4-subset.  Empty
+    # if a rigid-planar κ4 spec is present but the geometry has no equatorial square
+    # (the caller then yields no config -> legacy fallback).
+    _need_sq = any(s.get("rigid_planar") and s["denticity"] == 4 for s in ligand_specs)
+    _eq_squares = _equatorial_squares(geometry, n) if _need_sq else None
 
     def canon_key(assign):
         best = None
@@ -447,6 +503,37 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
                     b = dict(assign)
                     b[outer_v[1]] = (k, 0); b[central] = (k, 1); b[outer_v[0]] = (k, 2)
                     place(b)
+        elif dent == 4 and spec.get("rigid_planar") and _eq_squares is not None:
+            # RIGID PLANAR tetradentate (porphyrin / phthalocyanine): occupy ONLY an
+            # EQUATORIAL SQUARE (4 vertices coplanar through the metal), leaving any
+            # axial vertices free for axial ligands.  The macrocycle is a closed
+            # 4-cycle arm0-arm1-arm2-arm3-arm0, so consecutive donor arms must sit on
+            # ADJACENT (~90deg) square vertices, never across the diagonal.  Enumerate
+            # the square's dihedral arrangements; canon_key dedups to the orbit(s).
+            import numpy as _np
+            from delfin.fffree import polyhedra as _PLY3
+            try:
+                _Vq = _PLY3.ref_vectors(_GEOM_KEY_TO_SHAPE[geometry])
+            except Exception:
+                _Vq = None
+            for sq in _eq_squares:
+                if _Vq is None or any(v in assign for v in sq):
+                    continue
+                # cyclic ring order [w0, adjacent, diagonal, adjacent] so that adjacent
+                # ring positions are the ~90deg (square-edge) neighbours.
+                w0 = sq[0]
+                dpart = min((v for v in sq if v != w0),
+                            key=lambda v: float(_Vq[w0] @ _Vq[v]))
+                adj = [v for v in sq if v != w0 and v != dpart]
+                ring = [w0, adj[0], dpart, adj[1]]
+                # dihedral group of the square (4 rotations x 2 reflections); canon dedups.
+                for refl in (False, True):
+                    for rot in range(4):
+                        a = dict(assign)
+                        for arm in range(4):
+                            pos = (rot - arm) % 4 if refl else (rot + arm) % 4
+                            a[ring[pos]] = (k, arm)
+                        place(a)
         else:
             # tridentate+ (kappa>=3): occupy any d-vertex subset.  Assembly seats the
             # ligand on the matching mer/fac arrangement (metallacycle embed + best-

@@ -187,6 +187,82 @@ def _is_rigid_planar_tridentate(fmol, donor_local_idxs) -> bool:
         return False
 
 
+def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
+    """Universal, graph+geometry-only test for a RIGID PLANAR tetradentate ligand
+    (porphyrin / phthalocyanine / corrole / planar Schiff-base macrocycle: 4
+    coordinating donors held coplanar by a conjugated macrocyclic backbone).  Such a
+    ligand physically CANNOT seat on an arbitrary 4-vertex subset of an octahedron —
+    its 4 donors must form an EQUATORIAL SQUARE (coplanar through the metal, leaving
+    the axial sites free).  No SMILES/refcode knowledge.
+
+    Criteria (all required):
+      (1) exactly 4 donor atoms;
+      (2) every donor is a conjugated lone-pair donor (aromatic / sp2) AND lies in a
+          ring — an sp3 amine arm (cyclam / tren) is flexible, not rigid-planar;
+      (3) on an embedded free conformer the 4 donors are near-coplanar AND form a
+          SQUARE: the two longest donor-donor distances (the diagonals) are nearly
+          equal and clearly exceed the four shorter ones (the sides), with a
+          diagonal/side ratio in the porphyrin range (~1.25-1.6).
+
+    Returns True only when all hold; any failure / exception -> False (the ligand
+    keeps the historic over-enumerate-and-self-gate combinatorial freedom).
+    Deterministic."""
+    try:
+        dons = [int(x) for x in donor_local_idxs]
+        if len(dons) != 4:
+            return False
+        # (2) each donor conjugated (aromatic/sp2) AND ring-borne.
+        for di in dons:
+            at = fmol.GetAtomWithIdx(di)
+            if not at.IsInRing():
+                return False
+            if not (at.GetIsAromatic() or str(at.GetHybridization()) == "SP2"):
+                return False
+        # (3) geometric coplanarity + square signature on an embedded conformer.
+        from rdkit.Chem import AllChem
+        import numpy as _np
+        mh = Chem.AddHs(fmol)
+        if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=False) != 0:
+            if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=True) != 0:
+                return False
+        try:
+            AllChem.MMFFOptimizeMolecule(mh)
+        except Exception:
+            pass
+        P = _np.array(mh.GetConformer().GetPositions(), float)
+        D = P[dons]
+        Dc = D - D.mean(axis=0)
+        # planarity: out-of-plane extent (smallest SVD singular value) must be small.
+        try:
+            _, sv, _ = _np.linalg.svd(Dc)
+        except Exception:
+            return False
+        if sv[0] < 1e-6:
+            return False
+        if float(sv[2] / sv[0]) > 0.22:               # not flat -> not rigid planar
+            return False
+        # square signature: 6 pairwise donor distances = 2 diagonals + 4 sides.
+        dists = sorted(
+            float(_np.linalg.norm(D[a] - D[b]))
+            for a in range(4) for b in range(a + 1, 4)
+        )
+        sides = dists[:4]
+        diags = dists[4:]
+        if sides[0] < 1e-6 or diags[0] < 1e-6:
+            return False
+        # diagonals near-equal, sides near-equal, diagonal clearly > side.
+        if diags[1] / diags[0] > 1.30:                # diagonals not balanced
+            return False
+        if sides[3] / sides[0] > 1.50:                # sides too irregular
+            return False
+        ratio = diags[0] / sides[3]                   # diagonal/side
+        if not (1.20 <= ratio <= 1.70):               # square ~sqrt(2); reject non-square
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _default_geometry(metal: str, cn: int) -> Optional[str]:
     if cn == 2:
         # iter-32f (DELFIN_FFFREE_CN_EXTEND): linear two-coordinate — the canonical
@@ -796,6 +872,13 @@ def decompose(smiles: str) -> Optional[Dict]:
         rigid_planar = False
         if _planar_mer_enabled() and len(fdonors) == 3:
             rigid_planar = _is_rigid_planar_tridentate(fmol, local_donors)
+        # κ4 rigid-planar (porphyrin / phthalocyanine / planar Schiff-base macrocycle):
+        # tag it so the enumerator restricts the 4 donors to an EQUATORIAL SQUARE
+        # (coplanar through the metal) and the assembler seats them in that plane.
+        # Only reachable under DELFIN_FFFREE_KAPPA4 (κ4 path gated above) -> byte-id off.
+        elif (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") == "1"
+              and len(fdonors) == 4):
+            rigid_planar = _is_rigid_planar_tetradentate(fmol, local_donors)
         ligands.append({
             "mol": fmol,
             "donor_local_idx": local_donors[0],       # primary (back-compat)
