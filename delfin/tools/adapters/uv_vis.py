@@ -22,6 +22,7 @@ class UvVisParseAdapter(StepAdapter):
     category = "spectra"
     params = _OUTPUT_FILE
     consumes = ("qc_output",)
+    wires = {"qc_output": "output_file"}   # auto-wire output_file from an upstream QM .out
     data_keys = (
         DataKeySpec("n_transitions", "int"),
         DataKeySpec("transitions", "list", "", "Electronic transitions (energy, λ, fosc)"),
@@ -73,6 +74,7 @@ class IrParseAdapter(StepAdapter):
     category = "spectra"
     params = _OUTPUT_FILE
     consumes = ("qc_output",)
+    wires = {"qc_output": "output_file"}   # auto-wire output_file from an upstream QM .out
     data_keys = (
         DataKeySpec("n_modes", "int"),
         DataKeySpec("modes", "list", "", "Vibrational modes (freq, intensity)"),

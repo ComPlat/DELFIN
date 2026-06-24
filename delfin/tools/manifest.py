@@ -52,6 +52,7 @@ def contract_to_dict(c) -> Dict[str, Any]:
         "data_keys": [_datakey_to_dict(d) for d in c.data_keys],
         "requires_binaries": sorted(c.requires_binaries),
         "requires_python": sorted(c.requires_python),
+        "wires": [{"capability": cap, "kwarg": kw} for cap, kw in c.wires],
     }
 
 

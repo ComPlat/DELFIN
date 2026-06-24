@@ -86,6 +86,11 @@ class StepContract:
     data_keys: Tuple[DataKeySpec, ...] = ()  # keys written into StepResult.data
     requires_binaries: frozenset = frozenset()   # external executables
     requires_python: frozenset = frozenset()     # importable module names
+    # opt-in auto-wiring: (capability, kwarg) pairs — when an upstream step makes
+    # *capability* available, the pipeline injects it as this step's *kwarg* (e.g.
+    # a parser declaring ("qc_output","filepath") gets its filepath from the
+    # upstream QM .out automatically). Distinct from the global gbw→moread rule.
+    wires: Tuple[Tuple[str, str], ...] = ()
 
     @property
     def required_params(self) -> Tuple[str, ...]:

@@ -22,6 +22,7 @@ class CclibParseAdapter(StepAdapter):
     category = "analysis"
     params = _FILEPATH
     consumes = ("qc_output",)
+    wires = {"qc_output": "filepath"}   # auto-wire filepath from an upstream QM .out
     requires_python = ("cclib",)
     data_keys = (
         DataKeySpec("scfenergies", "list", "eV", "SCF energies"),
@@ -58,6 +59,7 @@ class CclibEnergiesAdapter(StepAdapter):
     category = "analysis"
     params = _FILEPATH
     consumes = ("qc_output",)
+    wires = {"qc_output": "filepath"}   # auto-wire filepath from an upstream QM .out
     requires_python = ("cclib",)
     data_keys = (
         DataKeySpec("scf_ev", "float", "eV", "SCF energy"),
@@ -89,6 +91,7 @@ class CclibVibrationsAdapter(StepAdapter):
     category = "analysis"
     params = _FILEPATH
     consumes = ("qc_output",)
+    wires = {"qc_output": "filepath"}   # auto-wire filepath from an upstream QM .out
     requires_python = ("cclib",)
     data_keys = (
         DataKeySpec("freqs", "list", "cm^-1", "Vibrational frequencies"),

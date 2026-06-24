@@ -43,6 +43,8 @@ class StepAdapter(abc.ABC):
     data_keys: Tuple["DataKeySpec", ...] = ()
     requires_binaries: Tuple[str, ...] = ()
     requires_python: Tuple[str, ...] = ()
+    # opt-in input auto-wiring: {capability: kwarg} or ((capability, kwarg), ...)
+    wires: Any = ()
 
     def contract(self) -> "StepContract":
         """Assemble this adapter's declarative :class:`StepContract`.
@@ -56,6 +58,7 @@ class StepAdapter(abc.ABC):
         produced = set(self.produces)
         if self.produces_geometry:
             produced.add("geometry")
+        wires = self.wires.items() if isinstance(self.wires, dict) else self.wires
         return StepContract(
             name=self.name,
             description=self.description,
@@ -67,6 +70,7 @@ class StepAdapter(abc.ABC):
             data_keys=tuple(self.data_keys),
             requires_binaries=frozenset(self.requires_binaries),
             requires_python=frozenset(self.requires_python),
+            wires=tuple((str(c), str(k)) for c, k in wires),
         )
 
     @abc.abstractmethod

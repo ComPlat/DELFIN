@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from delfin.tools._registry import get as _get_adapter
 from delfin.tools._registry import list_steps as _list_steps
-from delfin.tools._wiring import can_autowire
+from delfin.tools._wiring import can_autowire, wire_satisfies
 
 _MAX_ENUM_SHOWN = 8          # list allowed values inline only for small enums
 
@@ -167,10 +167,13 @@ def _check_real_step(
 
     # 1. required parameters
     missing_params: List[str] = []
+    avail_frozen = frozenset(avail_caps)
     for p in contract.required_params:
         if p in eff:
             continue
-        if can_autowire(p, frozenset(avail_caps)):
+        if can_autowire(p, avail_frozen):
+            continue
+        if wire_satisfies(p, contract.wires, avail_frozen):
             continue
         missing_params.append(p)
     if missing_params:

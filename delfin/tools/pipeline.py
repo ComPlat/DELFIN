@@ -161,6 +161,25 @@ def _resolve_cores(cores: int | str) -> int:
     return int(cores)
 
 
+def _result_artifacts(result, step_name: str) -> Dict[str, Any]:
+    """A step result's artifacts, with its ``output_file`` exposed under the
+    ``qc_output`` capability tag when the step declares it produces ``qc_output``.
+
+    QM engines write their main log to ``StepResult.output_file`` (not into the
+    artifacts dict), so downstream parsers could not auto-wire to it.  Surfacing
+    it as the ``qc_output`` artifact lets a parser's ``wires`` fill its filepath
+    from the upstream job.  Purely additive — only adds a key, never removes one.
+    """
+    arts: Dict[str, Any] = dict(result.artifacts) if result.artifacts else {}
+    out = getattr(result, "output_file", None)
+    if out and "qc_output" not in arts:
+        from delfin.tools._registry import get as _get_adapter
+        ad = _get_adapter(step_name)
+        if ad is not None and "qc_output" in ad.contract().produces:
+            arts["qc_output"] = out
+    return arts
+
+
 @dataclass
 class _StepSpec:
     """Specification for a single step in a pipeline."""
@@ -1294,11 +1313,12 @@ class Pipeline:
                 from delfin.tools._wiring import autowire_kwargs
                 from delfin.tools._registry import get as _get_adapter
                 _adapter = _get_adapter(spec.step_name)
-                _consumes = (
-                    _adapter.contract().consumes if _adapter is not None else frozenset()
-                )
+                _contract = _adapter.contract() if _adapter is not None else None
+                _consumes = _contract.consumes if _contract is not None else frozenset()
+                _wires = _contract.wires if _contract is not None else ()
                 merged_kwargs = autowire_kwargs(
-                    spec.step_name, merged_kwargs, current_artifacts, consumes=_consumes,
+                    spec.step_name, merged_kwargs, current_artifacts,
+                    consumes=_consumes, wires=_wires,
                 )
                 merged_kwargs.setdefault("_prev_artifacts", dict(current_artifacts))
 
@@ -1321,8 +1341,7 @@ class Pipeline:
                         break
                     if loop_result.geometry:
                         loop_geom = loop_result.geometry
-                    if loop_result.artifacts:
-                        current_artifacts.update(loop_result.artifacts)
+                    current_artifacts.update(_result_artifacts(loop_result, spec.step_name))
                     try:
                         if spec.loop_until(loop_result, iteration):
                             break
@@ -1373,8 +1392,7 @@ class Pipeline:
             if result.ok:
                 if result.geometry:
                     current_geom = result.geometry
-                if result.artifacts:
-                    current_artifacts.update(result.artifacts)
+                current_artifacts.update(_result_artifacts(result, spec.step_name))
             elif not result.ok:
                 logger.warning("[%s] step '%s' failed: %s", self.name, spec.label, result.error)
                 if stop_on_failure:

@@ -69,13 +69,17 @@ def autowire_kwargs(
     current_artifacts: Dict[str, Any],
     *,
     consumes: frozenset = frozenset(),
+    wires: Tuple[Tuple[str, str], ...] = (),
     rules: Tuple[WiringRule, ...] = DEFAULT_RULES,
 ) -> Dict[str, Any]:
     """Inject artifact-backed kwargs into *merged_kwargs* in place and return it.
 
-    For each rule: skip if the consumer already set the kwarg (explicit wins),
-    skip if the artifact is not available upstream, otherwise inject it when the
-    rule's name predicate matches or the consumer ``consumes`` the capability.
+    For each global rule: skip if the consumer already set the kwarg (explicit
+    wins), skip if the artifact is not available upstream, otherwise inject it
+    when the rule's name predicate matches or the consumer ``consumes`` the
+    capability.  Then the consumer's own declarative ``wires`` — ``(capability,
+    kwarg)`` pairs — inject an available upstream artifact into that exact kwarg
+    (e.g. a parser's ``filepath`` from the upstream ``qc_output``).
     """
     for rule in rules:
         if rule.inject_kwarg in merged_kwargs:
@@ -85,7 +89,24 @@ def autowire_kwargs(
             continue
         if rule.applies_to(step_name) or (rule.capability in consumes):
             merged_kwargs[rule.inject_kwarg] = str(current_artifacts[key])
+    for capability, kwarg in wires:
+        if kwarg in merged_kwargs:
+            continue
+        if capability in current_artifacts:
+            merged_kwargs[kwarg] = str(current_artifacts[capability])
     return merged_kwargs
+
+
+def wire_satisfies(
+    param_name: str, wires: Tuple[Tuple[str, str], ...], avail_caps: frozenset,
+) -> bool:
+    """Whether one of *wires* would fill *param_name* from an available capability.
+
+    Lets the validator agree with what :func:`autowire_kwargs` does at run time,
+    so a wired parser's ``filepath`` is not flagged "missing" when the producing
+    capability is available upstream.
+    """
+    return any(k == param_name and c in avail_caps for c, k in wires)
 
 
 def can_autowire(
@@ -105,4 +126,5 @@ def can_autowire(
     )
 
 
-__all__ = ["WiringRule", "DEFAULT_RULES", "autowire_kwargs", "can_autowire"]
+__all__ = ["WiringRule", "DEFAULT_RULES", "autowire_kwargs", "can_autowire",
+           "wire_satisfies"]
