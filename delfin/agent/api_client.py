@@ -3475,6 +3475,7 @@ class _DocToolExecutor:
             info = self._calc_engine.get_calc_info(calc_id)
             if info is None:
                 return json.dumps({"error": f"Calculation '{calc_id}' not found."})
+            info = self._inject_scientific_check(info)
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":
@@ -3483,6 +3484,41 @@ class _DocToolExecutor:
             )
 
         return json.dumps({"error": f"Unknown calc tool: {name}"})
+
+    def _inject_scientific_check(self, info: dict) -> dict:
+        """Attach the scientific-correctness critic's red flags to a calc's
+        info, so the agent can't inspect a result without seeing them — an SCF
+        that never converged, an optimisation on a saddle point (imaginary
+        frequencies), heavy spin contamination. Read-only + deterministic; only
+        adds the field when there's a real ❌/⚠️, so clean results stay clean.
+        Never raises."""
+        try:
+            path = info.get("path") or ""
+            if not path:
+                return info
+            from .result_critic import (
+                critique_folder, worst_level, format_report)
+            by_file = critique_folder(path)
+            if not by_file:
+                return info
+            worst = "ok"
+            for crits in by_file.values():
+                wl = worst_level(crits)
+                if wl == "error":
+                    worst = "error"
+                    break
+                if wl == "warn" and worst != "error":
+                    worst = "warn"
+            if worst == "ok":
+                return info
+            return {**info, "scientific_check": {
+                "worst": worst,
+                "report": format_report(by_file),
+                "note": ("Read-only correctness flags — do NOT report this "
+                         "result as trustworthy until the ❌/⚠️ are addressed."),
+            }}
+        except Exception:
+            return info
 
     # -- Repo file access tools -----------------------------------------------
 
