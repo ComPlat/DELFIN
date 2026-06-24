@@ -1140,15 +1140,22 @@ def _ligand_confs_from_mol(frag_mol, k=10):
         if os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") != "1":
             raise
         # Kekulize-robust retry (same root as the decompose split): a cleaved
-        # aromatic-N⁺ ligand (triazolide / pyridinium cap) is unkekulizable, so
-        # EmbedMultipleConfs raises and the WHOLE complex falls to legacy.  Re-
-        # sanitize with kekulization skipped (aromaticity retained) and retry.
+        # aromatic-N⁺ ligand (triazolide / pyridinium / scorpionate cap) carries
+        # ARTEFACT positive charges on ring N from the metal-dative SMILES encoding,
+        # which leave the ring unkekulizable -> EmbedMultipleConfs raises and the
+        # WHOLE complex falls to legacy.  Neutralise those aromatic-N⁺ formal charges
+        # (geometry-only: connectivity + donor indices unchanged) so a full sanitize
+        # kekulizes and the fragment embeds.  Verified: scorpionate cap embeds.
         cids = []
         try:
             fm = Chem.RWMol(frag_mol)
-            Chem.SanitizeMol(fm, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
-                                              ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE))
-            m = Chem.AddHs(fm.GetMol())
+            for a in fm.GetAtoms():
+                if (a.GetIsAromatic() and a.GetSymbol() == "N"
+                        and a.GetFormalCharge() > 0):
+                    a.SetFormalCharge(0)
+            m = fm.GetMol()
+            Chem.SanitizeMol(m)
+            m = Chem.AddHs(m)
             cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
                                                    numThreads=1))
         except Exception:
