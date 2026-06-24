@@ -337,7 +337,7 @@ class AgentEngine:
         self.messages: list[dict[str, Any]] = []
         self.role_outputs: dict[str, str] = {}
         self.compaction_summaries: dict[str, str] = {}
-        self.token_usage = {"input": 0, "output": 0}
+        self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
         # Exact system prompt of the most recent turn (for bug reports).
         self.last_system_prompt: str = ""
@@ -597,6 +597,7 @@ class AgentEngine:
             "role_total": len(self.route),
             "input_tokens": self.token_usage["input"],
             "output_tokens": self.token_usage["output"],
+            "cached_tokens": self.token_usage.get("cached", 0),
             "cost_usd": self.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
@@ -985,6 +986,11 @@ class AgentEngine:
                     # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
+                        # Prompt tokens served from the endpoint cache (Anthropic
+                        # reports it here). Visibility into how much of the input
+                        # was free — drives the caching/efficiency work.
+                        self.token_usage["cached"] = self.token_usage.get(
+                            "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
 
                 elif event.type == "message_delta":
                     with self._lock:
@@ -992,6 +998,9 @@ class AgentEngine:
                         # Input tokens already counted in message_start.
                         self.token_usage["output"] += event.output_tokens
                         self.cost_usd += event.cost_usd
+                        # OpenAI/vLLM report cached prompt tokens here.
+                        self.token_usage["cached"] = self.token_usage.get(
+                            "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
                     # Per-turn runaway breaker: if THIS turn's spend crosses the
                     # (very high) hard cap, stop so the loop can't run forever.
                     _cap = getattr(self, "_cost_cap_value", 0.0)
@@ -1577,10 +1586,14 @@ class AgentEngine:
                     elif event.type == "message_start":
                         with self._lock:
                             self.token_usage["input"] += event.input_tokens
+                            self.token_usage["cached"] = self.token_usage.get(
+                                "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
                     elif event.type == "message_delta":
                         with self._lock:
                             self.token_usage["output"] += event.output_tokens
                             self.cost_usd += event.cost_usd
+                            self.token_usage["cached"] = self.token_usage.get(
+                                "cached", 0) + (getattr(event, "cached_tokens", 0) or 0)
             except Exception:
                 break
 
@@ -1867,7 +1880,7 @@ class AgentEngine:
             self.role_outputs.clear()
             self.compaction_summaries.clear()
             self.current_role_index = 0
-            self.token_usage = {"input": 0, "output": 0}
+            self.token_usage = {"input": 0, "output": 0, "cached": 0}
             self.cost_usd = 0.0
             self._last_outcome_cost = 0.0  # A6 — reset Δ baseline on new cycle
             self.session_id = self._fresh_session_id()  # fresh session for new cycle

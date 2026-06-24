@@ -5737,6 +5737,7 @@ def create_tab(ctx):
                 s["cost_usd"],
                 provider=s.get("provider", provider_dropdown.value),
                 perm_profile=state.get("_perm_profile", "ask_all"),
+                cached_tokens=s.get("cached_tokens", 0),
                 active_gate_type=active_gate.get("type", ""),
                 active_gate_text=active_gate.get("title", ""),
             )
@@ -14774,6 +14775,7 @@ def _render_status(
     cost_usd: float,
     provider: str = "claude",
     perm_profile: str = "ask_all",
+    cached_tokens: int = 0,
     active_gate_type: str = "",
     active_gate_text: str = "",
 ) -> str:
@@ -14802,7 +14804,12 @@ def _render_status(
         cost_str = _estimate_cost_str(backend, input_tokens, output_tokens,
                                       provider=provider)
 
-    tokens_str = f"{input_tokens:,} in / {output_tokens:,} out"
+    # Show cached prompt tokens when the endpoint reports them — a live signal
+    # of how much input was served free from the prefix cache.
+    _cached_str = (f" ({cached_tokens:,} cached, "
+                   f"{100 * cached_tokens // max(input_tokens, 1)}%)"
+                   if cached_tokens else "")
+    tokens_str = f"{input_tokens:,} in{_cached_str} / {output_tokens:,} out"
 
     # Permission profile badge (color-coded)
     _perm_colors = {

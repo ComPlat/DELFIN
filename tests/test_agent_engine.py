@@ -219,7 +219,7 @@ def test_engine_reset_cycle(agent_tree, mock_client):
     assert engine.current_role_index == 0
     assert engine.messages == []
     assert engine.role_outputs == {}
-    assert engine.token_usage == {"input": 0, "output": 0}
+    assert engine.token_usage == {"input": 0, "output": 0, "cached": 0}
     assert engine.cost_usd == 0.0
 
 

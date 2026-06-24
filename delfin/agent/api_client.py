@@ -37,7 +37,8 @@ class StreamEvent:
     """A single event from a streaming Claude response."""
 
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
-                 "cost_usd", "tool_name", "tool_input", "tool_output")
+                 "cost_usd", "tool_name", "tool_input", "tool_output",
+                 "cached_tokens")
 
     def __init__(
         self,
@@ -50,6 +51,7 @@ class StreamEvent:
         tool_name: str = "",
         tool_input: str = "",
         tool_output: str = "",
+        cached_tokens: int = 0,
     ):
         self.type = type
         self.text = text
@@ -60,6 +62,10 @@ class StreamEvent:
         self.tool_name = tool_name
         self.tool_input = tool_input
         self.tool_output = tool_output
+        # Prompt tokens served from the endpoint's prefix cache (OpenAI/vLLM
+        # ``prompt_tokens_details.cached_tokens`` or Anthropic
+        # ``cache_read_input_tokens``). 0 when unreported. Lets us SEE caching.
+        self.cached_tokens = cached_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +608,7 @@ class APIClient(_BaseClient):
                         yield StreamEvent(
                             type="message_start",
                             input_tokens=_total_in,
+                            cached_tokens=cache_read,
                         )
 
                 elif etype == "content_block_start":
@@ -2810,6 +2817,17 @@ def _resolve_max_tool_rounds() -> int:
     except Exception:
         return 500
     return 100_000 if val <= 0 else val
+
+
+def _cached_tokens_of(usage) -> int:
+    """Prompt tokens served from the endpoint's prefix cache, read defensively
+    from the OpenAI/vLLM ``usage.prompt_tokens_details.cached_tokens`` field.
+    Returns 0 when the endpoint doesn't report it. Never raises."""
+    try:
+        det = getattr(usage, "prompt_tokens_details", None)
+        return int(getattr(det, "cached_tokens", 0) or 0) if det else 0
+    except Exception:
+        return 0
 
 
 def _record_security_event(kind: str, tool: str, detail: str,
@@ -6357,6 +6375,7 @@ class OpenAIClient(_BaseClient):
 
         _total_in = 0
         _total_out = 0
+        _total_cached = 0      # prompt tokens served from the endpoint cache
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
         # install easily eats 20+ rounds before the model can wrap up,
@@ -6452,6 +6471,7 @@ class OpenAIClient(_BaseClient):
                         if chunk.usage:
                             _total_in += chunk.usage.prompt_tokens or 0
                             _total_out += chunk.usage.completion_tokens or 0
+                            _total_cached += _cached_tokens_of(chunk.usage)
 
                         if not chunk.choices:
                             continue
@@ -6510,6 +6530,7 @@ class OpenAIClient(_BaseClient):
                 if getattr(resp, "usage", None):
                     _total_in += resp.usage.prompt_tokens or 0
                     _total_out += resp.usage.completion_tokens or 0
+                    _total_cached += _cached_tokens_of(resp.usage)
                 if getattr(resp, "choices", None):
                     _choice = resp.choices[0]
                     _msg = _choice.message
@@ -6820,6 +6841,7 @@ class OpenAIClient(_BaseClient):
                             input_tokens=_total_in,
                             output_tokens=_total_out,
                             cost_usd=cost,
+                            cached_tokens=_total_cached,
                             stop_reason="consecutive_identical_errors",
                         )
                         return
@@ -6840,6 +6862,7 @@ class OpenAIClient(_BaseClient):
                 input_tokens=_total_in,
                 output_tokens=_total_out,
                 cost_usd=cost,
+                cached_tokens=_total_cached,
                 stop_reason=finish_reason or "end_turn",
             )
             break
@@ -6866,6 +6889,7 @@ class OpenAIClient(_BaseClient):
                 input_tokens=_total_in,
                 output_tokens=_total_out,
                 cost_usd=cost,
+                cached_tokens=_total_cached,
                 stop_reason="max_tool_rounds",
             )
 
