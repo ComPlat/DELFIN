@@ -119,3 +119,52 @@ def test_compact_below_threshold_is_noop(agent_tree):
     engine._compact_history()
     engine.client.kill.assert_not_called()
     assert len(engine.messages) == 4
+
+
+# ---------------------------------------------------------------------------
+# Re-compaction fidelity: a prior summary must not be re-truncated to 400 chars
+# (that silently dropped any fact sitting deep in it). Exercises the compaction
+# methods directly via __new__ so no agent-pack is needed.
+# ---------------------------------------------------------------------------
+
+
+def _bare_engine():
+    eng = AgentEngine.__new__(AgentEngine)
+    eng.messages = []
+    eng.context_window_tokens = 10      # force compaction (tiny window)
+    eng.auto_compact_pct = 0.95
+    eng.backend = "cli"                 # extractive path (no LLM call)
+    eng.client = None
+    eng.last_compaction_info = {}
+    eng.session_id = ""
+    return eng
+
+
+def test_prior_summary_survives_second_compaction():
+    """A load-bearing fact sitting DEEP in the first summary must survive when
+    a second compaction folds that summary back in. Regression: the prior
+    summary was treated as a 400-char user goal, dropping everything past it."""
+    eng = _bare_engine()
+    eng.messages.append({"role": "user", "content": "ORIGINAL_GOAL: build the EOS solver"})
+    for i in range(5):
+        eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
+        eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})
+    eng.messages.append({"role": "user",
+                         "content": "DEEP_CONSTRAINT: bug reports group-readable to qmchem_shared only"})
+    for i in range(5, 8):
+        eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
+        eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})
+
+    eng._compact_history()
+    block1 = eng.messages[0]["content"]
+    assert block1.startswith("[Conversation summary")
+    # precondition: the constraint really is deep (past the old 400-char cut)
+    assert "DEEP_CONSTRAINT" in block1 and block1.find("DEEP_CONSTRAINT") > 400
+
+    for i in range(12):
+        eng.messages.append({"role": "user" if i % 2 == 0 else "assistant",
+                             "content": f"later {i}: " + "more " * 10})
+    eng._compact_history()
+    block2 = eng.messages[0]["content"]
+    assert "ORIGINAL_GOAL" in block2      # original intent preserved
+    assert "DEEP_CONSTRAINT" in block2    # deep fact no longer truncated away

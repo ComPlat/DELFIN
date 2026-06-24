@@ -1184,6 +1184,10 @@ class AgentEngine:
 
     _COMPACTION_THRESHOLD = 12  # messages before compaction triggers
     _KEEP_RECENT = 4            # keep last 4 messages intact
+    # Header that marks a compaction summary message — used both to build the
+    # block and to recognise a PRIOR summary on re-compaction so it isn't
+    # re-truncated like a fresh user goal (which compounded loss).
+    _SUMMARY_BLOCK_PREFIX = "[Conversation summary"
 
     def _estimate_context_tokens(self) -> int:
         """Rough char/4 estimate of tokens in the current message list."""
@@ -1429,6 +1433,21 @@ class AgentEngine:
                 content = msg.get("content", "")
                 if role == "user":
                     text = content if isinstance(content, str) else ""
+                    # A prior compaction's summary block is ALREADY a
+                    # compressed recap of many messages. On a second
+                    # compaction it lands here as a "user" message — and
+                    # truncating it to 400 chars (as if it were a one-line
+                    # goal) silently drops everything deeper than ~400 chars,
+                    # compounding loss across repeated compactions on long
+                    # sessions. Carry it forward near-whole instead (bounded,
+                    # header stripped so we don't nest "[summary]" markers).
+                    if text.lstrip().startswith(self._SUMMARY_BLOCK_PREFIX):
+                        body = text.split("\n", 1)[1].strip() if "\n" in text else text.strip()
+                        if len(body) > 3000:
+                            body = body[:3000] + "\n... [older summary detail elided] ..."
+                        if body:
+                            summary_parts.append(body)
+                        continue
                     # Goals deserve more than one line — keep up to
                     # 400 chars of the first sentence/paragraph so the
                     # post-compact agent can read the original intent.
