@@ -96,14 +96,30 @@ def test_compact_prompt_preserves_section_headers(loader):
     compact = loader._strip_lazy_modules(
         text, task_text="hi", mode_id="solo", model="qwen2.5-coder:7b",
     )
-    # Core sections must survive
+    # Core sections must survive. Memory guidance now lives once in the
+    # universal memory_addendum.md (injected for every role), not in the role
+    # prompt — so it's no longer expected here.
     for needle in (
         "## Strategies for approaching tasks",
         "## Subagents",
-        "## Memory",
         "## Context management",
     ):
         assert needle in compact, f"compact lost section: {needle}"
+
+
+def test_memory_guidance_present_once_in_full_prompt(loader):
+    """The memory section was duplicated (role prompt + universal addendum);
+    it's now consolidated into memory_addendum.md so the assembled prompt
+    carries it exactly once, with the key guidance intact."""
+    sp = loader.build_system_prompt(
+        role_id="solo_agent", mode_id="solo", mode_description="Code",
+        route=["solo_agent"], role_index=0, prior_outputs=None,
+        memory_context="", task_text="x", session_key="m", live_state=None,
+        model="kit.qwen3.5-397b-A17b", permission_mode="ask_all")
+    assert sp.count("## Memory") == 1                 # no duplication
+    assert "remember" in sp and "durable" in sp        # proactive-save guidance
+    assert "still holds" in sp                          # verify-before-acting bit
+    assert "~/.claude/" not in sp                       # the wrong path is gone
 
 
 def test_compact_prose_keeps_code_blocks_verbatim(loader):

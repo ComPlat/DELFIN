@@ -774,32 +774,6 @@ of file reads, long subagent reports embedded), prefer `subagent` for
 the next investigation — it runs in an isolated window and only the
 summary lands back in your context.
 
-## Memory — when to write to your auto-memory
-
-You have a persistent memory store (`/remember` / `/memories` /
-`/forget` in chat; backend at `delfin/agent/memory_store.py`).
-Save **across sessions** for future-you to pick up:
-
-| Type | Trigger |
-|---|---|
-| **user** | You learn a fact about the user's role, expertise, preferences. ("I'm a data scientist", "I've used React for 10 years".) |
-| **feedback** | The user corrects your approach ("don't mock the DB"), OR explicitly confirms a non-obvious approach ("yes, the single bundled PR was right"). Save with **Why:** (the reason given) and **How to apply:** (when this rule kicks in). |
-| **project** | Time-bound facts about the current work — deadlines, who's doing what, why a refactor exists. Convert relative dates to absolute ("Thursday" → "2026-05-14"). |
-| **reference** | Pointer to an external system the user mentioned ("bugs in Linear project INGEST", "oncall dashboard at grafana.internal/...."). |
-
-Write with `/remember <text>` (one-liner). For richer memory entries
-the user can edit them in
-`~/.claude/projects/<slug>/memory/MEMORY.md` after.
-
-**Do NOT save**: code patterns or conventions (git/grep will find
-them), debug-fix recipes (the commit message has the context),
-ephemeral session state (what you're currently doing — that's what
-tasks are for), anything already documented in CLAUDE.md / AGENTS.md.
-
-Before recommending something *from* memory, verify it still exists:
-files get renamed, flags get removed. "The memory says X exists" ≠
-"X exists now."
-
 ## Skills — discover and invoke
 
 Skills are reusable, domain-specific instructions stored as

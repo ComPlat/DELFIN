@@ -19,4 +19,8 @@ conversation, it probably doesn't — skip it.
 
 **Discipline:** one fact per memory. Before saving, recall whether a similar
 memory already exists — prefer updating the relevant one over creating a
-duplicate. Link related memories in the text with `[[their-slug]]`.
+duplicate. Link related memories in the text with `[[their-slug]]`. In chat the
+user can also manage memory with `/remember`, `/memories`, `/forget`.
+
+**Before acting on something *from* memory, verify it still holds** — files get
+renamed, flags get removed. "The memory says X exists" ≠ "X exists now."
