@@ -37,6 +37,7 @@ on any error.  Default-OFF / byte-identical unless ``DELFIN_FFFREE_PI_COPLANAR_F
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -57,7 +58,8 @@ _RING_FLAT = 0.35     # a ring's own max out-of-plane to be judged "flat" (Å)
 _MOOP_MIN = 0.30      # only act if the metal is at least this far out of plane (Å)
 _MOOP_EPS = 0.10      # required strict improvement in metal out-of-plane (Å)
 _CLASH_FLOOR = 1.95   # heavy-heavy inter-ligand floor (Å); below = clash
-_LINKER_STRETCH = 0.45  # max allowed arm→backbone linker bond growth (Å)
+_LINKER_STRETCH = 0.45  # max allowed arm→backbone linker bond growth (Å, rigid path)
+_BOND_ERR_TOL = 0.15    # max 1-2 bond distortion allowed after backbone-flex relax (Å)
 # deterministic spin grid about the M-D axis (keeps M in-plane; relieves linker+clash)
 _SPINS = [0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0, 90.0, -90.0,
           120.0, -120.0, 150.0, -150.0, 180.0]
@@ -239,6 +241,71 @@ def _global_nb_heavy_min(coords, syms, metal_set):
     return mn
 
 
+def _build_restraints(P, comp_set, adj, free):
+    """1-2 (bond) and 1-3 (angle-as-distance) target distances from the ORIGINAL
+    geometry P, for every pair inside `comp_set` with at least one endpoint in
+    `free`.  Preserving these while moving only `free` atoms re-routes the backbone
+    to follow a rotated arm without distorting bonds/angles."""
+    R = []
+    cl = sorted(comp_set)
+    for a in cl:
+        # 1-2 bonds
+        for b in adj[a]:
+            if b > a and b in comp_set and (a in free or b in free):
+                R.append((a, b, float(np.linalg.norm(P[a] - P[b]))))
+        # 1-3 (a-x-b): preserve the a..b distance => preserves the angle at x
+        for x in adj[a]:
+            if x not in comp_set:
+                continue
+            for b in adj[x]:
+                if b > a and b != a and b in comp_set and b not in adj[a] \
+                        and (a in free or b in free):
+                    R.append((a, b, float(np.linalg.norm(P[a] - P[b]))))
+    return R
+
+
+def _relax_backbone(coords, free, restraints, iters=160):
+    """Position-based-dynamics distance-constraint relaxation: move the `free`
+    atoms to satisfy the target distances in `restraints` (i, j, target); anchored
+    atoms (metal, donors, the rigidly-rotated arm) stay fixed.  Deterministic,
+    FF-free; preserves 1-2 bonds and 1-3 angles so the backbone re-routes to follow
+    a rotated arm without local distortion."""
+    P = coords.copy()
+    free = set(free)
+    for _ in range(int(iters)):
+        moved = 0.0
+        for i, j, t in restraints:
+            fi, fj = i in free, j in free
+            if not fi and not fj:
+                continue
+            dv = P[i] - P[j]
+            L = float(np.linalg.norm(dv))
+            if L < 1e-9:
+                continue
+            corr = 0.5 * ((L - t) / L) * dv
+            if fi and fj:
+                P[i] -= corr; P[j] += corr
+            elif fi:
+                P[i] -= 2.0 * corr
+            else:
+                P[j] += 2.0 * corr
+            moved = max(moved, float(np.linalg.norm(corr)))
+        if moved < 1e-5:
+            break
+    return P
+
+
+def _max_bond_err(P0, P1, comp_set, adj):
+    """Max change in any 1-2 bond length inside comp_set (P0 original, P1 result)."""
+    e = 0.0
+    for a in sorted(comp_set):
+        for b in adj[a]:
+            if b > a and b in comp_set:
+                e = max(e, abs(float(np.linalg.norm(P1[a] - P1[b]))
+                              - float(np.linalg.norm(P0[a] - P0[b]))))
+    return e
+
+
 def _arm_clash(coords, mov, syms, adj, metal_set):
     """Min heavy-heavy distance between the MOVABLE arm atoms and every other
     non-metal heavy atom they are NOT directly bonded to.  This is the exact
@@ -346,6 +413,9 @@ def correct_xyz(block):
                         if k != mi and syms[k] != "H" and D[mi, k] < _MD_SHELL}
         coords = P.copy()
         changed = False
+        # backbone-flex fallback for severe (large-rotation) arms; on by default
+        # within this pass, toggleable for A/B comparison.
+        flex_on = os.environ.get("DELFIN_FFFREE_PI_BACKBONE_FLEX", "1") == "1"
 
         for comp in comps:
             comp_set = set(comp)
@@ -400,6 +470,8 @@ def correct_xyz(block):
 
                 best = None
                 best_key = None
+                flex_cand = None          # min-clash in-plane rotation ignoring linker
+                flex_clash = -1.0
                 for sp in _SPINS:
                     rot = _axis_rot(target, math.radians(sp)) @ R0
                     Q = coords.copy()
@@ -411,7 +483,13 @@ def correct_xyz(block):
                     noop = abs(float(np.dot(M - cen2, nrm2)))
                     if noop > m_oop - _MOOP_EPS:
                         continue
-                    # linker stretch guard
+                    clash = _arm_clash(Q, movable, syms, adj, metal_set)
+                    # candidate for the backbone-flex fallback (best in-plane pose,
+                    # linker stretch will be healed by relaxing the backbone)
+                    if clash > flex_clash:
+                        flex_clash = clash
+                        flex_cand = Q
+                    # rigid candidate: linker not over-stretched AND clash never-worse
                     max_link = 0.0
                     for a, b, d0 in linkers:
                         dl = float(np.linalg.norm(Q[a] - Q[b])) - d0
@@ -419,18 +497,33 @@ def correct_xyz(block):
                             max_link = dl
                     if max_link > _LINKER_STRETCH:
                         continue
-                    # asymmetric clash safety: never worsen the arm's contact past the floor
-                    clash = _arm_clash(Q, movable, syms, adj, metal_set)
                     if clash < clash_min:
                         continue
-                    # rank: lowest metal-oop, then least linker stretch, then most clash
                     key = (round(noop, 4), round(max_link, 4), -round(clash, 4))
                     if best_key is None or key < best_key:
                         best_key = key
                         best = Q
-                if best is None:
-                    continue
+
                 Q = best
+                if Q is None and flex_on and flex_cand is not None:
+                    # SEVERE case: rigid rotation over-stretches the arm→backbone
+                    # linker.  Apply the rotation anyway (metal now in-plane) and let
+                    # the BACKBONE flex to follow it: freeze metal + all donors + the
+                    # rigid arm, relax the remaining backbone atoms to restore the
+                    # original 1-2/1-3 distances.  Accept only if the ring stays flat,
+                    # metal-oop strictly improves, and bonds are restored within tol.
+                    free = comp_set - movable - coord_donors
+                    if free:
+                        restr = _build_restraints(coords, comp_set, adj, free)
+                        Qf = _relax_backbone(flex_cand, free, restr)
+                        cen3, nrm3, ringoop3 = _flat(Qf, list(pi))
+                        noop3 = abs(float(np.dot(M - cen3, nrm3)))
+                        berr = _max_bond_err(coords, Qf, comp_set, adj)
+                        if (ringoop3 <= _RING_FLAT and noop3 < m_oop - _MOOP_EPS
+                                and berr < _BOND_ERR_TOL):
+                            Q = Qf
+                if Q is None:
+                    continue
                 if not np.all(np.isfinite(Q)):
                     continue
                 # per-arm global clash gate: applying THIS arm may not create or
