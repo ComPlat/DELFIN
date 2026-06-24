@@ -84,9 +84,16 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         for di in donor_idxs:
             rw.AddBond(int(di), mi, Chem.BondType.DATIVE)   # donor->metal: preserves donor valence/H
         m = rw.GetMol()
+        _sops = (Chem.SanitizeFlags.SANITIZE_ALL
+                 ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        # Kekulize-robust (DELFIN_FFFREE_KEKULIZE_SPLIT, default OFF -> byte-id): the
+        # cleaved aromatic-N⁺ cap (triazolide / pyridinium scorpionate) is unkekulizable,
+        # so the strict sanitize fails and the metallacycle embed returns None -> legacy.
+        # Skip kekulization (aromaticity retained) so the DG embed can proceed.
+        if os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1":
+            _sops ^= Chem.SanitizeFlags.SANITIZE_KEKULIZE
         try:
-            Chem.SanitizeMol(m, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
-                                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+            Chem.SanitizeMol(m, sanitizeOps=_sops)
         except Exception:
             pass
         mh = Chem.AddHs(m)
@@ -1125,10 +1132,35 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     if key is not None and key in _CONF_CACHE:
         return _CONF_CACHE[key]
     m = Chem.AddHs(frag_mol)
-    cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
-                                           numThreads=1))
+    try:
+        cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
+                                               numThreads=1))
+    except Exception:
+        # Default (byte-identical): re-raise the original unguarded behaviour.
+        if os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") != "1":
+            raise
+        # Kekulize-robust retry (same root as the decompose split): a cleaved
+        # aromatic-N⁺ ligand (triazolide / pyridinium cap) is unkekulizable, so
+        # EmbedMultipleConfs raises and the WHOLE complex falls to legacy.  Re-
+        # sanitize with kekulization skipped (aromaticity retained) and retry.
+        cids = []
+        try:
+            fm = Chem.RWMol(frag_mol)
+            Chem.SanitizeMol(fm, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                              ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE))
+            m = Chem.AddHs(fm.GetMol())
+            cids = list(AllChem.EmbedMultipleConfs(m, numConfs=k, randomSeed=SEED,
+                                                   numThreads=1))
+        except Exception:
+            cids = []
     if not cids:
-        if AllChem.EmbedMolecule(m, randomSeed=SEED) != 0:
+        try:
+            _emb_ok = AllChem.EmbedMolecule(m, randomSeed=SEED) == 0
+        except Exception:
+            if os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") != "1":
+                raise                  # byte-identical: original unguarded behaviour
+            _emb_ok = False            # kekulize-robust: clean None instead of crash
+        if not _emb_ok:
             if key is not None:
                 _CONF_CACHE[key] = None
             return None
