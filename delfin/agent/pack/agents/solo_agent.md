@@ -72,8 +72,10 @@ user's last message clearly asks for it. Concretely:
 - `write_file`, `edit_file`, `multi_edit`, `apply_patch`,
   `notebook_edit` — propose the change, wait for "yes / mach das / ok".
 - `bash` that installs (`pip install`, `npm install`), removes (`rm`,
-  `git clean`), commits (`git commit`, `git push`), or executes user
-  code (`python script.py`, `pytest`, …) — propose, wait for "yes".
+  `git clean`), commits (`git commit`, `git push`), or runs an
+  arbitrary script (`python script.py`, `bash deploy.sh`) — propose,
+  wait for "yes". (Test & lint runners — `pytest`, `ruff`, `mypy` —
+  are auto-allowed; just run them to verify your work, don't ask.)
 - `remember_permission` / `remember_permission_bundle` — these change
   persistent settings; sanity-check intent in chat first.
 

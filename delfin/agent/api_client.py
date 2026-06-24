@@ -6069,6 +6069,32 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
         or "'async for' requires" in s
 
 
+# A handful of API/stream failures are TRANSIENT — a shared-proxy hiccup, not a
+# bad request. On Jerome's long KIT runs (vLLM behind an Open-WebUI proxy) a
+# single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
+_STREAM_RETRY_MAX = 3
+_TRANSIENT_API_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+_TRANSIENT_NAME_HINTS = (
+    "timeout", "connection", "ratelimit", "internalserver",
+    "serviceunavailable", "apiconnection", "remoteprotocol",
+    "remotedisconnect", "overloaded",
+)
+
+
+def _is_transient_api_error(exc: Exception) -> bool:
+    """Whether an API/streaming error is a transient hiccup worth retrying
+    (timeout, dropped connection, rate-limit, 5xx) rather than a deterministic
+    failure (400/401/404) that would just fail again. Class-name + HTTP-status
+    based so we don't import the openai/httpx exception hierarchy."""
+    name = type(exc).__name__.lower()
+    if any(h in name for h in _TRANSIENT_NAME_HINTS):
+        return True
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "status", None)
+    return isinstance(status, int) and status in _TRANSIENT_API_STATUS
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
     pool so a multi-subagent turn runs concurrently (Claude-Code-style
@@ -6537,6 +6563,7 @@ class OpenAIClient(_BaseClient):
         # check them before the model is allowed to finish.
         _edited_py: dict = {}
         _verify_attempts = 0
+        _stream_attempt = 0    # transient-API-error retries (reset per response)
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
@@ -6679,6 +6706,24 @@ class OpenAIClient(_BaseClient):
                     stream.close()
             except Exception as _stream_exc:
                 if not _is_stream_unsupported_error(_stream_exc):
+                    # Not a stream-format issue. If it's a transient shared-proxy
+                    # hiccup (timeout / 5xx / rate-limit) and nothing was emitted
+                    # this round yet, back off and retry the round — the request
+                    # state is identical, so there's no risk of duplicated
+                    # output. Anything else (bad request, auth, mid-stream after
+                    # partial output) re-raises as before.
+                    if (_is_transient_api_error(_stream_exc)
+                            and not _text_chunks and not _tool_calls
+                            and _stream_attempt < _STREAM_RETRY_MAX):
+                        _stream_attempt += 1
+                        _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
+                        yield StreamEvent(type="text_delta", text=(
+                            f"\n⏳ Transient API error "
+                            f"({type(_stream_exc).__name__}); retrying "
+                            f"{_stream_attempt}/{_STREAM_RETRY_MAX} in "
+                            f"{_delay:.0f}s…\n"))
+                        time.sleep(_delay)
+                        continue
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
@@ -6710,6 +6755,11 @@ class OpenAIClient(_BaseClient):
                             ],
                         }
                     finish_reason = _choice.finish_reason
+
+            # Got a response (streamed or fallback): clear the transient-retry
+            # budget so a later hiccup in this same (possibly long) turn gets a
+            # fresh set of retries rather than inheriting an exhausted count.
+            _stream_attempt = 0
 
             # Harmony tool-channel recovery: gpt-5.x via the OpenAI-compatible
             # endpoint sometimes leaks its tool calls ("to=<tool> {json}") into
