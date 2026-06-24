@@ -195,6 +195,109 @@ def render_runs_html(limit: int = 20) -> str:
     return "".join(parts)
 
 
+# --- run detail (the calc browser) ----------------------------------------
+
+
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.0f}{unit}"
+        size /= 1024
+    return f"{size:.0f}TB"
+
+
+def list_run_files(work_dir, limit: int = 200) -> list:
+    """All files under a run's work dir as ``{path, size, bytes}`` (path relative)."""
+    from pathlib import Path
+
+    out: list = []
+    if not work_dir:
+        return out
+    wd = Path(work_dir)
+    if not wd.is_dir():
+        return out
+    for f in sorted(wd.rglob("*")):
+        if len(out) >= limit:
+            break
+        if f.is_file():
+            try:
+                size = f.stat().st_size
+            except OSError:
+                size = 0
+            out.append({"path": str(f.relative_to(wd)), "size": _human_size(size),
+                        "bytes": size})
+    return out
+
+
+def tail_text(path, n: int = 40) -> str:
+    """Last *n* lines of a text file (best-effort)."""
+    from pathlib import Path
+
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError as exc:
+        return f"(cannot read {path}: {exc})"
+    return "\n".join(lines[-n:])
+
+
+def render_run_detail_html(run_id: str, *, tail_lines: int = 40) -> str:
+    """Detailed view of one run — status, error, outputs, events, the files in its
+    ``~/calc`` work dir, and a tail of its main log. The visual face of
+    ``platform.run_diagnostics``."""
+    import html as _html
+
+    from delfin.tools import platform
+
+    if not run_id:
+        return "<p><em>Select a run to see its details.</em></p>"
+    diag = platform.run_diagnostics(run_id)
+    if "status" not in diag:
+        return f"<p style='color:#dc3545'>{diag.get('error', 'unknown run')}</p>"
+
+    colour = {"success": "#28a745", "failed": "#dc3545", "cancelled": "#6c757d"}.get(
+        diag["status"], "#0366d6")
+    parts = [f"<h4>Run {diag['id']} — {diag['name']} "
+             f"<span style='color:{colour}'>[{diag['status']}]</span></h4>"]
+    if diag.get("error"):
+        parts.append(f"<p style='color:#dc3545'>error: {_html.escape(str(diag['error']))}</p>")
+    if diag.get("outputs"):
+        parts.append(f"<p>outputs: <code>{_html.escape(_fmt_outputs(diag['outputs']))}</code></p>")
+    parts.append(f"<p><small>work dir: <code>{diag.get('work_dir') or '—'}</code></small></p>")
+
+    events = diag.get("events") or []
+    if events:
+        body = _html.escape("\n".join(str(e) for e in events))
+        parts.append("<b>events</b><pre style='background:#f6f8fa;padding:6px;"
+                     f"max-height:160px;overflow:auto'>{body}</pre>")
+
+    files = list_run_files(diag.get("work_dir"))
+    if files:
+        rows = "".join(f"<tr><td>{_html.escape(f['path'])}</td>"
+                       f"<td style='text-align:right'>{f['size']}</td></tr>" for f in files)
+        parts.append("<b>files (~/calc)</b>" + _TABLE + _TH
+                     + "<th>file</th><th>size</th></tr>" + rows + "</table>")
+    else:
+        parts.append("<p><em>No files in the work dir yet.</em></p>")
+
+    logs = diag.get("log_files") or []
+    if logs:
+        main = max(logs, key=_file_size)
+        body = _html.escape(tail_text(main, n=tail_lines))
+        parts.append(f"<b>log tail — <code>{_html.escape(main)}</code></b>"
+                     "<pre style='background:#0d1117;color:#c9d1d9;padding:6px;"
+                     f"max-height:240px;overflow:auto'>{body}</pre>")
+    return "".join(parts)
+
+
+def _file_size(path) -> int:
+    from pathlib import Path
+    try:
+        return Path(path).stat().st_size
+    except OSError:
+        return 0
+
+
 def render_all_html() -> str:
     """One combined HTML view of the whole platform (used by the widget)."""
     sections = [render_environment_html, render_tool_status_html,
@@ -228,11 +331,17 @@ class ToolsPanel:
         self._status = widgets.HTML("")
         self._body = widgets.HTML(render_all_html())
 
+        # run detail (the calc browser): pick a run → status/files/log tail
+        self._run_select = widgets.Dropdown(description="Run:", options=[], value=None)
+        self._run_detail = widgets.HTML(render_run_detail_html(""))
+        self._run_select.observe(self._on_run_select, names="value")
+
         self._refresh_btn.on_click(self._on_refresh)
         self._install_btn.on_click(lambda _b: self._run_install(None))
         self._install_sel_btn.on_click(self._on_install_selected)
 
         self._build_install_checklist()
+        self._refresh_run_options()
 
         self.widget = widgets.VBox([
             self._title,
@@ -241,7 +350,23 @@ class ToolsPanel:
             self._install_box,
             self._status,
             self._body,
+            widgets.HTML("<hr><b>Run detail</b> — inspect a run's files in "
+                         "<code>~/calc</code> and its log:"),
+            self._run_select,
+            self._run_detail,
         ])
+
+    def _refresh_run_options(self) -> None:
+        from delfin.tools import platform
+        try:
+            runs = platform.list_runs()
+        except Exception:  # noqa: BLE001
+            runs = []
+        self._run_select.options = [(f"{r.id} — {r.name} [{r.status}]", r.id) for r in runs]
+
+    def _on_run_select(self, _change) -> None:
+        self._run_detail.value = _safe(
+            lambda: render_run_detail_html(self._run_select.value or ""))
 
     def _build_install_checklist(self) -> None:
         from delfin.tools import platform
@@ -273,6 +398,9 @@ class ToolsPanel:
     def refresh(self) -> None:
         self._body.value = render_all_html()
         self._build_install_checklist()
+        self._refresh_run_options()
+        self._run_detail.value = _safe(
+            lambda: render_run_detail_html(self._run_select.value or ""))
 
     def _on_refresh(self, _btn) -> None:
         self.refresh()
@@ -331,6 +459,9 @@ __all__ = [
     "render_applications_html",
     "render_keys_html",
     "render_runs_html",
+    "render_run_detail_html",
+    "list_run_files",
+    "tail_text",
     "render_all_html",
     "ToolsPanel",
     "create_tab",
