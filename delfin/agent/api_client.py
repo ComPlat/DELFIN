@@ -733,6 +733,13 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*(?:cat|head|tail|wc|file|stat|which|type|env|printenv|sort|uniq|cut|tr)\b",
     r"^\s*(?:basename|dirname|realpath|readlink)\b",
     r"^\s*echo\b",
+    # cd <literal-path>: harmless on its own (it executes nothing, and each
+    # bash call is a fresh subprocess) and the common prefix in
+    # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
+    # excludes $ ( ` so no command/variable substitution sneaks in — so the
+    # segment-wise gate still judges the rest of the compound on its own merits.
+    # Effect: a harmless command no longer needs approval just for a cd prefix.
+    r"^\s*cd\s+[A-Za-z0-9_./~@:+=-]+\s*$",
     r"^\s*find\b(?![^|;&]*-delete)(?![^|;&]*-exec[^|;&]*rm)",
     r"^\s*grep\b", r"^\s*rg\b", r"^\s*ag\b",
     r"^\s*sed\s+-n\b",                                       # read-only sed
