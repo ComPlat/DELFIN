@@ -28647,6 +28647,29 @@ def _apply_pi_inplane_final(isomers):
         return isomers
 
 
+def _apply_pi_coplanar_final(isomers):
+    """FINAL per-arm π-coplanarity polish for MULTI-ARM polydentates (the 91 % of
+    the metal-out-of-plane defect that the monodentate ``_apply_pi_inplane_final``
+    cannot reach).  Runs on the FINAL emitted ensemble — after ``_conf`` (the
+    backbone reembed that re-tilts the rings) — so nothing downstream can undo it.
+
+    Per conjugated π-system with exactly ONE coordinating σ-donor, rotates ONLY that
+    arm (the π-system + its donor-less substituents) rigidly about its donor so the
+    metal lies in the system plane; the shared backbone + other arms stay fixed, so
+    every M-D length is preserved exactly.  Asymmetric / accept-if-better per arm
+    (metal-oop strictly down, linker not over-stretched, inter-ligand clash
+    never-worse) → never makes a frame worse.  Geometry-only, deterministic, FF-free.
+    Default-OFF / byte-identical unless ``DELFIN_FFFREE_PI_COPLANAR_FINAL=1``.
+    """
+    if not isomers or os.environ.get("DELFIN_FFFREE_PI_COPLANAR_FINAL", "0") != "1":
+        return isomers
+    try:
+        from delfin._pi_coplanar_final import correct_results
+        return correct_results(isomers)
+    except Exception:
+        return isomers
+
+
 def _coord_integrity_filter(isomers):
     """Final UNIVERSAL decoordination filter over the FULL emitted ensemble at the
     public boundary -- covers BOTH the native fffree path AND the legacy generation
@@ -28764,9 +28787,9 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     _conf = _conf_complete_filter if outermost else (lambda x: x)
     _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))), r[1]
+        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))
+        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))
     return r
 
 
