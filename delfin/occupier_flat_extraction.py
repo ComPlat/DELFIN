@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
-from delfin.common.paths import ensure_relative_link
+from delfin.common.paths import GLOBAL_CWD_LOCK, ensure_relative_link
 from delfin.config import OCCUPIER_parser
 from delfin.copy_helpers import read_occupier_file
 from delfin.orca import run_orca_with_intelligent_recovery
@@ -35,8 +35,11 @@ from delfin.utils import (
 
 logger = get_logger(__name__)
 
-# Global lock guarding process-wide cwd changes
-_cwd_lock = threading.RLock()
+# Global lock guarding process-wide cwd changes.
+# Aliased to the single process-wide CWD guard so that every os.chdir site
+# across DELFIN (this module, engine/occupier.py, stability_constant.py) is
+# mutually exclusive. Re-exported: engine/occupier.py imports _cwd_lock here.
+_cwd_lock = GLOBAL_CWD_LOCK
 
 # Global lock preventing concurrent geometry file writes (prevents race conditions)
 _geometry_lock = threading.Lock()

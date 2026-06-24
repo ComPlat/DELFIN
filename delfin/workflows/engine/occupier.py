@@ -19,6 +19,7 @@ from delfin.esd_input_generator import (
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
 from delfin.orca import run_orca
+from delfin.common.paths import pushd
 from delfin.occupier_flat_extraction import _cwd_lock
 from delfin.xyz_io import read_xyz_and_create_input3
 from delfin.workflows.engine.classic import (
@@ -1553,8 +1554,6 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
                     return key, list(seq)
         return "even_seq", seq_bundle.get("even_seq", [])
 
-    fallback_cwd_lock = threading.RLock()
-
     def make_setup(folder_name: str, charge_delta: int, source_folder: Optional[str]) -> Callable[[], Path]:
         setup_lock = threading.Lock()
         state: Dict[str, Any] = {"done": False, "path": None, "error": None}
@@ -1647,14 +1646,14 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     ) -> WorkflowJob:
         def _work(cores: int) -> None:
             folder_dir = ensure()
-            with fallback_cwd_lock:
-                prev_cwd = os.getcwd()
-                try:
-                    os.chdir(folder_dir)
-                    logger.info("[%s] Fallback OCCUPIER execution with %d cores", folder_name, cores)
-                    run_OCCUPIER()
-                finally:
-                    os.chdir(prev_cwd)
+            # Serialize on the single process-wide CWD guard (pushd) so this
+            # fallback cannot race with the flat-FoB / stability-constant chdir
+            # sites. work_dir=folder_dir additionally anchors run_OCCUPIER's
+            # CONTROL read/write to an absolute path, so even a stray chdir
+            # cannot leak those writes into the main run directory.
+            with pushd(folder_dir):
+                logger.info("[%s] Fallback OCCUPIER execution with %d cores", folder_name, cores)
+                run_OCCUPIER(work_dir=folder_dir)
             _update_runtime_cache(folder_name, folder_dir, config, occ_results)
 
         workdir = (working_dir or Path(folder_name)).resolve()

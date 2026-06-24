@@ -607,7 +607,7 @@ def _check_contamination_trigger(
     return new_entry
 
 
-def run_OCCUPIER():
+def run_OCCUPIER(work_dir: Optional[Path] = None):
 
     print("""
                       *******************
@@ -615,10 +615,17 @@ def run_OCCUPIER():
                       *******************
     """)
 
+    # CWD-independent base directory. With work_dir=None the base is the current
+    # working directory, i.e. byte-identical to the historical behaviour. When an
+    # explicit work_dir is passed (parallel OCCUPIER/FoB execution), the CONTROL
+    # read/write below is anchored to it so a concurrent thread's os.chdir cannot
+    # make these writes leak into another directory (e.g. the main run dir).
+    base = resolve_path(work_dir) if work_dir else resolve_path(Path.cwd())
+
     global_log = os.environ.get("DELFIN_GLOBAL_LOG")
     if global_log:
         add_file_handler(global_log)
-    occ_log_path = Path("occupier.log")
+    occ_log_path = base / "occupier.log"
     add_file_handler(occ_log_path)
     logger.info("Occupier log attached at %s", occ_log_path.resolve())
 
@@ -1008,7 +1015,7 @@ def run_OCCUPIER():
 
     try:
         start_time = time.time()
-        control_file_path = resolve_path("CONTROL.txt")
+        control_file_path = resolve_path(base / "CONTROL.txt")
         config = OCCUPIER_parser(str(control_file_path))
 
         input_file_entry = config.get("input_file")
@@ -1036,7 +1043,7 @@ def run_OCCUPIER():
             metals, config
         )
 
-        species_delta = infer_species_delta(Path.cwd())
+        species_delta = infer_species_delta(base)
         seq_bundle = resolve_sequences_for_delta(config, species_delta)
 
         method_token = str(config.get("OCCUPIER_method", "auto") or "auto").strip().lower()

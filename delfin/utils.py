@@ -452,8 +452,27 @@ def calculate_total_electrons_txt(control_file_path: str) -> Optional[Tuple[int,
 
     input_file_path = _parse_control_for_input_file(control_file_path)
     if not input_file_path.exists():
-        logger.error(f"Input file '{input_file_path}' not found.")
-        return None
+        # Recalc safety net: the geometry named in CONTROL.txt (often input.xyz)
+        # may not be present in the run directory (it is a derived file that is
+        # not always staged/persisted), but the real coordinates usually survive
+        # as input.txt / start.txt. Fall back to a sibling that actually holds
+        # coordinates instead of aborting the electron count.
+        from delfin import define
+        control_dir = resolve_path(control_file_path).parent
+        recovered = None
+        for sibling in ("input.txt", "start.txt"):
+            candidate = control_dir / sibling
+            if candidate != input_file_path and define._has_coordinates(candidate):
+                recovered = candidate
+                break
+        if recovered is None:
+            logger.error(f"Input file '{input_file_path}' not found.")
+            return None
+        logger.warning(
+            "Input file '%s' not found; using sibling geometry '%s' for electron "
+            "count (recalc safety net).", input_file_path.name, recovered.name,
+        )
+        input_file_path = recovered
 
     try:
         with input_file_path.open('r', encoding='utf-8', errors="ignore") as input_file:

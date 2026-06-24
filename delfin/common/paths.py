@@ -2,10 +2,45 @@
 from __future__ import annotations
 
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Union
 
 SCRATCH_ENV = "DELFIN_SCRATCH"
+
+# Process-global CWD guard.
+#
+# ``os.chdir`` mutates the working directory of the WHOLE process, not just the
+# calling thread. DELFIN runs OCCUPIER/FoB jobs concurrently in a single-process
+# ThreadPoolExecutor, so any thread that ``chdir``s while another thread does
+# CWD-relative file I/O can make that I/O land in the wrong directory. This is a
+# real defect: it leaked OCCUPIER ``CONTROL.txt`` writes from a sub-folder into
+# the main run directory. Every thread that must ``chdir`` has to serialize on
+# THIS single re-entrant lock (RLock — nested chdir helpers occur) and hold it
+# for the entire chdir → work → restore span. Use ``pushd`` for that.
+GLOBAL_CWD_LOCK = threading.RLock()
+
+
+@contextmanager
+def pushd(path: Union[str, Path]) -> Iterator[Path]:
+    """Temporarily ``chdir`` into *path*, serialized on :data:`GLOBAL_CWD_LOCK`.
+
+    The process-global lock is held for the whole ``with`` block, so no other
+    thread can change the working directory underneath the caller. The previous
+    working directory is always restored on exit.
+    """
+    target = resolve_path(path)
+    with GLOBAL_CWD_LOCK:
+        prev = os.getcwd()
+        os.chdir(target)
+        try:
+            yield target
+        finally:
+            try:
+                os.chdir(prev)
+            except OSError:
+                pass
 
 
 def resolve_path(path: Union[str, Path]) -> Path:
@@ -70,6 +105,8 @@ def ensure_relative_link(src: Union[str, Path], dest: Union[str, Path]) -> bool:
 
 __all__ = [
     "SCRATCH_ENV",
+    "GLOBAL_CWD_LOCK",
+    "pushd",
     "resolve_path",
     "get_runtime_dir",
     "scratch_path",

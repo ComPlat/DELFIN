@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
+from delfin.common.paths import GLOBAL_CWD_LOCK, pushd
 
 logger = get_logger(__name__)
 
@@ -1249,7 +1250,7 @@ def build_stability_constant_plan(
     )
 
     total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
-    cwd_lock = threading.RLock()
+    cwd_lock = GLOBAL_CWD_LOCK  # single process-wide CWD guard (see common.paths)
     jobs: List[WorkflowJob] = []
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in {"1", "true", "yes", "on", "y"}
 
@@ -1430,7 +1431,7 @@ def build_stability_reaction_plan(
     sc_preopt = _normalized_thdy_preopt(config)
     total_cores = max(1, int(str(config.get("PAL", 1)).strip()))
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).strip().lower() in {"1", "true", "yes", "on", "y"}
-    cwd_lock = threading.RLock()
+    cwd_lock = GLOBAL_CWD_LOCK  # single process-wide CWD guard (see common.paths)
 
     original_cwd = ctx.control_file_path.parent.resolve()
     sc_dir = original_cwd / THERMODYNAMICS_DIRNAME
@@ -1656,15 +1657,11 @@ def _run_solv_complex_occupier(
     # Create CONTROL.txt for OCCUPIER folder with solv complex charge
     _write_occupier_control(occ_dir, config, charge=analysis.metal_charge, pal=cores)
 
-    # Step 4: Run OCCUPIER
-    with cwd_lock:
-        prev_cwd = os.getcwd()
-        try:
-            os.chdir(occ_dir)
-            logger.info("[SC] Running OCCUPIER in %s", occ_dir)
-            run_OCCUPIER()
-        finally:
-            os.chdir(prev_cwd)
+    # Step 4: Run OCCUPIER (pushd serializes on the global CWD guard;
+    # work_dir anchors run_OCCUPIER's CONTROL writes to an absolute path)
+    with pushd(occ_dir):
+        logger.info("[SC] Running OCCUPIER in %s", occ_dir)
+        run_OCCUPIER(work_dir=occ_dir)
 
     logger.info("[SC] OCCUPIER completed for solvation complex")
 
@@ -1922,14 +1919,9 @@ def _run_metal_reaction_species(
 
     _write_occupier_control(occ_dir, config, charge=charge, pal=cores)
 
-    with cwd_lock:
-        prev_cwd = os.getcwd()
-        try:
-            os.chdir(occ_dir)
-            logger.info("[SC] Running OCCUPIER for reaction species '%s' in %s", label, occ_dir)
-            run_OCCUPIER()
-        finally:
-            os.chdir(prev_cwd)
+    with pushd(occ_dir):
+        logger.info("[SC] Running OCCUPIER for reaction species '%s' in %s", label, occ_dir)
+        run_OCCUPIER(work_dir=occ_dir)
 
     mult, broken_sym, preferred_idx, gbw_path = read_occupier_file(
         str(occ_dir), "OCCUPIER.txt", multiplicity=1, broken_sym="",
