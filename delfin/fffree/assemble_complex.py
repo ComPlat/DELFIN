@@ -63,6 +63,45 @@ def _planar_mer_cn5_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_PLANAR_MER_CN5", "0") == "1"
 
 
+def _ring_bounds_enabled() -> bool:
+    """Tighten the aromatic 5-/6-ring INTERIOR ANGLE in the metallacycle DG embed.
+
+    Eye-find QEBLOC (2026-06-24): the κ4 cage cap's rigid 5-ring embeds with its
+    interior angle OPEN (~115deg vs the ideal ~108deg) — the unconstrained ETKDG
+    embed + kekulization-skip (KEKULIZE_SPLIT) leaves the ring-atom 1-3 bounds loose,
+    so even rigid-body seating inherits the ~6deg ring splay.  This flag adds an
+    interior-angle 1-3 bound (regular-polygon ideal: 108deg for 5-rings, 120deg for
+    6-rings) so the ring embeds flat-and-correct.  Geometry-only, feasibility-safe
+    (falls back to the unconstrained embed).  Default OFF -> byte-identical."""
+    return os.environ.get("DELFIN_FFFREE_RING_BOUNDS", "0") == "1"
+
+
+def _tighten_ring_bounds(bm, mh, tol=0.06):
+    """Set the 1-3 distance bound of every aromatic 5-/6-ring to the regular-polygon
+    interior angle, using the bounds matrix's OWN 1-2 midpoints (so RDKit's bond
+    lengths are respected and only the ANGLE is enforced).  In place; never raises."""
+    try:
+        ri = mh.GetRingInfo()
+    except Exception:
+        return
+
+    def _mid(i, j):
+        lo, hi = (i, j) if i < j else (j, i)
+        return 0.5 * (float(bm[lo][hi]) + float(bm[hi][lo]))
+    for ring in ri.AtomRings():
+        n = len(ring)
+        if n not in (5, 6):
+            continue
+        ct = float(np.cos(np.radians(180.0 * (n - 2) / n)))   # 108deg (5) / 120deg (6)
+        for a in range(n):
+            i, j, kk = ring[a], ring[(a + 1) % n], ring[(a + 2) % n]
+            d12 = _mid(i, j); d23 = _mid(j, kk)
+            d13 = float(np.sqrt(max(d12 * d12 + d23 * d23 - 2 * d12 * d23 * ct, 0.0)))
+            lo, hi = (i, kk) if i < kk else (kk, i)
+            bm[lo][hi] = float(d13 + tol)
+            bm[hi][lo] = float(max(d13 - tol, 0.0))
+
+
 def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                         harden=False, force_bite=False):
     """Embed a chelating ligand TOGETHER with a placeholder metal bonded to its
@@ -157,7 +196,8 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # covalent bounds, which the downstream per-donor radial rescale re-sets exactly).
         _have_targets = (donor_target_pos is not None
                          and len(donor_target_pos) == len(donor_idxs))
-        _use_bm = (_have_targets and (_chel_bite or harden or force_bite)) or _oc6_vertex
+        _ring_b = _ring_bounds_enabled()
+        _use_bm = (_have_targets and (_chel_bite or harden or force_bite)) or _oc6_vertex or _ring_b
         if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
@@ -167,6 +207,12 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                 dset = {int(d) for d in donor_idxs}
                 tp = ([np.asarray(p, float) for p in donor_target_pos]
                       if _have_targets else None)
+                # RING_BOUNDS-only (rigid cage): do NOT pin donor-donor to the ideal
+                # polyhedron (that re-introduces the cap splay the rigid seating fixes);
+                # only enforce the ring interior angle below.  Keep the cap's natural
+                # donor geometry -> coordination stays emergent.
+                if _ring_b and not (_chel_bite or harden or force_bite):
+                    tp = None
 
                 def _setb(i, j, dist, tol=0.05):
                     lo, hi = (i, j) if i < j else (j, i)
