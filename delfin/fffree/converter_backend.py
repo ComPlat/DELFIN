@@ -662,8 +662,9 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
     ligands = d["ligands"]
-    if any(lg["denticity"] >= 4 for lg in ligands):
-        return None        # kappa>=4 (porphyrin/salen/DTPA) not yet supported -> legacy
+    if (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") != "1"
+            and any(lg["denticity"] >= 4 for lg in ligands)):
+        return None        # kappa>=4 (porphyrin/salen/DTPA): default legacy; KAPPA4=1 enables
     # Aromatic donors on the NEWLY-enabled CN5 chelate geometries (TBP-5/SPY-5) would be
     # placed face-on (ring-normal perp to M-N): _vsepr_reconstruct skips ring donors and
     # there is no in-plane orientation yet (deferred to the aromatic-N-in-plane iter).  The

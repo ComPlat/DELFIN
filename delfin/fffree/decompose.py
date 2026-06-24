@@ -778,7 +778,16 @@ def decompose(smiles: str) -> Optional[Dict]:
         if len(fdonors) == 0:
             return None                               # bridging / spectator -> legacy
         if len(fdonors) > 3:
-            return None                               # >tridentate (rare) -> legacy
+            # κ4+ single-fragment polydentate (porphyrin / cyclam / salen / macrocycle
+            # / cage): the historic default bails to legacy.  DELFIN_FFFREE_KAPPA4=1
+            # admits ONE polydentate fragment with up to CN donors -- the chelate-config
+            # enumerator (polya_isomer_count, dent>=3 branch) and the seating
+            # (_orient_chelate_to_vertices / _embed_metallacycle) already generalise to
+            # any denticity, and the self-gate (_build_is_clean) vetoes geometrically
+            # infeasible vertex subsets.  Default OFF -> byte-identical.
+            if not (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") == "1"
+                    and 4 <= len(fdonors) <= cn):
+                return None                           # >tridentate -> legacy (default)
         local_donors = [orig.index(o) for o in fdonors]
         # Geometry-aware meridional flag (env-gated, default OFF -> not computed, so
         # byte-identical): a RIGID PLANAR tridentate (terpy / pincer) must bind
