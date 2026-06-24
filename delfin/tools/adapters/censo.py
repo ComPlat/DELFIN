@@ -9,7 +9,7 @@ from typing import Any, Optional
 from delfin.tools._base import StepAdapter
 from delfin.tools._types import StepResult, StepStatus
 from delfin.tools._registry import register
-from delfin.tools._spec import ParamSpec
+from delfin.tools._spec import DataKeySpec, ParamSpec
 from delfin.tools._keys import key
 
 
@@ -19,7 +19,12 @@ class CensoSortAdapter(StepAdapter):
     produces_geometry = False
     category = "semiempirical"
     consumes = ("ensemble",)
+    wires = {"ensemble": "ensemble"}   # auto-wire the ensemble from an upstream CREST
     requires_binaries = ("censo",)
+    data_keys = (
+        DataKeySpec("output_dir", "str", "", "CENSO output directory (ranked ensemble)"),
+        DataKeySpec("returncode", "int", "", "CENSO process return code"),
+    )
     params = (
         ParamSpec("ensemble", "path", required=True, description="Conformer ensemble XYZ"),
         key("charge", default=0),

@@ -38,6 +38,7 @@ Available templates:
 
 from delfin.tools.templates._classic import classic_opt_freq
 from delfin.tools.templates._full import (
+    conformer_dG,
     conformer_energy,
     full_workflow,
     xtb_thermochemistry,
@@ -52,6 +53,7 @@ __all__ = [
     "classic_opt_freq",
     "xtb_thermochemistry",
     "conformer_energy",
+    "conformer_dG",
     "full_workflow",
     "imag_elimination",
     "imag_sub_pipeline",

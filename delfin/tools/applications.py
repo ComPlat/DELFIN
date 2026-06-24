@@ -14,6 +14,7 @@ from delfin.tools._spec import ParamSpec
 from delfin.tools._keys import key
 from delfin.tools.templates import (
     classic_opt_freq,
+    conformer_dG,
     conformer_energy,
     full_workflow,
     multi_level_opt,
@@ -159,6 +160,37 @@ conformer_energy_app = Application.from_pipeline(
 register_application(conformer_energy_app)
 
 
+# Conformer ΔG ranking — SMILES → xTB pre-opt → CREST ensemble → CENSO
+# free-energy sorting (the ensemble auto-wires from CREST). Returns the conformer
+# count and the directory holding the CENSO-ranked ensemble.
+conformer_dG_app = Application.from_pipeline(
+    conformer_dG,
+    name="conformer_dG",
+    description="Conformer free-energy ranking: SMILES → xTB pre-opt → CREST "
+                "ensemble → CENSO ΔG sorting; returns the conformer count and the "
+                "ranked-ensemble directory.",
+    category="semiempirical",
+    inputs=(
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", required=True),
+        key("mult"),
+        _SOLVENT_OPT,
+        ParamSpec("crest_method", "str", default="gfn2",
+                  enum=("gfn2", "gfn1", "gfnff", "gfn2//gfnff"),
+                  description="GFN level for the CREST search"),
+        ParamSpec("functional", "str", default="r2scan-3c",
+                  description="CENSO functional for the ΔG ranking"),
+    ),
+    outputs=(
+        OutputSpec("n_conformers", step="crest", key="n_conformers",
+                   type="int", description="Number of conformers found"),
+        OutputSpec("ranked_dir", step="censo", key="output_dir",
+                   type="str", description="Directory with the CENSO-ranked ensemble"),
+    ),
+)
+register_application(conformer_dG_app)
+
+
 # full_workflow — CONTROL.txt-class reference: SMILES → xTB pre-opt → DFT opt →
 # DFT freq → imaginary-frequency cleanup → large-basis single point. Composes the
 # derived blocks into one named workflow of classic-engine complexity (the real
@@ -204,5 +236,6 @@ __all__ = [
     "multi_level_energy",
     "xtb_thermo_app",
     "conformer_energy_app",
+    "conformer_dG_app",
     "full_workflow_app",
 ]

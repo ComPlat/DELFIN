@@ -42,6 +42,20 @@ conformer_energy.add("crest_conformers", label="crest")
 conformer_energy.add("xtb_optimize", method="{method}", label="refine_best")
 
 
+# ── Conformer ΔG ranking: SMILES → xTB pre-opt → CREST → CENSO ────────
+
+conformer_dG = PipelineTemplate("conformer_dG", defaults={
+    "charge": "{charge}",
+    "mult": "{mult}",
+    "solvent": "{solvent}",
+})
+conformer_dG.add("smiles_to_xyz", smiles="{smiles}", label="smiles")
+conformer_dG.add("xtb_optimize", method="gfn2", label="xtb_preopt")
+conformer_dG.add("crest_conformers", method="{crest_method}", label="crest")
+# CENSO's ensemble auto-wires from the CREST step (consumes the 'ensemble' port).
+conformer_dG.add("censo_sort", functional="{functional}", label="censo")
+
+
 # ── full_workflow: CONTROL.txt-class reference (classic engine shape) ──
 
 full_workflow = PipelineTemplate("full_workflow", defaults={
