@@ -46,6 +46,13 @@ def h_resolve_spec(spec: Dict[str, Any]) -> str:
         return _dumps({"error": str(exc)})
 
 
+def h_scientific_lint(spec: Dict[str, Any]) -> str:
+    try:
+        return _dumps(platform.scientific_lint(spec))
+    except Exception as exc:  # noqa: BLE001
+        return _dumps({"error": str(exc)})
+
+
 def h_list_capabilities() -> str:
     return _dumps(platform.list_capabilities())
 
@@ -267,6 +274,14 @@ def run_server(argv: Optional[list[str]] = None) -> None:
         """Fill a minimal spec to the full one that will run: injects each step's
         default params and flags which inputs get auto-wired from upstream."""
         return h_resolve_spec(spec)
+
+    @mcp.tool()
+    def scientific_lint(spec: dict) -> str:
+        """Physics-plausibility review of a spec beyond structural validation:
+        composite-method/basis/dispersion redundancy, relativity without a
+        relativistic basis, solvent model with no solvent, impossible
+        multiplicity. Returns {step, level, rule, message} findings."""
+        return h_scientific_lint(spec)
 
     @mcp.tool()
     def list_capabilities() -> str:

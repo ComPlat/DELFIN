@@ -208,8 +208,9 @@ def build_guide() -> Dict[str, Any]:
                        "catalog", "list_keys", "describe_key", "compatible_successors"]},
             {"step": "assemble", "do": "Write a pipeline spec (schemas.pipeline_spec)",
              "tools": ["pipeline_spec schema", "resolve_spec"]},
-            {"step": "validate", "do": "Statically check it; apply the suggested fixes",
-             "tools": ["validate_spec"]},
+            {"step": "validate", "do": "Statically check wiring/params, then review "
+                                       "physics plausibility; apply the suggested fixes",
+             "tools": ["validate_spec", "scientific_lint"]},
             {"step": "build-missing", "do": "No block fits? scaffold + integrate one",
              "tools": ["new_capability_template", "register_module"]},
             {"step": "persist", "do": "Save it so it appears in the Pipelines tab",

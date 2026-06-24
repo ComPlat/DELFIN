@@ -186,6 +186,23 @@ def register_module(
             "diagnostics": diagnostics}
 
 
+def scientific_lint(spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Physics-plausibility review of a spec, beyond structural validation.
+
+    Catches chemist-obvious issues a contract validator cannot — a composite
+    method with a redundant basis/dispersion, a relativistic Hamiltonian without
+    a relativistic basis, a solvation model with no solvent, an impossible
+    multiplicity. Returns a list of ``{step, level, rule, message}`` findings
+    (advisory ``warning`` unless the input is genuinely invalid).
+    """
+    from delfin.tools._science import scientific_lint as _lint
+
+    return [
+        {"step": f.step, "level": f.level, "rule": f.rule, "message": f.message}
+        for f in _lint(spec)
+    ]
+
+
 def resolve_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Fill a *minimal* spec to the full one that will actually run.
 
@@ -553,6 +570,7 @@ __all__ = [
     "new_capability_template",
     "register_module",
     "resolve_spec",
+    "scientific_lint",
     # keys + manifest
     "list_keys",
     "describe_key",
