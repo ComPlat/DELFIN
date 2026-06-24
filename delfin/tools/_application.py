@@ -97,6 +97,17 @@ class Application:
             spec=to_dict(pipeline, strict=True),
         )
 
+    def with_input_defaults(self, values: Dict[str, Any]) -> Dict[str, Any]:
+        """*values* augmented with each declared input's default (explicit wins).
+
+        So a caller need only pass the required inputs: every optional input with
+        a declared default is filled, which resolves the template's ``{...}``
+        placeholders that would otherwise leak literally into a run.
+        """
+        merged = {p.name: p.default for p in self.inputs if p.default is not None}
+        merged.update(values)
+        return merged
+
     def build(self, **values: Any):
         """Materialise a concrete Pipeline, filling template params with *values*."""
         from delfin.tools._serialize import from_dict
@@ -104,7 +115,7 @@ class Application:
 
         obj = from_dict(self.spec)
         if isinstance(obj, PipelineTemplate):
-            return obj.build(**values)
+            return obj.build(**self.with_input_defaults(values))
         return obj  # already a concrete Pipeline
 
     def validate(self, *, geometry: bool = False, **values: Any):

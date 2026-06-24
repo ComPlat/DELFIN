@@ -37,6 +37,11 @@ Available templates:
 """
 
 from delfin.tools.templates._classic import classic_opt_freq
+from delfin.tools.templates._full import (
+    conformer_energy,
+    full_workflow,
+    xtb_thermochemistry,
+)
 from delfin.tools.templates._imag import imag_elimination, imag_sub_pipeline
 from delfin.tools.templates._redox import redox_potential
 from delfin.tools.templates._screening import conformer_screening, multi_level_opt
@@ -45,6 +50,9 @@ from delfin.tools.templates._esd import esd_states
 
 __all__ = [
     "classic_opt_freq",
+    "xtb_thermochemistry",
+    "conformer_energy",
+    "full_workflow",
     "imag_elimination",
     "imag_sub_pipeline",
     "redox_potential",

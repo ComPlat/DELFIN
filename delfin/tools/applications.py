@@ -12,7 +12,21 @@ from __future__ import annotations
 from delfin.tools._application import Application, OutputSpec, register_application
 from delfin.tools._spec import ParamSpec
 from delfin.tools._keys import key
-from delfin.tools.templates import classic_opt_freq, multi_level_opt, redox_potential
+from delfin.tools.templates import (
+    classic_opt_freq,
+    conformer_energy,
+    full_workflow,
+    multi_level_opt,
+    redox_potential,
+    xtb_thermochemistry,
+)
+
+# A method input for the native-xTB workflows (GFN level, not a DFT functional).
+_XTB_METHOD = ParamSpec("method", "str", default="gfn2",
+                        enum=("gfn0", "gfn1", "gfn2", "gfnff"),
+                        description="xTB level (GFN0/1/2-xTB or GFN-FF)")
+_SOLVENT_OPT = ParamSpec("solvent", "str", default="",
+                         description="Implicit solvent name (empty = gas phase)")
 
 # SMILES → xTB pre-opt → ORCA opt → ORCA freq, returning the final energies.
 opt_freq_energy = Application.from_pipeline(
@@ -92,4 +106,103 @@ multi_level_energy = Application.from_pipeline(
 register_application(multi_level_energy)
 
 
-__all__ = ["opt_freq_energy", "redox", "multi_level_energy"]
+# Native xTB thermochemistry — a fully open-source path (no licensed engine):
+# SMILES → xTB optimization → xTB Hessian/thermo. Runnable end-to-end.
+xtb_thermo_app = Application.from_pipeline(
+    xtb_thermochemistry,
+    name="xtb_thermochemistry",
+    description="Open-source thermochemistry: SMILES → native xTB optimization → "
+                "xTB Hessian; returns energy, free energy, ZPVE and the imaginary "
+                "frequency count. Needs only the free xtb binary.",
+    category="semiempirical",
+    inputs=(
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", required=True),
+        key("mult"),
+        _XTB_METHOD,
+        _SOLVENT_OPT,
+    ),
+    outputs=(
+        OutputSpec("energy_Eh", step="xtb_thermo", key="energy_Eh",
+                   unit="Eh", description="Total xTB energy"),
+        OutputSpec("free_energy_Eh", step="xtb_thermo", key="free_energy_Eh",
+                   unit="Eh", description="Total free energy (RRHO)"),
+        OutputSpec("zpve_Eh", step="xtb_thermo", key="zpve_Eh",
+                   unit="Eh", description="Zero-point vibrational energy"),
+        OutputSpec("n_imaginary", step="xtb_thermo", key="n_imaginary",
+                   type="int", description="Number of imaginary frequencies"),
+    ),
+)
+register_application(xtb_thermo_app)
+
+
+# Conformer energy — SMILES → xTB pre-opt → CREST conformer search → xTB
+# refinement of the best conformer; returns its energy.
+conformer_energy_app = Application.from_pipeline(
+    conformer_energy,
+    name="conformer_energy",
+    description="Conformer search: SMILES → xTB pre-opt → CREST ensemble → xTB "
+                "refinement of the best conformer; returns its energy.",
+    category="semiempirical",
+    inputs=(
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", required=True),
+        key("mult"),
+        _XTB_METHOD,
+        _SOLVENT_OPT,
+    ),
+    outputs=(
+        OutputSpec("energy_Eh", step="refine_best", key="energy_Eh",
+                   unit="Eh", description="Best-conformer xTB energy"),
+    ),
+)
+register_application(conformer_energy_app)
+
+
+# full_workflow — CONTROL.txt-class reference: SMILES → xTB pre-opt → DFT opt →
+# DFT freq → imaginary-frequency cleanup → large-basis single point. Composes the
+# derived blocks into one named workflow of classic-engine complexity (the real
+# CONTROL.txt-driven workflow is untouched). hess_file for the imag_cleanup stage
+# auto-wires from the dft_freq hessian.
+full_workflow_app = Application.from_pipeline(
+    full_workflow,
+    name="full_workflow",
+    description="CONTROL.txt-class reference workflow: SMILES → xTB pre-opt → DFT "
+                "opt → DFT freq → imaginary-frequency cleanup → large-basis single "
+                "point. Returns the refined electronic energy and the Gibbs free "
+                "energy.",
+    category="dft",
+    inputs=(
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", required=True),
+        key("mult"),
+        key("method"),
+        ParamSpec("basis", "str", default="def2-SVP", description="Opt/freq basis set"),
+        ParamSpec("refine_basis", "str", default="def2-TZVP",
+                  description="Large basis for the final single point"),
+        key("solvent", default=""),
+        ParamSpec("metals", "list", default=[],
+                  description="Metal centers for the imag-cleanup stage (usually [])"),
+        ParamSpec("main_basisset", "str", default="def2-SVP",
+                  description="imag_fix main basis set"),
+        ParamSpec("metal_basisset", "str", default="def2-TZVP",
+                  description="imag_fix metal basis set"),
+    ),
+    outputs=(
+        OutputSpec("energy_Eh", step="refine", key="energy_Eh",
+                   unit="Eh", description="Refined electronic energy (large basis)"),
+        OutputSpec("gibbs_Eh", step="dft_freq", key="gibbs_Eh",
+                   unit="Eh", description="Gibbs free energy (opt-level frequencies)"),
+    ),
+)
+register_application(full_workflow_app)
+
+
+__all__ = [
+    "opt_freq_energy",
+    "redox",
+    "multi_level_energy",
+    "xtb_thermo_app",
+    "conformer_energy_app",
+    "full_workflow_app",
+]
