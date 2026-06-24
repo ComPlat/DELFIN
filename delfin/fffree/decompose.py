@@ -416,6 +416,40 @@ def _nhc_carbene_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_NHC_CARBENE", "0") == "1"
 
 
+def _kekulize_split_enabled() -> bool:
+    """Kekulize-robust fragment split (default OFF -> byte-identical: the fallback
+    branch is never entered).  Many aromatic-N⁺ pincer/cage SMILES (pyridinium-type
+    donors, e.g. GONWEL) cannot be KEKULIZED once the M-D bonds are cut, so the
+    strict ``GetMolFrags(sanitizeFrags=True)`` raises and the WHOLE complex falls to
+    the legacy-UFF path — even when its denticity/CN are perfectly FF-free-buildable.
+    This is a pure RDKit-perception artefact, not a chemistry limit."""
+    return os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1"
+
+
+def _kekulize_robust_frags(em, mapping):
+    """Split ``em`` into fragment mols WITHOUT the strict kekulize, then sanitize
+    each fragment with kekulization skipped (aromaticity retained).  Returns the
+    fragment-mol list (and populates ``mapping`` with the per-fragment original
+    atom indices, same contract as the strict call) or None on genuine failure.
+    Recovers the aromatic-N⁺ ligands that only fail RDKit kekulization."""
+    try:
+        raw = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
+                               fragsMolAtomMapping=mapping)
+    except Exception:
+        return None
+    out = []
+    for f in raw:
+        fm = Chem.RWMol(f)
+        try:
+            Chem.SanitizeMol(
+                fm, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                 ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE))
+        except Exception:
+            return None                               # real valence error -> legacy
+        out.append(fm.GetMol())
+    return out
+
+
 def _carbene_carbon_idxs(mol, m: int, matom) -> List[int]:
     """Graph-only detection of carbene-carbon DONORS on the metal.
 
@@ -724,6 +758,13 @@ def decompose(smiles: str) -> Optional[Dict]:
                                              fragsMolAtomMapping=mapping)
                 except Exception:
                     frags = None
+        if frags is None and _kekulize_split_enabled():
+            # Kekulize-robust fallback: the strict split failed only because RDKit
+            # cannot kekulize the cleaved aromatic-N⁺ ligand(s) — recover them with
+            # kekulization skipped so a genuinely FF-free-buildable complex (correct
+            # CN + denticity, checked below) is NOT dumped to the legacy path.
+            mapping = []
+            frags = _kekulize_robust_frags(em, mapping)
         if frags is None:
             return None
     donor_set = set(donor_idx)
