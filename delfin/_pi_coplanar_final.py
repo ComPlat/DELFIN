@@ -171,6 +171,22 @@ def _rings(comp_set, adj, syms):
     return R
 
 
+def _face_on(M, pts):
+    """True if the metal binds the ring FACE-ON (η / π-face): its projection onto
+    the ring plane falls INSIDE the ring (near the centroid).  A σ aromatic donor
+    instead has the metal OUTSIDE the ring along an exocyclic in-plane lone pair, so
+    forcing it into the plane is correct ONLY for the σ case.  Geometric, robust
+    (replaces the crude nearest-other-ring-atom < 2.8 Å heuristic, which wrongly
+    excluded legitimate σ-donors in fused systems)."""
+    pts = np.asarray(pts, float)
+    cen = pts.mean(0)
+    _, _, vt = np.linalg.svd(pts - cen)
+    nrm = vt[2]
+    in_plane = (M - cen) - np.dot(M - cen, nrm) * nrm
+    radius = float(np.mean(np.linalg.norm(pts - cen, axis=1)))
+    return float(np.linalg.norm(in_plane)) < 0.7 * radius
+
+
 def _flat(coords, ring):
     """(centroid, unit-normal, max-out-of-plane) of a ring atom set."""
     pts = coords[ring]
@@ -426,8 +442,11 @@ def correct_xyz(block):
                 if len(pdon) != 1:
                     continue               # 0 = non-coordinating; ≥2 = rigid chelate (mid-pipeline)
                 d = pdon[0]
-                # η / face-on exclusion: no OTHER π atom may be near the metal
-                if any(k != d and D[mi, k] < 2.8 for k in pi):
+                # η / face-on exclusion (proper geometric test): skip if the metal
+                # binds the ring FACE-ON (projection inside the ring) — only a σ
+                # donor (metal outside, along an in-plane lone pair) should be pulled
+                # into the plane.  Replaces the crude < 2.8 Å heuristic.
+                if _face_on(M, coords[sorted(pi)]):
                     continue
 
                 cen, nrm, _ = _flat(coords, list(pi))
