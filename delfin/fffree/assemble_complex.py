@@ -201,8 +201,31 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
             except Exception:
                 cids = []
         if not cids:                                      # default / fallback: unconstrained embed
-            cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, randomSeed=SEED,
-                                                   numThreads=1, useRandomCoords=False))
+            try:
+                cids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, randomSeed=SEED,
+                                                       numThreads=1, useRandomCoords=False))
+            except Exception:
+                if os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") != "1":
+                    raise                                 # byte-identical default
+                # κ4 chain: an unkekulizable aromatic-N⁺ scorpionate cap makes the
+                # embedder throw -> metallacycle returns None -> cage to legacy.
+                # Neutralise the artefact ring-N⁺ charges (geometry-only) and retry so
+                # the chelate-aware metallacycle embed succeeds (clean OC-6 seating).
+                cids = []
+                try:
+                    rw2 = Chem.RWMol(m)
+                    for a in rw2.GetAtoms():
+                        if (a.GetIsAromatic() and a.GetSymbol() == "N"
+                                and a.GetFormalCharge() > 0):
+                            a.SetFormalCharge(0)
+                    m2 = rw2.GetMol()
+                    Chem.SanitizeMol(m2)
+                    mh = Chem.AddHs(m2)
+                    cids = list(AllChem.EmbedMultipleConfs(
+                        mh, numConfs=k, randomSeed=SEED, numThreads=1,
+                        useRandomCoords=False))
+                except Exception:
+                    cids = []
         if not cids:
             if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
                 return None
@@ -2541,7 +2564,14 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     _asym = True
                 _rigid_planar = bool(lg.get("rigid_planar")) and dent == 3
                 Q = None
-                if ring_confs is not None:
+                # κ4 chain: when the chelate's metallacycle embed failed (ring_confs
+                # is None, e.g. an unkekulizable aromatic-N⁺ scorpionate cap) the
+                # tridentate was NEVER seated -> skipped -> whole complex to legacy.
+                # Seat the FREE-ligand conformer too (Kabsch-fit the rigid donor
+                # triangle onto the assigned vertices).  Gated default-OFF byte-id.
+                _orient_free = (ring_confs is None
+                                and os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1")
+                if ring_confs is not None or _orient_free:
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym)
                     # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
                     # embed sometimes produces a backbone with collapsed C-C / C-O bonds.
