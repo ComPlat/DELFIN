@@ -509,11 +509,26 @@ def _rigid_planar_central_arm(mol, dons):
     return None
 
 
-def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True):
+def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
     donors seat onto the target vertex directions, then per-donor rescale to the
     ideal M-donor distance.  The ring geometry (backbone clears the metal) is
     preserved as a rigid body.  Works for any denticity.
+
+    LIGAND-GEOMETRY-FIRST (``rigid=True``, DELFIN_FFFREE_LIGAND_RIGID): for a RIGID
+    polydentate (clathrochelate cage cap / macrocycle / conjugated pincer) the
+    ligand's OWN internal geometry is the hard constraint and the coordination
+    polyhedron is EMERGENT.  The historic per-donor radial rescale moves each donor
+    INDEPENDENTLY onto its exact ideal radius, which — on a rigid backbone — splays
+    the ring open (eye-find QEBLOC: ring N-N-N 110deg->129deg, B-N 1.54->1.52,
+    N-N compressed) because the donors are forced apart while the backbone cannot
+    follow.  Instead apply a SINGLE UNIFORM scale (metal at origin) so EVERY M-X
+    distance scales by the same factor: all bond ANGLES (ligand-internal AND the
+    coordination bite) are preserved EXACTLY, donors land at ~the target radius, and
+    the coordination polyhedron comes out slightly twisted but PHYSICALLY REAL
+    (the cage cavity dictates it).  This reverses the construction order from
+    "coordination ideal -> ligand distorts" to "ligand geometry first -> coordination
+    emergent".  Default ``rigid=False`` -> byte-identical (per-donor rescale).
 
     CONFIG-FAITHFUL seating (default for ASYMMETRIC chelates; DELFIN_LEGACY_CHELATE_SEAT
     unset): donor_idxs[i] (= the config's arm i) is seated on targets[i] in FIXED
@@ -573,6 +588,21 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True):
                     best = (resid, R_, p_)
             R = best[1]; perm = best[2]
     Q = lP @ R.T
+    if rigid:
+        # LIGAND-GEOMETRY-FIRST: rigid-body best-fit (rotation + translation, NO scale,
+        # NO per-donor radial move) of the donor set onto the target POINTS.  Both the
+        # ligand-internal geometry (bonds AND angles) AND the coordination bite are
+        # preserved EXACTLY as embedded; the metal-donor distances come out EMERGENT
+        # (the rigid cage cavity dictates them).  A uniform scale was rejected here:
+        # it preserves angles but, because the metallacycle embed's M-D runs short
+        # (~1.95 vs 2.13), the M-D correction factor inflates EVERY ligand bond
+        # (B-N 1.54->1.66).  The pure rigid fit keeps the embedded bonds untouched.
+        don = np.array([np.asarray(lP[d], float) for d in donor_idxs])
+        tgt = np.array([np.asarray(targets[perm[i]], float)
+                        for i in range(len(donor_idxs))])
+        dmu = don.mean(0); tmu = tgt.mean(0)
+        Rk = _kabsch_rot(don - dmu, tgt - tmu)
+        return (np.asarray(lP, float) - dmu) @ Rk.T + tmu
     # Per-donor RADIAL placement at the exact ideal M-donor distance (NOT a uniform
     # scale, which preserved the ETKDG embed's M-D asymmetry -> over-contracted donors,
     # the FEKZON CCDC defect).  Keep each donor's Kabsch-rotated DIRECTION (so the embed's
@@ -2050,7 +2080,10 @@ def assemble_hapto(metal, geometry, d, variant=None):
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
                                              targets[0], targets[1])
                 else:
-                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=True)
+                    _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
+                                   and dent >= 3)
+                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=True,
+                                                    rigid=_rigid_seat)
                 if Q is None:
                     continue
                 cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
@@ -2572,7 +2605,10 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 _orient_free = (ring_confs is None
                                 and os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1")
                 if ring_confs is not None or _orient_free:
-                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym)
+                    _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
+                                   and dent >= 3)
+                    Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
+                                                    rigid=_rigid_seat)
                     # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
                     # embed sometimes produces a backbone with collapsed C-C / C-O bonds.
                     # _orient_chelate_to_vertices preserves that (rigid Kabsch+rescale),
