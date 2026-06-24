@@ -107,3 +107,29 @@ def test_deny_grants_nothing(tmp_path):
 
     assert out["ok"] is False
     assert calls == []
+
+
+# --- Adversarial-review fix: don't auto-grant sensitive system/secret dirs ---
+
+@pytest.mark.parametrize("path,grantable", [
+    ("/tmp/project", True),
+    ("/home/u/ka_xn0397/Porpoise", True),
+    ("/etc", False), ("/etc/hostname", False),   # system root + child
+    ("/root", False), ("/", False), ("/usr/lib", False), ("/var/log", False),
+    ("/home/u/.ssh", False),                     # secret dir
+])
+def test_is_grantable_session_dir(path, grantable):
+    from delfin.agent.kit_confirm import _is_grantable_session_dir
+    assert _is_grantable_session_dir(path) is grantable
+
+
+def test_approving_a_system_file_does_not_grant_its_dir(tmp_path):
+    # Approving a read of /etc/hostname must NOT grant all of /etc for the
+    # session (the single read still proceeds; we just don't broaden).
+    broker, calls = _broker_with_recorder()
+    t, req, out = _run_request(broker, "read_file", {"path": "/etc/hostname"})
+    approve, _persist_btn, _deny = _buttons(broker, req)
+    approve.click()
+    t.join(timeout=5)
+    assert out["ok"] is True                         # the read is allowed
+    assert all(k != "extra_dir_session" for k, _ in calls)   # but no broad grant

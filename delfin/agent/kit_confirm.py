@@ -31,7 +31,37 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
+
+
+# Directories never AUTO-granted for the session from a single-file approval:
+# approving a read of e.g. /etc/hostname must not silently open all of /etc.
+_NON_GRANTABLE_DIRS = frozenset({
+    "/", "/etc", "/root", "/usr", "/bin", "/sbin", "/lib", "/lib64",
+    "/var", "/sys", "/proc", "/dev", "/boot", "/run", "/srv", "/cdrom",
+})
+_SECRET_DIR_NAMES = frozenset({
+    ".ssh", ".gnupg", ".gpg", ".aws", ".azure", ".kube", ".docker",
+})
+
+
+def _is_grantable_session_dir(path: str) -> bool:
+    """Whether ``path`` is safe to auto-grant for the rest of the session. The
+    single approved read still proceeds — this only governs whether we BROADEN
+    to the parent directory, which must not be a system root (or its direct
+    child) or a secret directory. Fail closed on any error."""
+    try:
+        p = Path(path).expanduser().resolve()
+        if str(p) in _NON_GRANTABLE_DIRS:
+            return False
+        if len(p.parts) >= 2 and ("/" + p.parts[1]) in _NON_GRANTABLE_DIRS:
+            return False
+        if set(p.parts) & _SECRET_DIR_NAMES:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 @dataclass
@@ -394,7 +424,8 @@ class KitConfirmBroker:
                 # the agent stops re-prompting per file (bug 065503). The
                 # request() handler skips this when 'Dauerhaft' was clicked —
                 # that path already adds the dir AND persists it.
-                if ok and persist_kind == "extra_dir" and persist_pat:
+                if (ok and persist_kind == "extra_dir" and persist_pat
+                        and _is_grantable_session_dir(persist_pat)):
                     req.session_dir = persist_pat
                 if persist and persist_pat:
                     req.persist_pattern = persist_pat

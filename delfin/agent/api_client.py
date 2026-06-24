@@ -5944,8 +5944,14 @@ def _bwrap_functional() -> bool:
     ok = False
     try:
         if shutil.which("bwrap"):
+            # Probe the SAME namespace shape the real wrap uses (ro-bind /,
+            # /dev, /proc, tmpfs /tmp) — a minimal probe could pass where the
+            # real wrap fails (e.g. /proc or user-namespace restricted), which
+            # would then break every bash command in bypass mode with no
+            # fallback. Match the real wrap so we fail to plain bash instead.
             r = subprocess.run(
-                ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "true"],
+                ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev",
+                 "--proc", "/proc", "--tmpfs", "/tmp", "true"],
                 capture_output=True, timeout=5,
             )
             ok = r.returncode == 0
@@ -6530,7 +6536,6 @@ class OpenAIClient(_BaseClient):
         # Auto-verify: track .py files edited this turn so the harness can
         # check them before the model is allowed to finish.
         _edited_py: dict = {}
-        _verified_this_turn = False
         _verify_attempts = 0
         _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
@@ -6945,11 +6950,13 @@ class OpenAIClient(_BaseClient):
                                if isinstance(fn_args, dict) else None)
                         if _ep and str(_ep).endswith(".py"):
                             try:
-                                _ws = str(getattr(self._permissions, "workspace", "") or "")
+                                # "." default matches the verify gate's
+                                # workspace default, so edit-tracking and
+                                # verification resolve paths the same way.
+                                _ws = str(getattr(self._permissions, "workspace", ".") or ".")
                                 _abs = (str(_ep) if os.path.isabs(str(_ep))
                                         else os.path.join(_ws, str(_ep)))
                                 _edited_py[_abs] = True
-                                _verified_this_turn = False
                             except Exception:
                                 pass
 
@@ -7032,11 +7039,12 @@ class OpenAIClient(_BaseClient):
             # No tool calls — the model thinks it's done. Auto-verify the code
             # it edited BEFORE letting the turn finish: if it left a problem,
             # inject it and force a fix round (the model can't just claim done).
-            # Bounded so a genuinely unfixable failure can't loop forever.
-            if (_edited_py and not _verified_this_turn and _av_mode != "off"
-                    and _verify_attempts < 2):
+            # Re-checked at every turn-end (a passing check breaks out, so we
+            # only ever re-reach here after a failure) — so a model that just
+            # ACKNOWLEDGES without actually editing is still re-verified, not let
+            # off. Bounded so a genuinely unfixable failure can't loop forever.
+            if (_edited_py and _av_mode != "off" and _verify_attempts < 2):
                 _verify_attempts += 1
-                _verified_this_turn = True
                 _problems = _run_auto_verify(
                     list(_edited_py), _av_mode, _av_cmd,
                     getattr(self._permissions, "workspace", "."))

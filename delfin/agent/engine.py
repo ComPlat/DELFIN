@@ -595,8 +595,8 @@ class AgentEngine:
             "role": self.current_role,
             "role_index": self.current_role_index,
             "role_total": len(self.route),
-            "input_tokens": self.token_usage["input"],
-            "output_tokens": self.token_usage["output"],
+            "input_tokens": self.token_usage.get("input", 0),
+            "output_tokens": self.token_usage.get("output", 0),
             "cached_tokens": self.token_usage.get("cached", 0),
             "cost_usd": self.cost_usd,
             "cycle_complete": self.is_cycle_complete,
@@ -1929,6 +1929,7 @@ class AgentEngine:
         self.compaction_summaries = data.get("compaction_summaries", {})
         self.messages = data.get("engine_messages", [])
         self.token_usage = data.get("token_usage", {"input": 0, "output": 0})
+        self.token_usage.setdefault("cached", 0)   # old sessions predate this key
         self.cost_usd = data.get("cost_usd", 0.0)
         self.session_id = data.get("session_id", "")
 

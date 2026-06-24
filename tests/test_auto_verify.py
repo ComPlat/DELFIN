@@ -89,3 +89,8 @@ def test_loop_is_wired():
     assert "_run_auto_verify(" in src
     assert "force a fix round instead of ending" in src
     assert 'fn_name in ("edit_file", "multi_edit", "write_file")' in src
+    # Adversarial-review fix: the gate must NOT depend on a per-turn "verified"
+    # flag — that let a model which only ACKNOWLEDGES (no new edit) skip
+    # re-verification and finish with an unfixed problem.
+    assert "_verified_this_turn" not in src
+    assert "_edited_py and _av_mode != \"off\" and _verify_attempts < 2" in src
