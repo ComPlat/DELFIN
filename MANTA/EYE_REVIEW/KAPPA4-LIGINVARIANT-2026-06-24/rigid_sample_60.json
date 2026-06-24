@@ -1,0 +1,422 @@
+[
+{
+"ref": "HOKCUH",
+"smi": "C1=CC=C(CN2C=C3C[N+]45CCOCCOCC[N+]67CC[O+]8CC[O+](CC4)[Zn-4]856([N+]3=N2)[N+]2=NN(CC3=CC=CC=C3)C=C2C7)C=C1",
+"metal": "Zn",
+"cn": 6,
+"maxdent": 6
+},
+{
+"ref": "HOCXON",
+"smi": "CCC1=CC=CC(CC)=C1[N+]1=CC2=CC=CC3=[C]2[Y-4]1([Cl])([Cl])([O+]1CCCC1)([O+]1CCCC1)[N+](C1=C(CC)C=CC=C1CC)=C3",
+"metal": "Y",
+"cn": 7,
+"maxdent": 3
+},
+{
+"ref": "EGEPEN",
+"smi": "O=P12NC3=CC=CC=[N+]3[Zn-4]34([O]1)([O]P(=O)(NC1=CC=CC=[N+]13)NC1=CC=CC=[N+]14)[N+]1=CC=CC=C1N2",
+"metal": "Zn",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "BAYHEQ",
+"smi": "C1=CC=[N+]2C(=C1)C1=CC(C3=CC=C(C4=NC5=C6C=CC=CC6=C6C=CC=CC6=C5N4)C=C3)=CC3=[N+]1[Os-4]214([N+]2=CC=CC=C2C2=CC(C5=CC=C(C6=NC7=C8C=CC=CC8=C8C=CC=CC8=C7N6)C=C5)=CC(=[N+]21)C1=CC=CC=[N+]14)[N+]1=CC=CC=C31",
+"metal": "Os",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "IPAWEE",
+"smi": "C#CC1=CC2=[N+]3C(=C1)C1=CC=CC4=CC=C[N+](=C41)[Cr-3]314([N+]3=C5C(=CC=C3)C=CC=C5C3=CC(C#C)=CC(=[N+]31)C1=CC=CC3=CC=C[N+]4=C31)[N+]1=C3C(=CC=C1)C=CC=C32",
+"metal": "Cr",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "RURFAN",
+"smi": "C[N+]12CC[N](C3=C(F)C(F)=C(F)C(F)=C3F)[Re]1([O-])([C](=O)CC1=CC=CC=C1)[N](C1=C(F)C(F)=C(F)C(F)=C1F)CC2",
+"metal": "Re",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "MULRUJ",
+"smi": "COC1=[NH+]C=C[C+]2[C+]1[Mo-5]213([N]=O)([N+]2=CC=C(N(C)C)C=C2)[N+]2=CC=CN2[BH-](N2C=CC=[N+]21)N1C=CC=[N+]13",
+"metal": "Mo",
+"cn": 7,
+"maxdent": 3
+},
+{
+"ref": "XEVJER",
+"smi": "COC1=CC=C(C2=CSC3=N[N+]4=CC5=CC=CC=[N+]5[Cd-4]456([N]23)[N]2C(C3=CC=C(OC)C=C3)=CSC2=N[N+]5=CC2=CC=CC=[N+]26)C=C1",
+"metal": "Cd",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "JEPDAJ",
+"smi": "CC1C2=CC=CC=[C]2[Ta-2]2([Cl])([Cl])([CH2]C3=CC=CC=C3)([O+]3CCCC3)[CH2][N+]12C",
+"metal": "Ta",
+"cn": 7,
+"maxdent": 3
+},
+{
+"ref": "GUYJAM",
+"smi": "O=C1[O][Ru-4]23([P+](C4=CC=CC=C4)(C4=CC=CC=C4)C4=CC=CC=C4)([NH2+]C1CC1=CC=C(O)C=C1)[N+]1=CC=CC=C1C1=CC=CC(=[N+]12)C1=CC=CC=[N+]13",
+"metal": "Ru",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "CABSAD",
+"smi": "CN1C2=CC=CC=[N+]2[Cr-3]234([N+]5=CC=CC=C5N(C)C5=[N+]2C1=CC=C5)[N+]1=C2C(=CC=C1)C=CC=C2C1=CC=CC(=[N+]13)C1=CC=CC2=CC=C[N+]4=C21",
+"metal": "Cr",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "JIRDOE",
+"smi": "C=CCC(=C[B-]12O[N+]3=C4CCCCC4=[N+]4O[B-]5(C=C(CC=C)C6=CC=CC=C6)O[N+]6=C7CCCCC7=[N+](O1)[Fe-4]3461[N+](=C3CCCCC3=[N+]1O5)O2)C1=CC=CC=C1",
+"metal": "Fe",
+"cn": 6,
+"maxdent": 6
+},
+{
+"ref": "VIWKOC",
+"smi": "[Cl][Hg-3]12([Cl])[N+]3=CC=CC=C3C[NH+]1CC1=CC=CC=[N+]12",
+"metal": "Hg",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "XELCUM",
+"smi": "CN(C)C=[O+][Mo]12([O-])([O-])[O]C(=O)C3=CC=CC(=[N+]31)C(=O)[O]2",
+"metal": "Mo",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "MIYSAO",
+"smi": "[C+]1=[C+][Pt-3]123[N+]1=C(C=CC=C1C[P+]2(C1=CC=CC=C1)C1=CC=CC=C1)C[P+]3(C1=CC=CC=C1)C1=CC=CC=C1",
+"metal": "Pt",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "MOKCUL",
+"smi": "CC(C)[N+]12CC[NH+]3CC[N+](C(C)C)(CC1)[Rh-6]32145<-[C+]2=[C+]->1CC[C+]->4=[C+]->5CC2",
+"metal": "Rh",
+"cn": 7,
+"maxdent": 4
+},
+{
+"ref": "AJIDOM",
+"smi": "CC1=CC=C(S(=O)(=O)[N]2C3=CC=CC=C3[N+]3=C(C)C4=CC=CC5=[N+]4[Cd-4]234([OH2+])[N](S(=O)(=O)C2=CC=C(C)C=C2)C2=CC=CC=C2[N+]4=C5C)C=C1",
+"metal": "Cd",
+"cn": 6,
+"maxdent": 5
+},
+{
+"ref": "MUGLAE",
+"smi": "CC(C)(C)C(=O)NC1=CC=CC=C1C1=C2C=CC3=C(C4=CC=CC=C4NC(=O)C(C)(C)C)C4=[N+]5C(=C(C6=CC=CC=C6NC(=O)C(C)(C)C)C6=CC=C7C(C8=CC=CC=C8NC(=O)C(C)(C)C)=C8C=CC1=[N+]8[Ni-2]5([N]76)[N]23)C=C4",
+"metal": "Ni",
+"cn": 4,
+"maxdent": 4
+},
+{
+"ref": "YOMLAN",
+"smi": "CC1(C)C[N]2CC[N+]34CCSC3C(C)(C)[S][Tc]24([O-])[S]1",
+"metal": "Tc",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "KECFOQ",
+"smi": "C1=CC=C2C(=C1)[C+]1->[Co-5]3456(<-[C+]=1C1=CC=CC=C1C2[N]3C1C2=CC=CC=C2[C+]->4=[C+]->5C2=CC=CC=C21)[N+]1=CC=CC=C1C1=CC=CC=[N+]16",
+"metal": "Co",
+"cn": 7,
+"maxdent": 5
+},
+{
+"ref": "SUQQON",
+"smi": "CC1=[N+]2[BH-]3[N+]4=C(C)C=C(C5=CC=CC=C5)[N]4[Zn-3]4([O]C(C5=NOC6=CC=CC=C65)=N[O+]4C)([N]2C(C2=CC=CC=C2)=C1)[N]1C(C2=CC=CC=C2)=CC(C)=[N+]31",
+"metal": "Zn",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "NEBLOV",
+"smi": "S=C=[N][Co-3]123[NH+]4CC[N+]15CC[NH+]2CC1=CC(=CC=C1)OCCN(CCOC1=CC=CC(=C1)C[NH+]3CC5)CCOC1=CC(=CC=C1)C4",
+"metal": "Co",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "FOKQAZ",
+"smi": "CC1=CC=C(C2=C3C=CC4=C5C=CC6=C(C7=CC=C(C)C=C7)C7=[N+]8C(=C(C9=CC=C(C)C=C9)C9=CC=C2[N]9[Pt-]8([C]2=CC=C(C)C=C2)([C]2=CC=C(C#N)C=C2)([N]34)[N]65)C=C7)C=C1",
+"metal": "Pt",
+"cn": 6,
+"maxdent": 4
+},
+{
+"ref": "DMHERU",
+"smi": "CN(C)[NH2+][RuH-6]123([NH2+]N(C)C)([NH2+]N(C)C)<-[C+]4=[C+]->1CC[C+]->2=[C+]->3CC4",
+"metal": "Ru",
+"cn": 8,
+"maxdent": 4
+},
+{
+"ref": "RUKBAA",
+"smi": "C1=CC=C([CH2][Zr-2]234([CH2]C5=CC=CC=C5)[N]5CCC[N+]2=C2C=CC=CC=C2[N]3CCC[N+]4=C2C=CC=CC=C25)C=C1",
+"metal": "Zr",
+"cn": 6,
+"maxdent": 4
+},
+{
+"ref": "FEWQON",
+"smi": "C[O][Fe-2]123[N]4C5=CC=C4C4=C6C=CC(=[N+]61)C=C1C=CC(=C(C6=CC=CC=C6NC(=O)C6=C(C)C(=CC=C6)C6=C(O)C(=CC=C6)C(=O)NC6=CC=CC=C64)C4=[N+]2C(=C5)C=C4)[N]13",
+"metal": "Fe",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "SOTFIQ",
+"smi": "[O-][Re-2]12345[O]C6=CC=CC=C6C[N+]1(CC[N+]2(CC1=CC=CC=C1[O]3)CC1=CC=CC=[N+]14)CC1=CC=CC=[N+]15",
+"metal": "Re",
+"cn": 7,
+"maxdent": 6
+},
+{
+"ref": "GORJOO",
+"smi": "N#C[N-]C#[N+][Cd-5]123([OH2+])([O][N+](=O)[O]1)[N+]1=CC=CC=C1C1=C(C4=CC=CC=N4)N=C(C4=CC=CC=N4)C(=[N+]12)C1=CC=CC=[N+]13",
+"metal": "Cd",
+"cn": 7,
+"maxdent": 3
+},
+{
+"ref": "BEDLIG",
+"smi": "CC(C)(C)C1=CC(C(C)(C)C)=[N+]2N1C1C(=O)[O][Fe-4]234([O]C(=O)C(N2C(C(C)(C)C)=CC(C(C)(C)C)=[N+]23)N2C(C(C)(C)C)=CC(C(C)(C)C)=[N+]24)[N+]2=C(C(C)(C)C)C=C(C(C)(C)C)N12",
+"metal": "Fe",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "PIXGOS",
+"smi": "C[Si](C)(C)[C+]12->[Cr-9]3456([C]#[O+])([C]#[O+])([C]#[O+])<-[C+](C=CC7=CC=C([N+](=O)[O-])C=C7)([C+]3[C+]14)[C+]5[C+]26",
+"metal": "Cr",
+"cn": 9,
+"maxdent": 6
+},
+{
+"ref": "GEPWUU",
+"smi": "CC(C)CCOC1=CC=C(OCCC(C)C)C2=C3[N]C4=C5C(OCCC(C)C)=CC=C(OCCC(C)C)C5=C5[N]C6=C7C(OCCC(C)C)=CC=C(OCCC(C)C)C7=C7[N]C8=C9C(OCCC(C)C)=CC=C(OCCC(C)C)C9=C9[N]C(=C12)[N]3[Ni]([N]98)([N]45)[N]76",
+"metal": "Ni",
+"cn": 4,
+"maxdent": 4
+},
+{
+"ref": "KETNED",
+"smi": "CCCCOC1=CC=CC(OCCCC)=C1C1=C2C=CC3=C(C4=C(OCCCC)C=CC=C4OCCCC)C4=[N+]5C(=C(C6=C(OCCCC)C=CC=C6OCCCC)C6=CC=C7C(C8=C(OCCCC)C=CC=C8OCCCC)=C8C=CC1=[N+]8[Zn-2]5([N]76)[N]23)C=C4",
+"metal": "Zn",
+"cn": 4,
+"maxdent": 4
+},
+{
+"ref": "RAVWIX",
+"smi": "CC(C)[C+]12->[Os-7]3456([Cl])([Cl])([N+]7=CC=CC=C7NC(=O)C7=C(O)C8=CC=CC=C8S(=O)(=O)N7C)<-[C+](C)([C+]3[C+]14)[C+]5[C+]26",
+"metal": "Os",
+"cn": 9,
+"maxdent": 6
+},
+{
+"ref": "WELNAD",
+"smi": "O=C1[O][Ru-3]2([Cl])([P+](C3=CC=CC=C3)(C3=CC=CC=C3)C3=CC=CC=C3)([P+](C3=CC=CC=C3)(C3=CC=CC=C3)C3=CC=CC=C3)[O]C(=O)C3=[N+]2C1=CC=C3",
+"metal": "Ru",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "LUVVAB",
+"smi": "CC1=CC(C)=C(N2C=CN3[C+]2[Fe-2]2([N]4CC4(C)C4=CC=C5C=CC=CC5=C4)[C+]4N(C5=C(C)C=C(C)C=C5C)C=CN4[B-]3(C3=CC=CC=C3)N3C=CN(C4=C(C)C=C(C)C=C4C)[C+]32)C(C)=C1",
+"metal": "Fe",
+"cn": 4,
+"maxdent": 3
+},
+{
+"ref": "YUTSIQ",
+"smi": "CC(C)[P+](C(C)C)(C(C)C)[Os-3]123([C-]=CC4=CC=CC=C4)([C+]=[C+]1)[N+]1=CC=CN1[BH-](N1C=CC=[N+]12)N1C=CC=[N+]13",
+"metal": "Os",
+"cn": 7,
+"maxdent": 3
+},
+{
+"ref": "XEQGOP",
+"smi": "[OH2+][Mn-5]1234([OH2+])[O+]5CC[O+]1CC[O+]2CC[O+]3CC[O+]4CC5",
+"metal": "Mn",
+"cn": 7,
+"maxdent": 5
+},
+{
+"ref": "REVMEN",
+"smi": "CN(C)C=[O+][Zn-3]123[N]4C5=CC=C4C(C4=CC=CC=C4)=C4C=CC(=[N+]41)C(C1=CC=CC=C1NC(=O)CC1=CC(C(F)(F)F)=CC(C(F)(F)F)=C1)=C1C=CC(=C(C4=CC=CC=C4)C4=[N+]2C(=C5C2=CC=CC=C2)C=C4)[N]13",
+"metal": "Zn",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "ADINAG",
+"smi": "CC(C)(C)[P+]1(C(C)(C)C)CC2=CC=CC3=[N+]2[Mn-5]12([C]#[O+])([C]#[O+])[O]C(=O)C3[P+]2(C(C)(C)C)C(C)(C)C",
+"metal": "Mn",
+"cn": 6,
+"maxdent": 4
+},
+{
+"ref": "SUQNUQ",
+"smi": "CC1=[N+]2[BH-]3[N+]4=C(C)C=C(C5=CC=CC=C5)[N]4[Zn-3]4([N]5N=NN=C5C5=[N+]4C4=CC=CC=C4S5)([N]2C(C2=CC=CC=C2)=C1)[N]1C(C2=CC=CC=C2)=CC(C)=[N+]31",
+"metal": "Zn",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "REKXAG",
+"smi": "CCC1(CC)C2=CC=C3[N]2[Ti-]24([O-])[N]5C1=CC=C5C(CC)(CC)C1=[N+]2C(=CC=C1)C(CC)(CC)C1=[N+]4C(=CC(C)=C1)C3(CC)CC",
+"metal": "Ti",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "BEDLII",
+"smi": "CC(C)(C)C1=CC(C2=C3C=C4C5=CC=CC=C5[Si](C5=CC=CC=C5)(C5=CC=CC=C5)C5=C4[N]3[Ni-2]34[N]6C(=CC=C6C(C6=CC(C(C)(C)C)=CC(C(C)(C)C)=C6)=C6C=CC5=[N+]63)C(C3=CC(C(C)(C)C)=CC(C(C)(C)C)=C3)=C3C=CC2=[N+]34)=CC(C(C)(C)C)=C1",
+"metal": "Ni",
+"cn": 4,
+"maxdent": 4
+},
+{
+"ref": "QEVFON",
+"smi": "C[OH+][Cu-4]12([O][Cl+3]([O-])([O-])[O-])([O][Cl+3]([O-])([O-])[O-])[O+]=S(CCC3=CC=CC=C3)C(C)C[N+]1(C)CCC1=CC=CC=[N+]12",
+"metal": "Cu",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "XUPDIW",
+"smi": "O=C1NC=C2C(=[O+][Co-5]345([OH2+])([OH2+])[O+]=C6NC(=O)NC=C6[N+]3=CC3=[N+]4C(=CC=C3)C=[N+]25)N1",
+"metal": "Co",
+"cn": 7,
+"maxdent": 5
+},
+{
+"ref": "KUQCUW",
+"smi": "CC1=CC(C)=C(C2C3=[N+]4C(=CS3)C3=CC=CC=C3[O][Hf-]4([N](C)C)([N](C)C)[N]2C2=C(C(C)C)C=CC=C2C(C)C)C(C)=C1",
+"metal": "Hf",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "PIHRIL",
+"smi": "CC1=CC2=C(C=C1C)N1C[P+](C(C)(C)C)(C(C)(C)C)[Mo-6]3([C]#[O+])([C]#[O+])([C]#[O+])[C+]1N2C[P+]3(C(C)(C)C)C(C)(C)C",
+"metal": "Mo",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "DESRUP",
+"smi": "CC(C)(C)[P+]1(C(C)(C)C)NC[C+]2->[RuH-4]13([Cl])<-[C+]=2N[P+]3(C(C)(C)C)C(C)(C)C",
+"metal": "Ru",
+"cn": 6,
+"maxdent": 4
+},
+{
+"ref": "ZOXFIE",
+"smi": "[O+]#[C][Ru-6]123([C]#[O+])<-[C+]4=[C+]->1C1=CC=CC=C1C([NH+]2CCC[NH+]3C1C2=CC=CC=C2C=CC2=CC=CC=C21)C1=CC=CC=C14",
+"metal": "Ru",
+"cn": 6,
+"maxdent": 4
+},
+{
+"ref": "JEZNUB",
+"smi": "[I][Cd-3]12([I])[O+]=C(C3=CC=CC=C3)N[N+]1=CC1=CC=CC=[N+]12",
+"metal": "Cd",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "DAGMIH",
+"smi": "CCOC(=O)C(CC1=CC=CC2=[N+]1[Pd-2]1([O]C(C)=O)[N+]3=C(C=CC=C23)C[C]1(C(=O)OCC)C(=O)OCC)C(=O)OCC",
+"metal": "Pd",
+"cn": 4,
+"maxdent": 3
+},
+{
+"ref": "VOLKAI",
+"smi": "[O+]#[C][Ru-4]12([C](C#CC3=CC=CC=C3)=CC3=CC=CC=C3)([P+](C3=CC=CC=C3)(C3=CC=CC=C3)C3=CC=CC=C3)[N]3C=CC=[N+]3[BH-]([N+]3=CC=C[N]31)[N+]1=CC=C[N]12",
+"metal": "Ru",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "QQQGCS",
+"smi": "CCC1=C(CC)C2=CC3=[N+]4C(=CC5=C(CC)C(CC)=C6C=C7C(CC)=C(CC)C8=[N+]7[Co-2]4([N]2C1=C8)[N]65)C(CC)=C3CC",
+"metal": "Co",
+"cn": 4,
+"maxdent": 4
+},
+{
+"ref": "IGOTOQ",
+"smi": "CCC1(CC)CC(CC)(CC)C2=C([P+]3=CC4=CC=CC5=[N+]4[Cu-2]3[P+](C3=C4C(=CC6=C3C(CC)(CC)CC6(CC)CC)C(CC)(CC)CC4(CC)CC)=C5)C3=C(C=C21)C(CC)(CC)CC3(CC)CC",
+"metal": "Cu",
+"cn": 3,
+"maxdent": 3
+},
+{
+"ref": "SEPKEF",
+"smi": "CC1=CC=C(S(=O)(=O)[O][Ir-2]23([CH3])[C]4=C(C=CC=C4C[P+]2(C(C)(C)C)C(C)(C)C)C[P+]3(C(C)(C)C)C(C)(C)C)C=C1",
+"metal": "Ir",
+"cn": 5,
+"maxdent": 3
+},
+{
+"ref": "PALCEN",
+"smi": "CC(C)C1=CC=CC(C(C)C)=C1[N]1C23C[P+](C)(C4=CC=CC=C4)[Re-5]1([C]#[O+])([C]#[O+])([C]#[O+])[N+](C1=C(C(C)C)C=CC=C1C(C)C)=C2C1=CC=CC2=CC=CC3=C21",
+"metal": "Re",
+"cn": 6,
+"maxdent": 3
+},
+{
+"ref": "NOBTCU",
+"smi": "O=[N+]([O-])[O][Cu-3]123[N+]4=C(C[N+]1(CC1=[N+]2C2=CC=CC=C2S1)CC1=[N+]3C2=CC=CC=C2S1)SC1=CC=CC=C14",
+"metal": "Cu",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "RIJSAH",
+"smi": "CC(C)C1=CC=CC(C(C)C)=C1[N]1C2=CC=CC=C2[N+]2=CC=[N+]3C4=CC=CC=C4[N](C4=C(C(C)C)C=CC=C4C(C)C)[Ti-]123[N-]C12CC3CC(CC(C3)C1)C2",
+"metal": "Ti",
+"cn": 5,
+"maxdent": 4
+},
+{
+"ref": "NAHCAB",
+"smi": "CC1(C)C2CC1C1CCOCCOCC3=CC4=CC(=C3)COCCOCCC3C5=CC6=[N+](C=C5C5CC3C5(C)C)[Ir-3]35([C]7=CC=CC=C7C7=[N+]3C=C2C1=C7)([C]1=CC=CC=C1C1=[N+]5C=C2C(=C1)C(CCOCCOC4)C1CC2C1(C)C)[C]1=CC=CC=C16",
+"metal": "Ir",
+"cn": 6,
+"maxdent": 6
+},
+{
+"ref": "GIDTOC",
+"smi": "[O+]#[C][Cr-9]12345([C]#[O+])([C]#[O+])<-[C+]67CCC8=CC=CC=C8C[C+]->16[C+]2[C+]3[C+]4[C+]75",
+"metal": "Cr",
+"cn": 9,
+"maxdent": 6
+},
+{
+"ref": "VAHMOH",
+"smi": "CC(C)NC1=[N+]2CC[N]3C(NC(C)C)=[N+](C(C)C)[Zr-2]32([CH2]C2=CC=CC=C2)([CH2]C2=CC=CC=C2)[N]1C(C)C",
+"metal": "Zr",
+"cn": 6,
+"maxdent": 4
+}
+]
