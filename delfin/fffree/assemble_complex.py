@@ -437,6 +437,82 @@ def _coplanar_metal_centered_conformer(mol, donor_idxs, metal_sym, mds, k=8):
         return None
 
 
+def _rigid_ligand_cavity_conformer(mol, donor_idxs, metal_sym, mds, k=12):
+    """LIGAND-GEOMETRY-FIRST universal seating for a RIGID POLYDENTATE (macrocycle /
+    cage / conjugated pincer): embed the FREE ligand (its own internal geometry is the
+    hard INVARIANT — the conjugated/macrocyclic backbone holds the donors in their
+    natural arrangement), then solve, for each conformer, the 3-D metal position that
+    best matches EVERY ideal M-donor distance ``mds[i]`` SIMULTANEOUSLY (Gauss-Newton
+    on the over-determined distance system).  Pick the conformer whose donor cavity
+    most consistently admits the metal at the ideal radii (smallest distance residual
+    = least-strained seating that respects the ligand), recenter so the metal sits at
+    the ORIGIN, and emit it.
+
+    Same return contract as ``_embed_metallacycle`` / ``_coplanar_metal_centered_
+    conformer``: ``(lsyms, [coords, ...])`` excluding the placeholder metal, matching
+    ``AddHs(mol)`` atom order (donor indices preserved), recentered on the metal.
+    Returns ``None`` on failure.
+
+    Unlike ``_coplanar_metal_centered_conformer`` this does NOT constrain the metal to
+    a backbone PLANE and does NOT require the backbone to be flat, so it is UNIVERSAL:
+    a 3-D cage solves to the cavity centre; a planar κ4 macrocycle solves to the
+    in-plane donor centre AUTOMATICALLY (the equidistant point of coplanar donors lies
+    in their plane).  Paired with the rigid-body orient (``_orient_chelate_to_vertices
+    (rigid=True)``: Kabsch fit, NO per-donor radial rescale) the ligand's internal
+    bonds AND angles are preserved EXACTLY and the coordination polyhedron comes out
+    EMERGENT — the "ligand-first → polyhedron emergent" construction order.  Universal,
+    geometry/graph-only, deterministic (fixed seed, single thread); never raises."""
+    try:
+        mh = Chem.AddHs(mol)
+        cids = list(AllChem.EmbedMultipleConfs(
+            mh, numConfs=max(int(k), 1), randomSeed=SEED,
+            numThreads=1, useRandomCoords=False))
+        if not cids:
+            if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
+                return None
+            cids = [0]
+        try:
+            AllChem.MMFFOptimizeMoleculeConfs(mh, numThreads=1)
+        except Exception:
+            pass
+        dons = [int(x) for x in donor_idxs]
+        if len(dons) < 2 or len(mds) != len(dons):
+            return None
+        keep = list(range(mh.GetNumAtoms()))
+        best = None                       # (residual, recentered coords)
+        for cid in cids:
+            P = np.array(mh.GetConformer(cid).GetPositions(), float)
+            D = P[dons]
+            # 3-D Gauss-Newton: minimise sum_i (|u - D_i| - md_i)^2, seed = donor centroid
+            u = D.mean(axis=0)
+            r = np.zeros(len(dons))
+            for _ in range(200):
+                J = []; r = []
+                for i in range(len(dons)):
+                    diff = u - D[i]; nn = max(float(np.linalg.norm(diff)), 1e-9)
+                    r.append(nn - mds[i]); J.append(diff / nn)
+                J = np.array(J); r = np.array(r)
+                try:
+                    step = np.linalg.lstsq(J, -r, rcond=None)[0]
+                except Exception:
+                    break
+                u = u + step
+                if float(np.linalg.norm(step)) < 1e-9:
+                    break
+            resid = float(np.sqrt(np.mean(np.asarray(r) ** 2)))
+            coords = P[keep] - u              # recenter: metal -> origin
+            if not np.all(np.isfinite(coords)):
+                continue
+            if best is None or resid < best[0]:
+                best = (resid, coords)
+        if best is None:
+            return None
+        lsyms = [mh.GetAtomWithIdx(i).GetSymbol() for i in keep]
+        return lsyms, [best[1]]
+    except Exception:
+        return None
+
+
 def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     """True if any heavy-heavy non-metal bonded pair sits below `factor` × the
     covalent-sum ideal — catches the YILNUF-class oxalate-embed failure where the
@@ -2579,6 +2655,23 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                             ring_confs = _ma
                 except Exception:
                     pass
+            # UNIVERSAL LIGAND-INVARIANT cavity seating (DELFIN_FFFREE_RIGID_LIGAND_SEAT,
+            # default OFF -> byte-identical).  For ANY rigid polydentate (dent>=3:
+            # κ3 pincer / κ4 macrocycle / κ6 cage) replace the metallacycle/coplanar
+            # conformer with the FREE-ligand conformer whose donor cavity best admits the
+            # metal at the ideal M-D radii (3-D distance solve; NO backbone-flatness
+            # requirement -> works where _coplanar_metal_centered_conformer bails).  Paired
+            # with the rigid-body orient below (_rigid_seat forced True for this ligand) the
+            # ligand internal geometry is preserved EXACTLY and the polyhedron is EMERGENT.
+            # Overrides _use_cop / PI_RIGID_PLACE when set (the more general construction).
+            # Self-gating: None on solve failure -> keeps the metallacycle embed (never-worse).
+            _rls = (_dent >= 3 and _dtp is not None
+                    and os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1")
+            if _rls:
+                _mds = [float(np.linalg.norm(p)) for p in _dtp]
+                _cav = _rigid_ligand_cavity_conformer(lg["mol"], _dons_d, metal, _mds)
+                if _cav is not None:
+                    ring_confs = _cav
         if ring_confs is not None:
             lsyms, coords_list = ring_confs
         else:
@@ -2651,8 +2744,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 _orient_free = (ring_confs is None
                                 and os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1")
                 if ring_confs is not None or _orient_free:
-                    _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
-                                   and dent >= 3)
+                    # rigid-body orient (no per-donor rescale) when LIGAND_RIGID OR the
+                    # universal cavity seating (RIGID_LIGAND_SEAT) is active for a dent>=3
+                    # rigid polydentate -> ligand internal geometry preserved, polyhedron
+                    # emergent.  Default OFF on both -> byte-identical (per-donor rescale).
+                    _rigid_seat = (dent >= 3 and (
+                        os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
+                        or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
                                                     rigid=_rigid_seat)
                     # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
