@@ -109,6 +109,18 @@ DEFAULT_SETTINGS = {
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
         "max_tool_rounds": 500,
+        # Auto-verification: don't let the agent finish a turn with broken code.
+        # When the model stops after editing .py files, the harness verifies
+        # them and — on a problem — forces a bounded fix round (the model can't
+        # just claim "done"). Modes:
+        #   "syntax" (default) — py_compile the edited files (fast, safe, no
+        #                        side effects); catches the most common slip:
+        #                        leaving a syntax error behind.
+        #   "command"          — run agent.auto_verify_command in the workspace
+        #                        (e.g. a focused pytest) for real test coverage.
+        #   "off"              — disable.
+        "auto_verify": "syntax",
+        "auto_verify_command": "",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).
         # Teams point this at a shared archive (env DELFIN_BUG_ARCHIVE

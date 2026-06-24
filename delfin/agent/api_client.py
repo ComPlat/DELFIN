@@ -2819,6 +2819,53 @@ def _resolve_max_tool_rounds() -> int:
     return 100_000 if val <= 0 else val
 
 
+def _resolve_auto_verify() -> tuple[str, str]:
+    """(mode, command) for auto-verification. mode ∈ syntax|command|off
+    (default syntax). Reads agent.auto_verify[_command]; never raises."""
+    try:
+        from delfin import user_settings
+        ag = (user_settings.load_settings().get("agent", {}) or {})
+        mode = str(ag.get("auto_verify", "syntax") or "syntax").strip().lower()
+        cmd = str(ag.get("auto_verify_command", "") or "").strip()
+    except Exception:
+        return "syntax", ""
+    if mode not in ("syntax", "command", "off"):
+        mode = "syntax"
+    return mode, cmd
+
+
+def _run_auto_verify(edited_paths: list, mode: str, command: str,
+                     workspace) -> str:
+    """Verify code the agent just edited. Returns a short problem summary when
+    something is wrong (→ force a fix round), or "" when clean. Must never
+    raise — verification failing closed would be worse than not verifying."""
+    try:
+        if mode == "command" and command:
+            r = subprocess.run(command, shell=True, cwd=str(workspace),
+                               capture_output=True, text=True, timeout=180)
+            if r.returncode != 0:
+                out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+                return (f"`{command}` failed (exit {r.returncode}):\n"
+                        f"{out[-1800:]}")
+            return ""
+        if mode == "syntax":
+            import py_compile
+            probs: list[str] = []
+            for p in edited_paths:
+                try:
+                    py_compile.compile(str(p), doraise=True)
+                except py_compile.PyCompileError as exc:
+                    probs.append(str(exc).strip()[:400])
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    continue
+            return "\n".join(probs)
+    except Exception:
+        return ""
+    return ""
+
+
 def _cached_tokens_of(usage) -> int:
     """Prompt tokens served from the endpoint's prefix cache, read defensively
     from the OpenAI/vLLM ``usage.prompt_tokens_details.cached_tokens`` field.
@@ -6376,6 +6423,12 @@ class OpenAIClient(_BaseClient):
         _total_in = 0
         _total_out = 0
         _total_cached = 0      # prompt tokens served from the endpoint cache
+        # Auto-verify: track .py files edited this turn so the harness can
+        # check them before the model is allowed to finish.
+        _edited_py: dict = {}
+        _verified_this_turn = False
+        _verify_attempts = 0
+        _av_mode, _av_cmd = _resolve_auto_verify()
         # Per-turn tool-round budget. 15 was too tight for real coding
         # workflows: write_file + cat heredocs + venv create + pip
         # install easily eats 20+ rounds before the model can wrap up,
@@ -6779,6 +6832,23 @@ class OpenAIClient(_BaseClient):
                     })
                     _round_results.append(result)
 
+                    # Track .py files successfully edited this turn (for the
+                    # turn-end auto-verify). A new edit invalidates a prior pass.
+                    if (_av_mode != "off"
+                            and fn_name in ("edit_file", "multi_edit", "write_file")
+                            and not str(result).lstrip().startswith('{"error"')):
+                        _ep = (fn_args.get("path")
+                               if isinstance(fn_args, dict) else None)
+                        if _ep and str(_ep).endswith(".py"):
+                            try:
+                                _ws = str(getattr(self._permissions, "workspace", "") or "")
+                                _abs = (str(_ep) if os.path.isabs(str(_ep))
+                                        else os.path.join(_ws, str(_ep)))
+                                _edited_py[_abs] = True
+                                _verified_this_turn = False
+                            except Exception:
+                                pass
+
                 # All futures resolved in the loop above — release threads.
                 if _sub_executor is not None:
                     _sub_executor.shutdown(wait=False)
@@ -6854,6 +6924,33 @@ class OpenAIClient(_BaseClient):
 
                 # Loop back to get the model's next response
                 continue
+
+            # No tool calls — the model thinks it's done. Auto-verify the code
+            # it edited BEFORE letting the turn finish: if it left a problem,
+            # inject it and force a fix round (the model can't just claim done).
+            # Bounded so a genuinely unfixable failure can't loop forever.
+            if (_edited_py and not _verified_this_turn and _av_mode != "off"
+                    and _verify_attempts < 2):
+                _verify_attempts += 1
+                _verified_this_turn = True
+                _problems = _run_auto_verify(
+                    list(_edited_py), _av_mode, _av_cmd,
+                    getattr(self._permissions, "workspace", "."))
+                if _problems:
+                    _record_security_event(
+                        "auto_verify", "verify", _problems[:80], blocked=False)
+                    yield StreamEvent(
+                        type="text_delta",
+                        text=("\n\n🔁 Auto-verify: the code just edited has a "
+                              "problem — fixing before finishing.\n"))
+                    api_messages.append({
+                        "role": "user",
+                        "content": (
+                            "Auto-verification of the file(s) you just edited "
+                            "found a problem. Fix it, then finish:\n\n"
+                            f"{_problems}"),
+                    })
+                    continue        # force a fix round instead of ending
 
             # No tool calls — emit final message_delta and break
             cost = self._estimate_cost(_total_in, _total_out)

@@ -29,6 +29,7 @@ _KINDS = {
     "denied_by_user": ("✋", "User denied"),
     "isolation":      ("🔒", "Filesystem isolation active"),
     "egress":         ("🌐", "Outbound data transfer"),
+    "auto_verify":    ("🔁", "Auto-verify caught a problem"),
 }
 
 
