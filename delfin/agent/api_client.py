@@ -2820,47 +2820,108 @@ def _resolve_max_tool_rounds() -> int:
 
 
 def _resolve_auto_verify() -> tuple[str, str]:
-    """(mode, command) for auto-verification. mode ∈ syntax|command|off
-    (default syntax). Reads agent.auto_verify[_command]; never raises."""
+    """(mode, command) for auto-verification. mode ∈ smart|syntax|command|off
+    (default smart). Reads agent.auto_verify[_command]; never raises."""
     try:
         from delfin import user_settings
         ag = (user_settings.load_settings().get("agent", {}) or {})
-        mode = str(ag.get("auto_verify", "syntax") or "syntax").strip().lower()
+        mode = str(ag.get("auto_verify", "smart") or "smart").strip().lower()
         cmd = str(ag.get("auto_verify_command", "") or "").strip()
     except Exception:
-        return "syntax", ""
-    if mode not in ("syntax", "command", "off"):
-        mode = "syntax"
+        return "smart", ""
+    if mode not in ("smart", "syntax", "command", "off"):
+        mode = "smart"
     return mode, cmd
+
+
+def _syntax_check(edited_paths: list) -> str:
+    """py_compile the edited .py files (fast, no execution). Returns a summary
+    of any syntax errors, or ""."""
+    import py_compile
+    probs: list[str] = []
+    for p in edited_paths:
+        try:
+            py_compile.compile(str(p), doraise=True)
+        except py_compile.PyCompileError as exc:
+            probs.append(str(exc).strip()[:400])
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    return "\n".join(probs)
+
+
+def _detect_test_command(workspace) -> str:
+    """A fast pytest command if the workspace clearly has a Python test setup,
+    else "". Looks for a tests/ dir with test_*.py, or top-level test_*.py /
+    conftest.py — and requires pytest to be importable. ``-x`` stops at the
+    first failure so a broken suite reports quickly."""
+    try:
+        ws = Path(workspace)
+        import importlib.util
+        if importlib.util.find_spec("pytest") is None:
+            return ""
+        tdir = ws / "tests"
+        has = (tdir.is_dir() and any(tdir.glob("test_*.py"))) \
+            or any(ws.glob("test_*.py")) or (ws / "conftest.py").is_file()
+        return "python -m pytest -x -q" if has else ""
+    except Exception:
+        return ""
+
+
+# Workspaces whose test suite ran too slow to auto-verify per turn — probed
+# once, then skipped (syntax-only) so a slow suite isn't re-run every turn.
+_SLOW_TEST_WS: set = set()
+
+
+def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
+    """Run a verification command. Returns (problem_summary, timed_out)."""
+    try:
+        r = subprocess.run(command, shell=True, cwd=str(workspace),
+                           capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "", True
+    except Exception:
+        return "", False
+    if r.returncode != 0:
+        out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        return f"`{command}` failed (exit {r.returncode}):\n{out[-1800:]}", False
+    return "", False
 
 
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
                      workspace) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
-    something is wrong (→ force a fix round), or "" when clean. Must never
-    raise — verification failing closed would be worse than not verifying."""
+    something is wrong (→ force a fix round), or "" when clean. Never raises —
+    verification failing closed would be worse than not verifying.
+
+    Modes: ``syntax`` (py_compile only), ``command`` (run ``command``),
+    ``smart`` (syntax first; then, if the workspace has a detectable test
+    suite, run it with a timeout — and remember a too-slow suite so it isn't
+    re-run every turn), ``off``.
+    """
     try:
-        if mode == "command" and command:
-            r = subprocess.run(command, shell=True, cwd=str(workspace),
-                               capture_output=True, text=True, timeout=180)
-            if r.returncode != 0:
-                out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
-                return (f"`{command}` failed (exit {r.returncode}):\n"
-                        f"{out[-1800:]}")
+        if mode == "off":
             return ""
-        if mode == "syntax":
-            import py_compile
-            probs: list[str] = []
-            for p in edited_paths:
-                try:
-                    py_compile.compile(str(p), doraise=True)
-                except py_compile.PyCompileError as exc:
-                    probs.append(str(exc).strip()[:400])
-                except FileNotFoundError:
-                    continue
-                except Exception:
-                    continue
-            return "\n".join(probs)
+        if mode == "command" and command:
+            prob, _ = _run_test_command(command, workspace, 180)
+            return prob
+        if mode in ("syntax", "smart"):
+            syn = _syntax_check(edited_paths)
+            if syn or mode == "syntax":
+                return syn
+            # smart: syntax clean → try the project's tests (bounded + adaptive)
+            ws_key = str(workspace)
+            if ws_key in _SLOW_TEST_WS:
+                return ""
+            cmd = command or _detect_test_command(workspace)
+            if not cmd:
+                return ""
+            prob, timed_out = _run_test_command(cmd, workspace, 60)
+            if timed_out:
+                _SLOW_TEST_WS.add(ws_key)    # don't re-run a slow suite each turn
+                return ""
+            return prob
     except Exception:
         return ""
     return ""

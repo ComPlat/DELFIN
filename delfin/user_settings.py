@@ -113,13 +113,15 @@ DEFAULT_SETTINGS = {
         # When the model stops after editing .py files, the harness verifies
         # them and — on a problem — forces a bounded fix round (the model can't
         # just claim "done"). Modes:
-        #   "syntax" (default) — py_compile the edited files (fast, safe, no
-        #                        side effects); catches the most common slip:
-        #                        leaving a syntax error behind.
-        #   "command"          — run agent.auto_verify_command in the workspace
-        #                        (e.g. a focused pytest) for real test coverage.
-        #   "off"              — disable.
-        "auto_verify": "syntax",
+        #   "smart" (default) — py_compile the edited files AND, if the
+        #                       workspace has a detectable pytest setup, run it
+        #                       (-x, 60s timeout) and enforce it passes. A
+        #                       too-slow suite is probed once then skipped, so
+        #                       it isn't re-run every turn.
+        #   "syntax"          — py_compile only (fast; for big/slow projects).
+        #   "command"         — run agent.auto_verify_command (your own check).
+        #   "off"             — disable.
+        "auto_verify": "smart",
         "auto_verify_command": "",
         # Directory the "Bug Report" button writes reproducible bug
         # bundles into. Empty = per-user fallback (~/.delfin/agent_bugs).

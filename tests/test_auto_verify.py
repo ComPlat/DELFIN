@@ -37,11 +37,50 @@ def test_command_mode_clean_on_success(tmp_path):
     assert _run_auto_verify([], "command", "python -c \"pass\"", tmp_path) == ""
 
 
-def test_default_mode_is_syntax():
+def test_default_mode_is_smart():
     from delfin.user_settings import DEFAULT_SETTINGS
-    assert DEFAULT_SETTINGS["agent"]["auto_verify"] == "syntax"
+    assert DEFAULT_SETTINGS["agent"]["auto_verify"] == "smart"
     mode, _cmd = _resolve_auto_verify()
-    assert mode in ("syntax", "command", "off")
+    assert mode in ("smart", "syntax", "command", "off")
+
+
+def test_detect_test_command(tmp_path):
+    from delfin.agent.api_client import _detect_test_command
+    assert _detect_test_command(tmp_path) == ""          # no test setup
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_x():\n    assert True\n")
+    assert "pytest" in _detect_test_command(tmp_path)     # detected
+
+
+def test_smart_runs_tests_and_flags_failure(tmp_path):
+    # syntax OK but a real test fails → smart mode surfaces it.
+    (tmp_path / "mod.py").write_text("def val():\n    return 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from mod import val\ndef test_val():\n    assert val() == 2\n")
+    out = _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path)
+    assert out and "failed" in out
+
+
+def test_smart_clean_when_tests_pass(tmp_path):
+    (tmp_path / "mod.py").write_text("def val():\n    return 2\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from mod import val\ndef test_val():\n    assert val() == 2\n")
+    assert _run_auto_verify([str(tmp_path / "mod.py")], "smart", "", tmp_path) == ""
+
+
+def test_smart_syntax_error_short_circuits(tmp_path):
+    bad = tmp_path / "bad.py"
+    bad.write_text("def f(:\n  return 1\n")
+    out = _run_auto_verify([str(bad)], "smart", "", tmp_path)
+    assert out and ("SyntaxError" in out or "invalid syntax" in out)
+
+
+def test_smart_no_tests_is_syntax_only(tmp_path):
+    ok = tmp_path / "ok.py"
+    ok.write_text("def f():\n    return 1\n")
+    assert _run_auto_verify([str(ok)], "smart", "", tmp_path) == ""
 
 
 def test_loop_is_wired():
