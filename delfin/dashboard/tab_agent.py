@@ -3017,6 +3017,14 @@ def create_tab(ctx):
         [session_dropdown, load_session_btn, fork_session_btn, delete_session_btn],
         layout=widgets.Layout(margin="0 0 6px 0"),
     )
+    # Tuck occasional session management behind a compact, collapsed bar so
+    # the top stays tidy and the chat sits higher (one click to expand; the
+    # widgets stay fully functional inside, incl. agent-driven clicks).
+    session_accordion = widgets.Accordion(
+        children=[session_row], titles=("⚙ Sessions",),
+        layout=widgets.Layout(margin="0 0 6px 0"),
+    )
+    session_accordion.selected_index = None  # collapsed by default
 
     # Search bar (toggle visibility with Ctrl+K or /search)
     search_input = widgets.Text(
@@ -4395,7 +4403,7 @@ def create_tab(ctx):
         pass
 
     agent_content = widgets.VBox(
-        [css_widget, _enter_js_output, controls_row, session_row, search_row,
+        [css_widget, _enter_js_output, controls_row, session_accordion, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
          kit_mode_row, kit_dirs_status,
          chat_html,
