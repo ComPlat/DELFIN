@@ -100,7 +100,11 @@ def test_engine_records_trace(home, monkeypatch, tmp_path):
     monkeypatch.setattr(mc, "resolve", lambda *a, **k: mc.ModelCapabilities(
         model="m", provider="ollama", context_window=32768, supports_tools=True))
     from delfin.agent.engine import AgentEngine
-    eng = AgentEngine(repo_dir=str(tmp_path), backend="api",
+    # tmp_path is monkeypatched to be $HOME; use a project sub-dir as the
+    # workspace (the agent is never allowed to root in $HOME itself).
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    eng = AgentEngine(repo_dir=str(proj), backend="api",
                       provider="ollama", model="x")
     eng._trace_pending.append(("read_file", '{"path":"a"}', time.monotonic()))
     eng._record_tool_trace("read_file", "content here", ok=True)

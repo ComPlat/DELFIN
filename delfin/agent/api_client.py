@@ -878,6 +878,42 @@ def _is_delfin_workspace(workspace: Path | str | None) -> bool:
         return True
     return False
 
+
+# Workspace roots so broad that "the agent may write anywhere inside" is
+# dangerous: a system directory, the filesystem root, or the user's home
+# directory itself. Only these *exact* roots are refused — any project
+# sub-directory under home (``~/agent_workspace``, ``~/software/delfin``)
+# is always fine. This makes "launch dir = workspace" safe: the agent can
+# never be pinned to all of ``$HOME`` and write across SSH keys, configs,
+# and other users' projects.
+_FORBIDDEN_WORKSPACE_DIRS: frozenset[str] = frozenset({
+    "/", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/var",
+    "/boot", "/root", "/sys", "/proc", "/dev", "/opt", "/home", "/Users",
+})
+
+
+def _is_forbidden_workspace_root(path: Path | str | None) -> bool:
+    """True if *path* is too broad to be a safe agent workspace root.
+
+    Refuses ``$HOME`` itself, any ancestor of it (``/home``, ``/`` …) and
+    known system directories. A project sub-directory under home is allowed.
+    Unresolvable / missing paths fail closed (refused).
+    """
+    if path is None:
+        return True
+    try:
+        p = Path(path).expanduser().resolve()
+    except Exception:
+        return True
+    if str(p) in _FORBIDDEN_WORKSPACE_DIRS:
+        return True
+    try:
+        home = Path.home().resolve()
+    except Exception:
+        return False
+    return p == home or p in home.parents
+
+
 # Path globs (relative to workspace) where writes/edits are forbidden.
 _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".git/**", "**/.git/**",
@@ -1006,6 +1042,17 @@ class KitToolPermissions:
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
+        # Security: never let the agent be pinned to $HOME or a system root.
+        # "launch dir = workspace" is only safe because this floor holds — a
+        # too-broad workspace would let writes/bash reach SSH keys, configs and
+        # other users' files. Project sub-dirs (~/agent_workspace) are fine.
+        if _is_forbidden_workspace_root(self.workspace):
+            raise ValueError(
+                f"Refusing {self.workspace} as the agent workspace — it is your "
+                "home directory or a system root, which would let the agent "
+                "write anywhere. Launch from a project sub-directory instead "
+                "(e.g. ~/agent_workspace)."
+            )
         valid = {"plan", "default", "acceptEdits", "bypassPermissions"}
         if self.mode not in valid:
             raise ValueError(f"mode must be one of {valid}, got {self.mode!r}")
@@ -1016,6 +1063,10 @@ class KitToolPermissions:
             except Exception:
                 continue
             if p == self.workspace:
+                continue
+            # Same floor for extra writable roots — drop forbidden ones
+            # silently rather than fail the whole engine build.
+            if _is_forbidden_workspace_root(p):
                 continue
             if p not in resolved_extra:
                 resolved_extra.append(p)

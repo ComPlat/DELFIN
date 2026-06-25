@@ -17,6 +17,7 @@ import pytest
 from delfin.agent.api_client import (
     KitToolPermissions,
     _doc_executor,
+    _is_forbidden_workspace_root,
 )
 
 
@@ -494,3 +495,38 @@ def test_venv_outside_workspace_is_not_auto_allowed(workspace):
     perms = KitToolPermissions(workspace=workspace, mode="acceptEdits")
     assert not perms.matches_bash_auto_allow("/etc/.venv/bin/pip install evil")
     assert not perms.matches_bash_auto_allow("rm -rf /")
+
+
+def test_home_and_system_roots_are_forbidden_workspaces():
+    """'launch dir = workspace' must never pin to $HOME or a system root —
+    that would let the agent write across SSH keys, configs and other users'
+    files. Project sub-dirs stay allowed (req 2026-06-25: 'Home soll er nie
+    arbeiten können')."""
+    home = Path.home().resolve()
+    # Forbidden: home itself, its ancestors, and system roots.
+    assert _is_forbidden_workspace_root(home)
+    assert _is_forbidden_workspace_root(home.parent)
+    assert _is_forbidden_workspace_root(Path("/"))
+    assert _is_forbidden_workspace_root(Path("/etc"))
+    assert _is_forbidden_workspace_root("~")
+    assert _is_forbidden_workspace_root(None)
+    # Allowed: a real project sub-directory under home.
+    assert not _is_forbidden_workspace_root(home / "agent_workspace")
+    assert not _is_forbidden_workspace_root(home / "software" / "delfin")
+
+
+def test_constructing_perms_with_home_workspace_is_refused():
+    """The containment layer itself refuses $HOME — defense in depth, so the
+    floor holds no matter how the engine is built."""
+    with pytest.raises(ValueError, match="home directory or a system root"):
+        KitToolPermissions(workspace=Path.home(), mode="acceptEdits")
+
+
+def test_forbidden_extra_dir_is_dropped_not_fatal(workspace):
+    """A forbidden EXTRA writable dir is silently dropped; the engine still
+    builds with the valid primary workspace."""
+    perms = KitToolPermissions(
+        workspace=workspace, mode="acceptEdits",
+        extra_workspace_dirs=(Path.home(), workspace / "sub"),
+    )
+    assert Path.home().resolve() not in perms.extra_workspace_dirs
