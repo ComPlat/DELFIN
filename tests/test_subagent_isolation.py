@@ -18,7 +18,7 @@ from delfin.agent.api_client import StreamEvent, create_client
 @pytest.fixture(autouse=True)
 def _isolate_state(monkeypatch, tmp_path):
     """Redirect subagent state files to tmp so tests don't touch ~/.delfin."""
-    monkeypatch.setattr(S, "_RUNNING_PATH", tmp_path / "running.json")
+    monkeypatch.setattr(S, "_RUNNING_DIR", tmp_path / "running")
     monkeypatch.setattr(S, "_SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(S, "_TELEMETRY_PATH", tmp_path / "telemetry.jsonl")
     yield

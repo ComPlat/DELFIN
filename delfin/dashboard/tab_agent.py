@@ -3935,19 +3935,32 @@ def create_tab(ctx):
             from delfin.agent.subagents import read_running, read_telemetry
             import time as _t
             running = read_running()
-            rows = []
+            # Each RUNNING subagent is an expandable block (open by default)
+            # showing its live steps (read/write/bash …) — the Claude-Code-style
+            # drill-down the user asked for ("man sieht nicht was die machen").
+            blocks = []
             for sa in running.values():
                 el = int(_t.time() - float(sa.get("started_at", _t.time())))
-                rows.append(
-                    f"<span style='color:#b45309;'>🟡 {sa.get('type','?')}"
-                    f"</span> {_html.escape(sa.get('description','')[:60])}"
-                    f" · {el//60}m{el%60:02d}s"
+                actions = sa.get("actions") or []
+                steps = "".join(
+                    f"<div style='padding-left:16px; color:#555;'>· "
+                    f"{_html.escape(str(a)[:80])}</div>" for a in actions
+                ) or "<div style='padding-left:16px; color:#999;'>(starting…)</div>"
+                summ = (
+                    f"🟡 <b>{_html.escape(str(sa.get('type','?')))}</b> "
+                    f"{_html.escape(str(sa.get('description',''))[:60])}"
+                    f" · {el//60}m{el%60:02d}s · {len(actions)} steps"
                 )
-            # Only show subagents from the CURRENT session — the telemetry file
-            # is global, so without this filter a fresh session keeps showing
-            # the previous session's (and old test) runs (bug 2026-06-25:
-            # "neue session und ich seh immer noch explore … · 0 calls").
+                blocks.append(
+                    f"<details open style='margin:1px 0;'>"
+                    f"<summary style='color:#b45309; cursor:pointer;'>{summ}</summary>"
+                    f"{steps}</details>"
+                )
+            # Finished subagents (telemetry) — compact one-liners, CURRENT
+            # session only (the telemetry file is global; without this filter a
+            # fresh session keeps showing prior/old-test runs, bug 2026-06-25).
             _sess_start = float(state.get("_session_start_ts", 0) or 0)
+            recent = []
             for rec in (read_telemetry(last_n=8) or [])[::-1]:
                 try:
                     if float(rec.get("ts", 0) or 0) < _sess_start:
@@ -3955,22 +3968,58 @@ def create_tab(ctx):
                 except Exception:
                     pass
                 ok = not rec.get("error")
-                rows.append(
+                recent.append(
                     f"<span style='color:{'#2e7d32' if ok else '#c62828'};'>"
-                    f"{'✅' if ok else '❌'} {rec.get('subagent_type','?')}"
-                    f"</span> {_html.escape(str(rec.get('description',''))[:60])}"
+                    f"{'✅' if ok else '❌'} {_html.escape(str(rec.get('subagent_type','?')))}"
+                    f"</span> {_html.escape(str(rec.get('description',''))[:50])}"
                     f" · {float(rec.get('elapsed_s',0)):.0f}s"
                     f" · {rec.get('n_tool_calls', rec.get('tool_calls', 0))} calls"
                 )
-            if rows:
-                subagent_panel_html.value = (
-                    "<div style='font-size:11px; color:#546e7a;'>"
-                    "<b>🤖 Subagents</b> · " + " &nbsp;|&nbsp; ".join(rows[:5])
-                    + "</div>")
+            if blocks or recent:
+                html = ("<div style='font-size:11px; color:#546e7a;'>"
+                        "<b>🤖 Subagents</b>")
+                html += "".join(blocks)
+                if recent:
+                    html += ("<div style='margin-top:2px;'>"
+                             + " &nbsp;|&nbsp; ".join(recent[:5]) + "</div>")
+                html += "</div>"
+                subagent_panel_html.value = html
             else:
                 subagent_panel_html.value = ""
         except Exception:
             subagent_panel_html.value = ""
+
+    def _start_subagent_live_watcher(interval: float = 1.5) -> None:
+        """Refresh the subagent panel every ~1.5s WHILE subagents are running,
+        so the live drill-down updates during a blocking parallel batch — the
+        main loop is busy inside the subagent tool call and emits no events to
+        drive the normal refresh. Daemon; idles cheaply when none run."""
+        if state.get("_subagent_live_thread") is not None:
+            return
+        state["_subagent_live_stop"] = False
+
+        def _loop() -> None:
+            import time as _t2
+            from delfin.agent.subagents import read_running as _rr
+            was_active = False
+            while not state.get("_subagent_live_stop"):
+                try:
+                    active = bool(_rr())
+                    # Refresh while any run, plus once after the last finishes
+                    # (flip running → recent without a main-loop tool result).
+                    if active or was_active:
+                        _refresh_subagent_panel()
+                    was_active = active
+                except Exception:
+                    pass
+                _t2.sleep(interval)
+            state["_subagent_live_thread"] = None
+
+        import threading as _threading
+        t = _threading.Thread(
+            target=_loop, daemon=True, name="delfin-subagent-live")
+        state["_subagent_live_thread"] = t
+        t.start()
 
     # Live tool-trace panel: the MAIN agent's tool calls as they happen — the
     # dashboard analogue of the terminal action feed (the subagent panel above
@@ -14604,6 +14653,12 @@ def create_tab(ctx):
     # the Python session.
     try:
         _start_job_event_watcher()
+    except Exception:
+        pass
+    # Live subagent drill-down: refresh the panel while subagents run so you
+    # can watch what each one is doing in real time (read/write/bash …).
+    try:
+        _start_subagent_live_watcher()
     except Exception:
         pass
 

@@ -93,36 +93,67 @@ _TELEMETRY_PATH = Path.home() / ".delfin" / "subagent_telemetry.jsonl"
 _TELEMETRY_MAX_LINES = 5000
 
 
-_RUNNING_PATH = Path.home() / ".delfin" / "subagent_running.json"
+# One file PER running subagent (not a shared dict file): 6+ parallel
+# subagents update their live status on every tool call, and a shared
+# read-modify-write would race-drop each other's entries (the panel would
+# flicker subagents in and out). One owner per file → no races. The normal
+# finally-cleanup removes a subagent's file when it finishes or errors.
+_RUNNING_DIR = Path.home() / ".delfin" / "subagent_running"
+
+
+def _format_action(name: str, tool_input) -> str:
+    """A short 'tool: target' line for the live drill-down panel."""
+    try:
+        args = json.loads(tool_input) if isinstance(tool_input, str) else (tool_input or {})
+    except Exception:
+        args = {}
+    if not isinstance(args, dict):
+        args = {}
+    if name in ("write_file", "edit_file", "multi_edit", "read_file", "Write", "Edit", "Read"):
+        tgt = str(args.get("path") or args.get("file_path") or "")
+        tgt = tgt.rsplit("/", 1)[-1] if tgt else ""
+        return f"{name} {tgt}".strip()
+    if name in ("bash", "Bash"):
+        cmd = str(args.get("command") or "").strip().replace("\n", " ")
+        return f"bash: {cmd[:60]}"
+    if name in ("search_docs", "grep", "Grep", "glob", "Glob"):
+        q = str(args.get("query") or args.get("pattern") or "")
+        return f"{name} {q[:40]}".strip()
+    return name
 
 
 def _running_update(sa_id: str, entry: dict | None) -> None:
-    """Maintain the live registry of running subagents (entry=None removes).
+    """Maintain the live per-subagent status file (entry=None removes).
 
-    File-based so the dashboard can render a Claude-Code-style live panel
-    (name · task · status · elapsed) without sharing memory with the
-    worker thread."""
+    File-based so the dashboard can render a Claude-Code-style live drill-down
+    (name · task · steps · status) without sharing memory with the worker
+    thread."""
     try:
-        try:
-            data = json.loads(_RUNNING_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
+        _RUNNING_DIR.mkdir(parents=True, exist_ok=True)
+        f = _RUNNING_DIR / f"{sa_id}.json"
         if entry is None:
-            data.pop(sa_id, None)
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                pass
         else:
-            data[sa_id] = entry
-        _RUNNING_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _RUNNING_PATH.write_text(json.dumps(data), encoding="utf-8")
+            f.write_text(json.dumps(entry), encoding="utf-8")
     except Exception:
         pass
 
 
 def read_running() -> dict:
-    """Live registry: {id: {type, description, started_at}}."""
+    """Live registry: {id: {type, description, started_at, actions, last_action}}."""
+    out: dict = {}
     try:
-        return json.loads(_RUNNING_PATH.read_text(encoding="utf-8"))
+        for f in _RUNNING_DIR.glob("*.json"):
+            try:
+                out[f.stem] = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
     except Exception:
-        return {}
+        pass
+    return out
 
 
 # Finished-subagent sessions (Claude-Code SendMessage analog): each run
@@ -725,10 +756,14 @@ def run_subagent(
     # Honour a caller-supplied id (background runs reserve it up-front so the
     # parent can poll/retrieve the result); else resume keeps its id; else new.
     _sa_id = resume_from if prior else ((sa_id or "").strip() or _uuid.uuid4().hex[:8])
+    _sa_started = time.time()
+    _sa_actions: list[str] = []
     _running_update(_sa_id, {
         "type": subagent_type,
         "description": (description or "")[:120],
-        "started_at": time.time(),
+        "started_at": _sa_started,
+        "actions": [],
+        "last_action": "",
     })
 
     try:
@@ -751,6 +786,17 @@ def run_subagent(
                 tool_calls_seen.append({
                     "name": event.tool_name,
                     "input": event.tool_input,
+                })
+                # Live drill-down: record this step so the dashboard can show
+                # what THIS subagent is doing right now (read/write/bash …).
+                _sa_actions.append(
+                    _format_action(event.tool_name, event.tool_input))
+                _running_update(_sa_id, {
+                    "type": subagent_type,
+                    "description": (description or "")[:120],
+                    "started_at": _sa_started,
+                    "actions": _sa_actions[-12:],
+                    "last_action": _sa_actions[-1],
                 })
             elif event.type == "tool_result":
                 # Attach the output to the most recent tool call still

@@ -19,7 +19,7 @@ from delfin.agent import api_client as A
 
 @pytest.fixture(autouse=True)
 def _iso(monkeypatch, tmp_path):
-    monkeypatch.setattr(S, "_RUNNING_PATH", tmp_path / "running.json")
+    monkeypatch.setattr(S, "_RUNNING_DIR", tmp_path / "running")
     monkeypatch.setattr(S, "_SESSIONS_DIR", tmp_path / "sessions")
     monkeypatch.setattr(S, "_TELEMETRY_PATH", tmp_path / "telemetry.jsonl")
     yield

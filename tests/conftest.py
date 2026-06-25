@@ -14,8 +14,8 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_subagent_state(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
-    monkeypatch.setattr(sa, "_RUNNING_PATH",
-                        tmp_path / "subagent_running.json")
+    monkeypatch.setattr(sa, "_RUNNING_DIR",
+                        tmp_path / "subagent_running")
     monkeypatch.setattr(sa, "_TELEMETRY_PATH",
                         tmp_path / "subagent_telemetry.jsonl")
     monkeypatch.setattr(sa, "_SESSIONS_DIR",

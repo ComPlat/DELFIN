@@ -100,13 +100,42 @@ def test_malformed_arguments_default_to_empty(monkeypatch):
 
 def test_running_registry_roundtrip(tmp_path, monkeypatch):
     from delfin.agent import subagents as sa
-    monkeypatch.setattr(sa, "_RUNNING_PATH", tmp_path / "running.json")
+    monkeypatch.setattr(sa, "_RUNNING_DIR", tmp_path / "running")
     sa._running_update("abc", {"type": "explore", "description": "map hooks",
-                                "started_at": 123.0})
+                                "started_at": 123.0,
+                                "actions": ["read_file core.py"],
+                                "last_action": "read_file core.py"})
     reg = sa.read_running()
     assert reg["abc"]["type"] == "explore"
+    assert reg["abc"]["last_action"] == "read_file core.py"   # live drill-down
     sa._running_update("abc", None)
     assert "abc" not in sa.read_running()
+
+
+def test_running_registry_is_per_subagent_no_race(tmp_path, monkeypatch):
+    """Two parallel subagents each own their file — updating one never drops
+    the other (the shared-dict design race-dropped entries)."""
+    from delfin.agent import subagents as sa
+    monkeypatch.setattr(sa, "_RUNNING_DIR", tmp_path / "running")
+    sa._running_update("aaa", {"type": "code", "description": "type.py",
+                               "started_at": 1.0, "actions": [], "last_action": ""})
+    sa._running_update("bbb", {"type": "code", "description": "range.py",
+                               "started_at": 1.0, "actions": [], "last_action": ""})
+    # Rapid updates to bbb must not lose aaa.
+    for i in range(5):
+        sa._running_update("bbb", {"type": "code", "description": "range.py",
+                                   "started_at": 1.0,
+                                   "actions": [f"step{i}"], "last_action": f"step{i}"})
+    reg = sa.read_running()
+    assert set(reg) == {"aaa", "bbb"}
+    assert reg["bbb"]["last_action"] == "step4"
+
+
+def test_format_action_summaries():
+    from delfin.agent.subagents import _format_action
+    assert _format_action("write_file", '{"path": "/a/b/type.py"}') == "write_file type.py"
+    assert _format_action("read_file", {"path": "/x/core.py"}) == "read_file core.py"
+    assert _format_action("bash", '{"command": "pytest -q"}') == "bash: pytest -q"
 
 
 def test_background_flag_in_subagent_schema():
