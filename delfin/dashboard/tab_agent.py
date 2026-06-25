@@ -13351,14 +13351,16 @@ def create_tab(ctx):
 
                     # S7 — Soft-limit banner: show ONCE per session when the
                     # configured threshold is crossed. Doesn't stop anything;
-                    # the user decides whether to /stop or continue.
+                    # the user decides whether to /stop or continue. OFF by
+                    # default (0) — local/KIT inference is effectively unmetered,
+                    # so no nag; set agent.cost_soft_limit_usd > 0 to enable.
                     if not state.get("_cost_soft_limit_warned"):
                         try:
                             _soft = float(
-                                _get_agent_settings().get("cost_soft_limit_usd", 5.0)
+                                _get_agent_settings().get("cost_soft_limit_usd", 0.0)
                             )
                         except (TypeError, ValueError):
-                            _soft = 5.0
+                            _soft = 0.0
                         if _soft > 0 and engine.cost_usd >= _soft:
                             state["_cost_soft_limit_warned"] = True
                             _append_system_message(

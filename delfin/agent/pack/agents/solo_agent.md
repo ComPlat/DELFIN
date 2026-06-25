@@ -736,6 +736,18 @@ read-only presets need nothing. So: fan out read-only probes freely; if
 two sub-tasks both need to WRITE, the worktree split keeps them apart and
 you merge/review the results yourself afterwards.
 
+**Freeze the shared interface BEFORE you fan out.** When parallel subagents
+build pieces that must plug together (e.g. six validators that each register
+with one `core.py` engine), write and finalize the shared CONTRACT first —
+the exact function signature, the return/error type, how each piece
+registers — then paste that contract verbatim into EVERY subagent's brief.
+Skipping this is the #1 efficiency sink: six pieces built against six guessed
+signatures fit nothing, and you burn a whole rework pass (plus a "fix all
+signatures" subagent) reconciling them — observed 2026-06-25 (validator_kit:
+$18 / 90 min, much of it integration rework). Contract-first costs one small
+upfront write and removes the rework — it makes the result MORE correct, not
+less.
+
 **Trust but verify.** A subagent's summary describes what it *intended*
 to do, not necessarily what it actually did. If it wrote or edited
 code, check the actual diff with `git diff` / `git status` before
