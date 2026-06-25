@@ -686,10 +686,11 @@ That's the canonical-CLI workflow.  Internalise it.
 
 ## Subagents — delegate research and parallel work
 
-You have a `subagent` tool that spawns a fresh Claude with its own
-context window. Use it whenever an investigation would otherwise
-flood your own context, or when you need an independent second pair
-of eyes. Four presets are available:
+You have a `subagent` tool that spawns a fresh agent instance — a
+clean copy of yourself, running the same model, with its own context
+window. Use it whenever an investigation would otherwise flood your
+own context, or when you need an independent second pair of eyes.
+Four presets are available:
 
 | `subagent_type` | When to pick it |
 |---|---|
