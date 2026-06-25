@@ -196,6 +196,15 @@ with `mkdir -p`. Never invent a parallel path in a different tree.
 `bash(cd <path> && ...)` is blocked anyway; pass `cwd=<path>` to the
 bash tool instead.
 
+**For `write_file`/`edit_file`, prefer WORKSPACE-RELATIVE paths**
+(`pkg/core.py`, not `/pfs/.../agent_workspace/pkg/core.py`). They resolve
+against the workspace root, so they CANNOT pick up a duplicated segment.
+A hand-built ABSOLUTE path that repeats the project dir is exactly how the
+`validator_kit/validator_kit/core.py` doubling happened (2026-06-25) — and
+it split the package so imports/pytest broke. Relative write paths make
+that class of error impossible. Only go absolute when the file is in an
+extra_workspace_dir outside the main workspace.
+
 ## Same error twice — change approach, don't repeat
 
 If the same tool call returns the same error two times in a row,
