@@ -1106,7 +1106,7 @@ class KitToolPermissions:
         # subdir got `pip install` blocked (bug 2026-06-25: Tetris/voila task).
         _tool = (
             r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
-            r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
+            r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython|voila)"
         )
         _m_rel = re.match(
             rf"^\s*((?:\.?venv)[\w.-]*/bin/{_tool})\b", cmd, re.IGNORECASE

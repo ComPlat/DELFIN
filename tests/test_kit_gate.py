@@ -484,6 +484,9 @@ def test_venv_pip_in_subdir_is_auto_allowed(workspace):
     assert perms.matches_bash_auto_allow(".venv/bin/pip install voila")   # bare
     assert perms.matches_bash_auto_allow("app/.venv/bin/pytest -q")
     assert perms.matches_bash_auto_allow("app/.venv-proj/bin/python -m pip install x")
+    # A Voila app serves a notebook from its own venv — the build's whole point.
+    assert perms.matches_bash_auto_allow(
+        "tetris_app/.venv/bin/voila tetris.ipynb --port=8866 --no-browser")
 
 
 def test_venv_outside_workspace_is_not_auto_allowed(workspace):
