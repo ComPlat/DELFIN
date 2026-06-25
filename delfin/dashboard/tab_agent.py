@@ -4411,13 +4411,18 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
-         # Below the chat + message box: tasks first, then the permission
-         # requests (Self-Mod Guard / KIT confirms). Keeps the conversation
-         # and input at the top where you act; tasks and requests are the
-         # reference panels underneath — what's where is now obvious.
-         task_ticker_html, todo_pane_html, subagent_pane_html,
+         # Directly under the message box, most prominent: pending permission
+         # requests (Self-Mod Guard / KIT confirms) — right where you look and
+         # act. The container is empty when nothing is pending, so the task
+         # list sits right below it; a request appears above the tasks the
+         # moment it's needed and collapses away again once you decide.
          kit_confirm_container,
-         status_line_html, subagent_panel_html, tool_trace_panel_html,
+         # Then the task list, then ALL subagent views co-located in one place
+         # (live Agent-calls + running/recent telemetry) so "where are the
+         # subagents" is never a question again.
+         task_ticker_html, todo_pane_html,
+         subagent_pane_html, subagent_panel_html,
+         status_line_html, tool_trace_panel_html,
          security_panel_html],
     )
 
