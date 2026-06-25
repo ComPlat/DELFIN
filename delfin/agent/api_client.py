@@ -2896,6 +2896,43 @@ def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, boo
     return "", False
 
 
+def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
+    """The package dir to scope auto-verify's test run to — the package that owns
+    the files the agent just edited.
+
+    Running pytest at the WORKSPACE root collects every test file beneath it, so
+    unrelated or broken tests in a sibling directory (an earlier task's
+    leftovers) fail and falsely flag the agent's clean code as broken (observed
+    2026-06-25: a fresh ``spreadsheet_test/`` package was all-green, but
+    auto-verify ran the whole workspace's pytest and hit stale tests in a
+    sibling dir). Scoping the run to what was actually edited avoids that.
+
+    Climbs from the common ancestor of the edited files up to (never above) the
+    workspace, returning the first dir that has a ``tests/`` dir or test files.
+    Returns ``None`` when it can't narrow below the workspace (→ caller keeps the
+    workspace-wide behaviour)."""
+    try:
+        ws = Path(workspace).resolve()
+        dirs = [Path(p).resolve().parent for p in edited_paths if p]
+        if not dirs:
+            return None
+        import os as _os
+        common = Path(_os.path.commonpath([str(d) for d in dirs]))
+        if common != ws and ws not in common.parents:
+            return None                       # edited outside the workspace
+        cur = common
+        while True:
+            if (cur / "tests").is_dir() and any((cur / "tests").glob("test_*.py")):
+                return cur
+            if any(cur.glob("test_*.py")) or (cur / "conftest.py").is_file():
+                return cur
+            if cur == ws or ws not in cur.parents:
+                return None
+            cur = cur.parent
+    except Exception:
+        return None
+
+
 def _run_auto_verify(edited_paths: list, mode: str, command: str,
                      workspace) -> str:
     """Verify code the agent just edited. Returns a short problem summary when
@@ -2921,10 +2958,14 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             ws_key = str(workspace)
             if ws_key in _SLOW_TEST_WS:
                 return ""
-            cmd = command or _detect_test_command(workspace)
+            # Scope the run to the package the agent edited, not the whole
+            # workspace — otherwise stale/broken tests in a sibling dir falsely
+            # fail and flag clean code (bug 2026-06-25).
+            scope = _scoped_test_dir(edited_paths, workspace) or Path(workspace)
+            cmd = command or _detect_test_command(scope)
             if not cmd:
                 return ""
-            prob, timed_out = _run_test_command(cmd, workspace, 60)
+            prob, timed_out = _run_test_command(cmd, scope, 60)
             if timed_out:
                 _SLOW_TEST_WS.add(ws_key)    # don't re-run a slow suite each turn
                 return ""

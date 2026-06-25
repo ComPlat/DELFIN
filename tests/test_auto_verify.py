@@ -94,3 +94,38 @@ def test_loop_is_wired():
     # re-verification and finish with an unfixed problem.
     assert "_verified_this_turn" not in src
     assert "_edited_py and _av_mode != \"off\" and _verify_attempts < 2" in src
+
+
+def test_auto_verify_scopes_to_edited_package(tmp_path):
+    """A broken test in a SIBLING dir must not fail auto-verify of a clean
+    package the agent edited. Bug 2026-06-25: a green spreadsheet_test/ package
+    was flagged because auto-verify ran the whole workspace's pytest and hit
+    stale tests in a sibling directory."""
+    from delfin.agent.api_client import _run_auto_verify
+    pkg = tmp_path / "spreadsheet_test"
+    (pkg / "sheet").mkdir(parents=True)
+    (pkg / "tests").mkdir()
+    (pkg / "sheet" / "__init__.py").write_text("")
+    (pkg / "sheet" / "m.py").write_text("def add(a, b):\n    return a + b\n")
+    (pkg / "tests" / "test_m.py").write_text(
+        "from sheet.m import add\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    # unrelated broken test elsewhere in the workspace
+    junk = tmp_path / "old_junk"
+    junk.mkdir()
+    (junk / "test_broken.py").write_text("import does_not_exist_xyz_42\n")
+
+    prob = _run_auto_verify([str(pkg / "sheet" / "m.py")], "smart", "",
+                            str(tmp_path))
+    assert prob == "", f"clean package falsely flagged: {prob[:200]}"
+
+
+def test_auto_verify_still_catches_failure_inside_the_package(tmp_path):
+    """The scoping must not hide a REAL failure in the edited package."""
+    from delfin.agent.api_client import _run_auto_verify
+    pkg = tmp_path / "pkg"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "tests" / "test_x.py").write_text(
+        "def test_x():\n    assert 1 == 2\n")
+    prob = _run_auto_verify([str(pkg / "tests" / "test_x.py")], "smart", "",
+                            str(tmp_path))
+    assert prob != ""
