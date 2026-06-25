@@ -1100,7 +1100,10 @@ class KitToolPermissions:
         # Workspace-local virtualenv tool invocations are safe to
         # auto-allow in default mode because sandboxing still confines
         # them to the allowed roots. Support both hidden `.venv-*` and
-        # plain `venv-*` names, plus absolute or cwd-relative forms.
+        # plain `venv-*` names, under ANY path prefix — bare (`.venv/bin/pip`),
+        # absolute, `~`, OR a relative subdir (`app/.venv/bin/pip`). The last
+        # form was previously rejected, so an agent that built its venv in a
+        # subdir got `pip install` blocked (bug 2026-06-25: Tetris/voila task).
         _tool = (
             r"(?:pip|python(?:\d(?:\.\d+)?)?|pytest|ruff|black|isort|mypy|"
             r"coverage|sphinx-build|pyflakes|flake8|tox|jupyter|ipython)"
@@ -1109,14 +1112,20 @@ class KitToolPermissions:
             rf"^\s*((?:\.?venv)[\w.-]*/bin/{_tool})\b", cmd, re.IGNORECASE
         )
         _m_abs = re.match(
-            rf"^\s*((?:~|/)[^\s]*/(?:\.?venv)[\w.-]*/bin/{_tool})\b",
+            rf"^\s*([^\s]*/(?:\.?venv)[\w.-]*/bin/{_tool})\b",
             cmd, re.IGNORECASE,
         )
         candidate = None
         if _m_rel:
             candidate = (self.workspace / _m_rel.group(1)).resolve(strict=False)
         elif _m_abs:
-            candidate = Path(_m_abs.group(1)).expanduser().resolve(strict=False)
+            p = _m_abs.group(1)
+            if p.startswith("~") or p.startswith("/"):
+                candidate = Path(p).expanduser().resolve(strict=False)
+            else:
+                # relative path with a subdir prefix (app/.venv/bin/pip): resolve
+                # against the WORKSPACE, not the process cwd, then containment-check.
+                candidate = (self.workspace / p).resolve(strict=False)
         if candidate is not None and self.find_root_for(candidate) is not None:
             return True
         return False

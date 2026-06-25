@@ -471,3 +471,23 @@ def test_bash_scanner_in_bypass_still_rejects_secrets(workspace):
                  "description": "leak"})
     assert err is not None
     assert "secret" in err.lower() or "deny" in err.lower()
+
+
+def test_venv_pip_in_subdir_is_auto_allowed(workspace):
+    """A venv tool invoked via a relative SUBDIR path is auto-allowed (the
+    standard way to install into a venv built in a subdir). Bug 2026-06-25: the
+    Tetris/voila task built its venv in tetris_app/.venv and 'pip install' was
+    blocked because only bare/absolute venv paths matched."""
+    perms = KitToolPermissions(workspace=workspace, mode="acceptEdits")
+    assert perms.matches_bash_auto_allow(
+        "tetris_app/.venv/bin/pip install -r requirements.txt")
+    assert perms.matches_bash_auto_allow(".venv/bin/pip install voila")   # bare
+    assert perms.matches_bash_auto_allow("app/.venv/bin/pytest -q")
+    assert perms.matches_bash_auto_allow("app/.venv-proj/bin/python -m pip install x")
+
+
+def test_venv_outside_workspace_is_not_auto_allowed(workspace):
+    """Containment still holds — a venv path OUTSIDE the workspace is rejected."""
+    perms = KitToolPermissions(workspace=workspace, mode="acceptEdits")
+    assert not perms.matches_bash_auto_allow("/etc/.venv/bin/pip install evil")
+    assert not perms.matches_bash_auto_allow("rm -rf /")
