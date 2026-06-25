@@ -2974,40 +2974,26 @@ def create_tab(ctx):
                 "into an archive report (for maintainers)",
     )
 
-    # Primary controls — the settings you change + the two actions you reach
-    # for most: New Session and Stop. Everything occasional (git, export,
-    # undo, bug report, model refresh, the retired pipeline "Next Role") is
-    # tucked into a collapsed "Tools" bar so the top stays tidy. Nothing is
-    # removed — one click reveals it, and all widgets stay fully functional.
-    _primary_controls = widgets.HBox(
-        [mode_dropdown, provider_dropdown, model_dropdown,
-         effort_dropdown, perm_dropdown, stop_btn],
-        layout=widgets.Layout(flex_flow="row wrap"),
-    )
-    # Removed from the UI — every one stays reachable, so NO functionality is
-    # lost, the top is just clean:
-    #   New Session             -> the Sessions bar's "+ New Session" + Load
-    #   Commit / Git Push       -> ask the agent ("commit …", "push")
-    #   Undo Edit               -> ask the agent ("undo the last edit")
+    # Everything in ONE visible row — no collapsing. Sessions go first (they
+    # are prepended a few lines below, once defined), then the settings, then
+    # Stop and the utility buttons (Export, Bug Report, Model Refresh).
+    # Removed from the UI (all still reachable, so NO functionality is lost):
+    #   New Session  -> Sessions "+ New Session" + Load
+    #   Commit / Git Push / Undo Edit -> ask the agent
     #   Next Role (advance_btn) -> retired-pipeline vestigial, never enables
-    # The widget objects stay alive (their handlers/toggles are still wired);
-    # they're simply not placed in any visible row.
+    # Their widget objects stay alive (handlers/toggles still wired), just
+    # not placed in any visible row.
     for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
                     push_btn, push_confirm_btn, push_cancel_btn):
         _hidden.layout.display = "none"
-    _tools_row = widgets.HBox(
-        [export_btn, bug_note_input, bug_report_btn, model_refresh_btn],
+    _controls_hbox = widgets.HBox(
+        [mode_dropdown, provider_dropdown, model_dropdown,
+         effort_dropdown, perm_dropdown, stop_btn,
+         export_btn, bug_note_input, bug_report_btn, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
-    tools_accordion = widgets.Accordion(
-        children=[_tools_row],
-        titles=("⚙ Tools — Export · Bug Report · Model Refresh",),
-        layout=widgets.Layout(margin="2px 0 0 0"),
-    )
-    tools_accordion.selected_index = None  # collapsed by default
     controls_row = widgets.VBox([
-        _primary_controls,
-        tools_accordion,
+        _controls_hbox,
         mode_desc_html,
     ], layout=widgets.Layout(margin="0 0 6px 0"))
 
@@ -3037,18 +3023,10 @@ def create_tab(ctx):
         layout=widgets.Layout(width="70px"),
         tooltip="Duplicate the selected session under a new ID",
     )
-    session_row = widgets.HBox(
-        [session_dropdown, load_session_btn, fork_session_btn, delete_session_btn],
-        layout=widgets.Layout(margin="0 0 6px 0"),
-    )
-    # Tuck occasional session management behind a compact, collapsed bar so
-    # the top stays tidy and the chat sits higher (one click to expand; the
-    # widgets stay fully functional inside, incl. agent-driven clicks).
-    session_accordion = widgets.Accordion(
-        children=[session_row], titles=("⚙ Sessions",),
-        layout=widgets.Layout(margin="0 0 6px 0"),
-    )
-    session_accordion.selected_index = None  # collapsed by default
+    # Sessions sit at the very front of the single controls row (built above).
+    _controls_hbox.children = (
+        session_dropdown, load_session_btn, fork_session_btn, delete_session_btn,
+    ) + tuple(_controls_hbox.children)
 
     # Search bar (toggle visibility with Ctrl+K or /search)
     search_input = widgets.Text(
@@ -4425,7 +4403,7 @@ def create_tab(ctx):
     resume_last_btn.layout.display = "none"
 
     agent_content = widgets.VBox(
-        [css_widget, _enter_js_output, controls_row, session_accordion, search_row,
+        [css_widget, _enter_js_output, controls_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
          kit_mode_row, kit_dirs_status,
          chat_html,
