@@ -551,6 +551,29 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
         ideal_mb = _ex_len.get(key)                   # length-gated (multibond dict form)
         return ideal_mb is not None and d >= ideal_mb - _mb_tol
 
+    # LENGTH-BASED multibond exemption (DELFIN_FFFREE_MULTIBOND_LENGTH_EXEMPT, default OFF
+    # -> byte-identical).  ~20% of the FF-free "collapse" self-gate rejections are FALSE
+    # FLAGS: a genuine multiple/aromatic bond (a metal-carbonyl C≡O ~1.13, a nitrile C≡N
+    # ~1.16, an imine C=N ~1.28, an aromatic C~C ~1.39) whose bond-ORDER was lost in the
+    # constructed mol, so the order-based _is_exempt never fires and the 0.82×single-bond
+    # floor flags it as collapsed (measured: ~4 pp of build-coverage lost this way).  This
+    # check exempts a flagged bond whose LENGTH itself matches a known multiple/aromatic
+    # ideal for its element pair (no bond-order needed) -- a real collapse (e.g. C-C at
+    # 0.38 A) sits far below every multibond ideal and is still caught.  Tolerance reuses
+    # DELFIN_FFFREE_MULTIBOND_TOL.
+    _mb_len_exempt = os.environ.get("DELFIN_FFFREE_MULTIBOND_LENGTH_EXEMPT", "0") == "1"
+    _MB_LEN = {("C", "C"): (1.20, 1.34, 1.39), ("C", "N"): (1.16, 1.28, 1.34),
+               ("C", "O"): (1.13, 1.21, 1.28), ("N", "N"): (1.10, 1.25),
+               ("N", "O"): (1.21, 1.24), ("C", "S"): (1.55, 1.60),
+               ("O", "O"): (1.21,), ("N", "S"): (1.54,), ("C", "P"): (1.66, 1.55)}
+
+    def _len_is_multibond(a, b, d):
+        key = (min(a, b), max(a, b))
+        for ideal in _MB_LEN.get(key, ()):  # legit short multiple/aromatic bond length?
+            if abs(d - ideal) <= _mb_tol:
+                return True
+        return False
+
     n_coll = 0
     for i, j in bonds:
         if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
@@ -560,6 +583,8 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
             continue
         if _is_exempt(i, j, d_ij):                    # genuine short multiple bond -> pass
             continue
+        if _mb_len_exempt and _len_is_multibond(syms[i], syms[j], d_ij):
+            continue                                  # length-matches a multibond ideal -> pass
         n_coll += 1
     if n_coll > 0:
         return False
