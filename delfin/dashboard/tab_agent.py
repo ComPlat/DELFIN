@@ -2981,19 +2981,27 @@ def create_tab(ctx):
     # removed — one click reveals it, and all widgets stay fully functional.
     _primary_controls = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
-         effort_dropdown, perm_dropdown,
-         new_cycle_btn, stop_btn],
+         effort_dropdown, perm_dropdown, stop_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
+    # Removed from the UI — every one stays reachable, so NO functionality is
+    # lost, the top is just clean:
+    #   New Session             -> the Sessions bar's "+ New Session" + Load
+    #   Commit / Git Push       -> ask the agent ("commit …", "push")
+    #   Undo Edit               -> ask the agent ("undo the last edit")
+    #   Next Role (advance_btn) -> retired-pipeline vestigial, never enables
+    # The widget objects stay alive (their handlers/toggles are still wired);
+    # they're simply not placed in any visible row.
+    for _hidden in (new_cycle_btn, advance_btn, undo_btn, commit_btn,
+                    push_btn, push_confirm_btn, push_cancel_btn):
+        _hidden.layout.display = "none"
     _tools_row = widgets.HBox(
-        [undo_btn, export_btn, commit_btn,
-         push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
-         bug_note_input, bug_report_btn, model_refresh_btn, advance_btn],
+        [export_btn, bug_note_input, bug_report_btn, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     tools_accordion = widgets.Accordion(
         children=[_tools_row],
-        titles=("⚙ Tools — Commit · Push · Export · Undo · Bug Report",),
+        titles=("⚙ Tools — Export · Bug Report · Model Refresh",),
         layout=widgets.Layout(margin="2px 0 0 0"),
     )
     tools_accordion.selected_index = None  # collapsed by default
@@ -4412,11 +4420,9 @@ def create_tab(ctx):
     state["_wire_phase5_callbacks"] = _wire_phase5_callbacks
 
     # -- layout assembly ---------------------------------------------------
-    # Augment the existing controls row with the resume button.
-    try:
-        controls_row.children = tuple(controls_row.children) + (resume_last_btn,)
-    except Exception:
-        pass
+    # "Resume last session" removed from the UI — loading a session from the
+    # Sessions bar covers it. Object kept (handler still wired), not shown.
+    resume_last_btn.layout.display = "none"
 
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_accordion, search_row,
