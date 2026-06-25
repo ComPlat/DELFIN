@@ -446,10 +446,17 @@ class KitConfirmBroker:
         approve_persist.on_click(lambda _b: _decide(True, persist=True))
         deny.on_click(lambda _b: _decide(False, persist=False))
 
+        # Only show "Allow + Permanent" when something is actually persistable
+        # AND a persist hook is wired. Otherwise it was rendered DISABLED — a
+        # dead button that does nothing on click and leaves the dialog up
+        # (the user's "Dauerhaft geht garnicht, Fenster verschwindet nicht").
+        # Show only buttons that really act and dismiss the row.
+        _can_persist = bool(persist_pat) and self._persist_callback is not None
+        _buttons = [approve] + ([approve_persist] if _can_persist else []) + [deny]
         return widgets.VBox(
             [header,
              persist_status,
-             widgets.HBox([approve, approve_persist, deny])],
+             widgets.HBox(_buttons)],
             layout=widgets.Layout(
                 border="1px solid #ccc",
                 padding="6px",

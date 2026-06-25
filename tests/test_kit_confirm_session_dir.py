@@ -109,6 +109,26 @@ def test_deny_grants_nothing(tmp_path):
     assert calls == []
 
 
+def test_allow_permanent_hidden_when_no_persist_hook():
+    """The 'Allow + Permanent' button is only shown when something is actually
+    persistable AND a persist hook is wired. Otherwise it used to render
+    DISABLED — a dead button that did nothing on click and left the dialog up
+    (user bug 2026-06-25: 'Dauerhaft geht garnicht, Fenster verschwindet
+    nicht'). Now only acting buttons are shown, and any click dismisses."""
+    broker = KitConfirmBroker(default_timeout_s=5.0)   # NO persist callback
+    t, req, out = _run_request(broker, "bash", {"command": "ls -la /etc"})
+    row = broker._build_request_row(req, widgets)
+    labels = [b.description for b in row.children[-1].children]
+    assert "Allow + Permanent" not in labels      # dead button is gone
+    assert any("Allow" in lbl for lbl in labels)  # plain allow stays
+    assert any("Deny" in lbl for lbl in labels)
+    # The plain Allow still resolves AND removes the row from the panel.
+    row.children[-1].children[0].click()
+    t.join(timeout=5)
+    assert out["ok"] is True
+    assert req not in list(broker._pending)        # dialog dismissed
+
+
 # --- Adversarial-review fix: don't auto-grant sensitive system/secret dirs ---
 
 @pytest.mark.parametrize("path,grantable", [
