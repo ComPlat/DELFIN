@@ -5809,10 +5809,27 @@ class _DocToolExecutor:
         if approved:
             perms.mode = new_mode
             perms.last_approved_plan = plan
+            # Re-state the approved plan as the authoritative, MOST-RECENT
+            # instruction so execution anchors on it — not on stale context.
+            # Bug 2026-06-25: in a session whose context still held an earlier
+            # task (a prior Tetris build keyed to the same project), the agent
+            # presented a CORRECT spreadsheet plan, got it approved, then
+            # emitted a verbatim `mkdir tetris_app/...` from the leftover
+            # context. A recency-anchored "execute exactly THIS plan, ignore
+            # any earlier different task" curbs that drift.
+            _anchor = plan if len(plan) <= 8000 else plan[:8000] + " …[truncated]"
             return json.dumps({
                 "status": "approved",
                 "new_mode": new_mode,
                 "plan_chars": len(plan),
+                "instruction": (
+                    "Plan APPROVED — execute EXACTLY this approved plan and "
+                    "nothing else. If anything EARLIER in the conversation "
+                    "describes a DIFFERENT task or project (a different app, "
+                    "different file names), IGNORE it: this approved plan is "
+                    "the single source of truth for what to build now.\n\n"
+                    + _anchor
+                ),
             })
         return json.dumps({
             "status": "rejected",

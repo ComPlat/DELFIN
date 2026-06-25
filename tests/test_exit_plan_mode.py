@@ -62,6 +62,21 @@ def test_exit_plan_with_callback_approve():
     assert seen == ["a plan"]
 
 
+def test_approval_result_anchors_on_the_plan():
+    """On approval the result re-states the plan as the authoritative, most
+    recent instruction — so execution anchors on it, not on stale context.
+    Hardening for bug 2026-06-25: a session whose context still held a prior
+    Tetris build presented a correct spreadsheet plan, got it approved, then
+    built Tetris from the leftover context."""
+    plan = "# Plan: Mini-Spreadsheet\n1. grid.py\n2. formula.py\n3. tests"
+    result = _exec_plan(plan, _make_perms(mode="plan"))
+    assert result["status"] == "approved"
+    instr = result.get("instruction", "")
+    assert "grid.py" in instr and "formula.py" in instr   # full plan echoed
+    assert "EXACTLY this approved plan" in instr
+    assert "IGNORE it" in instr                            # ignore earlier task
+
+
 def test_exit_plan_with_callback_reject():
     perms = _make_perms(
         mode="plan",
