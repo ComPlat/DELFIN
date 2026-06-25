@@ -129,6 +129,26 @@ def test_allow_permanent_hidden_when_no_persist_hook():
     assert req not in list(broker._pending)        # dialog dismissed
 
 
+def test_header_says_self_mod_only_for_protected_writes():
+    """The red 'Self-Modification Guard' header is reserved for a real
+    protected-core write (or persisting a permission rule). Ordinary bash
+    confirms and outside-workspace reads are NOT self-mods (user 2026-06-25:
+    a plain mkdir in a subagent worktree wore the scary Self-Mod-Guard label
+    and alarmed the user)."""
+    from delfin.agent.kit_confirm import KitConfirmBroker, _ConfirmRequest
+    b = KitConfirmBroker()
+    bash_req = _ConfirmRequest(
+        seq=1, tool_name="bash", args={"command": "mkdir -p /scratch/x"}, preview="")
+    read_req = _ConfirmRequest(
+        seq=2, tool_name="read_file", args={"path": "/tmp/x.py"}, preview="")
+    prot_req = _ConfirmRequest(
+        seq=3, tool_name="write_file",
+        args={"path": "/repo/delfin/agent/api_client.py"}, preview="")
+    assert b._is_self_mod_request(bash_req) is False
+    assert b._is_self_mod_request(read_req) is False
+    assert b._is_self_mod_request(prot_req) is True
+
+
 # --- Adversarial-review fix: don't auto-grant sensitive system/secret dirs ---
 
 @pytest.mark.parametrize("path,grantable", [

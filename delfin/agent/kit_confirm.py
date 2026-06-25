@@ -225,19 +225,21 @@ class KitConfirmBroker:
         self._status_label = widgets.HTML(value="")
         self._requests_box = widgets.VBox([])
         self._toast = widgets.HTML(value="")
+        # Header text + border are set per refresh: a scary red "Self-
+        # Modification Guard" ONLY when a protected-core write is pending,
+        # otherwise a neutral "Confirmation required" for ordinary bash /
+        # file confirms (user 2026-06-25: "Self-Mod Guard passt? — was machen?"
+        # on a plain mkdir in a subagent worktree).
+        self._title_label = widgets.HTML(value="")
 
         self._panel = widgets.VBox(
             [
-                widgets.HTML(
-                    "<b>Self-Modification Guard</b> "
-                    "<small>(forces a confirm whenever the agent tries to change "
-                    "its own security layer — in any mode)</small>"
-                ),
+                self._title_label,
                 self._toast,
                 self._requests_box,
             ],
             layout=widgets.Layout(
-                border="1px solid #c5221f",
+                border="1px solid #c0c0c0",
                 padding="6px",
                 margin="6px 0",
                 display="none",
@@ -245,6 +247,19 @@ class KitConfirmBroker:
         )
         self._refresh_panel()
         return self._panel
+
+    def _is_self_mod_request(self, req) -> bool:
+        """True only for a GENUINE self-modification: a write/edit to a
+        protected core file, or persisting a permission rule. Ordinary bash
+        confirms and outside-workspace reads are NOT self-mods and must not
+        wear the red 'Self-Modification Guard' header."""
+        tool = getattr(req, "tool_name", "")
+        if tool in ("write_file", "edit_file", "multi_edit"):
+            try:
+                return _is_protected_path(req.args.get("path", ""))
+            except Exception:
+                return False
+        return tool in ("remember_permission", "remember_permission_bundle")
 
     def _refresh_panel(self) -> None:
         if self._requests_box is None:
@@ -261,12 +276,29 @@ class KitConfirmBroker:
         for req in pending:
             rows.append(self._build_request_row(req, widgets))
 
+        _self_mod = any(self._is_self_mod_request(r) for r in pending)
         try:
             self._requests_box.children = tuple(rows)
+            title = getattr(self, "_title_label", None)
+            if title is not None:
+                if _self_mod:
+                    title.value = (
+                        "<b style='color:#c5221f'>🔒 Self-Modification Guard</b> "
+                        "<small>(the agent is trying to change its own security "
+                        "layer — approve each such action explicitly)</small>"
+                    )
+                else:
+                    title.value = (
+                        "<b>Confirmation required</b> "
+                        "<small>(review and confirm each action below)</small>"
+                    )
             # Auto-collapse when nothing is pending — the panel only matters
-            # while the agent is waiting on a Self-Mod-Guard or a
-            # remember_permission decision.
+            # while the agent is waiting on a confirm decision. Red border only
+            # for a real self-modification; neutral grey otherwise.
             if self._panel is not None:
+                self._panel.layout.border = (
+                    "1px solid #c5221f" if _self_mod else "1px solid #c0c0c0"
+                )
                 self._panel.layout.display = "" if pending else "none"
         except Exception:
             pass
