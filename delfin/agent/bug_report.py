@@ -384,6 +384,22 @@ def write_bug_report(
                              + uuid.uuid4().hex)
         report_dir.mkdir(parents=True, exist_ok=True)
 
+    # Set setgid on the report dir BEFORE writing any files, so files created
+    # inside inherit the dir's GROUP (the maintainer group, itself inherited
+    # from the setgid archive dir). This makes a report readable by the
+    # maintainer group WITHOUT the writer needing membership in it — the
+    # explicit chgrp in _make_group_readable only succeeds when the writer is a
+    # member, which it may not be (observed 2026-06-25: writer 'qmchem_all' was
+    # not in 'qmchem_shared', so its chgrp failed and the report stayed
+    # unreadable to the maintainer). chmod on an owned dir always works; ZFS
+    # honours setgid for new-file group inheritance. Best-effort.
+    try:
+        import os as _os
+        import stat as _stat
+        _os.chmod(report_dir, report_dir.stat().st_mode | _stat.S_ISGID)
+    except Exception:
+        pass
+
     meta: dict[str, Any] = {
         "schema": "delfin-bug-report/1",
         "created_at": datetime.now(timezone.utc).isoformat(),

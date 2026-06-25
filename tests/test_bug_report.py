@@ -374,3 +374,12 @@ def test_make_group_readable_sets_group_read_bit(tmp_path):
 
     assert f.stat().st_mode & _stat.S_IRGRP        # group can read the file
     assert report.stat().st_mode & _stat.S_IXGRP   # group can traverse the dir
+
+
+def test_report_dir_is_setgid(tmp_path):
+    """The report dir carries the setgid bit so files written inside inherit the
+    archive's maintainer group — readable even when the writing user is not a
+    member of that group (so it cannot chgrp). Regression for 2026-06-25."""
+    import stat as _stat
+    d = _write(tmp_path)
+    assert d.stat().st_mode & _stat.S_ISGID, "report dir must be setgid"
