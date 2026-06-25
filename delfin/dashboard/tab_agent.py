@@ -163,6 +163,20 @@ _AGENT_CSS = """\
     display: flex;
     flex-direction: column;
 }
+/* Auto-growing message box: starts at 80px, grows with the text up to a
+   cap, then scrolls — no more scrolling inside a tiny fixed field. */
+.delfin-agent-input {
+    height: auto !important;
+}
+.delfin-agent-input textarea {
+    min-height: 80px;
+    max-height: 280px;
+    height: 80px;
+    overflow-y: auto;
+    resize: none;
+    box-sizing: border-box;
+    line-height: 1.4;
+}
 .delfin-chat-msg {
     overflow-anchor: none;
     margin-bottom: 8px;
@@ -3661,6 +3675,37 @@ def create_tab(ctx):
             var chat = document.querySelector('.delfin-agent-chat');
             if (chat) chat.scrollTop = chat.scrollHeight;
         }, 150);
+    })();
+
+    // --- Auto-grow the message box with its content (up to a cap) ---
+    (function() {
+        if (window.__delfinInputGrow) return;
+        window.__delfinInputGrow = true;
+        var MAXH = 280;
+        function grow(ta) {
+            if (!ta) return;
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(ta.scrollHeight, MAXH) + 'px';
+        }
+        function inputTA() {
+            return document.querySelector('.delfin-agent-input textarea');
+        }
+        // Grow while typing (also fires on the programmatic /clear,/search
+        // value-set dispatches above, so the box shrinks back when cleared).
+        document.addEventListener('input', function(e) {
+            if (e.target && e.target.tagName === 'TEXTAREA' &&
+                e.target.closest && e.target.closest('.delfin-agent-input')) {
+                grow(e.target);
+            }
+        });
+        // After a send the value is cleared from Python without firing an
+        // 'input' event — reset the height shortly after any send click.
+        document.addEventListener('click', function(e) {
+            if (e.target && e.target.closest &&
+                e.target.closest('.delfin-agent-send-row')) {
+                setTimeout(function() { grow(inputTA()); }, 60);
+            }
+        });
     })();
 })();
 """))
