@@ -168,7 +168,7 @@ class KitConfirmBroker:
             except Exception as exc:
                 ok, msg = False, f"persist failed: {exc}"
             self._set_toast(
-                f"{'OK' if ok else 'FAIL'} dauerhaft: {msg}"
+                f"{'OK' if ok else 'FAIL'} persisted: {msg}"
             )
         # Plain "Erlauben (1×)" on an outside-workspace access: grant the
         # directory for THIS session only (live perms, not persisted) so the
@@ -180,7 +180,7 @@ class KitConfirmBroker:
             except Exception as exc:
                 ok, msg = False, f"session grant failed: {exc}"
             self._set_toast(
-                f"{'OK' if ok else 'FAIL'} für diese Session: {msg}"
+                f"{'OK' if ok else 'FAIL'} for this session: {msg}"
             )
 
         self._refresh_panel()
@@ -230,8 +230,8 @@ class KitConfirmBroker:
             [
                 widgets.HTML(
                     "<b>Self-Modification Guard</b> "
-                    "<small>(forciert Confirm wenn der Agent seine eigene "
-                    "Sicherheitsschicht ändern will — egal in welchem Mode)</small>"
+                    "<small>(forces a confirm whenever the agent tries to change "
+                    "its own security layer — in any mode)</small>"
                 ),
                 self._toast,
                 self._requests_box,
@@ -326,13 +326,12 @@ class KitConfirmBroker:
                 persist_pat = parent
                 persist_kind = "extra_dir"
             except Exception:
-                persist_disabled_reason = "Pfad nicht auflösbar."
+                persist_disabled_reason = "Path could not be resolved."
         elif tool in ("remember_permission", "remember_permission_bundle"):
-            # The click IS the persistence — no separate dauerhaft option.
+            # The click IS the persistence — no separate permanent option.
             persist_disabled_reason = (
-                "Diese Tool-Aktion IST die Persistenz: ein Klick auf "
-                "'Erlauben' schreibt die Regel direkt in settings.json. "
-                "Ablehnen verwirft sie."
+                "This tool action IS the persistence: clicking 'Allow' writes "
+                "the rule straight to settings.json. 'Deny' discards it."
             )
 
         # ---- 2. Header: tool name + path/cmd snippet + rationale ----
@@ -344,7 +343,7 @@ class KitConfirmBroker:
             subtitle = ""
         rationale_html = (
             f'<div style="font-size:11px; color:#9aa5b1; margin:2px 0;">'
-            f'<i>Begründung Agent:</i> {_html_escape(rationale)}</div>'
+            f'<i>Agent rationale:</i> {_html_escape(rationale)}</div>'
             if rationale else ""
         )
 
@@ -378,20 +377,20 @@ class KitConfirmBroker:
         persist_status: Any
         if persist_pat and self._persist_callback is not None:
             kind_label = (
-                "Bash-Allow-Pattern" if persist_kind == "allow_pattern"
+                "bash allow-pattern" if persist_kind == "allow_pattern"
                 else "extra_workspace_dir" if persist_kind == "extra_dir"
                 else persist_kind
             )
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#6b7280; margin:2px 0;">'
-                f'Bei <b>Dauerhaft</b>: <code>{_html_escape(persist_pat)}</code> '
+                f'With <b>Permanent</b>: <code>{_html_escape(persist_pat)}</code> '
                 f'({kind_label}) → <code>{_html_escape(target_path)}</code>'
                 f'</div>'
             ))
         elif persist_disabled_reason:
             persist_status = widgets.HTML(value=(
                 f'<div style="font-size:10px; color:#a16207; margin:2px 0;">'
-                f'<b>Dauerhaft</b> nicht verfügbar: '
+                f'<b>Permanent</b> not available: '
                 f'{_html_escape(persist_disabled_reason)}'
                 f'</div>'
             ))
@@ -400,21 +399,21 @@ class KitConfirmBroker:
 
         # ---- 5. Buttons --------------------------------------------
         approve = widgets.Button(
-            description="Erlauben (1×)", button_style="success",
-            tooltip="Erlauben — bei Ordner-Zugriff gilt der Ordner für DIESE "
-                    "Session (keine erneute Nachfrage pro Datei), sonst diese "
-                    "eine Aktion. In zukünftigen Sessions wird wieder gefragt.",
+            description="Allow (once)", button_style="success",
+            tooltip="Allow — for a directory access the folder applies for THIS "
+                    "session (no re-prompt per file); otherwise just this one "
+                    "action. Future sessions will ask again.",
         )
         approve_persist = widgets.Button(
-            description="Erlauben + Dauerhaft",
+            description="Allow + Permanent",
             button_style="info",
             tooltip=(
-                f"Aktion erlauben UND Regel nach {target_path} schreiben "
-                "(gilt in zukünftigen Sessions ohne erneutes Fragen)."
+                f"Allow the action AND write the rule to {target_path} "
+                "(applies in future sessions without asking again)."
             ),
             disabled=(not persist_pat or self._persist_callback is None),
         )
-        deny = widgets.Button(description="Ablehnen", button_style="danger")
+        deny = widgets.Button(description="Deny", button_style="danger")
 
         def _decide(ok: bool, persist: bool = False):
             with self._lock:
@@ -430,6 +429,16 @@ class KitConfirmBroker:
                 if persist and persist_pat:
                     req.persist_pattern = persist_pat
                     req.persist_kind = persist_kind
+                # Drop it from the pending queue HERE, in the UI (click) thread,
+                # so the row disappears on THIS click. The worker thread also
+                # removes it (idempotent) and refreshes, but that refresh runs
+                # off the UI thread and may not render — leaving the row up until
+                # a second click (bug 2026-06-25: "Erlauben/Dauerhaft braucht 2x
+                # Klick / verschwindet nicht").
+                try:
+                    self._pending.remove(req)
+                except ValueError:
+                    pass
             req.event.set()
             self._refresh_panel()
 
