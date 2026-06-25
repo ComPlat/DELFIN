@@ -4352,9 +4352,7 @@ def create_tab(ctx):
     agent_content = widgets.VBox(
         [css_widget, _enter_js_output, controls_row, session_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
-         kit_mode_row, kit_dirs_status, kit_confirm_container,
-         task_ticker_html,
-         todo_pane_html, subagent_pane_html,
+         kit_mode_row, kit_dirs_status,
          chat_html,
          plan_accept_btn, ask_user_box,
          working_html, queue_html, context_bar_html,
@@ -4368,6 +4366,12 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
+         # Below the chat + message box: tasks first, then the permission
+         # requests (Self-Mod Guard / KIT confirms). Keeps the conversation
+         # and input at the top where you act; tasks and requests are the
+         # reference panels underneath — what's where is now obvious.
+         task_ticker_html, todo_pane_html, subagent_pane_html,
+         kit_confirm_container,
          status_line_html, subagent_panel_html, tool_trace_panel_html,
          security_panel_html],
     )
