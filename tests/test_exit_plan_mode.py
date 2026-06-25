@@ -125,3 +125,17 @@ def test_plan_mode_lifecycle_unblocks_writes():
     # Write succeeded (returns plain text on success, JSON error on
     # failure). The key invariant: plan-mode block is gone.
     assert "plan mode" not in out
+
+
+def test_exit_plan_timeout_is_awaiting_not_rejected():
+    """A plan-approval TIMEOUT must report 'awaiting_approval', not 'rejected',
+    so the agent stops instead of resubmitting the plan (which re-blocks for the
+    whole window). Regression for the 2026-06-25 21-min double-hang."""
+    perms = _make_perms(
+        mode="plan",
+        plan_approval_callback=lambda _p: {"approved": False, "timed_out": True},
+    )
+    result = _exec_plan("a plan", perms)
+    assert result["status"] == "awaiting_approval"
+    assert "resubmit" in result["message"].lower()   # tells the agent to stop
+    assert perms.mode == "plan"                        # still read-only (no flip)

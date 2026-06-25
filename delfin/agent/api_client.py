@@ -5676,6 +5676,22 @@ class _DocToolExecutor:
                     "{approved: bool, new_mode?: str}"
                 )})
             approved = bool(resp.get("approved", False))
+            # A timeout is NOT a rejection: the user simply hasn't clicked yet.
+            # Returning "rejected" here made the agent re-submit the same plan,
+            # blocking for the full approval window AGAIN (observed 2026-06-25:
+            # two exit_plan_mode calls × 10 min = a 21-min hang, nothing built).
+            # Tell it plainly to STOP and wait instead — the user can still
+            # approve in the UI, which resumes execution on a fresh turn.
+            if not approved and resp.get("timed_out"):
+                return json.dumps({
+                    "status": "awaiting_approval",
+                    "message": (
+                        "Plan submitted — still awaiting the user's approval "
+                        "in the dashboard. This is NOT a rejection. Stop here "
+                        "and wait; do NOT resubmit the plan. The user will "
+                        "approve in the UI, which resumes execution."
+                    ),
+                })
             requested_mode = (resp.get("new_mode") or "default")
             if requested_mode not in self._VALID_POST_PLAN_MODES:
                 return json.dumps({"error": (

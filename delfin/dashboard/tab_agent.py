@@ -4153,7 +4153,15 @@ def create_tab(ctx):
         # observes state changes from _on_plan_accept.
         state["_kit_plan_has_response"] = True
         _refresh_plan_accept_btn()
-        ev.wait(timeout=600)   # 10 min
+        # Block only briefly for the click. A long freeze here is pointless: if
+        # the user steps away, the agent should pause, not sit frozen for 10 min
+        # and then re-submit (observed 2026-06-25: a 21-min double-hang). On
+        # timeout we flag it so exit_plan_mode reports "awaiting approval" (not
+        # "rejected") and the agent stops. The user can still approve later —
+        # the accept button resumes execution on a fresh turn regardless.
+        got = ev.wait(timeout=180)   # 3 min
+        if not got:
+            result["timed_out"] = True
         return result
 
     # Hook into the existing _on_plan_accept: register a second on_click
