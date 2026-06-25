@@ -2974,16 +2974,32 @@ def create_tab(ctx):
                 "into an archive report (for maintainers)",
     )
 
+    # Primary controls — the settings you change + the two actions you reach
+    # for most: New Session and Stop. Everything occasional (git, export,
+    # undo, bug report, model refresh, the retired pipeline "Next Role") is
+    # tucked into a collapsed "Tools" bar so the top stays tidy. Nothing is
+    # removed — one click reveals it, and all widgets stay fully functional.
+    _primary_controls = widgets.HBox(
+        [mode_dropdown, provider_dropdown, model_dropdown,
+         effort_dropdown, perm_dropdown,
+         new_cycle_btn, stop_btn],
+        layout=widgets.Layout(flex_flow="row wrap"),
+    )
+    _tools_row = widgets.HBox(
+        [undo_btn, export_btn, commit_btn,
+         push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
+         bug_note_input, bug_report_btn, model_refresh_btn, advance_btn],
+        layout=widgets.Layout(flex_flow="row wrap"),
+    )
+    tools_accordion = widgets.Accordion(
+        children=[_tools_row],
+        titles=("⚙ Tools — Commit · Push · Export · Undo · Bug Report",),
+        layout=widgets.Layout(margin="2px 0 0 0"),
+    )
+    tools_accordion.selected_index = None  # collapsed by default
     controls_row = widgets.VBox([
-        widgets.HBox(
-            [mode_dropdown, provider_dropdown, model_dropdown,
-             effort_dropdown, perm_dropdown,
-             new_cycle_btn, advance_btn, stop_btn, undo_btn, export_btn,
-             commit_btn, push_btn, push_confirm_btn, push_cancel_btn, push_status_html,
-             bug_note_input, bug_report_btn,
-             model_refresh_btn],
-            layout=widgets.Layout(flex_flow="row wrap"),
-        ),
+        _primary_controls,
+        tools_accordion,
         mode_desc_html,
     ], layout=widgets.Layout(margin="0 0 6px 0"))
 
