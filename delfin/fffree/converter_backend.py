@@ -437,6 +437,44 @@ def _has_large_ligand(lig_groups) -> bool:
     return False
 
 
+def _decollapse_enabled() -> bool:
+    """Post-seating heavy-bond decollapse (env DELFIN_FFFREE_CHELATE_DECOLLAPSE,
+    default OFF -> byte-identical).  The chelate seating (per-donor radial rescale
+    in _orient_chelate_to_vertices) can collapse a backbone bond NEAR the metal
+    (diagnosed: 87% of severe collapses are chelate-dispatch, 77% within 3 A of the
+    metal).  When ON, a config that would FAIL the collapse self-gate is first run
+    through the safe firewall mover before being skipped."""
+    return os.environ.get("DELFIN_FFFREE_CHELATE_DECOLLAPSE", "0") == "1"
+
+
+def _maybe_decollapse(syms, P):
+    """Pull collapsed heavy-heavy bonds apart via the proven firewall mover
+    (delfin._bond_decollapse.correct_xyz: metals + donors FROZEN, collapse must
+    STRICTLY drop, and no measured axis — vdW clashes, F20 H-planarity, F3 bond
+    distortion, M-D invariant — may worsen, else the relaxed frame is rejected and
+    the input returned bit-exact).  The collapsed backbone atoms (C/H, neither metal
+    nor donor) are free to move, so a ring/backbone bond squeezed into the metal's
+    shell during seating is relaxed back to its ideal length while the coordination
+    geometry is held fixed.  Returns the SAME (syms, P) objects when the flag is off
+    OR when the mover makes no change (no collapse, or firewall rejected) -> the
+    caller's identity check keeps the OFF path byte-identical and skips a pointless
+    re-gate when nothing moved."""
+    if not _decollapse_enabled():
+        return syms, P
+    try:
+        from delfin import _bond_decollapse as _BD
+        xin = _xyz(syms, P)
+        xout = _BD.correct_xyz(None, xin)
+        if xout == xin:
+            return syms, P                       # bit-exact: nothing moved
+        s2, P2, _ = _BD._parse(xout)
+        if len(s2) == len(syms):
+            return s2, np.asarray(P2, dtype=float)
+    except Exception:
+        pass
+    return syms, P
+
+
 def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
                          cn=None, geom=None, donors=None):
     """Conformer-aware seating fallback for a large-ligand build that FAILED the
@@ -797,19 +835,31 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         _clg = _lig_groups_from_config(config, ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
                                donors=donors, exempt_pairs=_ex):   # donor-aware self-gate
-            # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
-            # a large-arm chelate config whose rigid build fails the self-gate is
-            # re-seated (donors frozen on the native vertices; backbone re-folded).
-            # On success the clean fold is used for THIS config; on failure the config
-            # is SKIPPED as before (never-worse).  Byte-identical when off (skip).
-            reseated = None
-            if _seating_enabled() and _has_large_ligand(_clg):
-                reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
-                                                cn=d.get("cn"), geom=d.get("geometry"),
-                                                donors=donors)
-            if reseated is None:
-                continue                          # skip this config
-            syms, P = reseated
+            # Decollapse (DELFIN_FFFREE_CHELATE_DECOLLAPSE, default OFF, byte-id):
+            # the seating can squeeze a backbone bond into the metal's shell; the
+            # safe firewall mover pulls it back to ideal length (metals+donors frozen,
+            # collapse must strictly drop, no axis worsens).  Re-gate after — accept
+            # ONLY if the moved frame now passes the FULL self-gate (shape/overcoord
+            # re-checked too), else fall through to seating/skip as before.
+            _dc_s, _dc_P = _maybe_decollapse(syms, P)
+            if (_dc_P is not P) and _build_is_clean(
+                    _dc_s, _dc_P, cn=d.get("cn"), geom=d.get("geometry"),
+                    donors=donors, exempt_pairs=_ex):
+                syms, P = _dc_s, _dc_P
+            else:
+                # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
+                # a large-arm chelate config whose rigid build fails the self-gate is
+                # re-seated (donors frozen on the native vertices; backbone re-folded).
+                # On success the clean fold is used for THIS config; on failure the config
+                # is SKIPPED as before (never-worse).  Byte-identical when off (skip).
+                reseated = None
+                if _seating_enabled() and _has_large_ligand(_clg):
+                    reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
+                                                    cn=d.get("cn"), geom=d.get("geometry"),
+                                                    donors=donors)
+                if reseated is None:
+                    continue                          # skip this config
+                syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
