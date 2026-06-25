@@ -4009,7 +4009,12 @@ class _DocToolExecutor:
             )
 
         if name in ("write_file", "edit_file", "multi_edit"):
-            path_arg = args.get("path", "")
+            # Tolerate the `file_path` / `filename` / … aliases here too — the
+            # permission gate runs BEFORE the executor, so reading only `path`
+            # rejected a model that used `file_path` (Claude-Code convention)
+            # with "path is required", even though the executor itself accepts
+            # it (bug 2026-06-25: qwen on KIT fell back to bash heredoc writes).
+            path_arg = self._get_path_arg(args)
             resolved, err = self._resolve_in_workspace(path_arg, perms)
             if err:
                 return err
