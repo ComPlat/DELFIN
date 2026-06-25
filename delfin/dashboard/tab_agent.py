@@ -2717,6 +2717,17 @@ def create_tab(ctx):
     # Use _PROVIDER_MODELS_FALLBACK as the initial value; dynamically updated later
     _PROVIDER_MODELS = dict(_PROVIDER_MODELS_FALLBACK)
 
+    # Show only models that actually work for the current auth. When OpenAI runs
+    # through the Codex CLI on a ChatGPT-account login (no OPENAI_API_KEY), the
+    # API-only '*-codex' models fail with a 400 (bug 2026-06-25: Jerome picked
+    # gpt-5.3-codex → "not supported when using Codex with a ChatGPT account").
+    # Drop them from the offered list. A live fetch (which needs an API key, i.e.
+    # API mode) overwrites this with the full list, so API users still see all.
+    if _codex_cli_available and not _provider_key("OPENAI_API_KEY"):
+        _PROVIDER_MODELS["openai"] = [
+            (lbl, mid) for (lbl, mid) in _PROVIDER_MODELS.get("openai", [])
+            if "-codex" not in str(mid)]
+
     provider_dropdown = widgets.Dropdown(
         options=_available_providers,
         value=_available_providers[0][1],
