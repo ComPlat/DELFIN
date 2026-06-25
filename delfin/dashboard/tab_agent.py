@@ -3395,9 +3395,13 @@ def create_tab(ctx):
         # Inject a follow-up user message that triggers execution.
         try:
             input_textarea.value = (
-                "Please execute the proposed plan now. "
-                "Use the KIT-Toolbox tools (write_file / edit_file / bash) "
-                "and briefly report after each step what you did."
+                "Please execute the approved plan now. FIRST call task_create "
+                "ONCE PER STEP of the approved plan — create the WHOLE task "
+                "list up front so the full roadmap is visible, not one task at "
+                "a time. THEN work through them in order: set each to "
+                "in_progress when you start it and completed when its check "
+                "passes. Use the KIT-Toolbox tools (write_file / edit_file / "
+                "bash) and briefly report after each step what you did."
             )
             _on_send(None)
         except Exception as exc:
