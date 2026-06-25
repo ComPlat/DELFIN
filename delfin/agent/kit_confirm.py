@@ -303,7 +303,7 @@ class KitConfirmBroker:
                 persist_disabled_reason = (
                     "Self-Modification Guard: writes to protected core files "
                     "(api_client.py, kit_confirm.py, engine.py, tab_agent.py) "
-                    "must be approved explicitly every time. Click 'Erlauben' "
+                    "must be approved explicitly every time. Click 'Allow' "
                     "for THIS action."
                 )
             else:
