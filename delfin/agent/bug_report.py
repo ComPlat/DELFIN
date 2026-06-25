@@ -475,21 +475,42 @@ def write_bug_report(
 
 
 def _make_group_readable(report_dir: Path) -> None:
-    """Add group read (+ traverse on dirs) to the whole report so a maintainer
-    in the archive's shared group can ALWAYS read it — independent of the
-    writing user's umask (a restrictive 0077 umask otherwise produces an
-    unreadable ``drwx------`` report). Does NOT touch the "others" bits, so the
-    report stays as private as the archive's home dir already makes it. The
-    report's group itself is inherited from the archive dir (set it once with
-    ``chgrp <maintainer-grp> + chmod g+s`` on the archive). Best-effort: a
-    chmod failure must never break bug reporting."""
+    """Make the whole report readable by the archive's maintainer group, so a
+    maintainer can ALWAYS read a filed report — independent of the writing
+    user's umask (a restrictive 0077 otherwise yields an unreadable
+    ``drwx------``) AND independent of setgid inheritance.
+
+    Two parts, both best-effort (a failure must never break bug reporting):
+
+    1. GROUP — set each path's group to the archive directory's group (the
+       maintainer group). Relying on setgid inheritance alone is fragile: a
+       report dir created without the setgid bit (moved in, or a parent that
+       lost ``g+s``) leaves files in the writer's PRIMARY group, which the
+       maintainer is not in — so ``chmod g+r`` then grants read to the wrong
+       group and the report is silently unreadable (observed 2026-06-25:
+       files came out ``qmchem_all`` instead of ``qmchem_shared``). Setting
+       the group explicitly makes readability deterministic.
+    2. MODE — add group read (+ traverse on dirs). The "others" bits are left
+       untouched, so the report stays as private as the archive home already
+       makes it.
+    """
+    import os as _os
     import stat as _stat
+    try:
+        maintainer_gid = report_dir.parent.stat().st_gid
+    except Exception:
+        maintainer_gid = None
     try:
         targets = [report_dir, *report_dir.rglob("*")]
     except Exception:
         return
     for p in targets:
         try:
+            if maintainer_gid is not None and p.stat().st_gid != maintainer_gid:
+                try:
+                    _os.chown(p, -1, maintainer_gid)   # chgrp to maintainer group
+                except Exception:
+                    pass
             mode = p.stat().st_mode
             extra = _stat.S_IRGRP | (_stat.S_IXGRP if p.is_dir() else 0)
             p.chmod(mode | extra)

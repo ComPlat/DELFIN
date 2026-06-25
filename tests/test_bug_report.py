@@ -320,3 +320,57 @@ def test_push_reports_rsync_failure(tmp_path, monkeypatch):
     )
     assert ok is False
     assert "rsync failed" in msg
+
+
+# ---------------------------------------------------------------------------
+# A filed report must be readable by the archive's maintainer group, even when
+# setgid inheritance fails (observed 2026-06-25: files came out group
+# qmchem_all instead of qmchem_shared, so the maintainer could not read them).
+# ---------------------------------------------------------------------------
+
+import os as _os
+import types as _types
+import stat as _stat
+import pathlib as _pathlib
+
+
+def test_make_group_readable_chgrps_to_maintainer_group(tmp_path, monkeypatch):
+    from delfin.agent import bug_report as br
+
+    archive = tmp_path / "archive"; archive.mkdir()
+    report = archive / "20260625-000000_x"; report.mkdir()
+    f = report / "report.md"; f.write_text("payload")
+
+    MAINT_GID = 4242424  # pretend the archive belongs to the maintainer group
+    real_stat = _pathlib.Path.stat
+
+    def fake_stat(self, *a, **k):
+        st = real_stat(self, *a, **k)
+        gid = MAINT_GID if self == archive else st.st_gid
+        return _types.SimpleNamespace(st_gid=gid, st_mode=st.st_mode)
+
+    monkeypatch.setattr(_pathlib.Path, "stat", fake_stat)
+    chowns = []
+    monkeypatch.setattr(_os, "chown", lambda p, uid, gid: chowns.append((str(p), gid)))
+
+    br._make_group_readable(report)
+
+    # every report path is chgrp'd toward the maintainer group (not left in the
+    # writer's primary group, which the maintainer is not a member of).
+    assert chowns, "expected a chgrp toward the maintainer group"
+    assert all(gid == MAINT_GID for _, gid in chowns)
+    assert any(p == str(f) for p, _ in chowns)
+
+
+def test_make_group_readable_sets_group_read_bit(tmp_path):
+    from delfin.agent import bug_report as br
+
+    report = tmp_path / "archive" / "rep"
+    report.mkdir(parents=True)
+    f = report / "report.json"; f.write_text("{}")
+    f.chmod(0o600)  # restrictive umask simulation — no group read
+
+    br._make_group_readable(report)
+
+    assert f.stat().st_mode & _stat.S_IRGRP        # group can read the file
+    assert report.stat().st_mode & _stat.S_IXGRP   # group can traverse the dir
