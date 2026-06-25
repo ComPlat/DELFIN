@@ -3855,6 +3855,10 @@ def create_tab(ctx):
     subagent_panel_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="2px 0 0 0"),
     )
+    # Session-start stamp (updated on each New Session) so the panel is
+    # session-scoped from first load — never leaks a prior session's subagents.
+    import time as _t_init
+    state.setdefault("_session_start_ts", _t_init.time())
 
     def _refresh_subagent_panel():
         try:
@@ -3869,7 +3873,17 @@ def create_tab(ctx):
                     f"</span> {_html.escape(sa.get('description','')[:60])}"
                     f" · {el//60}m{el%60:02d}s"
                 )
-            for rec in (read_telemetry(last_n=3) or [])[::-1]:
+            # Only show subagents from the CURRENT session — the telemetry file
+            # is global, so without this filter a fresh session keeps showing
+            # the previous session's (and old test) runs (bug 2026-06-25:
+            # "neue session und ich seh immer noch explore … · 0 calls").
+            _sess_start = float(state.get("_session_start_ts", 0) or 0)
+            for rec in (read_telemetry(last_n=8) or [])[::-1]:
+                try:
+                    if float(rec.get("ts", 0) or 0) < _sess_start:
+                        continue          # belongs to an earlier session
+                except Exception:
+                    pass
                 ok = not rec.get("error")
                 rows.append(
                     f"<span style='color:{'#2e7d32' if ok else '#c62828'};'>"
@@ -13945,6 +13959,10 @@ def create_tab(ctx):
             state["engine"] = None
         state["chat_messages"].clear()
         state["streaming"] = False
+        # Stamp the session start so the subagent panel only shows runs from
+        # this session onward (the telemetry file is global).
+        import time as _t_ns
+        state["_session_start_ts"] = _t_ns.time()
         # Adopt the engine's fresh session id (reset_cycle mints a new UUID for
         # API backends, "" for CLI) so the new session is scoped to it from the
         # first turn — task_list/panel filter by it, so old tasks don't leak in.
