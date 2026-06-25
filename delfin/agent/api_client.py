@@ -2825,6 +2825,55 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
 ]
 
 
+_THRASH_CLEANUP_LIMIT = 4   # cleanup/reorg commands in a turn before nudging
+_THRASH_REWRITE_LIMIT = 4   # rewrites of the SAME file in a turn before nudging
+_THRASH_CLEANUP_RE = re.compile(r"(?:^|&&|;|\|)\s*(?:rm\s+-rf|rmdir|mv)\b")
+
+
+def _thrash_check(state: dict, fn_name: str, fn_args: dict) -> str:
+    """Detect low-progress loops and return a ONE-TIME soft hint (or "").
+
+    Catches the wasted-work patterns seen in real runs (validator_kit,
+    2026-06-25: $18/90 min, much of it thrash): repeated cleanup/reorg
+    commands, and the SAME file rewritten over and over. The hint is prepended
+    to that tool result so the model reads it and changes approach — it never
+    stops real work (the consecutive-identical-error check is the hard stop).
+    Pure + stateful via the passed-in ``state`` dict, so it is unit-testable.
+    """
+    try:
+        sent = state.setdefault("hints", set())
+        if fn_name in ("bash", "Bash"):
+            cmd = str((fn_args or {}).get("command", ""))
+            if _THRASH_CLEANUP_RE.search(cmd):
+                state["cleanup"] = state.get("cleanup", 0) + 1
+                if state["cleanup"] >= _THRASH_CLEANUP_LIMIT and "cleanup" not in sent:
+                    sent.add("cleanup")
+                    return (
+                        "⚠ Progress check: several cleanup/reorg commands "
+                        "(rm/mv/rmdir) this turn. Stop reorganizing — settle on "
+                        "ONE final layout, state it, and write files directly "
+                        "to it instead of moving them around."
+                    )
+        elif fn_name in ("write_file", "edit_file", "multi_edit", "Write", "Edit"):
+            p = str((fn_args or {}).get("path") or (fn_args or {}).get("file_path") or "")
+            if p:
+                counts = state.setdefault("writes", {})
+                counts[p] = counts.get(p, 0) + 1
+                key = "rewrite:" + p
+                if counts[p] >= _THRASH_REWRITE_LIMIT and key not in sent:
+                    sent.add(key)
+                    return (
+                        f"⚠ Progress check: {p.rsplit('/', 1)[-1]} rewritten "
+                        f"{counts[p]}× this turn. read_file it once, then make "
+                        f"ONE targeted edit_file instead of re-writing the whole "
+                        f"file — repeated full rewrites usually mean you're "
+                        f"guessing; verify the current contents first."
+                    )
+    except Exception:
+        return ""
+    return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -6743,6 +6792,9 @@ class OpenAIClient(_BaseClient):
         _CONSECUTIVE_FAIL_LIMIT = 3
         _last_error_signature: str | None = None
         _consecutive_failure_count = 0
+        # Thrash detector state (cleanup loops, same-file rewrites) — soft
+        # nudges the model to change approach when it's spinning. Per turn.
+        _thrash_state: dict = {}
 
         # Scale the tool-output elision budget to the model's real context
         # window so a big-context model keeps its earlier file reads instead
@@ -7136,6 +7188,12 @@ class OpenAIClient(_BaseClient):
                     context_result = _smart_truncate(
                         result, cap=5000, label="tool_result"
                     )
+                    # Thrash detector: prepend a one-time progress nudge when a
+                    # low-progress loop (repeated cleanup, same-file rewrites) is
+                    # detected, so the model changes approach instead of spinning.
+                    _thrash_note = _thrash_check(_thrash_state, fn_name, fn_args)
+                    if _thrash_note:
+                        context_result = _thrash_note + "\n\n" + context_result
                     api_messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
