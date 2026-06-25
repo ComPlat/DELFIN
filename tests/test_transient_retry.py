@@ -123,3 +123,29 @@ def test_nontransient_error_is_not_retried(client):
     with pytest.raises(BadRequestError):
         _drive(client)
     assert calls["n"] == 1                   # a deterministic 400 is not retried
+
+
+# --- KIT/litellm/vLLM proxy 'Extra data' hiccup: a 400 that IS transient -----
+
+class _Status400(Exception):
+    def __init__(self, msg):
+        super().__init__(msg)
+        self.status_code = 400
+
+
+def test_proxy_extra_data_400_is_transient():
+    from delfin.agent.api_client import _is_transient_api_error
+    e = _Status400(
+        "Error code: 400 - {'detail': 'litellm.BadRequestError: "
+        'Hosted_vllmException - {"error":{"message":"Extra data: line 1 '
+        'column 505 (char 504)","type":"BadRequestError","code":400}}\'}')
+    assert _is_transient_api_error(e) is True
+
+
+def test_genuine_bad_request_400_is_not_transient():
+    from delfin.agent.api_client import _is_transient_api_error
+    # real client errors must NOT be retried (they'd just fail again)
+    assert _is_transient_api_error(_Status400("model not found")) is False
+    assert _is_transient_api_error(_Status400("context length exceeded")) is False
+    # 'Extra data' WITHOUT the proxy markers is too generic to retry
+    assert _is_transient_api_error(_Status400("Extra data in user field")) is False

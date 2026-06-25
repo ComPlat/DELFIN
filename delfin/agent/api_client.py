@@ -6092,7 +6092,20 @@ def _is_transient_api_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
         status = getattr(exc, "status", None)
-    return isinstance(status, int) and status in _TRANSIENT_API_STATUS
+    if isinstance(status, int) and status in _TRANSIENT_API_STATUS:
+        return True
+    # A shared proxy (litellm → vLLM, the KIT toolbox) intermittently wraps an
+    # INTERNAL failure as a 400 — most often a "Extra data: line 1 column N"
+    # JSON-decode hiccup inside the proxy on large tool-heavy requests. That is
+    # NOT a genuine bad request: re-issuing the identical request succeeds
+    # (observed 2026-06-25 — failed twice, then 6/6 OK). "Extra data" is a
+    # json.JSONDecodeError signature that real bad-request errors never carry,
+    # so matching it (scoped to the proxy) retries the hiccup without retrying
+    # true client errors (model-not-found, context-length, bad params).
+    msg = str(exc)
+    if "Extra data" in msg and ("vllm" in msg.lower() or "litellm" in msg.lower()):
+        return True
+    return False
 
 
 def _fan_out_subagents(tc_list, permissions):
