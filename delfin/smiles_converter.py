@@ -28759,18 +28759,34 @@ def _gfnff_ensemble_rank_filter(isomers):
                 order.append(k)
             groups[k].append((xyz, lbl))
 
+        # HYBRID cost control: GFN2 ranks correctly but is ~10-50x GFN-FF, so for a
+        # conformer-rich isomer we first cull cheaply with GFN-FF to the top-M, then
+        # rank only those M with the (default GFN2) method.  Safe because the GFN2
+        # winners are NOT GFN-FF's worst (measured: ABAKOE's GFN2-best was GFN-FF
+        # rank ~3, well inside a top-15 cull).  Isomers with <=M conformers skip the
+        # cull and are GFN2-ranked directly.
+        precull_m = int(os.environ.get("DELFIN_GFNFF_PRECULL_M", "15"))
         out = []
         for k in order:
             frames = groups[k]
             if len(frames) == 1:
                 out.append(frames[0])
                 continue
+            if len(frames) > precull_m:
+                ffs = []
+                for (xyz, lbl) in frames:
+                    e = _gff.gfnff_energy(xyz, charge=chg, method="gfnff")
+                    ffs.append((e if e is not None else float("inf"), xyz, lbl))
+                ffs.sort(key=lambda t: t[0])
+                shortlist = [(xyz, lbl) for _e, xyz, lbl in ffs[:precull_m]]
+            else:
+                shortlist = frames
             scored = []
-            for (xyz, lbl) in frames:
-                e = _gff.gfnff_energy(xyz, charge=chg)
+            for (xyz, lbl) in shortlist:
+                e = _gff.gfnff_energy(xyz, charge=chg)   # default method = GFN2
                 scored.append((e if e is not None else float("inf"), xyz, lbl))
             if all(s[0] == float("inf") for s in scored):
-                out.extend(frames)            # GFN-FF unusable here -> keep all
+                out.extend(frames)            # ranking unusable here -> keep all
                 continue
             scored.sort(key=lambda t: t[0])
             emin = scored[0][0]
