@@ -103,6 +103,9 @@ _RUNNING_DIR = Path.home() / ".delfin" / "subagent_running"
 
 def _format_action(name: str, tool_input) -> str:
     """A short 'tool: target' line for the live drill-down panel."""
+    # Strip the MCP namespace so the panel shows `bash`, not the noisy
+    # `mcp__kit-coding__bash` (user 2026-06-26: "die mcp_ Sachen … zu viel").
+    name = (name or "").split("__")[-1]
     try:
         args = json.loads(tool_input) if isinstance(tool_input, str) else (tool_input or {})
     except Exception:

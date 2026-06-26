@@ -3505,34 +3505,27 @@ def create_tab(ctx):
         layout=widgets.Layout(min_height="200px"),
     )
 
-    # Agent-view switcher: "go INTO" a subagent and watch its activity in the
-    # chat window. "Main" shows the conversation; picking a subagent shows ITS
-    # text + tool calls/results (live while running, saved once finished).
+    # Agent-view switcher: clickable chips to "go INTO" a subagent and watch
+    # its activity in the chat window. Shown ONLY while subagents exist this
+    # session (hidden otherwise), and placed BELOW the message box. "Main" shows
+    # the conversation; a subagent chip shows ITS text + tool calls/results.
     state.setdefault("_view_agent", "main")
-    agent_view_dropdown = widgets.Dropdown(
-        options=[("💬 Main", "main")], value="main", description="View:",
-        layout=widgets.Layout(width="360px", margin="0 0 4px 0"),
-        style={"description_width": "38px"},
-    )
+    # Vertical list of clickable items (• Main, • Subagent …) below the message
+    # box — click one to enter its chat. Shown only while subagents exist.
+    agent_view_chips = widgets.VBox(
+        [], layout=widgets.Layout(display="none", margin="2px 0 0 0"))
 
-    def _on_agent_view_change(change):
-        if state.get("_view_dropdown_rebuilding"):
-            return
-        if change.get("name") == "value":
-            state["_view_agent"] = change.get("new") or "main"
-            _refresh_chat_html()
-    agent_view_dropdown.observe(_on_agent_view_change, names="value")
-
-    def _refresh_agent_view_dropdown():
-        """Rebuild the View dropdown from running + this-session finished
-        subagents, preserving the current selection."""
+    def _refresh_agent_view_chips():
+        """Rebuild the chip row from running + this-session finished subagents.
+        Hidden when there are no subagents. Only rebuilds on a real change so it
+        doesn't flicker on the 1.5s live tick."""
         try:
             from delfin.agent.subagents import read_running, list_finished
-            opts = [("💬 Main", "main")]
             running = read_running()
+            entries = [("💬 Main", "main", "")]
             for sid, sa in running.items():
-                opts.append(("🟡 " + str(sa.get("type", "?")) + " · "
-                             + str(sa.get("description", ""))[:28], sid))
+                entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
+                                str(sa.get("description", ""))[:48]))
             _ss = float(state.get("_session_start_ts", 0) or 0)
             for rec in list_finished(12):
                 sid = rec.get("sa_id")
@@ -3544,19 +3537,42 @@ def create_tab(ctx):
                 except Exception:
                     pass
                 ok = not rec.get("error")
-                opts.append(((("✅" if ok else "❌") + " "
-                              + str(rec.get("subagent_type", "?")) + " · "
-                              + str(rec.get("description", ""))[:28]), sid))
-            vals = [v for _, v in opts]
+                entries.append(
+                    ((("✅" if ok else "❌") + " " + str(rec.get("subagent_type", "?"))[:16]),
+                     sid, str(rec.get("description", ""))[:48]))
             cur = state.get("_view_agent", "main")
-            state["_view_dropdown_rebuilding"] = True
-            try:
-                agent_view_dropdown.options = opts
-                agent_view_dropdown.value = cur if cur in vals else "main"
-                if cur not in vals:
+            vals = [v for _, v, _ in entries]
+            if cur not in vals:
+                cur = "main"
+                if state.get("_view_agent") != "main":
                     state["_view_agent"] = "main"
-            finally:
-                state["_view_dropdown_rebuilding"] = False
+                    _refresh_chat_html()
+            # Hide the row entirely when only "Main" is present (no subagents).
+            if len(entries) <= 1:
+                if agent_view_chips.children:
+                    agent_view_chips.children = ()
+                agent_view_chips.layout.display = "none"
+                state["_view_chips_sig"] = ()
+                return
+            sig = tuple((sid, lbl) for lbl, sid, _ in entries) + (cur,)
+            if state.get("_view_chips_sig") == sig:
+                return                       # nothing changed → no rebuild
+            state["_view_chips_sig"] = sig
+            btns = []
+            for lbl, sid, tip in entries:
+                b = widgets.Button(
+                    description="• " + lbl, tooltip=tip or lbl,
+                    button_style=("primary" if sid == cur else ""),
+                    layout=widgets.Layout(width="auto", margin="0 0 2px 0"))
+
+                def _click(_b, _sid=sid):
+                    state["_view_agent"] = _sid
+                    _refresh_chat_html()
+                    _refresh_agent_view_chips()
+                b.on_click(_click)
+                btns.append(b)
+            agent_view_chips.children = tuple(btns)
+            agent_view_chips.layout.display = ""
         except Exception:
             pass
 
@@ -4034,23 +4050,20 @@ def create_tab(ctx):
             # Each RUNNING subagent is an expandable block (open by default)
             # showing its live steps (read/write/bash …) — the Claude-Code-style
             # drill-down the user asked for ("man sieht nicht was die machen").
+            # COMPACT one-liners only — the full per-step activity (and the noisy
+            # tool names) now lives in the "• Subagent" drill-in chips above, so
+            # the bottom panel stays lean (user 2026-06-26: "die mcp_ Sachen …
+            # das ist zu viel unten"). Shows the current action, not every step.
             blocks = []
             for sa in running.values():
                 el = int(_t.time() - float(sa.get("started_at", _t.time())))
-                actions = sa.get("actions") or []
-                steps = "".join(
-                    f"<div style='padding-left:16px; color:#555;'>· "
-                    f"{_html.escape(str(a)[:80])}</div>" for a in actions
-                ) or "<div style='padding-left:16px; color:#999;'>(starting…)</div>"
-                summ = (
-                    f"🟡 <b>{_html.escape(str(sa.get('type','?')))}</b> "
-                    f"{_html.escape(str(sa.get('description',''))[:60])}"
-                    f" · {el//60}m{el%60:02d}s · {len(actions)} steps"
-                )
+                last = str(sa.get("last_action", ""))[:48]
                 blocks.append(
-                    f"<details open style='margin:1px 0;'>"
-                    f"<summary style='color:#b45309; cursor:pointer;'>{summ}</summary>"
-                    f"{steps}</details>"
+                    f"<div style='color:#b45309;'>🟡 "
+                    f"<b>{_html.escape(str(sa.get('type','?')))}</b> "
+                    f"{_html.escape(str(sa.get('description',''))[:50])}"
+                    f" · {el//60}m{el%60:02d}s"
+                    + (f" · {_html.escape(last)}" if last else "") + "</div>"
                 )
             # Finished subagents (telemetry) — compact one-liners, CURRENT
             # session only (the telemetry file is global; without this filter a
@@ -4105,7 +4118,7 @@ def create_tab(ctx):
                     # (flip running → recent without a main-loop tool result).
                     if active or was_active:
                         _refresh_subagent_panel()
-                        _refresh_agent_view_dropdown()
+                        _refresh_agent_view_chips()
                         # If the user is "inside" a subagent, live-update the
                         # chat window with its latest activity.
                         if state.get("_view_agent", "main") != "main":
@@ -4560,7 +4573,6 @@ def create_tab(ctx):
         [css_widget, _enter_js_output, controls_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
          kit_mode_row, kit_dirs_status,
-         agent_view_dropdown,
          chat_html,
          plan_accept_btn, ask_user_box,
          working_html, queue_html, context_bar_html,
@@ -4574,6 +4586,9 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
+         # Below the message box: click • Main / • Subagent to enter its chat.
+         # Hidden entirely unless subagents exist this session.
+         agent_view_chips,
          # Directly under the message box, most prominent: pending permission
          # requests (Self-Mod Guard / KIT confirms) — right where you look and
          # act. The container is empty when nothing is pending, so the task
