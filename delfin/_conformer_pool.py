@@ -1013,9 +1013,30 @@ def generate_conformer_pool(
         _th = None  # type: ignore
 
     # ---------- Quality filter ----------
+    # Under-yield fix (DELFIN_CONF_RELAX_CANDIDATES, default OFF): a rigidly-rotated
+    # torsion candidate clashes grossly in the packed coordination sphere (measured
+    # worst contacts 0.06-0.5 A), so the clash gate below rejects ~100% of them and
+    # only the base survives.  Relieve the clash first with a core-frozen spring
+    # relaxation (metal + every donor pinned), then gate the RELAXED frame.  Geometry
+    # -only + deterministic; byte-identical when off (coords pass through untouched).
+    _relax_on = os.environ.get("DELFIN_CONF_RELAX_CANDIDATES", "0") == "1"
+    _cr = None
+    _relax_frozen = None
+    if _relax_on:
+        try:
+            from delfin.fffree import _conf_relax as _cr
+            _relax_frozen = _cr.core_indices(graph)
+        except Exception:
+            _relax_on = False
+
     scored_candidates: List[Tuple[float, str, str, List[Coord]]] = []
     for (coords, tag) in raw_candidates:
         try:
+            if _relax_on and _relax_frozen is not None and _cr is not None:
+                coords = _cr.relax_clashes(
+                    symbols, coords, graph, _relax_frozen,
+                    clash_hh, clash_xh, clash_xx,
+                )
             if not _rot._coord_bond_invariant_holds(
                 graph, base_coords, coords, tol=md_tol
             ):
