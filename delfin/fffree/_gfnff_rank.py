@@ -38,8 +38,13 @@ _METHOD_FLAGS = {
 
 
 def _resolve_method() -> str:
-    m = os.environ.get("DELFIN_CONF_RANK_METHOD", "gfnff").strip().lower()
-    return m if m in _METHOD_FLAGS else "gfnff"
+    # Default GFN2-xTB: GFN-FF is too crude to RANK transition-metal-complex
+    # conformers — measured on ABAKOE (W(V)) its energy minimum is GFN2's
+    # near-maximum (482 kcal/mol), so a GFN-FF ranking keeps garbage.  GFN2 gives a
+    # physical low-energy ladder.  Set DELFIN_CONF_RANK_METHOD=gfnff for a fast
+    # (cruder) draft pass.
+    m = os.environ.get("DELFIN_CONF_RANK_METHOD", "gfn2").strip().lower()
+    return m if m in _METHOD_FLAGS else "gfn2"
 
 # resolve the xtb binary once (PATH, then common conda/micromamba locations)
 def _find_xtb() -> Optional[str]:
