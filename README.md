@@ -20,7 +20,7 @@
 Three ways to use it:
 - **CLI** — `delfin` runs workflows from a `CONTROL.txt` configuration file
 - **Dashboard** — browser UI for job setup, result analysis, and configuration
-- **Agent** — optional AI assistant (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, analyses results, and helps select methods
+- **Agent** — an autonomous AI coding agent (model-agnostic: Claude, OpenAI, or local via Ollama) that operates the dashboard, runs and interprets workflows, and implements code itself — extending DELFIN and carrying multi-step projects through to completion (sandboxed bash, subagents, persistent memory)
 
 ### Design principles
 
