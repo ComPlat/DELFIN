@@ -145,6 +145,7 @@ include = ["delfin*"]
 "delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]
+"delfin.manta" = ["*.md"]
 
 [tool.setuptools.exclude-package-data]
 "delfin" = [
