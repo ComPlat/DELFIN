@@ -28714,6 +28714,79 @@ def _conf_complete_filter(isomers):
         return isomers
 
 
+def _gfnff_ensemble_rank_filter(isomers):
+    """FINAL energy-ranked conformer retention over the emitted ensemble (the
+    headline 'keep the most important conformers' feature).
+
+    The shipped conformer engine (conformer_complete) generates topology-gated,
+    RMSD-DIVERSE rotamers but invokes NO force field, and the final isomer ordering
+    is by least-clash — so nothing in the pipeline ranks conformers by ENERGY.  This
+    pass groups the emitted frames by base isomer (the label with any conformer
+    suffix stripped), scores each group's frames with GFN-FF (xtb, license-clean,
+    parametrised for metals; UFF is unusable on TM complexes), and keeps the top-K
+    LOWEST-energy frames within an energy window.  Every base isomer keeps >=1 frame,
+    so the isomer manifold is never reduced — only each isomer's conformer set is
+    trimmed to the physically important members.
+
+    Within one isomer the total charge is constant, so charge=0 ranks the conformers
+    self-consistently (a constant offset cancels); DELFIN_GFNFF_CHARGE can override.
+
+    Identity unless DELFIN_FFFREE_GFNFF_RANK=1 -> byte-identical when off.  Never
+    raises; on any failure or if xtb is absent the input passes through unchanged."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_GFNFF_RANK", "0") != "1":
+        return isomers
+    try:
+        import re as _re
+        from delfin.fffree import _gfnff_rank as _gff
+        if not _gff.available():
+            return isomers
+        topk = int(os.environ.get("DELFIN_GFNFF_TOPK", "10"))
+        ewin = float(os.environ.get("DELFIN_GFNFF_EWIN", "15.0"))
+        chg = int(os.environ.get("DELFIN_GFNFF_CHARGE", "0"))
+        _suffix = _re.compile(r"(_conf-|-conf\d|_pool-|-reembed|_reembed|_conf\d)")
+
+        def base_key(lbl):
+            if not lbl:
+                return ""
+            return _suffix.split(lbl, maxsplit=1)[0]
+
+        groups = {}
+        order = []
+        for (xyz, lbl) in isomers:
+            k = base_key(lbl)
+            if k not in groups:
+                groups[k] = []
+                order.append(k)
+            groups[k].append((xyz, lbl))
+
+        out = []
+        for k in order:
+            frames = groups[k]
+            if len(frames) == 1:
+                out.append(frames[0])
+                continue
+            scored = []
+            for (xyz, lbl) in frames:
+                e = _gff.gfnff_energy(xyz, charge=chg)
+                scored.append((e if e is not None else float("inf"), xyz, lbl))
+            if all(s[0] == float("inf") for s in scored):
+                out.extend(frames)            # GFN-FF unusable here -> keep all
+                continue
+            scored.sort(key=lambda t: t[0])
+            emin = scored[0][0]
+            kept = []
+            for (e, xyz, lbl) in scored:
+                if len(kept) >= topk:
+                    break
+                if e != float("inf") and e - emin > ewin:
+                    break
+                kept.append((xyz, lbl))
+            out.extend(kept or [(scored[0][1], scored[0][2])])
+        return out
+    except Exception:
+        return isomers
+
+
 def _permute_dedup_filter(isomers):
     """UNIVERSAL permutation-invariant duplicate removal over the FULL emitted
     ensemble.
@@ -28786,10 +28859,14 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     # so it strips permutation-equivalent duplicates from the whole final pool.
     _conf = _conf_complete_filter if outermost else (lambda x: x)
     _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
+    # _grank = final GFN-FF energy-ranked top-K conformer retention (default OFF,
+    # byte-id when off).  Runs after dedup so it ranks the de-duplicated conformer
+    # set, before the clash-based isomer ordering.
+    _grank = _gfnff_ensemble_rank_filter if outermost else (lambda x: x)
     if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))), r[1]
+        return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))), r[1]
     if isinstance(r, list):
-        return _rank_emitted_isomers(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))
+        return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))
     return r
 
 
