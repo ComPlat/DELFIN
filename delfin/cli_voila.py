@@ -307,6 +307,11 @@ def main(argv=None):
         ),
     )
     args = parser.parse_args(argv)
+    # Record the REAL shell cwd the user launched from, BEFORE Voila resets the
+    # kernel's cwd to the notebook's directory (inside the delfin checkout).
+    # ONLY the agent tab reads this — to decide where to build (launch dir =
+    # workspace). Everything else keeps using ctx.repo_dir unchanged.
+    os.environ.setdefault("DELFIN_LAUNCH_CWD", os.getcwd())
     if args.resume:
         # Propagate to the spawned voila subprocess via env; the agent-tab
         # reads DELFIN_RESUME_SESSION at create_tab() time.

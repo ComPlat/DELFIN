@@ -1225,6 +1225,26 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
+def _agent_workspace_from_launch(launch_cwd: str, fallback) -> "Path":
+    """Where the AGENT works — derived from the REAL delfin-voila launch dir,
+    not Path.cwd() (Voila pins the kernel cwd to the notebook's dir inside the
+    delfin checkout, so cwd always points at delfin). Rule: if the launch dir
+    is inside a DELFIN source tree → that tree (work on DELFIN); otherwise →
+    the launch dir itself (build right there, e.g. ~/agent_workspace). Empty
+    launch_cwd → fallback (legacy). ONLY the agent uses this; calc/jobs/
+    settings keep ctx.repo_dir. Bug 2026-06-26: launched from ~/agent_workspace,
+    the agent still built in software/delfin because cwd was the notebook dir."""
+    from pathlib import Path as _P
+    lc = (launch_cwd or "").strip()
+    if not lc:
+        return fallback
+    p = _P(lc).expanduser()
+    for base in [p, *p.parents]:
+        if (base / "delfin" / "__init__.py").exists():
+            return base
+    return p
+
+
 def _classify_model_error_text(error_text: str) -> str:
     """Classify a model/endpoint error: 'temp' (backend temporarily
     unavailable — it WILL recover, NOT an auth problem), 'auth' (invalid key /
@@ -4854,7 +4874,13 @@ def create_tab(ctx):
         try:
             from delfin.agent.engine import AgentEngine
 
-            repo_dir = ctx.repo_dir or Path.cwd()
+            # The agent builds where you LAUNCHED delfin-voila, not where the
+            # notebook lives. Only this (agent) resolution changes — ctx.repo_dir
+            # (calc/jobs/settings) is untouched.
+            repo_dir = _agent_workspace_from_launch(
+                os.environ.get("DELFIN_LAUNCH_CWD", ""),
+                ctx.repo_dir or Path.cwd(),
+            )
             # MCP config from agent settings (optional)
             _agent_s = _get_agent_settings()
             _mcp_cfg = _agent_s.get("mcp_config", "")
