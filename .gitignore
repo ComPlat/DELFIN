@@ -65,3 +65,37 @@ censo.log
 
 # Internal self-paced optimization loop work-queue — local only, not for the public repo
 OPTIMIZATION_BACKLOG.md
+
+# Run-output artifacts (move to quality_framework/results/ instead)
+/reports/
+/topology_summary.json
+/all_metrics_*.json
+
+# Iter-specific scripts (move to quality_framework/iter_history/<iter>/scripts/ instead)
+/scripts/iter*_*.py
+/scripts/iter*_*.sh
+
+# Design docs / forensik reports — keep LOCAL in agent_workspace, NEVER in DELFIN repo
+iters/
+
+# === CCDC/CSD LICENSE GUARD (2026-06-09, erweitert 2026-06-15) ===
+# CSD-daten sind lizenziert, dürfen NICHT in dieses public repo.
+# Mechanische enforcement: scripts/license_guard.py + tests/test_license_guard.py
+# + .git/hooks/pre-commit. Doku: LICENSE_GUARD.md.
+paper_data/
+**/ccdc_ref_xyz/
+*.mol2
+**/ccdc_validation.py
+scripts/ccdc_exploit/
+*ccdc*fragment*index*.json
+*fragment_index_v*.json
+**/CCDC_all/
+# CCDC-derived fragment libraries / Mogul bounds (NIE shippen — agent_workspace only)
+*.npz
+*grip_lib*
+*mogul_bounds*
+*ccdc*fragment*
+*ccdc*ref*
+# Built fragment indexes (both COD + CCDC sind build-artefakte, nie ins repo)
+*fragment_index*.sqlite
+*fragment_index*.db

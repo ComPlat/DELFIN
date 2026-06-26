@@ -1,0 +1,966 @@
+"""delfin.fffree.decompose — SMILES → coordination decomposition for the
+metal-FF-free backend.
+
+Scope (falls back to None otherwise): mononuclear complex with explicit
+metal-donor bonds in the graph, CN 4/5/6.  Returns the metal, CN, default
+geometry, and per-ligand fragments (mol + local donor indices + donor elements +
+denticity) — monodentate and chelating (bi-/tridentate) ligands are both
+detected; ``has_chelate`` flags whether any ligand is polydentate.  CN outside
+4-6, >1 metal, >tridentate ligands, or unparseable input -> return None.
+"""
+from __future__ import annotations
+import os
+from typing import Optional, Dict, List
+from rdkit import Chem
+import delfin._bond_decollapse as bd
+
+# d8 square-planar-preferring metals (else CN4 -> tetrahedral)
+_D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}
+
+# Metalloid / heavier-pnictogen-chalcogen / post-transition elements that
+# ``_bond_decollapse._is_metal`` flags as "metals" but which, when bonded to a true
+# transition/lanthanide metal, act as coordinating DONORS — not coordination centres.
+# Sb (stibine), As (arsine), Bi (bismuthine), Te/Se (telluro/seleno-ether), Ge/Sn/Pb
+# (heavy-tetrel donors / metal-metal bonds).  Used ONLY by the donor-aware metal-centre
+# resolver below (DELFIN_FFFREE_METALLOID_DONOR=1); the default code path is untouched.
+_METALLOID_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+
+def _metalloid_donor_enabled() -> bool:
+    """Donor-aware metal-centre resolution for complexes whose coordinating donor is a
+    metalloid (stibine Sb, arsine As, bismuthine Bi, telluro/seleno-ether Te/Se, heavy
+    tetrel Ge/Sn/Pb).  Default OFF -> byte-identical (the resolver below is never used,
+    so the metal count / centre selection is exactly the historic ``bd._is_metal`` set)."""
+    return os.environ.get("DELFIN_FFFREE_METALLOID_DONOR", "0") == "1"
+
+
+def _resolve_metal_center(mol) -> Optional[int]:
+    """Resolve the single coordination CENTRE of a mononuclear complex, treating a
+    metalloid donor (Sb/As/Bi/Te/Se/Ge/Sn/Pb) as a DONOR — not a co-centre — when it
+    coordinates a true transition/lanthanide metal.
+
+    Root cause (eye-flagged ATOQUV, a Pd bis(distibine)): the historic centre test
+    ``[a for a in atoms if bd._is_metal(a.symbol)]`` flags BOTH the real metal AND every
+    metalloid donor as "metals", so a Pd coordinated by four Sb donors counts as FIVE
+    "metals" -> ``len(metals) != 1`` -> ``decompose`` bails to legacy and the donors are
+    never seated (eye: ligands float free at M-Sb ~3.2 Å, CN 0).  The SAME two distibine
+    ligands on a Pt centre are seated correctly by a metal-dependent legacy branch -> the
+    classification was inconsistent across central metals.
+
+    This resolver makes the classification CONSISTENT and chemically correct, independent
+    of the central metal: among the ``bd._is_metal`` atoms, the unique non-metalloid
+    member (a genuine d-/f-block metal) is the coordination CENTRE; metalloid members are
+    donors and stay in their ligand fragment.  Graph/element-rule based, no refcode.
+
+    Returns the centre atom index when EXACTLY ONE true (non-metalloid) metal is present
+    AND every other metal-flagged atom is a metalloid donor bonded (directly) to that
+    centre; otherwise returns None (polynuclear / metalloid-only / unbonded metalloid ->
+    keep the historic legacy fallback).  Deterministic."""
+    metal_idx = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
+    true_centers = [i for i in metal_idx
+                    if mol.GetAtomWithIdx(i).GetSymbol() not in _METALLOID_DONORS]
+    if len(true_centers) != 1:
+        return None                                   # 0 or >1 real metals -> legacy
+    c = true_centers[0]
+    catom = mol.GetAtomWithIdx(c)
+    cnbrs = {n.GetIdx() for n in catom.GetNeighbors()}
+    # every OTHER metal-flagged atom must be a metalloid DONOR bonded to the centre
+    # (a metalloid floating free / bridging two metals is not a simple donor -> legacy).
+    for i in metal_idx:
+        if i == c:
+            continue
+        if mol.GetAtomWithIdx(i).GetSymbol() not in _METALLOID_DONORS:
+            return None                               # a second real metal -> polynuclear
+        if i not in cnbrs:
+            return None                               # metalloid not bonded to centre
+    return c
+
+
+def _planar_mer_enabled() -> bool:
+    """Geometry-aware MERIDIONAL vertex assignment for RIGID PLANAR tridentate
+    ligands (terpy / pincer / phenanthroline-extended).  Default OFF ->
+    byte-identical to the historic output (the branch is never entered)."""
+    return os.environ.get("DELFIN_FFFREE_PLANAR_MER", "0") == "1"
+
+
+def _is_rigid_planar_tridentate(fmol, donor_local_idxs) -> bool:
+    """Universal, graph+geometry-only test for a RIGID PLANAR tridentate ligand
+    (terpy / pincer / phenanthroline-extended: 3 coordinating donors held coplanar
+    by a conjugated/aromatic backbone).  Such a ligand physically CANNOT fold to a
+    facial vertex triple — it must bind MERIDIONALLY (the 3 donors coplanar through
+    the metal, outer-outer ~150-170deg).  No SMILES/refcode knowledge.
+
+    Criteria (all required):
+      (1) exactly 3 donor atoms;
+      (2) the donors are connected into ONE rigid backbone: the shortest path
+          between every donor pair runs ONLY through sp2/aromatic (conjugated) heavy
+          atoms — so the backbone is a flat conjugated framework, not a flexible
+          aliphatic chain (cyclam / dien-amine are NOT rigid-planar);
+      (3) the 3 donors are mutually-meridional in the rigid skeleton: an embedded
+          conformer has the 3 donors near-coplanar with the backbone AND a WIDE
+          natural outer-outer donor angle (the central donor flanked by the two
+          outer ones at ~120-180deg about the inter-donor centroid) — a flat
+          tridentate spans a meridional arc, not a facial cap.
+
+    Returns True only when all hold; any failure / exception -> False (the ligand
+    keeps the historic facial-or-meridional combinatorial freedom).  Deterministic."""
+    try:
+        dons = [int(x) for x in donor_local_idxs]
+        if len(dons) != 3:
+            return False
+        # (2) backbone conjugation: every donor-donor shortest path is all-sp2/aromatic.
+        path_atoms = set()
+        for a in range(3):
+            for b in range(a + 1, 3):
+                sp = Chem.GetShortestPath(fmol, dons[a], dons[b])
+                if not sp:
+                    return False
+                # interior atoms (exclude the two donor endpoints) must be conjugated
+                for idx in sp[1:-1]:
+                    at = fmol.GetAtomWithIdx(int(idx))
+                    if at.GetAtomicNum() <= 1:
+                        return False
+                    is_sp2 = str(at.GetHybridization()) == "SP2"
+                    if not (at.GetIsAromatic() or is_sp2):
+                        return False
+                path_atoms.update(int(i) for i in sp)
+        # the donors themselves must be aromatic/sp2 (conjugated lone-pair donors:
+        # pyridyl / imine N, etc.) — an sp3 amine arm is flexible, not rigid-planar.
+        for di in dons:
+            at = fmol.GetAtomWithIdx(di)
+            if not (at.GetIsAromatic() or str(at.GetHybridization()) == "SP2"):
+                return False
+        # (3) geometric coplanarity + wide span on an embedded conformer.
+        from rdkit.Chem import AllChem
+        import numpy as _np
+        mh = Chem.AddHs(fmol)
+        if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=False) != 0:
+            if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=True) != 0:
+                return False
+        try:
+            AllChem.MMFFOptimizeMolecule(mh)
+        except Exception:
+            pass
+        P = _np.array(mh.GetConformer().GetPositions(), float)
+        pa = sorted(path_atoms)
+        if len(pa) < 4:
+            return False
+        B = P[pa]
+        B = B - B.mean(axis=0)
+        # planarity: smallest SVD singular value (out-of-plane spread) must be small
+        try:
+            _, sv, Vt = _np.linalg.svd(B)
+        except Exception:
+            return False
+        # ratio of out-of-plane extent to in-plane extent (rotation/scale invariant)
+        if sv[0] < 1e-6:
+            return False
+        planar_ratio = float(sv[2] / sv[0])
+        if planar_ratio > 0.18:                     # not flat -> not a rigid planar tridentate
+            return False
+        # wide span: the donor that is "central" (closest to the donor centroid arc)
+        # should be flanked by the two outer donors at a WIDE angle about the metal-
+        # facing side.  Use the angle at the central donor's projection: a flat
+        # tridentate has outer..outer spanning a meridional arc.  Compute the angle
+        # subtended by the two outer donors at the inter-donor centroid; for a rigid
+        # planar terpy/pincer this is wide (mer), for a facial-capable cap it is ~60deg.
+        d3 = P[dons]
+        cen = d3.mean(axis=0)
+        # identify the central donor = the one whose removal leaves the widest pair
+        best_span = 0.0
+        for c in range(3):
+            outer = [dons[k] for k in range(3) if k != c]
+            v1 = P[outer[0]] - P[dons[c]]
+            v2 = P[outer[1]] - P[dons[c]]
+            n1 = _np.linalg.norm(v1); n2 = _np.linalg.norm(v2)
+            if n1 < 1e-6 or n2 < 1e-6:
+                continue
+            ang = _np.degrees(_np.arccos(_np.clip(float(v1 @ v2) / (n1 * n2), -1.0, 1.0)))
+            if ang > best_span:
+                best_span = ang
+        # a flat meridional tridentate has the outer donors at a wide angle as seen
+        # from the central donor (terpy ~ 110-130deg internal; a facial cap is sharper).
+        if best_span < 95.0:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
+    """Universal, graph+geometry-only test for a RIGID PLANAR tetradentate ligand
+    (porphyrin / phthalocyanine / corrole / planar Schiff-base macrocycle: 4
+    coordinating donors held coplanar by a conjugated macrocyclic backbone).  Such a
+    ligand physically CANNOT seat on an arbitrary 4-vertex subset of an octahedron —
+    its 4 donors must form an EQUATORIAL SQUARE (coplanar through the metal, leaving
+    the axial sites free).  No SMILES/refcode knowledge.
+
+    Criteria (all required):
+      (1) exactly 4 donor atoms;
+      (2) every donor is a conjugated lone-pair donor (aromatic / sp2) AND lies in a
+          ring — an sp3 amine arm (cyclam / tren) is flexible, not rigid-planar;
+      (3) on an embedded free conformer the 4 donors are near-coplanar AND form a
+          SQUARE: the two longest donor-donor distances (the diagonals) are nearly
+          equal and clearly exceed the four shorter ones (the sides), with a
+          diagonal/side ratio in the porphyrin range (~1.25-1.6).
+
+    Returns True only when all hold; any failure / exception -> False (the ligand
+    keeps the historic over-enumerate-and-self-gate combinatorial freedom).
+    Deterministic."""
+    try:
+        dons = [int(x) for x in donor_local_idxs]
+        if len(dons) != 4:
+            return False
+        # (2) each donor conjugated (aromatic/sp2) AND ring-borne.
+        for di in dons:
+            at = fmol.GetAtomWithIdx(di)
+            if not at.IsInRing():
+                return False
+            if not (at.GetIsAromatic() or str(at.GetHybridization()) == "SP2"):
+                return False
+        # (3) geometric coplanarity + square signature on an embedded conformer.
+        from rdkit.Chem import AllChem
+        import numpy as _np
+        mh = Chem.AddHs(fmol)
+        if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=False) != 0:
+            if AllChem.EmbedMolecule(mh, randomSeed=42, useRandomCoords=True) != 0:
+                return False
+        try:
+            AllChem.MMFFOptimizeMolecule(mh)
+        except Exception:
+            pass
+        P = _np.array(mh.GetConformer().GetPositions(), float)
+        D = P[dons]
+        Dc = D - D.mean(axis=0)
+        # planarity: out-of-plane extent (smallest SVD singular value) must be small.
+        try:
+            _, sv, _ = _np.linalg.svd(Dc)
+        except Exception:
+            return False
+        if sv[0] < 1e-6:
+            return False
+        if float(sv[2] / sv[0]) > 0.22:               # not flat -> not rigid planar
+            return False
+        # square signature: 6 pairwise donor distances = 2 diagonals + 4 sides.
+        dists = sorted(
+            float(_np.linalg.norm(D[a] - D[b]))
+            for a in range(4) for b in range(a + 1, 4)
+        )
+        sides = dists[:4]
+        diags = dists[4:]
+        if sides[0] < 1e-6 or diags[0] < 1e-6:
+            return False
+        # diagonals near-equal, sides near-equal, diagonal clearly > side.
+        if diags[1] / diags[0] > 1.30:                # diagonals not balanced
+            return False
+        if sides[3] / sides[0] > 1.50:                # sides too irregular
+            return False
+        ratio = diags[0] / sides[3]                   # diagonal/side
+        if not (1.20 <= ratio <= 1.70):               # square ~sqrt(2); reject non-square
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _default_geometry(metal: str, cn: int) -> Optional[str]:
+    if cn == 2:
+        # iter-32f (DELFIN_FFFREE_CN_EXTEND): linear two-coordinate — the canonical
+        # d10 geometry (Cu(I)/Ag(I)/Au(I)/Hg(II)).  No metal-specific branch: CN2 is
+        # essentially always linear.
+        return "L-2 linear"
+    if cn == 6:
+        return "OC-6 octahedron"
+    if cn == 5:
+        return "TBP-5 trigonal bipyramid"
+    if cn == 4:
+        return "SP-4 square planar" if metal in _D8 else "T-4 tetrahedron"
+    if cn == 3:
+        # iter-32c (User 2026-05-28 ADUMOD: Pd CN3 was built as Td/linear).
+        # d⁸ Pt/Pd/Ni/Au/Rh/Ir CN3 prefer T-shape (square-planar with one vacancy);
+        # all other metals get trigonal-planar SP-3.  Both isomers can be additively
+        # enumerated via DELFIN_FFFREE_DUAL_CN3=1 (mirror of dual-CN4 / dual-CN6 wiring).
+        return "T-3 T-shape" if metal in _D8 else "SP-3 trigonal planar"
+    if cn == 7:
+        return "PB-7 pentagonal bipyramid"
+    if cn == 8:
+        return "SQAP-8 square antiprism"
+    if cn == 9:
+        return "TTP-9 tricapped trigonal prism"
+    return None
+
+
+def _rigid_hapto_enabled() -> bool:
+    """Rigid-η construction on the FF-free path (default OFF -> byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_RIGID_HAPTO", "0") == "1"
+
+
+def _donor_protonation_enabled() -> bool:
+    """Honour the SMILES-implied protonation on coordinating atoms when a ligand is
+    cleaved off the metal (default OFF -> byte-identical: the normalization is never
+    applied)."""
+    return os.environ.get("DELFIN_FFFREE_DONOR_PROTONATION", "0") == "1"
+
+
+# Standard NEUTRAL valences for the light p-block donor/π-face elements.  Used only to
+# derive the SMILES-implied H of a coordinating atom whose explicit ``[X+]`` charge is a
+# dative-bond ENCODING artifact (not a real cation) — graph-only, never extended to the
+# metal itself.
+_NEUTRAL_VALENCE = {6: 4, 7: 3, 8: 2, 15: 3, 16: 2, 5: 3}
+
+
+def _restore_donor_protonation(mol, m: int, donor_idx: List[int]):
+    """Normalize the protonation of metal-coordinating atoms to the SMILES-implied
+    valence BEFORE the ligand fragments are cleaved + re-sanitized.
+
+    Root cause (eye: IRECIT under-protonated, IPOSOW over-protonated):
+    a metal-donor bond written explicitly in the SMILES forces an ENCODING ARTIFACT
+    on the donor atom so the parser accepts the M-X valence — most often a ``[C+]``/
+    ``[O+]`` formal charge plus ``noImplicit``.  When the M-X bond is later cleaved
+    and the freed fragment re-sanitized, that artifact survives and the donor keeps
+    the WRONG hydrogen count:
+
+      * a π-face donor carbon (``[C+]=[C+]`` η²-alkene, ``[C+]`` η-ring/arene) keeps
+        its artifact ``+`` and ``noImplicit`` -> RDKit adds ZERO H -> the C=C / ring
+        CH protons vanish (IRECIT: ``[C+]=[C+]`` should be ethylene H2C=CH2, 2 H/C);
+        the bare ``[C+]`` cation also blocks kekulization, so the whole cleave fails
+        and the system silently falls back to legacy.
+      * a σ lone-pair donor (N/O/P/S, carbene-C, carbonyl-C in ``[C]#[O+]``) is a
+        DIFFERENT animal: its open coordination slot is a LONE PAIR, not an H, so it
+        must NOT gain a proton when freed.  Naively neutralizing every ``[X+]`` would
+        ADD a spurious H here (the IPOSOW-class over-protonation).
+
+    The fix is therefore asymmetric and graph-derived (never refcode/element-special):
+    only a π-DONOR CARBON — a metal-bound carbon whose remaining (non-metal) bonds are
+    an unsaturated C=C / C≡C / aromatic-C face (a multiple/aromatic bond to another
+    carbon) and which carries an artifact ``+`` with no H — has its artifact charge +
+    radical dropped and its explicit-H set to the neutral sp/sp²/sp³ valence implied
+    by its non-metal bond orders (``valence(C)=4`` minus the non-metal bond sum).
+    Every σ lone-pair donor (heteroatom, carbene-C, carbonyl-C) is LEFT EXACTLY AS-IS,
+    so no proton is added where the SMILES does not imply one.
+
+    Operates in place on an ``RWMol``; idempotent; graph-only; deterministic; never
+    raises (any failure leaves the atom untouched).  Returns the count of atoms whose
+    protonation was restored (for diagnostics)."""
+    restored = 0
+    for d in donor_idx:
+        try:
+            a = mol.GetAtomWithIdx(int(d))
+        except Exception:
+            continue
+        if a.GetAtomicNum() != 6:
+            continue                          # only π-donor CARBON is restored
+        if a.GetFormalCharge() <= 0:
+            continue                          # no encoding artifact to undo
+        if a.GetTotalNumHs() > 0:
+            continue                          # already protonated -> nothing to do
+        # Non-metal bond order sum + is this an unsaturated/aromatic CARBON π-face?
+        nonmetal_bo = 0.0
+        is_pi_carbon = False
+        for b in a.GetBonds():
+            other = b.GetOtherAtom(a)
+            if bd._is_metal(other.GetSymbol()):
+                continue                      # the dative M-C bond contributes nothing
+            bo = b.GetBondTypeAsDouble()
+            nonmetal_bo += bo
+            if other.GetAtomicNum() == 6 and (bo >= 2.0 or b.GetIsAromatic()
+                                              or a.GetIsAromatic()):
+                is_pi_carbon = True           # C=C / C#C / aromatic-C face
+        if not is_pi_carbon:
+            continue                          # σ lone-pair / carbonyl C -> leave as-is
+        nh = int(round(_NEUTRAL_VALENCE[6] - nonmetal_bo))
+        if nh <= 0:
+            continue                          # valence already full -> add nothing
+        try:
+            a.SetFormalCharge(0)              # drop the dative-encoding [C+] artifact
+            a.SetNumRadicalElectrons(0)
+            a.SetNoImplicit(True)
+            a.SetNumExplicitHs(nh)
+            restored += 1
+        except Exception:
+            continue
+    return restored
+
+
+# Heavy-atom per-donor-arm complexity cap (decompose ligand-complexity gate).  At the
+# default cap (8) a ligand with >8 heavy atoms / donor is REJECTED -> the whole complex
+# bails to legacy (0 enumerated isomers).  The isomer-completeness audit
+# (ISOMER_COMPLETENESS_AUDIT_2026_06_18 §4/§6) measured this single gate as the DOMINANT
+# reach gap (~51.5 % of the pool: large/conjugated ligands — phosphines with big
+# substituents, polypyridyl, large arene systems).  Conformer-aware SEATING
+# (DELFIN_FFFREE_CONFORMER_SEATING, default OFF) raises this cap so those complexes
+# reach the FF-free build, where the conformer/backbone-re-embed machinery seats the
+# large ligand and the self-gate keeps the never-worse guarantee.
+_HEAVY_CAP_DEFAULT = 8
+
+
+def _seating_enabled() -> bool:
+    """Conformer-aware seating for large ligands (default OFF -> byte-identical):
+    when ON, the per-arm heavy-atom cap is raised so large-ligand complexes enter the
+    FF-free path instead of bailing to legacy at decompose()."""
+    return os.environ.get("DELFIN_FFFREE_CONFORMER_SEATING", "0") == "1"
+
+
+def _heavy_cap() -> int:
+    """Effective per-donor-arm heavy-atom cap.  Default 8 (byte-identical).  Raised to
+    DELFIN_FFFREE_SEATING_HEAVY_CAP (default 24) when conformer seating is enabled, so
+    realistic TMC ligands (polypyridyl, substituted phosphines, large arenes) reach the
+    FF-free build; the conformer seating + self-gate enforce never-worse downstream."""
+    if not _seating_enabled():
+        return _HEAVY_CAP_DEFAULT
+    try:
+        return int(os.environ.get("DELFIN_FFFREE_SEATING_HEAVY_CAP", "24"))
+    except Exception:
+        return 24
+
+
+def _eta_groups(mol, m: int) -> List[List[int]]:
+    """Detect η (hapto) groups among the metal's carbon neighbours: maximal sets
+    of ≥2 metal-bound carbons that are mutually contiguous through C-C bonds
+    (a Cp / arene / diene / allyl π-face).  Graph-only, deterministic; returns a
+    list of sorted carbon-index lists.  A lone metal-bound carbon (σ M-C, e.g. a
+    carbonyl C or a methyl) is NOT an η group and is left out.
+
+    Mirrors smiles_converter._find_hapto_groups but scoped to ONE metal and used
+    only by the rigid-hapto FF-free path (env-gated)."""
+    matom = mol.GetAtomWithIdx(m)
+    c_nbrs = [n.GetIdx() for n in matom.GetNeighbors() if n.GetAtomicNum() == 6]
+    cset = set(c_nbrs)
+    if len(cset) < 2:
+        return []
+    seen: set = set()
+    groups: List[List[int]] = []
+    for start in c_nbrs:
+        if start in seen:
+            continue
+        comp: List[int] = []
+        stack = [start]
+        seen.add(start)
+        while stack:
+            cur = stack.pop()
+            comp.append(cur)
+            for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+                ni = nb.GetIdx()
+                if ni in cset and ni not in seen:
+                    seen.add(ni)
+                    stack.append(ni)
+        if len(comp) >= 2:                            # contiguous π-face = η group
+            groups.append(sorted(comp))
+    return groups
+
+
+def _restore_eta_ring_hydrogens(fmol, local_eta: List[int]):
+    """Restore the hydrogens dropped from η-ring carbons after the M-C cleave.
+
+    The dative-bond SMILES encoding writes π-face carbons as ``[C+]`` cations
+    (degree-3 with the metal bond).  When ``_decompose_hapto`` cleaves the M-C
+    bonds the bare ring carbons keep ``noImplicit=True`` + a radical electron, so
+    RDKit's ``AddHs`` adds ZERO hydrogen to them — the η-ring CH hydrogens vanish
+    from every emitted frame (eye-caught: CEBQEI 11 H vs 17, BOCMIR 6 vs 10).
+
+    Real Cp / arene / diene / allyl ring carbons are sp2 (valence 3): a ring
+    carbon with no substituent (2 heavy neighbours) bears exactly ONE H; a
+    substituted ring carbon (3 heavy neighbours) bears none.  We therefore drop
+    the encoding-artifact formal charge + radical on each η-carbon and set its
+    explicit-H count to ``max(0, 3 - heavy_neighbours)``.  The H land exo / in the
+    ring plane via RDKit's geometric embed (handled downstream in
+    ``_ligand_confs_from_mol``).  Graph-only, deterministic, idempotent; returns a
+    sanitized RWMol-derived mol or the original fmol on any failure (never raises,
+    never produces a non-finite molecule)."""
+    try:
+        rw = Chem.RWMol(fmol)
+        for i in local_eta:
+            a = rw.GetAtomWithIdx(int(i))
+            if a.GetAtomicNum() != 6:
+                continue                                  # η-faces are carbon
+            n_heavy = sum(1 for nb in a.GetNeighbors() if nb.GetAtomicNum() > 1)
+            nh = max(0, 3 - n_heavy)                       # sp2 ring carbon, valence 3
+            a.SetFormalCharge(0)                           # drop the [C+] artifact
+            a.SetNumRadicalElectrons(0)
+            a.SetNoImplicit(True)
+            a.SetNumExplicitHs(nh)
+        m2 = rw.GetMol()
+        Chem.SanitizeMol(m2)
+        return m2
+    except Exception:
+        return fmol
+
+
+def _nhc_carbene_enabled() -> bool:
+    """Free-carbene repair of metal-bound carbene-C after the M-C cleave (default
+    OFF -> byte-identical: the repair branch is never entered)."""
+    return os.environ.get("DELFIN_FFFREE_NHC_CARBENE", "0") == "1"
+
+
+def _kekulize_split_enabled() -> bool:
+    """Kekulize-robust fragment split (default OFF -> byte-identical: the fallback
+    branch is never entered).  Many aromatic-N⁺ pincer/cage SMILES (pyridinium-type
+    donors, e.g. GONWEL) cannot be KEKULIZED once the M-D bonds are cut, so the
+    strict ``GetMolFrags(sanitizeFrags=True)`` raises and the WHOLE complex falls to
+    the legacy-UFF path — even when its denticity/CN are perfectly FF-free-buildable.
+    This is a pure RDKit-perception artefact, not a chemistry limit."""
+    return os.environ.get("DELFIN_FFFREE_KEKULIZE_SPLIT", "0") == "1"
+
+
+def _kekulize_robust_frags(em, mapping):
+    """Split ``em`` into fragment mols WITHOUT the strict kekulize, then sanitize
+    each fragment with kekulization skipped (aromaticity retained).  Returns the
+    fragment-mol list (and populates ``mapping`` with the per-fragment original
+    atom indices, same contract as the strict call) or None on genuine failure.
+    Recovers the aromatic-N⁺ ligands that only fail RDKit kekulization."""
+    try:
+        raw = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=False,
+                               fragsMolAtomMapping=mapping)
+    except Exception:
+        return None
+    out = []
+    for f in raw:
+        fm = Chem.RWMol(f)
+        try:
+            Chem.SanitizeMol(
+                fm, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                 ^ Chem.SanitizeFlags.SANITIZE_KEKULIZE))
+        except Exception:
+            return None                               # real valence error -> legacy
+        out.append(fm.GetMol())
+    return out
+
+
+def _carbene_carbon_idxs(mol, m: int, matom) -> List[int]:
+    """Graph-only detection of carbene-carbon DONORS on the metal.
+
+    A carbene C (NHC = imidazol-2-yliden and its saturated/benzannulated kin, but
+    also any divalent C-donor) is encoded in the dative-bond SMILES as ``[C+]``: a
+    ring carbon that bonds the metal AND sits between heteroatoms (the canonical
+    N-C-N of an NHC; generalised to ≥2 ring heteroatom neighbours, N/O/S/P).  Once
+    the M-C bond is cleaved this carbon drops to degree 2 (two σ bonds to the ring
+    heteroatoms) while still carrying the ``[C+]``/aromatic encoding artifact, which
+    leaves RDKit unable to kekulise the ring (KekulizeException) -> the whole
+    fragment split fails -> the system falls back to legacy.
+
+    Returns the sorted local indices of such carbons (metal-bound, in a ring, with
+    ≥2 ring heteroatom neighbours).  A lone σ-C (methyl, carbonyl C, aryl-C) has
+    fewer than two heteroatom neighbours and is never flagged.  Deterministic."""
+    out: List[int] = []
+    for n in matom.GetNeighbors():
+        if n.GetAtomicNum() != 6:
+            continue
+        if not n.IsInRing():
+            continue
+        het = 0
+        for x in n.GetNeighbors():
+            if x.GetIdx() == m:
+                continue
+            if x.GetAtomicNum() in (7, 8, 15, 16) and x.IsInRing():
+                het += 1
+        if het >= 2:
+            out.append(n.GetIdx())
+    return sorted(out)
+
+
+def _repair_carbene_carbons(em, carbene_idxs: List[int]):
+    """Repair cleaved carbene carbons IN-PLACE on the bond-removed RWMol ``em`` to
+    the RDKit-valid representation of a FREE singlet carbene.
+
+    After the M-C cleave the carbene carbon is a degree-2 carbon still tagged
+    ``[C+]`` (charge +1, valence 3, the dative-bond encoding artifact) — RDKit
+    cannot kekulise the surrounding ring, so ``SanitizeMol``/``sanitizeFrags``
+    raises.  The chemically correct free species (after heterolytic M-C cleavage the
+    σ lone pair stays on carbon) is the neutral divalent singlet carbene ``:C:`` —
+    an sp² carbon with a σ lone pair and an empty p orbital, i.e. RDKit valence 2
+    with 2 (non-bonding) radical electrons, charge 0, no implicit/explicit H.  This
+    is exactly the representation RDKit accepts and round-trips, and embeds to the
+    real ~101-106° N-C-N carbene angle.  Idempotent; only touches the flagged
+    carbons.  Mutates ``em`` in place (the caller owns the RWMol)."""
+    cset = set(int(i) for i in carbene_idxs)
+    for i in cset:
+        a = em.GetAtomWithIdx(i)
+        if a.GetAtomicNum() != 6:
+            continue
+        a.SetFormalCharge(0)            # drop the [C+] dative-encoding artifact
+        a.SetNumExplicitHs(0)
+        a.SetNumRadicalElectrons(2)     # divalent singlet carbene :C: (val 2)
+        a.SetNoImplicit(True)
+        a.SetIsAromatic(False)          # carbene C is no longer ring-aromatic
+
+
+def _metal_has_carbonyl(mol, m: int, matom) -> bool:
+    """True if the metal carries ≥1 σ-bound CARBONYL (M-C≡O).  Graph-only: a metal-
+    bound carbon that itself bears a (double/triple-)bonded oxygen and no other heavy
+    neighbour beyond the metal + that O.  Universal (no metal/refcode hard-coding); the
+    carbonyl-tripod motif is the chemical signature of a half-sandwich, independent of
+    the metal block (3d is a correlate, not a condition)."""
+    for nb in matom.GetNeighbors():
+        if nb.GetAtomicNum() != 6:
+            continue
+        ci = nb.GetIdx()
+        for o in mol.GetAtomWithIdx(ci).GetNeighbors():
+            if o.GetIdx() == m or o.GetAtomicNum() != 8:
+                continue
+            b = mol.GetBondBetweenAtoms(ci, o.GetIdx())
+            if b is not None and b.GetBondTypeAsDouble() >= 2.0:   # C=O / C≡O
+                return True
+    return False
+
+
+def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
+    """Hapto-aware decomposition (DELFIN_FFFREE_RIGID_HAPTO=1 only).
+
+    Treats each contiguous metal-bound π-face (Cp / arene / diene / allyl) as ONE
+    coordination site occupying ONE polyhedron vertex (the ring centroid), so the
+    effective CN is (#σ-donors) + (#η-groups) rather than the inflated η-carbon
+    count.  Returns a decompose dict with per-ligand 'eta' metadata that
+    assemble_complex builds as a rigid ring on the centroid vertex, or None to
+    fall back to the legacy hapto path.  Universal, graph-only, deterministic."""
+    egroups = _eta_groups(mol, m)
+    if not egroups:
+        return None                                   # no η-face -> not our case
+    # Hebel B (DELFIN_FFFREE_HAPTO_HALFSANDWICH_GATE, default OFF): restrict the rigid-
+    # hapto path to GENUINE half-sandwich carbonyls (η-ring + ≥1 M-CO).  The rigid-η
+    # construction wins decisively on η-ring+carbonyl-tripod piano-stools but misfires
+    # on η-ring complexes WITHOUT a carbonyl tripod (arene-M-Cl/amine piano-stools,
+    # vinyl/allyl-Pt, polyene-Mo) — there it gives a net recall LOSS.  With the gate
+    # on, those fall back cleanly to the legacy hapto path.  Graph-based + universal:
+    # the discriminator is the chemical carbonyl motif, NOT the metal/refcode.
+    if (os.environ.get("DELFIN_FFFREE_HAPTO_HALFSANDWICH_GATE", "0") == "1"
+            and not _metal_has_carbonyl(mol, m, matom)):
+        return None                                   # not a carbonyl half-sandwich
+    eta_atoms = set()
+    for g in egroups:
+        eta_atoms.update(g)
+    nbr_idx = [n.GetIdx() for n in matom.GetNeighbors()]
+    sigma_idx = [d for d in nbr_idx if d not in eta_atoms]
+    cn = len(sigma_idx) + len(egroups)                # effective coordination number
+    _allowed = {4, 5, 6}
+    if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
+        _allowed.update({7, 8, 9})
+    if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
+        _allowed.add(3)
+    if cn not in _allowed:
+        return None
+    metal = matom.GetSymbol()
+    geometry = _default_geometry(metal, cn)
+    if geometry is None:
+        return None
+    donor_elem = {d: mol.GetAtomWithIdx(d).GetSymbol() for d in sigma_idx}
+    # Cleave: break every M-σ-donor bond AND every M-(η-carbon) bond, then split
+    # into sanitized fragment mols (indices stay stable inside each fragment).
+    em = Chem.RWMol(mol)
+    # Donor-protonation normalization (DELFIN_FFFREE_DONOR_PROTONATION=1; default OFF
+    # -> not called, byte-identical): restore the SMILES-implied H on π-donor carbons
+    # (η-faces written as [C+]) BEFORE the sanitize-fragment cleave, so the freed face
+    # kekulizes and carries the correct CH protons; σ donors are left untouched.
+    if _donor_protonation_enabled():
+        _restore_donor_protonation(em, m, nbr_idx)
+    for d in nbr_idx:
+        if em.GetBondBetweenAtoms(m, d) is not None:
+            em.RemoveBond(m, d)
+    mapping: List = []
+    try:
+        frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
+                                 fragsMolAtomMapping=mapping)
+    except Exception:
+        return None
+    sigma_set = set(sigma_idx)
+    # map global η-atom -> its group id (for per-fragment grouping)
+    eta_gid = {}
+    for gid, g in enumerate(egroups):
+        for a in g:
+            eta_gid[a] = gid
+    ligands: List[Dict] = []
+    n_sites = 0
+    for fmol, orig_idxs in zip(frags, mapping):
+        orig = list(orig_idxs)
+        if m in orig:
+            continue                                  # the metal's own fragment
+        f_sigma = [o for o in orig if o in sigma_set]
+        f_eta_gids = sorted({eta_gid[o] for o in orig if o in eta_gid})
+        if not f_sigma and not f_eta_gids:
+            return None                               # bridging / spectator -> legacy
+        # A fragment may carry both σ-donors and η-faces (rare); but each must map
+        # cleanly onto its own vertex.  Keep v1 simple+safe: a fragment is EITHER a
+        # set of σ-donors (handled like the Werner path) OR exactly ONE η-face.
+        if f_eta_gids:
+            if len(f_eta_gids) != 1 or f_sigma:
+                return None                           # mixed/multi η in one frag -> legacy
+            gid = f_eta_gids[0]
+            g = egroups[gid]
+            local_eta = [orig.index(o) for o in g]
+            # Restore the η-ring CH hydrogens the M-C cleave stripped (the [C+]
+            # artifact otherwise has AddHs add zero H to the π-face carbons).
+            fmol = _restore_eta_ring_hydrogens(fmol, local_eta)
+            ligands.append({
+                "mol": fmol,
+                "is_eta": True,
+                "eta_local_idxs": local_eta,          # ring carbons (local indices)
+                "eta_n": len(g),                      # η hapticity (5=Cp, 6=arene, ...)
+                "denticity": 1,                       # occupies ONE vertex (centroid)
+                "donor_elem": "C",
+            })
+            n_sites += 1
+        else:
+            if len(f_sigma) > 3:
+                return None                           # >tridentate (rare) -> legacy
+            local_donors = [orig.index(o) for o in f_sigma]
+            ligands.append({
+                "mol": fmol,
+                "is_eta": False,
+                "donor_local_idx": local_donors[0],
+                "donor_local_idxs": local_donors,
+                "denticity": len(f_sigma),
+                "donor_elem": donor_elem[f_sigma[0]],
+                "donor_elems": [donor_elem[o] for o in f_sigma],
+            })
+            n_sites += len(f_sigma)
+    if n_sites != cn:
+        return None
+    # Ligand-complexity gate (mirror of the Werner path), but EXEMPT η-faces: an
+    # η-ring is placed rigidly as one unit, so its heavy-atom count is irrelevant.
+    MAX_HEAVY_PER_DONOR = _heavy_cap()    # raised under conformer-seating (default 8)
+    for lg in ligands:
+        if lg.get("is_eta"):
+            continue
+        nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
+        if nheavy / max(lg["denticity"], 1) > MAX_HEAVY_PER_DONOR:
+            return None
+    has_chelate = any((not lg.get("is_eta")) and lg["denticity"] >= 2
+                      for lg in ligands)
+    has_eta = any(lg.get("is_eta") for lg in ligands)
+    return {"metal": metal, "cn": cn, "geometry": geometry,
+            "has_chelate": has_chelate, "has_eta": has_eta,
+            "donor_elems": [lg["donor_elem"] for lg in ligands],
+            "ligands": ligands}
+
+
+def decompose(smiles: str) -> Optional[Dict]:
+    # Reuse the converter's full organometallic mol-preparation (stk / dative-bond
+    # conversion / charge+H perception) so cleaved ligands have correct chemistry
+    # (NH3 stays NH3, Cl⁻ stays Cl⁻ — not HCl).  Lazy import avoids the import
+    # cycle (smiles_converter -> converter_backend -> decompose).
+    mol = None
+    try:
+        from delfin.smiles_converter import _prepare_mol_for_embedding
+        mol = _prepare_mol_for_embedding(smiles)
+    except Exception:
+        mol = None
+    if mol is None:
+        mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        return None
+    metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
+    if len(metals) != 1:
+        # Donor-aware metal-centre resolution (DELFIN_FFFREE_METALLOID_DONOR=1, default
+        # OFF -> byte-identical: this branch is never entered, the function returns None
+        # exactly as before).  A mononuclear complex whose donor is a metalloid (Sb/As/
+        # Bi/Te/Se/Ge/Sn/Pb) has the metalloid mis-counted as a co-metal, inflating the
+        # metal count past 1.  Resolve the real (non-metalloid) transition/lanthanide
+        # centre; the metalloid donors then go through the normal Werner cleave below.
+        if _metalloid_donor_enabled():
+            c = _resolve_metal_center(mol)
+            if c is None:
+                return None                           # not a clean metalloid-donor case
+            metals = [c]
+        else:
+            return None                               # mononuclear only (v1)
+    m = metals[0]
+    matom = mol.GetAtomWithIdx(m)
+    # Rigid-hapto path (env-gated, default OFF): if the metal carries a contiguous
+    # π-face (Cp / arene / diene / allyl), collapse each face to ONE coordination
+    # site so the effective CN passes the 4-6 gate and reaches the FF-free build.
+    # Byte-identical when the flag is off (the branch is never entered).
+    if _rigid_hapto_enabled():
+        d_hap = _decompose_hapto(smiles, mol, m, matom)
+        if d_hap is not None:
+            return d_hap
+        # no η-face (or unhandled hapto topology) -> fall through to the Werner path,
+        # which is byte-identical to the flag-off behaviour for non-hapto inputs.
+    donor_idx = [n.GetIdx() for n in matom.GetNeighbors()]
+    cn = len(donor_idx)
+    # High-CN (7-9) support is env-gated: default coverage stays CN 4-6 (byte-
+    # identical), CN 7-9 polyhedra (PB-7/SQAP-8/TTP-9) only when DELFIN_FFFREE_HIGHCN=1.
+    # Low-CN (3) support is env-gated: DELFIN_FFFREE_CN3=1 enables SP-3/T-3 (iter-32c).
+    # CN-coverage extension (iter-32f): DELFIN_FFFREE_CN_EXTEND=1 accepts the most
+    # impactful out-of-range buckets — CN2 (linear, the big one: d10 Cu/Ag/Au/Hg) plus
+    # CN7 (PB-7) and CN8 (SQAP-8) — routing them to the polyhedra that already exist.
+    # Default OFF -> byte-identical (the branch is never entered).
+    _allowed = set()
+    _allowed.update({4, 5, 6})
+    if os.environ.get("DELFIN_FFFREE_HIGHCN", "0") == "1":
+        _allowed.update({7, 8, 9})
+    if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
+        _allowed.add(3)
+    if os.environ.get("DELFIN_FFFREE_CN_EXTEND", "0") == "1":
+        _allowed.update({2, 7, 8})
+    if cn not in _allowed:
+        return None
+    metal = matom.GetSymbol()
+    geometry = _default_geometry(metal, cn)
+    if geometry is None:
+        return None
+
+    donor_elem = {d: mol.GetAtomWithIdx(d).GetSymbol() for d in donor_idx}
+    # break metal-donor bonds (keep atom indices stable), then split into
+    # sanitized fragment mols (sanitize fixes valences -> N regains its H etc.).
+    em = Chem.RWMol(mol)
+    # Donor-protonation normalization (DELFIN_FFFREE_DONOR_PROTONATION=1; default OFF
+    # -> not called, byte-identical): restore the SMILES-implied H on π-donor carbons
+    # whose [C+] dative-encoding artifact would otherwise leave them under-protonated
+    # (and unkekulizable).  σ lone-pair donors are left untouched (no over-protonation).
+    if _donor_protonation_enabled():
+        _restore_donor_protonation(em, m, donor_idx)
+    for d in donor_idx:
+        if em.GetBondBetweenAtoms(m, d) is not None:
+            em.RemoveBond(m, d)
+    mapping: List = []
+    try:
+        frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
+                                 fragsMolAtomMapping=mapping)
+    except Exception:
+        # NHC / carbene-C donor repair (DELFIN_FFFREE_NHC_CARBENE=1 only; default OFF
+        # -> this branch is never entered and the failure stays a legacy fallback,
+        # byte-identical).  Defect-driven: the fragment split only fails (kekulize/
+        # valence) when a cleaved carbene-C kept its [C+] encoding; repair those
+        # carbons to the free singlet carbene :C: and retry the split ONCE.  A
+        # genuinely unsplittable input (no carbene, real valence error) still has no
+        # carbene candidates -> no repair -> return None unchanged.
+        frags = None
+        if _nhc_carbene_enabled():
+            carbene_idxs = _carbene_carbon_idxs(mol, m, matom)
+            if carbene_idxs:
+                _repair_carbene_carbons(em, carbene_idxs)
+                mapping = []
+                try:
+                    frags = Chem.GetMolFrags(em, asMols=True, sanitizeFrags=True,
+                                             fragsMolAtomMapping=mapping)
+                except Exception:
+                    frags = None
+        if frags is None and _kekulize_split_enabled():
+            # Kekulize-robust fallback: the strict split failed only because RDKit
+            # cannot kekulize the cleaved aromatic-N⁺ ligand(s) — recover them with
+            # kekulization skipped so a genuinely FF-free-buildable complex (correct
+            # CN + denticity, checked below) is NOT dumped to the legacy path.
+            mapping = []
+            frags = _kekulize_robust_frags(em, mapping)
+        if frags is None:
+            return None
+    donor_set = set(donor_idx)
+    ligands: List[Dict] = []
+    n_chelate_bonds = 0
+    for fmol, orig_idxs in zip(frags, mapping):
+        orig = list(orig_idxs)
+        if m in orig:
+            continue                                  # the metal's own fragment
+        fdonors = [o for o in orig if o in donor_set]
+        if len(fdonors) == 0:
+            return None                               # bridging / spectator -> legacy
+        if len(fdonors) > 3:
+            # κ4+ single-fragment polydentate (porphyrin / cyclam / salen / macrocycle
+            # / cage): the historic default bails to legacy.  DELFIN_FFFREE_KAPPA4=1
+            # admits ONE polydentate fragment with up to CN donors -- the chelate-config
+            # enumerator (polya_isomer_count, dent>=3 branch) and the seating
+            # (_orient_chelate_to_vertices / _embed_metallacycle) already generalise to
+            # any denticity, and the self-gate (_build_is_clean) vetoes geometrically
+            # infeasible vertex subsets.  Default OFF -> byte-identical.
+            if not (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") == "1"
+                    and 4 <= len(fdonors) <= cn):
+                return None                           # >tridentate -> legacy (default)
+        local_donors = [orig.index(o) for o in fdonors]
+        # Geometry-aware meridional flag (env-gated, default OFF -> not computed, so
+        # byte-identical): a RIGID PLANAR tridentate (terpy / pincer) must bind
+        # MERIDIONALLY; tag it so enumeration restricts it to mer vertex triples and
+        # the assembler seats its 3 donors coplanar with the metal.
+        rigid_planar = False
+        if _planar_mer_enabled() and len(fdonors) == 3:
+            rigid_planar = _is_rigid_planar_tridentate(fmol, local_donors)
+        # κ4 rigid-planar (porphyrin / phthalocyanine / planar Schiff-base macrocycle):
+        # tag it so the enumerator restricts the 4 donors to an EQUATORIAL SQUARE
+        # (coplanar through the metal) and the assembler seats them in that plane.
+        # Only reachable under DELFIN_FFFREE_KAPPA4 (κ4 path gated above) -> byte-id off.
+        elif (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") == "1"
+              and len(fdonors) == 4):
+            rigid_planar = _is_rigid_planar_tetradentate(fmol, local_donors)
+        ligands.append({
+            "mol": fmol,
+            "donor_local_idx": local_donors[0],       # primary (back-compat)
+            "donor_local_idxs": local_donors,         # all donors (chelate)
+            "denticity": len(fdonors),
+            "donor_elem": donor_elem[fdonors[0]],
+            "donor_elems": [donor_elem[o] for o in fdonors],
+            "rigid_planar": rigid_planar,
+        })
+        n_chelate_bonds += len(fdonors)
+    if n_chelate_bonds != cn:
+        return None
+    has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
+    # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
+    # small/simple ligands place cleanly; very large conjugated ligands need
+    # conformer work the rigid placement doesn't do, so the DEFAULT bails to None
+    # for those.  Per-arm (not per-ligand) so a polydentate chelate (e.g. citrate,
+    # 13 heavy over 6 donors ~ 2/arm) is not unfairly rejected for its total size.
+    # Conformer seating (DELFIN_FFFREE_CONFORMER_SEATING) raises the cap so the large
+    # ligand reaches the build, where the conformer-aware seating (+ backbone re-embed)
+    # places it and the self-gate enforces never-worse.  Default OFF -> cap 8 (byte-id).
+    MAX_HEAVY_PER_DONOR = _heavy_cap()
+    #
+    # JOINT-DECLASH gate-lift (DELFIN_FFFREE_JOINT_DECLASH, default OFF -> byte-id):
+    # large MONODENTATE ligands (per-arm 9-12 heavy: PMePh2, mesityloxide, ArO,
+    # N(SiMe3)2, ...) are the cleanest "class-B" sub-population — their coordination
+    # core builds IDEAL and only the ligand BODIES clash, which the new joint
+    # inter-ligand declash pass now relieves before the self-gate.  So raise the
+    # per-arm ceiling for MONODENTATE arms only (8 -> 12).  CHELATE arms keep the
+    # historic cap (their backbone needs ring/metallacycle work the declash does not
+    # do); denticity>3 / kappa4 already bailed above (class-C, separate).
+    _jd = os.environ.get("DELFIN_FFFREE_JOINT_DECLASH", "0") == "1"
+    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", "12")) if _jd else 8
+    # CHELATE-BACKBONE gate-lift (DELFIN_FFFREE_CHELATE_BACKBONE, default OFF -> byte-id):
+    # PHASE 0 of the polydentate project (K4_MACROCYCLE_DESIGN_2026_06_17.md §10).
+    # Large kappa<=3 chelates with an extended/strained backbone (e.g. BIQCOV: Ta,
+    # kappa3 diamido, ~9.7 heavy/arm; ABEZAJ Ti diamido-amine; ABIBAP Ru terpy-class)
+    # build cleanly via the hardened metallacycle DG-embed (soft donor-donor windows +
+    # more conformers, assemble_complex._embed_metallacycle) but are CUT OFF at the
+    # decompose stage because the historic per-arm chelate cap (8 heavy/arm) rejects
+    # their aryl/strained backbone BEFORE any build is attempted.  Raise the CHELATE arm
+    # ceiling (8 -> DELFIN_FFFREE_CHELATE_HEAVY_CAP, default 12) ONLY when the flag is on;
+    # the self-gate (_build_is_clean) still vetoes any unclean result -> never worse than
+    # legacy.  Strictly the already-allowed kappa<=3 path: the denticity>3 gate (Z.398-399)
+    # is UNTOUCHED, so kappa4+ stays legacy (Phase 1+, separately user-gated).
+    _chel_bb = os.environ.get("DELFIN_FFFREE_CHELATE_BACKBONE", "0") == "1"
+    _chel_cap = int(os.environ.get("DELFIN_FFFREE_CHELATE_HEAVY_CAP", "12")) if _chel_bb else 8
+    for lg in ligands:
+        # A rigid-planar tridentate (terpy/pincer) is seated as one quasi-rigid
+        # meridional unit (its conjugated backbone holds the donors coplanar), so its
+        # per-arm heavy count — inflated by flanking aryl substituents — is not the
+        # placement-relevant complexity; exempt it (mirrors the η-face exemption).
+        # Only reachable when DELFIN_FFFREE_PLANAR_MER=1 (else rigid_planar is False).
+        if lg.get("rigid_planar"):
+            continue
+        nheavy = sum(1 for a in lg["mol"].GetAtoms() if a.GetAtomicNum() > 1)
+        # union of all three independent cap-raisers (each default OFF -> 8 -> byte-id):
+        #   MAX_HEAVY_PER_DONOR : seating heavy-cap (raises EVERY arm)
+        #   _mono_cap           : joint-declash mono-cap (raises MONODENTATE arms)
+        #   _chel_cap           : chelate-backbone cap (raises CHELATE arms)
+        # Whichever applicable raiser is largest wins per arm; all OFF => 8 everywhere.
+        if lg["denticity"] == 1:
+            cap = max(MAX_HEAVY_PER_DONOR, _mono_cap)
+        else:
+            cap = max(MAX_HEAVY_PER_DONOR, _chel_cap)
+        if nheavy / max(lg["denticity"], 1) > cap:
+            return None
+    has_rigid_planar = any(lg.get("rigid_planar") for lg in ligands)
+    return {"metal": metal, "cn": cn, "geometry": geometry,
+            "has_chelate": has_chelate,
+            "has_rigid_planar": has_rigid_planar,
+            "donor_elems": [lg["donor_elem"] for lg in ligands],
+            "ligands": ligands}
+
+
+if __name__ == "__main__":
+    for label, smi in [("cisplatin", "N[Pt](N)(Cl)Cl"),
+                       ("hexammineCo", "[NH3][Co]([NH3])([NH3])([NH3])([NH3])[NH3]"),
+                       ("[CoCl3(NH3)3]", "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]")]:
+        d = decompose(smi)
+        if d:
+            print(f"{label:<16} metal={d['metal']} CN={d['cn']} geom={d['geometry']} "
+                  f"donors={d['donor_elems']}")
+        else:
+            print(f"{label:<16} -> None (legacy fallback)")

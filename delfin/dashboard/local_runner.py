@@ -443,6 +443,8 @@ def _run_mode(mode: str) -> int:
         guppy_parallel_jobs = str(os.environ.get('GUPPY_PARALLEL_JOBS') or '4')
         guppy_goat_topk = str(os.environ.get('GUPPY_GOAT_TOPK') or '0')
         guppy_goat_parallel = str(os.environ.get('GUPPY_GOAT_PARALLEL_JOBS') or guppy_parallel_jobs)
+        guppy_start_strategy = str(os.environ.get('GUPPY_START_STRATEGY') or 'isomers')
+        guppy_max_isomers = str(os.environ.get('GUPPY_MAX_ISOMERS') or '100')
         print('Starting GUPPY SMILES sampling...')
         return _run_command([
             sys.executable,
@@ -461,9 +463,73 @@ def _run_mode(mode: str) -> int:
             guppy_goat_topk,
             '--goat-parallel-jobs',
             guppy_goat_parallel,
+            '--start-strategy',
+            guppy_start_strategy,
+            '--max-isomers',
+            guppy_max_isomers,
             '--output',
             'GUPPY_try.xyz',
         ])
+    if resolved_mode == 'guppy_batch':
+        csv_path = os.environ.get('GUPPY_BATCH_CSV') or ''
+        if not csv_path or not Path(csv_path).is_file():
+            print(f'ERROR: GUPPY_BATCH_CSV not set or file missing: {csv_path!r}')
+            return 1
+        guppy_workdir = os.environ.get('GUPPY_BATCH_WORKDIR') or 'GUPPY_BATCH'
+        guppy_pal = str(
+            os.environ.get('GUPPY_PAL')
+            or os.environ.get('DELFIN_PAL')
+            or os.environ.get('SLURM_CPUS_PER_TASK')
+            or '16'
+        )
+        guppy_maxcore = str(
+            os.environ.get('GUPPY_MAXCORE') or os.environ.get('DELFIN_MAXCORE') or '6000'
+        )
+        guppy_runs = str(os.environ.get('GUPPY_RUNS') or '20')
+        guppy_parallel_jobs = str(os.environ.get('GUPPY_PARALLEL_JOBS') or '4')
+        guppy_start_strategy = str(os.environ.get('GUPPY_START_STRATEGY') or 'isomers')
+        guppy_max_isomers = str(os.environ.get('GUPPY_MAX_ISOMERS') or '100')
+        guppy_goat_topk = str(os.environ.get('GUPPY_GOAT_TOPK') or '0')
+        guppy_goat_parallel = str(
+            os.environ.get('GUPPY_GOAT_PARALLEL_JOBS') or guppy_parallel_jobs
+        )
+        guppy_rmsd = str(os.environ.get('GUPPY_RMSD_CUTOFF') or '0.3')
+        guppy_energy_window = str(os.environ.get('GUPPY_ENERGY_WINDOW_KCAL') or '25.0')
+        cmd = [
+            sys.executable,
+            '-m',
+            'delfin.guppy_batch',
+            csv_path,
+            '--workdir',
+            guppy_workdir,
+            '--runs',
+            guppy_runs,
+            '--pal',
+            guppy_pal,
+            '--maxcore',
+            guppy_maxcore,
+            '--parallel-jobs',
+            guppy_parallel_jobs,
+            '--goat-topk',
+            guppy_goat_topk,
+            '--goat-parallel-jobs',
+            guppy_goat_parallel,
+            '--start-strategy',
+            guppy_start_strategy,
+            '--max-isomers',
+            guppy_max_isomers,
+            '--rmsd-cutoff',
+            guppy_rmsd,
+            '--energy-window-kcal',
+            guppy_energy_window,
+        ]
+        task_id = os.environ.get('SLURM_ARRAY_TASK_ID')
+        if task_id:
+            cmd.extend(['--row', str(task_id)])
+            print(f'Starting GUPPY batch (array task {task_id} / row {task_id})...')
+        else:
+            print('Starting GUPPY batch (full sequential run)...')
+        return _run_command(cmd)
     if resolved_mode in {'hyperpol_xtb', 'tadf_xtb', 'censo_anmr'}:
         if not xyz_file:
             print(f'ERROR: DELFIN_XYZ_FILE not set for {resolved_mode} mode')
