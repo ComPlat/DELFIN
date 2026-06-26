@@ -29,7 +29,7 @@ Three ways to use it:
 3. **Validated structure generation.** Geometries are checked against physical invariants — metal–donor distances, π-system planarity, hapticity — before they enter a calculation.
 4. **From prediction to design.** The same pipelines that predict properties can serve as the fitness function for evolutionary inverse design (ChemDarwin).
 
-DELFIN is research infrastructure: it does not replace chemical judgement — it makes DFT-grade evaluation routine enough to inform it.
+DELFIN is research infrastructure: it does not replace chemical judgement — it makes rigorous quantum-chemical evaluation (DFT, semi-empirical, and ML potentials) routine enough to inform it.
 
 ### What DELFIN can do
 
