@@ -143,6 +143,19 @@ def _is_enabled() -> bool:
     return _env_bool("DELFIN_FFFREE_CONF_COMPLETE", False)
 
 
+def _polar_h_enabled() -> bool:
+    """Polar-hydrogen rotor sampling (env DELFIN_FFFREE_POLAR_H_ROTORS, default OFF
+    -> byte-identical DOF set when unset).  The heavy-atom DOF enumeration skips
+    terminal O-H / N-H / S-H rotors ("they only spin H"), but those polar hydrogens
+    form the intramolecular hydrogen bonds that decide the global minimum: a
+    constructed conformer can reproduce the heavy-atom fold to <0.1 A yet sit 1-2
+    kcal/mol high because its O-H / N-H points the wrong way (measured on
+    ethanolamine, phenylpropylamine vs CREST).  When ON, each polar X-H is added as
+    a rotor (axis = heavy-neighbour -> X, rotating = the H(s)) so the H-bonded
+    orientation is sampled and GFN2-ranked."""
+    return _env_bool("DELFIN_FFFREE_POLAR_H_ROTORS", False)
+
+
 def _ringguard_enabled() -> bool:
     """Metallacycle-rotation guard master switch.
 
@@ -566,6 +579,31 @@ def identify_complete_dofs(
                              d["pivot"], d["anchor"]))
     if len(dofs) > max_dofs:
         dofs = dofs[:max_dofs]
+
+    # Polar-hydrogen rotors (env-gated, default OFF -> dofs unchanged).  Added AFTER
+    # the heavy-rotor cap with their own budget so they are never crowded out by it.
+    # Each terminal/polar O/N/S that bears H(s) becomes a rotor spinning ONLY its
+    # H(s) around the heavy-neighbour->X axis -> samples the O-H / N-H / COOH-H
+    # orientation (the intramolecular H-bond former) that the heavy-atom enumeration
+    # deliberately skips.  GFN2 ranking then selects the H-bonded minimum.
+    if _polar_h_enabled():
+        pol_cap = _env_int("DELFIN_FFFREE_POLAR_H_CAP", 4, lo=1, hi=16)
+        phs: List[Dict] = []
+        for x in range(n):
+            if is_metal[x] or atomic_nums[x] not in (7, 8, 16):   # N, O, S
+                continue
+            hs = [h for h in neighbours[x] if atomic_nums[h] == 1]
+            heavy_nbrs = [c for c in neighbours[x]
+                          if atomic_nums[c] > 1 and not is_metal[c]]
+            if not hs or not heavy_nbrs:
+                continue
+            # under the metallacycle guard, never spin an X-H whose X coordinates a
+            # metal (it is a donor; rotating its H is fine but keep it conservative)
+            anchor = min(heavy_nbrs)
+            phs.append({"pivot": x, "anchor": anchor, "rotating": list(hs),
+                        "moved_heavy": 0, "moved_beyond": 0, "polar_h": True})
+        phs.sort(key=lambda d: (d["pivot"], d["anchor"]))
+        dofs = dofs + phs[:pol_cap]
     return dofs
 
 
