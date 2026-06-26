@@ -28740,8 +28740,16 @@ def _gfnff_ensemble_rank_filter(isomers):
         from delfin.fffree import _gfnff_rank as _gff
         if not _gff.available():
             return isomers
-        topk = int(os.environ.get("DELFIN_GFNFF_TOPK", "10"))
-        ewin = float(os.environ.get("DELFIN_GFNFF_EWIN", "15.0"))
+        # Retention policy = "keep ALL distinct conformers, rank them, drop only
+        # garbage" (user 2026-06-26).  The conformers are already RMSD-deduped
+        # upstream (conf_complete @0.5 A), so each is a genuinely distinct fold; the
+        # energy ranking ORDERS them (most important first) and the wide window drops
+        # only true garbage (clashing / wildly strained -> tens-to-thousands of
+        # kcal/mol above the minimum).  Defaults are intentionally generous (window
+        # 35 kcal/mol, soft K-cap 64) so a normal conformer set is kept in full;
+        # tighten DELFIN_GFNFF_TOPK / DELFIN_GFNFF_EWIN for a compact pool.
+        topk = int(os.environ.get("DELFIN_GFNFF_TOPK", "64"))
+        ewin = float(os.environ.get("DELFIN_GFNFF_EWIN", "35.0"))
         chg = int(os.environ.get("DELFIN_GFNFF_CHARGE", "0"))
         _suffix = _re.compile(r"(_conf-|-conf\d|_pool-|-reembed|_reembed|_conf\d)")
 
@@ -28765,7 +28773,9 @@ def _gfnff_ensemble_rank_filter(isomers):
         # winners are NOT GFN-FF's worst (measured: ABAKOE's GFN2-best was GFN-FF
         # rank ~3, well inside a top-15 cull).  Isomers with <=M conformers skip the
         # cull and are GFN2-ranked directly.
-        precull_m = int(os.environ.get("DELFIN_GFNFF_PRECULL_M", "15"))
+        # Cost bound only: GFN-FF pre-cull engages for isomers richer than this
+        # (rare).  Kept >= the soft K-cap so it never trims below what we retain.
+        precull_m = int(os.environ.get("DELFIN_GFNFF_PRECULL_M", "64"))
         out = []
         for k in order:
             frames = groups[k]
