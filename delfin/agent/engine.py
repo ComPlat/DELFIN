@@ -1832,6 +1832,19 @@ class AgentEngine:
         """Request the current streaming response to stop."""
         self._stop_requested = True
 
+    def steer(self, text: str) -> bool:
+        """Inject a user message into the RUNNING tool loop (mid-loop steering).
+        The model reacts to it on the next round, without ending the turn.
+        Returns True if the active client supports it (API/KIT/Ollama engine)."""
+        client = getattr(self, "client", None)
+        if client is not None and hasattr(client, "push_steer"):
+            try:
+                client.push_steer(text)
+                return True
+            except Exception:
+                return False
+        return False
+
     def set_live_state(self, text: str) -> None:
         """Update the per-turn live-state snippet.
 

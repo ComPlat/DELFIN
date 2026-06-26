@@ -6541,7 +6541,30 @@ class OpenAIClient(_BaseClient):
         self.client = openai.OpenAI(**kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
+        # Mid-loop steering inbox: the dashboard pushes a user message here WHILE
+        # the tool loop is running; stream_message drains it between rounds and
+        # injects it so the model reacts within the SAME turn (no need to wait
+        # for the turn to end).
+        import threading as _threading
+        self._steer_lock = _threading.Lock()
+        self._steer_msgs: list[str] = []
         self._attach_subagent_runner(permissions)
+
+    def push_steer(self, text: str) -> None:
+        """Queue a user message for MID-LOOP injection (thread-safe). Picked up
+        between tool rounds by ``stream_message`` and fed to the model."""
+        t = (text or "").strip()
+        if t:
+            with self._steer_lock:
+                self._steer_msgs.append(t)
+
+    def _drain_steer(self) -> list[str]:
+        with self._steer_lock:
+            if not self._steer_msgs:
+                return []
+            out = self._steer_msgs[:]
+            self._steer_msgs.clear()
+            return out
 
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
@@ -7357,6 +7380,14 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         pass
 
+                # Mid-loop steering: if the user sent a message WHILE the loop
+                # was running, inject it now as a user turn so the model reacts
+                # to it on the very next round (no waiting for the turn to end).
+                for _steer in self._drain_steer():
+                    api_messages.append({"role": "user", "content": _steer})
+                    yield StreamEvent(
+                        type="text_delta", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
+
                 # Consecutive-failure check. A "failure round" is one
                 # where every tool_result this round is an `{"error": …}`
                 # JSON and the joined signature matches the previous
@@ -7432,6 +7463,22 @@ class OpenAIClient(_BaseClient):
                             f"{_problems}"),
                     })
                     continue        # force a fix round instead of ending
+
+            # Mid-loop steering at turn end: the model gave a final answer (no
+            # tool calls), but if the user steered while it ran, respond to that
+            # instead of ending — record the answer, inject the user message,
+            # and keep going. Also catches "agent stopped early" (e.g. after
+            # creating a task list): a user "weiter" resumes in the same turn.
+            _steer_end = self._drain_steer()
+            if _steer_end:
+                _final = "".join(_text_chunks) if _text_chunks else ""
+                if _final.strip():
+                    api_messages.append({"role": "assistant", "content": _final})
+                for _s in _steer_end:
+                    api_messages.append({"role": "user", "content": _s})
+                    yield StreamEvent(
+                        type="text_delta", text="\n\n💬 [you, mid-run]: " + _s + "\n")
+                continue
 
             # No tool calls — emit final message_delta and break
             cost = self._estimate_cost(_total_in, _total_out)

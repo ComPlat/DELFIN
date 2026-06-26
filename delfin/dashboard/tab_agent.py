@@ -12252,6 +12252,18 @@ def create_tab(ctx):
         # The agent will receive it after finishing the current response.
         # Use /stop to force-interrupt if needed.
         if state["streaming"]:
+            # Mid-loop steering: for the API/KIT/Ollama engine (DELFIN runs its
+            # OWN tool loop), inject the message straight INTO the running loop
+            # so the model reacts on its next step — no waiting for the turn to
+            # end. (CLI backends have no such loop → fall through to the queue.)
+            _seng = state.get("engine")
+            if _seng is not None and hasattr(_seng, "steer") and _seng.steer(user_text):
+                input_textarea.value = ""
+                _append_chat_message("user", user_text)
+                _append_system_message(
+                    "💬 Sent to the running agent — it picks this up on its next "
+                    "step (mid-run steering).")
+                return
             # Safety: detect stale streaming state (worker crashed/finished
             # but streaming flag wasn't reset). If no active CLI process,
             # reset the flag and process normally.
