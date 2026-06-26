@@ -11,7 +11,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import rdDistGeom as DG
 
-from delfin.fffree.assemble_complex import _ring_bounds_enabled, _tighten_ring_bounds
+from delfin.manta.assemble_complex import _ring_bounds_enabled, _tighten_ring_bounds
 
 
 def test_flag_off_default():

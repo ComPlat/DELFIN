@@ -1,4 +1,4 @@
-"""delfin.fffree — metal-FF-free coordination-structure generation.
+"""delfin.manta — metal-FF-free coordination-structure generation.
 
 Deterministic enumeration of coordination isomers (Burnside/Pólya over the donor
 set + coordination polyhedron) and geometric assembly of each isomer on an ideal

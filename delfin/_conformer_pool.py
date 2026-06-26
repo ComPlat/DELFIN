@@ -1024,7 +1024,7 @@ def generate_conformer_pool(
     _relax_frozen = None
     if _relax_on:
         try:
-            from delfin.fffree import _conf_relax as _cr
+            from delfin.manta import _conf_relax as _cr
             _relax_frozen = _cr.core_indices(graph)
         except Exception:
             _relax_on = False
@@ -1100,7 +1100,7 @@ def generate_conformer_pool(
     # UFF placed at 301) and rank by that.  Byte-identical when off (block skipped).
     if os.environ.get("DELFIN_CONF_GFNFF_RANK", "0") == "1":
         try:
-            from delfin.fffree import _gfnff_rank as _gff
+            from delfin.manta import _gfnff_rank as _gff
             _top_m = _env_int(
                 "DELFIN_CONF_GFNFF_TOPM", max(3 * k_target, 12), lo=1, hi=256
             )

@@ -1,5 +1,5 @@
 """Reference coordination polyhedra (unit vectors) + covalent radii for the
-metal-FF-free builder (delfin.fffree).
+metal-FF-free builder (delfin.manta).
 
 Self-contained: ideal CN4/5/6 polyhedron vertex sets (tetrahedron, square planar,
 trigonal bipyramid, square pyramid, octahedron, trigonal prism) and a covalent-radii

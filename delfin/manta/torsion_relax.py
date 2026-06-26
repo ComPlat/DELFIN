@@ -1,4 +1,4 @@
-"""delfin.fffree.torsion_relax — FF-free whole-complex TORSION-SPACE clash relax.
+"""delfin.manta.torsion_relax — FF-free whole-complex TORSION-SPACE clash relax.
 
 When rigid M-D-axis rotation (#307 inter-ligand frame selection) is not enough —
 when LIGAND-INTERNAL rotation (P-C, then C-C, ...) is needed — this module
@@ -63,7 +63,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 
 import delfin._bond_decollapse as _bd
-from delfin.fffree.refine import _vdw
+from delfin.manta.refine import _vdw
 
 # Geometric clash factor — identical to the builder's _clash_count / the spec's f.
 _CLASH_F = 0.75

@@ -1,4 +1,4 @@
-"""delfin.fffree.cod_ideals — COD-empirical bond-length ideals (per element pair, p50
+"""delfin.manta.cod_ideals — COD-empirical bond-length ideals (per element pair, p50
 over the disorder-cleaned COD corpus).  Construction-driver source (Iter 29): the FF-free
 refiner pulls heavy-heavy bonds toward these REAL crystal lengths instead of the generic
 covalent-sum _ideal_bond (which is systematically too long for aromatic/conjugated ligands).

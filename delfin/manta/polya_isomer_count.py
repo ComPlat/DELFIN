@@ -279,7 +279,7 @@ def _chelate_cis_edges(geometry: str, n: int):
     """Vertex pairs a bidentate chelate can span (cis edges), derived geometrically from
     the ideal polyhedron: pairs whose ideal angular separation is below
     CHELATE_CIS_MAX_DEG.  Single source of truth = the SAME vertex set the assembler
-    places into (delfin.fffree.polyhedra), so enumeration and placement stay consistent
+    places into (delfin.manta.polyhedra), so enumeration and placement stay consistent
     for every geometry (incl. TBP-5/SPY-5).  Byte-identical to the old antipode table for
     octahedron/square_planar.  Falls back to the antipode table if no reference vectors."""
     # Stream-B Fix 1: gate the cis-edge ceiling so the tetrahedron's only pair-angle
@@ -294,7 +294,7 @@ def _chelate_cis_edges(geometry: str, n: int):
         try:
             import math
             import numpy as np
-            from delfin.fffree import polyhedra as _PLY
+            from delfin.manta import polyhedra as _PLY
             V = _PLY.ref_vectors(shape)
             cos_max = math.cos(math.radians(ceiling))
             return [(i, j) for i in range(n) for j in range(i + 1, n)
@@ -312,7 +312,7 @@ def _meridional_triples(geometry: str, n: int):
     a flat conjugated tridentate physically requires.  A facial triple (3 mutually
     ~90deg vertices, no antipodal pair) is EXCLUDED: a rigid flat ligand cannot fold
     to it.  Derived GEOMETRICALLY from the same ideal vertex set the assembler places
-    into (delfin.fffree.polyhedra), so it is correct for any CN6 polyhedron (and
+    into (delfin.manta.polyhedra), so it is correct for any CN6 polyhedron (and
     returns [] for geometries with no meridional triple).  Deterministic.
 
     A meridional triple is detected as: the largest pairwise angle is ~180deg (a
@@ -325,7 +325,7 @@ def _meridional_triples(geometry: str, n: int):
     if shape is None:
         return []
     try:
-        from delfin.fffree import polyhedra as _PLY
+        from delfin.manta import polyhedra as _PLY
         V = _PLY.ref_vectors(shape)
     except Exception:
         return []
@@ -370,7 +370,7 @@ def _equatorial_squares(geometry: str, n: int):
     axial ligands) or the full SP-4 square.  A flat conjugated macrocycle physically
     requires its 4 donors coplanar with the metal; any non-coplanar 4-subset (a
     folded / cis-bent arrangement) is EXCLUDED.  Derived GEOMETRICALLY from the same
-    ideal vertex set the assembler places into (delfin.fffree.polyhedra), so it is
+    ideal vertex set the assembler places into (delfin.manta.polyhedra), so it is
     correct for any CN>=4 polyhedron (and returns [] for geometries with no
     equatorial square, e.g. TBP-5 / SPY-5).  Deterministic."""
     import math
@@ -380,7 +380,7 @@ def _equatorial_squares(geometry: str, n: int):
     if shape is None:
         return []
     try:
-        from delfin.fffree import polyhedra as _PLY
+        from delfin.manta import polyhedra as _PLY
         V = _PLY.ref_vectors(shape)
     except Exception:
         return []
@@ -486,7 +486,7 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
             # (~90deg) vertex and the two OUTER donors (arms 0,2) on the antipodal
             # (~180deg) outer pair, so the placed donors are coplanar with the metal.
             import numpy as _np
-            from delfin.fffree import polyhedra as _PLY2
+            from delfin.manta import polyhedra as _PLY2
             try:
                 _V = _PLY2.ref_vectors(_GEOM_KEY_TO_SHAPE[geometry])
             except Exception:
@@ -523,7 +523,7 @@ def enumerate_chelate_configs(geometry: str, ligand_specs):
             # ADJACENT (~90deg) square vertices, never across the diagonal.  Enumerate
             # the square's dihedral arrangements; canon_key dedups to the orbit(s).
             import numpy as _np
-            from delfin.fffree import polyhedra as _PLY3
+            from delfin.manta import polyhedra as _PLY3
             try:
                 _Vq = _PLY3.ref_vectors(_GEOM_KEY_TO_SHAPE[geometry])
             except Exception:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """metal_sphere_builder.py — metal-FF-free coordination-sphere placement.
 
-Places donor atoms on ideal polyhedron vertices (delfin.fffree.polyhedra) at
+Places donor atoms on ideal polyhedron vertices (delfin.manta.polyhedra) at
 empirical metal-donor distances, with NO force field on the metal.  Deterministic
 geometric construction.
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from typing import List, Tuple
 import numpy as np
-from delfin.fffree import polyhedra as _PH
+from delfin.manta import polyhedra as _PH
 
 _COV = _PH.COV
 _GEOM_BY_CN = _PH.GEOM_BY_CN

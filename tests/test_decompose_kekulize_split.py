@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from delfin.fffree.decompose import decompose
+from delfin.manta.decompose import decompose
 
 # CORRECTION 2026-06-24 (honest re-verification): of the original 3 cases, the two
 # borate clathrochelates BUILD BY DEFAULT — the strict GetMolFrags(sanitizeFrags=True)

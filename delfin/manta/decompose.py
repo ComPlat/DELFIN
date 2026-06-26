@@ -1,4 +1,4 @@
-"""delfin.fffree.decompose — SMILES → coordination decomposition for the
+"""delfin.manta.decompose — SMILES → coordination decomposition for the
 metal-FF-free backend.
 
 Scope (falls back to None otherwise): mononuclear complex with explicit

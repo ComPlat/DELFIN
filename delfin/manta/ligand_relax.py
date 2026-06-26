@@ -1,4 +1,4 @@
-"""delfin.fffree.ligand_relax — ligand-internal relaxer (#38, v3: torsional/rigid-body).
+"""delfin.manta.ligand_relax — ligand-internal relaxer (#38, v3: torsional/rigid-body).
 
 THE GRUNDPFEILER (division of labor): fffree fixes the metal coordination sphere BY
 CONSTRUCTION (enumeration + ideal polyhedra, metal-FF-free) and relaxes ONLY the ligand

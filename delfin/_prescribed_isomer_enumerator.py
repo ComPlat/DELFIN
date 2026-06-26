@@ -430,12 +430,12 @@ def _orbit_burnside_selftest(verbose: bool = False) -> bool:
     """Assert that :func:`_enumerate_orbits` returns exactly the proper-
     rotation (Cauchy-Frobenius) orbit count for a battery of CN2-9
     donor multisets, cross-checked against the independent Burnside
-    oracle :func:`delfin.fffree.polya_isomer_count.count_isomers`.
+    oracle :func:`delfin.manta.polya_isomer_count.count_isomers`.
 
     Pure graph/group-theory; no SMILES/refcode keying.  Returns True on
     success, raises AssertionError on any mismatch.  Used as the P5
     completeness guard (DELFIN_ORBIT_ENUM)."""
-    from delfin.fffree.polya_isomer_count import count_isomers
+    from delfin.manta.polya_isomer_count import count_isomers
 
     # (CODE key, oracle NAME key, CN).  CODE keys cover CN<=12 in
     # _burnside_groups; oracle NAME keys exist for these geometries.

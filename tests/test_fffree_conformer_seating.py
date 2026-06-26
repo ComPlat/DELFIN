@@ -41,7 +41,7 @@ _SMALL = "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]"
 
 
 def _isomers(smiles):
-    from delfin.fffree import converter_backend as CB
+    from delfin.manta import converter_backend as CB
     return CB._fffree_isomers(smiles)
 
 
@@ -141,15 +141,15 @@ def test_reseat_fallback_returns_none_when_infeasible():
     """Legacy fallback (never-worse): _seat_via_conformers returns None when the
     ligand cannot map onto the native frame (degenerate lig_groups) -> the caller
     bails to legacy rather than emitting a worse build."""
-    from delfin.fffree import converter_backend as CB
+    from delfin.manta import converter_backend as CB
     os.environ["DELFIN_FFFREE_CONFORMER_SEATING"] = "1"
     # a trivially-degenerate (None lig_groups) reseat request must return None
     assert CB._seat_via_conformers("Co", None, ["Co"], np.zeros((1, 3))) is None
 
 
 def test_seating_helpers_flag_gated():
-    from delfin.fffree import converter_backend as CB
-    from delfin.fffree import decompose as DEC
+    from delfin.manta import converter_backend as CB
+    from delfin.manta import decompose as DEC
     os.environ.pop("DELFIN_FFFREE_CONFORMER_SEATING", None)
     assert CB._seating_enabled() is False
     assert DEC._heavy_cap() == DEC._HEAVY_CAP_DEFAULT == 8

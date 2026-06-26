@@ -1,4 +1,4 @@
-"""delfin.fffree.refine — geometry refiner (NO force field).
+"""delfin.manta.refine — geometry refiner (NO force field).
 
 Deterministic coordinate descent that directly minimises a structural-defect
 count (close-contact clashes / hydrogen over-coordination / collapsed bonds),
@@ -16,7 +16,7 @@ from typing import List, Set, Tuple
 import os
 import numpy as np
 import delfin._bond_decollapse as bd
-from delfin.fffree import cod_ideals as _CODI
+from delfin.manta import cod_ideals as _CODI
 
 # Iter 29 (construction-driver): refine heavy-heavy bonds toward COD-empirical lengths
 # (real crystal p50) instead of the generic covalent-sum _ideal_bond, which is

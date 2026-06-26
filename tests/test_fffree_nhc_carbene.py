@@ -1,4 +1,4 @@
-"""Tests for the FF-free NHC / carbene-C donor repair (delfin.fffree.decompose).
+"""Tests for the FF-free NHC / carbene-C donor repair (delfin.manta.decompose).
 
 Root cause locked here: a metal-bound carbene carbon (NHC = N-C-N imidazol-2-
 yliden and kin) is encoded in the dative-bond SMILES as ``[C+]`` (charge +1,
@@ -25,8 +25,8 @@ import pytest
 
 from rdkit import Chem
 
-from delfin.fffree import decompose as DEC
-from delfin.fffree.converter_backend import _fffree_isomers
+from delfin.manta import decompose as DEC
+from delfin.manta.converter_backend import _fffree_isomers
 
 # A small single-NHC silver(I) complex (FUFYOW): Ag bound to an acetate-O and one
 # benzannulated NHC carbene-C.  CN2 (d10 Ag(I) linear).

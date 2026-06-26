@@ -1,6 +1,6 @@
 """Tests for the vdW-level inter-ligand clash gate on the ADDITIONAL conformer
 frames (backbone re-embed / conformer re-seating) of the FF-free path
-(delfin.fffree.converter_backend, env DELFIN_FFFREE_INTERLIG_VDW_GATE).
+(delfin.manta.converter_backend, env DELFIN_FFFREE_INTERLIG_VDW_GATE).
 
 Eye-found defect (ACEQUY = Fe(N(Dipp)(SiMe3))3): the per-ligand backbone re-embed
 re-folds each ligand with the metal+donor core frozen but WITHOUT inter-ligand
@@ -21,7 +21,7 @@ import os
 import numpy as np
 import pytest
 
-from delfin.fffree import converter_backend as CB
+from delfin.manta import converter_backend as CB
 
 
 @pytest.fixture(autouse=True)

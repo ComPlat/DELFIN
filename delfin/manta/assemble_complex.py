@@ -17,7 +17,7 @@ from typing import List, Tuple
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
-from delfin.fffree import metal_sphere_builder as MSB
+from delfin.manta import metal_sphere_builder as MSB
 import delfin._bond_decollapse as _bd
 
 SEED = 42
@@ -1362,7 +1362,7 @@ def _clash_count(Q, existing, syms_Q, syms_ex):
     """# heavy/H pairs between block Q and existing atoms closer than 0.7*(vdW sum)."""
     if len(existing) == 0:
         return 0
-    from delfin.fffree.refine import _vdw
+    from delfin.manta.refine import _vdw
     c = 0
     for a in range(len(Q)):
         for b in range(len(existing)):
@@ -1393,7 +1393,7 @@ def _torsion_relax_frame(out_syms, P, fixed, block_specs):
     threading the true per-ligand connectivity (``block_specs`` = list of
     ``(offset, lmol, donor_local)``).  No-op when the flag is unset; never raises."""
     try:
-        from delfin.fffree import torsion_relax as _TR
+        from delfin.manta import torsion_relax as _TR
         bp = None
         if block_specs:
             blocks = [bb for bb in (_ligand_block_bonds(m, off, dl)
@@ -1414,7 +1414,7 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs):
     declashed class-B build passes ``_build_is_clean``.  No-op when the flag is
     unset; never raises."""
     try:
-        from delfin.fffree import joint_declash as _JD
+        from delfin.manta import joint_declash as _JD
         bp = None
         if block_specs:
             blocks = [bb for bb in (_ligand_block_bonds(m, off, dl)
@@ -1484,7 +1484,7 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     P = np.vstack(blocks)
     if refine:
         try:
-            from delfin.fffree.refine import refine as _refine
+            from delfin.manta.refine import refine as _refine
             P = _refine(out_syms, P, fixed)
         except Exception:
             pass
@@ -1732,7 +1732,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             continue
         if refine:
             try:
-                from delfin.fffree.refine import refine as _refine
+                from delfin.manta.refine import refine as _refine
                 P = _refine(out_syms, P, fixed)
             except Exception:
                 pass
@@ -2266,7 +2266,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
     # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
     # ring + constructed coordination are preserved; periphery relaxes only).
     try:
-        from delfin.fffree.refine import refine as _refine
+        from delfin.manta.refine import refine as _refine
         P = _refine(out_syms, P, fixed)
     except Exception:
         pass
@@ -2941,7 +2941,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         pass
     # FF-free geometric clash-relief (both tracks)
     try:
-        from delfin.fffree.refine import refine as _refine
+        from delfin.manta.refine import refine as _refine
         P = _refine(out_syms, P, fixed)
     except Exception:
         pass
@@ -2950,7 +2950,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
     # frozen.  Chelate ring + M-D arms are ring bonds -> kept rigid by construction;
     # only the σ-arms/substituents rotate.  Torsion-only, never-worse.  No-op when unset.
     try:
-        from delfin.fffree import torsion_relax as _TR
+        from delfin.manta import torsion_relax as _TR
         bp = None
         try:
             # true connectivity: ligand-internal bonds (lig_offset shifts the AddHs
@@ -2972,7 +2972,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
         # inter-ligand heavy-heavy minimisation, core frozen.  After #308.  Reuses
         # the same true-connectivity bond list.  No-op when the flag is unset.
-        from delfin.fffree import joint_declash as _JD
+        from delfin.manta import joint_declash as _JD
         P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
                        dtype=float)
     except Exception:
@@ -3008,7 +3008,7 @@ def generate_complex_conformers(metal, ligand_smiles, donor_idx, geometry,
     """Wire L3 into the complex: enumerate the LIGAND's conformers (conformer_enum),
     build the homoleptic complex from each, dedup. Demonstrates conformers-per-isomer
     (the L3 dimension of generate-gate-floor)."""
-    from delfin.fffree import conformer_enum as CE
+    from delfin.manta import conformer_enum as CE
     _, confs = CE.enumerate_conformers(ligand_smiles)
     ref = MSB._ref_vectors(geometry); n = len(ref)
     out = []

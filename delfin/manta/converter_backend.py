@@ -1,4 +1,4 @@
-"""delfin.fffree.converter_backend — adapter wiring the metal-FF-free foundation
+"""delfin.manta.converter_backend — adapter wiring the metal-FF-free foundation
 into the converter's smiles_to_xyz_isomers contract.
 
 _fffree_isomers(smiles) -> [(xyz_string, label), ...]  or  None (-> legacy fallback).
@@ -14,12 +14,12 @@ from typing import List, Optional, Tuple
 import numpy as np
 from rdkit import Chem
 
-from delfin.fffree import decompose as DEC
-from delfin.fffree import polya_isomer_count as PIC
-from delfin.fffree import assemble_complex as AC
-from delfin.fffree import polyhedra as PLY
-from delfin.fffree import ligand_relax as LR
-from delfin.fffree import backbone_reembed as _BR
+from delfin.manta import decompose as DEC
+from delfin.manta import polya_isomer_count as PIC
+from delfin.manta import assemble_complex as AC
+from delfin.manta import polyhedra as PLY
+from delfin.manta import ligand_relax as LR
+from delfin.manta import backbone_reembed as _BR
 import delfin._bond_decollapse as _bd
 
 

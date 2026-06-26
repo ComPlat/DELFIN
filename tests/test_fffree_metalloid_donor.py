@@ -1,4 +1,4 @@
-"""Tests for the FF-free donor-aware metal-centre resolution (delfin.fffree.decompose).
+"""Tests for the FF-free donor-aware metal-centre resolution (delfin.manta.decompose).
 
 Root cause locked here (eye-flagged ATOQUV, a Pd bis(distibine)): ``decompose``
 identifies the coordination CENTRE with ``_bond_decollapse._is_metal``, which also
@@ -32,9 +32,9 @@ import pytest
 
 from rdkit import Chem
 
-from delfin.fffree import decompose as DEC
-from delfin.fffree import polyhedra as PLY
-from delfin.fffree.converter_backend import _fffree_isomers
+from delfin.manta import decompose as DEC
+from delfin.manta import polyhedra as PLY
+from delfin.manta.converter_backend import _fffree_isomers
 
 # ATOQUV: Pd(II) coordinated by two o-phenylene-bis(dimethylstibine) chelates (4 Sb).
 ATOQUV_PD = ("[CH3][Sb+]1([CH3])[CH2]C2=CC=CC=C2[CH2][Sb+]([CH3])([CH3])[Pd-2]12"

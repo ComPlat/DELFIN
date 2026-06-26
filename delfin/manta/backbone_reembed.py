@@ -1,4 +1,4 @@
-"""delfin.fffree.backbone_reembed — core-preserving GLOBAL backbone re-embed as an
+"""delfin.manta.backbone_reembed — core-preserving GLOBAL backbone re-embed as an
 additional FF-free conformer source (Task: largest XRD-recall lever, 2026-06-18).
 
 WHY (the proof, CONFORMER_REACHABILITY_2026_06_17 / RECALL_GAP_FORENSIK_2026_06_17):

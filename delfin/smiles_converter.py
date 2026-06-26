@@ -28683,7 +28683,7 @@ def _coord_integrity_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.converter_backend import _coord_filter
+        from delfin.manta.converter_backend import _coord_filter
         return _coord_filter(isomers) or isomers
     except Exception:
         return isomers
@@ -28708,7 +28708,7 @@ def _conf_complete_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_CONF_COMPLETE", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.conformer_complete import apply_to_ensemble
+        from delfin.manta.conformer_complete import apply_to_ensemble
         return apply_to_ensemble(isomers) or isomers
     except Exception:
         return isomers
@@ -28737,7 +28737,7 @@ def _gfnff_ensemble_rank_filter(isomers):
         return isomers
     try:
         import re as _re
-        from delfin.fffree import _gfnff_rank as _gff
+        from delfin.manta import _gfnff_rank as _gff
         if not _gff.available():
             return isomers
         # Retention policy = "keep ALL distinct conformers, rank them, drop only
@@ -28834,7 +28834,7 @@ def _permute_dedup_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_PERMUTE_DEDUP", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.permute_dedup import dedup_ensemble
+        from delfin.manta.permute_dedup import dedup_ensemble
         return dedup_ensemble(isomers) or isomers
     except Exception:
         return isomers
@@ -28958,15 +28958,15 @@ def _smiles_to_xyz_isomers_impl(
     hapto_mode = _hapto_approx_enabled(hapto_approx)
 
     # --- metal-FF-free generation backend (env-gated, default OFF) ---------
-    # delfin.fffree: provably-complete deterministic enumeration (Pólya isomers)
+    # delfin.manta: provably-complete deterministic enumeration (Pólya isomers)
     # + metal-FF-free geometric assembly on COD-ideal polyhedra.  v1 handles
     # Werner complexes (mononuclear, explicit metal-donor bonds, all-monodentate,
     # CN 4-6); decompose() returns None for chelates / hapto / dative / multi-
     # metal, so those fall through to the legacy pipeline below unchanged.
-    # Bit-exact OFF (default).  See delfin/fffree/.
+    # Bit-exact OFF (default).  See delfin/manta/.
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
         try:
-            from delfin.fffree.converter_backend import _fffree_isomers
+            from delfin.manta.converter_backend import _fffree_isomers
             _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
         except Exception:
             _ff = None

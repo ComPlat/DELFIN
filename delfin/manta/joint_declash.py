@@ -1,4 +1,4 @@
-"""delfin.fffree.joint_declash — JOINT global INTER-LIGAND heavy-heavy declash.
+"""delfin.manta.joint_declash — JOINT global INTER-LIGAND heavy-heavy declash.
 
 The deepest FF-free recall lever for the "class-B" bulk: large / multi-ligand
 complexes whose COORDINATION CORE is already IDEAL (donor-angle-RMSD ~0-8°, sane
@@ -62,8 +62,8 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 import numpy as np
 
 import delfin._bond_decollapse as _bd
-from delfin.fffree import torsion_relax as _TR
-from delfin.fffree.refine import _vdw
+from delfin.manta import torsion_relax as _TR
+from delfin.manta.refine import _vdw
 
 # Geometric clash factor — identical to the self-gate / #308 / the spec's f.
 _CLASH_F = 0.75

@@ -1,5 +1,5 @@
 """Unit tests for the ASYMMETRIC permutation-invariant duplicate pruner
-(``delfin.fffree.permute_dedup``).
+(``delfin.manta.permute_dedup``).
 
 Governing invariant (user): "nur die SCHLECHTEN aussortieren, nicht die guten".
 The pruner must merge ONLY genuinely-identical frames and KEEP geometrically
@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from delfin.fffree import permute_dedup as pd
+from delfin.manta import permute_dedup as pd
 
 
 def _xyz(atoms):
