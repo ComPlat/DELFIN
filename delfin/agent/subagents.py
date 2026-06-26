@@ -758,12 +758,36 @@ def run_subagent(
     _sa_id = resume_from if prior else ((sa_id or "").strip() or _uuid.uuid4().hex[:8])
     _sa_started = time.time()
     _sa_actions: list[str] = []
+    # Rich live transcript (text the subagent writes + tool calls with brief
+    # in/out) so the dashboard can let you "go INTO" a running subagent and
+    # watch its activity in the chat window, Claude-Code style.
+    _sa_transcript: list = []
+    _sa_text_buf: list[str] = []
+
+    def _sa_push() -> None:
+        _running_update(_sa_id, {
+            "type": subagent_type,
+            "description": (description or "")[:120],
+            "started_at": _sa_started,
+            "actions": _sa_actions[-12:],
+            "last_action": _sa_actions[-1] if _sa_actions else "",
+            "transcript": _sa_transcript[-40:],
+        })
+
+    def _sa_flush_text() -> None:
+        if _sa_text_buf:
+            _t = "".join(_sa_text_buf).strip()
+            _sa_text_buf.clear()
+            if _t:
+                _sa_transcript.append({"k": "text", "v": _t[:1500]})
+
     _running_update(_sa_id, {
         "type": subagent_type,
         "description": (description or "")[:120],
         "started_at": _sa_started,
         "actions": [],
         "last_action": "",
+        "transcript": [],
     })
 
     try:
@@ -782,6 +806,7 @@ def run_subagent(
                 break
             if event.type == "text_delta" and event.text:
                 final_text_parts.append(event.text)
+                _sa_text_buf.append(event.text)
             elif event.type == "tool_use":
                 tool_calls_seen.append({
                     "name": event.tool_name,
@@ -789,15 +814,13 @@ def run_subagent(
                 })
                 # Live drill-down: record this step so the dashboard can show
                 # what THIS subagent is doing right now (read/write/bash …).
+                _sa_flush_text()
                 _sa_actions.append(
                     _format_action(event.tool_name, event.tool_input))
-                _running_update(_sa_id, {
-                    "type": subagent_type,
-                    "description": (description or "")[:120],
-                    "started_at": _sa_started,
-                    "actions": _sa_actions[-12:],
-                    "last_action": _sa_actions[-1],
-                })
+                _sa_transcript.append({
+                    "k": "tool", "name": event.tool_name or "?",
+                    "in": _format_action(event.tool_name, event.tool_input)})
+                _sa_push()
             elif event.type == "tool_result":
                 # Attach the output to the most recent tool call still
                 # missing one (preserves what the subagent actually saw).
@@ -813,6 +836,11 @@ def run_subagent(
                         "input": "",
                         "output": event.tool_output,
                     })
+                for _e in reversed(_sa_transcript):
+                    if _e.get("k") == "tool" and "out" not in _e:
+                        _e["out"] = str(event.tool_output or "")[:400]
+                        break
+                _sa_push()
             elif event.type == "message_delta":
                 in_tokens = max(in_tokens, event.input_tokens)
                 out_tokens = max(out_tokens, event.output_tokens)

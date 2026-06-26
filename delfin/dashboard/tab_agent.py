@@ -3505,6 +3505,61 @@ def create_tab(ctx):
         layout=widgets.Layout(min_height="200px"),
     )
 
+    # Agent-view switcher: "go INTO" a subagent and watch its activity in the
+    # chat window. "Main" shows the conversation; picking a subagent shows ITS
+    # text + tool calls/results (live while running, saved once finished).
+    state.setdefault("_view_agent", "main")
+    agent_view_dropdown = widgets.Dropdown(
+        options=[("💬 Main", "main")], value="main", description="View:",
+        layout=widgets.Layout(width="360px", margin="0 0 4px 0"),
+        style={"description_width": "38px"},
+    )
+
+    def _on_agent_view_change(change):
+        if state.get("_view_dropdown_rebuilding"):
+            return
+        if change.get("name") == "value":
+            state["_view_agent"] = change.get("new") or "main"
+            _refresh_chat_html()
+    agent_view_dropdown.observe(_on_agent_view_change, names="value")
+
+    def _refresh_agent_view_dropdown():
+        """Rebuild the View dropdown from running + this-session finished
+        subagents, preserving the current selection."""
+        try:
+            from delfin.agent.subagents import read_running, list_finished
+            opts = [("💬 Main", "main")]
+            running = read_running()
+            for sid, sa in running.items():
+                opts.append(("🟡 " + str(sa.get("type", "?")) + " · "
+                             + str(sa.get("description", ""))[:28], sid))
+            _ss = float(state.get("_session_start_ts", 0) or 0)
+            for rec in list_finished(12):
+                sid = rec.get("sa_id")
+                if not sid or sid in running:
+                    continue
+                try:
+                    if float(rec.get("finished_at", 0) or 0) < _ss:
+                        continue
+                except Exception:
+                    pass
+                ok = not rec.get("error")
+                opts.append(((("✅" if ok else "❌") + " "
+                              + str(rec.get("subagent_type", "?")) + " · "
+                              + str(rec.get("description", ""))[:28]), sid))
+            vals = [v for _, v in opts]
+            cur = state.get("_view_agent", "main")
+            state["_view_dropdown_rebuilding"] = True
+            try:
+                agent_view_dropdown.options = opts
+                agent_view_dropdown.value = cur if cur in vals else "main"
+                if cur not in vals:
+                    state["_view_agent"] = "main"
+            finally:
+                state["_view_dropdown_rebuilding"] = False
+        except Exception:
+            pass
+
     # ----- Slash-command palette (discoverable command browser) -----
     palette_toggle_btn = widgets.Button(
         description="/", icon="terminal",
@@ -4050,6 +4105,11 @@ def create_tab(ctx):
                     # (flip running → recent without a main-loop tool result).
                     if active or was_active:
                         _refresh_subagent_panel()
+                        _refresh_agent_view_dropdown()
+                        # If the user is "inside" a subagent, live-update the
+                        # chat window with its latest activity.
+                        if state.get("_view_agent", "main") != "main":
+                            _refresh_chat_html()
                     was_active = active
                 except Exception:
                     pass
@@ -4500,6 +4560,7 @@ def create_tab(ctx):
         [css_widget, _enter_js_output, controls_row, search_row,
          status_html, cycle_inspector_html, inspector_actions_row, inspector_detail_box,
          kit_mode_row, kit_dirs_status,
+         agent_view_dropdown,
          chat_html,
          plan_accept_btn, ask_user_box,
          working_html, queue_html, context_bar_html,
@@ -5866,6 +5927,60 @@ def create_tab(ctx):
         '" style="display:none">'
     )
 
+    def _render_agent_transcript(sa_id):
+        """Render a subagent's activity (the text it writes + its tool calls and
+        results) for the in-chat drill-in view — live from the running registry
+        while it runs, or the saved session once it has finished."""
+        import html as _h
+        from delfin.agent.subagents import read_running, load_subagent_session
+
+        def _tool_block(tool, out):
+            out = _h.escape(str(out or "")[:400])
+            pre = ("<pre style='margin:2px 0 0 0; color:#555; white-space:pre-wrap;'>"
+                   + out + "</pre>") if out else ""
+            return ("<div class='delfin-chat-tool' style='font-family:monospace; "
+                    "font-size:12px; margin:2px 0;'>$ "
+                    + _h.escape(str(tool)).strip() + pre + "</div>")
+
+        def _text_block(txt):
+            return ("<div class='delfin-chat-msg' style='background:#f1f8e9; "
+                    "max-width:95%; white-space:pre-wrap;'>"
+                    + _h.escape(str(txt)) + "</div>")
+
+        run = read_running().get(sa_id)
+        if run:
+            head = ("<div style='color:#b45309; margin-bottom:4px;'>🟡 <b>"
+                    + _h.escape(str(run.get("type", "?"))) + "</b> "
+                    + _h.escape(str(run.get("description", ""))[:80])
+                    + " · running</div>")
+            body = []
+            for e in (run.get("transcript") or []):
+                if e.get("k") == "text":
+                    body.append(_text_block(e.get("v", "")))
+                else:
+                    body.append(_tool_block(
+                        (e.get("name", "") + " " + e.get("in", "")), e.get("out", "")))
+            return head + ("".join(body) or "<i>(starting…)</i>")
+
+        sess = load_subagent_session(sa_id) or {}
+        if not sess:
+            return "<i>Subagent not found — it may have finished and been cleared.</i>"
+        ok = not sess.get("error")
+        head = ("<div style='color:" + ("#2e7d32" if ok else "#c62828")
+                + "; margin-bottom:4px;'>" + ("✅" if ok else "❌") + " <b>"
+                + _h.escape(str(sess.get("subagent_type", "?"))) + "</b> "
+                + _h.escape(str(sess.get("description", ""))[:80])
+                + " · finished</div>")
+        body = []
+        for it in (sess.get("interactions") or []):
+            body.append(_tool_block(
+                (str(it.get("name", "")) + " " + str(it.get("input", ""))[:80]),
+                it.get("output", "")))
+        for m in (sess.get("messages") or []):
+            if m.get("role") == "assistant" and str(m.get("content", "")).strip():
+                body.append(_text_block(m["content"]))
+        return head + "".join(body)
+
     def _refresh_chat_html(streaming=False):
         """Rebuild the chat display HTML.
 
@@ -5873,6 +5988,18 @@ def create_tab(ctx):
         all earlier messages use a cached HTML prefix.  This avoids
         markdown-converting the entire history on every token chunk.
         """
+        # Agent-view switch: when a subagent is selected in the agent dropdown,
+        # show ITS activity in the chat window (drill-in) instead of the main
+        # conversation. "main" (default) renders the conversation as usual.
+        _va = state.get("_view_agent", "main")
+        if _va and _va != "main":
+            try:
+                body = _render_agent_transcript(_va)
+            except Exception as _exc:
+                body = "<i>subagent view unavailable: " + str(_exc)[:120] + "</i>"
+            chat_html.value = ('<div class="delfin-agent-chat">' + body
+                               + "\n" + _SCROLL_TAG + "</div>")
+            return
         msgs = state["chat_messages"]
         if not msgs:
             chat_html.value = (
