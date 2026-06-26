@@ -6566,6 +6566,22 @@ class OpenAIClient(_BaseClient):
             self._steer_msgs.clear()
             return out
 
+    def _has_pending_tasks(self) -> bool:
+        """True if the current session still has open (pending/in_progress)
+        tasks — used to auto-continue a model that stops mid-build (o3)."""
+        perms = getattr(self, "_permissions", None)
+        if perms is None:
+            return False
+        try:
+            from .agent_tasks import get_store
+            store = get_store(perms.workspace)
+            sid = getattr(perms, "task_session_id", "") or None
+            return any(
+                t.get("status") in ("pending", "in_progress")
+                for t in store.list(session_id=sid))
+        except Exception:
+            return False
+
     def _attach_subagent_runner(
         self, permissions: Optional["KitToolPermissions"],
     ) -> None:
@@ -6927,6 +6943,14 @@ class OpenAIClient(_BaseClient):
         # Thrash detector state (cleanup loops, same-file rewrites) — soft
         # nudges the model to change approach when it's spinning. Per turn.
         _thrash_state: dict = {}
+        # Auto-continue: some models (o3) end the turn after each batch + a
+        # "I'll continue" line. When the model stops with tasks still open AND
+        # it made fresh progress this round, we inject a continue and keep the
+        # SAME turn going — capped, and only after real tool activity, so it
+        # can never loop without progress.
+        _AUTO_CONT_CAP = 12
+        _auto_cont_count = 0
+        _did_tools_since_cont = False
 
         # Scale the tool-output elision budget to the model's real context
         # window so a big-context model keeps its earlier file reads instead
@@ -7380,6 +7404,10 @@ class OpenAIClient(_BaseClient):
                     except Exception:
                         pass
 
+                # This round executed tools → real progress was made (used to
+                # gate auto-continue so it never fires without progress).
+                _did_tools_since_cont = True
+
                 # Mid-loop steering: if the user sent a message WHILE the loop
                 # was running, inject it now as a user turn so the model reacts
                 # to it on the very next round (no waiting for the turn to end).
@@ -7478,6 +7506,33 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _s})
                     yield StreamEvent(
                         type="text_delta", text="\n\n💬 [you, mid-run]: " + _s + "\n")
+                continue
+
+            # Auto-continue: the model ended its turn, but tasks are still open
+            # and it made fresh progress this round (o3 stops after each batch +
+            # an "I'll continue" line). Keep the SAME turn going. Guarded: needs
+            # tool activity since the last auto-continue + a hard cap, so it can
+            # never loop without progress. The injected nudge also tells it to
+            # ASK when genuinely unsure rather than guess — autonomy ≠ guessing.
+            if (_did_tools_since_cont and _auto_cont_count < _AUTO_CONT_CAP
+                    and self._has_pending_tasks()):
+                _auto_cont_count += 1
+                _did_tools_since_cont = False
+                _final = "".join(_text_chunks) if _text_chunks else ""
+                if _final.strip():
+                    api_messages.append({"role": "assistant", "content": _final})
+                api_messages.append({"role": "user", "content": (
+                    "Continue — there are still OPEN tasks. Do the next task's "
+                    "first concrete action NOW (write_file / bash …), update task "
+                    "status as you go, and keep working straight through until "
+                    "every task is completed. Do NOT stop to announce that you "
+                    "will continue. BUT if you are genuinely UNSURE what the user "
+                    "wants, or an action is risky/irreversible and you can't tell "
+                    "it's intended, STOP and ask (ask_user_question) instead of "
+                    "guessing — a wrong autonomous action is worse than a quick "
+                    "question.")})
+                yield StreamEvent(
+                    type="text_delta", text="\n\n↻ auto-continue → next task\n")
                 continue
 
             # No tool calls — emit final message_delta and break

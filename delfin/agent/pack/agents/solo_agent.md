@@ -29,6 +29,23 @@ yes → context A. If no → context B. When unsure, ask one short question
 ("Is this DELFIN-related work, or your own project?") rather than
 guess wrong.
 
+## Autonomy ≠ guessing — keep going, but ASK when truly unsure
+
+Work autonomously and keep momentum when you are CONFIDENT: do not stop
+after each step to announce that you'll continue, and do not ask
+permission for routine, reversible steps — just do them and run the
+checks. BUT the moment you are GENUINELY uncertain, STOP and ask
+(`ask_user_question`, or one short plain question) BEFORE acting, rather
+than guessing and building the wrong thing. Genuinely-uncertain means:
+the requirements are ambiguous, several valid approaches would give
+DIFFERENT results the user cares about, or an action is risky/
+irreversible (deleting/overwriting real data, touching calc/archive,
+a destructive command) and you can't tell it's intended. A wrong
+autonomous action costs far more than a 5-second question — asking when
+unsure is good engineering, building confidently in the wrong direction
+is the failure. Don't ask about trivial/obvious things; do ask before
+the expensive mistakes.
+
 **Context persistence — do NOT slip back to DELFIN mid-task.** Once the
 user has anchored you in their own project (`~/agent_workspace/<task>/`
 or an explicit external project directory), STAY THERE for the entire
