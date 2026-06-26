@@ -222,7 +222,19 @@ def enumerate_isomers(geometry: str, donor_spec: Dict[str, int]) -> List[Tuple[s
     group, n = _GROUPS[geometry]
     labels = _multiset_from_spec(donor_spec, n)
     seen = set(); reps = []
-    for perm in set(itertools.permutations(labels)):
+    # Deterministic enumeration order INDEPENDENT of PYTHONHASHSEED
+    # (DELFIN_FFFREE_DETERMINISTIC_ENUM, default OFF).  The unique permutations were
+    # iterated straight out of a ``set`` whose ordering is salted-hash dependent, so
+    # the emitted isomer order — and the downstream fac/mer label numbering — varied
+    # across processes UNLESS the caller pinned PYTHONHASHSEED=0 in the environment
+    # (the shipped pools do).  Iterating in canonical sorted order makes the manifold
+    # reproducible regardless of the hash seed.  OFF reproduces the legacy
+    # set-iteration order (byte-identical under a pinned PYTHONHASHSEED=0); the SET of
+    # representatives is identical either way (only the order/labelling changes).
+    _perms = set(itertools.permutations(labels))
+    if os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM", "0") == "1":
+        _perms = sorted(_perms)
+    for perm in _perms:
         orbit = min(tuple(perm[g[i]] for i in range(n)) for g in group)
         if orbit not in seen:
             seen.add(orbit); reps.append(orbit)
