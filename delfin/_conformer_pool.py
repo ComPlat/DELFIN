@@ -1070,6 +1070,26 @@ def generate_conformer_pool(
     if not scored_candidates:
         return [(xyz, "base")]
 
+    # ---------- GFN-FF re-rank (DELFIN_CONF_GFNFF_RANK, default OFF) ----------
+    # The UFF scoring above is only a cheap pre-filter: on transition-metal complexes
+    # OpenBabel-UFF energies are unusable for ranking (measured 170-300 kcal/mol
+    # spreads + 1e16 blow-ups where the physical conformer window is a few kcal/mol).
+    # When enabled, re-score the lowest-UFF shortlist with GFN-FF (xtb CLI,
+    # license-clean, parametrised for metals; measured 8 kcal/mol spread on a pool
+    # UFF placed at 301) and rank by that.  Byte-identical when off (block skipped).
+    if os.environ.get("DELFIN_CONF_GFNFF_RANK", "0") == "1":
+        try:
+            from delfin.fffree import _gfnff_rank as _gff
+            _top_m = _env_int(
+                "DELFIN_CONF_GFNFF_TOPM", max(3 * k_target, 12), lo=1, hi=256
+            )
+            _chg = _env_int("DELFIN_CONF_GFNFF_CHARGE", 0, lo=-12, hi=12)
+            _reranked = _gff.rerank(scored_candidates, _top_m, charge=_chg)
+            if _reranked:
+                scored_candidates = _reranked
+        except Exception as exc:
+            logger.debug("GFN-FF rerank skipped: %s", exc)
+
     # ---------- Top-K diverse selection ----------
     pool = _select_top_k_diverse(
         scored_candidates,
