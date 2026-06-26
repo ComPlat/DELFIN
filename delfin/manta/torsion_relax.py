@@ -62,7 +62,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
-import delfin._bond_decollapse as _bd
+import delfin.manta._bond_decollapse as _bd
 from delfin.manta.refine import _vdw
 
 # Geometric clash factor — identical to the builder's _clash_count / the spec's f.

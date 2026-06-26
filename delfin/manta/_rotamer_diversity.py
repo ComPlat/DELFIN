@@ -46,7 +46,7 @@ Env-flags
 
 Welle-5p-A hard-gate (default ON when ``DELFIN_5P_A_TOPOLOGY_HARDGATE=1``)
 Every candidate frame is additionally passed through
-:func:`delfin._topology_hash.topology_preserved` which rejects any
+:func:`delfin.manta._topology_hash.topology_preserved` which rejects any
 rotation that
     * changes the bond multiset,
     * moves an M–D edge,
@@ -809,7 +809,7 @@ def apply(
         # a different bond network on the modified geometry.
         if _topo_hardgate_enabled():
             try:
-                from delfin import _topology_hash as _th  # local import
+                from delfin.manta import _topology_hash as _th  # local import
                 _gate_res = _th.topology_preserved(
                     symbols,
                     base_coords,

@@ -52,7 +52,7 @@ from typing import List, Sequence, Set, Tuple
 
 import numpy as np
 
-from delfin._pi_h_projector import (
+from delfin.manta._pi_h_projector import (
     _parse_xyz,
     _format_xyz,
     _build_geometric_adjacency,
@@ -62,7 +62,7 @@ from delfin._pi_h_projector import (
     _COV_RADII,
     _MD_INVARIANT_TOL,
 )
-from delfin._arom_planarize import _detect_aromatic_rings, _fuse_components
+from delfin.manta._arom_planarize import _detect_aromatic_rings, _fuse_components
 
 # Chemically-coordinating donor elements (in-plane σ lone-pair donors): an
 # atom of one of these elements that lies within M-bond distance is treated as a

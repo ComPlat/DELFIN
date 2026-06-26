@@ -39,7 +39,7 @@ Universal-fundamental compliance
   metal-membership flag.
 * Chelate-rings (any ring containing a metal atom) are **EXCLUDED**
   from templating — they require different handling (chelate-twist
-  in :mod:`delfin._conformer_pool` Layer 3, or the planned 5p-A
+  in :mod:`delfin.manta._conformer_pool` Layer 3, or the planned 5p-A
   topology-hash framework).
 * Aromatic rings are EXCLUDED (planar fixed by π-conjugation).
 * Templates are normalised to unit RMS amplitude; the actual
@@ -50,7 +50,7 @@ Universal-fundamental compliance
 Wire-in
 -------
 :func:`generate_ring_conformer_pool` returns ``[(coords, mode_tag), ...]``
-suitable for plugging into :mod:`delfin._conformer_pool` as a
+suitable for plugging into :mod:`delfin.manta._conformer_pool` as a
 **replacement** for the current naive 2-atom Layer-2 pucker.
 
 Env-flags
@@ -73,7 +73,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from delfin.common.logging import get_logger
 
 # Reuse helpers from the rotamer-diversity module
-from delfin import _rotamer_diversity as _rot
+from delfin.manta import _rotamer_diversity as _rot
 
 logger = get_logger(__name__)
 
@@ -351,7 +351,7 @@ def _ring_plane_normal(
 
     Power iteration on (trace*I − cov) to extract the smallest
     eigenvector of the covariance matrix (= the plane normal).  Same
-    technique as :func:`delfin._conformer_pool._ring_plane_normal`.
+    technique as :func:`delfin.manta._conformer_pool._ring_plane_normal`.
     """
     c = _centroid(coords, ring_atoms)
     cov = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
@@ -411,7 +411,7 @@ def _average_ring_bond_length(
 def _rings_from_graph(graph: Dict) -> List[List[int]]:
     """Return SSSR-like ring atom lists from an OB-perceived graph.
 
-    Mirrors :func:`delfin._conformer_pool._rings_from_graph` for
+    Mirrors :func:`delfin.manta._conformer_pool._rings_from_graph` for
     independence from that module.
     """
     ring_bonds = []
@@ -469,7 +469,7 @@ def find_rings_for_templating(graph: Dict) -> List[List[int]]:
 
     EXCLUDE:
         * rings containing a metal atom (= chelate rings; handled by
-          Layer-3 chelate-twist in :mod:`delfin._conformer_pool`)
+          Layer-3 chelate-twist in :mod:`delfin.manta._conformer_pool`)
         * rings whose every consecutive bond is aromatic (planar π-system,
           fixed)
         * rings whose size lies outside the supported range (3..30)
@@ -598,7 +598,7 @@ def _md_distance_check(
     """Return True iff every M-D bond length is preserved within *tol* Å.
 
     Standalone fallback: re-uses
-    :func:`delfin._rotamer_diversity._coord_bond_invariant_holds`
+    :func:`delfin.manta._rotamer_diversity._coord_bond_invariant_holds`
     when available; otherwise iterates metal-donor edges directly.
     """
     if hasattr(_rot, "_coord_bond_invariant_holds"):

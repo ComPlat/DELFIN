@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Optional, Dict, List
 from rdkit import Chem
-import delfin._bond_decollapse as bd
+import delfin.manta._bond_decollapse as bd
 
 # d8 square-planar-preferring metals (else CN4 -> tetrahedral)
 _D8 = {"Pt", "Pd", "Ni", "Au", "Rh", "Ir"}

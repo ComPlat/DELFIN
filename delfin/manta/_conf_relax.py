@@ -22,7 +22,7 @@ from typing import Dict, List, Sequence, Set, Tuple
 
 import numpy as np
 
-from delfin._bond_decollapse import _ideal_bond
+from delfin.manta._bond_decollapse import _ideal_bond
 
 
 def core_indices(graph: Dict) -> Set[int]:

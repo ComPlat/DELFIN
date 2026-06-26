@@ -19,7 +19,7 @@ of attraction; one of them will be the global-minimum basin.
 Architecture (5 sampling layers, then quality filter + top-K diverse)
 ---------------------------------------------------------------------
 1. **Torsion-grid** — staggered rotamer states around every rotatable
-   single bond (re-uses :func:`delfin._rotamer_diversity.identify_rotamer_dofs`).
+   single bond (re-uses :func:`delfin.manta._rotamer_diversity.identify_rotamer_dofs`).
 2. **Ring-pucker** — for each non-aromatic sp3 ring of size 5 / 6, two
    pucker modes (chair-like inversion + twist-flip) on the ring atom
    pair displaced perpendicular to the mean ring plane.
@@ -50,7 +50,7 @@ Universal-fundamental compliance (per :doc:`feedback_universal_fundamental_doctr
 * Chelate-twist: ring contains a metal atom + at least one sp3 atom +
   ring size ≤ 7 (graph property — works for Fe(en)3, Co(diamine)3,
   Cu(acac)2, etc.).
-* M–D invariant via :func:`delfin._rotamer_diversity._coord_bond_invariant_holds`.
+* M–D invariant via :func:`delfin.manta._rotamer_diversity._coord_bond_invariant_holds`.
 
 Wire-in
 -------
@@ -76,7 +76,7 @@ Env-flags
 
 Welle-5p-A hard-gate (default ON when ``DELFIN_5P_A_TOPOLOGY_HARDGATE=1``)
 Every layer's candidate is additionally passed through
-:func:`delfin._topology_hash.topology_preserved` before the energy
+:func:`delfin.manta._topology_hash.topology_preserved` before the energy
 filter.  This rejects chelate-ring twists that flip an amine-H toward
 the metal or perturb M–D edges beyond ``DELFIN_5P_A_MD_TOL``.
 """
@@ -91,7 +91,7 @@ from delfin.common.logging import get_logger
 
 # Reuse helpers from the T6 rotamer-diversity module to keep the M–D
 # invariant, topology-hash and DOF-detection logic single-sourced.
-from delfin import _rotamer_diversity as _rot
+from delfin.manta import _rotamer_diversity as _rot
 
 logger = get_logger(__name__)
 
@@ -939,7 +939,7 @@ def generate_conformer_pool(
             "DELFIN_5P_B_RING_TEMPLATES", False
         )
         if use_5p_b_templates:
-            from delfin import _ring_conformer_templates as _ring_tpl
+            from delfin.manta import _ring_conformer_templates as _ring_tpl
 
             k_per_ring = _env_int(
                 "DELFIN_5P_B_K_PER_RING", 6 if coverage else 3, lo=1, hi=20
@@ -1005,7 +1005,7 @@ def generate_conformer_pool(
         _hm_min = _env_float("DELFIN_5P_A_CLASH_HM_MIN", 2.30, lo=0.0, hi=10.0)
         _bond_tol_th = _env_float("DELFIN_5P_A_BOND_TOL", 1.30, lo=0.5, hi=3.0)
         try:
-            from delfin import _topology_hash as _th  # local import
+            from delfin.manta import _topology_hash as _th  # local import
         except Exception:
             _th = None  # type: ignore
             _hardgate_on = False

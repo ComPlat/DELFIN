@@ -10,7 +10,7 @@ architecture: it answers the question
 The output is a deterministic, canonical, labelled list:
 
     >>> from rdkit import Chem
-    >>> from delfin._prescribed_isomer_enumerator import enumerate_prescribed_isomers
+    >>> from delfin.manta._prescribed_isomer_enumerator import enumerate_prescribed_isomers
     >>> mol = Chem.MolFromSmiles("[Cl][Pt]([Cl])([NH3])[NH3]", sanitize=False)
     >>> isomers = enumerate_prescribed_isomers(mol)
     >>> [(d["positional"], d["stereo"], d["n_polya_orbit"]) for d in isomers]
@@ -24,13 +24,13 @@ Each entry is a self-contained dict with these keys:
     Polyhedron code (``"OH"``, ``"TH"``, ``"SQ"``, ``"TBP"``, ...).
 ``positional``
     Chemistry-faithful positional tag from
-    :func:`delfin._polya_groups.positional_descriptor`
+    :func:`delfin.manta._polya_groups.positional_descriptor`
     (``"fac"`` / ``"mer"`` / ``"cis"`` / ``"trans"`` / ``"all-cis"`` /
     ``"ccc-trans"`` / ``"axial"`` / ``"equatorial"`` / ``"only-isomer"``
     / ``""``).
 ``stereo``
     ``"Delta"`` / ``"Lambda"`` / ``"achiral"``.  Chirality from
-    :mod:`delfin._chirality_enumerator` (Λ/Δ for ≥2 chelate pairs).
+    :mod:`delfin.manta._chirality_enumerator` (Λ/Δ for ≥2 chelate pairs).
 ``donor_assignment``
     ``{polyhedron_position: donor_list_index}``.  Concrete vertex →
     donor mapping for this orbit representative.  Caller's realisation
@@ -59,16 +59,16 @@ Doctrine
   element allowlist (per
   :doc:`feedback_universal_fundamental_doctrine`).  All decisions are
   derived from atomic numbers, bond graph, and the universal symmetry
-  groups in :mod:`delfin._burnside_groups`.
+  groups in :mod:`delfin.manta._burnside_groups`.
 * **Decoupled from realisation.**  This module does not import the
   smiles-converter or any UFF / ETKDG path.  It is the "ground-truth"
   layer (per :doc:`feedback_nature_methodology_doctrine`) — the
   realisation layer is expected to attempt to *build* each prescribed
   isomer; missing labels = measurable coverage gap.
-* **Cauchy-Frobenius via** :mod:`delfin._burnside_groups`.  Orbit
+* **Cauchy-Frobenius via** :mod:`delfin.manta._burnside_groups`.  Orbit
   count under the proper-rotation group = number of distinct
   chiral / positional isomers.  Λ/Δ enantiomers split out via
-  :mod:`delfin._chirality_enumerator`.
+  :mod:`delfin.manta._chirality_enumerator`.
 * **Production-OFF.**  This module is helper-only.  Nothing in the
   pipeline imports it yet (Welle-5n Phase 3 will wire it into the
   scaffold builder).
@@ -107,15 +107,15 @@ try:
 except Exception:  # pragma: no cover — RDKit always present in DELFIN
     _RDKIT_OK = False
 
-from delfin._burnside_groups import burnside_canonical_key, get_groups
-from delfin._chirality_enumerator import _classify_helicity
-from delfin._polya_groups import (
+from delfin.manta._burnside_groups import burnside_canonical_key, get_groups
+from delfin.manta._chirality_enumerator import _classify_helicity
+from delfin.manta._polya_groups import (
     polyhedra_for_cn,
     polyhedron_geometry,
     positional_descriptor,
     trans_positions,
 )
-from delfin._system_classifier import (
+from delfin.manta._system_classifier import (
     _donor_element_class,
     _find_hapto_groups_local,
     _is_metal,
@@ -320,12 +320,12 @@ def _enumerate_orbits(
     ``_classify_helicity`` scalar)
     --------------------------------------------------------------
     The Iter-2/3 scalar-triple-product classifier in
-    :mod:`delfin._chirality_enumerator` collapses to zero for the
+    :mod:`delfin.manta._chirality_enumerator` collapses to zero for the
     cubic-axis tris-bidentate Δ/Λ pair (Fe(en)3-style) because the
     chelate centroid-vector sum vanishes by Oh symmetry.  The
     Burnside / Cauchy-Frobenius count on chelate-coloured labels has
     no such structural blind spot — it is exact for every polyhedron
-    in :data:`delfin._burnside_groups._GEO`.
+    in :data:`delfin.manta._burnside_groups._GEO`.
     """
     cn = len(donor_classes)
     if cn != len(polyhedron_geometry(geom)):
@@ -625,10 +625,10 @@ def enumerate_prescribed_isomers(mol) -> List[Dict[str, object]]:
 
     The function is **pure** (no I/O, no env-flag side-effects).  It
     operates entirely on the parsed RDKit ``mol`` graph using the
-    universal :mod:`delfin._system_classifier` 8-axis classifier as the
-    typing layer, the :mod:`delfin._burnside_groups` polyhedron-symmetry
+    universal :mod:`delfin.manta._system_classifier` 8-axis classifier as the
+    typing layer, the :mod:`delfin.manta._burnside_groups` polyhedron-symmetry
     registry as the orbit-counting layer, and the
-    :mod:`delfin._chirality_enumerator` helicity classifier as the
+    :mod:`delfin.manta._chirality_enumerator` helicity classifier as the
     Λ / Δ-splitting layer.
     """
     if mol is None or not _RDKIT_OK:

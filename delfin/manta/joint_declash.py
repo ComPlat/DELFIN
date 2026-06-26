@@ -61,7 +61,7 @@ from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
-import delfin._bond_decollapse as _bd
+import delfin.manta._bond_decollapse as _bd
 from delfin.manta import torsion_relax as _TR
 from delfin.manta.refine import _vdw
 

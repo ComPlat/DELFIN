@@ -40,7 +40,7 @@ def _mol(smiles: str, *, add_hs: bool = True):
 
 def test_is_deep_enum_enabled_default_off_byte_identical():
     """Without env-flag the gate is OFF, preserving pre-patch behaviour."""
-    from delfin._deep_enumerator import is_deep_enum_enabled
+    from delfin.manta._deep_enumerator import is_deep_enum_enabled
     # Strip the env-flag if a sibling test set it.
     with mock.patch.dict(
         os.environ,
@@ -53,7 +53,7 @@ def test_is_deep_enum_enabled_default_off_byte_identical():
 
 def test_should_apply_deep_enum_default_off_returns_false():
     """Master gate unset -> trigger returns False regardless of features."""
-    from delfin._deep_enumerator import should_apply_deep_enum
+    from delfin.manta._deep_enumerator import should_apply_deep_enum
     # YIRQIC normalised SMILES -- meets feature trigger, but gate is unset.
     smi = (
         "[O+]#[C][Re-5]1([Br])([C]#[O+])("
@@ -76,7 +76,7 @@ def test_count_distinct_donor_classes_yirqic_5_classes():
     Counts: Br x1, C-CO x2 (same Morgan), C-carbene x1 (different
     Morgan), N-pyridyl x1, P-phosphine x1 -> 5 distinct classes.
     """
-    from delfin._deep_enumerator import count_distinct_donor_classes
+    from delfin.manta._deep_enumerator import count_distinct_donor_classes
     from delfin.smiles_converter import _donor_type_map, _METAL_SET
 
     smi = (
@@ -98,7 +98,7 @@ def test_count_distinct_donor_classes_yirqic_5_classes():
 
 def test_should_apply_deep_enum_yirqic_triggers_when_gate_on():
     """X10-YIRQIC must trigger deep enum when ``DELFIN_5M_X_DEEP_ENUM=1``."""
-    from delfin._deep_enumerator import should_apply_deep_enum
+    from delfin.manta._deep_enumerator import should_apply_deep_enum
     from delfin.smiles_converter import _donor_type_map
 
     smi = (
@@ -122,7 +122,7 @@ def test_should_apply_deep_enum_cisplatin_does_not_trigger():
     simple, well-behaved sigma complexes from any change in enumerator
     contract even when the master gate is on.
     """
-    from delfin._deep_enumerator import should_apply_deep_enum
+    from delfin.manta._deep_enumerator import should_apply_deep_enum
     from delfin.smiles_converter import _donor_type_map
 
     m = _mol("[Pt](Cl)(Cl)(N)N")
@@ -138,7 +138,7 @@ def test_should_apply_deep_enum_cisplatin_does_not_trigger():
 
 def test_coordination_number_for_yirqic_is_six():
     """Sanity check the CN helper before relying on it in trigger logic."""
-    from delfin._deep_enumerator import coordination_number
+    from delfin.manta._deep_enumerator import coordination_number
     from delfin.smiles_converter import _METAL_SET
 
     smi = (
@@ -156,7 +156,7 @@ def test_coordination_number_for_yirqic_is_six():
 def test_unlabeled_rmsd_threshold_default_off_is_2_5():
     """Pre-patch contract: unlabeled RMSD threshold stays at 2.5 A unless
     the deep-enum master gate is non-zero."""
-    from delfin._deep_enumerator import deep_enum_unlabeled_rmsd_threshold
+    from delfin.manta._deep_enumerator import deep_enum_unlabeled_rmsd_threshold
 
     smi = (
         "[O+]#[C][Re-5]1([Br])([C]#[O+])("
@@ -175,7 +175,7 @@ def test_unlabeled_rmsd_threshold_default_off_is_2_5():
 
 def test_unlabeled_rmsd_threshold_deep_enum_on_drops_to_0_8():
     """Deep-enum on + trigger satisfied -> threshold drops to 0.8 A."""
-    from delfin._deep_enumerator import deep_enum_unlabeled_rmsd_threshold
+    from delfin.manta._deep_enumerator import deep_enum_unlabeled_rmsd_threshold
     from delfin.smiles_converter import _donor_type_map
 
     smi = (
@@ -201,7 +201,7 @@ def test_simple_acac_complex_does_not_trigger():
     regardless of CN.  Simple mono-class chelates stay on the legacy
     code path (bit-exact pre-patch).
     """
-    from delfin._deep_enumerator import should_apply_deep_enum
+    from delfin.manta._deep_enumerator import should_apply_deep_enum
     from delfin.smiles_converter import _donor_type_map
 
     # acac: O=C(C)C=C(C)[O-] coordinated tris -- all donors are O.

@@ -38,7 +38,7 @@ Doctrine
 - Standalone module.  Imports from delfin.smiles_converter for the master
   constants (``_TOPO_GEOMETRY_VECTORS``, ``_get_ml_bond_length``,
   ``_METAL_SET``, ``_COVALENT_RADII``).  Optional helpers from
-  ``delfin._atom_weights`` and ``delfin._vdw_radii`` are imported lazily;
+  ``delfin.manta._atom_weights`` and ``delfin.manta._vdw_radii`` are imported lazily;
   inline fallbacks are used when those modules are not yet available.
 - Always returns a valid XYZ string.  On any internal exception the original
   XYZ is returned unchanged with a populated report dict.
@@ -89,19 +89,19 @@ except Exception:  # pragma: no cover
 # Mass / vdW helpers — try the dedicated stub modules first; fall back inline.
 # ---------------------------------------------------------------------------
 try:
-    from delfin._atom_weights import get_atom_weight as _ext_get_atom_weight  # type: ignore
+    from delfin.manta._atom_weights import get_atom_weight as _ext_get_atom_weight  # type: ignore
     _HAVE_EXT_WEIGHTS = True
 except Exception:
     _HAVE_EXT_WEIGHTS = False
 
 try:
-    from delfin._vdw_radii import get_vdw_sum as _ext_get_vdw_sum, VDW_RADII as _EXT_VDW  # type: ignore
+    from delfin.manta._vdw_radii import get_vdw_sum as _ext_get_vdw_sum, VDW_RADII as _EXT_VDW  # type: ignore
     _HAVE_EXT_VDW = True
 except Exception:
     _HAVE_EXT_VDW = False
 
 
-# Inline atomic mass table (a.u.). Used when delfin._atom_weights is not present.
+# Inline atomic mass table (a.u.). Used when delfin.manta._atom_weights is not present.
 _ATOMIC_MASS: Dict[str, float] = {
     "H": 1.008, "He": 4.003, "Li": 6.94, "Be": 9.012, "B": 10.81, "C": 12.011,
     "N": 14.007, "O": 15.999, "F": 18.998, "Ne": 20.180, "Na": 22.990,
@@ -123,7 +123,7 @@ _ATOMIC_MASS: Dict[str, float] = {
     "Np": 237.0, "Pu": 244.0,
 }
 
-# Inline Bondi vdW radii (Å). Used when delfin._vdw_radii is not present.
+# Inline Bondi vdW radii (Å). Used when delfin.manta._vdw_radii is not present.
 _VDW_RADII: Dict[str, float] = {
     "H": 1.20, "He": 1.40, "Li": 1.82, "Be": 1.53, "B": 1.92, "C": 1.70,
     "N": 1.55, "O": 1.52, "F": 1.47, "Ne": 1.54, "Na": 2.27, "Mg": 1.73,

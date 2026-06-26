@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import List, Set, Tuple
 import os
 import numpy as np
-import delfin._bond_decollapse as bd
+import delfin.manta._bond_decollapse as bd
 from delfin.manta import cod_ideals as _CODI
 
 # Iter 29 (construction-driver): refine heavy-heavy bonds toward COD-empirical lengths

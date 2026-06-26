@@ -1,4 +1,4 @@
-"""Tests for delfin._conformer_pool (Welle-5o per-isomer conformer-pool)."""
+"""Tests for delfin.manta._conformer_pool (Welle-5o per-isomer conformer-pool)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from delfin import _conformer_pool as cp
+from delfin.manta import _conformer_pool as cp
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ def test_diversity_rmsd_floor_respected():
         pytest.skip("not enough conformers to enforce RMSD diversity")
     # Heavy-RMSD between every pair must be ≥ floor (use slightly looser
     # numerical tolerance to account for top-K-diverse greedy heuristic).
-    import delfin._rotamer_diversity as _rot
+    import delfin.manta._rotamer_diversity as _rot
     parsed = [_rot._parse_delfin_xyz(x) for (x, _t) in out]
     syms = parsed[0][0]
     coord_lists = [list(c) for (_s, c) in parsed]
@@ -365,7 +365,7 @@ def test_md_invariant_enforced(monkeypatch):
     )
     if len(out) < 2:
         pytest.skip("no pool variants generated")
-    import delfin._rotamer_diversity as _rot
+    import delfin.manta._rotamer_diversity as _rot
     # Re-parse base to obtain graph / coords
     ob = _rot._build_ob_mol_from_xyz(_FE_EN_XYZ)
     assert ob is not None

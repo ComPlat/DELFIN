@@ -52,7 +52,7 @@ bicapped trigonal antiprism for La(NTA), CN=10 bicapped SAP for La(NO3)5 type).
 The new vector tables, point groups, and alias rows are emitted unconditionally
 (they are static reference data, no runtime cost).  The metal-aware *selection*
 logic is gated by the environment variable ``DELFIN_HIGH_CN_POLYHEDRA`` (read
-by :mod:`delfin._symmetry_detection`).  Default OFF — bit-exact identical to
+by :mod:`delfin.manta._symmetry_detection`).  Default OFF — bit-exact identical to
 the pre-patch CN>=8 dispatch.
 """
 from __future__ import annotations

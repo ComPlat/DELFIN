@@ -7,9 +7,9 @@ flipped donor-H orientation past the metal.
 
 This hotfix:
 1. Excludes rotatable bonds whose endpoint is in a ring containing a metal,
-   in :func:`delfin._rotamer_diversity.identify_rotamer_dofs`.
+   in :func:`delfin.manta._rotamer_diversity.identify_rotamer_dofs`.
 2. Excludes ring-pucker on rings within ≤5 bonds of a metal,
-   in :func:`delfin._conformer_pool._layer2_ring_pucker_candidates`.
+   in :func:`delfin.manta._conformer_pool._layer2_ring_pucker_candidates`.
 3. Disables Layer-3 chelate-twist entirely (interim) when the hotfix is on.
 
 Default-ON; ``DELFIN_5P_C_HOTFIX=0`` restores pre-hotfix behaviour.
@@ -21,8 +21,8 @@ import os
 
 import pytest
 
-from delfin import _conformer_pool as pool
-from delfin import _rotamer_diversity as rot
+from delfin.manta import _conformer_pool as pool
+from delfin.manta import _rotamer_diversity as rot
 
 
 # Synthetic Fe(NH2-CH2-CH2-S) chelate-ring geometry.  Five-membered

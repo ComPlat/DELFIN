@@ -186,7 +186,7 @@ def hungarian_assign_donors_to_slots(
       1. Identify donors (heavy neighbours of metal that are themselves
          not metals).
       2. CN = number of donors; classify polyhedron from (CN, donor types).
-      3. Get ideal donor unit vectors from :mod:`delfin._polyhedron_targets`.
+      3. Get ideal donor unit vectors from :mod:`delfin.manta._polyhedron_targets`.
       4. Compute current donor unit vectors (M -> donor direction).
       5. Build cost matrix (negative cosine similarity).
       6. ``scipy.optimize.linear_sum_assignment`` -> donor -> slot mapping.
@@ -201,7 +201,7 @@ def hungarian_assign_donors_to_slots(
     """
     # Lazy imports - graceful fallback if anything is missing.
     try:
-        from delfin._polyhedron_targets import (
+        from delfin.manta._polyhedron_targets import (
             classify_geometry_from_cn_donors,
             classify_geometry_from_cn_donors_with_metal,
             get_ideal_donor_vectors,
@@ -329,7 +329,7 @@ _POINT_GROUP_CANDIDATES: Tuple[str, ...] = (
 def _get_point_group_operations(pg_name: str) -> Optional[List[np.ndarray]]:
     """Fetch operations for a point group (lazy import, None on failure)."""
     try:
-        from delfin import _point_group_ops as pg_mod  # type: ignore
+        from delfin.manta import _point_group_ops as pg_mod  # type: ignore
     except ImportError:
         return None
     getter = getattr(pg_mod, "get_operations", None)

@@ -9,7 +9,7 @@ import math
 
 import numpy as np
 
-from delfin import _pi_coplanar_final as pcf
+from delfin.manta import _pi_coplanar_final as pcf
 
 
 def _pyridine(tilt_deg, md=2.10):

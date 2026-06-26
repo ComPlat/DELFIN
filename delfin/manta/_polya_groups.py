@@ -2,9 +2,9 @@
 prescribed-isomer enumeration (Welle-5n-Pre, 2026-05-18).
 
 This module is the **enumeration-layer** facade over the existing
-:mod:`delfin._burnside_groups` symmetry-builder.  It adds the
+:mod:`delfin.manta._burnside_groups` symmetry-builder.  It adds the
 graph-/CN-driven *selection logic* and the *positional-descriptor*
-helper needed by :mod:`delfin._prescribed_isomer_enumerator` to label
+helper needed by :mod:`delfin.manta._prescribed_isomer_enumerator` to label
 each orbit representative with a chemistry-faithful tag (``fac`` /
 ``mer`` / ``cis`` / ``trans`` / ``ccc`` / ``axial`` …) — all derived
 from the polyhedron geometry vectors, never from SMILES patterns.
@@ -19,7 +19,7 @@ Public API
 ----------
 ``polyhedra_for_cn(cn)``
     Return the canonical list of polyhedron codes (as registered in
-    :mod:`delfin._burnside_groups._GEO`) for a given coordination
+    :mod:`delfin.manta._burnside_groups._GEO`) for a given coordination
     number.  Order = chemistry-preferred first (e.g. ``["OH", "TPR"]``
     for CN6).
 ``trans_positions(geom)``
@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Dict, FrozenSet, Iterable, List, Sequence, Tuple
 
-from delfin._burnside_groups import (
+from delfin.manta._burnside_groups import (
     _GEO as _BURNSIDE_GEO,
     burnside_canonical_key,
     get_groups,

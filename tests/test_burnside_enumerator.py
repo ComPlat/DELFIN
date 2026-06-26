@@ -1,7 +1,7 @@
 """Pólya/Burnside enumerator correctness audit (Iter-9, 2026-05-13).
 
 These tests pin down two completeness properties of
-``delfin._burnside_groups``:
+``delfin.manta._burnside_groups``:
 
 1. Every polyhedron registered in ``_TOPO_GEOMETRY_VECTORS`` (the
    enumerator's geometry dictionary in ``smiles_converter.py``) MUST
@@ -30,7 +30,7 @@ from typing import Dict, Tuple
 
 import pytest
 
-from delfin._burnside_groups import (
+from delfin.manta._burnside_groups import (
     _GEO,
     burnside_canonical_key,
     get_groups,

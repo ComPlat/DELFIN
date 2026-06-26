@@ -14,7 +14,7 @@ import os
 import numpy as np
 import pytest
 
-from delfin._bond_decollapse import _is_metal as bd_is_metal
+from delfin.manta._bond_decollapse import _is_metal as bd_is_metal
 
 # CN_EXTEND is required for the small CN2 test ligands to reach the FF-free path; the
 # re-embed itself is independent of it.  RIGID_HAPTO/SIGMA stay default (off here).
@@ -47,7 +47,7 @@ def _base_of(label):
 
 
 def _donors(syms, P):
-    import delfin._bond_decollapse as bd
+    import delfin.manta._bond_decollapse as bd
     from delfin.manta import metal_sphere_builder as MSB
     m = next(i for i, s in enumerate(syms) if bd._is_metal(s))
     don = [j for j in range(len(syms))
@@ -166,7 +166,7 @@ def test_never_nonfinite():
 def test_chelate_byte_identical_off_and_core_preserved_on():
     """Chelate path: OFF byte-identical; ON keeps the chelate donors native (the
     bite-constrained embed must not drift the coordinating N atoms)."""
-    import delfin._bond_decollapse as bd
+    import delfin.manta._bond_decollapse as bd
     from delfin.manta import metal_sphere_builder as MSB
     os.environ.pop("DELFIN_FFFREE_BACKBONE_REEMBED", None)
     a = _sig(_isomers(_CHELATE))

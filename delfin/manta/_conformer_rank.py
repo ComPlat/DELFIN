@@ -157,7 +157,7 @@ def _frame_score(atoms: List[Tuple[str, float, float, float]]) -> float:
 # ``_COORD_IDEAL_TIE_EPS``).  Reorder-only; never alters atoms.  Default-OFF →
 # byte-identical isomer order.
 
-# Per-CN candidate geometries (canonical keys in delfin._polyhedron_targets).  For
+# Per-CN candidate geometries (canonical keys in delfin.manta._polyhedron_targets).  For
 # CN values with more than one chemically-valid ideal (CN4 Td vs square-planar,
 # CN5 TBP vs SPY), every candidate is scored and the BEST-fitting one wins, so a
 # valid square-planar CN4 is not penalised against a tetrahedral target (or v.v.).
@@ -178,7 +178,7 @@ _W_COORD_IDEAL = 1.0          # mean-angle-deviation (deg) penalty weight (tiebr
 
 def _ideal_angle_bags():
     """Lazy per-CN ideal donor-M-donor angle bags, derived ONCE from the shared
-    ``delfin._polyhedron_targets`` tables (single source of truth).  Maps
+    ``delfin.manta._polyhedron_targets`` tables (single source of truth).  Maps
     cn -> list of (geometry_key, sorted-tuple-of-ideal-angles).  Cached on the
     function object."""
     cache = getattr(_ideal_angle_bags, "_cache", None)
@@ -187,7 +187,7 @@ def _ideal_angle_bags():
     cache = {}
     try:
         import numpy as _np
-        from delfin import _polyhedron_targets as _PT
+        from delfin.manta import _polyhedron_targets as _PT
         for cn, geoms in _COORD_IDEAL_GEOMS.items():
             bags = []
             for g in geoms:

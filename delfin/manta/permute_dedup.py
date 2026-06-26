@@ -408,7 +408,7 @@ def _automorphisms_for_xyz(
     (caller then falls back to identity / fixed-order behaviour).
     """
     try:
-        from delfin._rotamer_diversity import (
+        from delfin.manta._rotamer_diversity import (
             _build_ob_mol_from_xyz, _graph_from_ob, _parse_delfin_xyz,
         )
         symbols, coords = _parse_delfin_xyz(xyz)
@@ -441,7 +441,7 @@ def _coords_array(xyz: str):
     """Parse one frame -> (N,3) numpy array, or None."""
     try:
         import numpy as np
-        from delfin._rotamer_diversity import _parse_delfin_xyz
+        from delfin.manta._rotamer_diversity import _parse_delfin_xyz
         _syms, co = _parse_delfin_xyz(xyz)
         return np.asarray(co, float)
     except Exception:

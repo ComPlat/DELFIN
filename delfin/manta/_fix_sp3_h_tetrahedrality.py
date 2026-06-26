@@ -1012,7 +1012,7 @@ def fix_sp3_h_tetrahedrality(xyz: str, mol, tolerance_deg: float = 10.0,
 
 
 def _selftest() -> None:
-    """Three sanity checks (callable as ``python -m delfin._fix_sp3_h_tetrahedrality``):
+    """Three sanity checks (callable as ``python -m delfin.manta._fix_sp3_h_tetrahedrality``):
 
     1. Synthetic methane with one H pushed to 180° from another H — fixer
        should restore tetrahedral geometry within tolerance.

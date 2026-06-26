@@ -42,7 +42,7 @@ import os
 import numpy as np
 import pytest
 
-from delfin._polyhedron_targets import (
+from delfin.manta._polyhedron_targets import (
     _CN_GEOM_KEY,
     _HIGH_CN_ACTINIDES,
     _HIGH_CN_IONIC_OTHER,

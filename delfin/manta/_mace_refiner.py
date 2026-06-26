@@ -29,7 +29,7 @@ Public API:
                model="medium", dispersion=True, device="auto") -> dict
 
 CLI (when mace is installed):
-    python -m delfin._mace_refiner <input.xyz> [-o out.xyz] [--steps 200]
+    python -m delfin.manta._mace_refiner <input.xyz> [-o out.xyz] [--steps 200]
 
 Limits:
     - Charged complexes / counter-ions: MACE-MP assumes neutral; charge handling

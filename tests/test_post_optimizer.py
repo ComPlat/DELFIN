@@ -1,4 +1,4 @@
-"""Unit tests for delfin._post_optimizer (Baustein 5: PBD post-optimizer).
+"""Unit tests for delfin.manta._post_optimizer (Baustein 5: PBD post-optimizer).
 
 Covers 10 behaviour contracts the PBD optimizer must satisfy:
 
@@ -13,7 +13,7 @@ Covers 10 behaviour contracts the PBD optimizer must satisfy:
   9. Hydrogen tetrahedrality correction (sp3 C)
  10. Multi-metal (bimetallic) selective repair
 
-All tests are skipped gracefully if delfin._post_optimizer, RDKit, or the
+All tests are skipped gracefully if delfin.manta._post_optimizer, RDKit, or the
 ``post_optimize_geometry`` entry point is unavailable, so the file is safe
 to land even if Baustein 5 plumbing is partially implemented.
 """
@@ -28,7 +28,7 @@ import pytest
 # Graceful imports — entire module is skipped if anything is missing.
 # ----------------------------------------------------------------------
 _post_optimizer = pytest.importorskip(
-    "delfin._post_optimizer",
+    "delfin.manta._post_optimizer",
     reason="Baustein 5 post-optimizer module not yet implemented",
 )
 Chem = pytest.importorskip("rdkit.Chem", reason="RDKit required for tests")
@@ -37,7 +37,7 @@ _rdGeometry = pytest.importorskip("rdkit.Geometry", reason="RDKit required")
 post_optimize_geometry = getattr(_post_optimizer, "post_optimize_geometry", None)
 if post_optimize_geometry is None:
     pytest.skip(
-        "delfin._post_optimizer.post_optimize_geometry not implemented yet",
+        "delfin.manta._post_optimizer.post_optimize_geometry not implemented yet",
         allow_module_level=True,
     )
 

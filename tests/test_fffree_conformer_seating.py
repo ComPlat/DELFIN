@@ -24,7 +24,7 @@ import os
 import numpy as np
 import pytest
 
-from delfin._bond_decollapse import _is_metal as bd_is_metal
+from delfin.manta._bond_decollapse import _is_metal as bd_is_metal
 
 # CN_EXTEND keeps the CN2 test-helper machinery available; BUILDER is required for the
 # isomer path.  Seating is the flag under test (added per-test).

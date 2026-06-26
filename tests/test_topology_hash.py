@@ -1,4 +1,4 @@
-"""Tests for delfin._topology_hash (Welle-5p-A topology hard-gate).
+"""Tests for delfin.manta._topology_hash (Welle-5p-A topology hard-gate).
 
 These tests cover the six acceptance scenarios from the Welle-5p-A
 agent brief:
@@ -20,7 +20,7 @@ import os
 
 import pytest
 
-from delfin import _topology_hash as th
+from delfin.manta import _topology_hash as th
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ class TestRotamerDiversityRollback:
         _clear_env(monkeypatch)
         # Without master flag the rotamer pass is a no-op anyway, but we want
         # to verify wire-in does not change behaviour either.
-        from delfin import _rotamer_diversity as rot
+        from delfin.manta import _rotamer_diversity as rot
         # Quick: identity check on a simple butane XYZ — no metal, no donor
         xyz = (
             "C  0.0  0.0  0.0\n"

@@ -22,7 +22,7 @@ Per-frame rollback if the flatten breaks any pre-existing M-D bond by more
 than the Iter-15 hard invariant (_MD_INVARIANT_TOL).  Bit-exact to input
 when no qualifying ring is found.
 
-Reuses the proven machinery from ``delfin._pi_h_projector``.
+Reuses the proven machinery from ``delfin.manta._pi_h_projector``.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from typing import List, Tuple
 
 import numpy as np
 
-from delfin._pi_h_projector import (
+from delfin.manta._pi_h_projector import (
     _parse_xyz,
     _format_xyz,
     _build_geometric_adjacency,

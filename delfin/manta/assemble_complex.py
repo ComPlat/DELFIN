@@ -18,7 +18,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from delfin.manta import metal_sphere_builder as MSB
-import delfin._bond_decollapse as _bd
+import delfin.manta._bond_decollapse as _bd
 
 SEED = 42
 
@@ -2637,7 +2637,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 # the donors are not in aromatic rings -> falls back to the metallacycle
                 # embed.  Default-OFF / byte-identical when the flag is unset.
                 try:
-                    from delfin._multiarm_coplanar import embed_coplanar_multiarm as _ma_emb
+                    from delfin.manta._multiarm_coplanar import embed_coplanar_multiarm as _ma_emb
                     _ma = _ma_emb(
                         lg["mol"], _dons_d, metal,
                         [float(np.linalg.norm(p)) for p in _dtp],

@@ -1,6 +1,6 @@
 """Baustein 6 — Variational L-BFGS-B Post-Refiner with 4-Tier Symmetry Awareness.
 
-Complements Baustein 5 (PBD, ``delfin._post_optimizer``).  Where B5 handles
+Complements Baustein 5 (PBD, ``delfin.manta._post_optimizer``).  Where B5 handles
 catastrophic moves + hard topology repair via constraint projection, B6
 performs smooth simultaneous balance of all forces (bonds, angles, clashes,
 hard topology, plus four tiers of symmetry pressure) via gradient-based
@@ -9,7 +9,7 @@ minimization of an 8-term energy functional ``U_total``.
 Pipeline
 --------
 1. Pre-compute symmetry info (Tier A / B / C / D — one-shot, expensive).
-2. Build the ``U_total`` + ``grad_U_total`` closures via ``delfin._energy_terms``.
+2. Build the ``U_total`` + ``grad_U_total`` closures via ``delfin.manta._energy_terms``.
 3. Run ``scipy.optimize.minimize(method="L-BFGS-B", jac=True)``.
 4. Validate result against the Baustein 5 topology hard-gate; on failure
    the input XYZ is returned unchanged.
@@ -187,13 +187,13 @@ def _array_to_xyz(coords: np.ndarray, mol, orig_lines: Optional[List[str]] = Non
 def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
     """Conservative topology hard-gate.
 
-    Tries the canonical ``delfin._post_optimizer._passes_topology`` first; if
+    Tries the canonical ``delfin.manta._post_optimizer._passes_topology`` first; if
     that module is unavailable, falls back to an inline check that mirrors its
     semantics (M-D window 0.85-1.10 × ideal, non-bonded heavy-pair collapse
     below 0.85 · Σr_cov).
     """
     try:
-        from delfin._post_optimizer import (  # type: ignore
+        from delfin.manta._post_optimizer import (  # type: ignore
             _passes_topology, _metal_indices, _md_pairs, _non_bonded_heavy_pairs,
         )
         metals = _metal_indices(mol)
@@ -238,7 +238,7 @@ def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
 # ---------------------------------------------------------------------------
 # Patch P-H-TRACK (B6 port) — rigid-H DoF reduction helpers.
 #
-# Mirrors :func:`delfin._post_optimizer._compute_h_neighbors` and adds the
+# Mirrors :func:`delfin.manta._post_optimizer._compute_h_neighbors` and adds the
 # extra plumbing required for L-BFGS-B coordinate substitution.
 #
 # Approach
@@ -269,7 +269,7 @@ def _topology_check(coords: np.ndarray, mol, metal_set: set) -> bool:
 def _compute_h_neighbors(mol) -> List[List[int]]:
     """Per-atom list of bonded H atom indices.
 
-    Mirrors :func:`delfin._post_optimizer._compute_h_neighbors`.  Returns a
+    Mirrors :func:`delfin.manta._post_optimizer._compute_h_neighbors`.  Returns a
     list of length ``mol.GetNumAtoms()``; entries indexed by an H atom are
     always empty so the helper is safe to use on any atom index.
     """
@@ -404,7 +404,7 @@ def _reduce_grad(
 
 # ---------------------------------------------------------------------------
 # Minimal fallback energy term (U_bond + U_clash + harmonic M-D).
-# Used only when delfin._energy_terms is not yet available.
+# Used only when delfin.manta._energy_terms is not yet available.
 # ---------------------------------------------------------------------------
 
 def _fallback_U_total(coords_2d: np.ndarray, mol, sym_info: Dict[str, Any],
@@ -527,7 +527,7 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
 
     # ----- Tier A: per-metal donor targets via Hungarian assignment -----
     try:
-        from delfin._symmetry_detection import (  # type: ignore
+        from delfin.manta._symmetry_detection import (  # type: ignore
             hungarian_assign_donors_to_slots,
         )
         metals = [a.GetIdx() for a in mol.GetAtoms()
@@ -546,7 +546,7 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
 
     # ----- Tier B: equivalent atoms / bond-pairs / angle-triples -----
     try:
-        from delfin._symmetry_detection import (  # type: ignore
+        from delfin.manta._symmetry_detection import (  # type: ignore
             find_equivalent_atoms,
             find_equivalent_bond_pairs,
             find_equivalent_angle_triples,
@@ -561,7 +561,7 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
 
     # ----- Tier C: fragment archetypes -----
     try:
-        from delfin._fragment_archetypes import detect_fragments  # type: ignore
+        from delfin.manta._fragment_archetypes import detect_fragments  # type: ignore
         frags = detect_fragments(mol) or []
         sym_info["fragments"] = frags
         meta["fragments_detected"] = len(frags)
@@ -571,7 +571,7 @@ def _precompute_symmetry(mol, coords: np.ndarray, class_label: str,
     # ----- Tier D: global molecular point group -----
     if enable_global_pg and bool(params.get("enable_D", False)):
         try:
-            from delfin._symmetry_detection import (  # type: ignore
+            from delfin.manta._symmetry_detection import (  # type: ignore
                 detect_global_point_group,
             )
             pg, ops, perms = detect_global_point_group(mol, coords)
@@ -625,7 +625,7 @@ def variational_refine(
         (default), the value is read from the environment variable
         ``DELFIN_B6_RIGID_H`` (``0`` ⇒ False, anything else ⇒ True),
         falling back to ``False`` when unset.  Default OFF mirrors the
-        B5 :func:`delfin._post_optimizer.post_optimize_geometry` patch.
+        B5 :func:`delfin.manta._post_optimizer.post_optimize_geometry` patch.
 
     Returns
     -------
@@ -709,7 +709,7 @@ def variational_refine(
 
     # ----- Step 5: pick U_total implementation -----
     try:
-        from delfin._energy_terms import U_total as _U_total  # type: ignore
+        from delfin.manta._energy_terms import U_total as _U_total  # type: ignore
         _have_full_U = True
     except Exception:
         _U_total = None  # type: ignore

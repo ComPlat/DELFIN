@@ -32,7 +32,7 @@ via DELFIN_FFFREE_LIGAND_RELAX=1.
 from __future__ import annotations
 from typing import Dict, List, Set, Tuple
 import numpy as np
-import delfin._bond_decollapse as bd
+import delfin.manta._bond_decollapse as bd
 
 _VDW = bd._VDW
 _VDW_D = bd._VDW_DEFAULT

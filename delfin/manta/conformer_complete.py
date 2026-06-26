@@ -8,7 +8,7 @@ structure) at the public ``smiles_to_xyz_isomers`` chokepoint, AFTER the legacy
 The three problems this cures (user eye-validation, root cause)
 ---------------------------------------------------------------
 1.  INCOMPLETE coverage — many rotatable single bonds in ligands are NEVER
-    rotated.  The pre-existing :mod:`delfin._rotamer_diversity` picks the
+    rotated.  The pre-existing :mod:`delfin.manta._rotamer_diversity` picks the
     *cheaper* (fewer-heavy) side of each rotatable bond, so a tBu / large
     pendant substituent (whose heavy side is the bulky one) only ever spins its
     terminal methyls and the bulky group itself stays frozen (ABUSEY "too few",
@@ -77,7 +77,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from delfin.common.logging import get_logger
 
 # Reuse the proven graph / DOF / rotation machinery — graph-only, FF-free.
-from delfin._rotamer_diversity import (
+from delfin.manta._rotamer_diversity import (
     _build_ob_mol_from_xyz,
     _graph_from_ob,
     _parse_delfin_xyz,
@@ -404,7 +404,7 @@ def identify_complete_dofs(
 ) -> List[Dict]:
     """Identify EVERY rotatable single bond that moves >= 1 heavy atom.
 
-    Differs from :func:`delfin._rotamer_diversity.identify_rotamer_dofs` in two
+    Differs from :func:`delfin.manta._rotamer_diversity.identify_rotamer_dofs` in two
     ways that are the whole point of the completeness pass:
 
     * We rotate the side that ACTUALLY MOVES A HEAVY ATOM.  The upstream picker

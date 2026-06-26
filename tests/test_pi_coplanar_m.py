@@ -1,4 +1,4 @@
-"""Unit tests for delfin._pi_coplanar_m (Iter-34 coordinated planar π-donor
+"""Unit tests for delfin.manta._pi_coplanar_m (Iter-34 coordinated planar π-donor
 co-planar-M orienter).
 
 Geometry-only (no SMILES build), so these run fast and deterministically.  We
@@ -19,11 +19,11 @@ import math
 
 import numpy as np
 
-from delfin._pi_coplanar_m import correct_xyz, correct_results
-from delfin._pi_h_projector import (
+from delfin.manta._pi_coplanar_m import correct_xyz, correct_results
+from delfin.manta._pi_h_projector import (
     _parse_xyz, _build_geometric_adjacency, _is_metal_sym,
 )
-from delfin._arom_planarize import _detect_aromatic_rings
+from delfin.manta._arom_planarize import _detect_aromatic_rings
 
 
 def _fmt(syms, P):

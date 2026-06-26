@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from delfin._fix_sp3_h_tetrahedrality import (
+from delfin.manta._fix_sp3_h_tetrahedrality import (
     _COV_RADII,
     _VDW_RADII,
     _build_geometric_adjacency,

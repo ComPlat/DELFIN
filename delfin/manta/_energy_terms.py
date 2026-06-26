@@ -1,7 +1,7 @@
 """Analytic energy terms + gradients for Baustein 6 variational refinement.
 
 Eight U-terms compose the total energy functional minimised by L-BFGS-B
-in :mod:`delfin._variational_refiner`:
+in :mod:`delfin.manta._variational_refiner`:
 
 * ``U_bond``      — bond-length penalty (covalent radii lookup)
 * ``U_angle``     — bond-angle penalty per hybridization
@@ -17,7 +17,7 @@ has the same shape as ``coords`` (``[N, 3]``). Gradients are fully analytic
 (no finite differencing) so L-BFGS-B can run with ``jac=True``.
 
 All dependencies on :mod:`delfin.smiles_converter` (``_get_ml_bond_length``,
-``_COVALENT_RADII``, ``_METAL_SET``) and :mod:`delfin._vdw_radii` are lazily
+``_COVALENT_RADII``, ``_METAL_SET``) and :mod:`delfin.manta._vdw_radii` are lazily
 imported inside helpers to keep the module light at import time and to avoid
 the known circular-import risk with ``smiles_converter``.
 
@@ -92,7 +92,7 @@ def _smiles_converter_ml_bondlen(metal_sym: str, donor_sym: str) -> float:
 def _vdw_radius(symbol: str) -> float:
     """Return Bondi/Alvarez vdW radius for ``symbol``."""
     try:
-        from delfin._vdw_radii import get_vdw_radius  # type: ignore
+        from delfin.manta._vdw_radii import get_vdw_radius  # type: ignore
         return float(get_vdw_radius(symbol))
     except Exception:
         return _DEFAULT_VDW_FALLBACK
@@ -334,7 +334,7 @@ def U_clash(coords: np.ndarray, mol, k_clash: float = 500.0,
             ) -> Tuple[float, np.ndarray]:
     """One-sided clash repulsion for non-bonded heavy pairs.
 
-    Uses Bondi/Alvarez vdW sums from :mod:`delfin._vdw_radii`. Metal/metal
+    Uses Bondi/Alvarez vdW sums from :mod:`delfin.manta._vdw_radii`. Metal/metal
     and 1-2, 1-3 connections are excluded. Penalty is C¹-continuous quadratic
     inside the overlap region; zero (with zero gradient) outside.
     """

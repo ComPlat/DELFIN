@@ -1,4 +1,4 @@
-"""Tests for delfin._ring_conformer_templates (Welle-5p-B).
+"""Tests for delfin.manta._ring_conformer_templates (Welle-5p-B).
 
 Validation HARD-gate per the Welle-5p-B brief:
 
@@ -21,8 +21,8 @@ import os
 
 import pytest
 
-from delfin import _ring_conformer_templates as ring_tpl
-from delfin import _rotamer_diversity as _rot
+from delfin.manta import _ring_conformer_templates as ring_tpl
+from delfin.manta import _rotamer_diversity as _rot
 
 
 # ---------------------------------------------------------------------------

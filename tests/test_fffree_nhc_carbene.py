@@ -64,7 +64,7 @@ def _prep(smiles):
     mol = _prepare_mol_for_embedding(smiles)
     if mol is None:
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
-    import delfin._bond_decollapse as bd
+    import delfin.manta._bond_decollapse as bd
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
     return mol, metals[0]
 

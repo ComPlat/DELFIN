@@ -69,7 +69,7 @@ def donor_pivot_rotation_sweep(
 
     # Lazy imports so the module is importable even before sisters are ready.
     try:
-        from delfin._energy_terms import U_total
+        from delfin.manta._energy_terms import U_total
     except Exception as exc:  # pragma: no cover - defensive
         return coords, {
             "error": f"missing _energy_terms: {exc}",
@@ -85,7 +85,7 @@ def donor_pivot_rotation_sweep(
     # _passes_topology has a richer signature than originally specified — we
     # call it carefully and degrade to a permissive sanity check on TypeError.
     try:
-        from delfin._post_optimizer import _passes_topology  # type: ignore
+        from delfin.manta._post_optimizer import _passes_topology  # type: ignore
     except Exception:
         _passes_topology = None  # type: ignore[assignment]
 
@@ -488,9 +488,9 @@ def _self_test() -> None:  # pragma: no cover - exercised manually
             pen += (1.0 - cos_phi) * 1.0
         return pen, np.zeros_like(c)
 
-    fake_mod = types.ModuleType("delfin._energy_terms")
+    fake_mod = types.ModuleType("delfin.manta._energy_terms")
     fake_mod.U_total = _mock_U  # type: ignore[attr-defined]
-    sys.modules["delfin._energy_terms"] = fake_mod
+    sys.modules["delfin.manta._energy_terms"] = fake_mod
 
     fake_conv = types.ModuleType("delfin.smiles_converter")
     fake_conv._METAL_SET = {"Pt"}
@@ -498,9 +498,9 @@ def _self_test() -> None:  # pragma: no cover - exercised manually
 
     # Force _passes_topology to permissive no-op (sister module not loadable
     # in this stub harness).
-    fake_post = types.ModuleType("delfin._post_optimizer")
+    fake_post = types.ModuleType("delfin.manta._post_optimizer")
     fake_post._passes_topology = lambda *a, **kw: True  # type: ignore[attr-defined]
-    sys.modules["delfin._post_optimizer"] = fake_post
+    sys.modules["delfin.manta._post_optimizer"] = fake_post
 
     new_coords, report = donor_pivot_rotation_sweep(
         coords, mol, sym_info={}, params={},

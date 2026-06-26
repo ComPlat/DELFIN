@@ -40,7 +40,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-import delfin._bond_decollapse as _bd
+import delfin.manta._bond_decollapse as _bd
 
 # Deterministic ETKDG seed base (42, 43, ...).  PYTHONHASHSEED=0 + single thread.
 _SEED0 = 42

@@ -54,7 +54,7 @@ from typing import List, Sequence, Set, Tuple
 
 import numpy as np
 
-from delfin._pi_h_projector import (
+from delfin.manta._pi_h_projector import (
     _parse_xyz,
     _format_xyz,
     _build_geometric_adjacency,

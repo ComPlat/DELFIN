@@ -44,7 +44,7 @@ v2 preserves bit-exact backward-compat with v1:
 
 API
 ---
-    from delfin._ensemble_dispatch import ensemble_smiles_to_xyz_isomers
+    from delfin.manta._ensemble_dispatch import ensemble_smiles_to_xyz_isomers
 
     out, errors = ensemble_smiles_to_xyz_isomers(
         smiles="...",
@@ -62,7 +62,7 @@ Catalogue extensibility
 -----------------------
 Add a new path at runtime via::
 
-    from delfin._ensemble_dispatch import register_path, Path
+    from delfin.manta._ensemble_dispatch import register_path, Path
     register_path(Path("iter9.0a-newport", {"DELFIN_ITER9_NEWFLAG": "1"}))
 
 The next ``ensemble_smiles_to_xyz_isomers(..., paths_mode="all")`` call will
@@ -391,7 +391,7 @@ def ensemble_smiles_to_xyz_isomers(
         smiles_to_xyz_isomers,
         _classify_complex_class,
     )
-    from delfin._ensemble_scoring import (
+    from delfin.manta._ensemble_scoring import (
         score_frame,
         fingerprint as _polyhedron_fingerprint,
         build_smiles_pair_counter,

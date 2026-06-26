@@ -20,7 +20,7 @@ from delfin.manta import assemble_complex as AC
 from delfin.manta import polyhedra as PLY
 from delfin.manta import ligand_relax as LR
 from delfin.manta import backbone_reembed as _BR
-import delfin._bond_decollapse as _bd
+import delfin.manta._bond_decollapse as _bd
 
 
 def _multibond_enabled() -> bool:
@@ -449,7 +449,7 @@ def _decollapse_enabled() -> bool:
 
 def _maybe_decollapse(syms, P):
     """Pull collapsed heavy-heavy bonds apart via the proven firewall mover
-    (delfin._bond_decollapse.correct_xyz: metals + donors FROZEN, collapse must
+    (delfin.manta._bond_decollapse.correct_xyz: metals + donors FROZEN, collapse must
     STRICTLY drop, and no measured axis — vdW clashes, F20 H-planarity, F3 bond
     distortion, M-D invariant — may worsen, else the relaxed frame is rejected and
     the input returned bit-exact).  The collapsed backbone atoms (C/H, neither metal
@@ -462,7 +462,7 @@ def _maybe_decollapse(syms, P):
     if not _decollapse_enabled():
         return syms, P
     try:
-        from delfin import _bond_decollapse as _BD
+        from delfin.manta import _bond_decollapse as _BD
         xin = _xyz(syms, P)
         xout = _BD.correct_xyz(None, xin)
         if xout == xin:
@@ -997,7 +997,7 @@ def _hapto_subst_rotamers(xyz, n_per=2):
     if xyz.count("\n") + 1 > 160:
         return [xyz]
     try:
-        from delfin import _rotamer_diversity as RD
+        from delfin.manta import _rotamer_diversity as RD
         outs = RD.apply(xyz, n_per_isomer=int(n_per), n_states=3, max_dofs=4)
         return outs if outs else [xyz]
     except Exception:
