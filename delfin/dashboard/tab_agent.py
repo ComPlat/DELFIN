@@ -1225,6 +1225,46 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
+def _agent_workspace_from_launch(launch_cwd: str, fallback) -> "Path":
+    """Where the AGENT works — derived from the REAL delfin-voila launch dir,
+    not Path.cwd() (Voila pins the kernel cwd to the notebook's dir inside the
+    delfin checkout, so cwd always points at delfin). Rule: if the launch dir
+    is inside a DELFIN source tree → that tree (work on DELFIN); otherwise →
+    the launch dir itself (build right there, e.g. ~/agent_workspace). Empty
+    launch_cwd → fallback (legacy). ONLY the agent uses this; calc/jobs/
+    settings keep ctx.repo_dir. Bug 2026-06-26: launched from ~/agent_workspace,
+    the agent still built in software/delfin because cwd was the notebook dir."""
+    from pathlib import Path as _P
+    lc = (launch_cwd or "").strip()
+    if not lc:
+        return fallback
+    p = _P(lc).expanduser()
+    for base in [p, *p.parents]:
+        if (base / "delfin" / "__init__.py").exists():
+            return base
+    return p
+
+
+def _classify_model_error_text(error_text: str) -> str:
+    """Classify a model/endpoint error: 'temp' (backend temporarily
+    unavailable — it WILL recover, NOT an auth problem), 'auth' (invalid key /
+    model not provisioned), or '' (neither). KIT's ServiceUnavailable dump
+    echoes 'Received Model Group=…', so the 'temp' signal must win over the
+    'model group' auth signal (bug 2026-06-26: a flapping qwen3.5-397b was
+    shown as 'auth/401 — invalid key' and marked permanently broken)."""
+    et = error_text or ""
+    low = et.lower()
+    if ("temporarily unavailable" in low or "serviceunavailableerror" in low
+            or "service unavailable" in low or "please try again later" in low
+            or "503" in et):
+        return "temp"
+    if ("authenticationerror" in low or "invalid subscription" in low
+            or "access denied" in low or "model group" in low
+            or ("401" in et and "model" in low)):
+        return "auth"
+    return ""
+
+
 def _filter_slash_commands(
     commands: tuple[tuple[str, str, str, bool], ...],
     query: str,
@@ -3396,13 +3436,16 @@ def create_tab(ctx):
         # Inject a follow-up user message that triggers execution.
         try:
             input_textarea.value = (
-                "Please execute the approved plan now. FIRST call task_create "
-                "ONCE PER STEP of the approved plan — create the WHOLE task "
-                "list up front so the full roadmap is visible, not one task at "
-                "a time. THEN work through them in order: set each to "
-                "in_progress when you start it and completed when its check "
-                "passes. Use the KIT-Toolbox tools (write_file / edit_file / "
-                "bash) and briefly report after each step what you did."
+                "Execute the approved plan now, in ONE continuous run. Open the "
+                "task list with task_create (one per step, the whole roadmap up "
+                "front) AND THEN KEEP GOING in the SAME turn: immediately start "
+                "task 1 with a REAL action (write_file / bash …). Do NOT end "
+                "your turn after only creating tasks and do NOT stop to ask "
+                "whether to continue — creating the task list is NOT a stopping "
+                "point. Work straight through every task (in_progress when you "
+                "start it, completed when its check passes), running pytest as "
+                "you go, and only stop when all tasks are done or you are truly "
+                "blocked. Briefly report after each step."
             )
             _on_send(None)
         except Exception as exc:
@@ -3464,6 +3507,77 @@ def create_tab(ctx):
         value='<div class="delfin-agent-chat"><i>Start a conversation...</i></div>',
         layout=widgets.Layout(min_height="200px"),
     )
+
+    # Agent-view switcher: clickable chips to "go INTO" a subagent and watch
+    # its activity in the chat window. Shown ONLY while subagents exist this
+    # session (hidden otherwise), and placed BELOW the message box. "Main" shows
+    # the conversation; a subagent chip shows ITS text + tool calls/results.
+    state.setdefault("_view_agent", "main")
+    # Vertical list of clickable items (• Main, • Subagent …) below the message
+    # box — click one to enter its chat. Shown only while subagents exist.
+    agent_view_chips = widgets.VBox(
+        [], layout=widgets.Layout(display="none", margin="2px 0 0 0"))
+
+    def _refresh_agent_view_chips():
+        """Rebuild the chip row from running + this-session finished subagents.
+        Hidden when there are no subagents. Only rebuilds on a real change so it
+        doesn't flicker on the 1.5s live tick."""
+        try:
+            from delfin.agent.subagents import read_running, list_finished
+            running = read_running()
+            entries = [("💬 Main", "main", "")]
+            for sid, sa in running.items():
+                entries.append(("🟡 " + str(sa.get("type", "?"))[:16], sid,
+                                str(sa.get("description", ""))[:48]))
+            _ss = float(state.get("_session_start_ts", 0) or 0)
+            for rec in list_finished(12):
+                sid = rec.get("sa_id")
+                if not sid or sid in running:
+                    continue
+                try:
+                    if float(rec.get("finished_at", 0) or 0) < _ss:
+                        continue
+                except Exception:
+                    pass
+                ok = not rec.get("error")
+                entries.append(
+                    ((("✅" if ok else "❌") + " " + str(rec.get("subagent_type", "?"))[:16]),
+                     sid, str(rec.get("description", ""))[:48]))
+            cur = state.get("_view_agent", "main")
+            vals = [v for _, v, _ in entries]
+            if cur not in vals:
+                cur = "main"
+                if state.get("_view_agent") != "main":
+                    state["_view_agent"] = "main"
+                    _refresh_chat_html()
+            # Hide the row entirely when only "Main" is present (no subagents).
+            if len(entries) <= 1:
+                if agent_view_chips.children:
+                    agent_view_chips.children = ()
+                agent_view_chips.layout.display = "none"
+                state["_view_chips_sig"] = ()
+                return
+            sig = tuple((sid, lbl) for lbl, sid, _ in entries) + (cur,)
+            if state.get("_view_chips_sig") == sig:
+                return                       # nothing changed → no rebuild
+            state["_view_chips_sig"] = sig
+            btns = []
+            for lbl, sid, tip in entries:
+                b = widgets.Button(
+                    description="• " + lbl, tooltip=tip or lbl,
+                    button_style=("primary" if sid == cur else ""),
+                    layout=widgets.Layout(width="auto", margin="0 0 2px 0"))
+
+                def _click(_b, _sid=sid):
+                    state["_view_agent"] = _sid
+                    _refresh_chat_html()
+                    _refresh_agent_view_chips()
+                b.on_click(_click)
+                btns.append(b)
+            agent_view_chips.children = tuple(btns)
+            agent_view_chips.layout.display = ""
+        except Exception:
+            pass
 
     # ----- Slash-command palette (discoverable command browser) -----
     palette_toggle_btn = widgets.Button(
@@ -3939,23 +4053,20 @@ def create_tab(ctx):
             # Each RUNNING subagent is an expandable block (open by default)
             # showing its live steps (read/write/bash …) — the Claude-Code-style
             # drill-down the user asked for ("man sieht nicht was die machen").
+            # COMPACT one-liners only — the full per-step activity (and the noisy
+            # tool names) now lives in the "• Subagent" drill-in chips above, so
+            # the bottom panel stays lean (user 2026-06-26: "die mcp_ Sachen …
+            # das ist zu viel unten"). Shows the current action, not every step.
             blocks = []
             for sa in running.values():
                 el = int(_t.time() - float(sa.get("started_at", _t.time())))
-                actions = sa.get("actions") or []
-                steps = "".join(
-                    f"<div style='padding-left:16px; color:#555;'>· "
-                    f"{_html.escape(str(a)[:80])}</div>" for a in actions
-                ) or "<div style='padding-left:16px; color:#999;'>(starting…)</div>"
-                summ = (
-                    f"🟡 <b>{_html.escape(str(sa.get('type','?')))}</b> "
-                    f"{_html.escape(str(sa.get('description',''))[:60])}"
-                    f" · {el//60}m{el%60:02d}s · {len(actions)} steps"
-                )
+                last = str(sa.get("last_action", ""))[:48]
                 blocks.append(
-                    f"<details open style='margin:1px 0;'>"
-                    f"<summary style='color:#b45309; cursor:pointer;'>{summ}</summary>"
-                    f"{steps}</details>"
+                    f"<div style='color:#b45309;'>🟡 "
+                    f"<b>{_html.escape(str(sa.get('type','?')))}</b> "
+                    f"{_html.escape(str(sa.get('description',''))[:50])}"
+                    f" · {el//60}m{el%60:02d}s"
+                    + (f" · {_html.escape(last)}" if last else "") + "</div>"
                 )
             # Finished subagents (telemetry) — compact one-liners, CURRENT
             # session only (the telemetry file is global; without this filter a
@@ -4010,6 +4121,11 @@ def create_tab(ctx):
                     # (flip running → recent without a main-loop tool result).
                     if active or was_active:
                         _refresh_subagent_panel()
+                        _refresh_agent_view_chips()
+                        # If the user is "inside" a subagent, live-update the
+                        # chat window with its latest activity.
+                        if state.get("_view_agent", "main") != "main":
+                            _refresh_chat_html()
                     was_active = active
                 except Exception:
                     pass
@@ -4473,6 +4589,9 @@ def create_tab(ctx):
                  margin="6px 0 0 0",
              ),
          ),
+         # Below the message box: click • Main / • Subagent to enter its chat.
+         # Hidden entirely unless subagents exist this session.
+         agent_view_chips,
          # Directly under the message box, most prominent: pending permission
          # requests (Self-Mod Guard / KIT confirms) — right where you look and
          # act. The container is empty when nothing is pending, so the task
@@ -4834,7 +4953,13 @@ def create_tab(ctx):
         try:
             from delfin.agent.engine import AgentEngine
 
-            repo_dir = ctx.repo_dir or Path.cwd()
+            # The agent builds where you LAUNCHED delfin-voila, not where the
+            # notebook lives. Only this (agent) resolution changes — ctx.repo_dir
+            # (calc/jobs/settings) is untouched.
+            repo_dir = _agent_workspace_from_launch(
+                os.environ.get("DELFIN_LAUNCH_CWD", ""),
+                ctx.repo_dir or Path.cwd(),
+            )
             # MCP config from agent settings (optional)
             _agent_s = _get_agent_settings()
             _mcp_cfg = _agent_s.get("mcp_config", "")
@@ -4855,7 +4980,26 @@ def create_tab(ctx):
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
-            _extra_dirs = None
+            # TIERED reachability (security: "delfin soll ein sicheres agent
+            # framework sein bei perfekter funktionalität", 2026-06-26):
+            #   WRITABLE  — agent_workspace ("kann er sich austoben") + calc.
+            #   CONFIRM   — calc edits ALSO need an explicit confirm so stored
+            #               calculations can't be silently destroyed.
+            #   READ-ONLY — archive (stored results, "fix") + the DELFIN
+            #               checkout: reachable for reading, writes hard-denied.
+            # The launch-dir workspace stays the primary writable root; all four
+            # are reachable for READING without a prompt.
+            def _abs_dir(d):
+                try:
+                    return str(Path(d).resolve()) if d and Path(d).is_dir() else None
+                except Exception:
+                    return None
+            _calc_p = _abs_dir(getattr(ctx, "calc_dir", None))
+            _extra_dirs = [p for p in (_abs_dir(getattr(ctx, "agent_dir", None)),
+                                       _calc_p) if p]
+            _confirm_write_dirs = [p for p in (_calc_p,) if p]
+            _read_only_dirs = [p for p in (_abs_dir(getattr(ctx, "archive_dir", None)),
+                                           _abs_dir(getattr(ctx, "repo_dir", None))) if p]
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
             if mode_dropdown.value == "dashboard":
                 _cli_tools = [
@@ -4863,8 +5007,6 @@ def create_tab(ctx):
                     "Write", "Bash",              # agent_workspace only
                     "WebSearch", "WebFetch",      # literature research
                 ]
-                if _ws_dir:
-                    _extra_dirs = [_ws_dir]
             elif state.get("_perm_profile") == "repo_free":
                 # repo_free + non-dashboard: auto-approve safe bash commands
                 # so the agent doesn't get stuck in permission-denial loops
@@ -4901,6 +5043,8 @@ def create_tab(ctx):
                 mcp_config=_mcp_cfg,
                 allowed_tools=_cli_tools,
                 extra_dirs=_extra_dirs,
+                read_only_dirs=_read_only_dirs,
+                confirm_write_dirs=_confirm_write_dirs,
                 agent_workspace_dir=_ws_dir,
                 effort=str(effort_dropdown.value or ""),
                 kit_confirm_callback=_kit_callback,
@@ -5801,6 +5945,60 @@ def create_tab(ctx):
         '" style="display:none">'
     )
 
+    def _render_agent_transcript(sa_id):
+        """Render a subagent's activity (the text it writes + its tool calls and
+        results) for the in-chat drill-in view — live from the running registry
+        while it runs, or the saved session once it has finished."""
+        import html as _h
+        from delfin.agent.subagents import read_running, load_subagent_session
+
+        def _tool_block(tool, out):
+            out = _h.escape(str(out or "")[:400])
+            pre = ("<pre style='margin:2px 0 0 0; color:#555; white-space:pre-wrap;'>"
+                   + out + "</pre>") if out else ""
+            return ("<div class='delfin-chat-tool' style='font-family:monospace; "
+                    "font-size:12px; margin:2px 0;'>$ "
+                    + _h.escape(str(tool)).strip() + pre + "</div>")
+
+        def _text_block(txt):
+            return ("<div class='delfin-chat-msg' style='background:#f1f8e9; "
+                    "max-width:95%; white-space:pre-wrap;'>"
+                    + _h.escape(str(txt)) + "</div>")
+
+        run = read_running().get(sa_id)
+        if run:
+            head = ("<div style='color:#b45309; margin-bottom:4px;'>🟡 <b>"
+                    + _h.escape(str(run.get("type", "?"))) + "</b> "
+                    + _h.escape(str(run.get("description", ""))[:80])
+                    + " · running</div>")
+            body = []
+            for e in (run.get("transcript") or []):
+                if e.get("k") == "text":
+                    body.append(_text_block(e.get("v", "")))
+                else:
+                    body.append(_tool_block(
+                        (e.get("name", "") + " " + e.get("in", "")), e.get("out", "")))
+            return head + ("".join(body) or "<i>(starting…)</i>")
+
+        sess = load_subagent_session(sa_id) or {}
+        if not sess:
+            return "<i>Subagent not found — it may have finished and been cleared.</i>"
+        ok = not sess.get("error")
+        head = ("<div style='color:" + ("#2e7d32" if ok else "#c62828")
+                + "; margin-bottom:4px;'>" + ("✅" if ok else "❌") + " <b>"
+                + _h.escape(str(sess.get("subagent_type", "?"))) + "</b> "
+                + _h.escape(str(sess.get("description", ""))[:80])
+                + " · finished</div>")
+        body = []
+        for it in (sess.get("interactions") or []):
+            body.append(_tool_block(
+                (str(it.get("name", "")) + " " + str(it.get("input", ""))[:80]),
+                it.get("output", "")))
+        for m in (sess.get("messages") or []):
+            if m.get("role") == "assistant" and str(m.get("content", "")).strip():
+                body.append(_text_block(m["content"]))
+        return head + "".join(body)
+
     def _refresh_chat_html(streaming=False):
         """Rebuild the chat display HTML.
 
@@ -5808,6 +6006,18 @@ def create_tab(ctx):
         all earlier messages use a cached HTML prefix.  This avoids
         markdown-converting the entire history on every token chunk.
         """
+        # Agent-view switch: when a subagent is selected in the agent dropdown,
+        # show ITS activity in the chat window (drill-in) instead of the main
+        # conversation. "main" (default) renders the conversation as usual.
+        _va = state.get("_view_agent", "main")
+        if _va and _va != "main":
+            try:
+                body = _render_agent_transcript(_va)
+            except Exception as _exc:
+                body = "<i>subagent view unavailable: " + str(_exc)[:120] + "</i>"
+            chat_html.value = ('<div class="delfin-agent-chat">' + body
+                               + "\n" + _SCROLL_TAG + "</div>")
+            return
         msgs = state["chat_messages"]
         if not msgs:
             chat_html.value = (
@@ -12042,6 +12252,18 @@ def create_tab(ctx):
         # The agent will receive it after finishing the current response.
         # Use /stop to force-interrupt if needed.
         if state["streaming"]:
+            # Mid-loop steering: for the API/KIT/Ollama engine (DELFIN runs its
+            # OWN tool loop), inject the message straight INTO the running loop
+            # so the model reacts on its next step — no waiting for the turn to
+            # end. (CLI backends have no such loop → fall through to the queue.)
+            _seng = state.get("engine")
+            if _seng is not None and hasattr(_seng, "steer") and _seng.steer(user_text):
+                input_textarea.value = ""
+                _append_chat_message("user", user_text)
+                _append_system_message(
+                    "💬 Sent to the running agent — it picks this up on its next "
+                    "step (mid-run steering).")
+                return
             # Safety: detect stale streaming state (worker crashed/finished
             # but streaming flag wasn't reset). If no active CLI process,
             # reset the flag and process normally.
@@ -13819,20 +14041,27 @@ def create_tab(ctx):
                 # model that isn't provisioned on the KIT/Azure endpoint, like
                 # azure.gpt-5.5 → 401). The raw litellm dump + silent "no
                 # output" is useless to the user — give an actionable hint.
-                _et_low = error_text.lower()
-                is_model_unavailable = (
-                    "authenticationerror" in _et_low
-                    or "invalid subscription" in _et_low
-                    or "access denied" in _et_low
-                    or "model group" in _et_low
-                    or ("401" in error_text and "model" in _et_low)
-                )
-                if is_model_unavailable:
-                    _cur_model = ""
-                    try:
-                        _cur_model = model_dropdown.value or ""
-                    except Exception:
-                        pass
+                # TEMPORARY backend outage (vLLM node overloaded/restarting) vs
+                # a real auth/provisioning problem — classified centrally so the
+                # "model group" echo in KIT's ServiceUnavailable dump can't be
+                # mistaken for an auth error (bug 2026-06-26).
+                _err_kind = _classify_model_error_text(error_text)
+                is_temp_unavailable = _err_kind == "temp"
+                is_model_unavailable = _err_kind == "auth"
+                _cur_model = ""
+                try:
+                    _cur_model = model_dropdown.value or ""
+                except Exception:
+                    pass
+                if is_temp_unavailable:
+                    _append_system_message(
+                        f"⏳ Model **{_cur_model or 'currently selected'}** is "
+                        f"temporarily unavailable on KIT (backend overloaded or "
+                        f"restarting — this is NOT a key/auth problem). Wait a "
+                        f"moment and resend, or switch to a responsive model "
+                        f"(e.g. `kit.gpt-oss-120b`)."
+                    )
+                elif is_model_unavailable:
                     # Learn it: never route/pick this model again until
                     # ~/.delfin/broken_models.json is cleared.
                     try:
