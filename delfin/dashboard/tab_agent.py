@@ -4901,7 +4901,23 @@ def create_tab(ctx):
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
-            _extra_dirs = None
+            # Always reachable (no per-file permission prompt), no matter where
+            # the agent is rooted: the DELFIN checkout, the agent_workspace, and
+            # the chemistry DATA dirs (calc + archive). The agent still BUILDS in
+            # its launch-dir workspace by default — these are just reachable —
+            # and an explicit "work in <dir>" adds more via remember_permission.
+            # (user 2026-06-26: "delfin agent_workspace calc archive immer
+            # erreichbar … gebaut wird da wo voila gestartet wurde".)
+            _extra_dirs = []
+            for _d in (getattr(ctx, "repo_dir", None), getattr(ctx, "agent_dir", None),
+                       getattr(ctx, "calc_dir", None), getattr(ctx, "archive_dir", None)):
+                try:
+                    if _d and Path(_d).is_dir():
+                        _rd = str(Path(_d).resolve())
+                        if _rd not in _extra_dirs:
+                            _extra_dirs.append(_rd)
+                except Exception:
+                    pass
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
             if mode_dropdown.value == "dashboard":
                 _cli_tools = [
@@ -4909,8 +4925,6 @@ def create_tab(ctx):
                     "Write", "Bash",              # agent_workspace only
                     "WebSearch", "WebFetch",      # literature research
                 ]
-                if _ws_dir:
-                    _extra_dirs = [_ws_dir]
             elif state.get("_perm_profile") == "repo_free":
                 # repo_free + non-dashboard: auto-approve safe bash commands
                 # so the agent doesn't get stuck in permission-denial loops
