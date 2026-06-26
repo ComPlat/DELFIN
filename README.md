@@ -13,7 +13,7 @@
 
 > 📄 **Preprint**: *Hartmann, M. et al. "DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials"*, ChemRxiv (2025). https://doi.org/10.26434/chemrxiv-2025-4c256
 
-**DELFIN** is an open-source platform that automates quantum-chemical property prediction behind a single **SMILES-in / property-out** interface. It connects structure generation, semi-empirical methods, density functional theory (DFT), and machine-learning potentials into reproducible end-to-end workflows for organic molecules, photoactive materials, and transition-metal complexes.
+**DELFIN** is an open-source, AI-orchestrated computational chemistry platform for automated molecular property prediction and inverse molecular design. Behind a single **SMILES-in / property-out** interface, it connects structure generation, quantum-chemistry workflows, machine-learning potentials, interactive dashboards, automated reports, and AI agents into one practical research platform — for organic molecules, photoactive materials, and transition-metal complexes.
 
 > 🧬 organic chemistry · 🧲 transition-metal complexes · 💡 photoactive materials · 🔋 redox systems · 🔬 spectroscopy · ⚛ excited-state dynamics
 
