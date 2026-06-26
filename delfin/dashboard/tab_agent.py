@@ -4901,23 +4901,26 @@ def create_tab(ctx):
 
             # CLI tool configuration per mode and permission profile
             _cli_tools = None
-            # Always reachable (no per-file permission prompt), no matter where
-            # the agent is rooted: the DELFIN checkout, the agent_workspace, and
-            # the chemistry DATA dirs (calc + archive). The agent still BUILDS in
-            # its launch-dir workspace by default — these are just reachable —
-            # and an explicit "work in <dir>" adds more via remember_permission.
-            # (user 2026-06-26: "delfin agent_workspace calc archive immer
-            # erreichbar … gebaut wird da wo voila gestartet wurde".)
-            _extra_dirs = []
-            for _d in (getattr(ctx, "repo_dir", None), getattr(ctx, "agent_dir", None),
-                       getattr(ctx, "calc_dir", None), getattr(ctx, "archive_dir", None)):
+            # TIERED reachability (security: "delfin soll ein sicheres agent
+            # framework sein bei perfekter funktionalität", 2026-06-26):
+            #   WRITABLE  — agent_workspace ("kann er sich austoben") + calc.
+            #   CONFIRM   — calc edits ALSO need an explicit confirm so stored
+            #               calculations can't be silently destroyed.
+            #   READ-ONLY — archive (stored results, "fix") + the DELFIN
+            #               checkout: reachable for reading, writes hard-denied.
+            # The launch-dir workspace stays the primary writable root; all four
+            # are reachable for READING without a prompt.
+            def _abs_dir(d):
                 try:
-                    if _d and Path(_d).is_dir():
-                        _rd = str(Path(_d).resolve())
-                        if _rd not in _extra_dirs:
-                            _extra_dirs.append(_rd)
+                    return str(Path(d).resolve()) if d and Path(d).is_dir() else None
                 except Exception:
-                    pass
+                    return None
+            _calc_p = _abs_dir(getattr(ctx, "calc_dir", None))
+            _extra_dirs = [p for p in (_abs_dir(getattr(ctx, "agent_dir", None)),
+                                       _calc_p) if p]
+            _confirm_write_dirs = [p for p in (_calc_p,) if p]
+            _read_only_dirs = [p for p in (_abs_dir(getattr(ctx, "archive_dir", None)),
+                                           _abs_dir(getattr(ctx, "repo_dir", None))) if p]
             _ws_dir = str(ctx.agent_dir) if ctx.agent_dir else ""
             if mode_dropdown.value == "dashboard":
                 _cli_tools = [
@@ -4961,6 +4964,8 @@ def create_tab(ctx):
                 mcp_config=_mcp_cfg,
                 allowed_tools=_cli_tools,
                 extra_dirs=_extra_dirs,
+                read_only_dirs=_read_only_dirs,
+                confirm_write_dirs=_confirm_write_dirs,
                 agent_workspace_dir=_ws_dir,
                 effort=str(effort_dropdown.value or ""),
                 kit_confirm_callback=_kit_callback,

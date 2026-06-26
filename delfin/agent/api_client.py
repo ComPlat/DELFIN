@@ -1015,6 +1015,14 @@ class KitToolPermissions:
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
     path_protected_globs: tuple[str, ...] = _DEFAULT_PATH_PROTECTED_GLOBS
     extra_workspace_dirs: tuple[Path, ...] = ()
+    # Reachable but NOT freely writable — protects valuable data:
+    #   read_only_workspace_dirs — reads allowed, writes HARD-denied (archive of
+    #     stored calculations; the DELFIN checkout when you didn't launch there).
+    #   confirm_write_dirs       — reads allowed, writes require an explicit
+    #     confirm even in acceptEdits (calc: edit a stored calculation only on
+    #     confirmation, so the agent can't silently destroy results).
+    read_only_workspace_dirs: tuple[Path, ...] = ()
+    confirm_write_dirs: tuple[Path, ...] = ()
     bash_timeout_s: int = 120
     bash_max_timeout_s: int = 600
     max_output_chars: int = 12_000
@@ -1071,6 +1079,30 @@ class KitToolPermissions:
             if p not in resolved_extra:
                 resolved_extra.append(p)
         self.extra_workspace_dirs = tuple(resolved_extra)
+
+        def _resolve_dirs(dirs, *, drop_writable: bool) -> tuple:
+            out: list[Path] = []
+            for d in dirs or ():
+                try:
+                    p = Path(d).expanduser().resolve()
+                except Exception:
+                    continue
+                if _is_forbidden_workspace_root(p):
+                    continue
+                # READ-ONLY dirs must NOT double as writable — writable wins
+                # (e.g. the delfin checkout when you launched there). CONFIRM
+                # dirs (calc) intentionally ARE writable roots too, so they keep
+                # their confirm marker even though they're in extra_workspace_dirs.
+                if drop_writable and (
+                    p == self.workspace or p in self.extra_workspace_dirs):
+                    continue
+                if p not in out:
+                    out.append(p)
+            return tuple(out)
+        self.read_only_workspace_dirs = _resolve_dirs(
+            self.read_only_workspace_dirs, drop_writable=True)
+        self.confirm_write_dirs = _resolve_dirs(
+            self.confirm_write_dirs, drop_writable=False)
         self.is_delfin_workspace = _is_delfin_workspace(self.workspace)
         # Merge in DELFIN-only bash patterns only inside the DELFIN repo so
         # generic projects don't get an auto-allowed ``xtb`` / ``delfin``
@@ -1104,7 +1136,7 @@ class KitToolPermissions:
         return p
 
     def find_root_for(self, resolved: Path) -> Optional[Path]:
-        """Return the workspace root that contains ``resolved``, or None."""
+        """Return the WRITABLE workspace root that contains ``resolved``, or None."""
         for root in self.all_workspace_roots():
             try:
                 resolved.relative_to(root)
@@ -1112,6 +1144,46 @@ class KitToolPermissions:
             except ValueError:
                 continue
         return None
+
+    @staticmethod
+    def _under_any(resolved: Path, roots) -> bool:
+        for root in roots:
+            try:
+                resolved.relative_to(root)
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def all_readable_roots(self) -> tuple[Path, ...]:
+        """Roots the agent may READ from: writable + read-only + confirm-write."""
+        return (self.all_workspace_roots()
+                + tuple(self.read_only_workspace_dirs)
+                + tuple(self.confirm_write_dirs))
+
+    def find_readable_root_for(self, resolved: Path) -> Optional[Path]:
+        """Return any reachable (readable) root containing ``resolved``, or None."""
+        for root in self.all_readable_roots():
+            try:
+                resolved.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
+
+    def is_read_only_path(self, resolved: Path) -> bool:
+        """True if a WRITE here must be hard-denied (archive / delfin checkout).
+        A path also under a writable root is NOT read-only (writable wins — e.g.
+        the delfin checkout when you launched there is the writable workspace)."""
+        if self.find_root_for(resolved) is not None:
+            return False
+        return self._under_any(resolved, self.read_only_workspace_dirs)
+
+    def is_confirm_write_path(self, resolved: Path) -> bool:
+        """True if a WRITE here must go through an explicit confirm (calc).
+        calc is a WRITABLE root (so the executor can write after confirm) AND a
+        confirm dir — so this does NOT exclude writable paths."""
+        return self._under_any(resolved, self.confirm_write_dirs)
 
     def matches_path_deny(self, rel_path: str) -> bool:
         rp = rel_path.replace("\\", "/")
@@ -3885,9 +3957,16 @@ class _DocToolExecutor:
         return ""
 
     def _resolve_in_workspace(
-        self, rel_path: str, perms: "KitToolPermissions"
+        self, rel_path: str, perms: "KitToolPermissions", *, for_read: bool = False
     ) -> tuple[Optional[Path], Optional[str]]:
         """Resolve ``rel_path`` against the workspace and verify containment.
+
+        ``for_read=True`` accepts any REACHABLE root (writable + read-only +
+        confirm-write) so reads work everywhere reachable. ``for_read=False``
+        (default, WRITE semantics) accepts only WRITABLE roots — so a write
+        executor can never touch a read-only dir (archive) even if the gate is
+        somehow bypassed (defense in depth). The write GATE resolves for_read
+        and applies the per-tier policy (deny read-only, confirm calc).
 
         Returns (resolved_path, error_message). If error_message is non-None,
         the path is rejected and resolved_path is None.
@@ -3900,9 +3979,12 @@ class _DocToolExecutor:
             resolved = candidate.resolve(strict=False)
         except Exception as exc:
             return None, f"cannot resolve path: {exc}"
-        root = perms.find_root_for(resolved)
+        root = (perms.find_readable_root_for(resolved) if for_read
+                else perms.find_root_for(resolved))
         if root is None:
-            roots_str = ", ".join(str(r) for r in perms.all_workspace_roots())
+            _roots = (perms.all_readable_roots() if for_read
+                      else perms.all_workspace_roots())
+            roots_str = ", ".join(str(r) for r in _roots)
             return None, (
                 f"path is outside the allowed workspace roots [{roots_str}]: "
                 f"{rel_path}. To work on it, ask the user to GRANT this path "
@@ -4095,8 +4177,11 @@ class _DocToolExecutor:
             resolved = path
 
         # Build the string we test against deny-globs: workspace-relative
-        # when possible (so globs like ".env" match), else absolute.
-        in_root = perms.find_root_for(resolved)
+        # when possible (so globs like ".env" match), else absolute. READS are
+        # allowed in any REACHABLE root (writable + read-only archive/delfin +
+        # calc) — so the agent reaches calc/archive without a prompt, while the
+        # secret-deny below still hard-blocks .ssh/.env/keys everywhere.
+        in_root = perms.find_readable_root_for(resolved)
         if in_root is not None:
             try:
                 rel_for_glob = str(resolved.relative_to(in_root)).replace("\\", "/")
@@ -4165,45 +4250,69 @@ class _DocToolExecutor:
             # with "path is required", even though the executor itself accepts
             # it (bug 2026-06-25: qwen on KIT fell back to bash heredoc writes).
             path_arg = self._get_path_arg(args)
-            resolved, err = self._resolve_in_workspace(path_arg, perms)
+            # for_read=True: recognise every reachable root so the per-tier
+            # policy below can fire (deny read-only, confirm calc). The write
+            # EXECUTOR re-resolves writable-only — defense in depth.
+            resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
             if err:
                 return err
+            # READ-ONLY data — archive of stored calculations, or the DELFIN
+            # checkout when you didn't launch there. Writes are HARD-denied;
+            # copy into calc/agent_workspace and edit the copy ("archive sind
+            # fix … wenn man arbeiten will muss man in calc bringen").
+            if perms.is_read_only_path(resolved):
+                _record_security_event(
+                    "read_only_write", name, self._display_path(resolved, perms),
+                    blocked=True)
+                return (
+                    f"'{path_arg}' is in a READ-ONLY location (the archive of "
+                    f"stored calculations, or the DELFIN checkout). It is fixed "
+                    f"— to work on it, COPY it into calc or agent_workspace and "
+                    f"edit the copy. Refusing to modify it in place."
+                )
             try:
                 rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
             except Exception:
                 rel_str = path_arg.replace("\\", "/")
             is_protected = perms.matches_path_protected(rel_str)
-            if is_protected:
-                _record_security_event("self_mod", name, rel_str,
-                                       blocked=perms.confirm_callback is None)
-                # Self-Modification Guard: editing the agent's own safety
-                # layer (api_client.py / kit_confirm.py / engine.py /
-                # tab_agent.py) ALWAYS requires explicit user confirmation,
-                # regardless of mode. Without a callback the gate refuses
-                # rather than silently proceeding.
+            # calc holds the user's ACTIVE calculations — editing one always
+            # needs an explicit confirm even in acceptEdits, so the agent can't
+            # silently destroy results ("nur Bearbeitung mit Nachfrage").
+            is_calc = perms.is_confirm_write_path(resolved)
+            if is_protected or is_calc:
+                _record_security_event(
+                    "self_mod" if is_protected else "calc_edit", name, rel_str,
+                    blocked=perms.confirm_callback is None)
                 if perms.confirm_callback is None:
+                    _what = ("the agent's own safety layer" if is_protected
+                             else "a stored calculation under calc")
                     return (
-                        f"'{name}' targets the agent's own safety layer "
-                        f"('{rel_str}'). The Self-Modification Guard requires "
-                        "explicit user confirmation but no confirm_callback "
-                        "is configured — refusing to proceed."
+                        f"'{name}' targets {_what} ('{rel_str}') — this requires "
+                        "explicit user confirmation but no confirm_callback is "
+                        "configured, so it is refused."
                     )
-                preview = (
-                    "[SELF-MODIFICATION GUARD]\n"
-                    "This file is part of the agent's own safety layer.\n"
-                    "Approving this will let the agent rewrite the code that "
-                    "controls its own permissions.\n\n"
-                    + self._build_change_preview(name, args, resolved)
-                )
+                if is_protected:
+                    preview = (
+                        "[SELF-MODIFICATION GUARD]\n"
+                        "This file is part of the agent's own safety layer.\n"
+                        "Approving this will let the agent rewrite the code that "
+                        "controls its own permissions.\n\n"
+                        + self._build_change_preview(name, args, resolved)
+                    )
+                else:
+                    preview = (
+                        "[CALC EDIT — STORED CALCULATION]\n"
+                        "This file is under calc (an active/stored calculation). "
+                        "Approving this lets the agent modify it.\n\n"
+                        + self._build_change_preview(name, args, resolved)
+                    )
                 try:
                     ok = bool(perms.confirm_callback(name, args, preview))
                 except Exception as exc:
                     return f"confirm_callback raised: {exc}"
-                return None if ok else f"user denied '{name}' on protected path '{rel_str}'"
-            # Non-protected paths in default/acceptEdits/bypass: allow.
-            # Sandbox (_resolve_in_workspace), path_deny_globs and
-            # Self-Mod-Guard above already enforce the boundaries the user
-            # explicitly granted via "Erlaubte Verzeichnisse" / settings.json.
+                _w = "protected path" if is_protected else "calc file"
+                return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
+            # Writable roots (workspace + agent_workspace + grants): allow.
             return None
 
         if name == "bash":
@@ -4972,7 +5081,7 @@ class _DocToolExecutor:
         cwd_arg = arguments.get("cwd", "") or ""
 
         if cwd_arg:
-            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms, for_read=True)
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
@@ -5040,7 +5149,7 @@ class _DocToolExecutor:
         timeout_s = int(arguments.get("timeout_s", 24 * 3600) or 24 * 3600)
 
         if cwd_arg:
-            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms)
+            cwd_resolved, err = self._resolve_in_workspace(cwd_arg, perms, for_read=True)
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
@@ -5173,7 +5282,7 @@ class _DocToolExecutor:
         if not path_arg:
             return json.dumps({"error": "path is required"})
         max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
-        resolved, err = self._resolve_in_workspace(path_arg, perms)
+        resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             # Fall back to the read-access gate so cross-root reads
             # still go through the secret-deny + outside-workspace
@@ -7600,6 +7709,8 @@ def create_client(
     mcp_config: str = "",
     allowed_tools: list[str] | None = None,
     extra_dirs: list[str] | None = None,
+    read_only_dirs: list[str] | None = None,
+    confirm_write_dirs: list[str] | None = None,
     effort: str = "",
     kit_confirm_callback: Optional[Callable[[str, dict, str], bool]] = None,
 ) -> _BaseClient:
@@ -7686,6 +7797,8 @@ def create_client(
             mode=kit_mode,
             confirm_callback=kit_confirm_callback,
             extra_workspace_dirs=kit_extra,
+            read_only_workspace_dirs=tuple(read_only_dirs or ()),
+            confirm_write_dirs=tuple(confirm_write_dirs or ()),
             bash_auto_allow_patterns=allow_patterns,
             bash_deny_patterns=deny_patterns,
         )
@@ -7754,6 +7867,8 @@ def create_client(
             workspace=local_ws, mode=local_mode,
             confirm_callback=kit_confirm_callback,
             extra_workspace_dirs=local_extra,
+            read_only_workspace_dirs=tuple(read_only_dirs or ()),
+            confirm_write_dirs=tuple(confirm_write_dirs or ()),
             bash_auto_allow_patterns=tuple(_DEFAULT_BASH_AUTO_ALLOW),
             bash_deny_patterns=tuple(_DEFAULT_BASH_DENY_PATTERNS),
         )

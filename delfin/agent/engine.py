@@ -302,6 +302,8 @@ class AgentEngine:
         mcp_config: str = "",
         allowed_tools: list[str] | None = None,
         extra_dirs: list[str] | None = None,
+        read_only_dirs: list[str] | None = None,
+        confirm_write_dirs: list[str] | None = None,
         agent_workspace_dir: str = "",
         effort: str = "",
         kit_confirm_callback=None,
@@ -322,6 +324,7 @@ class AgentEngine:
             model=model, permission_mode=permission_mode,
             cwd=str(self.repo_dir), mcp_config=mcp_config,
             allowed_tools=allowed_tools, extra_dirs=extra_dirs,
+            read_only_dirs=read_only_dirs, confirm_write_dirs=confirm_write_dirs,
             effort=self.effort,
             kit_confirm_callback=kit_confirm_callback,
         )
