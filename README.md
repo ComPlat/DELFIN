@@ -226,7 +226,7 @@ Subagents run **in parallel** (each isolated, so concurrent runs can't clobber o
 
 ### Other features
 
-- **Dashboard co-pilot**: a dashboard mode reads current CONTROL/ORCA settings and executes slash commands in real time (e.g., "setze BP86" → functional changes in the Submit tab).
+- **Dashboard co-pilot**: a dashboard mode reads current CONTROL/ORCA settings and executes slash commands in real time (e.g., "set BP86" → functional changes in the Submit tab).
 - **Persistent memory**: `/remember`, `/memories`, `/forget` — facts and preferences persist across sessions and are injected into every prompt.
 - **Long sessions**: token-aware context compaction keeps long conversations coherent; `/compact` and `/context` expose the state.
 - **Agent workspace**: `~/agent_workspace/` for uploaded reference files, accessible to the agent.
