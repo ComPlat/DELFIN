@@ -2753,6 +2753,24 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
                                                     rigid=_rigid_seat)
+                    # Collapse-rigid-fallback (DELFIN_FFFREE_CHELATE_RIGID_FALLBACK,
+                    # default OFF -> byte-id).  The per-donor RADIAL rescale moves each
+                    # donor independently onto its exact ideal radius, which on many
+                    # chelates distorts the donor-backbone bonds into a collapse near
+                    # the metal (the #1 build-coverage gap: 15% selfgate-collapse, 77%
+                    # within 3A of the metal).  When the rescaled seating collapsed,
+                    # retry the RIGID-body Kabsch fit (no rescale): ligand geometry is
+                    # preserved exactly, the M-D distances come out emergent (cavity-
+                    # dictated, refined downstream), and the backbone does NOT collapse
+                    # -> the config is recovered instead of skipped to legacy.
+                    if (Q is not None and not _rigid_seat
+                            and os.environ.get("DELFIN_FFFREE_CHELATE_RIGID_FALLBACK", "0") == "1"
+                            and _has_collapsed_heavy_bonds(lsyms, Q)):
+                        _Qr = _orient_chelate_to_vertices(lP, dons_d, targets,
+                                                          asym=_asym, rigid=True)
+                        if (_Qr is not None and np.all(np.isfinite(_Qr))
+                                and not _has_collapsed_heavy_bonds(lsyms, _Qr)):
+                            Q = _Qr
                     # iter-32e (YILNUF oxalate-collapse class): the DG metallacycle
                     # embed sometimes produces a backbone with collapsed C-C / C-O bonds.
                     # _orient_chelate_to_vertices preserves that (rigid Kabsch+rescale),
