@@ -109,6 +109,7 @@ delfin_NMR = "delfin.cli_nmr_report:main"
 delfin-json = "delfin.cli_delfin_collect:main"
 delfin-build = "delfin.build_up_complex:main"
 delfin-guppy = "delfin.guppy_sampling:main"
+delfin-guppy-batch = "delfin.guppy_batch:main"
 delfin-fukui = "delfin.cli_fukui:main"
 delfin-voila = "delfin.cli_voila:main"
 delfin-step = "delfin.cli_step:main"
@@ -116,6 +117,8 @@ delfin-pipeline = "delfin.cli_pipeline:main"
 delfin-docs-index = "delfin.doc_server.indexer:main"
 delfin-tools-server = "delfin.tools.mcp_server:main"
 delfin-app = "delfin.cli_app:main"
+delfin-docs-server = "delfin.doc_server.__main__:main"
+delfin-ops-server = "delfin.ops_server.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -139,7 +142,7 @@ include = ["delfin*"]
     "ai_tools/*.txt",
     "submit_templates/*.sh",
 ]
-"delfin.agent.pack" = ["**/*.md", "**/*.yaml"]
+"delfin.agent.pack" = ["**/*.md", "**/*.yaml", "skills/*.md"]
 "delfin.agent.pack_lite" = ["**/*.md", "**/*.yaml"]
 "delfin.notebooks" = ["*.ipynb"]
 

@@ -199,7 +199,8 @@ class SlurmJobBackend(JobBackend):
         return f'{env_vars},{",".join(exports)}'
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
-                job_name, submit_script, *, gpu=None, partition=None):
+                job_name, submit_script, *, gpu=None, partition=None,
+                array=None):
         """Run sbatch with the given parameters.
 
         Parameters
@@ -210,6 +211,9 @@ class SlurmJobBackend(JobBackend):
         partition : str or None
             SLURM partition name, e.g. ``"gpu"`` or ``"gpu_4"``.
             Passed as ``--partition=<partition>`` when set.
+        array : str or None
+            SLURM job-array spec, e.g. ``"0-9"`` or ``"0-9%4"`` (max 4
+            concurrent). Passed as ``--array=<array>`` when set.
         """
         env_vars = self._append_profile_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
@@ -229,6 +233,8 @@ class SlurmJobBackend(JobBackend):
             cmd.append(f'--gres={gpu}')
         if partition:
             cmd.append(f'--partition={partition}')
+        if array:
+            cmd.append(f'--array={array}')
         cmd.append(str(submit_script))
         return subprocess.run(
             cmd,
@@ -262,6 +268,66 @@ class SlurmJobBackend(JobBackend):
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
             job_name, self.submit_templates_dir / 'submit_delfin.sh',
+        )
+        return SubmitResult(result.returncode, result.stdout, result.stderr)
+
+    def submit_guppy_batch(
+        self,
+        job_dir,
+        job_name,
+        smiles_csv,
+        *,
+        array_size: int,
+        array_concurrency: int | None = None,
+        time_limit: str = '24:00:00',
+        pal: int = 16,
+        maxcore: int = 6000,
+        start_strategy: str = 'isomers',
+        max_isomers: int = 100,
+        goat_topk: int = 0,
+        rmsd_cutoff: float = 0.3,
+        energy_window_kcal: float = 25.0,
+        extra_env: dict | None = None,
+    ) -> SubmitResult:
+        """Submit a SLURM job array: one task per SMILES row.
+
+        Each array task reads the CSV, picks its row via ``SLURM_ARRAY_TASK_ID``
+        (1-based), and runs GUPPY in a per-entry subdirectory. Charge is
+        always derived from that row's SMILES.
+        """
+        if array_size < 1:
+            raise ValueError('array_size must be >= 1')
+
+        pal_used = max(1, int(pal))
+        maxcore_used = max(1, int(maxcore))
+        mem_used = pal_used * maxcore_used
+
+        env_vars = (
+            f'DELFIN_MODE=guppy_batch,DELFIN_JOB_NAME={job_name},'
+            f'GUPPY_BATCH_CSV={smiles_csv},'
+            f'GUPPY_START_STRATEGY={start_strategy},'
+            f'GUPPY_MAX_ISOMERS={int(max_isomers)},'
+            f'GUPPY_GOAT_TOPK={int(goat_topk)},'
+            f'GUPPY_RMSD_CUTOFF={float(rmsd_cutoff)},'
+            f'GUPPY_ENERGY_WINDOW_KCAL={float(energy_window_kcal)},'
+            f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
+        )
+        if self.orca_base:
+            env_vars += f',DELFIN_ORCA_BASE={self.orca_base}'
+        env_vars = self._append_extra_env(env_vars, extra_env)
+        env_vars = self._append_tool_exports(env_vars)
+
+        # Array runs as 1-based tasks so SLURM_ARRAY_TASK_ID == CSV row.
+        hi = int(array_size)
+        if array_concurrency and array_concurrency > 0:
+            array_spec = f'1-{hi}%{int(array_concurrency)}'
+        else:
+            array_spec = f'1-{hi}'
+
+        result = self._sbatch(
+            job_dir, env_vars, time_limit, pal_used, mem_used,
+            job_name, self.submit_templates_dir / 'submit_delfin.sh',
+            array=array_spec,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
