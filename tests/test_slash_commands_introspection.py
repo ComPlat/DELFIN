@@ -8,6 +8,24 @@ glance at without leaving the agent tab.
 from __future__ import annotations
 
 
+def test_slash_palette_lists_the_core_commands():
+    """The browse-commands palette (_SLASH_COMMANDS) must surface the real
+    user commands — guards against a handler-only command being unbrowsable
+    (2026-06-26: /batch was handled but missing from the palette)."""
+    from delfin.dashboard.tab_agent import _SLASH_COMMANDS
+
+    cmds = {row[1] for row in _SLASH_COMMANDS}
+    expected = {
+        "/loop", "/batch", "/submit", "/check", "/trace", "/review",
+        "/explore", "/delegate", "/watch", "/jobs", "/usage", "/help",
+    }
+    missing = expected - cmds
+    assert not missing, f"palette missing commands: {sorted(missing)}"
+    # Every palette entry carries a non-empty description (col index 2).
+    for row in _SLASH_COMMANDS:
+        assert row[2], f"palette entry without description: {row}"
+
+
 def test_list_subagents_returns_all_four_presets():
     from delfin.agent.subagents import list_subagents
 

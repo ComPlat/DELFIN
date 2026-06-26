@@ -1191,6 +1191,7 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("ORCA", "/orca submit", "Submit ORCA job", False),
     # Submit
     ("Submit", "/submit", "Submit job from current Submit tab state", False),
+    ("Submit", "/batch", "Build a batch of jobs (/batch from-calc <dir> …)", True),
     # Calculations / archive browsing
     ("Calc", "/calc ls", "List directories/files", True),
     ("Calc", "/calc cd", "Navigate calc folder (syncs browser)", True),
