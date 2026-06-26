@@ -1225,6 +1225,26 @@ _SLASH_COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
 )
 
 
+def _classify_model_error_text(error_text: str) -> str:
+    """Classify a model/endpoint error: 'temp' (backend temporarily
+    unavailable — it WILL recover, NOT an auth problem), 'auth' (invalid key /
+    model not provisioned), or '' (neither). KIT's ServiceUnavailable dump
+    echoes 'Received Model Group=…', so the 'temp' signal must win over the
+    'model group' auth signal (bug 2026-06-26: a flapping qwen3.5-397b was
+    shown as 'auth/401 — invalid key' and marked permanently broken)."""
+    et = error_text or ""
+    low = et.lower()
+    if ("temporarily unavailable" in low or "serviceunavailableerror" in low
+            or "service unavailable" in low or "please try again later" in low
+            or "503" in et):
+        return "temp"
+    if ("authenticationerror" in low or "invalid subscription" in low
+            or "access denied" in low or "model group" in low
+            or ("401" in et and "model" in low)):
+        return "auth"
+    return ""
+
+
 def _filter_slash_commands(
     commands: tuple[tuple[str, str, str, bool], ...],
     query: str,
@@ -13819,20 +13839,27 @@ def create_tab(ctx):
                 # model that isn't provisioned on the KIT/Azure endpoint, like
                 # azure.gpt-5.5 → 401). The raw litellm dump + silent "no
                 # output" is useless to the user — give an actionable hint.
-                _et_low = error_text.lower()
-                is_model_unavailable = (
-                    "authenticationerror" in _et_low
-                    or "invalid subscription" in _et_low
-                    or "access denied" in _et_low
-                    or "model group" in _et_low
-                    or ("401" in error_text and "model" in _et_low)
-                )
-                if is_model_unavailable:
-                    _cur_model = ""
-                    try:
-                        _cur_model = model_dropdown.value or ""
-                    except Exception:
-                        pass
+                # TEMPORARY backend outage (vLLM node overloaded/restarting) vs
+                # a real auth/provisioning problem — classified centrally so the
+                # "model group" echo in KIT's ServiceUnavailable dump can't be
+                # mistaken for an auth error (bug 2026-06-26).
+                _err_kind = _classify_model_error_text(error_text)
+                is_temp_unavailable = _err_kind == "temp"
+                is_model_unavailable = _err_kind == "auth"
+                _cur_model = ""
+                try:
+                    _cur_model = model_dropdown.value or ""
+                except Exception:
+                    pass
+                if is_temp_unavailable:
+                    _append_system_message(
+                        f"⏳ Model **{_cur_model or 'currently selected'}** is "
+                        f"temporarily unavailable on KIT (backend overloaded or "
+                        f"restarting — this is NOT a key/auth problem). Wait a "
+                        f"moment and resend, or switch to a responsive model "
+                        f"(e.g. `kit.gpt-oss-120b`)."
+                    )
+                elif is_model_unavailable:
                     # Learn it: never route/pick this model again until
                     # ~/.delfin/broken_models.json is cleared.
                     try:
