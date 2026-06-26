@@ -25,6 +25,22 @@ from typing import Dict, List, Optional, Tuple
 
 _HARTREE_TO_KCAL = 627.5094740631
 
+# Selectable ranking Hamiltonian (DELFIN_CONF_RANK_METHOD).  All run through the SAME
+# xtb CLI / energy parse, so switching is just the flag.  GFN-FF is the fast default
+# (force field, ~physical conformer energies on metals); GFN2-xTB is the accurate
+# semiempirical tight-binding (better ranking, ~10-50x slower); GFN1/GFN0 in between.
+_METHOD_FLAGS = {
+    "gfnff": ["--gfnff"],
+    "gfn2": ["--gfn", "2"],
+    "gfn1": ["--gfn", "1"],
+    "gfn0": ["--gfn", "0"],
+}
+
+
+def _resolve_method() -> str:
+    m = os.environ.get("DELFIN_CONF_RANK_METHOD", "gfnff").strip().lower()
+    return m if m in _METHOD_FLAGS else "gfnff"
+
 # resolve the xtb binary once (PATH, then common conda/micromamba locations)
 def _find_xtb() -> Optional[str]:
     cand = os.environ.get("DELFIN_XTB_PATH")
@@ -45,7 +61,7 @@ def _find_xtb() -> Optional[str]:
 
 
 _XTB = _find_xtb()
-_CACHE: Dict[Tuple[str, int], Optional[float]] = {}
+_CACHE: Dict[Tuple[str, int, str], Optional[float]] = {}
 
 
 def available() -> bool:
@@ -57,14 +73,19 @@ def _natoms(xyz_block: str) -> int:
     return sum(1 for ln in xyz_block.splitlines() if len(ln.split()) == 4)
 
 
-def gfnff_energy(xyz_block: str, charge: int = 0,
-                 uhf: int = 0, timeout: float = 120.0) -> Optional[float]:
-    """Return the GFN-FF total energy of ``xyz_block`` in kcal/mol (or None on any
-    failure).  ``xyz_block`` is a header-less ``Sym x y z`` block (the canonical
-    DELFIN format).  Cached by (coordinate-hash, charge)."""
+def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
+                 timeout: float = 120.0, method: Optional[str] = None) -> Optional[float]:
+    """Return the total energy of ``xyz_block`` in kcal/mol under the selected xtb
+    Hamiltonian (or None on any failure).  ``xyz_block`` is a header-less
+    ``Sym x y z`` block (the canonical DELFIN format).  ``method`` overrides the
+    DELFIN_CONF_RANK_METHOD env (gfnff | gfn2 | gfn1 | gfn0).  Cached by
+    (coordinate-hash, charge, method)."""
     if _XTB is None:
         return None
-    key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge))
+    meth = (method or _resolve_method())
+    if meth not in _METHOD_FLAGS:
+        meth = "gfnff"
+    key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge), meth)
     if key in _CACHE:
         return _CACHE[key]
     val: Optional[float] = None
@@ -77,7 +98,7 @@ def gfnff_energy(xyz_block: str, charge: int = 0,
             fp = os.path.join(td, "conf.xyz")
             with open(fp, "w") as fh:
                 fh.write(f"{na}\n\n{xyz_block}\n")
-            cmd = [_XTB, fp, "--gfnff", "--sp",
+            cmd = [_XTB, fp] + _METHOD_FLAGS[meth] + ["--sp",
                    "--chrg", str(int(charge)), "--uhf", str(int(uhf))]
             res = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=timeout, cwd=td,
