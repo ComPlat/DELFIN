@@ -126,6 +126,74 @@ def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
     return val
 
 
+def gfnff_optimize(xyz_block: str, charge: int = 0, uhf: int = 0,
+                   method: Optional[str] = None,
+                   timeout: float = 600.0):
+    """Geometry OPTIMIZATION via ``xtb --opt`` (default GFN2).
+
+    Unlike :func:`gfnff_energy` (single-point ranking), this RELAXES the
+    geometry — used to polish the top-ranked structures into best-possible
+    coordinates.  Returns ``(optimized_xyz_block, energy_kcal_or_None)`` or
+    ``None`` on any failure (caller then keeps the unrelaxed structure).
+    Single-threaded (OMP=1) so each optimization is reproducible.
+    """
+    if _XTB is None:
+        return None
+    meth = (method or _resolve_method())
+    if meth not in _METHOD_FLAGS:
+        meth = "gfn2"
+    try:
+        na = _natoms(xyz_block)
+        if na < 2:
+            return None
+        with tempfile.TemporaryDirectory() as td:
+            fp = os.path.join(td, "conf.xyz")
+            with open(fp, "w") as fh:
+                fh.write(f"{na}\n\n{xyz_block}\n")
+            cmd = [_XTB, fp] + _METHOD_FLAGS[meth] + ["--opt",
+                   "--chrg", str(int(charge)), "--uhf", str(int(uhf))]
+            res = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=timeout, cwd=td,
+                                 env={**os.environ, "OMP_NUM_THREADS": "1"})
+            opt_fp = os.path.join(td, "xtbopt.xyz")
+            if not os.path.exists(opt_fp):
+                return None
+            with open(opt_fp) as fh:
+                lines = fh.read().splitlines()
+            if len(lines) < 3:
+                return None
+            try:
+                n = int(lines[0].strip())
+            except ValueError:
+                return None
+            opt_xyz = "\n".join(lines[2:2 + n])
+            # energy: xtbopt.xyz comment line is e.g. " energy: -42.1 gnorm: ..."
+            energy = None
+            toks = lines[1].split()
+            for i, tok in enumerate(toks):
+                if tok.lower().startswith("energy") and i + 1 < len(toks):
+                    try:
+                        energy = float(toks[i + 1]) * _HARTREE_TO_KCAL
+                    except ValueError:
+                        energy = None
+                    break
+            if energy is None:
+                for line in res.stdout.splitlines():
+                    if "TOTAL ENERGY" in line:
+                        parts = line.split()
+                        for i, t in enumerate(parts):
+                            if t == "ENERGY" and i + 1 < len(parts):
+                                try:
+                                    energy = float(parts[i + 1]) * _HARTREE_TO_KCAL
+                                except ValueError:
+                                    energy = None
+                                break
+                        break
+            return (opt_xyz, energy)
+    except Exception:
+        return None
+
+
 def rerank(scored: List[Tuple], top_m: int, charge: int = 0,
            uhf: int = 0) -> Optional[List[Tuple]]:
     """Re-rank a UFF-scored candidate list with GFN-FF.

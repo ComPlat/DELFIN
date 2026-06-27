@@ -240,6 +240,83 @@ def _smiles_to_architector_input(smiles):
     }
 
 
+# ---------------------------------------------------------------------------
+# MANTA "best version" button: SHIP-31 champion construction config + GFN2
+# single-point energy RANKING, then GFN2 geometry-OPT of the top-N ranked
+# structures (parallel, laptop-bounded) -> complete manifold + best-possible
+# top geometries in the viewer.
+# ---------------------------------------------------------------------------
+_MANTA_CHAMPION_FLAGS = (
+    "AROM_PLANARIZE", "ARYL_RING_SIZE", "BACKBONE_REEMBED", "CHELATE_BACKBONE",
+    "CN_EXTEND", "CONF_COMPLETE", "CONFORMER_COVERAGE", "CONFORMER_SEATING",
+    "DIATOMIC_ORIENT", "DONOR_BEND", "HAPTO_AXIS_ROT", "HAPTO_HALFSANDWICH_GATE",
+    "INTERLIG_RANK", "INTERLIG_VDW_GATE", "JOINT_DECLASH", "LIGAND_RIGID",
+    "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
+    "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
+    "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE",
+)
+# Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
+_MANTA_OPT_TOPN = 10
+_MANTA_OPT_WORKERS = 4
+
+
+def _manta_best_env(charge):
+    """Env that makes the converter run our best version: SHIP-31 champion
+    construction flags + GFN2 single-point energy ranking, GFN2 charge from
+    the SMILES."""
+    env = {
+        "DELFIN_FFFREE_BUILDER": "1",
+        "DELFIN_FRAME_RANK_FIX": "1",
+        "DELFIN_FFFREE_GFNFF_RANK": "1",
+        "DELFIN_CONF_RANK_METHOD": "gfn2",
+        "DELFIN_GFNFF_CHARGE": str(int(charge)),
+    }
+    for _f in _MANTA_CHAMPION_FLAGS:
+        env["DELFIN_FFFREE_" + _f] = "1"
+    return env
+
+
+def _manta_opt_top(isomers, charge):
+    """GFN2 geometry-optimize the top-N ranked isomers in parallel (laptop-
+    bounded), replace their geometry + label, re-sort the optimized head by
+    opt energy. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
+    any structure whose optimization fails keeps its unrelaxed geometry."""
+    if not isomers:
+        return isomers
+    import concurrent.futures as _cf
+    try:
+        from delfin.manta import _gfnff_rank as _gff
+    except Exception:
+        return isomers
+    if not _gff.available():
+        return isomers
+    head = list(isomers[:_MANTA_OPT_TOPN])
+    tail = list(isomers[_MANTA_OPT_TOPN:])
+
+    def _opt_one(item):
+        xyz, _na, label = item
+        try:
+            r = _gff.gfnff_optimize(xyz, charge=int(charge), method="gfn2")
+        except Exception:
+            r = None
+        if r and r[0]:
+            opt_xyz, e = r
+            na = len([ln for ln in opt_xyz.splitlines() if ln.strip()])
+            tag = (" [GFN2-opt %.1f kcal]" % e) if e is not None else " [GFN2-opt]"
+            return ((opt_xyz, na, (label or "isomer") + tag), e)
+        return (item, None)
+
+    workers = max(1, min(_MANTA_OPT_WORKERS, len(head)))
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            opted = list(ex.map(_opt_one, head))
+    except Exception:
+        return isomers
+    # optimized structures first, sorted by GFN2-opt energy (failed/None last)
+    opted.sort(key=lambda t: (t[1] is None, t[1] if t[1] is not None else 0.0))
+    return [it for (it, _e) in opted] + tail
+
+
 def create_tab(ctx):
     """Create the Submit Job tab.
 
@@ -296,6 +373,17 @@ def create_tab(ctx):
         layout=widgets.Layout(width='150px'),
         tooltip='Convert metal-complex SMILES to 3D via architector',
     )
+
+    manta_button = widgets.Button(
+        description='MANTA', button_style='',
+        layout=widgets.Layout(width='150px'),
+        tooltip='MANTA: build the complete coordination-isomer manifold from the '
+                'SMILES and rank it by GFN2 energy (best isomer/conformer first; '
+                'needs xtb). Results show in the viewer with isomer navigation.',
+    )
+    # MANTA-logo teal/cyan.
+    manta_button.style.button_color = '#1FA9C0'
+    manta_button.style.font_weight = 'bold'
 
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -862,7 +950,7 @@ def create_tab(ctx):
         if state['isomers']:
             _show_isomer_at_index(state['isomer_index'] + 1)
 
-    def _start_smiles_conversion(*, apply_uff: bool, quick: bool):
+    def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
@@ -879,7 +967,11 @@ def create_tab(ctx):
         _set_smiles_conversion_busy(True)
 
         _clear_mol_output()
-        if quick:
+        if rank:
+            _set_mol_status('MANTA (best version): building manifold + GFN2 '
+                            'ranking + optimizing top 10 (needs xtb; takes a '
+                            'bit)...', spinner=True)
+        elif quick:
             _set_mol_status('Quick convert (single structure)...', spinner=True)
         elif apply_uff:
             _set_mol_status('Converting SMILES with UFF...', spinner=True)
@@ -887,6 +979,22 @@ def create_tab(ctx):
             _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
 
         def _worker():
+            import os
+            # MANTA "best version": derive the GFN2 charge from the SMILES, then
+            # apply the SHIP-31 champion construction + GFN2-rank env for this
+            # build only (snapshot + restore so the global env isn't polluted).
+            _chg = 0
+            if rank:
+                try:
+                    from rdkit import Chem as _Chem
+                    _m = _Chem.MolFromSmiles(cleaned_data, sanitize=False)
+                    if _m is not None:
+                        _chg = _Chem.GetFormalCharge(_m)
+                except Exception:
+                    _chg = 0
+            _best_env = _manta_best_env(_chg) if rank else {}
+            _saved_env = {k: os.environ.get(k) for k in _best_env}
+            os.environ.update(_best_env)
             try:
                 if quick:
                     xyz_string, num_atoms, _method, preview_items, error = (
@@ -914,9 +1022,19 @@ def create_tab(ctx):
                             cleaned_data,
                             include_quick=apply_uff,
                         )
+                    if rank and not error and isomers:
+                        # MANTA: GFN2-optimize the top-N ranked structures
+                        # (parallel, laptop-bounded) for best-possible geometry.
+                        isomers = _manta_opt_top(isomers, _chg)
                     result = {'error': error, 'isomers': isomers}
             except Exception as exc:
                 result = {'error': str(exc)}
+            finally:
+                for _k, _v in _saved_env.items():
+                    if _v is None:
+                        os.environ.pop(_k, None)
+                    else:
+                        os.environ[_k] = _v
 
             _schedule_ui_update(
                 _apply_smiles_conversion_result,
@@ -936,6 +1054,11 @@ def create_tab(ctx):
 
     def handle_convert_smiles_quick(button):
         _start_smiles_conversion(apply_uff=False, quick=True)
+
+    def handle_manta(button):
+        # MANTA: full coordination-isomer manifold (with UFF cleanup) + GFN2
+        # energy ranking, shown in the viewer with the existing isomer nav.
+        _start_smiles_conversion(apply_uff=True, quick=False, rank=True)
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
@@ -2668,6 +2791,7 @@ def create_tab(ctx):
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
+    manta_button.on_click(handle_manta)
     guppy_submit_button.on_click(handle_guppy_submit)
     fukui_submit_button.on_click(handle_fukui_submit)
     smiles_prev_button.on_click(handle_smiles_prev)
@@ -2697,7 +2821,7 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, architector_button],
+        widgets.HBox([build_complex_button, architector_button, manta_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
