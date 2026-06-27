@@ -18,11 +18,15 @@ import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
 from delfin.common.paths import GLOBAL_CWD_LOCK, pushd
+
+if TYPE_CHECKING:  # forward-ref annotations only; no runtime import cost / cycle
+    from delfin.parallel_classic_manually import WorkflowJob
+    from delfin.workflows.pipeline import PipelineContext
 
 logger = get_logger(__name__)
 

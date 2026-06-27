@@ -1844,6 +1844,7 @@ def _eta_centroid_distance(metal, eta_n):
     except Exception:
         pass
     # last-resort: covalent M-C sum minus a ring-radius slip (always finite)
+    from delfin.manta import polyhedra as PLY
     rmc = PLY.COV.get(metal, 1.5) + PLY.COV.get("C", 0.76)
     if eta_n >= 3:
         rr = 1.40 / (2.0 * np.sin(np.pi / max(eta_n, 3)))

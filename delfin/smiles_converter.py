@@ -18011,6 +18011,13 @@ def _verify_topology_from_graph(
                         # and the UFF metallacycle-torsion constraint
                         # already drive these atoms back toward the
                         # plane on realistic energy scales.
+                        # Metal-bonded atoms are already skipped above (see the
+                        # _METAL_SET neighbour `continue`), so any atom reaching
+                        # here has NO metal neighbour: the looser metal budget is
+                        # dead by construction.  Bind it explicitly (was an
+                        # undefined name) to keep the strict budget and the intent
+                        # documented.
+                        has_metal_nbr = False
                         oop_budget = (
                             DELFIN_RULE7_SP2_OOP_MAX_METAL
                             if has_metal_nbr
@@ -23093,7 +23100,7 @@ def _snap_aromatic_rings_to_plane(
         # parent→H direction.  Env-gated default OFF for safety.
         if _delfin_env_int("DELFIN_H_UNIVERSAL_NORMALIZE", 0):
             try:
-                for atom in mol_template.GetAtoms():
+                for atom in mol.GetAtoms():
                     if atom.GetAtomicNum() != 1:
                         continue
                     nbrs = atom.GetNeighbors()
@@ -23384,7 +23391,7 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
                     if nb in ring_set or nb in metal_idx:
                         continue
                     d = float(np.linalg.norm(pm - _pos(nb)))
-                    cut = rad(syms[m]) + rad(syms[nb]) + 0.18
+                    cut = _rad(syms[m]) + _rad(syms[nb]) + 0.18
                     if d > cut:
                         continue  # spurious crush contact, not a real bond
                     if syms[nb] == 'H':
@@ -25162,6 +25169,7 @@ def _generate_topological_isomers(
     smiles: str,
     apply_uff: bool = True,
     max_isomers: int = 50,
+    n_metal_smart: bool = True,
     profile: Optional[Dict[str, int]] = None,
 ) -> List[Tuple[str, str]]:
     """Guarantee-complete isomer enumeration via topological permutation.
@@ -30011,7 +30019,8 @@ def _smiles_to_xyz_isomers_impl(
 
             topo_results = _generate_topological_isomers(
                 topo_mol, smiles, apply_uff=apply_uff,
-                max_isomers=max_isomers, profile=_qprof,
+                max_isomers=max_isomers, n_metal_smart=n_metal_smart,
+                profile=_qprof,
             )
 
             for topo_xyz, topo_label in topo_results:
@@ -31130,7 +31139,8 @@ def _smiles_to_xyz_isomers_impl(
                     _gie_mod._verify_topology_from_graph = _gie_relaxed_verify
                     _gie_topo = _generate_topological_isomers(
                         mol, smiles, apply_uff=apply_uff,
-                        max_isomers=max_isomers, profile=_qprof,
+                        max_isomers=max_isomers, n_metal_smart=n_metal_smart,
+                        profile=_qprof,
                     ) or []
                 except Exception as _gie_topo_exc:
                     logger.debug(
@@ -31942,7 +31952,7 @@ def smiles_to_xyz(
                     if xyz_content:
                         if apply_uff:
                             xyz_content = _optimize_xyz_openbabel_safe(
-                                xyz_content, mol_template=mol
+                                xyz_content, mol_template=_cluster_mol
                             )
                         if output_path:
                             Path(output_path).write_text(xyz_content, encoding='utf-8')

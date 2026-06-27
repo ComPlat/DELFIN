@@ -5,7 +5,7 @@ import copy
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.deep2_auto_tree import DEEP2_AUTO_SETTINGS

@@ -238,7 +238,7 @@ def _ring_of_donor(mol, donor, ring_info):
     return pool[0]
 
 
-def best_conformer(mol, donor_idxs, mds, k=40, w=2.0, dist_tol=0.25):
+def best_conformer(mol, donor_idxs, mds, k=40, w=2.0, dist_tol=0.25, cop_tol=0.6):
     """Embed K free-ligand conformers, solve the metal into every arm's ring plane
     per conformer, and return the SAME contract as
     ``_coplanar_metal_centered_conformer``: ``(lsyms, [coords])`` with the

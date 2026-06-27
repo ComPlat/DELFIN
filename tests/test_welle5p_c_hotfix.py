@@ -24,6 +24,18 @@ import pytest
 from delfin.manta import _conformer_pool as pool
 from delfin.manta import _rotamer_diversity as rot
 
+# STALE TEST (2026-06-27): the Welle-5p-C hotfix this file targeted was
+# superseded by the 5p-A topology hard-gate.  Its helper API
+# (_welle5p_c_hotfix_enabled, _bond_endpoint_near_metal_ring,
+# _bond_distance_to_any_metal, _atoms_in_same_ring) was removed from
+# delfin.manta._rotamer_diversity, so every assertion below references a
+# non-existent symbol.  Skipped until rewritten against the live 5p-A API
+# (tracked in the morning brief) — keeps the slow CI job green without
+# pretending a removed internal API still exists.
+pytestmark = pytest.mark.skip(
+    reason="stale: 5p-C hotfix helper API removed (superseded by 5p-A)"
+)
+
 
 # Synthetic Fe(NH2-CH2-CH2-S) chelate-ring geometry.  Five-membered
 # chelate ring: Fe—N—C—C—S—Fe.  This is the X10-ALEQEO motif (one
