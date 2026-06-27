@@ -6,16 +6,22 @@ name: CI
 # Two tiers (tests/conftest.py auto-marks the heavy + order-dependent tests
 # `slow`):
 #   - `tests` (fast gate, REQUIRED): everything EXCEPT the slow set. ~minutes.
-#     This is the merge gate.
-#   - `slow-tests` (informational, non-blocking): the heavy MANTA build tests
-#     (construct full complexes; the full serial suite is >60 min) plus a few
-#     order-dependent tests that only pass in the full serial context. Run here
-#     with a long timeout. Promote to required once test isolation/speed is
-#     improved so the slow set can rejoin the gate.
+#     This is the merge gate that runs on every push/PR.
+#   - `slow-tests` (informational): the heavy MANTA build tests (construct full
+#     complexes; the full serial suite is >90 min) plus a few order-dependent
+#     tests that only pass in the full serial context. These DO NOT fit a
+#     per-commit gate (they time out and mark the whole run "cancelled"), so
+#     they run NIGHTLY on a schedule (and on manual dispatch) instead — keeping
+#     every push/PR green while still exercising the heavy suite daily. Promote
+#     back into the gate once test isolation/speed is improved.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly heavy-suite run (03:17 UTC) — see slow-tests job.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR to save CI minutes.
 concurrency:
@@ -61,7 +67,10 @@ jobs:
   slow-tests:
     name: slow tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Nightly / manual only — never on push or PR, so a timeout here can never
+    # mark a per-commit run "cancelled". The fast gate above is the merge check.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 240
     # Informational while heavy-test speed + test isolation are improved.
     continue-on-error: true
     strategy:
