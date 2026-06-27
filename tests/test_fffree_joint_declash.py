@@ -1,4 +1,4 @@
-"""Tests for the FF-free JOINT inter-ligand declash (delfin.fffree.joint_declash).
+"""Tests for the FF-free JOINT inter-ligand declash (delfin.manta.joint_declash).
 
 Locks the load-bearing contracts of the class-B recovery lever:
   * geometry-preservation: declash is rigid-rotation-only -> bond-length and
@@ -15,8 +15,8 @@ import os
 import numpy as np
 import pytest
 
-from delfin.fffree import joint_declash as JD
-from delfin.fffree import decompose as DEC
+from delfin.manta import joint_declash as JD
+from delfin.manta import decompose as DEC
 
 
 def _two_ligand_complex():

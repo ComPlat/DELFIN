@@ -27,7 +27,7 @@ from typing import FrozenSet, List
 
 import pytest
 
-from delfin._theorem_d_asymmetric_bidentate import (
+from delfin.manta._theorem_d_asymmetric_bidentate import (
     classify_helicity_asymmetric,
     is_asymmetric_bidentate_set,
     theorem_d_aware_pairs,
@@ -119,7 +119,7 @@ def test_oh_tris_asymmetric_yields_delta_lambda():
     """
     import itertools
 
-    from delfin._chirality_enumerator import _OH_VECTORS  # noqa
+    from delfin.manta._chirality_enumerator import _OH_VECTORS  # noqa
     from delfin.smiles_converter import _canonical_oh  # noqa
 
     donor_labels = ['O0', 'O0', 'O0', 'S1', 'S1', 'S1']

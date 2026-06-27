@@ -20,7 +20,7 @@ import os
 import numpy as np
 import pytest
 
-_post_optimizer = pytest.importorskip("delfin._post_optimizer")
+_post_optimizer = pytest.importorskip("delfin.manta._post_optimizer")
 Chem = pytest.importorskip("rdkit.Chem")
 
 _classify = getattr(_post_optimizer, "_classify_distortion_mandatory", None)

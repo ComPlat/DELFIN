@@ -26,7 +26,7 @@ from typing import List, Sequence, Tuple
 import pytest
 
 _post_optimizer = pytest.importorskip(
-    "delfin._post_optimizer",
+    "delfin.manta._post_optimizer",
     reason="Baustein 5 post-optimizer module not yet implemented",
 )
 Chem = pytest.importorskip("rdkit.Chem", reason="RDKit required for tests")

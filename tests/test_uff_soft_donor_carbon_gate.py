@@ -50,21 +50,21 @@ def _clear_carbon_env(monkeypatch):
     monkeypatch.delenv("DELFIN_UFF_SOFT_DONORS_CARBON", raising=False)
     # Re-import to ensure module-level state is fresh; the helper reads
     # the env-var lazily, so this is precautionary.
-    import delfin._uff_soft_donor as _mod
+    import delfin.manta._uff_soft_donor as _mod
     importlib.reload(_mod)
     yield
 
 
 def test_soft_donor_elements_default_true():
     """N, O, P, S and halides default to SOFT."""
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     for sym in ("N", "O", "P", "S", "F", "Cl", "Br", "I"):
         assert should_soften_donor(sym) is True, f"{sym} should be SOFT"
 
 
 def test_carbon_default_hard():
     """C donor is HARD when DELFIN_UFF_SOFT_DONORS_CARBON is unset."""
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     assert should_soften_donor("C") is False
     # Explicit allow_carbon=False also returns False.
     assert should_soften_donor("C", allow_carbon=False) is False
@@ -73,7 +73,7 @@ def test_carbon_default_hard():
 def test_carbon_soft_when_env_flag_set(monkeypatch):
     """C donor flips to SOFT iff DELFIN_UFF_SOFT_DONORS_CARBON=1."""
     monkeypatch.setenv("DELFIN_UFF_SOFT_DONORS_CARBON", "1")
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     assert should_soften_donor("C") is True
     # Explicit allow_carbon=True overrides regardless of env-var.
     monkeypatch.delenv("DELFIN_UFF_SOFT_DONORS_CARBON", raising=False)
@@ -82,14 +82,14 @@ def test_carbon_soft_when_env_flag_set(monkeypatch):
 
 def test_other_hard_elements_default_false():
     """Si, B, Se, and unknown elements default to HARD."""
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     for sym in ("Si", "B", "Se", "As", "Te", "H", "Xx"):
         assert should_soften_donor(sym) is False, f"{sym} should be HARD"
 
 
 def test_malformed_input_safe_fallback():
     """Empty string, None, or non-string → False (HARD)."""
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     assert should_soften_donor("") is False
     assert should_soften_donor(None) is False
     assert should_soften_donor(123) is False
@@ -98,7 +98,7 @@ def test_malformed_input_safe_fallback():
 
 def test_malformed_env_flag_safe_fallback(monkeypatch):
     """Garbage in DELFIN_UFF_SOFT_DONORS_CARBON → treated as 0."""
-    from delfin._uff_soft_donor import should_soften_donor
+    from delfin.manta._uff_soft_donor import should_soften_donor
     for bad in ("", "yes", "abc", "1.5"):
         monkeypatch.setenv("DELFIN_UFF_SOFT_DONORS_CARBON", bad)
         assert should_soften_donor("C") is False, (
@@ -108,7 +108,7 @@ def test_malformed_env_flag_safe_fallback(monkeypatch):
 
 def test_should_use_soft_donor_unchanged():
     """The class-conditional gate (Phase 3) is untouched by this patch."""
-    from delfin._uff_soft_donor import should_use_soft_donor
+    from delfin.manta._uff_soft_donor import should_use_soft_donor
     assert should_use_soft_donor("sigma") is True
     assert should_use_soft_donor("multi_sigma") is True
     assert should_use_soft_donor("hapto") is False
@@ -139,7 +139,7 @@ def test_default_off_bit_exact_unchanged(monkeypatch):
 
 def test_soft_donor_elements_constant_immutable():
     """The whitelist is a frozenset so callers cannot mutate it."""
-    from delfin._uff_soft_donor import _SOFT_DONOR_ELEMENTS
+    from delfin.manta._uff_soft_donor import _SOFT_DONOR_ELEMENTS
     assert isinstance(_SOFT_DONOR_ELEMENTS, frozenset)
     # Carbon must NOT be in the default whitelist.
     assert "C" not in _SOFT_DONOR_ELEMENTS

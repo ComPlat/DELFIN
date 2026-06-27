@@ -13,8 +13,8 @@ import os
 import numpy as np
 import pytest
 
-from delfin.fffree import polyhedra as PH
-from delfin.fffree import polya_isomer_count as PIC
+from delfin.manta import polyhedra as PH
+from delfin.manta import polya_isomer_count as PIC
 
 _NEW = [
     ("PB-7 pentagonal bipyramid", "pentagonal_bipyramid", 7, 10),
@@ -64,7 +64,7 @@ def _cn7_smiles():
 
 
 def test_decompose_cn_gate_env_gated():
-    from delfin.fffree import decompose as D
+    from delfin.manta import decompose as D
     smi = _cn7_smiles()
     os.environ.pop("DELFIN_FFFREE_HIGHCN", None)
     assert D.decompose(smi) is None, "default (HIGHCN off) must reject CN7 (byte-identical)"
@@ -78,7 +78,7 @@ def test_decompose_cn_gate_env_gated():
 
 
 def test_cn7_builds_when_enabled():
-    from delfin.fffree import converter_backend as CB
+    from delfin.manta import converter_backend as CB
     os.environ["DELFIN_FFFREE_HIGHCN"] = "1"
     try:
         res = CB._fffree_isomers(_cn7_smiles(), max_isomers=4)

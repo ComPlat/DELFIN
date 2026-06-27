@@ -247,7 +247,7 @@ def test_5bb_fused_ring_aromatic_n_finder_includes_pyridine():
     the locator itself always returned it.  This test pins the locator
     contract so any future refactor that drops the fused-N is caught."""
     from rdkit import Chem
-    from delfin._donor_orientation_realism import (
+    from delfin.manta._donor_orientation_realism import (
         _find_aromatic_n_metal_pairs,
     )
 

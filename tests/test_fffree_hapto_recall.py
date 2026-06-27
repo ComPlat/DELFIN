@@ -49,7 +49,7 @@ def _rigid_hapto_env(monkeypatch):
 
 
 def _decomp(smiles):
-    from delfin.fffree import decompose as DC
+    from delfin.manta import decompose as DC
     d = DC.decompose(smiles)
     assert d is not None, "rigid-hapto decompose returned None"
     return d
@@ -71,7 +71,7 @@ def _ring_carbons(syms, P):
 def test_axis_rotants_change_orientation_only():
     """Each axis-rot build keeps M-centroid + ring-internal + M-D distances IDENTICAL
     to the canonical build (<=0.05 A) while producing a DISTINCT overall orientation."""
-    from delfin.fffree import assemble_complex as AC
+    from delfin.manta import assemble_complex as AC
     d = _decomp(MADREP)
     metal, geom = d["metal"], d["geometry"]
     syms, P0, donors0, _ = AC.assemble_hapto(metal, geom, d)
@@ -146,7 +146,7 @@ def test_axis_rot_on_appends_axis_frames_and_keeps_baseline(monkeypatch):
 def test_gate_keeps_carbonyl_halfsandwich(monkeypatch):
     """Gate ON: a Cr(CO)3 arene half-sandwich (η-ring + CO) STILL takes the rigid-
     hapto path."""
-    from delfin.fffree import decompose as DC
+    from delfin.manta import decompose as DC
     monkeypatch.setenv("DELFIN_FFFREE_HAPTO_HALFSANDWICH_GATE", "1")
     for smi in (MADREP, AHAZIT):
         d = DC.decompose(smi)
@@ -156,7 +156,7 @@ def test_gate_keeps_carbonyl_halfsandwich(monkeypatch):
 def test_gate_suppresses_noncarbonyl_eta(monkeypatch):
     """Gate ON: a non-carbonyl η piano-stool (vinyl-Pt, no M-CO) falls OFF the rigid-
     hapto path (decompose yields no η-build), so it reverts to legacy."""
-    from delfin.fffree import decompose as DC
+    from delfin.manta import decompose as DC
     # OFF: hapto fires
     d_off = DC.decompose(POZNIC)
     assert d_off is not None and d_off.get("has_eta")
@@ -188,7 +188,7 @@ def test_gate_legacy_fallback_byte_identical(monkeypatch):
 def test_metal_has_carbonyl_graph_detector():
     """The CO detector is graph-based: True for M-C≡O, False for M-arene only."""
     from rdkit import Chem
-    from delfin.fffree.decompose import _metal_has_carbonyl
+    from delfin.manta.decompose import _metal_has_carbonyl
     # crude probes: build mol, find metal, check.
     for smi, expect in ((MADREP, True), (AHAZIT, True), (POZNIC, False)):
         mol = Chem.MolFromSmiles(smi, sanitize=False)

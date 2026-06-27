@@ -6,8 +6,8 @@ import os
 os.environ.setdefault("PYTHONHASHSEED", "0")
 import numpy as np
 import pytest
-from delfin.fffree.polya_isomer_count import _equatorial_squares, enumerate_chelate_configs
-from delfin.fffree import polyhedra as PLY
+from delfin.manta.polya_isomer_count import _equatorial_squares, enumerate_chelate_configs
+from delfin.manta import polyhedra as PLY
 
 
 def _coplanar_through_metal(verts, shape):

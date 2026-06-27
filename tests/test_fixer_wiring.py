@@ -56,7 +56,7 @@ def _build_methylamine() -> Tuple[object, str]:
 
 def _flatten_amine_nitrogen(mol, xyz: str) -> str:
     """Manually flatten the NH2 in methylamine to trigger F25."""
-    from delfin._fix_sp3_n_pyramidality import _parse_xyz, _format_xyz
+    from delfin.manta._fix_sp3_n_pyramidality import _parse_xyz, _format_xyz
     syms, pts, orig = _parse_xyz(xyz)
     n_idx = syms.index("N")
     n_pos = pts[n_idx].copy()
@@ -76,7 +76,7 @@ def _build_pt_methyl_with_linear_c() -> Tuple[object, str]:
     m = Chem.AddHs(Chem.MolFromSmiles("[Pt](C)(Cl)(Cl)Cl"))
     AllChem.EmbedMolecule(m, randomSeed=42)
     xyz = _mol_to_xyz(m)
-    from delfin._fix_wuxqak_sp3_c_linear import _parse_xyz, _format_xyz
+    from delfin.manta._fix_wuxqak_sp3_c_linear import _parse_xyz, _format_xyz
     syms, pts, orig = _parse_xyz(xyz)
     pt_idx = syms.index("Pt")
     c_idx = syms.index("C")
@@ -221,7 +221,7 @@ def _build_broken_nitromethane() -> Tuple[object, str]:
     m = Chem.AddHs(Chem.MolFromSmiles("CN(=O)=O"))
     AllChem.EmbedMolecule(m, randomSeed=42)
     AllChem.MMFFOptimizeMolecule(m)
-    from delfin._fix_sp2n_planarize import (_parse_xyz, _format_xyz,
+    from delfin.manta._fix_sp2n_planarize import (_parse_xyz, _format_xyz,
                                             detect_nitro_groups)
     xyz = _mol_to_xyz(m)
     syms, pts, orig = _parse_xyz(xyz)
@@ -244,7 +244,7 @@ def _build_broken_nitromethane() -> Tuple[object, str]:
 
 
 def _nitro_metrics(mol, xyz):
-    from delfin._fix_sp2n_planarize import (_parse_xyz, detect_nitro_groups,
+    from delfin.manta._fix_sp2n_planarize import (_parse_xyz, detect_nitro_groups,
                                             _angle_deg, _oop_distance)
     syms, P, _ = _parse_xyz(xyz)
     g = detect_nitro_groups(mol)[0]

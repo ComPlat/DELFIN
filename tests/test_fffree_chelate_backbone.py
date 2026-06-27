@@ -34,8 +34,8 @@ import os
 
 import pytest
 
-from delfin.fffree import decompose as DEC
-from delfin.fffree.converter_backend import _fffree_isomers
+from delfin.manta import decompose as DEC
+from delfin.manta.converter_backend import _fffree_isomers
 
 # --- Large-kappa3 anchors (legacy today, native with the flag) -----------------
 # BIQCOV: Ta, kappa3 diamido (N,N,N), ~9.7 heavy/arm + 2 Cl co-ligands (TBP-5).

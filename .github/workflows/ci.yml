@@ -2,6 +2,13 @@ name: CI
 
 # Automated gate for every push to main and every pull request. The suite is
 # fully mocked (no live KIT/Ollama/Claude calls), so no secrets are required.
+#
+# Runs the FULL suite serially. A fast/slow split (pytest -m) and parallel
+# execution (pytest-xdist) were both tried and BOTH break the suite: several
+# tests are order-dependent (they rely on module-level state another test sets
+# up — e.g. a runtime-mutated _ENTRY_POINTS, sys.modules-driven scans) and only
+# pass in the full serial context. Speeding CI up therefore requires fixing
+# test isolation first (tracked as an optimisation task), not subsetting.
 on:
   push:
     branches: [main]
@@ -19,14 +26,13 @@ jobs:
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The MANTA build/integration tests construct full complexes and are slow
+    # (slowest single test ~130s); the full serial suite needs well over the
+    # old 30 min. 60 gives headroom until test speed/isolation is improved.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the dev/prod version and is green. 3.10 is declared-supported
-        # in pyproject but a base dependency has no installable 3.10 wheel on
-        # the runner (install fails in ~20s, before tests run) — re-add it once
-        # that dep is pinned/fixed, or drop 3.10 from requires-python.
         python-version: ["3.11"]
 
     steps:
@@ -34,9 +40,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Full history: test_pre_refactor_api_preserved.py compares the public
-          # API against a pre-refactor commit (`cf78545^`, ~1100 commits back)
-          # via `git show`. A shallow clone (the default) lacks it → 0 cases →
-          # that guard test fails. Fetch everything so the history is present.
+          # API against a pre-refactor commit via `git show`. A shallow clone
+          # lacks it -> 0 cases -> that guard test fails.
           fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
@@ -48,14 +53,7 @@ jobs:
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          # Base scientific deps + the agent / docs / dev extras. The heavy
-          # optional extras (torch, cclib, deepchem, …) are intentionally
-          # omitted: no delfin module imports them at top level, and the tests
-          # that exercise those features use pytest.importorskip, so they skip
-          # cleanly here instead of forcing a multi-GB install.
           pip install -e ".[agent,docs,dev]"
 
       - name: Run test suite
-        # The qm_tools binary-bundle test (xtb4stda/stda) self-skips when the
-        # bundle isn't present, so a plain checkout is fully green.
         run: pytest -q

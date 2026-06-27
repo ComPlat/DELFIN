@@ -24,7 +24,7 @@ Chem = pytest.importorskip("rdkit.Chem", reason="RDKit required for tests")
 
 import numpy as np  # noqa: E402
 
-mod = pytest.importorskip("delfin._fix_bridging_anion")
+mod = pytest.importorskip("delfin.manta._fix_bridging_anion")
 sc = pytest.importorskip("delfin.smiles_converter")
 
 

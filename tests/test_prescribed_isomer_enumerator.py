@@ -1,4 +1,4 @@
-"""Tests for delfin._prescribed_isomer_enumerator (Welle-5n-Pre).
+"""Tests for delfin.manta._prescribed_isomer_enumerator (Welle-5n-Pre).
 
 Covers the 5 brief validation cases plus the universal-fundamental
 acceptance gates:
@@ -26,14 +26,14 @@ import pytest
 rdkit = pytest.importorskip("rdkit")
 from rdkit import Chem  # noqa: E402
 
-from delfin._burnside_groups import burnside_canonical_key, get_groups  # noqa: E402
-from delfin._polya_groups import (  # noqa: E402
+from delfin.manta._burnside_groups import burnside_canonical_key, get_groups  # noqa: E402
+from delfin.manta._polya_groups import (  # noqa: E402
     polyhedra_for_cn,
     polyhedron_geometry,
     positional_descriptor,
     trans_positions,
 )
-from delfin._prescribed_isomer_enumerator import (  # noqa: E402
+from delfin.manta._prescribed_isomer_enumerator import (  # noqa: E402
     _build_extended_label,
     _enumerate_orbits,
     enumerate_prescribed_isomers,

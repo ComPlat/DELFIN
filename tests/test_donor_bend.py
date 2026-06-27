@@ -25,7 +25,7 @@ import pytest
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
-import delfin.fffree.assemble_complex as AC
+import delfin.manta.assemble_complex as AC
 
 
 def _frag(smiles: str, donor_sym: str):

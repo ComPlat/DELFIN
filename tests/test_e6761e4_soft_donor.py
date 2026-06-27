@@ -32,7 +32,7 @@ def test_detect_sp3_c_donor_feature_positive_wuxqak_like():
     Mirrors the WUXQAK pattern (Hf with three sp3-C donors, M-C-X linear
     collapse) documented in feedback_sp3_c_donor_linear.
     """
-    from delfin._e6761e4_soft_donor import detect_sp3_c_donor_feature
+    from delfin.manta._e6761e4_soft_donor import detect_sp3_c_donor_feature
     # Tetra-ethyl hafnium (Hf-CH₂-CH₃ ×4): all four σ-donors are sp3-C.
     m = _mol("[Hf](CC)(CC)(CC)CC")
     assert detect_sp3_c_donor_feature(m) is True
@@ -44,7 +44,7 @@ def test_detect_sp3_c_donor_feature_negative_pure_halide():
     No σ-donor here is a carbon, so the feature gate stays OFF — this
     pins the negative branch of ``detect_sp3_c_donor_feature``.
     """
-    from delfin._e6761e4_soft_donor import detect_sp3_c_donor_feature
+    from delfin.manta._e6761e4_soft_donor import detect_sp3_c_donor_feature
     # cisplatin-like Pt(NH3)2Cl2: donors are N (sp³) and Cl — no C donor.
     m = _mol("[Pt](Cl)(Cl)(N)N")
     assert detect_sp3_c_donor_feature(m) is False
@@ -56,7 +56,7 @@ def test_detect_terminal_ch3_on_donor_feature_positive_29ni_like():
     Mirrors the 29-Ni pincer-tBu-imid gold-test (CH₃ umbrella inversion
     in 12/12 frames per User test-case archive).
     """
-    from delfin._e6761e4_soft_donor import (
+    from delfin.manta._e6761e4_soft_donor import (
         detect_terminal_ch3_on_donor_feature,
     )
     # Ni-NMe₃ (trimethylamine σ-donor): N donor bonded to three terminal CH₃.
@@ -70,7 +70,7 @@ def test_is_feature_gate_enabled_default_on_sigma_class():
     Feature-positive sigma-class molecule, no env-overrides → True
     (per cross-archive analysis: e6761e4 wins F19/F24/pi_planar/funcgrp_bond).
     """
-    from delfin._e6761e4_soft_donor import is_feature_gate_enabled
+    from delfin.manta._e6761e4_soft_donor import is_feature_gate_enabled
     with mock.patch.dict(
         os.environ,
         {k: v for k, v in os.environ.items()
@@ -93,7 +93,7 @@ def test_is_feature_gate_enabled_default_on_sigma_class():
 
 def test_is_feature_gate_enabled_on_with_feature():
     """With flag ON and feature present, the gate fires."""
-    from delfin._e6761e4_soft_donor import is_feature_gate_enabled
+    from delfin.manta._e6761e4_soft_donor import is_feature_gate_enabled
     with mock.patch.dict(
         os.environ,
         {"DELFIN_5L_T4_SOFT_DONOR_FEATURE_GATE": "1"},
@@ -105,7 +105,7 @@ def test_is_feature_gate_enabled_on_with_feature():
 
 def test_donor_weight_for_atom_default_and_clamp():
     """``donor_weight_for_atom`` defaults to 0.3 and clamps to [0, 1]."""
-    from delfin._e6761e4_soft_donor import donor_weight_for_atom
+    from delfin.manta._e6761e4_soft_donor import donor_weight_for_atom
     m = _mol("[Hf](CC)(CC)(CC)CC")
     # Default base weight = 0.3.
     with mock.patch.dict(os.environ, {}, clear=False):

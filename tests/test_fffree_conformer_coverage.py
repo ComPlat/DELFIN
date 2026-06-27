@@ -15,8 +15,8 @@ import os
 
 import pytest
 
-from delfin import _conformer_pool as cp
-from delfin import _rotamer_diversity as rot
+from delfin.manta import _conformer_pool as cp
+from delfin.manta import _rotamer_diversity as rot
 
 
 # --------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Tests for delfin._rotamer_diversity (Welle-5l Track-6)."""
+"""Tests for delfin.manta._rotamer_diversity (Welle-5l Track-6)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from delfin import _rotamer_diversity as rot
+from delfin.manta import _rotamer_diversity as rot
 
 
 # A simple butane-like XYZ (no metals). Bond C2-C3 is a rotatable DOF.

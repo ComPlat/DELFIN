@@ -15,7 +15,7 @@ internal pairwise distance of the ligand block (rigid body).
 import itertools
 import numpy as np
 
-from delfin.fffree.assemble_complex import _orient_chelate_to_vertices
+from delfin.manta.assemble_complex import _orient_chelate_to_vertices
 
 
 def _fac_targets(md=2.13):

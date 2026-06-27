@@ -1518,7 +1518,7 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
         # Pre-check error → fall through to full corrector (it is fail-safe).
         pass
     try:
-        from delfin._coord_angle_corrector import correct_results as _b3_correct
+        from delfin.manta._coord_angle_corrector import correct_results as _b3_correct
         return _b3_correct(mol, results)
     except Exception as _b3_exc:
         try:
@@ -1534,7 +1534,7 @@ def _apply_5j_a_cp_piano_stool_if_enabled(mol, results, dual_parse_done: bool):
     Welle-5i Agent C catalogued 34 hapto BROKEN-TO-BROKEN files; 83 % (28 / 34)
     were η⁵-cyclopentadienyl coordination misclassified as η⁶-arene by the
     downstream hapticity / coord-geometry detector.  This dispatch helper
-    runs ``delfin._cp_piano_stool.correct_results`` on every metal-bearing
+    runs ``delfin.manta._cp_piano_stool.correct_results`` on every metal-bearing
     structure to snap M-ring-centroid distance + axial orientation to the
     ideal η⁵ piano-stool geometry, which makes the detector classify the
     ring as Cp (CN=5 polyhedron) instead of arene.
@@ -1555,7 +1555,7 @@ def _apply_5j_a_cp_piano_stool_if_enabled(mol, results, dual_parse_done: bool):
     if not _delfin_env_int("DELFIN_5J_A_CP_PIANO_STOOL", 0):
         return results
     try:
-        from delfin._cp_piano_stool import correct_results as _cp_correct
+        from delfin.manta._cp_piano_stool import correct_results as _cp_correct
         return _cp_correct(mol, results)
     except Exception as _cp_exc:
         try:
@@ -1588,7 +1588,7 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
     if not _delfin_env_int("DELFIN_BAUSTEIN4", 0):
         return results
     try:
-        from delfin._pi_h_projector import correct_results as _b4_correct
+        from delfin.manta._pi_h_projector import correct_results as _b4_correct
         new_results = _b4_correct(mol, results)
         # Iter-6 T3 — B4-clash-rollback (preventive; B4 default OFF anyway).
         # If DELFIN_B4_CLASH_ROLLBACK=1: count heavy/H non-bonded clashes
@@ -1659,7 +1659,7 @@ def _apply_bond_decollapse_if_enabled(mol, results, dual_parse_done: bool):
     ):
         return results
     try:
-        from delfin._bond_decollapse import correct_results as _bd_correct
+        from delfin.manta._bond_decollapse import correct_results as _bd_correct
         return _bd_correct(mol, results)
     except Exception as _bd_exc:
         try:
@@ -1695,7 +1695,7 @@ def _apply_aromatic_planarity_if_enabled(mol, results, dual_parse_done: bool):
     ):
         return results
     try:
-        from delfin._aromatic_ring_flattener import correct_results as _arom_correct
+        from delfin.manta._aromatic_ring_flattener import correct_results as _arom_correct
         return _arom_correct(mol, results)
     except Exception as _arom_exc:
         try:
@@ -1732,7 +1732,7 @@ def _apply_arom_planarize_if_enabled(mol, results, dual_parse_done: bool):
     ):
         return results
     try:
-        from delfin._arom_planarize import correct_results as _ap_correct
+        from delfin.manta._arom_planarize import correct_results as _ap_correct
         return _ap_correct(mol, results)
     except Exception as _ap_exc:
         try:
@@ -1771,7 +1771,7 @@ def _apply_pi_coplanar_m_if_enabled(mol, results, dual_parse_done: bool):
     ):
         return results
     try:
-        from delfin._pi_coplanar_m import correct_results as _pcm_correct
+        from delfin.manta._pi_coplanar_m import correct_results as _pcm_correct
         return _pcm_correct(mol, results)
     except Exception as _pcm_exc:
         try:
@@ -1813,7 +1813,7 @@ def _apply_hapto_clearance_if_enabled(mol, results, dual_parse_done: bool):
     ):
         return results
     try:
-        from delfin._hapto_final_clearance import enforce_m_x_clearance_xyz
+        from delfin.manta._hapto_final_clearance import enforce_m_x_clearance_xyz
         _find_hg = _find_hapto_groups
     except Exception as _imp_exc:
         try:
@@ -1863,7 +1863,7 @@ def _apply_baustein5_if_enabled(mol, results, dual_parse_done: bool):
     if not _delfin_env_int("DELFIN_BAUSTEIN5", 0):
         return results
     try:
-        from delfin._post_optimizer import post_optimize_geometry
+        from delfin.manta._post_optimizer import post_optimize_geometry
         cls = "sigma"
         try:
             cls = _classify_complex_class(mol)
@@ -1928,7 +1928,7 @@ def _apply_baustein6_if_enabled(mol, results, dual_parse_done: bool):
             and not _class_conditional_flag("DELFIN_BAUSTEIN6", mol, default=0)):
         return results
     try:
-        from delfin._variational_refiner import variational_refine
+        from delfin.manta._variational_refiner import variational_refine
         cls = "sigma"
         try:
             cls = _classify_complex_class(mol)
@@ -1985,7 +1985,7 @@ def _apply_fixer_f19_if_enabled(mol, results, dual_parse_done: bool):
     if mol is None:
         return results
     try:
-        from delfin._fix_sp3_h_tetrahedrality import fix_sp3_h_tetrahedrality
+        from delfin.manta._fix_sp3_h_tetrahedrality import fix_sp3_h_tetrahedrality
         tol = _delfin_env_float("DELFIN_FIX_F19_TOL_DEG", 10.0)
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
@@ -2036,7 +2036,7 @@ def _apply_hydroxyl_geom_if_enabled(mol, results, dual_parse_done: bool):
     if os.environ.get("DELFIN_FFFREE_HYDROXYL_GEOM", "0") != "1":
         return results
     try:
-        from delfin._fix_hydroxyl_geometry import fix_hydroxyl_geometry
+        from delfin.manta._fix_hydroxyl_geometry import fix_hydroxyl_geometry
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
             try:
@@ -2117,7 +2117,7 @@ def _apply_f19_to_fallback_xyz(xyz_content, mol):
         # Stage 1 — graph-driven full umbrella reconstruction.
         result = xyz_content
         try:
-            from delfin._fix_sp3_h_tetrahedrality import (
+            from delfin.manta._fix_sp3_h_tetrahedrality import (
                 fix_sp3_h_tetrahedrality_full,
             )
             tol = _delfin_env_float("DELFIN_FIX_F19_TOL_DEG", 10.0)
@@ -2136,7 +2136,7 @@ def _apply_f19_to_fallback_xyz(xyz_content, mol):
         # (5f-D).  Enable 5f-D only for THIS call; restore the prior env value
         # deterministically afterwards so we never leak global state.
         try:
-            from delfin import _h_vsepr_realism as _vsepr
+            from delfin.manta import _h_vsepr_realism as _vsepr
             _prev_5fd = os.environ.get("DELFIN_5F_D_ALKYL_ROTAMER")
             os.environ["DELFIN_5F_D_ALKYL_ROTAMER"] = "1"
             try:
@@ -2192,7 +2192,7 @@ def _apply_fixer_f25_if_enabled(mol, results, dual_parse_done: bool):
     if mol is None:
         return results
     try:
-        from delfin._fix_sp3_n_pyramidality import fix_sp3_n_pyramidality
+        from delfin.manta._fix_sp3_n_pyramidality import fix_sp3_n_pyramidality
         thresh = _delfin_env_float("DELFIN_FIX_F25_THRESHOLD_DEG", 348.0)
         target = _delfin_env_float("DELFIN_FIX_F25_TARGET_DEG", 328.0)
         new_results: List[Tuple[str, str]] = []
@@ -2254,7 +2254,7 @@ def _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done: bool):
     if mol is None:
         return results
     try:
-        from delfin._fix_sp2n_planarize import planarize_sp2_nitrogen
+        from delfin.manta._fix_sp2n_planarize import planarize_sp2_nitrogen
         oop_thr = _delfin_env_float("DELFIN_FIX_SP2N_OOP_DEG_A", 0.20)
         no_t = _delfin_env_float("DELFIN_FIX_SP2N_NO_A", 1.22)
         ono_t = _delfin_env_float("DELFIN_FIX_SP2N_ONO_DEG", 125.0)
@@ -2330,7 +2330,7 @@ def _apply_fixer_wuxqak_if_enabled(mol, results, dual_parse_done: bool):
     except Exception:
         pass
     try:
-        from delfin._fix_wuxqak_sp3_c_linear import fix_wuxqak_sp3_c_linear
+        from delfin.manta._fix_wuxqak_sp3_c_linear import fix_wuxqak_sp3_c_linear
         angle_thr = _delfin_env_float("DELFIN_FIX_WUXQAK_ANGLE_DEG", 150.0)
         target = _delfin_env_float("DELFIN_FIX_WUXQAK_TARGET_DEG", 109.5)
         new_results: List[Tuple[str, str]] = []
@@ -2419,7 +2419,7 @@ def _apply_fixer_bridging_anion_if_enabled(mol, results, dual_parse_done: bool):
     except Exception:
         pass
     try:
-        from delfin._fix_bridging_anion import fix_bridging_anion_angles
+        from delfin.manta._fix_bridging_anion import fix_bridging_anion_angles
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
             try:
@@ -2444,7 +2444,7 @@ def _apply_xtb_cascade_if_enabled(mol, results, dual_parse_done: bool):
     """Welle-5l Track-2 dispatch helper — xTB-cascade post-UFF refinement.
 
     Per-frame GFN2-xTB optimization with M-D-invariant rollback gate.  This
-    is the OPT-IN cascade-stage that wraps ``delfin._xtb_refiner.refine_with_xtb``.
+    is the OPT-IN cascade-stage that wraps ``delfin.manta._xtb_refiner.refine_with_xtb``.
     Runs AFTER all UFF-side post-processing (B3 / B4 / B5 / B6 / F19 / F25 /
     WUXQAK / bridging-anion / 5b-A / 5b-B / 5f-C / 5f-D / 5j-A) so the cascade
     refines the FINAL pipeline geometry, not an intermediate one.
@@ -2515,7 +2515,7 @@ def _apply_xtb_cascade_if_enabled(mol, results, dual_parse_done: bool):
     if not any_metal:
         return results
     try:
-        from delfin._xtb_refiner import refine_with_xtb as _xtb_refine
+        from delfin.manta._xtb_refiner import refine_with_xtb as _xtb_refine
     except Exception as _imp_exc:
         try:
             logger.debug("xTB cascade import failed: %s", _imp_exc)
@@ -15662,7 +15662,7 @@ def _build_hapto_scaffold(
     # ``iters/welle5l_RETRO_3_hidden_wins_2026_05_18.md`` Section 2 for
     # the master-rank analysis (29/136 metric wins for e6761e4).
     try:
-        from delfin._e6761e4_soft_donor import (
+        from delfin.manta._e6761e4_soft_donor import (
             apply_soft_relaxation as _t4_apply_soft,
             donor_weight_for_atom as _t4_donor_weight,
         )
@@ -21476,7 +21476,7 @@ def _enumerate_orbits_topo(
     with an enumeration over the *distinct chelate-extended label tuples*
     (``set(permutations(extended_labels))``), orbit-reduced by the proper
     rotation group of ``geom_name`` (CODE keys OH/SAP/DD/TTP/… from
-    :mod:`delfin._burnside_groups`, which cover CN<=12).  For a label
+    :mod:`delfin.manta._burnside_groups`, which cover CN<=12).  For a label
     multiset with multiplicities the number of distinct label tuples is
     ``n!/prod(mult!)`` — far smaller than ``n!`` — so high-CN cases
     (CN8 SAP/DD, CN9 TTP) enumerate completely without ever hitting the
@@ -21499,7 +21499,7 @@ def _enumerate_orbits_topo(
     """
     import itertools as _it
 
-    from delfin._burnside_groups import get_groups as _get_groups
+    from delfin.manta._burnside_groups import get_groups as _get_groups
 
     proper, _full = _get_groups(geom_name)
     # Chelate-extended labels: append a per-chelate colour suffix to each
@@ -21729,7 +21729,7 @@ def _enumerate_topological_isomers(
     _helicity_aware_pairs = None
     if _chir_enabled:
         try:
-            from delfin._chirality_enumerator import helicity_aware_pairs as _helicity_aware_pairs  # type: ignore
+            from delfin.manta._chirality_enumerator import helicity_aware_pairs as _helicity_aware_pairs  # type: ignore
         except Exception as _ce_exc:
             logger.debug("Chirality enumerator import failed: %s", _ce_exc)
             _chir_enabled = False
@@ -21759,7 +21759,7 @@ def _enumerate_topological_isomers(
     _burnside_canonical_key = None
     if _burnside_enabled:
         try:
-            from delfin._burnside_groups import burnside_canonical_key as _burnside_canonical_key  # type: ignore
+            from delfin.manta._burnside_groups import burnside_canonical_key as _burnside_canonical_key  # type: ignore
         except Exception as _be_exc:
             logger.debug("Burnside enumerator import failed: %s", _be_exc)
             _burnside_enabled = False
@@ -27429,7 +27429,7 @@ def _emit_chelate_pucker_variants(
 #
 # This sibling pass enumerates DISTINCT pucker basins (chair + boat) for the
 # NON-METAL rings using the chemistry-accurate, graph-only template library
-# in :mod:`delfin._ring_conformer_templates` (which already excludes
+# in :mod:`delfin.manta._ring_conformer_templates` (which already excludes
 # metal-chelate AND fully-aromatic rings), drives each variant cleanly into
 # its target Cremer-Pople basin with a constrained geometric snap, and
 # REJECTS any variant that does not reach its intended basin.  Pure additive
@@ -27548,8 +27548,8 @@ def _emit_nonmetal_ring_pucker_variants(
         return 0
 
     try:
-        from delfin import _ring_conformer_templates as _rct
-        from delfin import _rotamer_diversity as _rot
+        from delfin.manta import _ring_conformer_templates as _rct
+        from delfin.manta import _rotamer_diversity as _rot
     except Exception:
         return 0
 
@@ -27580,7 +27580,7 @@ def _emit_nonmetal_ring_pucker_variants(
     # ordering.
     base_xyz = results[0][0]
     try:
-        from delfin._conformer_rank import rank_isomers as _rank
+        from delfin.manta._conformer_rank import rank_isomers as _rank
         _ranked = _rank(list(results))
         if _ranked:
             base_xyz = _ranked[0][0]
@@ -28257,7 +28257,7 @@ def _rank_emitted_isomers(isomers):
     ranking (cross-validated 2026-06-12).  Never drops/alters a structure — only
     reorders.  Safe no-op on any error or with DELFIN_NO_FRAME_RANK=1."""
     try:
-        from delfin._conformer_rank import rank_isomers
+        from delfin.manta._conformer_rank import rank_isomers
         return rank_isomers(isomers)
     except Exception:
         return isomers
@@ -28641,7 +28641,7 @@ def _apply_pi_inplane_final(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_PI_RIGID_PLACE", "0") != "1":
         return isomers
     try:
-        from delfin._pi_inplane_final import correct_results
+        from delfin.manta._pi_inplane_final import correct_results
         return correct_results(isomers)
     except Exception:
         return isomers
@@ -28664,7 +28664,7 @@ def _apply_pi_coplanar_final(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_PI_COPLANAR_FINAL", "0") != "1":
         return isomers
     try:
-        from delfin._pi_coplanar_final import correct_results
+        from delfin.manta._pi_coplanar_final import correct_results
         return correct_results(isomers)
     except Exception:
         return isomers
@@ -28683,7 +28683,7 @@ def _coord_integrity_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.converter_backend import _coord_filter
+        from delfin.manta.converter_backend import _coord_filter
         return _coord_filter(isomers) or isomers
     except Exception:
         return isomers
@@ -28708,7 +28708,7 @@ def _conf_complete_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_CONF_COMPLETE", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.conformer_complete import apply_to_ensemble
+        from delfin.manta.conformer_complete import apply_to_ensemble
         return apply_to_ensemble(isomers) or isomers
     except Exception:
         return isomers
@@ -28737,7 +28737,7 @@ def _gfnff_ensemble_rank_filter(isomers):
         return isomers
     try:
         import re as _re
-        from delfin.fffree import _gfnff_rank as _gff
+        from delfin.manta import _gfnff_rank as _gff
         if not _gff.available():
             return isomers
         # Retention policy = "keep ALL distinct conformers, rank them, drop only
@@ -28834,7 +28834,7 @@ def _permute_dedup_filter(isomers):
     if not isomers or os.environ.get("DELFIN_FFFREE_PERMUTE_DEDUP", "0") != "1":
         return isomers
     try:
-        from delfin.fffree.permute_dedup import dedup_ensemble
+        from delfin.manta.permute_dedup import dedup_ensemble
         return dedup_ensemble(isomers) or isomers
     except Exception:
         return isomers
@@ -28958,15 +28958,15 @@ def _smiles_to_xyz_isomers_impl(
     hapto_mode = _hapto_approx_enabled(hapto_approx)
 
     # --- metal-FF-free generation backend (env-gated, default OFF) ---------
-    # delfin.fffree: provably-complete deterministic enumeration (Pólya isomers)
+    # delfin.manta: provably-complete deterministic enumeration (Pólya isomers)
     # + metal-FF-free geometric assembly on COD-ideal polyhedra.  v1 handles
     # Werner complexes (mononuclear, explicit metal-donor bonds, all-monodentate,
     # CN 4-6); decompose() returns None for chelates / hapto / dative / multi-
     # metal, so those fall through to the legacy pipeline below unchanged.
-    # Bit-exact OFF (default).  See delfin/fffree/.
+    # Bit-exact OFF (default).  See delfin/manta/.
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
         try:
-            from delfin.fffree.converter_backend import _fffree_isomers
+            from delfin.manta.converter_backend import _fffree_isomers
             _ff = _fffree_isomers(smiles, max_isomers=max_isomers)
         except Exception:
             _ff = None
@@ -29255,7 +29255,7 @@ def _smiles_to_xyz_isomers_impl(
             )
             if _hd_ta_run:
                 try:
-                    from delfin._hapto_diversity import (
+                    from delfin.manta._hapto_diversity import (
                         apply_hapto_diversity_topology_aware as _hd_apply,
                     )
                     _hd_seed_xyz, _hd_seed_label = results_hapto[0]
@@ -31477,7 +31477,7 @@ def _smiles_to_xyz_isomers_impl(
             and results
             and _delfin_env_int("DELFIN_DONOR_ORIENT_REALISM", 0)
         ):
-            from delfin._donor_orientation_realism import (
+            from delfin.manta._donor_orientation_realism import (
                 snap_donor_orientations as _dor_snap,
             )
             _new_results: List[Tuple[str, str]] = []
@@ -31529,7 +31529,7 @@ def _smiles_to_xyz_isomers_impl(
     )
     try:
         if results and _vsepr_h_realism_active:
-            from delfin._h_vsepr_realism import correct_results as _vsepr_correct
+            from delfin.manta._h_vsepr_realism import correct_results as _vsepr_correct
             results = _vsepr_correct(mol, results)
     except Exception as _vsepr_exc:
         try:
@@ -31554,7 +31554,7 @@ def _smiles_to_xyz_isomers_impl(
             and _delfin_env_int("DELFIN_5F_D_ALKYL_ROTAMER", 0)
             and not _vsepr_h_realism_active
         ):
-            from delfin._h_vsepr_realism import (
+            from delfin.manta._h_vsepr_realism import (
                 correct_results_rotamers_only as _rot_correct,
             )
             results = _rot_correct(mol, results)
@@ -31580,7 +31580,7 @@ def _smiles_to_xyz_isomers_impl(
             results
             and _delfin_env_int("DELFIN_5F_C_MH_OVERLAP_RESCUE", 0)
         ):
-            from delfin._h_vsepr_realism import rescue_results as _mh_rescue
+            from delfin.manta._h_vsepr_realism import rescue_results as _mh_rescue
             results = _mh_rescue(mol, results)
     except Exception as _mh_exc:
         try:
@@ -31623,7 +31623,7 @@ def _smiles_to_xyz_isomers_impl(
     # label-suffix regex above. The helper is a no-op when the env-flag is
     # unset, preserving byte-identical default behaviour.
     try:
-        from delfin import _rotamer_diversity as _rot_div  # local import
+        from delfin.manta import _rotamer_diversity as _rot_div  # local import
         if _rot_div._is_enabled() and results:
             expanded: List[Tuple[str, str]] = []
             for _ridx, (_rxyz, _rlbl) in enumerate(results):
@@ -31654,7 +31654,7 @@ def _smiles_to_xyz_isomers_impl(
     # The helper is a no-op when DELFIN_5O_CONFORMER_POOL=0, preserving
     # byte-identical default behaviour.
     try:
-        from delfin import _conformer_pool as _conf_pool  # local import
+        from delfin.manta import _conformer_pool as _conf_pool  # local import
         if _conf_pool._is_enabled() and results:
             pool_expanded: List[Tuple[str, str]] = []
             for _pidx, (_pxyz, _plbl) in enumerate(results):
@@ -31684,7 +31684,7 @@ def _smiles_to_xyz_isomers_impl(
     # any post-UFF amine-H umbrella inversion introduced upstream.
     # Default OFF: when DELFIN_5P_A_TOPOLOGY_HARDGATE=0 this is a no-op.
     try:
-        from delfin import _topology_hash as _th_post  # local import
+        from delfin.manta import _topology_hash as _th_post  # local import
         if _th_post.is_hardgate_enabled() and results:
             _gated: List[Tuple[str, str]] = []
             _dropped = 0
@@ -34336,7 +34336,7 @@ def _optimize_xyz_openbabel(
                     pass
                 if _soft_enabled and _soft_meta and _uff_param_unsafe:
                     try:
-                        from delfin._uff_soft_donor import (
+                        from delfin.manta._uff_soft_donor import (
                             should_use_soft_donor as _sus,
                         )
                         _gated_cls = _soft_meta.get("class_label", "no_metal")
@@ -34387,7 +34387,7 @@ def _optimize_xyz_openbabel(
                     )
                 if _soft_enabled and _soft_meta and not _uff_param_unsafe:
                     try:
-                        from delfin._uff_soft_donor import should_use_soft_donor  # lazy
+                        from delfin.manta._uff_soft_donor import should_use_soft_donor  # lazy
                         _cls = _soft_meta.get("class_label", "no_metal")
                         if should_use_soft_donor(_cls):
                             _donor_set = set(int(d) for d in _soft_meta.get("donor_indices", []))
@@ -34409,7 +34409,7 @@ def _optimize_xyz_openbabel(
                             # retain SOFT mode.  Carbon falls back to
                             # legacy FixAtom unless
                             # DELFIN_UFF_SOFT_DONORS_CARBON=1.
-                            from delfin._uff_soft_donor import (
+                            from delfin.manta._uff_soft_donor import (
                                 should_soften_donor,  # lazy import
                             )
                             _allow_carbon_soft = bool(

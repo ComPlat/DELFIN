@@ -1,6 +1,6 @@
 """Tests for the linear-CN2 d10 special-case helpers (Wave 2026-05-13).
 
-Covers ``delfin._polyhedron_targets._is_d10_linear_cn2``,
+Covers ``delfin.manta._polyhedron_targets._is_d10_linear_cn2``,
 ``classify_geometry_from_cn_donors_with_metal`` and the new ``bent_2`` /
 ``linear_2`` ideal-vector tables.
 
@@ -29,7 +29,7 @@ import os
 import numpy as np
 import pytest
 
-from delfin._polyhedron_targets import (
+from delfin.manta._polyhedron_targets import (
     _D10_LINEAR_CN2_METALS_ALWAYS,
     _D10_LINEAR_CN2_METALS_CHARGED,
     _is_d10_linear_cn2,
@@ -340,7 +340,7 @@ def test_tier_a_integration_au_cn2_returns_linear():
     coords[donor_idxs[0]] = metal_pos + np.array([1.5, 0.0, 0.0])
     coords[donor_idxs[1]] = metal_pos + np.array([0.0, 1.5, 0.0])
 
-    from delfin._symmetry_detection import hungarian_assign_donors_to_slots
+    from delfin.manta._symmetry_detection import hungarian_assign_donors_to_slots
 
     targets = hungarian_assign_donors_to_slots(coords, mol_h, metal_idx)
     assert len(targets) == 2

@@ -1,5 +1,5 @@
 """Tests for the universal FF-free conformer-completeness pass
-(delfin.fffree.conformer_complete).
+(delfin.manta.conformer_complete).
 
 Pure-Python / geometry-only assertions that do not require a full build:
   * identity-when-off (byte-identical default semantics),
@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from delfin.fffree import conformer_complete as CC
+from delfin.manta import conformer_complete as CC
 
 
 # --- helpers --------------------------------------------------------------

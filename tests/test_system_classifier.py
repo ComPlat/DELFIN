@@ -1,4 +1,4 @@
-"""Tests for delfin._system_classifier (Welle-5m-Y).
+"""Tests for delfin.manta._system_classifier (Welle-5m-Y).
 
 Universal 8-axis classifier — pure-graph features, no SMILES regex.
 Coverage: one test per axis + contrast SMILES descriptors.
@@ -11,7 +11,7 @@ import pytest
 rdkit = pytest.importorskip("rdkit")
 from rdkit import Chem
 
-from delfin._system_classifier import classify_complex_system
+from delfin.manta._system_classifier import classify_complex_system
 
 
 def _mol(smiles: str):

@@ -1,6 +1,6 @@
 """Unit tests for Welle-5j A — Cp piano-stool hapticity refinement.
 
-Validates ``delfin._cp_piano_stool``:
+Validates ``delfin.manta._cp_piano_stool``:
 
 * synthetic ferrocene-like η⁵ ring + off-axis Fe -> Fe snaps to axis at
   ideal η⁵ distance
@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 cp = pytest.importorskip(
-    "delfin._cp_piano_stool",
+    "delfin.manta._cp_piano_stool",
     reason="_cp_piano_stool module not present",
 )
 

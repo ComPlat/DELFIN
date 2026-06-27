@@ -1,4 +1,4 @@
-"""Unit tests for delfin._arom_planarize (Iter-33 universal aromatic
+"""Unit tests for delfin.manta._arom_planarize (Iter-33 universal aromatic
 ring-SYSTEM planarisation).
 
 Geometry-only (no SMILES build), so these run fast and deterministically.
@@ -13,8 +13,8 @@ import math
 
 import numpy as np
 
-from delfin._arom_planarize import correct_xyz, correct_results, _ring_oop
-from delfin._pi_h_projector import _parse_xyz, _build_geometric_adjacency
+from delfin.manta._arom_planarize import correct_xyz, correct_results, _ring_oop
+from delfin.manta._pi_h_projector import _parse_xyz, _build_geometric_adjacency
 
 
 def _benzene(z_pucker: float = 0.0, r: float = 1.39) -> str:

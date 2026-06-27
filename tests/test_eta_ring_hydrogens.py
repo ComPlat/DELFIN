@@ -38,8 +38,8 @@ _CASES = [
 
 
 def _build(smiles):
-    from delfin.fffree import decompose as DC
-    from delfin.fffree import assemble_complex as AC
+    from delfin.manta import decompose as DC
+    from delfin.manta import assemble_complex as AC
     d = DC.decompose(smiles)
     assert d is not None, "rigid-hapto decompose returned None"
     return d, AC
@@ -114,7 +114,7 @@ def test_repeat_build_deterministic():
 
 def test_restore_is_idempotent():
     """Re-running the restore on an already-fixed fragment changes nothing."""
-    from delfin.fffree.decompose import _restore_eta_ring_hydrogens
+    from delfin.manta.decompose import _restore_eta_ring_hydrogens
     frag = Chem.MolFromSmiles("[C+]1[C+][C+][C+][C+][C+]1")
     eta = list(range(frag.GetNumAtoms()))
     once = _restore_eta_ring_hydrogens(frag, eta)

@@ -4,9 +4,9 @@ Spec source: ``iters/BAUSTEIN6_MASTERPLAN.md`` Section 10
 (Verification Strategy).
 
 The whole module is skipped gracefully if any of the Baustein 6 sister
-modules (``delfin._variational_refiner``, ``delfin._energy_terms``,
-``delfin._symmetry_detection``, ``delfin._point_group_ops``,
-``delfin._fragment_archetypes``) or RDKit are unavailable.  Tests are
+modules (``delfin.manta._variational_refiner``, ``delfin.manta._energy_terms``,
+``delfin.manta._symmetry_detection``, ``delfin.manta._point_group_ops``,
+``delfin.manta._fragment_archetypes``) or RDKit are unavailable.  Tests are
 self-contained: synthetic XYZ strings are built inline, no external
 file dependencies.
 
@@ -65,25 +65,25 @@ _SKIP_REASON = None
 try:
     import numpy as np
     from rdkit import Chem
-    from delfin._variational_refiner import variational_refine
-    from delfin._energy_terms import (
+    from delfin.manta._variational_refiner import variational_refine
+    from delfin.manta._energy_terms import (
         U_bond, U_angle, U_clash, U_topology,
         U_A_coord_sphere, U_B_equivalence,
         U_C_fragment, U_D_global, U_total,
         _fd_gradient,
     )
-    from delfin._symmetry_detection import (
+    from delfin.manta._symmetry_detection import (
         find_equivalent_atoms,
         find_equivalent_bond_pairs,
         hungarian_assign_donors_to_slots,
         detect_global_point_group,
     )
-    from delfin._point_group_ops import (
+    from delfin.manta._point_group_ops import (
         get_operations,
         rotation_matrix_axis_angle,
         supported_point_groups,
     )
-    from delfin._fragment_archetypes import detect_fragments
+    from delfin.manta._fragment_archetypes import detect_fragments
 except Exception as _exc:  # pragma: no cover - environment shim
     _SKIP_REASON = f"Baustein 6 stack not importable: {_exc}"
     pytestmark = pytest.mark.skip(reason=_SKIP_REASON)

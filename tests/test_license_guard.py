@@ -37,7 +37,7 @@ def test_tracked_tree_is_ccdc_free():
     [
         ("import ccdc\n", "ccdc runtime API"),
         ("from ccdc.io import EntryReader\n", "ccdc submodule"),
-        ("from delfin.fffree.mogul_bounds import bounds\n", "mogul-derived module"),
+        ("from delfin.manta.mogul_bounds import bounds\n", "mogul-derived module"),
         ("import delfin.grip_io\n", "grip-derived module"),
         ("PATH = 'grip_lib_v5_TM.npz'\n", "grip fragment library path"),
         ("LIB = 'agent_workspace/ccdc_fragment_index_v3.json'\n", "ccdc fragment index"),
@@ -53,8 +53,8 @@ def test_guard_detects_violations(snippet, why):
 @pytest.mark.parametrize(
     "snippet",
     [
-        "from delfin.fffree.cod_ideals import ideal_bond\n",   # COD = open
-        "from delfin.fffree.polyhedra import md_distance\n",   # covalent radii = open
+        "from delfin.manta.cod_ideals import ideal_bond\n",   # COD = open
+        "from delfin.manta.polyhedra import md_distance\n",   # covalent radii = open
         "RADII = {'C': 0.76, 'N': 0.71}  # Cordero covalent radii\n",
         "IDX = 'cod_fragment_index_v3.sqlite'  # COD is open\n",
     ],
@@ -79,6 +79,6 @@ def test_path_guard_blocks_data_files(path):
     assert lg.check_path(path) is not None, f"path guard missed {path}"
 
 
-@pytest.mark.parametrize("path", ["delfin/fffree/cod_ideals.py", "docs/intro.md"])
+@pytest.mark.parametrize("path", ["delfin/manta/cod_ideals.py", "docs/intro.md"])
 def test_path_guard_allows_clean_paths(path):
     assert lg.check_path(path) is None, f"path guard wrongly blocked {path}"

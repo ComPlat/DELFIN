@@ -1,5 +1,5 @@
 """Tests for Patch P-H-TRACK (B6 port): rigid-H tracking in the B6
-variational refiner (``delfin._variational_refiner``).
+variational refiner (``delfin.manta._variational_refiner``).
 
 Mirrors :mod:`tests.test_b5_rigid_h`.  L-BFGS-B minimises an 8-term
 energy functional where each H atom carries its own 3 DoFs; under
@@ -19,7 +19,7 @@ from typing import List, Sequence, Tuple
 import pytest
 
 _variational_refiner = pytest.importorskip(
-    "delfin._variational_refiner",
+    "delfin.manta._variational_refiner",
     reason="Baustein 6 variational refiner module not yet available",
 )
 Chem = pytest.importorskip("rdkit.Chem", reason="RDKit required for tests")

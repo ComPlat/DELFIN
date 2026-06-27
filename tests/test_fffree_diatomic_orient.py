@@ -1,5 +1,5 @@
 """Tests for the FF-free linear-diatomic-donor orientation guard
-(DELFIN_FFFREE_DIATOMIC_ORIENT, delfin.fffree.assemble_complex).
+(DELFIN_FFFREE_DIATOMIC_ORIENT, delfin.manta.assemble_complex).
 
 Root cause covered: two chemically-identical diatomic ligands (e.g. two M-C#O
 carbonyls) with DIFFERENT fragment atom orderings collide in the canonical-SMILES
@@ -24,7 +24,7 @@ import pytest
 
 from rdkit import Chem
 
-import delfin.fffree.assemble_complex as AC
+import delfin.manta.assemble_complex as AC
 
 
 AXAGOY = ("[O+]#[C][Os-4]1([Cl])([Cl])([C]#[O+])[N+]2=CC=C(C3=CC=CC=C3)"
@@ -92,7 +92,7 @@ def test_nitrosyl_flip_is_corrected_to_n_donor():
 
 
 def _build_sha(smiles):
-    from delfin.fffree.converter_backend import _fffree_isomers
+    from delfin.manta.converter_backend import _fffree_isomers
     res = _fffree_isomers(smiles, max_isomers=50)
     if not res:
         return "NONE"
@@ -154,7 +154,7 @@ def _frame_flips(xyz, metal_sym="Os"):
 
 
 def test_axagoy_carbonyl_flip_fixed_on(monkeypatch):
-    from delfin.fffree.converter_backend import _fffree_isomers
+    from delfin.manta.converter_backend import _fffree_isomers
     for k, v in _onstack_env().items():
         monkeypatch.setenv(k, v)
     AC._CONF_CACHE.clear()
