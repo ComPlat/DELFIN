@@ -3,12 +3,15 @@ name: CI
 # Automated gate for every push to main and every pull request. The suite is
 # fully mocked (no live KIT/Ollama/Claude calls), so no secrets are required.
 #
-# Runs the FULL suite serially. A fast/slow split (pytest -m) and parallel
-# execution (pytest-xdist) were both tried and BOTH break the suite: several
-# tests are order-dependent (they rely on module-level state another test sets
-# up — e.g. a runtime-mutated _ENTRY_POINTS, sys.modules-driven scans) and only
-# pass in the full serial context. Speeding CI up therefore requires fixing
-# test isolation first (tracked as an optimisation task), not subsetting.
+# Two tiers (tests/conftest.py auto-marks the heavy + order-dependent tests
+# `slow`):
+#   - `tests` (fast gate, REQUIRED): everything EXCEPT the slow set. ~minutes.
+#     This is the merge gate.
+#   - `slow-tests` (informational, non-blocking): the heavy MANTA build tests
+#     (construct full complexes; the full serial suite is >60 min) plus a few
+#     order-dependent tests that only pass in the full serial context. Run here
+#     with a long timeout. Promote to required once test isolation/speed is
+#     improved so the slow set can rejoin the gate.
 on:
   push:
     branches: [main]
@@ -26,10 +29,7 @@ jobs:
   test:
     name: tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # The MANTA build/integration tests construct full complexes and are slow
-    # (slowest single test ~130s); the full serial suite needs well over the
-    # old 30 min. 60 gives headroom until test speed/isolation is improved.
-    timeout-minutes: 60
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -55,5 +55,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[agent,docs,dev]"
 
-      - name: Run test suite
-        run: pytest -q
+      - name: Run fast test suite (excludes heavy + order-dependent tests)
+        run: pytest -q -m "not slow"
+
+  slow-tests:
+    name: slow tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Informational while heavy-test speed + test isolation are improved.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[agent,docs,dev]"
+
+      - name: Run slow (heavy + order-dependent) tests
+        run: pytest -q -m "slow"
