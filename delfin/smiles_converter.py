@@ -26079,7 +26079,17 @@ def _generate_topological_isomers(
                     _N_ITER_BUDGET = max(_max_combos_n * 40, 2000)
                     import time as _time
                     _n_metal_start = _time.time()
-                    _N_WALL_BUDGET = 90.0
+                    # DETERMINISM vs anti-TLE trade-off (multinuclear enum).
+                    # The wall-clock cutoff bounds the exponential N-metal product
+                    # but makes the enumerated set depend on TIMING -> the same
+                    # input can give different label sets across runs (esp. under
+                    # CPU load).  Default 90 = current behaviour (anti-TLE, NOT
+                    # deterministic under load) -> byte-identical to pre-change.
+                    # Set DELFIN_NMETAL_WALL_BUDGET_S=0 for DETERMINISTIC mode
+                    # (termination by the deterministic _N_ITER_BUDGET + _max_combos_n
+                    # caps only) -- WARNING: can TLE on heavy multinuclear systems
+                    # until the deterministic iteration cap is tuned (see brief).
+                    _N_WALL_BUDGET = float(os.environ.get("DELFIN_NMETAL_WALL_BUDGET_S", "90"))
                     _iter_count = 0
                     _combo_seen_n: set = set()
                     _variant_counter_n: Dict[Tuple[tuple, ...], int] = {}
@@ -26096,7 +26106,7 @@ def _generate_topological_isomers(
                                 _N_ITER_BUDGET, _N,
                             )
                             break
-                        if _time.time() - _n_metal_start > _N_WALL_BUDGET:
+                        if _N_WALL_BUDGET > 0 and _time.time() - _n_metal_start > _N_WALL_BUDGET:
                             logger.debug(
                                 "N-metal enum wall-clock budget %.0fs exceeded at N=%d, stopping.",
                                 _N_WALL_BUDGET, _N,
