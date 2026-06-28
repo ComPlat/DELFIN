@@ -101,6 +101,15 @@ def _orbit_enum_enabled() -> bool:
     except (TypeError, ValueError):
         return False
 
+
+def _deterministic_mode() -> bool:
+    """Local copy of ``smiles_converter._deterministic_mode`` (avoid import cycle).
+
+    Master switch (``DELFIN_DETERMINISTIC=1``) → sort the permutation set so the
+    first-seen orbit representative is reproducible cross-process.
+    """
+    return os.environ.get("DELFIN_DETERMINISTIC", "0") == "1"
+
 try:
     from rdkit import Chem
     _RDKIT_OK = True
@@ -367,7 +376,14 @@ def _enumerate_orbits(
             return tuple(out)
 
         def _perm_stream():
-            for _arr in set(itertools.permutations(extended)):
+            # Orbits store the FIRST-seen perm; set-iteration order is
+            # hash-seed-dependent.  Sort under the master switch so the stored
+            # representative (and downstream labelling) is reproducible
+            # cross-process.  Default: legacy set-iteration order (unchanged).
+            _arrs = set(itertools.permutations(extended))
+            if _deterministic_mode():
+                _arrs = sorted(_arrs)
+            for _arr in _arrs:
                 _p = _lexmin_perm(_arr)
                 if _p is not None:
                     yield _p

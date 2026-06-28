@@ -1310,6 +1310,19 @@ def _delfin_env_int(name: str, default: int) -> int:
         return default
 
 
+def _deterministic_mode() -> bool:
+    """Master determinism switch (``DELFIN_DETERMINISTIC=1``, default OFF).
+
+    When set, the structure generator is forced bit-identical CROSS-PROCESS
+    (independent of ``PYTHONHASHSEED``, CPU load and wall-clock timing).  The
+    switch IMPLIES: deterministic OpenBabel/embed paths, sorted enumeration
+    (``DELFIN_FFFREE_DETERMINISTIC_ENUM=1``), zero multinuclear wall budgets,
+    and disabled embed timeouts (the deterministic path is always taken).
+    Unset/0 → byte-identical to legacy behaviour.
+    """
+    return os.environ.get("DELFIN_DETERMINISTIC", "0") == "1"
+
+
 def _apply_uff_jitter(
     xyz_delfin: str,
     atom_indices,
@@ -3391,7 +3404,9 @@ def _embed_with_timeout(mol, params=None, timeout: Optional[float] = None):
 
     t = threading.Thread(target=_do_embed, daemon=True)
     t.start()
-    t.join(timeout=timeout)
+    # Determinism: under the master switch, wait for the embed to finish
+    # (no wall-clock cutoff) so the result never depends on timing/CPU load.
+    t.join(timeout=None if _deterministic_mode() else timeout)
 
     if t.is_alive():
         logger.debug(
@@ -3458,7 +3473,9 @@ def _embed_multiple_confs_with_timeout(
 
     t = threading.Thread(target=_do_embed, daemon=True)
     t.start()
-    t.join(timeout=timeout)
+    # Determinism: under the master switch, wait for the embed to finish
+    # (no wall-clock cutoff) so the result never depends on timing/CPU load.
+    t.join(timeout=None if _deterministic_mode() else timeout)
 
     if t.is_alive():
         logger.debug(
@@ -25869,11 +25886,19 @@ def _generate_topological_isomers(
                     combo_count = 0
                     import time as _time_2m
                     _2m_start = _time_2m.time()
-                    _2M_WALL_BUDGET = 240.0
+                    # DETERMINISM vs anti-TLE trade-off (2-metal enum).  The
+                    # wall-clock cutoff bounds the (cf1,pm1)x(cf2,pm2) product
+                    # but makes the enumerated set TIMING-dependent.  Env-gated
+                    # DELFIN_2METAL_WALL_BUDGET_S (default 240 = byte-identical
+                    # to pre-change).  Master switch forces 0 (DETERMINISTIC:
+                    # termination by the max_combos cap only); 0 disables it.
+                    _2M_WALL_BUDGET = 0.0 if _deterministic_mode() else _delfin_env_float(
+                        "DELFIN_2METAL_WALL_BUDGET_S", 240.0,
+                    )
                     for (cf1, pm1), (cf2, pm2) in _it.product(iso1, iso2):
                         if combo_count >= max_combos:
                             break
-                        if _time_2m.time() - _2m_start > _2M_WALL_BUDGET:
+                        if _2M_WALL_BUDGET > 0 and _time_2m.time() - _2m_start > _2M_WALL_BUDGET:
                             logger.debug(
                                 "2-metal enum wall-clock budget %.0fs exceeded, stopping.",
                                 _2M_WALL_BUDGET,
@@ -26089,7 +26114,11 @@ def _generate_topological_isomers(
                     # (termination by the deterministic _N_ITER_BUDGET + _max_combos_n
                     # caps only) -- WARNING: can TLE on heavy multinuclear systems
                     # until the deterministic iteration cap is tuned (see brief).
-                    _N_WALL_BUDGET = float(os.environ.get("DELFIN_NMETAL_WALL_BUDGET_S", "90"))
+                    # Master switch forces 0 (DETERMINISTIC: termination by the
+                    # deterministic _N_ITER_BUDGET + _max_combos_n caps only).
+                    _N_WALL_BUDGET = 0.0 if _deterministic_mode() else float(
+                        os.environ.get("DELFIN_NMETAL_WALL_BUDGET_S", "90")
+                    )
                     _iter_count = 0
                     _combo_seen_n: set = set()
                     _variant_counter_n: Dict[Tuple[tuple, ...], int] = {}
@@ -29313,7 +29342,16 @@ def _smiles_to_xyz_isomers_impl(
                         "HD-TA diversity branch failed: %s", _hd_ta_exc,
                     )
 
-            if OPENBABEL_AVAILABLE and not _hapto_skip_ob_diversity:
+            # Determinism: this OB make3D diversity block runs with
+            # ``deterministic=False`` (wall-clock-seeded conformer search) and is
+            # NOT reproducible cross-process — and, unlike the other OB calls, it
+            # is reached on pure-hapto sandwiches (no σ-donor → guard never fires).
+            # Under the master switch, skip it so the deterministic path is taken.
+            if (
+                OPENBABEL_AVAILABLE
+                and not _hapto_skip_ob_diversity
+                and not _deterministic_mode()
+            ):
                 try:
                     _HAPTO_OB_RESTARTS = 4
                     _HAPTO_OB_CONFS_PER_RUN = 30
@@ -30141,6 +30179,11 @@ def _smiles_to_xyz_isomers_impl(
                     _extra_seed_count, int(_ms_v2_budget["seeds_mm_aug"])
                 )
                 _mm_walltime = float(_ms_v2_budget["mm_walltime"])
+            # Determinism: drop the wall-clock budget so the augmentation uses the
+            # untimed (deterministic) future-collection path below, never the
+            # per-future timeout path whose result depends on timing/CPU load.
+            if _deterministic_mode():
+                _mm_walltime = None
             _extra_seeds = list(
                 _PIPELINE_SEEDS[:max(1 if _ms_v2_budget is not None else 10,
                                      _extra_seed_count)]
@@ -32561,9 +32604,16 @@ def smiles_to_xyz(
             per_seed = max(1, 200 // len(seeds))
             _etkdg_deadline = _EMBED_TIMEOUT * 3  # total budget for all seeds
             _etkdg_start = __import__('time').monotonic()
+            # Determinism: the master switch disables the multi-seed wall-clock
+            # budget (and the per-seed join timeout below) so the full seed sweep
+            # always runs and the result never depends on timing/CPU load.
+            _det_multi = _deterministic_mode()
             try:
                 for seed in seeds:
-                    if __import__('time').monotonic() - _etkdg_start > _etkdg_deadline:
+                    if (
+                        not _det_multi
+                        and __import__('time').monotonic() - _etkdg_start > _etkdg_deadline
+                    ):
                         logger.debug("ETKDG multi-seed budget exhausted after %.1fs", _etkdg_deadline)
                         break
                     params_multi = AllChem.ETKDGv3()
@@ -32580,7 +32630,7 @@ def smiles_to_xyz(
                         _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
                     _mt = threading.Thread(target=_do_multi, daemon=True)
                     _mt.start()
-                    _mt.join(timeout=_EMBED_TIMEOUT)
+                    _mt.join(timeout=None if _det_multi else _EMBED_TIMEOUT)
                     if _mt.is_alive():
                         logger.debug("EmbedMultipleConfs timed out for seed %d", seed)
                         continue

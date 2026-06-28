@@ -26,6 +26,15 @@ def _delfin_env_int(name: str, default: int) -> int:
         return default
 
 
+def _deterministic_mode() -> bool:
+    """Local copy of ``smiles_converter._deterministic_mode`` (avoid import cycle).
+
+    The master switch (``DELFIN_DETERMINISTIC=1``) IMPLIES
+    ``DELFIN_FFFREE_DETERMINISTIC_ENUM=1`` here (sorted enumeration order).
+    """
+    return os.environ.get("DELFIN_DETERMINISTIC", "0") == "1"
+
+
 def _close_group(generators: List[Tuple[int, ...]], n: int) -> List[Tuple[int, ...]]:
     """Close a set of vertex permutations into the full group they generate."""
     identity = tuple(range(n))
@@ -232,7 +241,8 @@ def enumerate_isomers(geometry: str, donor_spec: Dict[str, int]) -> List[Tuple[s
     # set-iteration order (byte-identical under a pinned PYTHONHASHSEED=0); the SET of
     # representatives is identical either way (only the order/labelling changes).
     _perms = set(itertools.permutations(labels))
-    if os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM", "0") == "1":
+    # Master switch implies DETERMINISTIC_ENUM=1 (sorted, hash-seed-independent).
+    if _deterministic_mode() or os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM", "0") == "1":
         _perms = sorted(_perms)
     for perm in _perms:
         orbit = min(tuple(perm[g[i]] for i in range(n)) for g in group)
