@@ -275,9 +275,11 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
             for _f in _MANTA_CHAMPION_FLAGS:
                 env["DELFIN_FFFREE_" + _f] = "1"
             env["DELFIN_FFFREE_KAPPA4"] = "1"      # reach (κ4 macrocycles) for richness
+            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"  # organic global-min (chair) coverage
         else:  # builder = lean core + reach
             env["DELFIN_FFFREE_KAPPA4"] = "1"
             env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
+            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"
     return env
 
 

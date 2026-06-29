@@ -24775,6 +24775,27 @@ def _build_topology_xyz(
         return None
 
 
+def _conf_ff_energy(mol, cid):
+    """Cheap per-conformer force-field energy (MMFF, else UFF). Returns None when
+    the molecule is unparameterisable (e.g. a transition metal) so callers fall
+    back to geometry-only ranking. Pure-organic ligands (cyclohexane, sugars,
+    macrocycle backbones) ARE parameterised -> their global-minimum pucker (the
+    chair) gets a real energy and is kept."""
+    try:
+        from rdkit.Chem import AllChem
+        props = AllChem.MMFFGetMoleculeProperties(mol)
+        if props is not None:
+            ff = AllChem.MMFFGetMoleculeForceField(mol, props, confId=int(cid))
+            if ff is not None:
+                return float(ff.CalcEnergy())
+        ff = AllChem.UFFGetMoleculeForceField(mol, confId=int(cid))
+        if ff is not None:
+            return float(ff.CalcEnergy())
+    except Exception:
+        pass
+    return None
+
+
 def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     """Return conformer IDs ranked deterministically by geometry quality.
 
@@ -24783,7 +24804,14 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     ascending conformer ID so the ordering is fully reproducible.
 
     If ``top_k`` is given, only that many best candidates are returned.
-    """
+
+    Completeness fix (DELFIN_FFFREE_CONF_ENERGY_RANK=1, default OFF -> byte-id):
+    geometry-quality alone does NOT prefer the ENERGY global minimum, so a flexible
+    ring's most important conformer (cyclohexane CHAIR) was dropped while higher-energy
+    twist/half forms survived.  With the flag on, conformers are sorted by FF energy
+    FIRST (then geometry score, then id), so the global-minimum conformer is always
+    kept in top_k.  Falls back to geometry-only when the mol is unparameterisable
+    (metal) -> byte-identical for those."""
     try:
         all_ids = [int(c.GetId()) for c in mol.GetConformers()]
     except Exception:
@@ -24791,7 +24819,8 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     if not all_ids:
         return []
 
-    ranked: List[Tuple[float, int]] = []
+    _energy_rank = os.environ.get("DELFIN_FFFREE_CONF_ENERGY_RANK", "0") == "1"
+    ranked: List[Tuple[float, float, int]] = []
     for cid in all_ids:
         try:
             if _has_atom_clash(mol, cid, min_dist=0.3):
@@ -24799,10 +24828,14 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
             score = float(_geometry_quality_score(mol, cid))
         except Exception:
             continue
-        ranked.append((score, cid))
+        e = _conf_ff_energy(mol, cid) if _energy_rank else None
+        # energy primary (rounded for determinism); None -> +inf so unparameterisable
+        # mols keep the pure geometry-score ordering (byte-identical).
+        ekey = round(e, 2) if e is not None else float("inf")
+        ranked.append((ekey, score, cid))
 
-    ranked.sort(key=lambda pair: (pair[0], pair[1]))
-    ordered = [cid for _score, cid in ranked]
+    ranked.sort(key=lambda t: (t[0], t[1], t[2]))
+    ordered = [cid for _e, _score, cid in ranked]
     if top_k is not None and top_k >= 0:
         ordered = ordered[:top_k]
     return ordered
@@ -27219,9 +27252,19 @@ def _organic_conformer_pool(
         seed_count = min(max_pool, 5)
     else:
         seed_count = max_pool
+    # Completeness fix (DELFIN_FFFREE_CONF_ENERGY_RANK=1, default OFF -> byte-id):
+    # the first-come RMSD-diversity selection does NOT keep the ENERGY global minimum
+    # (cyclohexane's CHAIR was dropped for higher-energy twist forms).  With the flag
+    # on we widen the seed pool, compute each conformer's FF energy, and accept the
+    # RMSD-diverse survivors in ENERGY ORDER -> the global-minimum conformer (chair)
+    # is always kept.  Default OFF keeps the exact legacy seed-order behaviour.
+    _energy_rank = os.environ.get("DELFIN_FFFREE_CONF_ENERGY_RANK", "0") == "1"
+    if _energy_rank and n_atoms <= 80:
+        seed_count = max(seed_count, min(40, len(_PIPELINE_SEEDS)))
     seeds = list(_PIPELINE_SEEDS[: max(1, seed_count)])
+    candidates: List[Tuple[float, str]] = []     # (energy, xyz) when energy-ranking
     for seed in seeds:
-        if len(pool) >= max_pool:
+        if not _energy_rank and len(pool) >= max_pool:
             break
         try:
             mol_try = Chem.Mol(mol_h)
@@ -27232,6 +27275,7 @@ def _organic_conformer_pool(
             cid = _embed_with_timeout(mol_try, params)
             if cid is None or cid < 0:
                 continue
+            e_key = _conf_ff_energy(mol_try, cid) if _energy_rank else None
             conf = mol_try.GetConformer(cid)
             lines = []
             for i in range(mol_try.GetNumAtoms()):
@@ -27252,12 +27296,32 @@ def _organic_conformer_pool(
                 pass
             if not xyz or not xyz.strip():
                 continue
+            if _energy_rank:
+                candidates.append((e_key if e_key is not None else float("inf"), xyz))
+                continue
             if any(_heavy_atom_rmsd_xyz(xyz, x) < rmsd_threshold for x, _ in pool):
                 continue
             pool.append((xyz, f"conf-{len(pool) + 1}"))
         except Exception as exc:
             logger.debug("Organic conformer seed %s failed: %s", seed, exc)
             continue
+    if _energy_rank:
+        # Discard the single-embed base anchor: it is one arbitrary ETKDG pose (often a
+        # higher-energy twist) and would otherwise occupy conf-1 AND reject the true
+        # global minimum as an RMSD "duplicate" (chair vs twist-boat are < threshold
+        # apart).  The 40-seed candidate set is comprehensive, so rebuild the pool from
+        # it in ASCENDING energy order -> the global minimum (chair) becomes conf-1 and
+        # is always kept; then RMSD-diverse higher-energy minima follow.  Deterministic.
+        if base_xyz:
+            candidates.append((float("inf"), base_xyz))   # keep base only as a fallback
+        candidates.sort(key=lambda t: t[0])
+        pool = []
+        for _e, xyz in candidates:
+            if len(pool) >= max_pool:
+                break
+            if any(_heavy_atom_rmsd_xyz(xyz, x) < rmsd_threshold for x, _ in pool):
+                continue
+            pool.append((xyz, f"conf-{len(pool) + 1}"))
     return pool
 
 
