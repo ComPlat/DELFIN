@@ -281,10 +281,11 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     return env
 
 
-def _manta_opt_top(isomers, charge, topn=None):
-    """GFN2 geometry-optimize the top-N ranked isomers in parallel (laptop-
-    bounded), replace their geometry + label, re-sort the optimized head by
-    opt energy. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
+def _manta_opt_top(isomers, charge, topn=None, method="gfn2"):
+    """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
+    replace their geometry + label, re-sort the optimized head by opt energy. The
+    opt ``method`` FOLLOWS the Rank selection (gfn2/gfnff/gfn1/gfn0) so one switch
+    controls both. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
     any structure whose optimization fails keeps its unrelaxed geometry.
     ``topn`` (user-settable): None -> _MANTA_OPT_TOPN; 0 -> ALL structures (optimise
     the complete ranked manifold, slowest/best); N>0 -> top-N; N<0 -> none."""
@@ -311,13 +312,14 @@ def _manta_opt_top(isomers, charge, topn=None):
     def _opt_one(item):
         xyz, _na, label = item
         try:
-            r = _gff.gfnff_optimize(xyz, charge=int(charge), method="gfn2")
+            r = _gff.gfnff_optimize(xyz, charge=int(charge), method=method)
         except Exception:
             r = None
         if r and r[0]:
             opt_xyz, e = r
             na = len([ln for ln in opt_xyz.splitlines() if ln.strip()])
-            tag = (" [GFN2-opt %.1f kcal]" % e) if e is not None else " [GFN2-opt]"
+            _m = method.upper()
+            tag = (" [%s-opt %.1f kcal]" % (_m, e)) if e is not None else " [%s-opt]" % _m
             return ((opt_xyz, na, (label or "isomer") + tag), e)
         return (item, None)
 
@@ -441,10 +443,11 @@ def create_tab(ctx):
         tooltip='Energy-rank the manifold so the global-minimum isomer/conformer is first (needs '
                 'xtb). gfn2 = standard; gfnff = fast force-field; No = no ranking (raw order).')
     manta_opt_topn = widgets.IntText(
-        value=_MANTA_OPT_TOPN, description='GFN2-opt (0=all):', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='175px'),
-        tooltip='GFN2-optimise the ranked structures to a clean final geometry. N = top-N; '
-                '0 = ALL (whole manifold, slowest/best); negative = none.')
+        value=_MANTA_OPT_TOPN, description='Opt (0=all):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='150px'),
+        tooltip='Geometry-optimise the ranked structures to a clean final geometry (method '
+                'FOLLOWS Rank: gfn2/gfnff/...). N = top-N; 0 = ALL (whole manifold, slowest/best); '
+                'negative = none. (Only runs when Rank is not "No".)')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
@@ -1109,7 +1112,7 @@ def create_tab(ctx):
                     if rank and not error and isomers:
                         # MANTA: GFN2-optimize the top-N ranked structures
                         # (parallel, laptop-bounded) for best-possible geometry.
-                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn)
+                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method)
                     result = {'error': error, 'isomers': isomers}
             except Exception as exc:
                 result = {'error': str(exc)}
