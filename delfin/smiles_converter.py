@@ -24796,6 +24796,39 @@ def _conf_ff_energy(mol, cid):
     return None
 
 
+def _conf_heavy_rmsd(mol, cid_a: int, cid_b: int) -> float:
+    """Index-matched heavy-atom best-fit (Kabsch) RMSD between two conformers of
+    the SAME molecule.  Read-only (does NOT mutate either conformer, unlike
+    rdMolAlign.AlignMol), deterministic, and fast — atom indexing is identical
+    across a molecule's conformers, so the index match IS the correct
+    correspondence (no symmetry search needed for a basin-distinctness test).
+    Returns a large value on any failure so the caller treats the pair as
+    distinct (never silently merges basins)."""
+    try:
+        import numpy as np
+        ca = mol.GetConformer(int(cid_a))
+        cb = mol.GetConformer(int(cid_b))
+        heavy = [at.GetIdx() for at in mol.GetAtoms() if at.GetAtomicNum() > 1]
+        if len(heavy) < 3:
+            heavy = [at.GetIdx() for at in mol.GetAtoms()]
+        if len(heavy) < 3:
+            return 1.0e9
+        P = np.array([[ca.GetAtomPosition(i).x, ca.GetAtomPosition(i).y,
+                       ca.GetAtomPosition(i).z] for i in heavy], float)
+        Q = np.array([[cb.GetAtomPosition(i).x, cb.GetAtomPosition(i).y,
+                       cb.GetAtomPosition(i).z] for i in heavy], float)
+        P = P - P.mean(0)
+        Q = Q - Q.mean(0)
+        H = P.T @ Q
+        U, _S, Vt = np.linalg.svd(H)
+        d = float(np.sign(np.linalg.det(Vt.T @ U.T)))
+        R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+        Pr = P @ R.T
+        return float(np.sqrt(((Pr - Q) ** 2).sum() / len(heavy)))
+    except Exception:
+        return 1.0e9
+
+
 def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     """Return conformer IDs ranked deterministically by geometry quality.
 
@@ -24811,7 +24844,24 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     twist/half forms survived.  With the flag on, conformers are sorted by FF energy
     FIRST (then geometry score, then id), so the global-minimum conformer is always
     kept in top_k.  Falls back to geometry-only when the mol is unparameterisable
-    (metal) -> byte-identical for those."""
+    (metal) -> byte-identical for those.
+
+    Crystal-conformer coverage (DELFIN_FFFREE_CONF_BASIN_SPREAD=1, default OFF ->
+    byte-id):  the top_k lowest-energy/best-geometry conformers are frequently
+    near-duplicates of ONE basin, so the manifold never spans the conformational
+    space the packing-distorted CRYSTAL conformer lives in.  With the flag on the
+    selection is ADDITIVE (never-worse by construction): the original top_k frames
+    are kept BYTE-IDENTICAL (same members, same order), then up to
+    DELFIN_FFFREE_CONF_BASIN_EXTRA (default = top_k) ADDITIONAL energy-ordered
+    RMSD-DISTINCT basins are APPENDED — each appended only if it is
+    >= DELFIN_FFFREE_CONF_BASIN_RMSD (default 0.75 A) heavy-atom RMSD from every
+    already-kept conformer.  The result is a strict SUPERSET of the baseline top_k
+    (best-of-ensemble recall can only improve), and it is literally the WIDER
+    conformer net — the higher-energy distinct minima that a crystal's packing
+    forces select.  Rigid/small ligands with no further distinct basin add nothing
+    (stay byte-identical).  The distinct basins are real (clash-filtered) minima,
+    so this is principled widening, not spray (distinctness/validity guards stay
+    clean)."""
     try:
         all_ids = [int(c.GetId()) for c in mol.GetConformers()]
     except Exception:
@@ -24836,6 +24886,31 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
 
     ranked.sort(key=lambda t: (t[0], t[1], t[2]))
     ordered = [cid for _e, _score, cid in ranked]
+
+    _basin_spread = os.environ.get("DELFIN_FFFREE_CONF_BASIN_SPREAD", "0") == "1"
+    if (_basin_spread and top_k is not None and top_k >= 1
+            and len(ordered) > top_k):
+        try:
+            rmsd_min = float(os.environ.get("DELFIN_FFFREE_CONF_BASIN_RMSD", "0.75"))
+        except ValueError:
+            rmsd_min = 0.75
+        try:
+            n_extra = int(os.environ.get("DELFIN_FFFREE_CONF_BASIN_EXTRA", str(top_k)))
+        except ValueError:
+            n_extra = top_k
+        # ADDITIVE: keep the baseline top_k unchanged (byte-id), then APPEND up to
+        # n_extra higher-energy RMSD-distinct basins -> strict superset, wider net.
+        kept: List[int] = list(ordered[:top_k])
+        if n_extra > 0:
+            added = 0
+            for cid in ordered[top_k:]:
+                if added >= n_extra:
+                    break
+                if all(_conf_heavy_rmsd(mol, cid, s) >= rmsd_min for s in kept):
+                    kept.append(cid)
+                    added += 1
+        return kept
+
     if top_k is not None and top_k >= 0:
         ordered = ordered[:top_k]
     return ordered
