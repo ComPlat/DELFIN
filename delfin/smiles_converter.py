@@ -28611,6 +28611,53 @@ def _hapto_declash_filter(isomers):
         return isomers
 
 
+def _carbonyl_fix_filter(isomers):
+    """Contract stretched terminal metal-carbonyl C#O bonds over the emitted
+    ensemble.  The analytical seat's flat _bond_len places C-O at the single-bond
+    length (~1.43 A) ignoring bond order, so M-C#O carbonyls come out stretched
+    (~1.40 A vs the true ~1.13-1.15 A; measured 56% > 1.35 A).  This slides only
+    the terminal O inward along the C->O axis to the triple-bond length -- a pure
+    local geometry correction that never lengthens and moves nothing else, so the
+    isomer/conformer COUNT and all other geometry are preserved.
+
+    Identity (byte-identical) unless DELFIN_FFFREE_CARBONYL_FIX=1.  Geometry-only;
+    deterministic; never raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_CARBONYL_FIX", "0") != "1":
+        return isomers
+    try:
+        import numpy as np
+        from delfin.manta import hapto_declash as _HD
+        out = []
+        for item in isomers:
+            is_tuple = isinstance(item, (tuple, list))
+            xyz = item[0] if is_tuple and item else item
+            lines = str(xyz).splitlines()
+            syms, coords, idx = [], [], []
+            for li, ln in enumerate(lines):
+                p = ln.split()
+                if len(p) >= 4:
+                    try:
+                        x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    except ValueError:
+                        continue
+                    syms.append(p[0]); coords.append([x, y, z]); idx.append(li)
+            if len(syms) < 3:
+                out.append(item); continue
+            P = np.asarray(_HD.correct_carbonyls(syms, coords), float)
+            orig = np.asarray(coords, float)
+            if P.shape != orig.shape or np.allclose(P, orig, atol=1e-7):
+                out.append(item); continue
+            for k, li in enumerate(idx):
+                p = lines[li].split()
+                p[1] = f"{P[k][0]:.6f}"; p[2] = f"{P[k][1]:.6f}"; p[3] = f"{P[k][2]:.6f}"
+                lines[li] = " ".join(p)
+            new_xyz = "\n".join(lines)
+            out.append((new_xyz,) + tuple(item[1:]) if is_tuple else new_xyz)
+        return out
+    except Exception:
+        return isomers
+
+
 def _topology_gate_filter(isomers):
     """Final UNIVERSAL topology-preservation gate over the FULL emitted ensemble.
 
@@ -29269,13 +29316,15 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # OFF, byte-id when off).  Runs after dedup so it ranks the de-duplicated
         # conformer set, before the clash-based isomer ordering.
         _grank = _gfnff_ensemble_rank_filter if outermost else (lambda x: x)
-        # _hdeclash = eta-ring inter-ligand declash, the LAST geometry transform
-        # over the final dedup'd ensemble (count-preserving; byte-id when off).
+        # _hdeclash = eta-ring inter-ligand declash; _cofix = carbonyl-length fix.
+        # Both are geometry-only, count-preserving transforms over the final
+        # dedup'd ensemble (byte-id when off); carbonyl fix runs after the declash.
         _hdeclash = _hapto_declash_filter if outermost else (lambda x: x)
+        _cofix = _carbonyl_fix_filter if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))), r[1]
+            return _rank_emitted_isomers(_cofix(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))
+            return _rank_emitted_isomers(_cofix(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))
         return r
     finally:
         if outermost:

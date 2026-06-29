@@ -404,3 +404,81 @@ def declash_frame(syms: Sequence[str], coords,
                              bonds, grid=grid, clash_f=clash_f, max_rot_deg=max_rot_deg)
     except Exception:
         return np.array(coords, dtype=float)
+
+
+# ---------------------------------------------------------------------------
+# Carbonyl (and terminal triple-bond) length correction.
+# ---------------------------------------------------------------------------
+# The analytical seat's flat _bond_len places every C-O at the SINGLE-bond length
+# (~1.43 A) ignoring bond order, so terminal metal carbonyls M-C#O come out
+# stretched to ~1.40 A instead of the true ~1.13-1.15 A (measured: 56% of
+# carbonyls > 1.35 A).  This contracts a stretched terminal C#O back to the
+# correct triple-bond length by moving ONLY the terminal O inward along the C->O
+# axis.  Moving the terminal atom inward can only reduce inter-atom overlap, so it
+# is never-worse; it is a pure local geometry correction.
+
+_CO_TRIPLE = 1.15       # M-C#O target (A)
+_STRETCH_THR = 1.25     # only contract bonds longer than this (leave good ones)
+
+
+def correct_carbonyls(syms: Sequence[str], coords):
+    """Contract stretched terminal metal-carbonyl C#O bonds to the triple-bond
+    length by sliding ONLY the terminal O inward along the C->O axis.
+
+    SAFETY (the discriminator that makes this never-worse): geometry alone cannot
+    tell a stretched carbonyl (C#O, should be ~1.15) from a legitimate single C-O
+    (alkoxide / hydroxymethyl, correctly ~1.43).  So we require the UNAMBIGUOUS
+    carbonyl signature -- a metal-bound, **2-coordinate** carbon (bonded to exactly
+    the metal + the terminal O, no H, no other heavy atom) in a **linear** M-C-O
+    arrangement (angle > 150 deg).  M-CH2-OH (4-coord C), M-acyl/ester (3-coord C),
+    and bent C-O groups are all excluded, so only genuine M-C#O is touched.
+    Geometry-only, never lengthens, moves nothing but the terminal O;
+    deterministic; returns the input on any anomaly."""
+    try:
+        P = np.array(coords, dtype=float)
+        n = len(syms)
+        if n < 3 or P.shape != (n, 3) or not np.all(np.isfinite(P)):
+            return P
+        metals = [i for i in range(n) if _is_metal(syms[i])]
+        if not metals:
+            return P
+        bonds = _derive_bonds_geom(syms, P)
+        metal_set = set(metals)
+        # full neighbour lists (incl. H + metal) and the metal each atom binds
+        all_nbr: Dict[int, List[int]] = {i: [] for i in range(n)}
+        metal_of: Dict[int, int] = {}
+        for i, j in bonds:
+            all_nbr[i].append(j); all_nbr[j].append(i)
+            if (i in metal_set) ^ (j in metal_set):
+                a = j if i in metal_set else i
+                m = i if i in metal_set else j
+                metal_of.setdefault(a, m)
+        changed = False
+        for o in range(n):
+            if syms[o] != "O" or len(all_nbr[o]) != 1:
+                continue                          # terminal O only
+            c = all_nbr[o][0]
+            if syms[c] != "C" or c not in metal_of:
+                continue                          # O's carbon must bind a metal
+            # carbonyl C is 2-coordinate: exactly the metal + this O, nothing else
+            cn = all_nbr[c]
+            if len(cn) != 2 or set(cn) != {o, metal_of[c]}:
+                continue
+            m = metal_of[c]
+            v = P[o] - P[c]
+            d = float(np.linalg.norm(v))
+            if d <= _STRETCH_THR or d < 1e-6:
+                continue                          # already short enough
+            # linear M-C-O (carbonyls are linear; excludes bent C-O groups)
+            mc = P[m] - P[c]
+            mcn = float(np.linalg.norm(mc))
+            if mcn < 1e-6:
+                continue
+            cosang = float(np.dot(mc, v) / (mcn * d))  # angle M-C-O
+            if cosang > -0.866:                   # require > 150 deg (cos < -0.866)
+                continue
+            P[o] = P[c] + v * (_CO_TRIPLE / d)    # slide O inward to 1.15
+            changed = True
+        return P if changed else np.array(coords, dtype=float)
+    except Exception:
+        return np.array(coords, dtype=float)

@@ -141,6 +141,34 @@ def test_declash_frame_no_metal_is_identity():
     assert np.array_equal(Pn, P)
 
 
+def test_carbonyl_contraction():
+    """A stretched M-C#O (C-O ~1.43) is contracted toward 1.15; only the terminal
+    O moves (inward along C->O), C/metal fixed; a good carbonyl is left alone."""
+    # Cr-C-O linear along x; C at 1.9 (M-C), O stretched to 1.9+1.43
+    syms = ["Cr", "C", "O"]
+    P = np.array([[0, 0, 0], [1.9, 0, 0], [1.9 + 1.43, 0, 0]], float)
+    Pn = HD.correct_carbonyls(syms, P)
+    co = float(np.linalg.norm(Pn[2] - Pn[1]))
+    assert abs(co - HD._CO_TRIPLE) < 1e-6, f"C-O not contracted: {co:.3f}"
+    assert np.allclose(Pn[0], P[0]) and np.allclose(Pn[1], P[1]), "metal/C moved"
+    # O moved inward (closer to C), not outward
+    assert np.linalg.norm(Pn[2] - Pn[0]) < np.linalg.norm(P[2] - P[0])
+    # a correct carbonyl (already 1.15) is untouched
+    P2 = np.array([[0, 0, 0], [1.9, 0, 0], [1.9 + 1.15, 0, 0]], float)
+    assert np.array_equal(HD.correct_carbonyls(syms, P2), P2)
+
+
+def test_carbonyl_no_metal_or_nonterminal_is_identity():
+    # no metal -> identity
+    syms = ["C", "C", "O"]
+    P = np.array([[0, 0, 0], [1.5, 0, 0], [2.9, 0, 0]], float)
+    assert np.array_equal(HD.correct_carbonyls(syms, P), P)
+    # bridging O (2 heavy neighbours) -> not a terminal carbonyl -> identity
+    syms2 = ["Cr", "C", "O", "C"]
+    P2 = np.array([[0, 0, 0], [1.9, 0, 0], [3.3, 0, 0], [4.7, 0, 0]], float)
+    assert np.array_equal(HD.correct_carbonyls(syms2, P2), P2)
+
+
 def test_chelate_through_face_and_sidearm_is_skipped():
     """A ring whose ligand component also carries a sigma-donor is NOT spun
     (spinning would break the sidearm M-D bond)."""
