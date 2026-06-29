@@ -6500,6 +6500,7 @@ def create_tab(ctx):
                 "  /compact         — Summarize context (reduce tokens)\n"
                 "  /context         — Show context-window usage + compaction state\n"
                 "  /agents          — List subagent presets (explore/plan/...)\n"
+                "  /agents tools    — Per-tool usage/error/latency stats (all sessions)\n"
                 "  /skills          — List discovered skills\n"
                 "  /undo            — Undo last agent turn (remove from context)\n"
                 "  /retry           — Retry last message (undo + re-send)\n"
@@ -8039,6 +8040,13 @@ def create_tab(ctx):
             _append_system_message("\n".join(lines))
             return True
 
+        if cmd == "/agents tools" or cmd.startswith("/agents tools "):
+            # Per-tool aggregate across ALL sessions: calls, error-rate, p50/p95
+            # latency — shows where the agent struggles (error/latency hotspots),
+            # so the next optimisation is data-driven, not guessed.
+            from delfin.agent import tool_trace as _tt
+            _append_system_message(_tt.format_tool_stats(_tt.aggregate_tools()))
+            return True
         if cmd == "/agents metrics" or cmd.startswith("/agents metrics "):
             from delfin.agent.agent_metrics import (
                 aggregate_by_model, read_turns, compare_windows,

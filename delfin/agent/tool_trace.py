@@ -118,6 +118,97 @@ def format_summary(entries: list[dict], *, limit: int = 30) -> str:
     return head + ":\n" + "\n".join(rows)
 
 
+def _percentile(sorted_vals: list[int], q: float) -> int:
+    """Nearest-rank percentile of a pre-sorted list (stdlib only)."""
+    if not sorted_vals:
+        return 0
+    k = int(round((q / 100.0) * (len(sorted_vals) - 1)))
+    k = max(0, min(len(sorted_vals) - 1, k))
+    return sorted_vals[k]
+
+
+def aggregate_tools(*, dir_path: Path | None = None) -> list[dict]:
+    """Per-tool stats across ALL session traces in ``~/.delfin/tool_traces``.
+
+    Turns the rich per-call traces (used today only to diagnose a single
+    session) into a cross-session view of where the agent struggles. Returns one
+    dict per tool, sorted by call count (most-used first)::
+
+        {tool, calls, errors, error_rate, p50_ms, p95_ms, max_ms, total_ms}
+
+    Read-only + best-effort: never raises; a corrupt line/file is skipped.
+    """
+    base = Path(dir_path) if dir_path else _DIR
+    by_tool: dict[str, dict] = {}
+    try:
+        files = sorted(base.glob("*.jsonl"))
+    except Exception:
+        return []
+    for fp in files:
+        try:
+            lines = fp.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            continue
+        for ln in lines:
+            try:
+                e = json.loads(ln)
+            except Exception:
+                continue
+            tool = str(e.get("tool", "") or "?")
+            d = by_tool.setdefault(tool, {"calls": 0, "errors": 0, "durs": []})
+            d["calls"] += 1
+            if not e.get("ok", True):
+                d["errors"] += 1
+            try:
+                d["durs"].append(int(e.get("duration_ms", 0)))
+            except Exception:
+                pass
+    out: list[dict] = []
+    for tool, d in by_tool.items():
+        durs = sorted(d["durs"])
+        calls = d["calls"] or 1
+        out.append({
+            "tool": tool,
+            "calls": d["calls"],
+            "errors": d["errors"],
+            "error_rate": d["errors"] / calls,
+            "p50_ms": _percentile(durs, 50),
+            "p95_ms": _percentile(durs, 95),
+            "max_ms": durs[-1] if durs else 0,
+            "total_ms": sum(durs),
+        })
+    out.sort(key=lambda r: r["calls"], reverse=True)
+    return out
+
+
+def format_tool_stats(rows: list[dict], *, limit: int = 40) -> str:
+    """Human table for ``/agents tools``: tool | calls | err% | p50 | p95 | max."""
+    if not rows:
+        return ("(no tool traces recorded yet — run a few agent turns first; "
+                "traces live in ~/.delfin/tool_traces/)")
+    total_calls = sum(r["calls"] for r in rows)
+    total_err = sum(r["errors"] for r in rows)
+    pct = (total_err / total_calls * 100) if total_calls else 0.0
+    lines = [
+        f"Tool usage across all sessions — {total_calls} calls, "
+        f"{total_err} errors ({pct:.0f}%):",
+        "",
+        f"  {'tool':<22}{'calls':>7}{'err%':>6}{'p50ms':>8}{'p95ms':>8}{'maxms':>9}",
+    ]
+    for r in rows[:limit]:
+        # Strip the noisy ``mcp__<server>__`` prefix for display (the user finds
+        # it too verbose) — aggregation still keys on the full name.
+        name = r["tool"]
+        if name.startswith("mcp__"):
+            name = name.split("__")[-1]
+        lines.append(
+            f"  {name[:22]:<22}{r['calls']:>7}{r['error_rate']*100:>5.0f}%"
+            f"{r['p50_ms']:>8}{r['p95_ms']:>8}{r['max_ms']:>9}")
+    if len(rows) > limit:
+        lines.append(f"  … and {len(rows) - limit} more tool(s)")
+    return "\n".join(lines)
+
+
 def format_panel_html(entries: list[dict], *, limit: int = 12) -> str:
     """Compact HTML feed of the most-recent tool calls for the dashboard's live
     tool-trace panel — newest first, ✓/✗ glyph, tool name, short input, dur.
