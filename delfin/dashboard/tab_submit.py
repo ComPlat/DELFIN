@@ -14,7 +14,7 @@ from IPython import get_ipython
 from IPython.display import clear_output
 
 from delfin.config import parse_control_text, validate_control_text, get_esd_hints
-from delfin.smiles_converter import contains_metal
+from delfin.smiles_converter import contains_metal, _optimize_xyz_openbabel_safe
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
 from .helpers import resolve_time_limit, create_time_limit_widgets, disable_spellcheck, parse_time_to_seconds
@@ -384,6 +384,11 @@ def create_tab(ctx):
         layout=widgets.Layout(width='185px'),
         tooltip='Fast single structure (no isomer search, no UFF)',
     )
+    optimize_uff_button = widgets.Button(
+        description='OPTIMIZE WITH UFF', button_style='info',
+        layout=widgets.Layout(width='185px'),
+        tooltip='Optimize current XYZ coordinates with UFF force field',
+    )
     convert_smiles_uff_button = widgets.Button(
         description='CONVERT SMILES + UFF', button_style='info',
         layout=widgets.Layout(width='185px'),
@@ -736,6 +741,7 @@ def create_tab(ctx):
                 convert_smiles_button,
                 convert_smiles_quick_button,
                 convert_smiles_uff_button,
+                optimize_uff_button,
                 isomer_prev_btn,
                 isomer_next_btn,
             ],
@@ -1182,6 +1188,46 @@ def create_tab(ctx):
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
+
+    def handle_optimize_uff(button):
+        """Optimize current XYZ coordinates with UFF force field."""
+        raw_input = coords_widget.value.strip()
+        if not raw_input:
+            _replace_mol_output_text('No coordinates to optimize.')
+            return
+
+        cleaned_data, input_type = clean_input_data(raw_input)
+        if input_type != 'xyz':
+            _replace_mol_output_text(
+                'Input must be XYZ coordinates for UFF optimization.',
+                'Enter XYZ coordinates or use CONVERT SMILES first.',
+            )
+            return
+
+        _clear_mol_output()
+        _set_mol_status('Optimizing with UFF...', spinner=True)
+
+        def _worker():
+            try:
+                xyz_optimized = _optimize_xyz_openbabel_safe(cleaned_data)
+                _schedule_ui_update(_apply_uff_optimization_result, xyz_optimized)
+            except Exception as exc:
+                _schedule_ui_update(_apply_uff_optimization_result, None, str(exc))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_uff_optimization_result(xyz_optimized, error=None):
+        """Update UI after UFF optimization completes."""
+        if error or xyz_optimized is None:
+            _replace_mol_output_text(
+                f'UFF optimization failed: {error}',
+                'Keeping original coordinates.',
+            )
+            _set_mol_status('UFF optimization failed')
+        else:
+            coords_widget.value = xyz_optimized
+            _replace_mol_output_view(xyz_optimized)
+            _set_mol_status('UFF optimization completed')
 
     def handle_build_complex(button):
         with output_area:
@@ -2909,6 +2955,7 @@ def create_tab(ctx):
     convert_smiles_button.on_click(handle_convert_smiles)
     convert_smiles_quick_button.on_click(handle_convert_smiles_quick)
     convert_smiles_uff_button.on_click(handle_convert_smiles_uff)
+    optimize_uff_button.on_click(handle_optimize_uff)
     build_complex_button.on_click(handle_build_complex)
     architector_button.on_click(handle_architector_convert)
     manta_button.on_click(handle_manta)
@@ -2939,7 +2986,7 @@ def create_tab(ctx):
         job_type_widget, custom_time_widget, spacer_large,
         widgets.HTML('<b>Input (XYZ or SMILES):</b>'), coords_widget, spacer,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
-                      convert_smiles_quick_button],
+                      convert_smiles_quick_button, optimize_uff_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
