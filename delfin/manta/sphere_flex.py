@@ -36,9 +36,12 @@ import numpy as np
 import delfin.manta._bond_decollapse as _bd
 from delfin.manta.refine import _vdw
 
-# inter-ligand heavy-heavy clash factor — matches the self-gate / detector intent
-# (detector flags < 0.65*vdwsum; we relax toward >= 0.70 to clear it with margin).
-_CLASH_F = 0.70
+# inter-ligand heavy-heavy clash factor.  The license-free detector flags only
+# < 0.65*vdwsum, but REAL CSD crystals keep inter-ligand contacts >= ~0.85*vdwsum
+# (the 0.65 gate is deliberately permissive to keep FP=0).  Visual "clashes" the eye
+# catches live in the 0.70-0.85 band — too close for a real crystal but passing the
+# detector.  So we relax toward the REAL-crystal separation (0.85) to remove them.
+_CLASH_F = float(os.environ.get("DELFIN_FFFREE_FLEX_CLASH_F", "0.85"))
 _DEF_MAX_DISP = 0.30     # A, hard cap on per-donor displacement from its ideal vertex
 _DEF_K = 1.5             # harmonic restoring strength (toward ideal vertex + ideal M-D)
 _DEF_PASSES = 60
@@ -122,15 +125,42 @@ def _clash_loss(P: np.ndarray, pairs: np.ndarray, rsum: np.ndarray) -> Tuple[flo
     return float((over * over).sum()), int((over > 0.0).sum())
 
 
+def _monodentate_ligands(n, syms, lig, donors):
+    """List of (donor_idx, [body_atom_idxs]) for each MONODENTATE ligand (exactly
+    one donor on it).  Chelates (>=2 donors) are excluded — a single radial move
+    would distort their bite, so they keep the ideal placement."""
+    from collections import Counter
+    dcount = Counter(int(lig[d]) for d in donors)
+    out = []
+    for d in donors:
+        lg = int(lig[d])
+        if dcount[lg] != 1:
+            continue                                # part of a chelate -> skip
+        body = [i for i in range(n) if int(lig[i]) == lg]   # whole ligand (incl donor)
+        out.append((d, body))
+    return out
+
+
 def sphere_flex(syms: Sequence[str], P, fixed: Iterable[int],
                 bond_pairs: Optional[Sequence[Tuple[int, int]]] = None,
                 max_disp: float = _DEF_MAX_DISP, k: float = _DEF_K,
                 passes: int = _DEF_PASSES, damp: float = _DEF_DAMP,
                 md_tol: float = _DEF_MD_TOL) -> np.ndarray:
-    """Soft-sphere inter-ligand clash relaxation.  ``fixed`` = metal + donor indices
-    (metal stays frozen; donors are soft-restrained, not frozen).  Returns relaxed
-    P; never-worse on the inter-ligand heavy clash count, hard-bounded donor drift,
-    deterministic.  Never raises."""
+    """Radial coordination-sphere clash relief (NO FF, NO QM).
+
+    Mechanism (data-driven 2026-06-29): mild inter-ligand heavy-heavy clashes are
+    intrinsic to the rigid ideal placement and CANNOT be opened by rotating a
+    ligand body about its M-D axis (de-risked: rotation just spins the clash).
+    What relieves them is letting a crowded MONODENTATE ligand translate RADIALLY
+    OUTWARD along its own M-D axis by a small, HARD-BOUNDED amount (rigid-body, so
+    intra-ligand bond lengths/angles are exactly preserved and the donor stays on
+    its polyhedron ray -> coordination ANGLES are invariant; only that ligand's M-D
+    distance grows, by <= ``max_disp``).  Deterministic coordinate descent over the
+    per-ligand radial offset; never-worse on the inter-ligand heavy clash; the metal
+    and all chelate donors stay fixed.  Never raises.
+
+    ``fixed`` = metal + donor indices.  ``max_disp`` doubles as the max radial M-D
+    elongation (A)."""
     try:
         P = np.array(P, dtype=float).copy()
     except Exception:
@@ -154,65 +184,52 @@ def sphere_flex(syms: Sequence[str], P, fixed: Iterable[int],
     vdw = np.array([_vdw(s) for s in syms], dtype=float)
     rsum = _CLASH_F * (vdw[pairs[:, 0]] + vdw[pairs[:, 1]])
 
-    P0 = P.copy()                                  # ideal donor positions (= vertices)
-    md0 = {d: float(np.linalg.norm(P[d] - P[m])) for d in donors}
     base_loss, base_nclash = _clash_loss(P, pairs, rsum)
     if base_nclash == 0:
         return P                                   # nothing to do
-    donor_set = set(donors)
 
-    cur_damp = damp
+    movers = _monodentate_ligands(n, syms, lig, donors)
+    if not movers:
+        return P
+    md0 = {d: float(np.linalg.norm(P[d] - P[m])) for d, _ in movers}
+    P0 = P.copy()
+
+    # radial-offset grid: 0 .. max_disp outward (never inward), fine step.
+    steps = max(4, int(round(max_disp / 0.05)))
+    grid = [max_disp * (s + 1) / steps for s in range(steps)]   # >0 outward
     best = P.copy()
     best_loss, best_nclash = base_loss, base_nclash
 
-    # geometric clash-repulsion + harmonic donor restraint coordinate descent.
-    from delfin.manta.refine import _bonds_adj, _violations
     for _ in range(max(1, passes)):
-        _, bonded, adj = _bonds_adj(syms, P)
-        _loss_unused, moves = _violations(syms, P, bonded, adj)
-        disp = np.zeros((n, 3)); cnt = np.zeros(n)
-        for idx, dvec in moves:
-            if idx == m:                           # metal stays put
+        improved = False
+        for d, body in movers:
+            axis = best[d] - best[m]
+            na = float(np.linalg.norm(axis))
+            if na < 1e-9:
                 continue
-            disp[idx] += dvec; cnt[idx] += 1
-        for i in range(n):
-            if cnt[i] > 0:
-                disp[i] /= cnt[i]
-        # harmonic restraint on donors: pull back toward ideal vertex AND ideal M-D
-        for d in donors:
-            disp[d] += k * (P0[d] - P[d])          # spring to ideal vertex position
-            v = P[d] - P[m]; nv = float(np.linalg.norm(v))
-            if nv > 1e-9:
-                disp[d] += k * (md0[d] - nv) * (v / nv)   # spring to ideal M-D length
-        trial = P + cur_damp * disp
-        # hard bound: clamp each donor to within max_disp of its ideal vertex
-        for d in donors:
-            v = trial[d] - P0[d]; nv = float(np.linalg.norm(v))
-            if nv > max_disp:
-                trial[d] = P0[d] + v / nv * max_disp
-        if not np.all(np.isfinite(trial)):
-            cur_damp *= 0.6
-            if cur_damp < 0.03:
-                break
-            continue
-        tloss, tnclash = _clash_loss(trial, pairs, rsum)
-        # accept if the inter-ligand heavy clash strictly improves (fewer clashes,
-        # or same count but lower overlap energy)
-        better = (tnclash < best_nclash) or (tnclash == best_nclash and tloss < best_loss - 1e-9)
-        if better:
-            P = trial; best = trial.copy(); best_loss, best_nclash = tloss, tnclash
-            if best_nclash == 0:
-                break
-        else:
-            cur_damp *= 0.6
-            if cur_damp < 0.03:
-                break
+            u = axis / na
+            cur_off = na - md0[d]                   # current elongation already applied
+            local_loss, local_nclash, local_P = best_loss, best_nclash, None
+            for g in grid:
+                shift = (g - cur_off) * u           # move so total elongation == g
+                trial = best.copy()
+                trial[body] = best[body] + shift
+                tl, tnc = _clash_loss(trial, pairs, rsum)
+                better = (tnc < local_nclash) or (tnc == local_nclash and tl < local_loss - 1e-9)
+                if better:
+                    local_loss, local_nclash, local_P = tl, tnc, trial
+            if local_P is not None:
+                best = local_P; best_loss, best_nclash = local_loss, local_nclash
+                improved = True
+                if best_nclash == 0:
+                    break
+        if not improved or best_nclash == 0:
+            break
 
-    # final hard guards: donor drift / M-D drift within bound, never-worse on clash
-    for d in donors:
-        if float(np.linalg.norm(best[d] - P0[d])) > max_disp + 1e-6:
-            return P0
-        if abs(float(np.linalg.norm(best[d] - best[m])) - md0[d]) > md_tol + 1e-6:
+    # hard guards: each moved donor's M-D elongation within [0, max_disp]; never-worse.
+    for d, _ in movers:
+        elong = float(np.linalg.norm(best[d] - best[m])) - md0[d]
+        if elong < -1e-6 or elong > max_disp + 1e-6:
             return P0
     if not np.all(np.isfinite(best)):
         return P0

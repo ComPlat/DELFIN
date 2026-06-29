@@ -3006,6 +3006,14 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         from delfin.manta import joint_declash as _JD
         P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
                        dtype=float)
+        # SOFT coordination-sphere radial flex (env-gated, default-OFF byte-id):
+        # let crowded monodentate ligands translate radially outward a bounded
+        # amount to open residual mild inter-ligand clashes (real-crystal 0.85*vdw
+        # target).  This is the assemble_from_config path (the main metal-complex
+        # builder); never-worse on clash.  No-op when DELFIN_FFFREE_SPHERE_FLEX unset.
+        from delfin.manta import sphere_flex as _SF
+        P = np.asarray(_SF.flex_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                       dtype=float)
     except Exception:
         pass
     return P
