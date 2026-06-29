@@ -29042,6 +29042,19 @@ def _permute_dedup_filter(isomers):
 _CONF_COMPLETE_ACTIVE = threading.local()
 
 
+def _arg_deterministic(args, kwargs) -> bool:
+    """Extract the ``deterministic`` argument from the public wrapper's
+    ``*args/**kwargs`` (it is positional index 6 in ``_smiles_to_xyz_isomers_impl``:
+    smiles, num_confs, max_isomers, apply_uff, collapse_label_variants,
+    include_binding_mode_isomers, deterministic, ...).  Defaults to the impl
+    default (True) when not supplied."""
+    if "deterministic" in kwargs:
+        return bool(kwargs["deterministic"])
+    if len(args) > 6:
+        return bool(args[6])
+    return True
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
@@ -29062,29 +29075,60 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     depth), and ranking runs last over the full expanded set.  The completeness pass
     is suppressed on dual-parse re-entries so it runs once at the outermost level."""
     outermost = not getattr(_CONF_COMPLETE_ACTIVE, "value", False)
+    # Cross-process determinism bridge: the public ``deterministic=True`` contract
+    # MUST imply bit-identity across processes, but the deep timeout / wall-budget /
+    # sorted-enum guards consult the DELFIN_DETERMINISTIC *env* (so subprocess
+    # workers inherit it) — which the PARAM never set.  Result: embed thread joins
+    # kept their wall-clock timeout (see _embed_with_timeout), so under CPU load a
+    # heavy conformer's embed timed out and was dropped, making the isomer/conformer
+    # COUNT vary across independent runs (measured: ADUFIS 161 vs 170 frames).  Here
+    # we promote the param to the documented master switch at the OUTERMOST public
+    # call, scoped + restored, and keep it active through the post-processing filters
+    # below (they generate/rank conformers too).  Subprocesses spawned during the
+    # call inherit the env; the env is restored afterwards so a later
+    # deterministic=False caller is unaffected.
+    _det_param = _arg_deterministic(args, kwargs)
+    _det_env_prev = _enum_env_prev = None
+    _det_env_set = False
     if outermost:
         _CONF_COMPLETE_ACTIVE.value = True
+        if _det_param:
+            _det_env_prev = os.environ.get("DELFIN_DETERMINISTIC")
+            _enum_env_prev = os.environ.get("DELFIN_FFFREE_DETERMINISTIC_ENUM")
+            os.environ["DELFIN_DETERMINISTIC"] = "1"
+            os.environ.setdefault("DELFIN_FFFREE_DETERMINISTIC_ENUM", "1")
+            _det_env_set = True
     try:
         r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+        # Conformer-completeness AND permutation-dedup run only at the OUTERMOST
+        # public call (over the final, dual-parse-unioned ensemble); identity on
+        # inner re-entries.  Permutation-dedup runs LAST over the expanded union
+        # (after completeness has generated conformers and the topology gate has
+        # vetted them), so it strips permutation-equivalent duplicates from the
+        # whole final pool.
+        _conf = _conf_complete_filter if outermost else (lambda x: x)
+        _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
+        # _grank = final GFN-FF energy-ranked top-K conformer retention (default
+        # OFF, byte-id when off).  Runs after dedup so it ranks the de-duplicated
+        # conformer set, before the clash-based isomer ordering.
+        _grank = _gfnff_ensemble_rank_filter if outermost else (lambda x: x)
+        if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
+            return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))), r[1]
+        if isinstance(r, list):
+            return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))
+        return r
     finally:
         if outermost:
             _CONF_COMPLETE_ACTIVE.value = False
-    # Conformer-completeness AND permutation-dedup run only at the OUTERMOST public
-    # call (over the final, dual-parse-unioned ensemble); identity on inner
-    # re-entries.  Permutation-dedup runs LAST over the expanded union (after
-    # completeness has generated conformers and the topology gate has vetted them),
-    # so it strips permutation-equivalent duplicates from the whole final pool.
-    _conf = _conf_complete_filter if outermost else (lambda x: x)
-    _pdedup = _permute_dedup_filter if outermost else (lambda x: x)
-    # _grank = final GFN-FF energy-ranked top-K conformer retention (default OFF,
-    # byte-id when off).  Runs after dedup so it ranks the de-duplicated conformer
-    # set, before the clash-based isomer ordering.
-    _grank = _gfnff_ensemble_rank_filter if outermost else (lambda x: x)
-    if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-        return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))), r[1]
-    if isinstance(r, list):
-        return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))
-    return r
+            if _det_env_set:
+                if _det_env_prev is None:
+                    os.environ.pop("DELFIN_DETERMINISTIC", None)
+                else:
+                    os.environ["DELFIN_DETERMINISTIC"] = _det_env_prev
+                if _enum_env_prev is None:
+                    os.environ.pop("DELFIN_FFFREE_DETERMINISTIC_ENUM", None)
+                else:
+                    os.environ["DELFIN_FFFREE_DETERMINISTIC_ENUM"] = _enum_env_prev
 
 
 def _smiles_to_xyz_isomers_impl(
