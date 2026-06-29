@@ -395,58 +395,57 @@ def create_tab(ctx):
     manta_button.style.button_color = '#1FA9C0'
     manta_button.style.font_weight = 'bold'
 
-    # --- MANTA settings row (the key build switches, exposed under the button) ---
-    # quality = conformer depth (seeds x templates x cap); more = closer to the
-    # global minimum, slower. 'extreme' = research/benchmark depth.
+    # --- MANTA settings (the 5 keys a user actually needs; MANTA button sits BELOW) ---
+    # Power-user knobs (construction / seeds / confs-per-isomer / rank-method /
+    # merge-variants) are CLI-only on purpose: each has one sensible value for the
+    # dashboard (construction is ALWAYS champion = best; the rest are redundant with
+    # Quality), so exposing them only confuses users.  Pinned here.
+    _MANTA_DASH_DEFAULTS = dict(construction="champion", num_confs=None,
+                               collapse=False)
+    # Quality preset -> conformer-seed count.  Selecting a preset auto-fills the
+    # Seeds field (transparent: extreme = 60), but the field stays editable so a
+    # user can dial a custom seed count on top of the preset's cap/templates.
+    _MANTA_PROFILE_SEEDS = {'fast': 12, 'normal': 20, 'max': 40, 'extreme': 60}
     manta_quality = widgets.Dropdown(
         options=['fast', 'normal', 'max', 'extreme'], value='extreme',
         description='Quality:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='150px'),
-        tooltip='Conformer depth: fast(12 seeds)/normal(20)/max(40)/extreme(60). '
-                'More seeds = more conformers = higher chance the global minimum is covered.')
-    manta_seeds = widgets.IntText(
-        value=0, description='Seeds(0=auto):', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='150px'),
-        tooltip='Override the ETKDG conformer-seed count directly (0 = use Quality preset). '
-                'The key completeness/speed switch.')
-    manta_max_iso = widgets.IntText(
-        value=0, description='Max iso(0=ALL):', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='Cap emitted isomers (0 = COMPLETE manifold, never cut off — recommended).')
-    manta_rank = widgets.Checkbox(
-        value=True, description='GFN2 rank', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='120px'),
-        tooltip='Energy-rank the manifold by GFN2 (best isomer/conformer first; needs xtb).')
+        tooltip='Conformer depth (the main completeness<->speed switch). extreme guarantees the '
+                'GFN2 global minimum is in the manifold (convergence-proven); fast/normal miss it '
+                'by ~2.5 kcal/mol on multi-isomer systems.')
+    manta_seeds = widgets.IntText(
+        value=_MANTA_PROFILE_SEEDS['extreme'], description='Seeds:',
+        style={'description_width': 'initial'}, layout=widgets.Layout(width='130px'),
+        tooltip='ETKDG conformer seeds. Auto-fills from Quality (extreme=60) for transparency; '
+                'edit it to use a custom seed count (more seeds = more conformers, slower).')
+
+    def _sync_seeds_to_quality(change):
+        try:
+            manta_seeds.value = _MANTA_PROFILE_SEEDS.get(change['new'], manta_seeds.value)
+        except Exception:
+            pass
+    manta_quality.observe(_sync_seeds_to_quality, names='value')
+    manta_max_iso = widgets.IntText(
+        value=0, description='Max isomers (0=ALL):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='190px'),
+        tooltip='Cap emitted isomers. 0 = COMPLETE manifold, never cut off (recommended).')
+    manta_rank = widgets.Dropdown(
+        options=['gfn2', 'gfnff', 'gfn1', 'gfn0', 'No'], value='gfn2',
+        description='Rank:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='150px'),
+        tooltip='Energy-rank the manifold so the global-minimum isomer/conformer is first (needs '
+                'xtb). gfn2 = standard; gfnff = fast force-field; No = no ranking (raw order).')
     manta_opt_topn = widgets.IntText(
         value=_MANTA_OPT_TOPN, description='GFN2-opt top:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='150px'),
-        tooltip='GFN2-optimize the top-N ranked structures for best geometry (0 = none).')
-    # second row: construction config + remaining richness/energy keys
-    manta_construction = widgets.Dropdown(
-        options=['champion', 'builder', 'default'], value='champion',
-        description='Construction:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='185px'),
-        tooltip='champion = full SHIP-31 rich construction + KAPPA4 reach (DEFAULT, max richness); '
-                'builder = lean core + reach; default = library/legacy.')
-    manta_num_confs = widgets.IntText(
-        value=0, description='Confs/iso(0=def):', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='175px'),
-        tooltip='Conformers embedded per isomer (0 = library default 200). Higher = more rotamers.')
-    manta_method = widgets.Dropdown(
-        options=['gfn2', 'gfnff', 'gfn1', 'gfn0'], value='gfn2',
-        description='Rank method:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='170px'),
-        tooltip='Energy-ranking Hamiltonian (when GFN2 rank is on).')
-    manta_collapse = widgets.Checkbox(
-        value=False, description='Merge variants', style={'description_width': 'initial'},
         layout=widgets.Layout(width='160px'),
-        tooltip='Merge label-variant isomers (default OFF = keep every variant = max richness).')
+        tooltip='GFN2-optimise the top-N ranked structures to a clean final geometry (0 = none).')
     manta_settings_row = widgets.VBox([
-        widgets.HBox([manta_construction, manta_quality, manta_seeds, manta_max_iso],
-                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
-        widgets.HBox([manta_num_confs, manta_rank, manta_method, manta_opt_topn, manta_collapse],
-                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
-    ])
+        widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
+                     "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
+                     "&times; conformer manifold, GFN2-ranked</span>"),
+        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn],
+                     layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
+    ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -1138,17 +1137,20 @@ def create_tab(ctx):
         # MANTA: full coordination-isomer manifold (with UFF cleanup) + GFN2
         # energy ranking, shown in the viewer with the existing isomer nav.
         # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
+        _rank_sel = manta_rank.value
         _start_smiles_conversion(
-            apply_uff=True, quick=False, rank=bool(manta_rank.value),
-            construction=(manta_construction.value or 'champion'),
+            apply_uff=True, quick=False,
+            rank=(_rank_sel != 'No'),
+            method=(_rank_sel if _rank_sel != 'No' else 'gfn2'),
             quality_mode=(manta_quality.value or None),
+            # seeds field = preset value (transparent) unless the user edited it ->
+            # custom seed count on top of the preset's cap/templates.
             seeds_override=(int(manta_seeds.value) or None),
             # 0 -> COMPLETE manifold (never cut off); else user cap
             max_isomers=(int(manta_max_iso.value) or 100000),
-            num_confs=(int(manta_num_confs.value) or None),
             opt_topn=int(manta_opt_topn.value),
-            method=(manta_method.value or 'gfn2'),
-            collapse=bool(manta_collapse.value),
+            # construction always champion + power-user knobs CLI-only -> pinned here
+            **_MANTA_DASH_DEFAULTS,
         )
 
     def handle_convert_smiles_uff(button):
@@ -2912,9 +2914,10 @@ def create_tab(ctx):
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        widgets.HBox([build_complex_button, architector_button, manta_button],
+        widgets.HBox([build_complex_button, architector_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         manta_settings_row,
+        manta_button,          # MANTA button sits directly UNDER its settings
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,
