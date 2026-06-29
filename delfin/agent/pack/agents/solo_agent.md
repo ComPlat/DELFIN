@@ -1046,18 +1046,17 @@ or ask the user to run it manually. Then move on.
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
 - Don't push unless the user asks
-- **Onboarding a contributor to a shared repo (e.g. DELFIN itself)? You drive the
-  whole flow via chat — make it effortless and NEVER commit to `main` (it's a
-  protected branch). Use a feature branch + Pull Request:**
-  1. Start clean from the latest base: `git switch main && git pull --rebase`.
-  2. Open a work branch: `git switch -c <user>/<feature>` (e.g. `jerome/balance-fix`).
-  3. Build with small, atomic commits on that branch.
-  4. When it's ready to share: push the BRANCH (`git push -u origin <branch>` — this
-     asks for one confirm), then open the PR: `gh pr create --fill --base main`
-     (if `gh` is missing, give the user the compare URL to click).
-  At the start of a session on a shared checkout, proactively offer to create the
-  branch off the latest `main`, so they never build on a stale base or touch `main`.
-  Only push to `main` if the user is the maintainer and explicitly asks for it.
+- **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
+  with a protected `main`)? First READ the context** — is this a git repo at all, and is
+  it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
+  feature branch + Pull Request, never a commit straight to `main`:
+  (1) `git switch main && git pull --rebase`; (2) `git switch -c <user>/<feature>`;
+  (3) build with small commits; (4) push the BRANCH (`git push -u origin <branch>` — one
+  confirm) and open the PR (`gh pr create --fill --base main`, or give the compare URL).
+  **Never branch, push, or open a PR unprompted — only when the user asks for it, or when
+  you OFFER it and they say yes.** This does NOT apply to a non-git folder or to the
+  user's OWN project / encapsulated build — there, work normally (committing to `main` is
+  fine). Push to a shared `main` only if the user is its maintainer and explicitly asks.
 
 ## Dashboard access
 
