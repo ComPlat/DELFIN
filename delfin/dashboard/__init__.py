@@ -576,11 +576,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
     )
-    branch_options = [
-        ('main', 'main'),
-        ('tools-and-workflows', 'tools-and-workflows'),
-        ('GUPPY', 'GUPPY'),
-    ]
+    branch_options = _compute_branch_options(ctx.repo_dir)
     branch_switch_dropdown = widgets.Dropdown(
         options=branch_options,
         value='main',
@@ -616,9 +612,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         branch_switch_dropdown.disabled = lock_present
         switch_branch_btn.disabled = lock_present
         rollback_delfin_btn.disabled = lock_present
+        # Refresh the dropdown to the LIVE set — main + this checkout's local
+        # branches (the ones you/Jerome build with DELFIN) — so a branch created
+        # this session shows up without restarting the dashboard.
         current_branch = _get_current_git_branch(rd)
-        if current_branch in {value for _label, value in branch_options}:
-            branch_switch_dropdown.value = current_branch
+        opts = _compute_branch_options(rd)
+        if current_branch and current_branch not in [v for _l, v in opts]:
+            opts.append((current_branch, current_branch))
+        new_vals = [v for _l, v in opts]
+        if [v for _l, v in branch_switch_dropdown.options] != new_vals:
+            branch_switch_dropdown.options = opts
+        target = current_branch if current_branch in new_vals else (
+            'main' if 'main' in new_vals else None)
+        if target is not None and branch_switch_dropdown.value != target:
+            branch_switch_dropdown.value = target
 
     refresh_git_status_label()
 
@@ -1157,6 +1164,26 @@ def _list_local_git_branches(repo_dir):
     if result.returncode != 0:
         return set()
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _compute_branch_options(repo_dir):
+    """Branch-switch dropdown contents: ``main`` first (so you can always jump
+    back to it), then the LOCAL branches in this checkout — i.e. the ones you,
+    or a contributor like Jerome, actually create/build with DELFIN.
+
+    We deliberately do NOT list every remote branch: each person's checkout
+    naturally holds only their own working branches, so the menu stays scoped to
+    "main + mine" instead of the dozens of shared feature branches on origin.
+    """
+    local = set()
+    try:
+        if repo_dir:
+            local = _list_local_git_branches(repo_dir)
+    except Exception:
+        local = set()
+    rest = sorted(n for n in local if n != 'main')
+    names = ['main'] + rest
+    return [(n, n) for n in names]
 
 
 def _find_orca_candidates(notebook_dir):
