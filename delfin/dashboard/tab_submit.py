@@ -271,6 +271,7 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     if construction != "default":
         env["DELFIN_FFFREE_BUILDER"] = "1"
         env["DELFIN_FRAME_RANK_FIX"] = "1"
+        env["DELFIN_CHIRAL_ENUM"] = "1"        # Λ/Δ enantiomer enumeration (>=2 chelate pairs)
         if construction == "champion":
             for _f in _MANTA_CHAMPION_FLAGS:
                 env["DELFIN_FFFREE_" + _f] = "1"

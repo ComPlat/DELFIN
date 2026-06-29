@@ -48,6 +48,7 @@ def _apply_construction_env(config: str) -> None:
         return
     os.environ["DELFIN_FFFREE_BUILDER"] = "1"
     os.environ["DELFIN_FRAME_RANK_FIX"] = "1"
+    os.environ["DELFIN_CHIRAL_ENUM"] = "1"   # Lambda/Delta enantiomer enumeration (>=2 chelate pairs)
     flags = _CHAMPION_FLAGS if config == "champion" else _BUILDER_FLAGS
     for f in flags:
         os.environ["DELFIN_FFFREE_" + f] = "1"
