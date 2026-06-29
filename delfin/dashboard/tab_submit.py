@@ -260,19 +260,24 @@ _MANTA_OPT_TOPN = 10
 _MANTA_OPT_WORKERS = 4
 
 
-def _manta_best_env(charge):
-    """Env that makes the converter run our best version: SHIP-31 champion
-    construction flags + GFN2 single-point energy ranking, GFN2 charge from
-    the SMILES."""
-    env = {
-        "DELFIN_FFFREE_BUILDER": "1",
-        "DELFIN_FRAME_RANK_FIX": "1",
-        "DELFIN_FFFREE_GFNFF_RANK": "1",
-        "DELFIN_CONF_RANK_METHOD": "gfn2",
-        "DELFIN_GFNFF_CHARGE": str(int(charge)),
-    }
-    for _f in _MANTA_CHAMPION_FLAGS:
-        env["DELFIN_FFFREE_" + _f] = "1"
+def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
+    """Env for the chosen construction config + GFN2 energy ranking, GFN2 charge
+    from the SMILES. construction: 'champion' (full SHIP-31 rich + KAPPA4 reach,
+    DEFAULT/maximum richness) | 'builder' (lean core + reach) | 'default' (legacy)."""
+    env = {"DELFIN_GFNFF_CHARGE": str(int(charge))}
+    if rank:
+        env["DELFIN_FFFREE_GFNFF_RANK"] = "1"
+        env["DELFIN_CONF_RANK_METHOD"] = method
+    if construction != "default":
+        env["DELFIN_FFFREE_BUILDER"] = "1"
+        env["DELFIN_FRAME_RANK_FIX"] = "1"
+        if construction == "champion":
+            for _f in _MANTA_CHAMPION_FLAGS:
+                env["DELFIN_FFFREE_" + _f] = "1"
+            env["DELFIN_FFFREE_KAPPA4"] = "1"      # reach (κ4 macrocycles) for richness
+        else:  # builder = lean core + reach
+            env["DELFIN_FFFREE_KAPPA4"] = "1"
+            env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"
     return env
 
 
@@ -416,9 +421,32 @@ def create_tab(ctx):
         value=_MANTA_OPT_TOPN, description='GFN2-opt top:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='150px'),
         tooltip='GFN2-optimize the top-N ranked structures for best geometry (0 = none).')
-    manta_settings_row = widgets.HBox(
-        [manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn],
-        layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'))
+    # second row: construction config + remaining richness/energy keys
+    manta_construction = widgets.Dropdown(
+        options=['champion', 'builder', 'default'], value='champion',
+        description='Construction:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='185px'),
+        tooltip='champion = full SHIP-31 rich construction + KAPPA4 reach (DEFAULT, max richness); '
+                'builder = lean core + reach; default = library/legacy.')
+    manta_num_confs = widgets.IntText(
+        value=0, description='Confs/iso(0=def):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='175px'),
+        tooltip='Conformers embedded per isomer (0 = library default 200). Higher = more rotamers.')
+    manta_method = widgets.Dropdown(
+        options=['gfn2', 'gfnff', 'gfn1', 'gfn0'], value='gfn2',
+        description='Rank method:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='170px'),
+        tooltip='Energy-ranking Hamiltonian (when GFN2 rank is on).')
+    manta_collapse = widgets.Checkbox(
+        value=False, description='Merge variants', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='160px'),
+        tooltip='Merge label-variant isomers (default OFF = keep every variant = max richness).')
+    manta_settings_row = widgets.VBox([
+        widgets.HBox([manta_construction, manta_quality, manta_seeds, manta_max_iso],
+                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
+        widgets.HBox([manta_num_confs, manta_rank, manta_method, manta_opt_topn, manta_collapse],
+                     layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center')),
+    ])
 
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -987,7 +1015,8 @@ def create_tab(ctx):
 
     def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
                                  quality_mode=None, seeds_override=None,
-                                 max_isomers=None, opt_topn=None):
+                                 max_isomers=None, opt_topn=None, construction=None,
+                                 method="gfn2", num_confs=None, collapse=None):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
@@ -1021,7 +1050,7 @@ def create_tab(ctx):
             # apply the SHIP-31 champion construction + GFN2-rank env for this
             # build only (snapshot + restore so the global env isn't polluted).
             _chg = 0
-            if rank:
+            if rank or construction:
                 try:
                     from rdkit import Chem as _Chem
                     _m = _Chem.MolFromSmiles(cleaned_data, sanitize=False)
@@ -1029,7 +1058,10 @@ def create_tab(ctx):
                         _chg = _Chem.GetFormalCharge(_m)
                 except Exception:
                     _chg = 0
-            _best_env = _manta_best_env(_chg) if rank else {}
+            # construction env applies ONLY for MANTA (construction set); the plain
+            # convert/build-complex buttons pass construction=None -> unchanged behaviour.
+            _best_env = (_manta_best_env(_chg, construction=construction, method=method,
+                                         rank=rank) if construction else {})
             _saved_env = {k: os.environ.get(k) for k in _best_env}
             os.environ.update(_best_env)
             try:
@@ -1048,7 +1080,7 @@ def create_tab(ctx):
                     # isomer diversity over strict reproducibility.
                     _iso_kwargs = dict(
                         apply_uff=apply_uff,
-                        collapse_label_variants=False,
+                        collapse_label_variants=(bool(collapse) if collapse is not None else False),
                         include_binding_mode_isomers=True,
                         deterministic=not contains_metal(cleaned_data),
                     )
@@ -1060,6 +1092,8 @@ def create_tab(ctx):
                         _iso_kwargs["seeds_override"] = int(seeds_override)
                     if max_isomers:
                         _iso_kwargs["max_isomers"] = int(max_isomers)
+                    if num_confs:
+                        _iso_kwargs["num_confs"] = int(num_confs)
                     isomers, error = smiles_to_xyz_isomers(cleaned_data, **_iso_kwargs)
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
@@ -1106,11 +1140,15 @@ def create_tab(ctx):
         # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
         _start_smiles_conversion(
             apply_uff=True, quick=False, rank=bool(manta_rank.value),
+            construction=(manta_construction.value or 'champion'),
             quality_mode=(manta_quality.value or None),
             seeds_override=(int(manta_seeds.value) or None),
             # 0 -> COMPLETE manifold (never cut off); else user cap
             max_isomers=(int(manta_max_iso.value) or 100000),
+            num_confs=(int(manta_num_confs.value) or None),
             opt_topn=int(manta_opt_topn.value),
+            method=(manta_method.value or 'gfn2'),
+            collapse=bool(manta_collapse.value),
         )
 
     def handle_convert_smiles_uff(button):

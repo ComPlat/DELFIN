@@ -27,6 +27,31 @@ from pathlib import Path
 # is ever actually hit we WARN — completeness is never silently violated.
 _ALL_ISOMERS = 100_000
 
+# Construction configs (env-flag sets). 'champion' = the full SHIP-31 rich
+# construction (maximum coverage + conformer/motif handling); 'builder' = lean
+# core + reach; 'default' = library/legacy. champion is the MANTA default.
+_CHAMPION_FLAGS = (
+    "AROM_PLANARIZE", "ARYL_RING_SIZE", "BACKBONE_REEMBED", "CHELATE_BACKBONE",
+    "CN_EXTEND", "CONF_COMPLETE", "CONFORMER_COVERAGE", "CONFORMER_SEATING",
+    "DIATOMIC_ORIENT", "DONOR_BEND", "HAPTO_AXIS_ROT", "HAPTO_HALFSANDWICH_GATE",
+    "INTERLIG_RANK", "INTERLIG_VDW_GATE", "JOINT_DECLASH", "LIGAND_RIGID",
+    "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
+    "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
+    "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE", "KAPPA4",
+)
+_BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE")
+
+
+def _apply_construction_env(config: str) -> None:
+    """Set the DELFIN_FFFREE_* construction env for the chosen config (before import)."""
+    if config == "default":
+        return
+    os.environ["DELFIN_FFFREE_BUILDER"] = "1"
+    os.environ["DELFIN_FRAME_RANK_FIX"] = "1"
+    flags = _CHAMPION_FLAGS if config == "champion" else _BUILDER_FLAGS
+    for f in flags:
+        os.environ["DELFIN_FFFREE_" + f] = "1"
+
 
 def _safe_name(label: str, idx: int) -> str:
     """Filesystem-safe ``NNN__label.xyz`` from an isomer label."""
@@ -80,6 +105,23 @@ def _build_parser() -> argparse.ArgumentParser:
                         "Higher = more conformers/rotamers, slower.")
     p.add_argument("--num-confs", type=int, default=None, dest="num_confs",
                    help="conformers embedded per isomer (default: 200)")
+    p.add_argument("--construction", choices=["champion", "builder", "default"],
+                   default="champion",
+                   help="construction config: champion (full SHIP-31 rich, DEFAULT) | "
+                        "builder (lean core+reach) | default (library/legacy)")
+    p.add_argument("--collapse-variants", dest="collapse", action="store_true", default=False,
+                   help="merge label-variant isomers (default: OFF — keep every variant = "
+                        "maximum richness)")
+    p.add_argument("--no-binding-modes", dest="binding_modes", action="store_false", default=True,
+                   help="disable alternative binding-mode isomers (default: ON)")
+    p.add_argument("--hapto-approx", choices=["auto", "on", "off"], default="auto",
+                   help="hapto (eta) approximation: auto (default) | on | off")
+    p.add_argument("--no-uff", dest="apply_uff", action="store_false", default=True,
+                   help="skip the UFF cleanup of emitted geometries (default: UFF on)")
+    p.add_argument("--no-deterministic", dest="deterministic", action="store_false", default=True,
+                   help="allow non-deterministic embedding (default: deterministic)")
+    p.add_argument("--charge", type=int, default=None,
+                   help="override the metal/complex charge (default: read from the SMILES)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="suppress the per-structure listing")
     return p
@@ -88,21 +130,32 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = _build_parser().parse_args(argv)
 
-    # Ranking is env-gated inside the converter; flip the switches BEFORE import.
+    # Construction config + ranking are env-gated; set ALL switches BEFORE import.
+    _apply_construction_env(args.construction)
     if args.rank:
         os.environ["DELFIN_FFFREE_GFNFF_RANK"] = "1"
         os.environ["DELFIN_CONF_RANK_METHOD"] = args.method
+    if args.charge is not None:
+        os.environ["DELFIN_GFNFF_CHARGE"] = str(int(args.charge))
 
     from delfin.smiles_converter import smiles_to_xyz_isomers
 
     cap = args.max_isomers if args.max_isomers is not None else _ALL_ISOMERS
-    kwargs = {"max_isomers": cap}
+    kwargs = {
+        "max_isomers": cap,
+        "collapse_label_variants": bool(args.collapse),
+        "include_binding_mode_isomers": bool(args.binding_modes),
+        "apply_uff": bool(args.apply_uff),
+        "deterministic": bool(args.deterministic),
+    }
     if args.quality is not None:
         kwargs["quality_mode"] = args.quality
     if args.seeds is not None:
         kwargs["seeds_override"] = args.seeds
     if args.num_confs is not None:
         kwargs["num_confs"] = args.num_confs
+    if args.hapto_approx != "auto":
+        kwargs["hapto_approx"] = (args.hapto_approx == "on")
 
     result = smiles_to_xyz_isomers(args.smiles, **kwargs)
     if isinstance(result, tuple) and len(result) == 2:
