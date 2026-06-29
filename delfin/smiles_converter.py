@@ -27208,6 +27208,79 @@ def _heavy_atom_rmsd_xyz(xyz_a: str, xyz_b: str) -> float:
         return 1e9
 
 
+def _organic_mmff_ensemble(mol_h, *, max_pool: int = 8, rmsd_threshold: float = 0.5):
+    """Complete low-energy conformer ENSEMBLE for an organic (DELFIN_FFFREE_CONF_ENERGY_RANK).
+
+    Embed many ETKDGv3 seeds, MMFF-MINIMISE each so every conformer reaches its OWN
+    local minimum (the chair stays a chair, the twist-boat stays a twist-boat — no
+    collapse), then keep RMSD-DISTINCT basins in ASCENDING energy order: the global
+    minimum is conf-1 and the OTHER genuine minima follow (twist-boat, boat, rotamers).
+    This is the 'alternative to a global geometry optimisation' — the manifold contains
+    the global minimum AND the populated conformers by construction.  MMFF-quality
+    geometry, deterministic (fixed seed schedule, energy+id tie-break).  Returns
+    [(xyz,label),...] or [] on failure (caller falls back to the legacy pool)."""
+    try:
+        from rdkit.Chem import AllChem
+        m = Chem.Mol(mol_h)
+        n = m.GetNumAtoms()
+        n_emb = 250 if n <= 50 else (90 if n <= 90 else 30)
+        p = AllChem.ETKDGv3()
+        p.randomSeed = 42
+        p.useRandomCoords = True
+        p.enforceChirality = False
+        p.pruneRmsThresh = -1.0
+        cids = list(AllChem.EmbedMultipleConfs(m, numConfs=n_emb, params=p))
+        if not cids:
+            return []
+        mp = AllChem.MMFFGetMoleculeProperties(m)
+        ens: List[Tuple[float, int]] = []
+        for cid in cids:
+            try:
+                ff = (AllChem.MMFFGetMoleculeForceField(m, mp, confId=int(cid))
+                      if mp is not None else
+                      AllChem.UFFGetMoleculeForceField(m, confId=int(cid)))
+                if ff is None:
+                    continue
+                ff.Minimize(maxIts=1000)
+                ens.append((float(ff.CalcEnergy()), int(cid)))
+            except Exception:
+                continue
+        if not ens:
+            return []
+        ens.sort(key=lambda t: (round(t[0], 2), t[1]))     # energy, then id -> deterministic
+        # symmetry-aware ALIGNED RMSD so equivalent conformers (ring-flip chairs,
+        # rotated copies) collapse to ONE basin and only GENUINELY distinct minima
+        # (chair vs twist-boat, anti vs gauche) are kept.
+        from rdkit.Chem import rdMolAlign
+        kept: List[int] = []
+        for _e, cid in ens:
+            if len(kept) >= max_pool:
+                break
+            dup = False
+            for kcid in kept:
+                try:
+                    mc = Chem.Mol(m)                       # copy: don't mutate kept geometry
+                    if rdMolAlign.GetBestRMS(mc, mc, prbId=int(cid), refId=int(kcid)) < rmsd_threshold:
+                        dup = True
+                        break
+                except Exception:
+                    pass
+            if not dup:
+                kept.append(cid)
+        out: List[Tuple[str, str]] = []
+        for j, cid in enumerate(kept):
+            conf = m.GetConformer(int(cid))
+            lines = []
+            for i in range(n):
+                a = m.GetAtomWithIdx(i)
+                q = conf.GetAtomPosition(i)
+                lines.append(f"{a.GetSymbol():4s} {q.x:12.6f} {q.y:12.6f} {q.z:12.6f}")
+            out.append(("\n".join(lines) + "\n", f"conf-{j + 1}"))
+        return out
+    except Exception:
+        return []
+
+
 def _organic_conformer_pool(
     smiles: str,
     base_xyz: Optional[str],
@@ -27259,6 +27332,13 @@ def _organic_conformer_pool(
     # RMSD-diverse survivors in ENERGY ORDER -> the global-minimum conformer (chair)
     # is always kept.  Default OFF keeps the exact legacy seed-order behaviour.
     _energy_rank = os.environ.get("DELFIN_FFFREE_CONF_ENERGY_RANK", "0") == "1"
+    if _energy_rank:
+        # Best-possible organic path: MMFF-minimised, energy-ranked, RMSD-distinct
+        # basins (global minimum + all other genuine minima).  Falls through to the
+        # legacy pool only if this fails.
+        _ens = _organic_mmff_ensemble(mol_h, max_pool=max_pool, rmsd_threshold=rmsd_threshold)
+        if _ens:
+            return _ens
     if _energy_rank and n_atoms <= 80:
         seed_count = max(seed_count, min(40, len(_PIPELINE_SEEDS)))
     seeds = list(_PIPELINE_SEEDS[: max(1, seed_count)])
@@ -29516,7 +29596,12 @@ def _smiles_to_xyz_isomers_impl(
         )
         if err:
             return [], err
-        _max_pool = max(1, min(int(max_isomers), 8))
+        # legacy organic cap = 8; under energy-rank (completeness) honour max_isomers
+        # up to 50 so flexible polyols/sugars (many OH rotamers) cover their global min.
+        if os.environ.get("DELFIN_FFFREE_CONF_ENERGY_RANK", "0") == "1":
+            _max_pool = max(1, min(int(max_isomers), 50))
+        else:
+            _max_pool = max(1, min(int(max_isomers), 8))
         pool = _organic_conformer_pool(
             smiles, xyz, max_pool=_max_pool, apply_uff=apply_uff,
         )
