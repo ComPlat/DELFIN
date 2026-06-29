@@ -28544,6 +28544,73 @@ def _rank_emitted_isomers(isomers):
         return isomers
 
 
+def _hapto_declash_filter(isomers):
+    """Final-manifold eta-ring inter-ligand declash over the emitted ensemble.
+
+    The legacy analytical piano-stool seat (``_build_hapto_scaffold``) places an
+    eta-coordinated ring (arene / Cp / Cb / diene) on the metal but does NOT
+    choose its ROTATIONAL conformer about the M->centroid axis, so ring carbons /
+    substituents routinely eclipse the carbonyls and crowd the other ligands.
+    Measured against CCDC piano-stool crystals (find_inter_ligand_clash, F26) the
+    seat over-clashes ~3-4x, the residual dominated by the eta-face crowding
+    pendant aryls / other rings / sigma-donors -- contacts essentially absent in
+    the crystals.
+
+    This pass rotates each eta-ring about its M->centroid axis to the LOCAL
+    inter-ligand-clash minimum within a bounded window (the missing piano-stool
+    DOF).  It is a pure isometry of the coordination polyhedron: every
+    M-(ring atom) distance is preserved, the metal + all sigma-donors are frozen,
+    the inter-ligand overlap is never increased, and it is deterministic.
+
+    Runs as the LAST geometry transform over the FINAL, fully-selected + dedup'd
+    ensemble (NOT per-conformer during construction -- that would feed back into
+    conformer selection / dedup and change WHICH conformers survive), so the
+    isomer/conformer COUNT is exactly preserved: a frame is only re-emitted when
+    the spin actually moved an atom; untouched otherwise.
+
+    Identity (byte-identical) unless DELFIN_FFFREE_HAPTO_DECLASH=1.  Geometry-only
+    (Bondi vdW radii); no CSD/CCDC data.  Deterministic; never raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_HAPTO_DECLASH", "0") != "1":
+        return isomers
+    try:
+        import numpy as np
+        from delfin.manta import hapto_declash as _HD
+        try:
+            _maxrot = float(os.environ.get(
+                "DELFIN_FFFREE_HAPTO_DECLASH_MAXROT", _HD._DEF_MAXROT_DEG))
+        except (TypeError, ValueError):
+            _maxrot = _HD._DEF_MAXROT_DEG
+        out = []
+        for item in isomers:
+            is_tuple = isinstance(item, (tuple, list))
+            xyz = item[0] if is_tuple and item else item
+            lines = str(xyz).splitlines()
+            syms, coords, idx = [], [], []
+            for li, ln in enumerate(lines):
+                p = ln.split()
+                if len(p) >= 4:
+                    try:
+                        x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    except ValueError:
+                        continue
+                    syms.append(p[0]); coords.append([x, y, z]); idx.append(li)
+            if len(syms) < 4:
+                out.append(item); continue
+            P = np.asarray(_HD.declash_frame(syms, coords, max_rot_deg=_maxrot), float)
+            orig = np.asarray(coords, float)
+            if P.shape != orig.shape or np.allclose(P, orig, atol=1e-7):
+                out.append(item); continue          # no eta-ring / nothing moved
+            for k, li in enumerate(idx):
+                p = lines[li].split()
+                p[1] = f"{P[k][0]:.6f}"; p[2] = f"{P[k][1]:.6f}"; p[3] = f"{P[k][2]:.6f}"
+                lines[li] = " ".join(p)
+            new_xyz = "\n".join(lines)
+            out.append((new_xyz,) + tuple(item[1:]) if is_tuple else new_xyz)
+        return out
+    except Exception:
+        return isomers
+
+
 def _topology_gate_filter(isomers):
     """Final UNIVERSAL topology-preservation gate over the FULL emitted ensemble.
 
@@ -29202,10 +29269,13 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # OFF, byte-id when off).  Runs after dedup so it ranks the de-duplicated
         # conformer set, before the clash-based isomer ordering.
         _grank = _gfnff_ensemble_rank_filter if outermost else (lambda x: x)
+        # _hdeclash = eta-ring inter-ligand declash, the LAST geometry transform
+        # over the final dedup'd ensemble (count-preserving; byte-id when off).
+        _hdeclash = _hapto_declash_filter if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))), r[1]
+            return _rank_emitted_isomers(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))
+            return _rank_emitted_isomers(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))
         return r
     finally:
         if outermost:
