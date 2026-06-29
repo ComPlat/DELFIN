@@ -276,12 +276,17 @@ def _manta_best_env(charge):
     return env
 
 
-def _manta_opt_top(isomers, charge):
+def _manta_opt_top(isomers, charge, topn=None):
     """GFN2 geometry-optimize the top-N ranked isomers in parallel (laptop-
     bounded), replace their geometry + label, re-sort the optimized head by
     opt energy. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
-    any structure whose optimization fails keeps its unrelaxed geometry."""
+    any structure whose optimization fails keeps its unrelaxed geometry.
+    ``topn`` (user-settable; None -> _MANTA_OPT_TOPN) bounds how many of the
+    energy-ranked structures are GFN2-opted (0 -> none)."""
     if not isomers:
+        return isomers
+    _n = _MANTA_OPT_TOPN if topn is None else int(topn)
+    if _n <= 0:
         return isomers
     import concurrent.futures as _cf
     try:
@@ -290,8 +295,8 @@ def _manta_opt_top(isomers, charge):
         return isomers
     if not _gff.available():
         return isomers
-    head = list(isomers[:_MANTA_OPT_TOPN])
-    tail = list(isomers[_MANTA_OPT_TOPN:])
+    head = list(isomers[:_n])
+    tail = list(isomers[_n:])
 
     def _opt_one(item):
         xyz, _na, label = item
@@ -384,6 +389,36 @@ def create_tab(ctx):
     # MANTA-logo teal/cyan.
     manta_button.style.button_color = '#1FA9C0'
     manta_button.style.font_weight = 'bold'
+
+    # --- MANTA settings row (the key build switches, exposed under the button) ---
+    # quality = conformer depth (seeds x templates x cap); more = closer to the
+    # global minimum, slower. 'extreme' = research/benchmark depth.
+    manta_quality = widgets.Dropdown(
+        options=['fast', 'normal', 'max', 'extreme'], value='extreme',
+        description='Quality:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='150px'),
+        tooltip='Conformer depth: fast(12 seeds)/normal(20)/max(40)/extreme(60). '
+                'More seeds = more conformers = higher chance the global minimum is covered.')
+    manta_seeds = widgets.IntText(
+        value=0, description='Seeds(0=auto):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='150px'),
+        tooltip='Override the ETKDG conformer-seed count directly (0 = use Quality preset). '
+                'The key completeness/speed switch.')
+    manta_max_iso = widgets.IntText(
+        value=0, description='Max iso(0=ALL):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='160px'),
+        tooltip='Cap emitted isomers (0 = COMPLETE manifold, never cut off — recommended).')
+    manta_rank = widgets.Checkbox(
+        value=True, description='GFN2 rank', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='120px'),
+        tooltip='Energy-rank the manifold by GFN2 (best isomer/conformer first; needs xtb).')
+    manta_opt_topn = widgets.IntText(
+        value=_MANTA_OPT_TOPN, description='GFN2-opt top:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='150px'),
+        tooltip='GFN2-optimize the top-N ranked structures for best geometry (0 = none).')
+    manta_settings_row = widgets.HBox(
+        [manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn],
+        layout=widgets.Layout(gap='8px', flex_wrap='wrap', align_items='center'))
 
     smiles_batch_widget = widgets.Textarea(
         value='',
@@ -950,7 +985,9 @@ def create_tab(ctx):
         if state['isomers']:
             _show_isomer_at_index(state['isomer_index'] + 1)
 
-    def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False):
+    def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
+                                 quality_mode=None, seeds_override=None,
+                                 max_isomers=None, opt_topn=None):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
@@ -1009,13 +1046,21 @@ def create_tab(ctx):
                 else:
                     # Interactive metal-complex conversion should prioritize
                     # isomer diversity over strict reproducibility.
-                    isomers, error = smiles_to_xyz_isomers(
-                        cleaned_data,
+                    _iso_kwargs = dict(
                         apply_uff=apply_uff,
                         collapse_label_variants=False,
                         include_binding_mode_isomers=True,
                         deterministic=not contains_metal(cleaned_data),
                     )
+                    # user-exposed completeness/speed switches (MANTA settings row);
+                    # None -> library default. max_isomers None/0 -> COMPLETE (no cut).
+                    if quality_mode:
+                        _iso_kwargs["quality_mode"] = quality_mode
+                    if seeds_override:
+                        _iso_kwargs["seeds_override"] = int(seeds_override)
+                    if max_isomers:
+                        _iso_kwargs["max_isomers"] = int(max_isomers)
+                    isomers, error = smiles_to_xyz_isomers(cleaned_data, **_iso_kwargs)
                     if not error and isomers:
                         isomers = append_hapto_previews_to_isomers(
                             isomers,
@@ -1025,7 +1070,7 @@ def create_tab(ctx):
                     if rank and not error and isomers:
                         # MANTA: GFN2-optimize the top-N ranked structures
                         # (parallel, laptop-bounded) for best-possible geometry.
-                        isomers = _manta_opt_top(isomers, _chg)
+                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn)
                     result = {'error': error, 'isomers': isomers}
             except Exception as exc:
                 result = {'error': str(exc)}
@@ -1058,7 +1103,15 @@ def create_tab(ctx):
     def handle_manta(button):
         # MANTA: full coordination-isomer manifold (with UFF cleanup) + GFN2
         # energy ranking, shown in the viewer with the existing isomer nav.
-        _start_smiles_conversion(apply_uff=True, quick=False, rank=True)
+        # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
+        _start_smiles_conversion(
+            apply_uff=True, quick=False, rank=bool(manta_rank.value),
+            quality_mode=(manta_quality.value or None),
+            seeds_override=(int(manta_seeds.value) or None),
+            # 0 -> COMPLETE manifold (never cut off); else user cap
+            max_isomers=(int(manta_max_iso.value) or 100000),
+            opt_topn=int(manta_opt_topn.value),
+        )
 
     def handle_convert_smiles_uff(button):
         _convert_smiles(apply_uff=True)
@@ -2823,6 +2876,7 @@ def create_tab(ctx):
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
         widgets.HBox([build_complex_button, architector_button, manta_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
+        manta_settings_row,
         spacer_large,
         widgets.HTML('<b>Batch SMILES/XYZ:</b>'),
         smiles_batch_widget, spacer,

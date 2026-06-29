@@ -69,8 +69,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-isomers", type=int, default=None, dest="max_isomers",
                    help="optionally cap the number of isomers (default: ALL — "
                         "the complete enumerated set)")
-    p.add_argument("--quality", choices=["fast", "normal", "max"], default=None,
-                   help="depth preset: fast | normal | max (default: library default)")
+    p.add_argument("--quality", choices=["fast", "normal", "max", "extreme"], default=None,
+                   help="conformer-depth preset (seeds x templates x cap): "
+                        "fast(12 seeds) | normal(20) | max(40) | extreme(60). More seeds = "
+                        "more conformers = higher chance the GLOBAL MINIMUM is in the manifold. "
+                        "(default: library default ~normal)")
+    p.add_argument("--seeds", type=int, default=None, dest="seeds",
+                   help="override the ETKDG conformer-seed count directly (the key "
+                        "completeness/speed switch; overrides --quality's seed count). "
+                        "Higher = more conformers/rotamers, slower.")
     p.add_argument("--num-confs", type=int, default=None, dest="num_confs",
                    help="conformers embedded per isomer (default: 200)")
     p.add_argument("-q", "--quiet", action="store_true",
@@ -92,6 +99,8 @@ def main(argv=None) -> int:
     kwargs = {"max_isomers": cap}
     if args.quality is not None:
         kwargs["quality_mode"] = args.quality
+    if args.seeds is not None:
+        kwargs["seeds_override"] = args.seeds
     if args.num_confs is not None:
         kwargs["num_confs"] = args.num_confs
 

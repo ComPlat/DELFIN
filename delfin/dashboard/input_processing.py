@@ -199,6 +199,7 @@ def smiles_to_xyz_isomers(
     quality_mode="extreme",
     seeds_override=None,
     n_metal_smart=True,
+    max_isomers=None,
 ):
     """Generate distinct coordination isomers for a SMILES string.
 
@@ -224,6 +225,10 @@ def smiles_to_xyz_isomers(
         seeds_override=seeds_override,
         n_metal_smart=n_metal_smart,
     )
+    # max_isomers: None -> library default (byte-identical); set -> forwarded so the
+    # MANTA button can request the COMPLETE manifold (never cut off).
+    if max_isomers is not None:
+        base_kwargs["max_isomers"] = int(max_isomers)
     if _UI_ISOLATE_DEFAULT:
         results, error = _run_isomers_subprocess(smiles, base_kwargs)
         if error and hapto_approx is None and _is_hapto_failfast(error):

@@ -1427,6 +1427,28 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs):
         return P
 
 
+def _sphere_flex_frame(out_syms, P, fixed, block_specs):
+    """Apply the env-gated soft coordination-sphere clash relax to one assembled
+    frame (``DELFIN_FFFREE_SPHERE_FLEX``).  Donors are soft-restrained (not frozen)
+    so the sphere can BREATHE a few hundredths of an Angstrom to open the residual
+    inter-ligand heavy-heavy contacts that a frozen-donor refine (and pure M-D-axis
+    rotation) cannot.  Threads the true connectivity; runs AFTER joint-declash and
+    BEFORE the self-gate.  No-op when the flag is unset; never raises."""
+    try:
+        from delfin.manta import sphere_flex as _SF
+        from delfin.manta import torsion_relax as _TR
+        bp = None
+        if block_specs:
+            blocks = [bb for bb in (_ligand_block_bonds(m, off, dl)
+                                    for (off, m, dl) in block_specs) if bb is not None]
+            if blocks:
+                bp = _TR.bonds_from_blocks(0, blocks)
+        return np.asarray(_SF.flex_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+                          dtype=float)
+    except Exception:
+        return P
+
+
 def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                                     refine: bool = True):
     """vertex_specs[i] = (frag_mol, donor_local_idx).  Takes ligand MOLS directly
@@ -1499,6 +1521,11 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         # inter-ligand heavy-heavy clash (the self-gate blocker for class-B), core
         # frozen.  Runs after #308; no-op when DELFIN_FFFREE_JOINT_DECLASH unset.
         P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+        # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): let the
+        # donors breathe a hard-bounded amount to open the residual MILD inter-ligand
+        # heavy-heavy clashes that rotation/frozen-donor refine cannot (clash forensik
+        # 2026-06-29).  Restored toward the ideal vertex+M-D; never-worse on clash.
+        P = _sphere_flex_frame(out_syms, P, fixed, block_specs)
     return out_syms, P
 
 
@@ -1742,6 +1769,9 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
             # inter-ligand heavy-heavy minimisation, core frozen.  After #308.
             P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+            # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): donors
+            # breathe a bounded amount to open residual mild inter-ligand clashes.
+            P = _sphere_flex_frame(out_syms, P, fixed, block_specs)
         if not np.all(np.isfinite(P)):
             continue
         # complex-level RMSD dedup vs already-kept frames
