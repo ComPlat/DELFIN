@@ -1323,6 +1323,21 @@ def _deterministic_mode() -> bool:
     return os.environ.get("DELFIN_DETERMINISTIC", "0") == "1"
 
 
+def _hapto_scaffold_primary_enabled() -> bool:
+    """Hapto scaffold-primary routing (DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY=1,
+    default OFF -> byte-id).  For η-coordinated complexes the FF-free RIGID_HAPTO
+    path collapses the η-face onto the metal (measured η6 ~27% geometry-clean,
+    M-centroid ~0.66-1.18 A vs the ~1.6 A target).  The legacy analytical hapto
+    scaffold (smiles_to_xyz hapto branch) places the η-ring correctly (measured
+    η6 ~84% clean, η4 100%).  With this flag ON the FF-free builder does NOT
+    short-circuit a hapto complex: the scaffold path is tried FIRST (correct
+    geometry) and the FF-free RIGID result is kept only as a FALLBACK for the
+    cases the scaffold cannot build (never-worse on build-rate, strictly better
+    geometry).  Confirmed by the 2026-05-20 per-group collapse map (η6-arene/
+    sandwich build well; RIGID_HAPTO was a coverage-grab that regressed geometry)."""
+    return os.environ.get("DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY", "0") == "1"
+
+
 def _apply_uff_jitter(
     xyz_delfin: str,
     atom_indices,
@@ -29274,6 +29289,7 @@ def _smiles_to_xyz_isomers_impl(
     # CN 4-6); decompose() returns None for chelates / hapto / dative / multi-
     # metal, so those fall through to the legacy pipeline below unchanged.
     # Bit-exact OFF (default).  See delfin/manta/.
+    _hapto_ff_fallback: Optional[List[Tuple[str, str]]] = None
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
         try:
             from delfin.manta.converter_backend import _fffree_isomers
@@ -29281,13 +29297,29 @@ def _smiles_to_xyz_isomers_impl(
         except Exception:
             _ff = None
         if _ff:
-            # Iter-34: co-planar-M orient for coordinated in-plane σ π-donors on
-            # the FF-free path too (ABIZIW builds here).  No parsed ``mol`` is
-            # available at this early return; the corrector is geometry-only and
-            # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
-            # byte-identical (the dispatch returns _ff unchanged when unset).
-            _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
-            return _ff, None
+            # Hapto scaffold-primary (DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY, default
+            # OFF -> byte-id): the FF-free RIGID_HAPTO path collapses η-faces (η6
+            # ~27% clean) whereas the legacy analytical scaffold builds them
+            # correctly (η6 ~84%).  For a hapto complex, DON'T short-circuit here:
+            # stash the FF-free RIGID result as a FALLBACK and let the scaffold
+            # path (hapto branch below) try first.  The fallback is used only if
+            # the scaffold cannot build the complex -> never-worse on build-rate,
+            # strictly better geometry.  Non-hapto returns FF-free unchanged.
+            if _hapto_scaffold_primary_enabled():
+                try:
+                    _hp = _probe_hapto_groups_from_smiles(smiles)
+                except Exception:
+                    _hp = None
+                if _hp:
+                    _hapto_ff_fallback = _ff
+            if _hapto_ff_fallback is None:
+                # Iter-34: co-planar-M orient for coordinated in-plane σ π-donors on
+                # the FF-free path too (ABIZIW builds here).  No parsed ``mol`` is
+                # available at this early return; the corrector is geometry-only and
+                # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
+                # byte-identical (the dispatch returns _ff unchanged when unset).
+                _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
+                return _ff, None
 
     # Resolve the quality profile once per call so the seed count,
     # chelate ranks, topK and Pre-UFF cap follow the requested preset.
@@ -29349,8 +29381,16 @@ def _smiles_to_xyz_isomers_impl(
                 hapto_approx=True,
                 deterministic=deterministic,
             )
-            if err:
-                return [], err
+            if err or not (xyz and xyz.strip()):
+                # Scaffold-primary fallback: if the analytical scaffold cannot
+                # build this hapto complex (error OR empty geometry), fall back to
+                # the stashed FF-free RIGID_HAPTO result (collapsed but present) so
+                # the build-rate is never-worse vs the FF-free path.  Only set when
+                # DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY is on.
+                if _hapto_ff_fallback:
+                    return _hapto_ff_fallback, None
+                if err:
+                    return [], err
             # First-class η-label per detected hapto group.
             # `hapto_groups` is a list of (metal_idx, [c_indices]).  When
             # multiple groups exist (e.g. ferrocene Fe(η5-Cp)(η5-Cp))
