@@ -285,13 +285,11 @@ def test_bash_deny_wins_even_in_bypass(workspace):
 
 
 # ---------------------------------------------------------------------------
-# Git: push / commit allowed, branch deletion blocked everywhere
+# Git: commit/read auto-allowed, push needs confirm, deletion blocked everywhere
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cmd", [
-    "git push",
-    "git push origin main",
-    "git commit -m 'msg'",
+    "git commit -m 'msg'",      # local + reversible → auto
     "git commit --message=msg",
     "git status",
     "git diff --stat",
@@ -304,6 +302,27 @@ def test_git_normal_ops_auto_allowed_default_mode(workspace, cmd):
     perms = KitToolPermissions(workspace=workspace, mode="default")
     err = _gate(perms, "bash", {"command": cmd, "description": cmd})
     assert err is None, f"expected auto-allow for {cmd!r}, got: {err}"
+
+
+@pytest.mark.parametrize("cmd", ["git push", "git push origin main"])
+def test_git_push_needs_confirm_not_auto(workspace, cmd):
+    """Pushing publishes to a remote (can hit a shared/protected branch) — it
+    must NEVER auto-run. Head-less (no confirm callback) → blocked with a
+    guidance message; with a callback → routed through the confirm dialog."""
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    err = _gate(perms, "bash", {"command": cmd, "description": cmd})
+    assert err is not None and "auto-allow" in err
+
+    seen = {}
+
+    def _cb(tool, args_, preview):
+        seen["asked"] = args_.get("command")
+        return True
+
+    perms2 = KitToolPermissions(
+        workspace=workspace, mode="default", confirm_callback=_cb)
+    err2 = _gate(perms2, "bash", {"command": cmd, "description": cmd})
+    assert err2 is None and seen.get("asked") == cmd
 
 
 @pytest.mark.parametrize("cmd", [

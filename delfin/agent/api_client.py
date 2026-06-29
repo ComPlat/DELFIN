@@ -748,7 +748,11 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
     r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+list|tag\s*$|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|switch|checkout|add|"
-    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message|push|stash|init)\b",
+    # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
+    # outward-facing, hard-to-undo action (it can hit a shared/protected branch
+    # like main). Per this list's own policy ("Anything that pushes to remote …
+    # must NOT be here") it must go through the confirm gate, never auto-run.
+    r"restore(?!\s+--source)|commit\s+-m|commit\s+--message|stash|init)\b",
     r"^\s*tar\s+-?t",                                        # tar list-only
     r"^\s*unzip\s+-l\b",
     # -- (b) coding workflow ---------------------------------------------
@@ -941,6 +945,13 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
     "delfin/user_settings.py",
     ".delfin/settings.json",
     "**/.delfin/settings.json",
+    # CI / repo-governance config. Editing a GitHub Actions workflow can run
+    # arbitrary code on the runner or weaken the test gate; CODEOWNERS controls
+    # required reviews; dependabot pulls dependencies. A write under .github/
+    # therefore needs an explicit confirm, even in acceptEdits — so the agent
+    # can't silently poison CI or relax the merge protections of a repo.
+    ".github/**",
+    "**/.github/**",
 )
 
 
