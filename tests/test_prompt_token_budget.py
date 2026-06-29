@@ -26,11 +26,14 @@ def _estimate_tokens(text: str) -> int:
 # creep fails immediately. A deliberate "prompt diet" — trimming these
 # back down WITH benchmark validation — is on the backlog; shrink the
 # budgets again when it lands.
+# 13800 -> 14000: deliberate "## Memory" section added — instructs the agent
+# to use the `remember` tool proactively so durable facts persist across days
+# (the cross-session "don't lose the thread" capability; free, no extra LLM call).
 @pytest.mark.parametrize(
     "filename, max_tokens",
     [
         ("dashboard_agent.md", 7500),
-        ("solo_agent.md", 13800),
+        ("solo_agent.md", 14000),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
