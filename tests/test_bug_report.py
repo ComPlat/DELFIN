@@ -92,6 +92,18 @@ def test_metadata_captured(tmp_path):
     assert "## Conversation" in md
 
 
+def test_md_shows_friendly_mode_name_json_keeps_raw(tmp_path):
+    """Jerome's report (20260625-150316): the internal id 'solo' leaked into the
+    bug report. The human report.md must show the user-facing mode name 'Code';
+    report.json keeps the raw 'solo' for maintainer reproduction/tooling."""
+    d = _write(tmp_path, mode="solo")
+    md = (d / "report.md").read_text()
+    js = json.loads((d / "report.json").read_text())
+    assert "| mode | Code |" in md             # friendly name in the human report
+    assert "| mode | solo |" not in md          # internal id no longer leaks
+    assert js["mode"] == "solo"                 # raw value stays in json for tooling
+
+
 def test_reports_do_not_collide(tmp_path):
     d1 = _write(tmp_path)
     d2 = _write(tmp_path)
