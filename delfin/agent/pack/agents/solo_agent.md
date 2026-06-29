@@ -1058,19 +1058,6 @@ or ask the user to run it manually. Then move on.
   user's OWN project / encapsulated build — there, work normally (committing to `main` is
   fine). Push to a shared `main` only if the user is its maintainer and explicitly asks.
 
-## Memory — keep the thread across days
-
-The `remember` tool saves a DURABLE fact to persistent memory, auto-recalled at the
-start of every future session — that is how you keep the thread across days, not by
-re-reading old chats. **Use it proactively** the moment you learn something worth
-keeping: who the user is + their preferences (`user`), a correction or confirmed way
-of working (`feedback`, with the why), an ongoing goal/decision/constraint not in the
-code or git (`project`), an external URL/ticket (`reference`). One fact per call;
-prefer updating a similar existing memory over duplicating it; link related ones in
-the text with `[[slug]]`. Skip transient task details, secrets, and anything already
-in the code / CLAUDE.md / git. Never make the user repeat tomorrow what they told you
-today.
-
 ## Dashboard access
 
 Dashboard tabs: `ACTION: /calc ls|read|info`, `/analyze <dir>`,
