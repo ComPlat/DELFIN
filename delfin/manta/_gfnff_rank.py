@@ -194,6 +194,43 @@ def gfnff_optimize(xyz_block: str, charge: int = 0, uhf: int = 0,
         return None
 
 
+_Z_GFF = {s: i for i, s in enumerate(
+    ("H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu "
+     "Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I Xe Cs Ba "
+     "La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl Pb Bi"
+     ).split(), 1)}
+
+
+def _n_electrons(xyz_block: str, charge: int) -> int:
+    tot = 0
+    for line in xyz_block.splitlines():
+        p = line.split()
+        if len(p) >= 4:
+            tot += _Z_GFF.get(p[0], 0)
+    return tot - int(charge)
+
+
+def gfnff_optimize_autospin(xyz_block: str, charge: int = 0,
+                            method: Optional[str] = None, timeout: float = 600.0):
+    """Geometry-opt SCANNING multiplicity (the determined-spin/D3 path): try UHF in
+    {parity, parity+2, parity+4} (parity = n_electrons % 2) and return the LOWEST-energy
+    (ground-state multiplicity) result.  Essential for OPEN-SHELL transition metals where
+    a fixed uhf=0 gives a wrong GFN2 energy -> wrong ranking / wrong global minimum.
+    Falls back to the parity attempt if all energies fail.  Returns ``(xyz, energy)`` or None."""
+    try:
+        par = _n_electrons(xyz_block, charge) % 2
+    except Exception:
+        par = 0
+    best = None
+    for u in (par, par + 2, par + 4):
+        r = gfnff_optimize(xyz_block, charge=charge, uhf=u, method=method, timeout=timeout)
+        if r and r[1] is not None and (best is None or r[1] < best[1]):
+            best = r
+    if best is None:
+        return gfnff_optimize(xyz_block, charge=charge, uhf=par, method=method, timeout=timeout)
+    return best
+
+
 def rerank(scored: List[Tuple], top_m: int, charge: int = 0,
            uhf: int = 0) -> Optional[List[Tuple]]:
     """Re-rank a UFF-scored candidate list with GFN-FF.

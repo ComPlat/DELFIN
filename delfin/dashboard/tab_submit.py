@@ -314,7 +314,8 @@ def _manta_opt_top(isomers, charge, topn=None, method="gfn2"):
     def _opt_one(item):
         xyz, _na, label = item
         try:
-            r = _gff.gfnff_optimize(xyz, charge=int(charge), method=method)
+            # auto-spin: scan multiplicity -> ground state (correct for open-shell TM)
+            r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
         except Exception:
             r = None
         if r and r[0]:
