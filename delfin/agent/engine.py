@@ -361,7 +361,9 @@ class AgentEngine:
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
         self._active_capabilities = None
-        self._refresh_context_window()
+        # Background: the cold-cache KIT probe (~5s) must not block the first
+        # turn. The window upgrades from the 100k default once the probe lands.
+        self._refresh_context_window(background=True)
         self.auto_compact_pct: float = 0.95
         self.last_compaction_info: dict[str, int] | None = None
         # A6 — last cost_usd snapshot at outcome time; the next outcome's
@@ -606,7 +608,7 @@ class AgentEngine:
             "session_id": self.session_id,
         }
 
-    def _refresh_context_window(self) -> None:
+    def _refresh_context_window(self, *, background: bool = False) -> None:
         """Size the compaction budget to the ACTIVE model's real context.
 
         Resolves the model's true window + capabilities (Ollama ``/api/show``,
@@ -614,7 +616,21 @@ class AgentEngine:
         table) and stashes the capabilities for tool/vision decisions. Falls
         back to the legacy 100k on any error so behaviour never regresses.
         Call after construction and after every ``client.switch_model(...)``.
+
+        With ``background=True`` the (one-time, ~5s on a cold KIT cache) live
+        probe runs on a daemon thread, so engine construction never blocks the
+        first turn: the window stays at its current value (the 100k default)
+        until the probe lands, then upgrades for the next turn. The 24h disk
+        cache makes every later construction instant regardless. A first turn
+        that races the probe just uses the safe 100k window + name-regex tool/
+        vision fallback for that one turn — strictly better than a 5s stall.
         """
+        if background:
+            import threading
+            threading.Thread(
+                target=self._refresh_context_window,
+                daemon=True, name="caps-prewarm").start()
+            return
         try:
             model = getattr(self.client, "model", "") or ""
             base_url = ""

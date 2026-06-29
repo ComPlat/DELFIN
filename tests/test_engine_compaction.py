@@ -168,3 +168,46 @@ def test_prior_summary_survives_second_compaction():
     block2 = eng.messages[0]["content"]
     assert "ORIGINAL_GOAL" in block2      # original intent preserved
     assert "DEEP_CONSTRAINT" in block2    # deep fact no longer truncated away
+
+
+# ---------------------------------------------------------------------------
+# Capability probe is pre-warmed off the hot path: constructing the engine must
+# NOT block on the (cold-cache, ~5s on KIT) /v1/models probe — it runs on a
+# daemon thread so the first turn never stalls. The window upgrades from the
+# 100k default once the probe lands.
+# ---------------------------------------------------------------------------
+
+def test_context_window_probe_runs_in_background(agent_tree, monkeypatch):
+    import threading
+    import time
+    from types import SimpleNamespace
+    from delfin.agent import model_capabilities as mc
+
+    # A probe that blocks until the test releases it. If construction were
+    # synchronous it would hang here; the daemon thread lets construction return.
+    release = threading.Event()
+    caps = SimpleNamespace(context_window=262144, max_output_tokens=8192,
+                           supports_tools=True, supports_vision=False)
+
+    def gated_resolve(*a, **k):
+        release.wait(timeout=5)
+        return caps
+
+    monkeypatch.setattr(mc, "resolve", gated_resolve)
+    fake_client = MagicMock()
+    fake_client.session_id = "s"
+
+    with patch("delfin.agent.engine.create_client", return_value=fake_client):
+        engine = AgentEngine(repo_dir=agent_tree, backend="cli",
+                             mode="quick", pack_dir=agent_tree)
+
+    # Construction returned while the probe is still blocked → window untouched.
+    assert engine.context_window_tokens == 100_000
+
+    # Let the probe finish; it upgrades the window for the next turn.
+    release.set()
+    deadline = time.monotonic() + 3.0
+    while (time.monotonic() < deadline
+           and engine.context_window_tokens != 262144):
+        time.sleep(0.02)
+    assert engine.context_window_tokens == 262144
