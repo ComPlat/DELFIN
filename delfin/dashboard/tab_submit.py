@@ -286,13 +286,18 @@ def _manta_opt_top(isomers, charge, topn=None):
     bounded), replace their geometry + label, re-sort the optimized head by
     opt energy. Each item is ``(xyz_string, num_atoms, label)``. Best-effort:
     any structure whose optimization fails keeps its unrelaxed geometry.
-    ``topn`` (user-settable; None -> _MANTA_OPT_TOPN) bounds how many of the
-    energy-ranked structures are GFN2-opted (0 -> none)."""
+    ``topn`` (user-settable): None -> _MANTA_OPT_TOPN; 0 -> ALL structures (optimise
+    the complete ranked manifold, slowest/best); N>0 -> top-N; N<0 -> none."""
     if not isomers:
         return isomers
-    _n = _MANTA_OPT_TOPN if topn is None else int(topn)
-    if _n <= 0:
-        return isomers
+    if topn is None:
+        _n = _MANTA_OPT_TOPN
+    elif int(topn) == 0:
+        _n = len(isomers)                  # 0 = ALL (optimise everything)
+    elif int(topn) < 0:
+        return isomers                     # negative = none
+    else:
+        _n = int(topn)
     import concurrent.futures as _cf
     try:
         from delfin.manta import _gfnff_rank as _gff
@@ -436,13 +441,14 @@ def create_tab(ctx):
         tooltip='Energy-rank the manifold so the global-minimum isomer/conformer is first (needs '
                 'xtb). gfn2 = standard; gfnff = fast force-field; No = no ranking (raw order).')
     manta_opt_topn = widgets.IntText(
-        value=_MANTA_OPT_TOPN, description='GFN2-opt top:', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='160px'),
-        tooltip='GFN2-optimise the top-N ranked structures to a clean final geometry (0 = none).')
+        value=_MANTA_OPT_TOPN, description='GFN2-opt (0=all):', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='175px'),
+        tooltip='GFN2-optimise the ranked structures to a clean final geometry. N = top-N; '
+                '0 = ALL (whole manifold, slowest/best); negative = none.')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
-                     "&times; conformer manifold, GFN2-ranked</span>"),
+                     "&times; conformer manifold</span>"),
         widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
