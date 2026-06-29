@@ -1046,6 +1046,18 @@ or ask the user to run it manually. Then move on.
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
 - Don't push unless the user asks
+- **Onboarding a contributor to a shared repo (e.g. DELFIN itself)? You drive the
+  whole flow via chat — make it effortless and NEVER commit to `main` (it's a
+  protected branch). Use a feature branch + Pull Request:**
+  1. Start clean from the latest base: `git switch main && git pull --rebase`.
+  2. Open a work branch: `git switch -c <user>/<feature>` (e.g. `jerome/balance-fix`).
+  3. Build with small, atomic commits on that branch.
+  4. When it's ready to share: push the BRANCH (`git push -u origin <branch>` — this
+     asks for one confirm), then open the PR: `gh pr create --fill --base main`
+     (if `gh` is missing, give the user the compare URL to click).
+  At the start of a session on a shared checkout, proactively offer to create the
+  branch off the latest `main`, so they never build on a stale base or touch `main`.
+  Only push to `main` if the user is the maintainer and explicitly asks for it.
 
 ## Dashboard access
 
