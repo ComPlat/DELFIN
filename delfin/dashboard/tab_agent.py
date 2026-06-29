@@ -4960,6 +4960,26 @@ def create_tab(ctx):
                 os.environ.get("DELFIN_LAUNCH_CWD", ""),
                 ctx.repo_dir or Path.cwd(),
             )
+            # Safety fallback: if that resolves to $HOME or a system root (e.g.
+            # delfin-voila was launched from ~ with no project dir), DON'T refuse
+            # the agent — fall back to the dedicated ~/agent_workspace. Chosen
+            # over the delfin checkout on purpose: this keeps delfin READ-ONLY
+            # (the tiered guard), so a casual home launch can never write/pollute
+            # the DELFIN source tree; the agent just builds in its scratch space.
+            try:
+                from delfin.agent.api_client import (
+                    _is_forbidden_workspace_root as _fwr)
+                if _fwr(repo_dir) and ctx.agent_dir:
+                    _fb = Path(ctx.agent_dir)
+                    _fb.mkdir(parents=True, exist_ok=True)
+                    _append_system_message(
+                        f"⚠️ delfin-voila was launched from your home directory — "
+                        f"using `{_fb}` as the agent workspace (the agent can't be "
+                        f"given all of $HOME). To work on DELFIN launch from the "
+                        f"delfin checkout; to build a project launch from its folder.")
+                    repo_dir = str(_fb)
+            except Exception:
+                pass
             # MCP config from agent settings (optional)
             _agent_s = _get_agent_settings()
             _mcp_cfg = _agent_s.get("mcp_config", "")
