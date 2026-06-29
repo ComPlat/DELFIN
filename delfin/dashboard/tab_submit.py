@@ -283,7 +283,7 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     return env
 
 
-def _manta_opt_top(isomers, charge, topn=None, method="gfn2"):
+def _manta_opt_top(isomers, charge, topn=None, method="gfn2", spin="auto"):
     """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
     replace their geometry + label, re-sort the optimized head by opt energy. The
     opt ``method`` FOLLOWS the Rank selection (gfn2/gfnff/gfn1/gfn0) so one switch
@@ -314,8 +314,13 @@ def _manta_opt_top(isomers, charge, topn=None, method="gfn2"):
     def _opt_one(item):
         xyz, _na, label = item
         try:
-            # auto-spin: scan multiplicity -> ground state (correct for open-shell TM)
-            r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
+            if str(spin) == "auto":
+                # auto-spin: scan multiplicity -> GFN2 ground state (parity-correct)
+                r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
+            else:
+                # fixed multiplicity chosen by the user: uhf = multiplicity - 1
+                _uhf = max(0, int(spin) - 1)
+                r = _gff.gfnff_optimize(xyz, charge=int(charge), uhf=_uhf, method=method)
         except Exception:
             r = None
         if r and r[0]:
@@ -451,11 +456,19 @@ def create_tab(ctx):
         tooltip='Geometry-optimise the ranked structures to a clean final geometry (method '
                 'FOLLOWS Rank: gfn2/gfnff/...). N = top-N; 0 = ALL (whole manifold, slowest/best); '
                 'negative = none. (Only runs when Rank is not "No".)')
+    manta_spin = widgets.Dropdown(
+        options=['auto', '1', '2', '3', '4', '5', '6', '7'], value='auto',
+        description='Spin:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='130px'),
+        tooltip='Spin multiplicity for the GFN2 energy/rank. auto = scan parity/+2/+4 and take the '
+                'GFN2 ground state (parity-correct for open-shell TM). Or FIX it (1=singlet, 2=doublet, '
+                '3=triplet, ...) when you know the state. NOTE: GFN2 spin energetics for TM are '
+                'approximate -> set it explicitly for accuracy.')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
                      "&times; conformer manifold</span>"),
-        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn],
+        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn, manta_spin],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
@@ -1027,7 +1040,7 @@ def create_tab(ctx):
     def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
                                  quality_mode=None, seeds_override=None,
                                  max_isomers=None, opt_topn=None, construction=None,
-                                 method="gfn2", num_confs=None, collapse=None):
+                                 method="gfn2", num_confs=None, collapse=None, spin="auto"):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
@@ -1115,7 +1128,7 @@ def create_tab(ctx):
                     if rank and not error and isomers:
                         # MANTA: GFN2-optimize the top-N ranked structures
                         # (parallel, laptop-bounded) for best-possible geometry.
-                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method)
+                        isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method, spin=spin)
                     result = {'error': error, 'isomers': isomers}
             except Exception as exc:
                 result = {'error': str(exc)}
@@ -1161,6 +1174,7 @@ def create_tab(ctx):
             # 0 -> COMPLETE manifold (never cut off); else user cap
             max_isomers=(int(manta_max_iso.value) or 100000),
             opt_topn=int(manta_opt_topn.value),
+            spin=str(manta_spin.value),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
             # construction always champion + power-user knobs CLI-only -> pinned here
             **_MANTA_DASH_DEFAULTS,
         )
