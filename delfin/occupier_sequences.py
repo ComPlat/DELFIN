@@ -287,9 +287,56 @@ def infer_species_delta(folder: Optional[Path] = None, default: int = 0) -> int:
     return default
 
 
+def _is_protected_root_control(control_path: Path) -> bool:
+    """True if *control_path* is a top-level run-root CONTROL.txt that must never
+    be rewritten with auto-sequence blocks.
+
+    OCCUPIER only ever rewrites the per-stage CONTROL.txt that lives inside a
+    ``*_OCCUPIER`` folder. A destructive write that targets the run root instead
+    is always a CWD-race leak: historically it stripped the user's
+    ``OCCUPIER_sequence_profiles`` block and appended a machine-generated auto
+    block into the master CONTROL.txt, silently discarding the user's settings.
+
+    This guard refuses such writes while leaving genuine stage rewrites and
+    truly standalone runs untouched.
+    """
+    try:
+        parent = control_path.resolve().parent
+    except OSError:
+        return False
+    # Stage folders are always ``*_OCCUPIER`` → always safe to rewrite.
+    if parent.name.endswith("_OCCUPIER"):
+        return False
+    # Run root explicitly advertised by the managed pipeline.
+    env_root = os.environ.get("DELFIN_OCC_ROOT")
+    if env_root:
+        try:
+            if parent == Path(env_root).resolve():
+                return True
+        except OSError:
+            pass
+    # A directory that owns OCCUPIER stage sub-folders is a run root, not a
+    # standalone working directory.
+    try:
+        for child in parent.iterdir():
+            if child.is_dir() and child.name.endswith("_OCCUPIER"):
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def append_sequence_overrides(control_path: Path, bundle: Dict[str, List[Dict[str, Any]]]) -> None:
     """Append auto-generated sequence blocks to CONTROL.txt for the stage."""
     if not bundle:
+        return
+
+    if _is_protected_root_control(control_path):
+        logger.error(
+            "[occupier] BLOCKED auto-sequence override write to run-root CONTROL.txt "
+            "(%s) — refusing to corrupt the master CONTROL (CWD-race guard).",
+            control_path,
+        )
         return
 
     def _format_value(val: Any) -> str:
@@ -455,6 +502,14 @@ def remove_existing_sequence_blocks(
         )
 
     if updated != original and persist:
+        if _is_protected_root_control(control_path):
+            logger.error(
+                "[occupier] BLOCKED destructive CONTROL rewrite of run-root file "
+                "(%s) — refusing to strip OCCUPIER sequences from the master CONTROL "
+                "(CWD-race guard).",
+                control_path,
+            )
+            return original
         control_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
     return updated if updated != original else original

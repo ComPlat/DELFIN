@@ -2000,37 +2000,23 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
             logger.info("%s OCCUPIER start", log_prefix)
             logger.info("%s", separator)
 
-            # Thread-safe CWD change
-            import threading
-            _cwd_lock = getattr(build_occupier_process_jobs, '_cwd_lock', None)
-            if _cwd_lock is None:
-                _cwd_lock = threading.RLock()
-                build_occupier_process_jobs._cwd_lock = _cwd_lock
-
-            old_cwd = os.getcwd()
+            # Serialize on the single process-wide CWD guard (pushd → GLOBAL_CWD_LOCK)
+            # and anchor run_OCCUPIER's CONTROL read/write to an absolute work_dir.
+            # A bare run_OCCUPIER() under a *local* lock used to let a concurrent
+            # chdir leak this stage's CONTROL write into the run-root directory
+            # (CWD race, see fix 79e43146). work_dir makes that structurally
+            # impossible here as well.
+            from delfin.occupier import run_OCCUPIER
+            stage_dir = Path(folder_path).resolve()
             try:
-                with _cwd_lock:
-                    os.chdir(folder_path)
-
-                    # run_OCCUPIER() reads CONTROL.txt from current directory
-                    # It expects no parameters!
-                    # The global manager is already initialized and will handle core allocation
-                    from delfin.occupier import run_OCCUPIER
-                    run_OCCUPIER()
-
-                with _cwd_lock:
-                    os.chdir(old_cwd)
+                with pushd(stage_dir):
+                    run_OCCUPIER(work_dir=stage_dir)
 
                 logger.info("%s OCCUPIER completed", log_prefix)
                 logger.info("%s", separator)
                 logger.info("")
 
             except Exception as e:
-                with _cwd_lock:
-                    try:
-                        os.chdir(old_cwd)
-                    except:
-                        pass
                 logger.error("%s OCCUPIER failed: %s", log_prefix, e)
                 logger.info("%s", separator)
                 raise RuntimeError(f"OCCUPIER failed in {folder_path}: {e}")

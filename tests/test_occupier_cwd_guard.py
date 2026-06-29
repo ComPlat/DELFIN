@@ -90,3 +90,93 @@ def test_pushd_serializes_concurrent_chdir(tmp_path):
     assert not errors, errors
     assert (dir_a / "marker.txt").read_text() == "A"
     assert (dir_b / "marker.txt").read_text() == "B"
+
+
+# ---------------------------------------------------------------------------
+# Defense-in-depth: the run-root CONTROL.txt must never receive auto-sequence
+# rewrites, even if an unanchored/raced write ever targets it again. The leak
+# above is fixed at the cause (work_dir anchoring); this is the structural
+# backstop so the master CONTROL can never be silently corrupted.
+# ---------------------------------------------------------------------------
+
+_ROOT_CONTROL = (
+    "input_file=input.xyz\n"
+    "charge=+2\n"
+    "OCCUPIER_method=auto\n"
+    "OCCUPIER_tree=own\n"
+    "OCCUPIER_sequence_profiles:\n"
+    "-3,-2,-1,0,+1,+2,+3=[\n"
+    "even electron number:\n"
+    "even_seq = [\n"
+    '  {"index": 1, "m": 1, "BS": "", "from": 0}\n'
+    "]\n"
+    "]\n"
+    "INFOS:\n"
+    "some trailing template\n"
+)
+
+_BUNDLE = {"even_seq": [{"index": 1, "m": 5, "BS": "", "from": 0}]}
+
+
+def test_append_sequence_overrides_refuses_run_root(tmp_path, monkeypatch):
+    """A run root (a dir owning *_OCCUPIER sub-folders) must not get the auto block."""
+    monkeypatch.delenv("DELFIN_OCC_ROOT", raising=False)
+    from delfin.occupier_sequences import append_sequence_overrides
+
+    (tmp_path / "initial_OCCUPIER").mkdir()  # makes tmp_path a run root
+    control = tmp_path / "CONTROL.txt"
+    control.write_text(_ROOT_CONTROL, encoding="utf-8")
+
+    append_sequence_overrides(control, _BUNDLE)
+
+    assert "# AUTO sequence overrides" not in control.read_text(encoding="utf-8")
+    assert "OCCUPIER_sequence_profiles:" in control.read_text(encoding="utf-8")
+
+
+def test_remove_existing_sequence_blocks_refuses_run_root(tmp_path, monkeypatch):
+    """force=True strip must be refused on the run-root CONTROL (would discard the
+    user's OCCUPIER_sequence_profiles block)."""
+    monkeypatch.delenv("DELFIN_OCC_ROOT", raising=False)
+    from delfin.occupier_sequences import remove_existing_sequence_blocks
+
+    (tmp_path / "ox_step_1_OCCUPIER").mkdir()  # makes tmp_path a run root
+    control = tmp_path / "CONTROL.txt"
+    control.write_text(_ROOT_CONTROL, encoding="utf-8")
+
+    result = remove_existing_sequence_blocks(control, force=True)
+
+    assert control.read_text(encoding="utf-8") == _ROOT_CONTROL  # unchanged on disk
+    assert "OCCUPIER_sequence_profiles:" in result
+
+
+def test_stage_control_is_still_rewritten(tmp_path, monkeypatch):
+    """Positive control: a genuine *_OCCUPIER stage CONTROL must still be rewritten."""
+    monkeypatch.delenv("DELFIN_OCC_ROOT", raising=False)
+    from delfin.occupier_sequences import (
+        append_sequence_overrides,
+        remove_existing_sequence_blocks,
+    )
+
+    stage = tmp_path / "initial_OCCUPIER"
+    stage.mkdir()
+    control = stage / "CONTROL.txt"
+    control.write_text(_ROOT_CONTROL, encoding="utf-8")
+
+    remove_existing_sequence_blocks(control, force=True)
+    append_sequence_overrides(control, _BUNDLE)
+    text = control.read_text(encoding="utf-8")
+
+    assert "OCCUPIER_sequence_profiles:" not in text  # template stripped
+    assert "# AUTO sequence overrides" in text        # auto block written
+
+
+def test_process_jobs_path_anchors_work_dir():
+    """build_occupier_process_jobs must no longer call a bare run_OCCUPIER() under a
+    local lock; it must anchor via pushd + work_dir like the other chdir sites."""
+    import inspect
+    import delfin.workflows.engine.occupier as eo
+
+    src = inspect.getsource(eo.build_occupier_process_jobs)
+    assert "run_OCCUPIER(work_dir=" in src
+    assert "pushd(stage_dir)" in src
+    assert "getattr(build_occupier_process_jobs, '_cwd_lock'" not in src
