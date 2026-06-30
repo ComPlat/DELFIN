@@ -29373,10 +29373,14 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         _hdeclash = _hapto_declash_filter if outermost else (lambda x: x)
         _sdeclash = _sigma_declash_filter if outermost else (lambda x: x)
         _cofix = _carbonyl_fix_filter if outermost else (lambda x: x)
+        # _coordint_late = decoordination gate applied AGAIN on the FINAL manifold
+        # (the early one runs before _conf re-expands conformers; conformer/declash
+        # frames that decoordinate a donor must be caught here). Byte-id when off.
+        _coordint_late = _coord_integrity_filter if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))))), r[1]
+            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))))
+            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))
         return r
     finally:
         if outermost:

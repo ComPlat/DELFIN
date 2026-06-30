@@ -1125,16 +1125,55 @@ def _coord_filter(results):
         return results
     try:
         slack = float(os.environ.get("DELFIN_FFFREE_COORD_INTEGRITY_SLACK", "0.85"))
+        # True transition / f-block metal Z (the genuine coordination centre). Heavy
+        # MAIN-GROUP "metals" (Sb/Sn/Bi/Pb/Ga/In/Tl/Ge/As/Te) are DONORS when bound
+        # to such a centre, NOT a second centre -- so they must (a) not be picked as
+        # the centre and (b) be recognised as donors despite their longer M-E bond.
+        _TF_Z = (set(range(21, 31)) | set(range(39, 49)) | set(range(57, 81))
+                 | set(range(89, 104)))
+        _Z = {"Sc": 21, "Ti": 22, "V": 23, "Cr": 24, "Mn": 25, "Fe": 26, "Co": 27,
+              "Ni": 28, "Cu": 29, "Zn": 30, "Y": 39, "Zr": 40, "Nb": 41, "Mo": 42,
+              "Tc": 43, "Ru": 44, "Rh": 45, "Pd": 46, "Ag": 47, "Cd": 48, "La": 57,
+              "Hf": 72, "Ta": 73, "W": 74, "Re": 75, "Os": 76, "Ir": 77, "Pt": 78,
+              "Au": 79, "Hg": 80}
+
+        def _is_true_metal(s):
+            return _Z.get(s, 0) in _TF_Z
 
         def _parse(xyz):
-            ls = xyz.splitlines(); n = int(ls[0]); sy = []; P = []
-            for ln in ls[2:2 + n]:
+            # robust to BOTH standard XYZ (count + comment header) AND the
+            # atom-lines-only format the public emitter uses (no header). Take any
+            # line whose last 3 tokens are floats as an atom; skip count/comment.
+            sy = []; P = []
+            for ln in str(xyz).splitlines():
                 p = ln.split()
-                sy.append(p[0]); P.append([float(p[1]), float(p[2]), float(p[3])])
+                if len(p) < 4:
+                    continue
+                try:
+                    xyz3 = [float(p[1]), float(p[2]), float(p[3])]
+                except ValueError:
+                    continue
+                sy.append(p[0]); P.append(xyz3)
+            if not sy:
+                raise ValueError("no atoms")
             return sy, np.asarray(P, dtype=float)
 
-        # reference = the frame with the MOST donors within 2.75 A of the metal (the
-        # best-coordinated frame), so a decoordinated base frame cannot hide a donor.
+        # donor-detection cutoff: 2.75 A for ordinary donors, but heavy main-group
+        # donors sit at a longer M-E bond (our build ~3.3-3.6 A), so use a generous
+        # element-aware cutoff = 1.45*(vdW_m + vdW_d)/2 floored at 2.75 -- recognises
+        # a bonded heavy donor without admitting a flown-off one.
+        _HEAVY_MG = {"Sb", "Sn", "Bi", "Pb", "Ga", "In", "Tl", "Ge", "As", "Te"}
+
+        def _det_cut(ms, ds):
+            # heavy main-group donors are built with a longer M-E bond (~3.3-3.6 A);
+            # recognise them out to 4.0 A so a seated-but-long donor counts as a donor
+            # (the reference-relative threshold then drops only the flown-off frames).
+            if ds in _HEAVY_MG:
+                return 4.0
+            return max(2.75, 0.725 * (_bd._VDW.get(ms, 2.1) + _bd._VDW.get(ds, 1.7)))
+
+        # reference = frame with the MOST donors within the (element-aware) cutoff,
+        # using the TRUE metal centre.
         ref_mi = ref_don = ref_n = None; best = -1
         parsed = []
         for xyz, lab in results:
@@ -1142,21 +1181,36 @@ def _coord_filter(results):
                 sy, P = _parse(xyz); parsed.append((sy, P, xyz, lab))
             except Exception:
                 parsed.append((None, None, xyz, lab)); continue
-            mi = next((i for i in range(len(sy)) if _bd._is_metal(sy[i])), None)
+            mi = next((i for i in range(len(sy)) if _is_true_metal(sy[i])), None)
+            if mi is None:
+                mi = next((i for i in range(len(sy)) if _bd._is_metal(sy[i])), None)
             if mi is None:
                 continue
             don = [k for k in range(len(sy)) if k != mi and sy[k] != "H"
-                   and float(np.linalg.norm(P[mi] - P[k])) < 2.75]
+                   and float(np.linalg.norm(P[mi] - P[k])) < _det_cut(sy[mi], sy[k])]
             if len(don) > best:
                 best = len(don); ref_mi = mi; ref_don = don; ref_n = len(sy)
         if ref_mi is None or not ref_don:
             return results
-        # threshold per donor (donor-type ideal M-D + slack), from the reference frame
-        rsy = next(s for s, _, _, _ in parsed if s is not None and len(s) == ref_n)
+        # per-donor threshold = REFERENCE (best-coordinated) M-D distance + slack
+        # (reference-relative, so robust to a mis-calibrated absolute ideal: a heavy
+        # donor seated at 3.6 A is the reference, decoordination is 3.6 + slack).
+        # Bounded below by the donor-type ideal + slack so an already-stretched
+        # reference frame cannot raise the bar arbitrarily.
+        rsy = rP = None
+        for s, p, _, _ in parsed:
+            if s is not None and len(s) == ref_n:
+                rsy, rP = s, p; break
+        if rsy is None:
+            return results
         thr = {}
         for k in ref_don:
-            try: thr[k] = float(PLY.md_distance(rsy[ref_mi], rsy[k])) + slack
-            except Exception: thr[k] = 3.05
+            ref_d = float(np.linalg.norm(rP[ref_mi] - rP[k]))
+            try:
+                ideal = float(PLY.md_distance(rsy[ref_mi], rsy[k]))
+            except Exception:
+                ideal = ref_d
+            thr[k] = max(ref_d, ideal) + slack
         kept = []
         for sy, P, xyz, lab in parsed:
             if sy is None or len(sy) != ref_n:
