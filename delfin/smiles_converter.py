@@ -191,24 +191,6 @@ for _m in ('Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
            'Al', 'Ga', 'In', 'Tl', 'Sn', 'Pb', 'Bi', 'Po'):
     _METAL_ROW_OFFSET[_m] = 0.50
 
-# Heavy MAIN-GROUP-METAL DONORS (stannyl SnR3, stibine SbR3, bismuthine, ...)
-# form covalent / dative M-E sigma-bonds that are MUCH shorter than the generic
-# (cov_sum + offset) estimate: with the metallic covalent radii used here that
-# estimate gives ~3.1-3.3 A, but CSD/CCDC M-Sb and M-Sn medians are ~2.6 A (our
-# build measured 3.0-3.3, a +0.4-0.65 A over-stretch that crowds the heavy-donor
-# substituents).  When DELFIN_FFFREE_MAINGROUP_DONOR_BOND=1 (default OFF ->
-# byte-id) the M-(heavy-MG donor) bond is taken from this CSD-calibrated table
-# keyed by donor element.  Transition-metal donors are unaffected.
-_MAINGROUP_DONOR_BOND: Dict[str, float] = {
-    'Sn': 2.62, 'Sb': 2.62, 'Bi': 2.78, 'Pb': 2.85, 'Ge': 2.46, 'As': 2.48,
-    'Te': 2.64, 'Ga': 2.46, 'In': 2.70, 'Tl': 2.90,
-}
-# transition + lanthanide/actinide metals (the M in a corrected M-E bond)
-_TRANSITION_F_BLOCK: set = set(_METAL_ROW_OFFSET) - {
-    'Li', 'Na', 'K', 'Rb', 'Cs', 'Be', 'Mg', 'Ca', 'Sr', 'Ba',
-    'Al', 'Ga', 'In', 'Tl', 'Sn', 'Pb', 'Bi', 'Po',
-}
-
 # ---------------------------------------------------------------------------
 # Typical M-L bond lengths (Å) from crystallographic databases.
 # Keyed as (metal_symbol, donor_element) → distance.
@@ -782,12 +764,6 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     key = (metal_symbol, donor_symbol)
     if key in _METAL_LIGAND_BOND_LENGTHS:
         return _METAL_LIGAND_BOND_LENGTHS[key]
-    # Heavy main-group-metal donor (stannyl/stibine/...) on a transition/f-block
-    # metal: use the CSD-calibrated short M-E sigma-bond (default OFF -> byte-id).
-    if (donor_symbol in _MAINGROUP_DONOR_BOND
-            and metal_symbol in _TRANSITION_F_BLOCK
-            and os.environ.get("DELFIN_FFFREE_MAINGROUP_DONOR_BOND", "0") == "1"):
-        return _MAINGROUP_DONOR_BOND[donor_symbol]
     r_m = _COVALENT_RADII.get(metal_symbol)
     r_d = _COVALENT_RADII.get(donor_symbol)
     if r_m is not None and r_d is not None:
