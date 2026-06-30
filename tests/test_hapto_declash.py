@@ -141,6 +141,27 @@ def test_declash_frame_no_metal_is_identity():
     assert np.array_equal(Pn, P)
 
 
+def test_sigma_declash_never_worse_and_deterministic():
+    """declash_frame_sigma (whole-ligand M-D rotation + torsions) is strictly
+    never-worse on the partition-free total overlap and deterministic."""
+    syms, P, mi, bm, hap, fd, bonds = _ferrocene_like_piano_stool()
+    l0, w0, h0 = _total(syms, P)
+    Pn = HD.declash_frame_sigma(syms, P)
+    l1, w1, h1 = _total(syms, Pn)
+    assert l1 <= l0 + 1e-9 and w1 >= w0 - 1e-6 and h1 <= h0
+    # metal stays fixed (donor-frozen kinematics)
+    assert np.allclose(Pn[0], P[0], atol=1e-6)
+    a = HD.declash_frame_sigma(syms, P)
+    b = HD.declash_frame_sigma(syms, P)
+    assert np.array_equal(a, b)
+
+
+def test_sigma_declash_no_metal_is_identity():
+    syms = ["C", "C", "O", "H", "H"]
+    P = np.array([[0, 0, 0], [1.5, 0, 0], [2.2, 0.5, 0], [-0.5, 0.9, 0], [-0.5, -0.9, 0]], float)
+    assert np.array_equal(HD.declash_frame_sigma(syms, P), np.asarray(P, float))
+
+
 def test_carbonyl_contraction():
     """A stretched M-C#O (C-O ~1.43) is contracted toward 1.15; only the terminal
     O moves (inward along C->O), C/metal fixed; a good carbonyl is left alone."""

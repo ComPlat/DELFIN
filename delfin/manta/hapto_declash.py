@@ -406,6 +406,53 @@ def declash_frame(syms: Sequence[str], coords,
         return np.array(coords, dtype=float)
 
 
+def declash_frame_sigma(syms: Sequence[str], coords, clash_f: float = _DEF_CLASH_F):
+    """Geometry-only SIGMA-co-ligand declash of one assembled frame.
+
+    Complements the eta-ring spin (:func:`declash_frame`): relieves crowding of
+    the NON-eta ligand BODIES (stannyl SnCl3, stibine SbR3, phosphite, ...) by
+    the existing joint_declash kinematics -- each ligand's whole-body rotation
+    about its M-donor axis plus its internal rotatable-bond torsions, with the
+    metal + ALL donor atoms FROZEN (so the coordination polyhedron is invariant).
+    This is what makes the (correct, shorter) M-(heavy-main-group donor) bond
+    safe: with the donor pulled in to ~2.6 A the co-ligand substituents would
+    otherwise crowd; rotating them to their open conformer relieves it.
+
+    Donors = every non-metal atom within bonding range of a metal (frozen).
+    A partition-free total-overlap final guard rejects any result that is not
+    strictly never-worse (depth + worst contact + hard-<0.9A count).  Geometry-
+    only; deterministic; returns the input on any anomaly / no improvement."""
+    try:
+        P0 = np.array(coords, dtype=float)
+        n = len(syms)
+        if n < 4 or P0.shape != (n, 3) or not np.all(np.isfinite(P0)):
+            return P0
+        metals = [i for i in range(n) if _is_metal(syms[i])]
+        if not metals:
+            return P0
+        bonds = _derive_bonds_geom(syms, P0)
+        metal_set = set(metals)
+        frozen = set(metals)
+        for i, j in bonds:                          # donors = atoms bonded to a metal
+            if (i in metal_set) ^ (j in metal_set):
+                frozen.add(j if i in metal_set else i)
+        from delfin.manta import joint_declash as _JD
+        Pn = np.asarray(_JD.declash(syms, P0, frozen, bond_pairs=bonds), dtype=float)
+        if Pn.shape != P0.shape or not np.all(np.isfinite(Pn)):
+            return P0
+        # partition-free never-worse guard (same standard as the ring spin)
+        vdw = np.array([(_VDW.get(s, _VDW_D) if s != "H" else 0.0) for s in syms],
+                       dtype=float)
+        cov = np.array([_COV.get(s, _COV_D) for s in syms], dtype=float)
+        l0, w0, h0 = _total_overlap(P0, vdw, cov, clash_f)
+        l1, w1, h1 = _total_overlap(Pn, vdw, cov, clash_f)
+        if l1 > l0 + 1e-9 or w1 < w0 - 1e-6 or h1 > h0:
+            return P0
+        return Pn
+    except Exception:
+        return np.array(coords, dtype=float)
+
+
 # ---------------------------------------------------------------------------
 # Carbonyl (and terminal triple-bond) length correction.
 # ---------------------------------------------------------------------------

@@ -28611,6 +28611,57 @@ def _hapto_declash_filter(isomers):
         return isomers
 
 
+def _sigma_declash_filter(isomers):
+    """SIGMA-co-ligand inter-ligand declash over the emitted ensemble -- the
+    sigma-ligand counterpart to the eta-ring spin (_hapto_declash_filter).
+
+    Relieves crowding of the NON-eta ligand BODIES (stannyl / stibine / phosphite
+    / bulky phosphine substituents) by the joint_declash kinematics: each ligand's
+    whole-body rotation about its M-donor axis + internal rotatable-bond torsions,
+    metal + ALL donors FROZEN (coordination polyhedron invariant).  A
+    partition-free total-overlap guard makes every frame strictly never-worse
+    (measured on the hapto pool: inter-ligand clashes 4867 -> 4150 on top of the
+    ring spin, 0 frames worse).
+
+    Runs over the FINAL dedup'd manifold (count-preserving: a frame is only
+    re-emitted when an atom actually moved).  Identity (byte-identical) unless
+    DELFIN_FFFREE_SIGMA_DECLASH=1.  Geometry-only; deterministic; never raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_SIGMA_DECLASH", "0") != "1":
+        return isomers
+    try:
+        import numpy as np
+        from delfin.manta import hapto_declash as _HD
+        out = []
+        for item in isomers:
+            is_tuple = isinstance(item, (tuple, list))
+            xyz = item[0] if is_tuple and item else item
+            lines = str(xyz).splitlines()
+            syms, coords, idx = [], [], []
+            for li, ln in enumerate(lines):
+                p = ln.split()
+                if len(p) >= 4:
+                    try:
+                        x, y, z = float(p[1]), float(p[2]), float(p[3])
+                    except ValueError:
+                        continue
+                    syms.append(p[0]); coords.append([x, y, z]); idx.append(li)
+            if len(syms) < 4:
+                out.append(item); continue
+            P = np.asarray(_HD.declash_frame_sigma(syms, coords), float)
+            orig = np.asarray(coords, float)
+            if P.shape != orig.shape or np.allclose(P, orig, atol=1e-7):
+                out.append(item); continue
+            for k, li in enumerate(idx):
+                p = lines[li].split()
+                p[1] = f"{P[k][0]:.6f}"; p[2] = f"{P[k][1]:.6f}"; p[3] = f"{P[k][2]:.6f}"
+                lines[li] = " ".join(p)
+            new_xyz = "\n".join(lines)
+            out.append((new_xyz,) + tuple(item[1:]) if is_tuple else new_xyz)
+        return out
+    except Exception:
+        return isomers
+
+
 def _carbonyl_fix_filter(isomers):
     """Contract stretched terminal metal-carbonyl C#O bonds over the emitted
     ensemble.  The analytical seat's flat _bond_len places C-O at the single-bond
@@ -29320,11 +29371,12 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # Both are geometry-only, count-preserving transforms over the final
         # dedup'd ensemble (byte-id when off); carbonyl fix runs after the declash.
         _hdeclash = _hapto_declash_filter if outermost else (lambda x: x)
+        _sdeclash = _sigma_declash_filter if outermost else (lambda x: x)
         _cofix = _carbonyl_fix_filter if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_cofix(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))), r[1]
+            return _rank_emitted_isomers(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_cofix(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))
+            return _rank_emitted_isomers(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))))
         return r
     finally:
         if outermost:
