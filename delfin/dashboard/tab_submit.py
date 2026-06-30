@@ -901,8 +901,8 @@ def create_tab(ctx):
         if gif_uri:
             visual_html = (
                 f"<img src='{gif_uri}' alt='MANTA working' "
-                "style='width:auto; height:auto; max-width:58%; max-height:46%; "
-                "object-fit:contain;'/>"
+                "style='width:92%; max-width:1050px; height:auto; "
+                "object-fit:contain; image-rendering:auto;'/>"
             )
         else:
             visual_html = (
@@ -913,7 +913,7 @@ def create_tab(ctx):
             "<div class='manta-busy-stage' style='display:flex; "
             "flex-direction:column; align-items:center; justify-content:center; "
             f"width:100%; min-height:{SUBMIT_MOL_HEIGHT - 6}px; gap:20px; "
-            "background:#ffffff;'>"
+            "background:#fcfcfc;'>"
             f"{visual_html}"
             "<div class='manta-busy-caption' style='display:flex; "
             "align-items:center; justify-content:center; gap:8px; max-width:84%; "
@@ -1130,11 +1130,21 @@ def create_tab(ctx):
         _set_smiles_conversion_busy(True)
 
         if rank:
-            # MANTA only: play the floating MANTA animation in the viewer
-            # while it builds the manifold + GFN2-ranks + optimizes the top N.
-            _show_mol_busy('MANTA (best version): building manifold + GFN2 '
-                           'ranking + optimizing top 10 (needs xtb; takes a '
-                           'bit)...')
+            # MANTA only: play the MANTA animation in the viewer while it
+            # builds the manifold + ranks + optimizes. Phrase the caption from
+            # the actual settings (Rank method + Opt top-N), not hard-coded.
+            _method_lbl = str(method).upper()
+            _topn = 0 if opt_topn is None else int(opt_topn)
+            if _topn == 0:
+                _opt_part = ' + optimizing all'
+            elif _topn < 0:
+                _opt_part = ''
+            else:
+                _opt_part = f' + optimizing top {_topn}'
+            _show_mol_busy(
+                f'MANTA: building manifold + {_method_lbl} ranking{_opt_part} '
+                '(needs xtb; takes a bit)...'
+            )
         else:
             _clear_mol_output()
             if quick:
