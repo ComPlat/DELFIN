@@ -28662,63 +28662,6 @@ def _sigma_declash_filter(isomers):
         return isomers
 
 
-def _macrocycle_planarize_filter(isomers, smiles):
-    """Flatten conjugated metallo-macrocycles (porphyrin / phthalocyanine / corrole)
-    over the emitted ensemble.  MANTA's analytical/embed paths planarise individual
-    rings but ruffle the fused MACROCYCLE (porphyrin measured ~0.5 A RMS from the
-    mean plane vs <0.1 for planar, and plain UFF/"quick" gets ~0.36 -- MANTA must
-    not be worse than quick on ANY system).  This projects the conjugated macro-
-    cyclic core onto its best-fit plane + restores the in-plane bond lengths.
-
-    Gated to AROMATIC, already-mostly-planar cores only (never flattens a 3-D
-    macrocycle: crown ether / cyclam / sepulchrate).  Identity (byte-id) unless
-    DELFIN_FFFREE_MACROCYCLE_PLANARIZE=1.  Geometry-only; deterministic; never raises."""
-    if (not isomers or not smiles
-            or os.environ.get("DELFIN_FFFREE_MACROCYCLE_PLANARIZE", "0") != "1"):
-        return isomers
-    try:
-        import numpy as np
-        from rdkit import Chem
-        from delfin.manta import macrocycle_planarize as _MP
-        mol = Chem.MolFromSmiles(smiles, sanitize=False)
-        if mol is None:
-            return isomers
-        core, arom = _MP.detect_core(mol)
-        if core is None or not arom:
-            return isomers                               # not a conjugated macrocycle
-        mol_heavy = [a.GetSymbol() for a in mol.GetAtoms() if a.GetSymbol() != "H"]
-        out = []
-        for item in isomers:
-            is_tuple = isinstance(item, (tuple, list))
-            xyz = item[0] if is_tuple and item else item
-            lines = str(xyz).splitlines()
-            hsym, hxyz, hline = [], [], []
-            for li, ln in enumerate(lines):
-                p = ln.split()
-                if len(p) >= 4:
-                    try:
-                        x, y, z = float(p[1]), float(p[2]), float(p[3])
-                    except ValueError:
-                        continue
-                    if p[0] != "H":
-                        hsym.append(p[0]); hxyz.append([x, y, z]); hline.append(li)
-            if hsym != mol_heavy:                        # need heavy-order match to mol
-                out.append(item); continue
-            Pf = np.asarray(_MP.planarize(hsym, hxyz, mol), float)
-            orig = np.asarray(hxyz, float)
-            if Pf.shape != orig.shape or np.allclose(Pf, orig, atol=1e-7):
-                out.append(item); continue
-            for k, li in enumerate(hline):
-                p = lines[li].split()
-                p[1] = f"{Pf[k][0]:.6f}"; p[2] = f"{Pf[k][1]:.6f}"; p[3] = f"{Pf[k][2]:.6f}"
-                lines[li] = " ".join(p)
-            new_xyz = "\n".join(lines)
-            out.append((new_xyz,) + tuple(item[1:]) if is_tuple else new_xyz)
-        return out
-    except Exception:
-        return isomers
-
-
 def _carbonyl_fix_filter(isomers):
     """Contract stretched terminal metal-carbonyl C#O bonds over the emitted
     ensemble.  The analytical seat's flat _bond_len places C-O at the single-bond
@@ -29434,15 +29377,10 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # (the early one runs before _conf re-expands conformers; conformer/declash
         # frames that decoordinate a donor must be caught here). Byte-id when off.
         _coordint_late = _coord_integrity_filter if outermost else (lambda x: x)
-        # _mplan = conjugated-macrocycle planarisation (porphyrin etc.); needs the
-        # SMILES for ring/aromaticity perception. Last geometry transform; byte-id off.
-        _smi_arg = (args[0] if args else kwargs.get("smiles"))
-        _mplan = ((lambda x: _macrocycle_planarize_filter(x, _smi_arg))
-                  if outermost else (lambda x: x))
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_mplan(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))))))), r[1]
+            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_mplan(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))))))
+            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))
         return r
     finally:
         if outermost:
