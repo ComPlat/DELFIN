@@ -900,10 +900,9 @@ def create_tab(ctx):
         gif_uri = _manta_gif_data_uri()
         if gif_uri:
             visual_html = (
-                f"<img class='manta-busy-gif' src='{gif_uri}' alt='MANTA working' "
+                f"<img src='{gif_uri}' alt='MANTA working' "
                 "style='width:auto; height:auto; max-width:58%; max-height:46%; "
-                "object-fit:contain; "
-                "filter:drop-shadow(0 8px 18px rgba(25,118,210,0.22));'/>"
+                "object-fit:contain;'/>"
             )
         else:
             visual_html = (
@@ -3157,18 +3156,6 @@ def create_tab(ctx):
             overflow: hidden !important;
             max-width: 100% !important;
             max-height: 100% !important;
-        }
-        @keyframes manta-busy-float {
-            0%   { transform: translateY(0)     scale(1);    }
-            50%  { transform: translateY(-12px) scale(1.03); }
-            100% { transform: translateY(0)     scale(1);    }
-        }
-        .manta-busy-gif {
-            animation: manta-busy-float 3.4s ease-in-out infinite;
-            will-change: transform;
-        }
-        @media (prefers-reduced-motion: reduce) {
-            .manta-busy-gif { animation: none; }
         }
         .submit-fs-overlay {
             position: fixed !important;
