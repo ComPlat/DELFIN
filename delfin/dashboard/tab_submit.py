@@ -1,6 +1,8 @@
 """Submit Job tab: main DELFIN job submission form."""
 
+import base64
 import html
+import importlib.resources
 import json
 import re
 import shlex
@@ -25,6 +27,34 @@ from .input_processing import (
     smiles_to_xyz_isomers, is_smiles,
     clean_input_data, parse_resource_settings,
 )
+
+
+_MANTA_GIF_DATA_URI_CACHE = None
+
+
+def _manta_gif_data_uri():
+    """Return the packaged MANTA loading animation as a data URI (cached).
+
+    Mirrors the dashboard logo loader: read the gif shipped under
+    ``delfin/logo`` and inline it as a base64 ``data:`` URI so it renders
+    inside the molecule viewer without needing a served static path.
+    Returns ``''`` when the asset is unavailable.
+    """
+    global _MANTA_GIF_DATA_URI_CACHE
+    if _MANTA_GIF_DATA_URI_CACHE is not None:
+        return _MANTA_GIF_DATA_URI_CACHE
+    uri = ''
+    try:
+        gif = importlib.resources.files('delfin').joinpath(
+            'logo', 'MANTA_readme_demo.gif')
+        if gif.is_file():
+            data = gif.read_bytes()
+            if data:
+                uri = 'data:image/gif;base64,' + base64.b64encode(data).decode('ascii')
+    except Exception:
+        uri = ''
+    _MANTA_GIF_DATA_URI_CACHE = uri
+    return uri
 
 
 def _smiles_to_architector_input(smiles):
@@ -857,6 +887,49 @@ def create_tab(ctx):
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
         _set_manip_toolbar_enabled(True)
 
+    def _show_mol_busy(message):
+        """Render the animated MANTA loader centered in the viewer.
+
+        While the manifold build / GFN2 ranking / optimization runs there is
+        no structure to show, so fill the 3D viewer box with the floating
+        MANTA mark plus a status caption. ``_replace_mol_output_view`` later
+        swaps it out for the finished structure (same as before).
+        """
+        _clear_mol_status()
+        safe_msg = html.escape(str(message))
+        gif_uri = _manta_gif_data_uri()
+        if gif_uri:
+            visual_html = (
+                f"<img class='manta-busy-gif' src='{gif_uri}' alt='MANTA working' "
+                "style='width:auto; height:auto; max-width:58%; max-height:46%; "
+                "object-fit:contain; "
+                "filter:drop-shadow(0 8px 18px rgba(25,118,210,0.22));'/>"
+            )
+        else:
+            visual_html = (
+                "<span class='delfin-busy' style='width:42px; height:42px; "
+                "border-width:4px;'></span>"
+            )
+        payload = (
+            "<div class='manta-busy-stage' style='display:flex; "
+            "flex-direction:column; align-items:center; justify-content:center; "
+            f"width:100%; min-height:{SUBMIT_MOL_HEIGHT - 6}px; gap:20px; "
+            "background:#ffffff;'>"
+            f"{visual_html}"
+            "<div class='manta-busy-caption' style='display:flex; "
+            "align-items:center; justify-content:center; gap:8px; max-width:84%; "
+            "font-family:monospace; font-size:13px; line-height:1.4; "
+            "color:#1976d2; text-align:center;'>"
+            "<span class='delfin-busy' style='vertical-align:middle;'></span>"
+            f"<span>{safe_msg}</span></div></div>"
+        )
+        mol_output.outputs = ({
+            'output_type': 'display_data',
+            'data': {'text/html': payload},
+            'metadata': {},
+        },)
+        _set_manip_toolbar_enabled(False)
+
     def _apply_smiles_conversion_result(task_id, *, quick, cleaned_data, result):
         if task_id != state['smiles_task_id']:
             return
@@ -1057,17 +1130,20 @@ def create_tab(ctx):
         task_id = state['smiles_task_id']
         _set_smiles_conversion_busy(True)
 
-        _clear_mol_output()
         if rank:
-            _set_mol_status('MANTA (best version): building manifold + GFN2 '
-                            'ranking + optimizing top 10 (needs xtb; takes a '
-                            'bit)...', spinner=True)
-        elif quick:
-            _set_mol_status('Quick convert (single structure)...', spinner=True)
-        elif apply_uff:
-            _set_mol_status('Converting SMILES with UFF...', spinner=True)
+            # MANTA only: play the floating MANTA animation in the viewer
+            # while it builds the manifold + GFN2-ranks + optimizes the top N.
+            _show_mol_busy('MANTA (best version): building manifold + GFN2 '
+                           'ranking + optimizing top 10 (needs xtb; takes a '
+                           'bit)...')
         else:
-            _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
+            _clear_mol_output()
+            if quick:
+                _set_mol_status('Quick convert (single structure)...', spinner=True)
+            elif apply_uff:
+                _set_mol_status('Converting SMILES with UFF...', spinner=True)
+            else:
+                _set_mol_status('Converting SMILES (no UFF)...', spinner=True)
 
         def _worker():
             import os
@@ -3081,6 +3157,18 @@ def create_tab(ctx):
             overflow: hidden !important;
             max-width: 100% !important;
             max-height: 100% !important;
+        }
+        @keyframes manta-busy-float {
+            0%   { transform: translateY(0)     scale(1);    }
+            50%  { transform: translateY(-12px) scale(1.03); }
+            100% { transform: translateY(0)     scale(1);    }
+        }
+        .manta-busy-gif {
+            animation: manta-busy-float 3.4s ease-in-out infinite;
+            will-change: transform;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .manta-busy-gif { animation: none; }
         }
         .submit-fs-overlay {
             position: fixed !important;
