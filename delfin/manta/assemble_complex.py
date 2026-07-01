@@ -724,7 +724,45 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
                         for i in range(len(donor_idxs))])
         dmu = don.mean(0); tmu = tgt.mean(0)
         Rk = _kabsch_rot(don - dmu, tgt - tmu)
-        return (np.asarray(lP, float) - dmu) @ Rk.T + tmu
+        Qr = (np.asarray(lP, float) - dmu) @ Rk.T + tmu
+        # CAGE-CRUSH GUARD (DELFIN_FFFREE_CAGE_MD_GUARD, default-OFF -> byte-id):
+        # the rigid fit preserves the embed's ligand geometry EXACTLY, so it also
+        # preserves a CRUSHED embed (ETKDG produced a cavity far too small for the
+        # metal) -> the emergent M-D comes out physically IMPOSSIBLE (eye/CCDC:
+        # clathrochelate Co-O 1.49 vs ideal ~1.95, a 24% collapse).  A crushed
+        # coordination bond is UNRELAXABLE downstream (breaks topology / QM), whereas
+        # the per-donor radial placement gives correct M-D at the cost of (soft,
+        # UFF-relaxable) angle splay.  So when the emergent coordination sphere is
+        # crushed below a physical fraction of ideal, the "ligand-geometry-first"
+        # premise has FAILED for this embed -> DON'T trust it: fall through to the
+        # per-donor radial placement (ideal M-D).  Healthy rigid cages (emergent M-D
+        # ~0.9 of ideal, e.g. QEBLOC) stay on the rigid path untouched.  General:
+        # keys only on the physical M-D fraction, never on any SMILES/refcode.
+        if os.environ.get("DELFIN_FFFREE_CAGE_MD_GUARD", "0") == "1":
+            _emd = np.array([float(np.linalg.norm(Qr[d])) for d in donor_idxs])
+            _idl = np.array([float(tgt_md[perm[i]]) for i in range(len(donor_idxs))])
+            try:
+                _frac = float(os.environ.get("DELFIN_FFFREE_CAGE_MD_FRAC", "0.80"))
+            except Exception:
+                _frac = 0.80
+            # PER-DONOR ratio (NOT mean-vs-mean): the crush is typically UNEVEN — a
+            # subset of donors (e.g. the 3 O of an N3O3 clathrochelate) collapse to
+            # ~0.76 of ideal while the rest sit near ideal, so the MEAN stays above
+            # threshold and hides the broken bonds.  Flag the embed as crushed when
+            # ANY donor's emergent M-D falls below _frac of ITS OWN ideal M-D (each
+            # donor compared to its own covalent-radii target, so mixed-donor cages
+            # are judged correctly).
+            _rat = _emd / np.where(_idl > 1e-6, _idl, np.inf)
+            _crushed = bool(np.min(_rat) < _frac)
+            if os.environ.get("DELFIN_CAGE_DEBUG", "0") == "1":
+                os.write(2, ("[CAGE_GUARD] dent=%d emd_min=%.3f idl_min=%.3f min_ratio=%.3f crushed=%s\n"
+                             % (len(donor_idxs), float(np.min(_emd)), float(np.min(_idl)),
+                                float(np.min(_rat)), _crushed)).encode())
+            if not _crushed:
+                return Qr
+            # else fall through to the per-donor radial placement below (ideal M-D)
+        else:
+            return Qr
     # Per-donor RADIAL placement at the exact ideal M-donor distance (NOT a uniform
     # scale, which preserved the ETKDG embed's M-D asymmetry -> over-contracted donors,
     # the FEKZON CCDC defect).  Keep each donor's Kabsch-rotated DIRECTION (so the embed's
