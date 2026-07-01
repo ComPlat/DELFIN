@@ -739,28 +739,34 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
         # ~0.9 of ideal, e.g. QEBLOC) stay on the rigid path untouched.  General:
         # keys only on the physical M-D fraction, never on any SMILES/refcode.
         if os.environ.get("DELFIN_FFFREE_CAGE_MD_GUARD", "0") == "1":
-            _emd = np.array([float(np.linalg.norm(Qr[d])) for d in donor_idxs])
-            _idl = np.array([float(tgt_md[perm[i]]) for i in range(len(donor_idxs))])
             try:
-                _frac = float(os.environ.get("DELFIN_FFFREE_CAGE_MD_FRAC", "0.80"))
+                _frac = float(os.environ.get("DELFIN_FFFREE_CAGE_MD_FRAC", "0.85"))
             except Exception:
-                _frac = 0.80
-            # PER-DONOR ratio (NOT mean-vs-mean): the crush is typically UNEVEN — a
-            # subset of donors (e.g. the 3 O of an N3O3 clathrochelate) collapse to
-            # ~0.76 of ideal while the rest sit near ideal, so the MEAN stays above
-            # threshold and hides the broken bonds.  Flag the embed as crushed when
-            # ANY donor's emergent M-D falls below _frac of ITS OWN ideal M-D (each
-            # donor compared to its own covalent-radii target, so mixed-donor cages
-            # are judged correctly).
-            _rat = _emd / np.where(_idl > 1e-6, _idl, np.inf)
-            _crushed = bool(np.min(_rat) < _frac)
-            if os.environ.get("DELFIN_CAGE_DEBUG", "0") == "1":
-                os.write(2, ("[CAGE_GUARD] dent=%d emd_min=%.3f idl_min=%.3f min_ratio=%.3f crushed=%s\n"
-                             % (len(donor_idxs), float(np.min(_emd)), float(np.min(_idl)),
-                                float(np.min(_rat)), _crushed)).encode())
-            if not _crushed:
-                return Qr
-            # else fall through to the per-donor radial placement below (ideal M-D)
+                _frac = 0.85
+            # PER-DONOR IN-PLACE reset (NOT mean-vs-mean, NOT fall-through-to-rescale):
+            # the crush is typically UNEVEN — a subset of donors (the 3 O of an N3O3
+            # clathrochelate, or the 2 short Cd-N of an over-coordinated diimine)
+            # collapse below ideal while the rest sit near ideal.  For EACH donor whose
+            # emergent M-D (|Qr[d]|, metal at origin) is crushed below _frac of ITS OWN
+            # ideal M-D, reset it radially to ideal (keep direction); healthy donors +
+            # the backbone stay on the rigid fit.  This fixes the EMITTED frame DIRECTLY
+            # — a fall-through to the full per-donor rescale changes conformer SELECTION
+            # and the clash metric then prefers the still-crushed conformer (YECSUW:
+            # emitted stayed 1.785).  The downstream constrained relax (donors frozen)
+            # pulls the backbone to follow.  General, keys only on the physical M-D
+            # ratio (never SMILES/refcode); byte-id OFF; healthy cages (ratio ~0.9,
+            # QEBLOC/FEKZON) have no donor below threshold -> untouched.
+            _nfix = 0
+            for _i, _d in enumerate(donor_idxs):
+                _r = float(np.linalg.norm(Qr[_d]))
+                _idl = float(tgt_md[perm[_i]])
+                if _r > 1e-6 and _idl > 1e-6 and _r < _frac * _idl:
+                    Qr[_d] = Qr[_d] / _r * _idl
+                    _nfix += 1
+            if os.environ.get("DELFIN_CAGE_DEBUG", "0") == "1" and _nfix:
+                os.write(2, ("[CAGE_GUARD] dent=%d reset %d/%d donors to ideal M-D\n"
+                             % (len(donor_idxs), _nfix, len(donor_idxs))).encode())
+            return Qr
         else:
             return Qr
     # Per-donor RADIAL placement at the exact ideal M-donor distance (NOT a uniform
