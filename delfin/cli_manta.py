@@ -43,6 +43,14 @@ _CHAMPION_FLAGS = (
     # 9-0, over-coord 5-0 vs crystal; broad pool ~6% small ~0.05A regressions to be
     # removed by the whole-complex relax).  User-approved ship 2026-07-01.
     "CAGE_MD_GUARD",
+    # CN4 dual-geometry completeness (dropped from V2R champion in the reorg): additively
+    # enumerate the OPPOSITE CN4 polyhedron (SP-4<->T-4) so the crystal's geometry is never
+    # absent from the manifold when `_default_geometry` picked the other.  Closes the whole
+    # "crystal geometry != metal default" SET-gap class (YEGGUO 2.12->0.56 = champion).
+    # Native-additive/never-worse: the chelate path only augments when the default chelate
+    # itself succeeds (`and chel` guard, converter_backend.py), so it can never suppress the
+    # binding-mode fallback (DIPZOV 0.14 preserved).  A/B @extreme: BETTER 2, WORSE 0.
+    "CN4_BOTH",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 

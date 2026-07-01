@@ -1241,7 +1241,16 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         # e.g. QAKTOO is Td but Au defaults to SP-4) was never emitted.  Additively
         # enumerate the OTHER CN4 polyhedron's chelate isomers on top.  Best-effort:
         # the opposite-geometry pass never bails the primary result.
-        if (_cn4_both_enabled() and d.get("cn") == 4
+        # NEVER-WORSE GUARD (2026-07-01): only ADD the opposite-CN4 chelate isomers when
+        # the DEFAULT-geometry chelate path itself produced isomers (`chel` non-empty).
+        # If the default chelate returned nothing (e.g. DIPZOV: T-4 chelate = 0 isomers),
+        # this branch must return None so the caller falls through to the binding-mode /
+        # non-chelate fallback that builds the CORRECT isomers (DIPZOV cis/see-saw = 0.14).
+        # Without this guard the SP-4 `extra` alone masks the empty default, SUPPRESSES the
+        # good fallback, and REGRESSES the system (DIPZOV 0.14 -> 0.56).  Purely additive:
+        # where the default chelate succeeds, the opposite geometry is still added (YEGGUO
+        # wins via the separate non-chelate path, unaffected).
+        if (_cn4_both_enabled() and d.get("cn") == 4 and chel
                 and _cn4_opposite_geometry(d["geometry"]) is not None):
             opp = _cn4_opposite_geometry(d["geometry"])
             opp_key = _GEOM_TO_POLYA.get(opp)
@@ -1253,7 +1262,15 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                 except Exception:
                     extra = []
                 chel = chel + extra
-        return _coord_filter(chel or None)
+                if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
+                    os.write(2, ("[CN4_BOTH] default_chel=%d extra=%d total=%d geom=%s opp=%s\n"
+                                 % (len(chel)-len(extra), len(extra), len(chel),
+                                    d["geometry"], opp)).encode())
+        _r = _coord_filter(chel or None)
+        if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
+            os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"
+                         % (len(_r or []), len(chel))).encode())
+        return _r
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:

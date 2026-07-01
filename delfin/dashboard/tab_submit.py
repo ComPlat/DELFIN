@@ -285,6 +285,7 @@ _MANTA_CHAMPION_FLAGS = (
     "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
     "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE",
     "CAGE_MD_GUARD",   # per-donor M-D crush guard @0.85 (net-positive, user-approved 2026-07-01)
+    "CN4_BOTH",        # CN4 dual-geometry completeness (additive/never-worse; YEGGUO 2.12->0.56)
 )
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
 _MANTA_OPT_TOPN = 10
