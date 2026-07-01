@@ -272,6 +272,43 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                         useRandomCoords=False))
                 except Exception:
                     cids = []
+            # EMBED-FLOOR (DELFIN_FFFREE_EMBED_FLOOR, default-OFF -> byte-id): the
+            # unconstrained fallback embed has NO metal->non-donor lower bound, so a
+            # NON-DONOR heavy atom (a carboxylate carbonyl-O/C, a pendant heteroatom on
+            # a donor's first shell) collapses ONTO the metal (~0.7-1.1 A) -> that
+            # in-shell intruder makes _build_is_clean reject the whole complex -> it
+            # falls to legacy UFF whose buckled donors are the generic-sigma set-gap
+            # (#1 RMSD lever, ~2/3 of it).  Generate ADDITIONAL conformers with a
+            # metal->non-donor EXCLUSION bounds matrix and POOL them with the
+            # unconstrained ones (never replace).  ADDITIVE = never-worse by
+            # construction: the caller's clash-selection keeps the best, and the
+            # original unconstrained conformers stay in the pool (so a system that was
+            # already fine, e.g. MEZFOM, keeps its good frame — this is why we pool,
+            # not swap: raw OC6_VERTEX swapped and regressed MEZFOM 2.05->2.54).
+            # License-clean (covalent bounds + donor set from the cleave), deterministic.
+            if os.environ.get("DELFIN_FFFREE_EMBED_FLOOR", "0") == "1":
+                try:
+                    from rdkit.Chem import rdDistGeom as _DGf
+                    from rdkit import DistanceGeometry as _DGfs
+                    _bmf = _DGf.GetMoleculeBoundsMatrix(mh)
+                    _dsetf = {int(d) for d in donor_idxs}
+                    _exclf = float(os.environ.get("DELFIN_FFFREE_OC6_NONDONOR_EXCL", "2.4"))
+                    for _ai in range(mh.GetNumAtoms()):
+                        if _ai != mi and _ai not in _dsetf:
+                            _ish = mh.GetAtomWithIdx(_ai).GetAtomicNum() == 1
+                            _lof = 1.2 if _ish else _exclf
+                            _a2, _b2 = min(_ai, mi), max(_ai, mi)
+                            _bmf[_a2][_b2] = max(float(_bmf[_a2][_b2]), _lof + 2.0)
+                            _bmf[_b2][_a2] = float(_lof)
+                    if _DGfs.DoTriangleSmoothing(_bmf):
+                        _epf = _DGf.EmbedParameters()
+                        _epf.randomSeed = SEED
+                        _epf.useRandomCoords = True
+                        _epf.SetBoundsMat(_bmf)
+                        _fcids = list(AllChem.EmbedMultipleConfs(mh, numConfs=k, params=_epf))
+                        cids = list(cids) + [c for c in _fcids if c not in cids]
+                except Exception:
+                    pass
         if not cids:
             if AllChem.EmbedMolecule(mh, randomSeed=SEED, useRandomCoords=True) != 0:
                 return None
