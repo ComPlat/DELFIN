@@ -38,6 +38,11 @@ _CHAMPION_FLAGS = (
     "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
     "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
     "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE", "KAPPA4", "CONF_ENERGY_RANK",
+    # per-donor M-D crush guard @0.85 (refines the LIGAND_RIGID rigid seat): expands
+    # crushed cage/over-coordination donors to ideal M-D.  Net-positive (curated cage
+    # 9-0, over-coord 5-0 vs crystal; broad pool ~6% small ~0.05A regressions to be
+    # removed by the whole-complex relax).  User-approved ship 2026-07-01.
+    "CAGE_MD_GUARD",
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 

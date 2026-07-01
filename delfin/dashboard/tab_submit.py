@@ -284,6 +284,7 @@ _MANTA_CHAMPION_FLAGS = (
     "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
     "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
     "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE",
+    "CAGE_MD_GUARD",   # per-donor M-D crush guard @0.85 (net-positive, user-approved 2026-07-01)
 )
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
 _MANTA_OPT_TOPN = 10
