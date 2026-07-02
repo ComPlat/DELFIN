@@ -302,7 +302,12 @@ def _lig_groups_from_config(config, ligands):
             return None
         dons = [int(x) for x in lg["donor_local_idxs"]]
         groups.append({"mol": lg["mol"], "global_idxs": list(range(pos, pos + n)),
-                       "donor_local": dons})
+                       "donor_local": dons,
+                       # carry the rigid-planar-macrocycle tag so the backbone re-embed
+                       # can skip it (re-embedding re-puckers a rigidly-flat porphyrin/
+                       # phthalocyanine); default False -> byte-identical.
+                       "rigid_planar": bool(lg.get("rigid_planar")),
+                       "denticity": int(lg.get("denticity", len(dons)))})
         pos += n
     return groups
 
@@ -386,6 +391,16 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     native frame, never replaces it, and each is self-gated so it is never worse than
     legacy.  Default OFF -> no-op (byte-identical).  Never raises."""
     if not _BR.enabled() or lig_groups is None:
+        return
+    # A RIGID PLANAR macrocycle (porphyrin / phthalocyanine, dent>=3) is rigidly flat —
+    # it has no meaningful backbone conformational freedom.  Re-embedding its backbone
+    # only RE-PUCKERS the correctly-flat coplanar seat (BEGNOT: flat 0.06 -> re-embedded
+    # 0.4-0.6 macroRMS) and floods the manifold with unphysical puckered frames that rank
+    # ahead of the flat one.  Skip the re-embed for such configs so the flat frame stays
+    # the emitted output.  Gated by MACROCYCLE_FLATTEN (default OFF -> byte-identical: the
+    # re-embed still runs, matching historic behaviour when the flatten feature is off).
+    if (os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1"
+            and any(lg.get("rigid_planar") and lg.get("denticity", 0) >= 3 for lg in lig_groups)):
         return
     try:
         frames = _BR.reembed_complex(metal, lig_groups, (list(base_syms), base_P))

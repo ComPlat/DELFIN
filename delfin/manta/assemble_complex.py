@@ -309,6 +309,98 @@ def _planar_polydentate_place_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_PLANAR_POLYDENTATE_PLACE", "0") == "1"
 
 
+def _macrocycle_flatten_enabled() -> bool:
+    """Flatten the conjugated ring system of a RIGID PLANAR macrocyclic ligand
+    (porphyrin / phthalocyanine / conjugated Schiff-base) onto its own mean plane at
+    build time.
+
+    ROOT of the macrocycle-planarity defect: the fused aromatic macrocycle is
+    physically planar (CCDC BEGNOT perfluoro-Pc conj-core out-of-plane RMS 0.014), but
+    the free-ligand ETKDG+MMFF embed DOMES it badly (conj-core RMS ~1.7), and every
+    downstream flat-conformer consumer (``_coplanar_metal_centered_conformer`` requires
+    the backbone flat to solve the metal in-plane) then bails to the folded metallacycle
+    embed -> the emitted complex stays puckered (macroRMS ~0.88 vs CCDC 0.014).
+    Projecting the conjugated ring atoms onto their mean plane while 1-2 bond springs
+    hold every bond length restores the flat conformer with ZERO bond distortion, so the
+    native in-plane metal solve produces a flat complex directly (not a post-hoc relax).
+
+    Self-gating for genuinely steric-saddled macrocycles (beta-octasubstituted
+    porphyrins whose substituents clash on flattening): the flatten is rejected when it
+    introduces a NEW severe heavy-heavy clash, so the domed/saddled embed survives and
+    the never-worse additive selection keeps it.  Default OFF -> byte-identical."""
+    return os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1"
+
+
+def _flatten_rigid_macrocycle(mh, P, conj_idx, bonds, iters=400):
+    """Project the conjugated ring system onto its mean plane while 1-2 (bond) AND 1-3
+    (bonded-angle) distance springs hold the fused-ring shape (deterministic pure-numpy).
+    The 1-3 springs are essential: bond springs alone let flattening squash an angle so
+    two ortho substituents collide (BEGNOT: two ortho-F pulled to 1.7 A); holding the
+    angles keeps a genuinely-flat macrocycle clash-free (conj-core RMS -> 0.03, no new
+    contact).  Returns flattened coords, or None when flattening still introduces a NEW
+    severe heavy-heavy clash (a genuinely steric-saddled macrocycle whose substituents
+    cannot lie flat) or on any failure -> caller keeps the original domed conformer."""
+    try:
+        conj = [int(i) for i in conj_idx]
+        if len(conj) < 6:
+            return None
+        adj = {}
+        for i, j in bonds:
+            adj.setdefault(i, set()).add(j); adj.setdefault(j, set()).add(i)
+        tp = set()                                     # 1-3 (bonded-angle) pairs
+        for kk in adj:
+            nb = list(adj[kk])
+            for a in range(len(nb)):
+                for b in range(a + 1, len(nb)):
+                    tp.add((min(nb[a], nb[b]), max(nb[a], nb[b])))
+        L0 = [(int(i), int(j), float(np.linalg.norm(P[i] - P[j]))) for (i, j) in bonds]
+        L13 = [(int(i), int(j), float(np.linalg.norm(P[i] - P[j]))) for (i, j) in tp]
+        heavy = [i for i in range(len(P)) if mh.GetAtomWithIdx(i).GetAtomicNum() > 1]
+        excl = set((min(i, j), max(i, j)) for (i, j) in bonds) | set(tp)
+
+        def _min_nb(Q):
+            mn = 1e9
+            for a in range(len(heavy)):
+                ia = heavy[a]
+                for b in range(a + 1, len(heavy)):
+                    ib = heavy[b]
+                    if (ia, ib) in excl:
+                        continue
+                    d = float(np.linalg.norm(Q[ia] - Q[ib]))
+                    if d < mn:
+                        mn = d
+            return mn
+
+        base_min = _min_nb(P)
+        X = P.copy()
+        for _ in range(int(iters)):
+            cc = X[conj]; c = cc.mean(0)
+            _, _, vv = np.linalg.svd(cc - c); nrm = vv[2]
+            F = np.zeros_like(X)
+            for i in conj:
+                F[i] -= 0.6 * float(np.dot(X[i] - c, nrm)) * nrm
+            for i, j, l0 in L0:
+                d = X[i] - X[j]; r = float(np.linalg.norm(d))
+                if r > 1e-9:
+                    f = -1.0 * (r - l0) * d / r; F[i] += f; F[j] -= f
+            for i, j, l0 in L13:
+                d = X[i] - X[j]; r = float(np.linalg.norm(d))
+                if r > 1e-9:
+                    f = -0.7 * (r - l0) * d / r; F[i] += f; F[j] -= f
+            step = 0.1 * F
+            mag = np.linalg.norm(step, axis=1); over = mag > 0.1
+            if np.any(over):
+                step[over] *= (0.1 / mag[over])[:, None]
+            X = X + step
+        if not np.all(np.isfinite(X)):
+            return None
+        if _min_nb(X) < min(2.2, base_min) - 0.3:      # flatten introduced a real clash
+            return None
+        return X
+    except Exception:
+        return None
+
+
 def _coplanar_metal_centered_conformer(mol, donor_idxs, metal_sym, mds, k=8):
     """Build a metal-centered conformer of a RIGID PLANAR polydentate in which the
     metal is COPLANAR with the donor set (the in-plane meridional pose a flat
@@ -381,6 +473,19 @@ def _coplanar_metal_centered_conformer(mol, donor_idxs, metal_sym, mds, k=8):
         keep = list(range(mh.GetNumAtoms()))
         for cid in cids:
             P = np.array(mh.GetConformer(cid).GetPositions(), float)
+            # RIGID PLANAR macrocycle (porphyrin / phthalocyanine): the free embed domes
+            # the fused aromatic system so the flatness gate below rejects every conformer
+            # and the metal-in-plane solve never runs.  Flatten the conjugated ring system
+            # onto its mean plane (bond lengths held) so the flat pose is realised; self-
+            # gated (None -> keep domed) for genuinely steric-saddled macrocycles.
+            if _macrocycle_flatten_enabled():
+                _conj = [a.GetIdx() for a in mh.GetAtoms()
+                         if a.GetAtomicNum() > 1 and a.IsInRing()
+                         and (a.GetIsAromatic() or str(a.GetHybridization()) == "SP2")]
+                _bnds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mh.GetBonds()]
+                _flat = _flatten_rigid_macrocycle(mh, P, _conj, _bnds)
+                if _flat is not None:
+                    P = _flat
             cen = P[ring].mean(axis=0)
             B = P[ring] - cen
             try:

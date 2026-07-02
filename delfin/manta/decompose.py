@@ -232,14 +232,27 @@ def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
         P = _np.array(mh.GetConformer().GetPositions(), float)
         D = P[dons]
         Dc = D - D.mean(axis=0)
-        # planarity: out-of-plane extent (smallest SVD singular value) must be small.
+        # planarity: out-of-plane extent (smallest SVD singular value).  NOTE: this is
+        # measured on the FREE ligand (metal removed), which DOMES without the metal
+        # template that holds the macrocycle flat in the actual complex — a genuine
+        # phthalocyanine free-embed sits at ~0.25 (BEGNOT: perfluoro-Pc, sv2/sv0 0.253,
+        # perfect square) yet is textbook rigid-planar once the metal is seated.  So the
+        # free-ligand planarity is only a LOOSE sanity bound; the SQUARE SIGNATURE below
+        # (equal sides + equal diagonals + sqrt(2) diagonal/side) is the real, metal-
+        # template-independent discriminator of a rigid planar macrocycle.  Reject only a
+        # clearly 3-D donor set (cage / tripodal, sv2/sv0 -> 0.4-0.7).
         try:
             _, sv, _ = _np.linalg.svd(Dc)
         except Exception:
             return False
         if sv[0] < 1e-6:
             return False
-        if float(sv[2] / sv[0]) > 0.22:               # not flat -> not rigid planar
+        # The loosened bound (0.35) admits domed-but-square macrocycles (phthalocyanine
+        # free-embed) whose flatness is only recoverable WITH the macrocycle-flatten seat;
+        # keep the historic strict 0.22 when that feature is off so KAPPA4-alone stays
+        # byte-identical.
+        _pl_thr = 0.35 if os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1" else 0.22
+        if float(sv[2] / sv[0]) > _pl_thr:            # clearly 3-D -> not rigid planar
             return False
         # square signature: 6 pairwise donor distances = 2 diagonals + 4 sides.
         dists = sorted(
@@ -250,7 +263,10 @@ def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
         diags = dists[4:]
         if sides[0] < 1e-6 or diags[0] < 1e-6:
             return False
-        # diagonals near-equal, sides near-equal, diagonal clearly > side.
+        # diagonals near-equal, sides near-equal, diagonal clearly > side.  This is the
+        # PRIMARY test: a real N4/O4 planar macrocycle forces a square (BEGNOT diags
+        # 4.11/4.11, sides 3.0x4, ratio 1.371 ~ sqrt(2)); a folded/tripodal donor set does
+        # not.  Kept strict so the loosened planarity bound above cannot admit non-squares.
         if diags[1] / diags[0] > 1.30:                # diagonals not balanced
             return False
         if sides[3] / sides[0] > 1.50:                # sides too irregular
