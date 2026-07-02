@@ -187,6 +187,63 @@ def _is_rigid_planar_tridentate(fmol, donor_local_idxs) -> bool:
         return False
 
 
+def _graph_rigid_planar_macrocycle(fmol, donor_local_idxs) -> bool:
+    """EMBED-FREE detection of a rigid planar conjugated macrocycle (porphyrin /
+    phthalocyanine / corrole / conjugated Schiff-base): every donor ring-borne + sp2/
+    aromatic, and the donors are cyclically linked by SHORT conjugated bridges (a
+    conjugated macrocyclic ring) -> PLANARITY IS IMPLIED BY CONJUGATION, no coordinate
+    embed needed.  This is essential for meso-bridged porphyrins whose metal-removed
+    free fragment is NOT RDKit-embeddable (KekulizeException) -> the geometric square
+    check below throws -> the ligand was wrongly treated as non-planar (GISHOF: built
+    TBP-5 instead of SPY-5).  Graph-only, deterministic; never raises."""
+    import collections
+    try:
+        dl = [int(x) for x in donor_local_idxs]
+        if len(dl) not in (3, 4):
+            return False
+        for di in dl:
+            a = fmol.GetAtomWithIdx(di)
+            if not a.IsInRing():
+                return False
+            if not (a.GetIsAromatic() or str(a.GetHybridization()) == "SP2"):
+                return False
+
+        def _conj(a):
+            return a.GetIsAromatic() or str(a.GetHybridization()) == "SP2"
+
+        adj = collections.defaultdict(set)
+        for b in fmol.GetBonds():
+            i, j = b.GetBeginAtom(), b.GetEndAtom()
+            if _conj(i) and _conj(j):
+                adj[i.GetIdx()].add(j.GetIdx())
+                adj[j.GetIdx()].add(i.GetIdx())
+
+        def _short(s, t, maxlen=6):
+            seen = {s: 0}
+            q = collections.deque([s])
+            while q:
+                u = q.popleft()
+                if u == t:
+                    return seen[u]
+                if seen[u] >= maxlen:
+                    continue
+                for w in adj[u]:
+                    if w not in seen:
+                        seen[w] = seen[u] + 1
+                        q.append(w)
+            return None
+
+        need = 2 if len(dl) == 4 else 1
+        for a in range(len(dl)):
+            c = sum(1 for b in range(len(dl)) if a != b
+                    and _short(dl[a], dl[b], 6) is not None)
+            if c < need:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
     """Universal, graph+geometry-only test for a RIGID PLANAR tetradentate ligand
     (porphyrin / phthalocyanine / corrole / planar Schiff-base macrocycle: 4
@@ -195,18 +252,13 @@ def _is_rigid_planar_tetradentate(fmol, donor_local_idxs) -> bool:
     its 4 donors must form an EQUATORIAL SQUARE (coplanar through the metal, leaving
     the axial sites free).  No SMILES/refcode knowledge.
 
-    Criteria (all required):
-      (1) exactly 4 donor atoms;
-      (2) every donor is a conjugated lone-pair donor (aromatic / sp2) AND lies in a
-          ring — an sp3 amine arm (cyclam / tren) is flexible, not rigid-planar;
-      (3) on an embedded free conformer the 4 donors are near-coplanar AND form a
-          SQUARE: the two longest donor-donor distances (the diagonals) are nearly
-          equal and clearly exceed the four shorter ones (the sides), with a
-          diagonal/side ratio in the porphyrin range (~1.25-1.6).
-
-    Returns True only when all hold; any failure / exception -> False (the ligand
-    keeps the historic over-enumerate-and-self-gate combinatorial freedom).
-    Deterministic."""
+    Graph-first (embed-free) when MACROCYCLE_FLATTEN is on: a conjugated macrocyclic
+    ring of ring-borne sp2 donors is planar by conjugation, so recognise it WITHOUT the
+    fragile free-ligand embed (which throws on kekulize-fragile porphyrins).  Falls
+    through to the historic embed-based square check otherwise (byte-identical off)."""
+    if (os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1"
+            and _graph_rigid_planar_macrocycle(fmol, donor_local_idxs)):
+        return True
     try:
         dons = [int(x) for x in donor_local_idxs]
         if len(dons) != 4:
@@ -963,6 +1015,20 @@ def decompose(smiles: str) -> Optional[Dict]:
         if nheavy / max(lg["denticity"], 1) > cap:
             return None
     has_rigid_planar = any(lg.get("rigid_planar") for lg in ligands)
+    # LIGAND-DICTATED geometry for a rigid planar tetradentate macrocycle: a porphyrin/
+    # phthalocyanine holds its 4 donors in a SQUARE, so the metal geometry is dictated by
+    # the ligand, NOT the metal d-count.  CN5 (macrocycle + 1 axial) must be SPY-5 (square
+    # pyramid: square base + apex), NOT the metal-default TBP-5 (trigonal bipyramid) — the
+    # user's "quadratisch-pyramidal statt trigonal-pyramidal".  CN4 already resolves to
+    # SP-4 via _default_geometry only for d8; force it here for ANY metal carrying a rigid
+    # planar tetradentate.  Gated by MACROCYCLE_FLATTEN (default OFF -> byte-identical).
+    if os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1":
+        _rp4 = any(lg.get("rigid_planar") and lg.get("denticity") == 4 for lg in ligands)
+        if _rp4:
+            if cn == 4:
+                geometry = "SP-4 square planar"
+            elif cn == 5:
+                geometry = "SPY-5 square pyramid"
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,
             "has_rigid_planar": has_rigid_planar,
