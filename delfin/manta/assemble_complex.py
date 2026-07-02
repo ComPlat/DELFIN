@@ -3017,6 +3017,31 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     frames.append((_syms, _Pr))
         except Exception:
             pass
+    # ADDITIVE CONJUGATED-PI PLANARIZER (DELFIN_FFFREE_PI_PLANARIZE, default-OFF -> byte-id):
+    # recovers champion ddde3273's lost OB-UFF planarity — the native builder leaves the
+    # ETKDG pucker/saddle in conjugated pi-macrocycles (user-eye: "komplett verzogen, Metall
+    # nicht in der pi-Ebene").  For each kept frame add a PLANARISED variant (conjugated core
+    # + metal pulled into the best-fit plane, bond/angle springs prevent collapse).  ADDITIVE
+    # -> never-worse: a system that should be planar (DECTEN/GISHOF/BEGNOT) gets the flat
+    # variant that wins; a genuinely-ruffled macrocycle (CAZQED) keeps its ruffled original as
+    # best isomer.  Deterministic pure-numpy (no OB-UFF/CCDC).
+    if os.environ.get("DELFIN_FFFREE_PI_PLANARIZE", "0") == "1":
+        try:
+            from delfin.manta import pi_planarize as _PP
+            extra_pl = []
+            for _syms, _Pk in list(frames):
+                _Ppl = np.asarray(_PP.planarize_frame(_syms, _Pk, metal_idx=0), dtype=float)
+                if _Ppl.shape != _Pk.shape or not np.all(np.isfinite(_Ppl)):
+                    continue
+                if _complex_rmsd(_syms, _Ppl, _Pk) < 1e-4:          # no-op / unchanged
+                    continue
+                if any(Pk.shape == _Ppl.shape and _complex_rmsd(_syms, _Ppl, Pk) < rmsd_dedup
+                       for _, Pk in frames + extra_pl):
+                    continue
+                extra_pl.append((list(_syms), _Ppl))
+            frames = frames + extra_pl
+        except Exception:
+            pass
     return [(syms, P, donors) for syms, P in frames]
 
 
