@@ -2961,10 +2961,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     frames = []                                    # (syms, P) kept (deduped)
     for cb in combos[:MAX_EVAL]:
         blocks = [np.zeros((1, 3))]
-        ok = True
         for vi, ci in enumerate(cb):
-            Q = per_lig_cands[vi][ci][0]
-            blocks.append(Q)
+            blocks.append(per_lig_cands[vi][ci][0])
         Pc = np.vstack(blocks)
         if not np.all(np.isfinite(Pc)):
             continue
@@ -2983,10 +2981,46 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             break
     if not frames:
         return None
+    # ADDITIVE WHOLE-COMPLEX M-D RELAX (DELFIN_FFFREE_WHOLE_RELAX, default-OFF -> byte-id):
+    # the strict-never-worse ROOT fix (EMBED_FLOOR pattern).  The ETKDG metallacycle embed
+    # yields crushed/under-length M-D and every finisher freezes the metal+donors, so the
+    # crush is conserved (shared root of cage-collapse + over-coordination + generic-sigma).
+    # The champion loop ABOVE is byte-identical to the flag-off build (so its frames are an
+    # exact SUPERSET base); here — in a fully SEPARATE pass — we run a relaxed-PATH finish
+    # per combo (whole_relax: metal pinned, donors FREE, crushed M-D expanded, THEN the same
+    # frozen-donor polish) and APPEND the distinct relaxed frames.  Best-isomer RMSD (min
+    # over frames) is never-worse BY CONSTRUCTION: every champion frame is still present, and
+    # a relaxed frame only ever ADDS a lower-RMSD option.  Emitted frame-0 stays the champion
+    # pick (relaxed frames appended after).  Deterministic pure-numpy, license-clean.
+    if os.environ.get("DELFIN_FFFREE_WHOLE_RELAX", "0") == "1":
+        try:
+            relaxed = []
+            for cb in combos[:MAX_EVAL]:
+                blocks = [np.zeros((1, 3))]
+                for vi, ci in enumerate(cb):
+                    blocks.append(per_lig_cands[vi][ci][0])
+                Pc0 = np.vstack(blocks)
+                if not np.all(np.isfinite(Pc0)):
+                    continue
+                Pr = _finish_config_frame(out_syms, Pc0, fixed, relax_frags, refine, do_relax=True)
+                if Pr is None or not np.all(np.isfinite(Pr)):
+                    continue
+                if any(Pk.shape == Pr.shape and _complex_rmsd(out_syms, Pr, Pk) < rmsd_dedup
+                       for _, Pk in relaxed):
+                    continue
+                relaxed.append((list(out_syms), Pr))
+                if len(relaxed) >= int(n_frames):
+                    break
+            for _syms, _Pr in relaxed:
+                if not any(Pk.shape == _Pr.shape and _complex_rmsd(_syms, _Pr, Pk) < rmsd_dedup
+                           for _, Pk in frames):
+                    frames.append((_syms, _Pr))
+        except Exception:
+            pass
     return [(syms, P, donors) for syms, P in frames]
 
 
-def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
+def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True, do_relax=False):
     """Shared finishing tail for a single assembled chelate-config frame: the
     FUNDAMENTAL internal relaxation (division-of-labor doctrine) — build the
     ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
@@ -3006,6 +3040,18 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
     Returns the (possibly relaxed) coordinate array; never raises."""
     if not refine:
         return P
+    # WHOLE-COMPLEX M-D RELAX (do_relax=True, driven ADDITIVELY by the caller): expand
+    # crushed/under-length M-D with the metal pinned + donors FREE BEFORE the frozen-donor
+    # finishers below polish the result.  Runs only for the caller's relaxed-variant frame
+    # (the champion frame is finished with do_relax=False), so the manifold gets BOTH and
+    # best-isomer RMSD is never-worse by construction.  No force field / CCDC (pure numpy).
+    if do_relax:
+        try:
+            from delfin.manta import whole_relax as _WR
+            P = np.asarray(_WR.relax_if_enabled(out_syms, P, fixed, relax_frags, out_syms[0]),
+                           dtype=float)
+        except Exception:
+            pass
     try:
         cm = Chem.RWMol()
         cm.AddAtom(Chem.Atom(out_syms[0]))

@@ -1266,6 +1266,26 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                     os.write(2, ("[CN4_BOTH] default_chel=%d extra=%d total=%d geom=%s opp=%s\n"
                                  % (len(chel)-len(extra), len(extra), len(chel),
                                     d["geometry"], opp)).encode())
+        # CN6 dual-geometry completeness on the CHELATE path (DELFIN_FFFREE_TPR6): the
+        # chelate builder emits only OC-6 (the CN6 default from _default_geometry), so
+        # trigonal-prismatic CAGES -- the legacy cavity enumerator's shape -- are absent
+        # from the manifold (MEPHUL phosphonate aza-cage: crystal is TPR-6; native OC-6
+        # crushes the donors to 2.09 A vs the TPR-6 cavity's 0.30).  TPR6 was wired on the
+        # monodentate path only; add the TPR-6 chelate isomers here too, additively.  Same
+        # never-worse `and chel` guard as CN4_BOTH: only augment when the default OC-6
+        # chelate itself produced isomers, so it can never suppress the caller fallback.
+        if (os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1" and d.get("cn") == 6 and chel
+                and d["geometry"] != "TPR-6 trigonal prism"
+                and "trigonal_prism" in PIC._GROUPS):
+            d_tpr = dict(d); d_tpr["geometry"] = "TPR-6 trigonal prism"
+            try:
+                extra_tpr = _fffree_chelate_isomers(d_tpr, "trigonal_prism", max_isomers) or []
+            except Exception:
+                extra_tpr = []
+            chel = chel + extra_tpr
+            if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
+                os.write(2, ("[TPR6_CHEL] added %d TPR-6 chelate isomers (total %d)\n"
+                             % (len(extra_tpr), len(chel))).encode())
         _r = _coord_filter(chel or None)
         if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
             os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"

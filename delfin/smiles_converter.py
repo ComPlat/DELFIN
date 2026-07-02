@@ -3155,6 +3155,18 @@ DELFIN_SEVERE_DIST_MAX_SCALE: float = _delfin_env_float(
 ``_has_severe_covalent_distortion``.  Raise to tolerate UFF-overstretched
 bonds that still describe the correct topology."""
 
+DELFIN_SEVERE_DIST_MIN_SCALE: float = _delfin_env_float(
+    "DELFIN_SEVERE_DIST_MIN_SCALE", 0.68
+)
+"""Minimum bond length relative to the sum of covalent radii, used by
+``_has_severe_covalent_distortion`` ONLY when DELFIN_FFFREE_UFF_COLLAPSE_GUARD
+is set.  A heavy-heavy covalent bond below this fraction of the covalent-radii
+sum is physically impossible (a real C=C/C#C triple bond sits at ~0.79, an
+aromatic C-C at ~0.92) so 0.68 catches genuine collapses (UFF dumping macrocycle
+strain into one alpha-beta bond -> 0.82-0.94 Å, ratio ~0.54-0.62) with a wide
+margin below any legitimate short/multiple bond.  License-clean (covalent radii
+only), keys on the physical ratio (never SMILES/refcode)."""
+
 DELFIN_FINAL_GATE_ENABLED: int = _delfin_env_int("DELFIN_FINAL_GATE_ENABLED", 1)
 """When 1 (default), the three ``_xyz_passes_final_geometry_checks``
 guards in ``smiles_to_xyz_isomers`` (main conformer loop, linkage
@@ -18738,6 +18750,15 @@ def _has_severe_covalent_distortion(
         max_abs_bond = DELFIN_SEVERE_DIST_MAX_ABS
     if max_covalent_scale is None:
         max_covalent_scale = DELFIN_SEVERE_DIST_MAX_SCALE
+    # UFF-COLLAPSE GUARD (DELFIN_FFFREE_UFF_COLLAPSE_GUARD, default-OFF -> byte-id):
+    # OB-UFF can dump a strained macrocycle's excess into ONE covalent bond,
+    # collapsing it to ~0.82-0.94 Å (physically impossible; breaks topology/QM)
+    # while all OTHER checks pass (connectivity survives, the atoms are still
+    # "bonded").  Add a physical LOWER bound so _optimize_xyz_openbabel_safe's
+    # existing "severe distortion -> revert to pre-UFF geometry" path fires:
+    # the pre-UFF seat is clean (verified: apply_uff=False -> 1.165 Å, no collapse).
+    _collapse_guard = os.environ.get("DELFIN_FFFREE_UFF_COLLAPSE_GUARD", "0") == "1"
+    min_covalent_scale = DELFIN_SEVERE_DIST_MIN_SCALE
     try:
         conf = mol.GetConformer(conf_id)
         pt = Chem.GetPeriodicTable()
@@ -18758,8 +18779,15 @@ def _has_severe_covalent_distortion(
             try:
                 rc1 = float(pt.GetRcovalent(a1.GetAtomicNum()))
                 rc2 = float(pt.GetRcovalent(a2.GetAtomicNum()))
-                if rc1 > 0 and rc2 > 0 and d > max_covalent_scale * (rc1 + rc2):
-                    return True
+                if rc1 > 0 and rc2 > 0:
+                    if d > max_covalent_scale * (rc1 + rc2):
+                        return True
+                    if _collapse_guard and d < min_covalent_scale * (rc1 + rc2):
+                        if os.environ.get("DELFIN_COLLAPSE_DEBUG", "0") == "1":
+                            os.write(2, ("[COLLAPSE_GUARD] fired: %s-%s d=%.3f < %.3f\n"
+                                         % (a1.GetSymbol(), a2.GetSymbol(), d,
+                                            min_covalent_scale * (rc1 + rc2))).encode())
+                        return True
             except Exception:
                 pass
     except Exception:
@@ -24199,6 +24227,41 @@ def _snap_md_distances_to_ideal(
     return n_snapped
 
 
+def _cage_shell_enabled() -> bool:
+    """DELFIN_FFFREE_CAGE_SHELL (default OFF): in the topology-enumerator path,
+    snap crushed M-D shells to ideal BEFORE UFF. Fixes encapsulated-metal
+    cage/macrocycle collapse (porphyrin, borane/borate cage, cryptand, ...) where
+    the metal sits at the donor centroid and `_rescale_metal_donor_distances` is a
+    mathematical no-op (it scales the metal offset, ~0 for a centered metal).
+    Self-limited to donors >10% off ideal, so non-crushed systems are unchanged."""
+    return os.environ.get("DELFIN_FFFREE_CAGE_SHELL", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _snap_md_xyz(xyz_str: str, mol) -> str:
+    """Snap crushed M-D distances in a DELFIN xyz string to their ideal lengths,
+    reusing the verified `_snap_md_distances_to_ideal` (which self-limits to donors
+    >10% off ideal). Maps the xyz onto `mol`'s graph, snaps, writes back. Returns
+    the input UNCHANGED on any failure or if nothing needed snapping (byte-id)."""
+    if not RDKIT_AVAILABLE:
+        return xyz_str
+    try:
+        _m = Chem.RWMol(mol)
+        _m.RemoveAllConformers()
+        _m = _m.GetMol()
+        _c = _xyz_to_rdkit_conformer(_m, xyz_str)
+        if _c is None:
+            return xyz_str
+        _cid = _m.AddConformer(_c, assignId=True)
+        if _snap_md_distances_to_ideal(_m, _cid) > 0:
+            _out = _mol_to_xyz_conformer(_m, _cid)
+            return _out or xyz_str
+        return xyz_str
+    except Exception:
+        return xyz_str
+
+
 def _md_distance_in_tolerance(
     mol,
     conf_id: int,
@@ -25803,6 +25866,19 @@ def _generate_topological_isomers(
                         )
                 except Exception as exc:
                     logger.debug("Topo pre-UFF build failed (%s): %s", cf[0], exc)
+
+        # Cage/macrocycle shell fix (DELFIN_FFFREE_CAGE_SHELL, default OFF): snap
+        # crushed M-D shells to ideal BEFORE UFF, so encapsulated-metal cages/
+        # macrocycles (metal at donor centroid -> _rescale is a no-op) are inflated
+        # to correct M-D. This also repairs the crushed pre-UFF re-emit fallback
+        # below (xyz_pre becomes the snapped geometry). Byte-identical when off or
+        # when nothing is crushed (>10%-off self-limit inside the snapper).
+        if apply_uff and _pre_uff_batch and _cage_shell_enabled():
+            for _bi in range(len(_pre_uff_batch)):
+                _cf, _pm, _gn, _xyzp, _cstr, _ci = _pre_uff_batch[_bi]
+                _pre_uff_batch[_bi] = (
+                    _cf, _pm, _gn, _snap_md_xyz(_xyzp, mol), _cstr, _ci,
+                )
 
         # Batch UFF via ProcessPool (OB holds GIL → threads don't help).
         if apply_uff and _pre_uff_batch:
@@ -29295,6 +29371,7 @@ def _permute_dedup_filter(isomers):
 # finalisation filters keep running on every level (unchanged base behaviour ->
 # byte-identical when off).
 _CONF_COMPLETE_ACTIVE = threading.local()
+_UFF_UNION_ACTIVE = threading.local()  # re-entry guard for the emitted-level UFF-union
 
 
 def _arg_deterministic(args, kwargs) -> bool:
@@ -29378,10 +29455,11 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # frames that decoordinate a donor must be caught here). Byte-id when off.
         _coordint_late = _coord_integrity_filter if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))), r[1]
-        if isinstance(r, list):
-            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))
-        return r
+            result = (_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))), r[1])
+        elif isinstance(r, list):
+            result = _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))
+        else:
+            result = r
     finally:
         if outermost:
             _CONF_COMPLETE_ACTIVE.value = False
@@ -29394,6 +29472,37 @@ def smiles_to_xyz_isomers(*args, **kwargs):
                     os.environ.pop("DELFIN_FFFREE_DETERMINISTIC_ENUM", None)
                 else:
                     os.environ["DELFIN_FFFREE_DETERMINISTIC_ENUM"] = _enum_env_prev
+    # ---- UFF-UNION at the EMITTED level (truly additive -> never-worse-than-champion) ----
+    # After the champion manifold is fully filtered + ranked above, append the
+    # deterministic DEFAULT/UFF path's ALREADY-FILTERED emitted frames. Champion frames
+    # are kept verbatim (and ranked first), so best-of-manifold(result) =
+    # min(champion, default) <= champion AND <= quick, by construction -> never-worse on
+    # both, deterministically. The default is built via a recursive PUBLIC call (its own
+    # full pipeline) with all construction flags cleared; _UFF_UNION_ACTIVE guards
+    # against infinite recursion. byte-identical to baseline when the flag is OFF.
+    if (outermost and os.environ.get("DELFIN_FFFREE_UFF_UNION", "0") == "1"
+            and not getattr(_UFF_UNION_ACTIVE, "value", False)):
+        _u_keys = [k for k in list(os.environ)
+                   if (k.startswith("DELFIN_FFFREE_") and k != "DELFIN_FFFREE_DETERMINISTIC_ENUM")
+                   or k in ("DELFIN_FRAME_RANK_FIX", "DELFIN_CHIRAL_ENUM")]
+        _u_saved = {k: os.environ[k] for k in _u_keys}
+        _UFF_UNION_ACTIVE.value = True
+        try:
+            for k in _u_keys:
+                os.environ.pop(k, None)
+            _def = smiles_to_xyz_isomers(*args, **kwargs)
+        finally:
+            _UFF_UNION_ACTIVE.value = False
+            os.environ.update(_u_saved)
+        _df = _def[0] if isinstance(_def, tuple) else (_def if isinstance(_def, list) else [])
+        _df = [((x[0], "uff-union-%d" % i) if isinstance(x, (tuple, list)) and len(x) >= 2 else x)
+               for i, x in enumerate(_df or [])]
+        if _df:
+            if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], list):
+                result = (result[0] + _df, result[1])
+            elif isinstance(result, list):
+                result = result + _df
+    return result
 
 
 def _smiles_to_xyz_isomers_impl(
