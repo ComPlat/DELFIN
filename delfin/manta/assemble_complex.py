@@ -331,19 +331,32 @@ def _macrocycle_flatten_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_MACROCYCLE_FLATTEN", "0") == "1"
 
 
-def _flatten_rigid_macrocycle(mh, P, conj_idx, bonds, iters=400):
+def _flatten_rigid_macrocycle(mh, P, conj_idx, bonds, iters=400,
+                              donors=None, md_target=None):
     """Project the conjugated ring system onto its mean plane while 1-2 (bond) AND 1-3
     (bonded-angle) distance springs hold the fused-ring shape (deterministic pure-numpy).
     The 1-3 springs are essential: bond springs alone let flattening squash an angle so
     two ortho substituents collide (BEGNOT: two ortho-F pulled to 1.7 A); holding the
     angles keeps a genuinely-flat macrocycle clash-free (conj-core RMS -> 0.03, no new
-    contact).  Returns flattened coords, or None when flattening still introduces a NEW
-    severe heavy-heavy clash (a genuinely steric-saddled macrocycle whose substituents
-    cannot lie flat) or on any failure -> caller keeps the original domed conformer."""
+    contact).
+
+    CAVITY EXPANSION (donors + md_target given): the free-ligand embed (metal removed)
+    holds the donor cavity CONTRACTED (BEGNOT N-N 2.62 vs metal-templated 2.78), so the
+    coplanar metal-solve then seats the metal too close (Pd-N 1.85 vs ideal 2.10 / CCDC
+    1.97).  A gentle in-plane radial spring pulls each donor to radius `md_target` from the
+    conjugated-core centroid (~ the metal), with 1-2 bonds held HARD so the macrocycle
+    opens by ANGLE deformation (the physical 'breathing' the metal template induces), not
+    by bond stretching.  The eye flagged this via dMDerr; this closes it at the root.
+
+    Returns flattened coords, or None when flattening still introduces a NEW severe
+    heavy-heavy clash (a genuinely steric-saddled macrocycle whose substituents cannot lie
+    flat) or on any failure -> caller keeps the original domed conformer."""
     try:
         conj = [int(i) for i in conj_idx]
         if len(conj) < 6:
             return None
+        _don = [int(x) for x in donors] if donors else []
+        _mdt = float(md_target) if md_target else 0.0
         adj = {}
         for i, j in bonds:
             adj.setdefault(i, set()).add(j); adj.setdefault(j, set()).add(i)
@@ -387,6 +400,13 @@ def _flatten_rigid_macrocycle(mh, P, conj_idx, bonds, iters=400):
                 d = X[i] - X[j]; r = float(np.linalg.norm(d))
                 if r > 1e-9:
                     f = -0.7 * (r - l0) * d / r; F[i] += f; F[j] -= f
+            if _don and _mdt > 0.0:                     # in-plane cavity expansion to ideal M-D
+                for di in _don:
+                    v = X[di] - c
+                    v_ip = v - float(np.dot(v, nrm)) * nrm
+                    r = float(np.linalg.norm(v_ip))
+                    if r > 1e-6:
+                        F[di] += 0.6 * (_mdt - r) * v_ip / r
             step = 0.1 * F
             mag = np.linalg.norm(step, axis=1); over = mag > 0.1
             if np.any(over):
@@ -483,7 +503,11 @@ def _coplanar_metal_centered_conformer(mol, donor_idxs, metal_sym, mds, k=8):
                          if a.GetAtomicNum() > 1 and a.IsInRing()
                          and (a.GetIsAromatic() or str(a.GetHybridization()) == "SP2")]
                 _bnds = [(b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mh.GetBonds()]
-                _flat = _flatten_rigid_macrocycle(mh, P, _conj, _bnds)
+                # expand the contracted free-ligand cavity to the ideal M-D (the metal
+                # 'breathes' the macrocycle open) — donors to mean(mds), bonds held.
+                _flat = _flatten_rigid_macrocycle(
+                    mh, P, _conj, _bnds,
+                    donors=dons, md_target=float(np.mean(mds)) if len(mds) else 0.0)
                 if _flat is not None:
                     P = _flat
             cen = P[ring].mean(axis=0)
