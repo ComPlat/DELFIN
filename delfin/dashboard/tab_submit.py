@@ -276,16 +276,14 @@ def _smiles_to_architector_input(smiles):
 # structures (parallel, laptop-bounded) -> complete manifold + best-possible
 # top geometries in the viewer.
 # ---------------------------------------------------------------------------
+# 2026-07-04 DE-BLOAT (mirrors cli_manta._CHAMPION_FLAGS — CLI + Submit tab ship the identical config;
+# see cli_manta for the forensic result: old 29-flag stack 13.7% vs de-bloated 28.6% topology, 2.1x,
+# never-worse in every donor class). KAPPA4 folded into the tuple; CONF_ENERGY_RANK removed (net-neg).
 _MANTA_CHAMPION_FLAGS = (
-    "AROM_PLANARIZE", "ARYL_RING_SIZE", "BACKBONE_REEMBED", "CHELATE_BACKBONE",
-    "CN_EXTEND", "CONF_COMPLETE", "CONFORMER_COVERAGE", "CONFORMER_SEATING",
-    "DIATOMIC_ORIENT", "DONOR_BEND", "HAPTO_AXIS_ROT", "HAPTO_HALFSANDWICH_GATE",
-    "INTERLIG_RANK", "INTERLIG_VDW_GATE", "JOINT_DECLASH", "LIGAND_RIGID",
-    "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
-    "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
-    "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE",
-    "CAGE_MD_GUARD",   # per-donor M-D crush guard @0.85 (net-positive, user-approved 2026-07-01)
-    "CN4_BOTH",        # CN4 dual-geometry completeness (additive/never-worse; YEGGUO 2.12->0.56)
+    "AROM_PLANARIZE", "ARYL_RING_SIZE", "DIATOMIC_ORIENT", "HAPTO_AXIS_ROT",
+    "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
+    "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
+    "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
 )
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
 _MANTA_OPT_TOPN = 10
@@ -305,10 +303,8 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
         env["DELFIN_FRAME_RANK_FIX"] = "1"
         env["DELFIN_CHIRAL_ENUM"] = "1"        # Λ/Δ enantiomer enumeration (>=2 chelate pairs)
         if construction == "champion":
-            for _f in _MANTA_CHAMPION_FLAGS:
+            for _f in _MANTA_CHAMPION_FLAGS:   # de-bloated set (KAPPA4 included; CONF_ENERGY_RANK dropped)
                 env["DELFIN_FFFREE_" + _f] = "1"
-            env["DELFIN_FFFREE_KAPPA4"] = "1"      # reach (κ4 macrocycles) for richness
-            env["DELFIN_FFFREE_CONF_ENERGY_RANK"] = "1"  # organic global-min (chair) coverage
         else:  # builder = lean core + reach
             env["DELFIN_FFFREE_KAPPA4"] = "1"
             env["DELFIN_FFFREE_SIGMA_ENSEMBLE"] = "1"

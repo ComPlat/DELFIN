@@ -27,30 +27,23 @@ from pathlib import Path
 # is ever actually hit we WARN — completeness is never silently violated.
 _ALL_ISOMERS = 100_000
 
-# Construction configs (env-flag sets). 'champion' = the full SHIP-31 rich
-# construction (maximum coverage + conformer/motif handling); 'builder' = lean
+# Construction configs (env-flag sets). 'champion' = the DE-BLOATED best config; 'builder' = lean
 # core + reach; 'default' = library/legacy. champion is the MANTA default.
+#
+# 2026-07-04 DE-BLOAT: the old ~29-flag champion stack (dense conformer generators + geometry
+# correctors + chelate cap-raisers) was NET-NEGATIVE. Measured on ~450 region-balanced Batch.txt
+# systems via the canonical whole-manifold eye: the full old stack scored 13.7% topology-correct
+# vs 33.6% for zero-flags legacy, WORSE in every donor class (P/S 4x, NO/O 3x, ...). Removing the
+# 20 proven-negative flags -> 2.1x, never-worse in every class, while KEEPING the edge-class
+# builders (hapto/carbonyl/NHC/metalloid/kappa4/arom) so under-sampled edge chemistry cannot
+# regress, plus main's own never-worse CAGE_MD_GUARD + CN4_BOTH additions. Removed flags stay in
+# git history + remain individually env-gated (DELFIN_FFFREE_<flag>). Spot-verified: KITNEJ/QIDGEP/
+# VULMOE (50-junk topo-wrong manifolds under the old stack) now build the crystal topology.
 _CHAMPION_FLAGS = (
-    "AROM_PLANARIZE", "ARYL_RING_SIZE", "BACKBONE_REEMBED", "CHELATE_BACKBONE",
-    "CN_EXTEND", "CONF_COMPLETE", "CONFORMER_COVERAGE", "CONFORMER_SEATING",
-    "DIATOMIC_ORIENT", "DONOR_BEND", "HAPTO_AXIS_ROT", "HAPTO_HALFSANDWICH_GATE",
-    "INTERLIG_RANK", "INTERLIG_VDW_GATE", "JOINT_DECLASH", "LIGAND_RIGID",
-    "MD_CONTEXT", "METALLOID_DONOR", "MULTIBOND_EXEMPT", "NHC_CARBENE",
-    "PI_COPLANAR_M", "PLANAR_MER", "RIGID_HAPTO", "SIGMA_ENSEMBLE",
-    "TOPOLOGY_GATE", "TORSION_RELAX", "XH_COLLAPSE", "KAPPA4", "CONF_ENERGY_RANK",
-    # per-donor M-D crush guard @0.85 (refines the LIGAND_RIGID rigid seat): expands
-    # crushed cage/over-coordination donors to ideal M-D.  Net-positive (curated cage
-    # 9-0, over-coord 5-0 vs crystal; broad pool ~6% small ~0.05A regressions to be
-    # removed by the whole-complex relax).  User-approved ship 2026-07-01.
-    "CAGE_MD_GUARD",
-    # CN4 dual-geometry completeness (dropped from V2R champion in the reorg): additively
-    # enumerate the OPPOSITE CN4 polyhedron (SP-4<->T-4) so the crystal's geometry is never
-    # absent from the manifold when `_default_geometry` picked the other.  Closes the whole
-    # "crystal geometry != metal default" SET-gap class (YEGGUO 2.12->0.56 = champion).
-    # Native-additive/never-worse: the chelate path only augments when the default chelate
-    # itself succeeds (`and chel` guard, converter_backend.py), so it can never suppress the
-    # binding-mode fallback (DIPZOV 0.14 preserved).  A/B @extreme: BETTER 2, WORSE 0.
-    "CN4_BOTH",
+    "AROM_PLANARIZE", "ARYL_RING_SIZE", "DIATOMIC_ORIENT", "HAPTO_AXIS_ROT",
+    "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
+    "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
+    "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
