@@ -29330,6 +29330,16 @@ def smiles_to_xyz_isomers(*args, **kwargs):
     depth), and ranking runs last over the full expanded set.  The completeness pass
     is suppressed on dual-parse re-entries so it runs once at the outermost level."""
     outermost = not getattr(_CONF_COMPLETE_ACTIVE, "value", False)
+    # "max_isomers=0" is the DOCUMENTED complete-manifold contract (Submit-tab default + build_eye_
+    # package), meaning "never cut off".  But downstream max_isomers is used purely as a hard CAP
+    # (len(results) >= max_isomers, iso_list[:max_isomers], _PRE_UFF_CAP = max_isomers*mult), so 0
+    # was treated as "cap = 0" and COLLAPSED the manifold to ~1 frame -> CODSIA 14->2, losing the
+    # cis / see-saw CN4 polyhedra the user needs (all CN4 geometries: SP-4, Td, see-saw).  Normalise
+    # 0/negative -> effectively unlimited at the outermost public call so "0 = complete" holds; the
+    # existing timeout / wall-budget / combo-cap guards still bound pathological combinatorics.
+    if outermost and "max_isomers" in kwargs and (
+            kwargs["max_isomers"] is None or kwargs["max_isomers"] <= 0):
+        kwargs["max_isomers"] = 100000
     # Cross-process determinism bridge: the public ``deterministic=True`` contract
     # MUST imply bit-identity across processes, but the deep timeout / wall-budget /
     # sorted-enum guards consult the DELFIN_DETERMINISTIC *env* (so subprocess
