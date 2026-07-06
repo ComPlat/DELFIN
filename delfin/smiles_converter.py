@@ -27795,6 +27795,63 @@ def _ring_canonical_snap_z(basin: str, size: int):
     return None
 
 
+def _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers):
+    """Additive d8-CN4 square-planar SEATING pass (eye-driven: Weddell flags "d8 CN4 built
+    TETRAHEDRAL; must be square-planar" — HUPJUY Pd, VIHFAT Pt).  A d8 metal (Pt/Pd/Ni/Au/Rh/Ir)
+    at CN4 is ALWAYS square-planar in the crystal; the chelate ETKDG embed can leave the donors
+    TETRAHEDRAL and the SP-4 preference is silently lost (whole manifold -> ALARM).  For every
+    emitted frame carrying a d8 metal, append a square-planarized variant (rigid per-ligand de-tilt
+    of the donors into their common plane; ligand internals preserved).  The final graph-topology
+    gate downstream drops any variant whose flattening introduced a ligand-ligand contact, so this
+    is strictly ADDITIVE / never-worse.  Toggle DELFIN_D8_SP4_SEAT (default 0 -> byte-identical)."""
+    if not _delfin_env_int("DELFIN_D8_SP4_SEAT", 0):
+        return 0
+    try:
+        from delfin.manta._d8_square_planar import square_planarize_frame, _D8
+    except Exception:
+        return 0
+
+    def _sig(xyz_str):
+        try:
+            return tuple(sorted(
+                (p[0], round(float(p[1]), 2), round(float(p[2]), 2), round(float(p[3]), 2))
+                for p in (ln.split() for ln in xyz_str.strip().splitlines())
+                if len(p) >= 4 and p[0] not in ("H", "h")))
+        except Exception:
+            return tuple()
+
+    def _parse(xyz_str):
+        syms, P = [], []
+        for ln in xyz_str.strip().splitlines()[2:]:
+            t = ln.split()
+            if len(t) >= 4:
+                syms.append(t[0]); P.append([float(t[1]), float(t[2]), float(t[3])])
+        return syms, np.array(P, float)
+
+    seen = {_sig(x) for x, _ in results}
+    added = 0
+    for xyz, lbl in list(results):
+        try:
+            syms, P = _parse(xyz)
+            if not any(s in _D8 for s in syms):
+                continue
+            sp = square_planarize_frame(syms, P)
+            if sp is None:
+                continue
+            head = xyz.strip().splitlines()[:2]
+            new_xyz = "\n".join(head + [f"{syms[i]} {sp[i][0]:.6f} {sp[i][1]:.6f} {sp[i][2]:.6f}"
+                                        for i in range(len(syms))])
+            sg = _sig(new_xyz)
+            if sg in seen:
+                continue
+            seen.add(sg)
+            results.append((new_xyz, (lbl or "") + " SP-4 square planar (d8 seat)"))
+            added += 1
+        except Exception:
+            continue
+    return added
+
+
 def _emit_nonmetal_ring_pucker_variants(
     mol,
     results: List[Tuple[str, str]],
@@ -31168,6 +31225,16 @@ def _smiles_to_xyz_isomers_impl(
             )
         except Exception as _nm_pucker_exc:
             logger.debug("Non-metal ring-pucker pass skipped: %s", _nm_pucker_exc)
+
+    # --- Additive d8-CN4 square-planar seating pass (eye-driven; DELFIN_D8_SP4_SEAT, default 0) ---
+    # d8 metals (Pt/Pd/Ni/Au/Rh/Ir) at CN4 are square-planar in the crystal; the chelate embed can
+    # leave them tetrahedral (whole manifold ALARM).  Appends a de-tilted SP-4 variant; the final
+    # topology gate below drops any that overlap -> strictly additive / never-worse.
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
+        try:
+            _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers)
+        except Exception as _d8_exc:
+            logger.debug("d8-SP4 seating pass skipped: %s", _d8_exc)
 
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
