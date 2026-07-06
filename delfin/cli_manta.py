@@ -97,7 +97,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rank", action="store_true",
                    help="energy-rank the ensemble with xtb (default: off / byte-identical)")
     p.add_argument("--method", choices=["gfn2", "gfnff", "gfn1", "gfn0"], default="gfn2",
-                   help="ranking Hamiltonian when --rank is set (default: gfn2)")
+                   help="ranking/opt Hamiltonian when --rank/--opt is set (default: gfn2)")
+    p.add_argument("--opt", type=int, default=None, metavar="N",
+                   help="POST-PROCESSING (opt-in): xtb geometry-optimise the top-N emitted "
+                        "structures (0 = the whole manifold). Default: off — the manifold is "
+                        "emitted with its construction geometry, unchanged. Independent of --rank.")
     p.add_argument("--max-isomers", type=int, default=None, dest="max_isomers",
                    help="optionally cap the number of isomers (default: ALL — "
                         "the complete enumerated set)")
@@ -134,6 +138,53 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("-q", "--quiet", action="store_true",
                    help="suppress the per-structure listing")
     return p
+
+
+def _geometry_opt_topn(isomers, topn, method, charge):
+    """POST-PROCESSING (opt-in, --opt): xtb geometry-optimise the top-N emitted structures
+    (0 = all).  ``isomers`` = ``[(xyz, label), ...]``; returns the same shape with optimised
+    geometries substituted for the head.  Best-effort: any structure whose optimisation fails
+    keeps its construction geometry.  The manifold is UNCHANGED when --opt is omitted."""
+    if not isomers or topn is None or int(topn) < 0:
+        return isomers
+    try:
+        from delfin.manta import _gfnff_rank as _gff
+    except Exception:
+        return isomers
+    if not _gff.available():
+        print("delfin-manta: --opt requested but xtb was not found on PATH; "
+              "keeping construction geometry.", file=sys.stderr)
+        return isomers
+    import concurrent.futures as _cf
+    n = len(isomers) if int(topn) == 0 else min(int(topn), len(isomers))
+    head, tail = list(isomers[:n]), list(isomers[n:])
+
+    def _opt_one(item):
+        xyz, label = item
+        try:
+            r = _gff.gfnff_optimize_autospin(xyz, charge=int(charge), method=method)
+            new_xyz = r[0] if isinstance(r, tuple) else r
+            return (new_xyz or xyz, label)
+        except Exception:
+            return (xyz, label)
+    with _cf.ThreadPoolExecutor(max_workers=max(1, min(n, (os.cpu_count() or 4)))) as ex:
+        head = list(ex.map(_opt_one, head))
+    return head + tail
+
+
+def _charge_for_opt(smiles, cli_charge):
+    """Charge for --opt: the explicit --charge if given, else RDKit formal charge of the SMILES
+    (same derivation the Submit tab uses), else 0."""
+    if cli_charge is not None:
+        return int(cli_charge)
+    try:
+        from rdkit import Chem as _Chem
+        _m = _Chem.MolFromSmiles(smiles, sanitize=False)
+        if _m is not None:
+            return int(_Chem.GetFormalCharge(_m))
+    except Exception:
+        pass
+    return 0
 
 
 def main(argv=None) -> int:
@@ -178,6 +229,11 @@ def main(argv=None) -> int:
     if not isomers:
         print("delfin-manta: error: no structures generated", file=sys.stderr)
         return 1
+
+    # POST-PROCESSING (opt-in): geometry-optimise the top-N.  Omitted -> pure manifold, unchanged.
+    if args.opt is not None and args.opt >= 0:
+        _chg = _charge_for_opt(args.smiles, args.charge)
+        isomers = _geometry_opt_topn(isomers, args.opt, args.method, _chg)
 
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)

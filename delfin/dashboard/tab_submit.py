@@ -312,6 +312,49 @@ def _manta_best_env(charge, construction="champion", method="gfn2", rank=True):
     return env
 
 
+def _manta_rank_only(isomers, charge, method="gfn2", spin="auto"):
+    """RANK the manifold by xtb SINGLE-POINT energy: reorder best (lowest-energy) first WITHOUT
+    changing any geometry.  Each item is ``(xyz_string, num_atoms, label)``; the emitted structures
+    stay byte-identical to construction — only their ORDER changes.  spin='auto' -> parity-correct
+    uhf per structure (even electrons=singlet, odd=doublet); a fixed multiplicity sets uhf=mult-1.
+    Best-effort: any structure whose energy eval fails sinks to the end keeping its geometry.
+    Returns the list unchanged if xtb is unavailable or there is nothing to reorder."""
+    if not isomers or len(isomers) < 2:
+        return isomers
+    try:
+        from delfin.manta import _gfnff_rank as _gff
+    except Exception:
+        return isomers
+    if not _gff.available():
+        return isomers
+    import concurrent.futures as _cf
+
+    def _uhf_for(xyz):
+        if str(spin) != "auto":
+            return max(0, int(spin) - 1)
+        try:
+            return _gff._n_electrons(xyz, int(charge)) % 2   # parity-correct ground-state multiplicity
+        except Exception:
+            return 0
+
+    def _energy_one(item):
+        xyz = item[0]
+        try:
+            return _gff.gfnff_energy(xyz, charge=int(charge), uhf=_uhf_for(xyz), method=method)
+        except Exception:
+            return None
+    _max_workers = max(1, min(len(isomers), (os.cpu_count() or 4)))
+    try:
+        with _cf.ThreadPoolExecutor(max_workers=_max_workers) as ex:
+            energies = list(ex.map(_energy_one, isomers))
+    except Exception:
+        return isomers
+    # Ascending by energy; failed evals (None) sink to the end preserving their relative order.
+    order = sorted(range(len(isomers)),
+                   key=lambda i: (energies[i] is None, energies[i] if energies[i] is not None else 0.0, i))
+    return [isomers[i] for i in order]
+
+
 def _manta_opt_top(isomers, charge, topn=None, method="gfn2", spin="auto"):
     """Geometry-optimize the top-N ranked isomers in parallel (laptop-bounded),
     replace their geometry + label, re-sort the optimized head by opt energy. The
@@ -473,18 +516,25 @@ def create_tab(ctx):
         value=0, description='Max isomers (0=ALL):', style={'description_width': 'initial'},
         layout=widgets.Layout(width='190px'),
         tooltip='Cap emitted isomers. 0 = COMPLETE manifold, never cut off (recommended).')
+    # DEFAULT = No / No -> users get ONLY the manifold (no post-processing).  Rank and Opt are
+    # SEPARATE opt-ins: Rank reorders by xtb single-point energy (geometry UNCHANGED); Opt xtb-
+    # geometry-optimises structures (changes geometry).  You can Rank without Opt, or Opt without Rank.
     manta_rank = widgets.Dropdown(
-        options=['gfn2', 'gfnff', 'gfn1', 'gfn0', 'No'], value='gfn2',
+        options=['No', 'gfn2', 'gfnff', 'gfn1', 'gfn0'], value='No',
         description='Rank:', style={'description_width': 'initial'},
         layout=widgets.Layout(width='150px'),
-        tooltip='Energy-rank the manifold so the global-minimum isomer/conformer is first (needs '
-                'xtb). gfn2 = standard; gfnff = fast force-field; No = no ranking (raw order).')
-    manta_opt_topn = widgets.IntText(
-        value=_MANTA_OPT_TOPN, description='Opt (0=all):', style={'description_width': 'initial'},
-        layout=widgets.Layout(width='150px'),
-        tooltip='Geometry-optimise the ranked structures to a clean final geometry (method '
-                'FOLLOWS Rank: gfn2/gfnff/...). N = top-N; 0 = ALL (whole manifold, slowest/best); '
-                'negative = none. (Only runs when Rank is not "No".)')
+        tooltip='Energy-RANK the manifold so the global-minimum isomer/conformer is first — '
+                'single-point xtb energy, geometry UNCHANGED (pure reordering, no post-processing of '
+                'the structures). No = keep construction order (already best-first by realism). '
+                'gfn2 = standard; gfnff = fast force-field.')
+    manta_opt = widgets.Dropdown(
+        options=['No', 'Top 5', 'Top 10', 'Top 20', 'All'], value='No',
+        description='Opt:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='140px'),
+        tooltip='Geometry-OPTimise structures to a clean final geometry (xtb; method FOLLOWS Rank, or '
+                'gfn2 if Rank=No). No = keep the construction geometry (pure manifold, DEFAULT). '
+                'Top-N = optimise the N best; All = the whole manifold (slowest/best). '
+                'Independent of Rank.')
     manta_spin = widgets.Dropdown(
         options=['auto', '1', '2', '3', '4', '5', '6', '7'], value='auto',
         description='Spin:', style={'description_width': 'initial'},
@@ -497,7 +547,7 @@ def create_tab(ctx):
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
                      "&times; conformer manifold</span>"),
-        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt_topn, manta_spin],
+        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
@@ -1132,19 +1182,19 @@ def create_tab(ctx):
         # buttons pass construction=None); Rank=No / Opt<0 = manifold-only, but the logo still shows.
         if (not quick) and (construction is not None):
             _method_lbl = str(method).upper()
-            _topn = 0 if opt_topn is None else int(opt_topn)
-            if not rank:
+            _topn = -1 if opt_topn is None else int(opt_topn)
+            _opt_on = _topn >= 0
+            if not rank and not _opt_on:
                 _caption = ('MANTA: building the complete coordination-isomer × conformer manifold '
                             '(no post-processing)...')
             else:
-                if _topn == 0:
-                    _opt_part = ' + optimizing all'
-                elif _topn < 0:
-                    _opt_part = ''
-                else:
-                    _opt_part = f' + optimizing top {_topn}'
-                _caption = (f'MANTA: building manifold + {_method_lbl} ranking{_opt_part} '
-                            '(needs xtb; takes a bit)...')
+                _parts = []
+                if rank:
+                    _parts.append(f'{_method_lbl} energy-ranking')
+                if _opt_on:
+                    _parts.append('optimizing all' if _topn == 0 else f'optimizing top {_topn}')
+                _caption = ('MANTA: building manifold + ' + ' + '.join(_parts) +
+                            ' (needs xtb; takes a bit)...')
             _show_mol_busy(_caption)
         else:
             _clear_mol_output()
@@ -1213,8 +1263,14 @@ def create_tab(ctx):
                             include_quick=apply_uff,
                         )
                     if rank and not error and isomers:
-                        # MANTA: GFN2-optimize the top-N ranked structures
-                        # (parallel, laptop-bounded) for best-possible geometry.
+                        # RANK (opt-in): reorder best-first by xtb SINGLE-POINT energy.
+                        # Geometry UNCHANGED — the emitted structures stay byte-identical to
+                        # construction, only their order changes.
+                        isomers = _manta_rank_only(isomers, _chg, method=method, spin=spin)
+                    if (opt_topn is not None and int(opt_topn) >= 0
+                            and not error and isomers):
+                        # OPT (opt-in, independent of Rank): xtb geometry-optimise the top-N
+                        # (0 = the whole manifold) for best-possible final geometry.
                         isomers = _manta_opt_top(isomers, _chg, topn=opt_topn, method=method, spin=spin)
                     result = {'error': error, 'isomers': isomers}
             except Exception as exc:
@@ -1250,6 +1306,8 @@ def create_tab(ctx):
         # energy ranking, shown in the viewer with the existing isomer nav.
         # Read the exposed settings row (Quality/Seeds/Max-iso/Rank/Opt-top).
         _rank_sel = manta_rank.value
+        # Opt dropdown -> top-N int: No = -1 (off, keep construction geometry); All = 0; Top-N = N.
+        _opt_map = {'No': -1, 'Top 5': 5, 'Top 10': 10, 'Top 20': 20, 'All': 0}
         _start_smiles_conversion(
             apply_uff=True, quick=False,
             rank=(_rank_sel != 'No'),
@@ -1260,7 +1318,7 @@ def create_tab(ctx):
             seeds_override=(int(manta_seeds.value) or None),
             # 0 -> COMPLETE manifold (never cut off); else user cap
             max_isomers=(int(manta_max_iso.value) or 100000),
-            opt_topn=int(manta_opt_topn.value),
+            opt_topn=_opt_map.get(manta_opt.value, -1),
             spin=str(manta_spin.value),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
             # construction always champion + power-user knobs CLI-only -> pinned here
             **_MANTA_DASH_DEFAULTS,
