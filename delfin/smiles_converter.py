@@ -2722,12 +2722,30 @@ def _resolve_top_level_seed_count(mol) -> int:
     """
     fallback = max(1, int(DELFIN_TOP_LEVEL_SEED_COUNT))
     if not _delfin_env_int("DELFIN_CLASS_AWARE_SEEDS", 0):
-        return fallback
+        n = fallback
+    else:
+        try:
+            cls = _classify_complex_class(mol) if mol is not None else None
+            n = _class_aware_seed_count(cls)
+        except Exception:
+            n = fallback
+    # ADAPTIVE COMPLEXITY CAP (2026-07-06): ETKDG embedding dominates wall-clock on LARGE molecules
+    # (profiled: a 361-atom / 96-rotatable-bond Co-phthalocyanine spent 271/290s in _do_embed, ~22s
+    # per seed -> 12 seeds = the 1800s Submit timeout).  Each extra seed on a huge, heavily-symmetric
+    # molecule mostly re-samples redundant equivalent-substituent conformers, so scaling the seed
+    # count DOWN with size trades (near-)nothing in real diversity for a linear speed-up -> a normal
+    # PC finishes.  Small molecules (<=120 heavy, incl. all normal complexes + OHUCID) are UNTOUCHED
+    # (byte-identical).  Tiered so the cut is gentle at the boundary and firm for the giants.  Env
+    # override DELFIN_ADAPTIVE_SEED_CAP=0 restores the uncapped behaviour.
     try:
-        cls = _classify_complex_class(mol) if mol is not None else None
+        if _delfin_env_int("DELFIN_ADAPTIVE_SEED_CAP", 1) and mol is not None:
+            n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
+            if n_heavy > 120:
+                cap = 3 if n_heavy > 200 else (4 if n_heavy > 160 else 6)
+                n = min(n, cap)
     except Exception:
-        return fallback
-    return _class_aware_seed_count(cls)
+        pass
+    return n
 
 
 # --- Multi-sigma path V2 (Iter-multi_sigma audit, class-conditional default-ON) ---
