@@ -463,8 +463,13 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     if not isinstance(isomers, list) or len(isomers) < 2:
         return isomers
     coord_ideal = os.environ.get("DELFIN_RANK_COORD_IDEAL", "0") == "1"
-    # Fix B: header-tolerant parsing in the default path, gated default-OFF.
-    rank_fix = os.environ.get("DELFIN_FRAME_RANK_FIX", "0") == "1"
+    # Fix B: header-tolerant parsing so the ranker ACTUALLY orders the (headerless) emitted frames
+    # by least clash = most crystal-like first (cross-validated 2026-06-12: top-3 60-64%).  DEFAULT-ON
+    # (2026-07-06): with the strict parser the ranker was a silent no-op on shipped/default builds, so
+    # users got ENUMERATION order, not best-first — the champion always set FRAME_RANK_FIX=1, this ships
+    # the same proven ordering to everyone (built OFF 50k: frame-0 realism median 0.02, near crystal).
+    # DELFIN_FRAME_RANK_FIX=0 restores the legacy no-op (enumeration order).
+    rank_fix = os.environ.get("DELFIN_FRAME_RANK_FIX", "1") != "0"
     # π-coplanarity ranking (default-OFF → byte-identical order).
     pi_cop = os.environ.get("DELFIN_RANK_PI_COPLANAR", "0") == "1"
     _default_parse = _parse_xyz_tolerant if rank_fix else _parse_xyz
