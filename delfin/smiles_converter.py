@@ -2729,16 +2729,13 @@ def _resolve_top_level_seed_count(mol) -> int:
             n = _class_aware_seed_count(cls)
         except Exception:
             n = fallback
-    # ADAPTIVE COMPLEXITY CAP (2026-07-06): ETKDG embedding dominates wall-clock on LARGE molecules
-    # (profiled: a 361-atom / 96-rotatable-bond Co-phthalocyanine spent 271/290s in _do_embed, ~22s
-    # per seed -> 12 seeds = the 1800s Submit timeout).  Each extra seed on a huge, heavily-symmetric
-    # molecule mostly re-samples redundant equivalent-substituent conformers, so scaling the seed
-    # count DOWN with size trades (near-)nothing in real diversity for a linear speed-up -> a normal
-    # PC finishes.  Small molecules (<=120 heavy, incl. all normal complexes + OHUCID) are UNTOUCHED
-    # (byte-identical).  Tiered so the cut is gentle at the boundary and firm for the giants.  Env
-    # override DELFIN_ADAPTIVE_SEED_CAP=0 restores the uncapped behaviour.
+    # OPT-IN speed/quality knob (2026-07-06, default OFF -> full quality, byte-identical): fewer ETKDG
+    # seeds LOWERS conformer quality, so we NEVER cut seeds automatically — the user decides the trade
+    # (this cap is off unless DELFIN_ADAPTIVE_SEED_CAP=1).  The correct same-quality-faster path is
+    # PARALLELISING all seeds across cores (see the embed pipeline), not reducing them.  When explicitly
+    # enabled, scales seeds down for very large molecules (>120 heavy) as a last-resort finish guarantee.
     try:
-        if _delfin_env_int("DELFIN_ADAPTIVE_SEED_CAP", 1) and mol is not None:
+        if _delfin_env_int("DELFIN_ADAPTIVE_SEED_CAP", 0) and mol is not None:
             n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
             if n_heavy > 120:
                 cap = 3 if n_heavy > 200 else (4 if n_heavy > 160 else 6)
