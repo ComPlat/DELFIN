@@ -1127,22 +1127,25 @@ def create_tab(ctx):
         task_id = state['smiles_task_id']
         _set_smiles_conversion_busy(True)
 
-        if rank:
-            # MANTA only: play the MANTA animation in the viewer while it
-            # builds the manifold + ranks + optimizes. Phrase the caption from
-            # the actual settings (Rank method + Opt top-N), not hard-coded.
+        # The MANTA logo animation must ALWAYS play while MANTA builds the manifold — WITH or WITHOUT
+        # post-processing.  A MANTA submit is (not quick) AND has a construction preset (the convert
+        # buttons pass construction=None); Rank=No / Opt<0 = manifold-only, but the logo still shows.
+        if (not quick) and (construction is not None):
             _method_lbl = str(method).upper()
             _topn = 0 if opt_topn is None else int(opt_topn)
-            if _topn == 0:
-                _opt_part = ' + optimizing all'
-            elif _topn < 0:
-                _opt_part = ''
+            if not rank:
+                _caption = ('MANTA: building the complete coordination-isomer × conformer manifold '
+                            '(no post-processing)...')
             else:
-                _opt_part = f' + optimizing top {_topn}'
-            _show_mol_busy(
-                f'MANTA: building manifold + {_method_lbl} ranking{_opt_part} '
-                '(needs xtb; takes a bit)...'
-            )
+                if _topn == 0:
+                    _opt_part = ' + optimizing all'
+                elif _topn < 0:
+                    _opt_part = ''
+                else:
+                    _opt_part = f' + optimizing top {_topn}'
+                _caption = (f'MANTA: building manifold + {_method_lbl} ranking{_opt_part} '
+                            '(needs xtb; takes a bit)...')
+            _show_mol_busy(_caption)
         else:
             _clear_mol_output()
             if quick:

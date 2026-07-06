@@ -21,6 +21,9 @@ from delfin.smiles_converter import (
 # ``DELFIN_UI_INLINE=1`` to bypass (e.g. when profiling or for
 # cooperative debugging).
 _UI_ISOLATE_DEFAULT = os.environ.get("DELFIN_UI_INLINE", "0") != "1"
+# Per-conversion subprocess timeout (s).  Set DELFIN_UI_ISOLATE_TIMEOUT=0 (or negative) for NO
+# timeout, so a large complete manifold (huge, heavily-substituted macrocycles) can run to completion
+# instead of being killed at the default 30 min — the construction is deterministic, not a hang.
 _UI_ISOLATE_TIMEOUT = int(os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "1800"))
 
 
@@ -37,6 +40,8 @@ def _run_isomers_subprocess(smiles, kwargs, timeout=None):
     are accepted.  Output XYZ strings + labels are also JSON-safe.
     """
     timeout = timeout or _UI_ISOLATE_TIMEOUT
+    if not timeout or timeout <= 0:
+        timeout = None          # DELFIN_UI_ISOLATE_TIMEOUT<=0 -> run to completion, no kill
     payload = json.dumps({"smiles": smiles, "kwargs": kwargs})
     script = (
         "import json, sys\n"
