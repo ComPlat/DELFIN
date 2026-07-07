@@ -27507,6 +27507,116 @@ def _organic_conformer_pool(
             if any(_heavy_atom_rmsd_xyz(xyz, x) < rmsd_threshold for x, _ in pool):
                 continue
             pool.append((xyz, f"conf-{len(pool) + 1}"))
+    pool = _append_ring_puckers(mol_h, pool, rmsd_threshold)
+    if _delfin_env_int("DELFIN_TFD_DEDUP", 1):
+        pool = _tfd_dedup_pool(mol_h, pool)
+    return pool
+
+
+def _tfd_dedup_pool(mol_h, pool, tfd_thr: float = 0.008):
+    """Group-theoretic (symmetry-aware) dedup of the WHOLE conformer pool.
+
+    ETKDG + rotamer sampling on a molecule with a symmetric group (a symmetric
+    phosphine PCy3 / PPh3, a tert-butyl, three equivalent chelate arms, ...)
+    rotates ONE bond many times and deposits the SAME rotamer over and over,
+    because heavy-atom RMSD sees the relabelled-but-identical structures as
+    distinct.  Torsion-Fingerprint-Deviation compares all ring + rotatable-bond
+    torsions with the molecule's topological automorphisms folded in, so those
+    symmetry-equivalent duplicates collapse to ONE while genuinely distinct
+    conformers (a different pucker, a non-equivalent rotamer) survive — pucker
+    and rotation deduped HOLISTICALLY under one symmetry-aware criterion.
+
+    CRITICAL (user guardrail 2026-07-07): must NEVER drop a realistic,
+    genuinely-distinct conformer — only TRUE duplicates.  Measured: symmetry-
+    equivalent duplicates sit at TFD ~= 0.0 (TFD minimises over automorphisms),
+    while genuinely distinct conformers start at TFD ~0.01-0.02 (ibuprofen 8->2
+    at the 0.05 literature "same-cluster" threshold WRONGLY merged distinct
+    rotamers).  So the threshold is deliberately TIGHT (0.008): it removes only
+    the true relabelled duplicates and keeps every distinct realistic conformer.
+    Frames whose atom order does not match ``mol_h`` are kept untouched.
+    """
+    if not RDKIT_AVAILABLE or len(pool) < 2:
+        return pool
+    try:
+        from rdkit.Chem import TorsionFingerprints as _TF
+    except Exception:
+        return pool
+    try:
+        acc = Chem.Mol(mol_h)
+        acc.RemoveAllConformers()
+        loaded = []           # (pool_index, conf_id or None)
+        for i, (xyz, _lbl) in enumerate(pool):
+            conf = _xyz_to_rdkit_conformer(mol_h, xyz)
+            if conf is None:
+                loaded.append((i, None))
+            else:
+                loaded.append((i, acc.AddConformer(conf, assignId=True)))
+        keep = [True] * len(pool)
+        kept_ids = []
+        for i, cid in loaded:
+            if cid is None:
+                continue          # unmatched order -> cannot compare, keep it
+            dup = False
+            for kid in kept_ids:
+                try:
+                    if _TF.GetTFDBetweenConformers(acc, [kid], [cid])[0] < tfd_thr:
+                        dup = True
+                        break
+                except Exception:
+                    pass
+            if dup:
+                keep[i] = False
+            else:
+                kept_ids.append(cid)
+        deduped = [pool[i] for i in range(len(pool)) if keep[i]]
+        # renumber conf-N labels sequentially, preserve non-"conf-" labels
+        out = []
+        for xyz, lbl in deduped:
+            out.append((xyz, f"conf-{len(out) + 1}" if str(lbl).startswith("conf-") else lbl))
+        return out
+    except Exception:
+        return pool
+
+
+def _append_ring_puckers(mol_h, pool, rmsd_threshold):
+    """Add explicitly-CONSTRUCTED ring-pucker conformers to an organic pool.
+
+    ETKDG samples only the ground ring pucker (cyclohexane embeds 300/300 as the
+    chair, never the twist-boat; a 5/7/8-ring never leaves its lowest pucker).
+    Those higher ring basins are genuine, distinct, populated conformers a
+    COMPLETE manifold must contain, but no seed count reaches them.  This pass
+    constructs them for EVERY puckerable (saturated, size 5-8) ring via
+    Cremer-Pople displacement + a torsion-held relax, and builds the multi-ring
+    CARTESIAN PRODUCT (Cy3P: 3 cyclohexyls -> 3xchair, 2xchair+twist, ...) with a
+    whole-molecule clash gate so the combined puckers stay sterically realistic.
+    Deterministic, license-clean, TFD-deduped.  Byte-identical when
+    ``DELFIN_RING_PUCKER=0`` or the molecule has no puckerable ring.
+    """
+    if not RDKIT_AVAILABLE or not pool:
+        return pool
+    if not _delfin_env_int("DELFIN_RING_PUCKER", 1):
+        return pool
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+        mol_base = Chem.Mol(mol_h)
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 42
+        params.useRandomCoords = True
+        if AllChem.EmbedMolecule(mol_base, params) != 0:
+            return pool
+        # The module already TFD-dedups internally (chair vs twist-boat differ
+        # by only ~0.2 A heavy-atom RMSD, so the coarse pool RMSD gate would
+        # wrongly reject the constructed puckers); append them directly, guarding
+        # only against a near-exact coordinate duplicate.
+        for _px, _plabel in _rpuck.generate(mol_base, budget=64):
+            if any(_heavy_atom_rmsd_xyz(_px, x) < 0.05 for x, _ in pool):
+                continue
+            pool.append((_px, f"conf-{len(pool) + 1}"))
+    except Exception as _rp_exc:
+        try:
+            logger.debug("ring-pucker construction skipped: %s", _rp_exc)
+        except Exception:
+            pass
     return pool
 
 
@@ -27709,6 +27819,64 @@ def _emit_chelate_pucker_variants(
             n_added,
         )
     return n_added
+
+
+def _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers):
+    """Correct, combinatorial ring-pucker construction for the METAL path via
+    ``delfin.manta._ring_pucker`` (Cremer-Pople displacement + torsion-held
+    relax + whole-molecule clash gate).
+
+    Covers BOTH ring kinds the user needs (rings with metal / rings without):
+      * chelate rings that close THROUGH the metal — the metal and its
+        coordinating donor atoms are FROZEN so the coordination sphere is
+        preserved while the chelate backbone runs through its puckers (en
+        delta/lambda, 6-ring chair/boat/twist, ...);
+      * peripheral non-metal rings on the ligands (cyclohexyl, piperidinyl,
+        sugar, ...), including their multi-ring CARTESIAN PRODUCT.
+
+    Additive; every new frame still passes the final graph-topology gate.  Byte-
+    identical when ``DELFIN_RING_PUCKER=0`` or no puckerable ring is present.
+    """
+    if not RDKIT_AVAILABLE or not results:
+        return 0
+    if not _delfin_env_int("DELFIN_RING_PUCKER", 1):
+        return 0
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+    except Exception:
+        return 0
+    base_xyz = results[0][0]
+    # need an RDKit mol whose atom order matches the emitted XYZ (incl. H) so the
+    # UFF relax + TFD are well-defined; try the mol as-is, then an H-added copy.
+    conf = _xyz_to_rdkit_conformer(mol, base_xyz)
+    work = mol
+    if conf is None:
+        try:
+            work = Chem.AddHs(mol)
+            conf = _xyz_to_rdkit_conformer(work, base_xyz)
+        except Exception:
+            conf = None
+    if conf is None:
+        return 0
+    try:
+        m = Chem.Mol(work)
+        m.RemoveAllConformers()
+        m.AddConformer(conf, assignId=True)
+        frozen = set()
+        for a in m.GetAtoms():
+            if a.GetSymbol() in _METAL_SET:
+                frozen.add(a.GetIdx())
+                for nb in a.GetNeighbors():
+                    frozen.add(nb.GetIdx())
+        n_added = 0
+        for _px, _plabel in _rpuck.generate(m, frozen=frozen, budget=48):
+            if len(results) + n_added >= max_isomers:
+                break
+            results.append((_px, _plabel))
+            n_added += 1
+        return n_added
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -31241,6 +31409,18 @@ def _smiles_to_xyz_isomers_impl(
         except Exception as _nm_pucker_exc:
             logger.debug("Non-metal ring-pucker pass skipped: %s", _nm_pucker_exc)
 
+    # --- Correct combinatorial ring-pucker construction (metal path) ----------
+    # Supersedes the two legacy pucker passes above with the Cremer-Pople +
+    # torsion-held-relax constructor, which reaches the higher ring basins ETKDG
+    # never samples AND runs the multi-ring product, for chelate rings (metal +
+    # donors frozen -> coordination preserved) and peripheral ligand rings.
+    # Additive; the final topology gate drops any that violate the graph.
+    if not DELFIN_TOPOLOGY_STRICT_MODE:
+        try:
+            _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers)
+        except Exception as _rp_metal_exc:
+            logger.debug("RP ring-pucker pass skipped: %s", _rp_metal_exc)
+
     # --- Additive d8-CN4 square-planar seating pass (eye-driven; DELFIN_D8_SP4_SEAT, default 0) ---
     # d8 metals (Pt/Pd/Ni/Au/Rh/Ir) at CN4 are square-planar in the crystal; the chelate embed can
     # leave them tetrahedral (whole manifold ALARM).  Appends a de-tilted SP-4 variant; the final
@@ -32347,6 +32527,27 @@ def _smiles_to_xyz_isomers_impl(
                 )
     except Exception as _post_exc:
         logger.debug("Welle-5p-A post-emit gate failed: %s", _post_exc)
+
+    # --- Welle-5q: final all-class collapse-repair (env-flag gated, default OFF) ---
+    # A collapsed heavy-heavy pair (0.24-1.2 A: fused substituents / overlapping
+    # rings from a strained ETKDG embed) is a construction DEFECT in ANY class,
+    # not only hapto.  The early ``_apply_bond_decollapse_if_enabled`` pass is
+    # class-gated (default-ON {hapto, multi_hapto}) AND runs *before* the H-VSEPR /
+    # rotamer / xtb correctors, so a collapse left in a sigma-class core (e.g. an
+    # NHC-carbene benzimidazole ring, DUZFIQ) is never repaired.  The per-frame
+    # corrector freezes metals + the M-D sphere, spring-relaxes the non-metal
+    # heavy graph to physical bond lengths, and rolls back per frame unless the
+    # collapsed-bond count strictly drops with no M-D break and no vdw / h-planar /
+    # bond-distort regression -> byte-identical when no collapse is present.  Run
+    # once more here on the TRULY-FINAL geometry (after every upstream corrector),
+    # for ALL classes, so it is non-dormant and never-worse by construction.
+    # Default OFF: when DELFIN_FINAL_COLLAPSE_REPAIR=0 this is a byte-exact no-op.
+    try:
+        if results and _delfin_env_int("DELFIN_FINAL_COLLAPSE_REPAIR", 0) == 1:
+            from delfin.manta._bond_decollapse import correct_results as _fc_correct
+            results = _fc_correct(mol, results)
+    except Exception as _fc_exc:
+        logger.debug("Welle-5q final collapse-repair failed: %s", _fc_exc)
 
     return results, None
 
