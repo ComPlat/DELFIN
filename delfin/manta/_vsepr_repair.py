@@ -105,7 +105,11 @@ def repair_terminal_groups(xyz: str, tol: float = 20.0) -> str:
             others = []
             for k in adj[c]:
                 heavy_other = [x for x in adj[k] if x != c and syms[x] != "H"]
-                if syms[k] != "H" and not heavy_other and syms[k] not in _METALS:
+                # terminal neighbour (nothing else heavy attached) -> a group
+                # member.  H IS included so a distorted methyl CH3 / ammonium NH3
+                # is repaired too (user: the CF3 problem also hits CH3 in some
+                # systems); heavy terminals (F/Cl/O of CF3/SO3) as before.
+                if not heavy_other and syms[k] not in _METALS:
                     groups.setdefault(syms[k], []).append(k)
                 elif syms[k] != "H":
                     others.append(k)

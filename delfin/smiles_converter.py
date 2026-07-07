@@ -33422,7 +33422,24 @@ def smiles_to_xyz(
                     # Run with timeout to avoid hanging on single seed
                     _multi_ids = [None]
                     def _do_multi(m=mol, n=per_seed, p=params_multi):
-                        _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
+                        try:
+                            _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
+                        except Exception:
+                            # Kekulize / embed failure on a charged aromatic metal
+                            # complex (Zn/Cu/Co-porphyrin, salen: RDKit "Can't
+                            # kekulize") -> embed on a DE-AROMATISED copy (same atom
+                            # order) and transfer the coordinates back, so the
+                            # metallo-macrocycle still builds instead of dropping.
+                            try:
+                                _dc = _dearomatized_embedding_copy(m)
+                                if _dc is not None:
+                                    _kids = list(AllChem.EmbedMultipleConfs(_dc, numConfs=n, params=p))
+                                    _multi_ids[0] = [
+                                        m.AddConformer(Chem.Conformer(_dc.GetConformer(int(_c))), assignId=True)
+                                        for _c in _kids
+                                    ]
+                            except Exception:
+                                _multi_ids[0] = None
                     _mt = threading.Thread(target=_do_multi, daemon=True)
                     _mt.start()
                     _mt.join(timeout=None if _det_multi else _EMBED_TIMEOUT)
