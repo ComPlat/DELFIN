@@ -32549,6 +32549,25 @@ def _smiles_to_xyz_isomers_impl(
     except Exception as _fc_exc:
         logger.debug("Welle-5q final collapse-repair failed: %s", _fc_exc)
 
+    # --- Welle-5r: final VSEPR terminal-group repair (env-flag gated, default OFF) ---
+    # A rigid terminal EX3 group (CF3/CCl3/CBr3/CH3/SO3/...) has NO conformational
+    # freedom -- it is tetrahedral -- so any distortion is a construction defect,
+    # not a legitimate conformer.  The metal embed/seating sometimes splays one
+    # (LUXWIL CF3 F-C-F up to 157deg while the coordination sphere is fine).  This
+    # final pass rebuilds each distorted group's terminal atoms at their ideal
+    # VSEPR positions, anchored by the group's attachment bond so the rest of the
+    # molecule (and the coordination sphere) is untouched.  Pure geometry,
+    # license-clean, byte-identical when every terminal group is already ideal.
+    # Default OFF: when DELFIN_VSEPR_REPAIR=0 this is a byte-exact no-op.
+    try:
+        _vsepr_on = (_delfin_env_int("DELFIN_VSEPR_REPAIR", 0) == 1
+                     or _delfin_env_int("DELFIN_FFFREE_VSEPR_REPAIR", 0) == 1)
+        if results and _vsepr_on:
+            from delfin.manta._vsepr_repair import repair_terminal_groups as _vr
+            results = [(_vr(_rx), _rl) for _rx, _rl in results]
+    except Exception as _vr_exc:
+        logger.debug("Welle-5r VSEPR terminal-group repair failed: %s", _vr_exc)
+
     return results, None
 
 
