@@ -32,8 +32,31 @@ def _get_voila_static_root() -> str | None:
     return None
 
 
+def _is_safe_notebook_source(path: Path) -> bool:
+    """Reject a discovered notebook an attacker could have planted.
+
+    ``_find_notebook`` walks cwd, its parents and $HOME. On a shared host a
+    world-writable parent (e.g. ``/tmp``) could hold a hostile
+    ``delfin_dashboard.ipynb`` that Voilà would then TRUST and EXECUTE as the
+    launching user — arbitrary code execution via a search-path hijack. Only
+    accept a search-path notebook that is owned by the current user and is not
+    world-writable; anything else falls through to the packaged copy that ships
+    with the install (installed by pip, implicitly trusted).
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if hasattr(os, "geteuid"):
+        if st.st_uid != os.geteuid():
+            return False
+        if st.st_mode & 0o002:  # world-writable file
+            return False
+    return True
+
+
 def _find_notebook() -> str:
-    """Locate the dashboard notebook, preferring the checkout copy."""
+    """Locate the dashboard notebook, preferring a trusted checkout copy."""
     search_roots = [Path.cwd(), *Path.cwd().parents, Path.home()]
     rel_candidates = [
         Path("delfin_dashboard.ipynb"),
@@ -42,7 +65,7 @@ def _find_notebook() -> str:
     for root in search_roots:
         for rel in rel_candidates:
             candidate = (root / rel).resolve()
-            if candidate.is_file():
+            if candidate.is_file() and _is_safe_notebook_source(candidate):
                 return str(candidate)
 
     ref = importlib.resources.files("delfin.notebooks").joinpath(
@@ -365,6 +388,21 @@ def _default_voila_root() -> Path:
     return _secure_cache_dir("voila-root").resolve()
 
 
+def _dashboard_default_url(notebook: str, root_dir: str) -> str:
+    """URL that renders the dashboard, relative to *root_dir*.
+
+    Used as ``ServerApp.default_url`` so a plain ``localhost:PORT/`` request is
+    redirected straight to the rendered dashboard — the user experience is
+    unchanged even though we now run under an authenticating jupyter-server.
+    The notebook is always staged under ``root_dir`` first, so the relative
+    path resolves cleanly.
+    """
+    from urllib.parse import quote
+
+    rel = Path(notebook).resolve().relative_to(Path(root_dir).resolve()).as_posix()
+    return "/voila/render/" + quote(rel)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -409,6 +447,20 @@ def main(argv=None):
             "Allow binding to a non-loopback IP. Not recommended; prefer SSH "
             "tunnels or an authenticated HTTPS reverse proxy on shared servers."
         ),
+    )
+    parser.add_argument(
+        "--certfile",
+        default=None,
+        help=(
+            "TLS certificate (PEM) for HTTPS. Recommended together with "
+            "--keyfile when serving to a network so the token is not sent in "
+            "clear."
+        ),
+    )
+    parser.add_argument(
+        "--keyfile",
+        default=None,
+        help="TLS private key (PEM) matching --certfile.",
     )
     parser.add_argument(
         "--token",
@@ -528,53 +580,84 @@ def main(argv=None):
     # Trust the notebook so Voilà doesn't warn about untrusted content.
     _trust_notebook(notebook)
 
+    # Launch Voilà as a JUPYTER-SERVER EXTENSION, not standalone `voila`.
+    # WHY (verified 2026-07-08, voila 0.5.12 / jupyter_server 2.20): standalone
+    # `voila <nb>` does NOT enforce the token — the dashboard page, the kernel
+    # REST API AND the kernel websocket are all reachable WITHOUT auth, so on a
+    # shared host any local user reaching the port could drive the agent tab
+    # (arbitrary CLI = RCE as the launching user). Under `jupyter server` with
+    # the voila extension, jupyter_server enforces the token instead: an
+    # unauthenticated GET -> 302 login and the kernel websocket -> 403.
+    # `default_url` sends the browser straight to the rendered dashboard, so
+    # `http://localhost:PORT/?token=…` behaves exactly as before for the user.
+    dashboard_url = _dashboard_default_url(notebook, root_dir)
     cmd = [
         sys.executable,
         "-m",
-        "voila",
-        notebook,
+        "jupyter",
+        "server",
+        "--ServerApp.jpserver_extensions={'voila': True}",
         f"--port={args.port}",
-        f"--Voila.ip={args.ip}",
-        "--show_tracebacks=True",
-        f"--Voila.root_dir={root_dir}",
+        f"--ServerApp.ip={args.ip}",
+        f"--ServerApp.root_dir={root_dir}",
+        f"--ServerApp.default_url={dashboard_url}",
+        # Info-disclosure: never surface Python tracebacks to the browser
+        # (they leak paths, usernames, code). Off by default; set explicitly.
+        "--VoilaConfiguration.show_tracebacks=False",
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
+        # Shrink the RCE surface: the dashboard never needs server terminals.
+        "--ServerApp.terminals_enabled=False",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
     ]
 
-    # Token authentication for Voilà/Jupyter
+    # Token authentication — now actually ENFORCED by jupyter_server. Pass via
+    # env var, not CLI: /proc/PID/cmdline is world-readable on shared hosts, so
+    # a CLI token would leak to any local user via `ps`. Because the token is
+    # env-supplied, jupyter_server does NOT echo it to stdout.
     if _token:
-        # Pass via env var, not CLI: /proc/PID/cmdline is world-readable on
-        # shared hosts, so a CLI token would leak to any local user via `ps`.
         env["JUPYTER_TOKEN"] = _token
     else:
+        # Unreachable (main refuses to run without a token) — keep the
+        # fail-closed default explicit anyway.
         cmd.append("--ServerApp.token=")
 
-    voila_static_root = _get_voila_static_root()
-    if voila_static_root:
-        cmd.append(f"--Voila.static_root={voila_static_root}")
+    # TLS: honour explicit certs so a networked bind does not send the token in
+    # clear. Without certs we keep working but warn (SSH tunnel stays the
+    # recommended path); loopback (the default) needs no TLS.
+    if args.certfile and args.keyfile:
+        cmd.append(f"--ServerApp.certfile={args.certfile}")
+        cmd.append(f"--ServerApp.keyfile={args.keyfile}")
+    elif not _is_loopback_bind(args.ip):
+        print(
+            "  ⚠  Remote bind without TLS: dashboard traffic (including the "
+            "access token) is UNENCRYPTED. Prefer an SSH tunnel, or pass "
+            "--certfile/--keyfile for HTTPS.",
+            file=sys.stderr,
+        )
 
     if open_browser:
-        cmd.append("--Voila.open_browser=True")
+        cmd.append("--ServerApp.open_browser=True")
     else:
         cmd.append("--no-browser")
 
     if args.dark:
-        cmd.append("--theme=dark")
+        cmd.append("--VoilaConfiguration.theme=dark")
 
+    scheme = "https" if (args.certfile and args.keyfile) else "http"
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
     # Never print the raw token. Terminals, notebooks, service logs, and job
     # launchers may retain stdout on shared systems.
-    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
+    print(f"Starting DELFIN Dashboard on {scheme}://{bind_display}:{args.port}")
     if _token and _token_file is not None:
         print(f"  Append ?token=$(cat {_token_file}) to the URL.")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":
         for ip in _get_local_ips():
-            print(f"  -> http://{ip}:{args.port}")
+            print(f"  -> {scheme}://{ip}:{args.port}")
 
     print()
     if args.ip == "0.0.0.0":
