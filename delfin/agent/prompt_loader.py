@@ -1163,109 +1163,116 @@ class PromptLoader:
         # 6. Cycle context + efficiency rules + collaboration protocol
         if route:
             total = len(route)
-            cycle_info = (
+            header = (
                 f"---\n"
                 f"Current mode: {mode_id}\n"
                 f"Route: {' -> '.join(route)}\n"
                 f"Current role: {role_id} (step {role_index + 1} of {total})\n"
                 f"---\n"
-                f"Collaboration protocol:\n"
-                f"- You are part of an automated multi-agent pipeline.\n"
-                f"- Read the prior agent outputs carefully before starting your work.\n"
-                f"- Produce your output in the MANDATORY structured format from your role prompt.\n"
-                f"- The next agent in the route will parse your output. Be precise.\n"
-                f"- Do NOT silently redefine the task, success metric, or scope.\n"
-                f"- If you believe the goal or metric is wrong, raise QUESTION instead of drifting.\n"
-                f"- Prefer small stage gates with explicit exit evidence over broad implementation claims.\n"
-                f"- If you are the Builder: address all critical/major Critic/Runtime findings.\n"
-                f"- If you are the Test Agent: run pytest and verify acceptance criteria.\n"
-                f"---\n"
-                f"Efficiency rules (CRITICAL — every file read costs money):\n"
-                f"- Working directory is the repo root. Run `git diff` directly — never `cd` or `git -C`.\n"
-                f"- Use `git diff --stat` for overviews, only full diff for specific files.\n"
-                f"- Never retry a command in a different syntax if it already succeeded.\n"
-                f"- If a Bash command is BLOCKED/DENIED by the permission system, STOP IMMEDIATELY. "
-                f"Do NOT retry it or any variation — it will always be denied. "
-                f"Use Python alternatives (ast.parse for syntax, importlib for imports) "
-                f"or tell the user what commands to run manually.\n"
-                f"- Read only the lines you need (use offset/limit), not entire large files.\n"
-                f"- Do NOT spawn sub-agents (Agent tool) for simple questions. Only for complex multi-step tasks.\n"
-                f"- For overview/info questions, read README.md first. Only read more files if truly needed.\n"
-                f"- Prefer Grep over Read for searching. For implementation tasks, read as many files as needed.\n"
-                f"- Keep responses concise. No preamble, no restating what the user said.\n"
-                f"- NEVER run real ORCA, xTB, or SLURM computations. Only pytest unit tests.\n"
-                f"---\n"
-                f"Directory permissions (enforced at code level):\n"
-                f"- agent_workspace → Full access (agent sandbox)\n"
-                f"- calculations → Read freely, mutate with user confirmation\n"
-                f"- repo (DELFIN source) → Code agents: full access. Dashboard: no access.\n"
-                f"- archive → READ-ONLY (hard block, no exceptions)\n"
-                f"- remote_archive → READ-ONLY (hard block, no exceptions)\n"
-                f"- Always ask the user before any destructive action."
             )
 
-            # Tool isolation per role
-            _READ_ONLY_ROLES = {
-                "critic_agent", "reviewer_agent", "runtime_agent",
-                "chief_agent", "session_manager", "test_agent",
-                "dashboard_agent", "research_agent",
-            }
-            _WRITE_ROLES = {"builder_agent", "solo_agent"}
-            if role_id in _READ_ONLY_ROLES:
-                if role_id == "test_agent":
-                    cycle_info += (
-                        f"\n---\n"
-                        f"Tool restrictions:\n"
-                        f"- You may use: Read, Grep, Glob, Bash (for pytest and git commands ONLY).\n"
-                        f"- You may use Edit/Write ONLY to create or modify test files in tests/.\n"
-                        f"- Do NOT modify production code. That is the Builder's job."
-                    )
-                elif role_id == "dashboard_agent":
-                    cycle_info += (
-                        f"\n---\n"
-                        f"Tool access:\n"
-                        f"- Read, Grep, Glob: read DELFIN source code, calculation data, archives (anywhere).\n"
-                        f"- Write: ONLY to agent_workspace/ (analysis scripts, CSVs, reports).\n"
-                        f"- Bash: ONLY to run scripts in agent_workspace/ (ask user first!).\n"
-                        f"- WebSearch, WebFetch: literature research for methods and parameters.\n"
-                        f"- Doc-search tools (search_docs, read_section, list_docs, list_sections): "
-                        f"search indexed PDFs (ORCA manual, xTB docs, papers). ALWAYS use these BEFORE WebSearch.\n"
-                        f"- Calc-search tools (search_calcs, get_calc_info, calc_summary): "
-                        f"search calculation metadata across calc/, archive/, remote_archive/. "
-                        f"Use search_calcs for content-based search (method, basis, solvent), /calc search for filename globs.\n"
-                        f"- No Edit. Use Write to create/replace entire files in agent_workspace/.\n"
-                        f"- Dashboard control via ACTION: slash commands.\n"
-                        f"- calc/archive file changes ONLY through ACTION: commands (never Write/Bash).\n"
-                        f"- Data directories are READ-ONLY for Write/Bash tools (CLI enforced via --add-dir)."
-                    )
-                else:
-                    cycle_info += (
-                        f"\n---\n"
-                        f"Tool restrictions:\n"
-                        f"- You may use: Read, Grep, Glob, Bash (for git commands ONLY).\n"
-                        f"- Do NOT use Edit or Write. You are a review/analysis role.\n"
-                        f"- If you find something that needs changing, describe it precisely\n"
-                        f"  so the Builder can fix it."
-                    )
-            elif role_id in _WRITE_ROLES:
-                cycle_info += (
-                    f"\n---\n"
-                    f"Tool access: Full (Read, Edit, Write, Bash, Grep, Glob).\n"
-                    f"You are the only role allowed to modify production code."
+            # The dashboard agent is a SINGLE-STEP, human-facing GUIDE role — not
+            # a link in the multi-agent CODING pipeline. Emitting the pipeline
+            # collaboration protocol, the git/pytest efficiency rules, a
+            # "read DELFIN source anywhere" tool block, or the structured-output
+            # self-reflection here contaminated it into acting like a coder: it
+            # read the whole delfin/manta source tree and self-started a task
+            # (bug 20260708-092217). Its scope, tools and ACTION: mechanics
+            # already live in dashboard_agent.md — keep only a short, CONSISTENT
+            # orientation here so nothing contradicts that role prompt.
+            if role_id == "dashboard_agent":
+                cycle_info = header + (
+                    "You are a single-step, conversational guide talking "
+                    "directly to the user — there is no 'next agent' to hand "
+                    "structured output to, and this is NOT a coding pipeline. "
+                    "Drive the dashboard through ACTION: slash-commands and "
+                    "research via search_docs. Do NOT read or edit DELFIN "
+                    "source, run git/pytest, or start real ORCA/xTB/SLURM "
+                    "computations. Always ask before any destructive action "
+                    "(submit / recalc / cancel)."
+                )
+                sections.append(cycle_info)
+            else:
+                cycle_info = header + (
+                    f"Collaboration protocol:\n"
+                    f"- You are part of an automated multi-agent pipeline.\n"
+                    f"- Read the prior agent outputs carefully before starting your work.\n"
+                    f"- Produce your output in the MANDATORY structured format from your role prompt.\n"
+                    f"- The next agent in the route will parse your output. Be precise.\n"
+                    f"- Do NOT silently redefine the task, success metric, or scope.\n"
+                    f"- If you believe the goal or metric is wrong, raise QUESTION instead of drifting.\n"
+                    f"- Prefer small stage gates with explicit exit evidence over broad implementation claims.\n"
+                    f"- If you are the Builder: address all critical/major Critic/Runtime findings.\n"
+                    f"- If you are the Test Agent: run pytest and verify acceptance criteria.\n"
+                    f"---\n"
+                    f"Efficiency rules (CRITICAL — every file read costs money):\n"
+                    f"- Working directory is the repo root. Run `git diff` directly — never `cd` or `git -C`.\n"
+                    f"- Use `git diff --stat` for overviews, only full diff for specific files.\n"
+                    f"- Never retry a command in a different syntax if it already succeeded.\n"
+                    f"- If a Bash command is BLOCKED/DENIED by the permission system, STOP IMMEDIATELY. "
+                    f"Do NOT retry it or any variation — it will always be denied. "
+                    f"Use Python alternatives (ast.parse for syntax, importlib for imports) "
+                    f"or tell the user what commands to run manually.\n"
+                    f"- Read only the lines you need (use offset/limit), not entire large files.\n"
+                    f"- Do NOT spawn sub-agents (Agent tool) for simple questions. Only for complex multi-step tasks.\n"
+                    f"- For overview/info questions, read README.md first. Only read more files if truly needed.\n"
+                    f"- Prefer Grep over Read for searching. For implementation tasks, read as many files as needed.\n"
+                    f"- Keep responses concise. No preamble, no restating what the user said.\n"
+                    f"- NEVER run real ORCA, xTB, or SLURM computations. Only pytest unit tests.\n"
+                    f"---\n"
+                    f"Directory permissions (enforced at code level):\n"
+                    f"- agent_workspace → Full access (agent sandbox)\n"
+                    f"- calculations → Read freely, mutate with user confirmation\n"
+                    f"- repo (DELFIN source) → Code agents: full access. Dashboard: no access.\n"
+                    f"- archive → READ-ONLY (hard block, no exceptions)\n"
+                    f"- remote_archive → READ-ONLY (hard block, no exceptions)\n"
+                    f"- Always ask the user before any destructive action."
                 )
 
-            # Self-reflection instruction
-            cycle_info += (
-                f"\n---\n"
-                f"Self-reflection (mandatory before submitting output):\n"
-                f"Before producing your final output, ask yourself:\n"
-                f"1. Did I address everything from the plan/prior outputs?\n"
-                f"2. Did I miss any edge cases or requirements?\n"
-                f"3. Is my output complete and in the correct structured format?\n"
-                f"If anything is missing, fix it before submitting."
-            )
+                # Tool isolation per role
+                _READ_ONLY_ROLES = {
+                    "critic_agent", "reviewer_agent", "runtime_agent",
+                    "chief_agent", "session_manager", "test_agent",
+                    "research_agent",
+                }
+                _WRITE_ROLES = {"builder_agent", "solo_agent"}
+                if role_id in _READ_ONLY_ROLES:
+                    if role_id == "test_agent":
+                        cycle_info += (
+                            f"\n---\n"
+                            f"Tool restrictions:\n"
+                            f"- You may use: Read, Grep, Glob, Bash (for pytest and git commands ONLY).\n"
+                            f"- You may use Edit/Write ONLY to create or modify test files in tests/.\n"
+                            f"- Do NOT modify production code. That is the Builder's job."
+                        )
+                    else:
+                        cycle_info += (
+                            f"\n---\n"
+                            f"Tool restrictions:\n"
+                            f"- You may use: Read, Grep, Glob, Bash (for git commands ONLY).\n"
+                            f"- Do NOT use Edit or Write. You are a review/analysis role.\n"
+                            f"- If you find something that needs changing, describe it precisely\n"
+                            f"  so the Builder can fix it."
+                        )
+                elif role_id in _WRITE_ROLES:
+                    cycle_info += (
+                        f"\n---\n"
+                        f"Tool access: Full (Read, Edit, Write, Bash, Grep, Glob).\n"
+                        f"You are the only role allowed to modify production code."
+                    )
 
-            sections.append(cycle_info)
+                # Self-reflection instruction
+                cycle_info += (
+                    f"\n---\n"
+                    f"Self-reflection (mandatory before submitting output):\n"
+                    f"Before producing your final output, ask yourself:\n"
+                    f"1. Did I address everything from the plan/prior outputs?\n"
+                    f"2. Did I miss any edge cases or requirements?\n"
+                    f"3. Is my output complete and in the correct structured format?\n"
+                    f"If anything is missing, fix it before submitting."
+                )
+
+                sections.append(cycle_info)
 
         # 6b. Pre-task briefing (outcome-based insights)
         if self._should_inject_briefing(role_id, session_key, briefing_ctx):
