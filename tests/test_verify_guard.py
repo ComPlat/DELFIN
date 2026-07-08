@@ -91,6 +91,33 @@ def test_detect_unknown_false_restricts_to_fakes():
     assert any(f.keyword == "nactel" for f in only_fakes)
 
 
+def test_non_orca_cli_tokens_not_flagged():
+    # Regression (bug 7d54): a MANTA/xTB answer quotes CLI values in
+    # backticks — xTB methods (`gfn2`, `gfnff`) and MANTA configs
+    # (`champion`, `builder`) — and mentions "ORCA" only as a downstream
+    # program.  With no %block syntax this is NOT an ORCA keyword context,
+    # so the guard must stay completely silent.
+    text = (
+        "MANTA baut das Ensemble; ranke mit `--method gfn2` oder `gfnff`. "
+        "Die Configs sind `champion` und `builder`. Danach in xTB/DFT/ORCA "
+        "weiterrechnen."
+    )
+    assert vg.scan_for_unverified_keywords(text) == []
+
+
+def test_unknown_needs_block_marker_not_bare_orca():
+    # The bare word "ORCA" plus a `key = value` is NOT enough — without a
+    # %block marker the token is not judged.
+    assert vg.scan_for_unverified_keywords("In ORCA gilt `foobarbaz = 5`.") == []
+    # ...but WITH a %block marker it fires.
+    assert any(
+        f.keyword == "foobarbaz"
+        for f in vg.scan_for_unverified_keywords(
+            "In ORCA gilt `foobarbaz = 5` im %scf-Block."
+        )
+    )
+
+
 def test_empty_text_returns_no_flags():
     assert vg.scan_for_unverified_keywords("") == []
     assert vg.scan_for_unverified_keywords("   ") == []

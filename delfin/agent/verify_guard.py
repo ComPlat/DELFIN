@@ -17,11 +17,15 @@ Both detectors are data-driven:
   is confirmed absent from the manual namespace.  These are observed
   production hallucinations (``nactel``, ``nactorb``, ``multiplicity``
   used as a %casscf keyword, …).
-* **unknown-keyword detector** (conservative): tokens the answer
-  *presents as ORCA keywords* — backtick-quoted, or written as
-  ``keyword = value`` near a ``%block`` marker — that are not in the
-  1600+ keyword namespace and are not ordinary words.  Kept precision-
-  biased to avoid over-flagging legitimate prose.
+* **unknown-keyword detector** (conservative): tokens written in the
+  canonical ORCA block form ``keyword = value`` — and ONLY when the text
+  actually shows ORCA input syntax (a ``%block`` marker) — that are not
+  in the 1600+ keyword namespace and are not ordinary words.  It fires
+  only when the answer is genuinely about ORCA keywords: DELFIN is a
+  multi-tool agent, so backtick spans routinely quote CLI flags, file
+  names, xTB methods (``gfn2``, ``gfnff``) and MANTA configs
+  (``champion``, ``builder``) that are NOT ORCA keywords — those must
+  never be judged against the ORCA namespace.
 
 Nothing here touches the network or RDKit; it only reads the committed
 ``keywords_groundtruth_orca.json`` and is fully unit-testable.
@@ -150,14 +154,20 @@ def scan_for_unverified_keywords(
     flags: list[VerifyFlag] = []
     seen: set[str] = set()
 
-    # Tokens the answer *presents as* keywords: backtick-quoted spans
-    # and ``key = value`` assignments.  Used to gate ambiguous fakes and
-    # to drive the unknown-keyword detector.
+    # Tokens the answer *presents as* keywords: backtick-quoted spans AND
+    # ``key = value`` assignments gate the ambiguous-fake detector.  The
+    # unknown-keyword detector, by contrast, only considers ``assigned``
+    # tokens (canonical ORCA block form) — a backtick span alone is NOT
+    # evidence of an ORCA keyword claim (it quotes CLI flags, file names,
+    # xTB methods, MANTA configs, ...).
     presented: list[str] = []
+    assigned: list[str] = []
     for m in _BACKTICK_SPAN.finditer(text):
         presented.append(m.group(1).strip())
     for m in _ASSIGN.finditer(text):
-        presented.append(m.group(1).strip())
+        tok = m.group(1).strip()
+        presented.append(tok)
+        assigned.append(tok)
     presented_low = {t.lower() for t in presented}
 
     # 1. Fake-keyword blocklist — high precision, always on.  Ordinary-
@@ -187,14 +197,17 @@ def scan_for_unverified_keywords(
         # stay silent rather than risk false positives.
         return flags
 
-    # 2. Unknown-keyword detector — only tokens the answer presents as
-    #    keywords, and only when the answer is actually talking about
-    #    ORCA blocks.
-    talks_blocks = "%" in text or re.search(r"(?i)\borca\b", text) is not None
-    if not talks_blocks:
+    # 2. Unknown-keyword detector — fire ONLY in genuine ORCA-input
+    #    context.  "About ORCA" means the text actually shows ORCA block
+    #    syntax: a ``%block`` marker (``%scf``, ``%casscf``, ...), NOT the
+    #    bare word "ORCA" (a downstream program mention) and NOT a plain
+    #    "%" (e.g. "50 %").  Only ``keyword = value`` tokens are judged —
+    #    never arbitrary backtick spans.
+    has_orca_block = re.search(r"%[A-Za-z]", text) is not None
+    if not has_orca_block:
         return flags
 
-    for tok in presented:
+    for tok in assigned:
         low = tok.lower()
         if low in seen:
             continue
