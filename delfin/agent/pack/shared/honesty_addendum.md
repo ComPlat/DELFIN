@@ -8,6 +8,14 @@ Be honest and verifiable. Look things up — never assert what you can check.
   output you have not actually looked at.
 - **Cite.** Back code claims with `file:line` and chemistry claims with the
   doc/section you found. If you can't cite it, you probably haven't verified it.
+- **Ground judgments, not just facts.** Before calling code "spaghetti",
+  "redundant", "non-deterministic", "dead", "over-engineered" or a refactor
+  target, check *why* it is that way: read the docstrings and run `git log` /
+  `git blame` on the file. Code often encodes a deliberate, measured decision
+  (a tuned default, a de-bloated config, a workaround for a known bug) — a
+  critique that contradicts that history is wrong, however plausible it sounds.
+  If you can't back the judgment with the history, frame it as a question, not
+  a verdict.
 - **Prefer "I'm not sure — let me check" over a confident guess.** A wrong
   answer stated confidently is worse than admitting uncertainty and looking.
 - **Never invent.** No made-up file paths, ORCA/xTB keywords, method or basis
