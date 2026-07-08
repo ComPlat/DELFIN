@@ -188,8 +188,11 @@ ctx = create_dashboard(backend="auto")
 ```bash
 delfin-voila                 # starts on localhost:8866
 delfin-voila --port 9000     # custom port
-delfin-voila --ip 0.0.0.0    # bind to all interfaces if required
 delfin-voila --dark          # dark theme
+
+# On HPC/login nodes, keep the default 127.0.0.1 bind and use an SSH tunnel.
+# Direct network binds require an explicit security override:
+delfin-voila --ip 0.0.0.0 --allow-remote-bind
 ```
 
 Detailed documentation: [docs/SETTINGS_AND_SETUP.md](docs/SETTINGS_AND_SETUP.md)

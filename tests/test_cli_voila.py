@@ -92,7 +92,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)"
         in captured["cmd"]
     )
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Token is passed via env var (not CLI) for security — /proc/PID/cmdline
     # is world-readable, so the token must not appear in the command line.
     assert "--ServerApp.token=" not in captured["cmd"]
@@ -177,7 +177,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
 
     assert "--no-browser" in captured["cmd"]
     assert "--Voila.ip=127.0.0.1" in captured["cmd"]
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Token via env var, not CLI
     assert "--ServerApp.token=" not in captured["cmd"]
     assert "JUPYTER_TOKEN" in captured["env"]
@@ -296,7 +296,7 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
         assert exc.code == 0
 
     assert "--Voila.open_browser=True" in captured["cmd"]
-    assert "--ServerApp.disable_check_xsrf=True" in captured["cmd"]
+    assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Token via env var, not CLI
     assert "--ServerApp.token=" not in captured["cmd"]
     assert "JUPYTER_TOKEN" in captured["env"]
@@ -306,13 +306,57 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     assert "--no-browser" not in captured["cmd"]
 
 
-def test_no_token_disables_auth(monkeypatch, tmp_path, capsys):
-    """--no-token should pass --ServerApp.token= in CLI (empty = disabled)."""
+def test_no_token_is_refused(monkeypatch, tmp_path, capsys):
+    """--no-token is refused because Voilà exposes kernel/agent execution."""
     root_dir = tmp_path / "home"
     package_dir = tmp_path / "package"
     root_dir.mkdir()
     package_dir.mkdir()
 
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main(["--no-token", "--no-browser"])
+    except SystemExit as exc:
+        assert exc.code == 2
+
+    stderr = capsys.readouterr().err
+    assert "--no-token is no longer allowed" in stderr
+
+
+def test_short_custom_token_is_refused(monkeypatch, tmp_path, capsys):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main(["--token", "test", "--no-browser"])
+    except SystemExit as exc:
+        assert exc.code == 2
+
+    stderr = capsys.readouterr().err
+    assert "insecure --token" in stderr
+
+
+def test_generated_token_is_never_printed(monkeypatch, tmp_path, capsys):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
     notebook = package_dir / "delfin_dashboard.ipynb"
     notebook.write_text('{"cells":[]}', encoding="utf-8")
 
@@ -327,7 +371,7 @@ def test_no_token_disables_auth(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
     monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: None)
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
-    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     def fake_popen(cmd, env):
         captured["cmd"] = cmd
@@ -335,16 +379,75 @@ def test_no_token_disables_auth(monkeypatch, tmp_path, capsys):
         return FakeProc()
 
     monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
-    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
     try:
-        cli_voila.main(["--no-token", "--no-browser"])
+        cli_voila.main(["--no-browser"])
     except SystemExit as exc:
         assert exc.code == 0
 
-    # With --no-token: empty token in CLI (auth disabled), NOT in env var
-    assert "--ServerApp.token=" in captured["cmd"]
-    assert "JUPYTER_TOKEN" not in captured["env"]
+    token = captured["env"]["JUPYTER_TOKEN"]
+    stdout = capsys.readouterr().out
+    assert token not in stdout
+    assert f"?token={token}" not in stdout
+    assert "Append ?token=$(cat " in stdout
+
+
+def test_remote_bind_is_refused_without_override(monkeypatch, tmp_path, capsys):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    try:
+        cli_voila.main(["--ip", "0.0.0.0", "--no-browser"])
+    except SystemExit as exc:
+        assert exc.code == 2
 
     stderr = capsys.readouterr().err
-    assert "WARNING" in stderr
+    assert "refusing to bind delfin-voila to a non-loopback address" in stderr
+
+
+def test_remote_bind_requires_explicit_override(monkeypatch, tmp_path):
+    root_dir = tmp_path / "home"
+    package_dir = tmp_path / "package"
+    root_dir.mkdir()
+    package_dir.mkdir()
+    notebook = package_dir / "delfin_dashboard.ipynb"
+    notebook.write_text('{"cells":[]}', encoding="utf-8")
+
+    captured = {}
+
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(cli_voila, "_voila_is_available", lambda: True)
+    monkeypatch.setattr(cli_voila, "_find_notebook", lambda: str(notebook))
+    monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
+    monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: None)
+    monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
+
+    def fake_popen(cmd, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+        return FakeProc()
+
+    monkeypatch.setattr(cli_voila.subprocess, "Popen", fake_popen)
+
+    try:
+        cli_voila.main([
+            "--ip", "0.0.0.0", "--allow-remote-bind", "--no-browser",
+        ])
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert "--Voila.ip=0.0.0.0" in captured["cmd"]
+    assert "JUPYTER_TOKEN" in captured["env"]

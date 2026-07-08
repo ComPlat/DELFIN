@@ -11,6 +11,7 @@ import base64
 import html as _html
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -79,6 +80,47 @@ def _label_to_name(label: str) -> str:
     return label
 
 
+def _safe_literature_entry_name(name: str, *, label: str = 'file name') -> str:
+    """Validate a single file/folder name for the Literature explorer."""
+    raw = str(name or '').strip()
+    if not raw:
+        raise ValueError(f'{label} is required.')
+    if '\x00' in raw or '\n' in raw or '\r' in raw:
+        raise ValueError(f'{label} contains unsupported control characters.')
+    normalized = raw.replace('\\', '/')
+    if normalized.startswith('/') or re.match(r'^[A-Za-z]:', normalized):
+        raise ValueError(f'{label} must be a plain name, not a path.')
+    parts = [part for part in normalized.split('/') if part]
+    if len(parts) != 1 or parts[0] in {'.', '..'}:
+        raise ValueError(f'{label} must be a plain name, not a path.')
+    return parts[0]
+
+
+def _resolve_literature_path(root: Path, rel_path: str | Path = '') -> Path:
+    """Resolve a Literature path and require it to stay under *root*."""
+    root_resolved = root.expanduser().resolve()
+    if isinstance(rel_path, Path) and rel_path.is_absolute():
+        candidate = rel_path
+    else:
+        rel_text = str(rel_path or '').strip()
+        candidate = root_resolved if rel_text in {'', '/'} else root_resolved / rel_text.lstrip('/')
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError('Path must remain inside literature root.') from exc
+    return resolved
+
+
+def _literature_relpath(root: Path, path: Path) -> str:
+    """Return a POSIX relative path for an already-contained Literature path."""
+    root_resolved = root.expanduser().resolve()
+    resolved = path.resolve()
+    rel = resolved.relative_to(root_resolved)
+    rel_text = rel.as_posix()
+    return '' if rel_text == '.' else rel_text
+
+
 # ---------------------------------------------------------------------------
 # Tab factory
 # ---------------------------------------------------------------------------
@@ -88,6 +130,7 @@ def create_tab(ctx):
 
     # ── resolve literature directory ──────────────────────────────────
     lit_dir = (ctx.repo_dir / 'literature') if ctx.repo_dir else (Path.cwd() / 'literature')
+    lit_dir = lit_dir.expanduser().resolve()
     lit_dir.mkdir(parents=True, exist_ok=True)
 
     # ── layout constants (match Calculations Browser) ─────────────────
@@ -568,7 +611,11 @@ def create_tab(ctx):
     # ==================================================================
 
     def _cur_dir() -> Path:
-        return (lit_dir / state['current_path']) if state['current_path'] else lit_dir
+        try:
+            return _resolve_literature_path(lit_dir, state['current_path'])
+        except ValueError:
+            state['current_path'] = ''
+            return lit_dir
 
     def _set_status(msg: str, color: str = '#666') -> None:
         lit_status.value = f'<span style="font-size:12px;color:{color}">{msg}</span>'
@@ -822,11 +869,14 @@ def create_tab(ctx):
         if not label or label.startswith('('):
             return
         name = _label_to_name(label)
-        full = _cur_dir() / name
+        try:
+            name = _safe_literature_entry_name(name)
+            full = _resolve_literature_path(lit_dir, _cur_dir() / name)
+        except ValueError as exc:
+            _set_status(f'Invalid selection: {exc}', '#d32f2f')
+            return
         if full.is_dir():
-            state['current_path'] = str(
-                Path(state['current_path']) / name
-            ) if state['current_path'] else name
+            state['current_path'] = _literature_relpath(lit_dir, full)
             list_directory()
         else:
             open_file(full)
@@ -852,9 +902,13 @@ def create_tab(ctx):
             state['current_path'] = ''
         else:
             cleaned = raw.lstrip('/')
-            candidate = lit_dir / cleaned
+            try:
+                candidate = _resolve_literature_path(lit_dir, cleaned)
+            except ValueError:
+                _set_status(f'Path outside literature root: {raw}', '#d32f2f')
+                return
             if candidate.is_dir():
-                state['current_path'] = cleaned
+                state['current_path'] = _literature_relpath(lit_dir, candidate)
             else:
                 _set_status(f'Not a folder: {raw}', '#d32f2f')
                 return
@@ -902,12 +956,17 @@ def create_tab(ctx):
             content = entry.get('content', b'') if isinstance(entry, dict) else getattr(entry, 'content', b'')
             if not name:
                 continue
-            dest = target / name
+            try:
+                safe_name = _safe_literature_entry_name(name)
+                dest = _resolve_literature_path(lit_dir, target / safe_name)
+            except ValueError as exc:
+                _set_status(f'Upload skipped: {exc}', '#d32f2f')
+                continue
             if dest.exists():
                 stem, sfx = dest.stem, dest.suffix
                 c = 2
                 while dest.exists():
-                    dest = target / f'{stem}_{c}{sfx}'
+                    dest = _resolve_literature_path(lit_dir, target / f'{stem}_{c}{sfx}')
                     c += 1
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(bytes(content))
@@ -983,9 +1042,14 @@ def create_tab(ctx):
             return
         if new_name == sel.name:
             return
-        dest = sel.parent / new_name
+        try:
+            safe_name = _safe_literature_entry_name(new_name, label='new name')
+            dest = _resolve_literature_path(lit_dir, sel.parent / safe_name)
+        except ValueError as exc:
+            _set_status(f'Rename failed: {exc}', '#d32f2f')
+            return
         if dest.exists():
-            _set_status(f'{new_name} already exists', '#d32f2f')
+            _set_status(f'{safe_name} already exists', '#d32f2f')
             return
         try:
             sel.rename(dest)
@@ -1020,7 +1084,9 @@ def create_tab(ctx):
             batch_total = max(1, int(meta.get('batch_total') or 1))
             chunk_index = int(meta.get('chunk_index') or 0)
             chunk_total = max(1, int(meta.get('chunk_total') or 1))
-            name = str(meta.get('name') or 'upload.bin')
+            name = _safe_literature_entry_name(
+                str(meta.get('name') or 'upload.bin')
+            )
 
             batch = upload_bridge_state['batches'].setdefault(
                 batch_id, {'expected': batch_total, 'completed': set(), 'saved': []},
@@ -1032,12 +1098,14 @@ def create_tab(ctx):
 
             if all(part is not None for part in file_state['chunks']):
                 payload = base64.b64decode(''.join(file_state['chunks']))
-                dest = _cur_dir() / name
+                dest = _resolve_literature_path(lit_dir, _cur_dir() / name)
                 if dest.exists():
                     stem, sfx = dest.stem, dest.suffix
                     c = 2
                     while dest.exists():
-                        dest = _cur_dir() / f'{stem}_{c}{sfx}'
+                        dest = _resolve_literature_path(
+                            lit_dir, _cur_dir() / f'{stem}_{c}{sfx}'
+                        )
                         c += 1
                 dest.write_bytes(payload)
                 batch['saved'].append(dest.name)

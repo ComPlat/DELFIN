@@ -10,6 +10,7 @@ Usage::
 import argparse
 import importlib.util
 import importlib.resources
+import ipaddress
 import os
 import socket
 import shutil
@@ -245,6 +246,125 @@ def _trust_notebook(notebook: str) -> None:
         pass
 
 
+def _refuse_insecure_no_token(ip: str) -> str:
+    """Return a human-readable refusal for disabling auth in Voilà mode."""
+    return (
+        "Error: --no-token is no longer allowed for delfin-voila.\n"
+        "The dashboard can start kernels, run jobs, and drive the DELFIN "
+        "agent, so token authentication is mandatory even on 127.0.0.1 "
+        "on shared HPC/login nodes.\n"
+        "Use the generated token file or put the service behind an "
+        "authenticated SSH tunnel/reverse proxy."
+    )
+
+
+def _validate_access_token(token: str) -> str:
+    """Return a validated dashboard token or raise ValueError."""
+    value = str(token or "").strip()
+    if not value:
+        raise ValueError("dashboard token must not be empty")
+    if any(ch.isspace() or ord(ch) < 32 for ch in value):
+        raise ValueError("dashboard token must not contain whitespace/control characters")
+    # token_urlsafe(32) yields 43 chars. Reject weak hand-written tokens so a
+    # shared login node cannot be protected by something guessable like "test".
+    if len(value) < 32:
+        raise ValueError("dashboard token must be at least 32 characters")
+    return value
+
+
+def _is_loopback_bind(ip: str) -> bool:
+    """Return True for loopback-only bind addresses."""
+    value = str(ip or "").strip().lower()
+    if value in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _secure_cache_dir(name: str) -> Path:
+    """Create a private per-user DELFIN cache directory."""
+    import tempfile
+
+    cache_home = os.environ.get("XDG_CACHE_HOME", "").strip()
+    bases = [
+        Path(cache_home).expanduser() / "delfin" if cache_home else Path.home() / ".cache" / "delfin",
+        Path(tempfile.gettempdir()) / f"delfin-{os.getuid()}",
+    ]
+    last_error: OSError | None = None
+    for base in bases:
+        path = base / name
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(base, 0o700)
+                os.chmod(path, 0o700)
+            except OSError:
+                pass
+            return path
+        except OSError as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"could not create private cache directory: {last_error}")
+
+
+def _create_token_file(token: str) -> Path:
+    """Write *token* to a 0600 file, falling back from bad runtime dirs."""
+    import tempfile
+
+    candidates: list[Path] = []
+    runtime_raw = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_raw:
+        candidates.append(Path(runtime_raw))
+    candidates.append(_secure_cache_dir("tokens"))
+
+    last_error: OSError | None = None
+    for directory in candidates:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+            fd, path_str = tempfile.mkstemp(
+                prefix=f"voila-token-{os.getpid()}-", dir=str(directory)
+            )
+            token_file = Path(path_str)
+            try:
+                os.write(fd, token.encode("utf-8"))
+            finally:
+                os.close(fd)
+            try:
+                os.chmod(token_file, 0o600)
+            except OSError:
+                pass
+            return token_file
+        except OSError as exc:
+            last_error = exc
+            continue
+    raise RuntimeError(f"could not create secure token file: {last_error}")
+
+
+def _default_voila_root() -> Path:
+    """Return a narrow default root_dir for files served by Voilà."""
+    override = os.environ.get("DELFIN_VOILA_ROOT_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
+    cwd = Path.cwd().resolve()
+    home = Path.home().resolve()
+    forbidden = {
+        Path("/").resolve(),
+        Path("/home").resolve(),
+        Path("/tmp").resolve(),
+        home,
+    }
+    if cwd not in forbidden and home in cwd.parents:
+        return cwd
+    return _secure_cache_dir("voila-root").resolve()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -283,18 +403,25 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
+        "--allow-remote-bind",
+        action="store_true",
+        help=(
+            "Allow binding to a non-loopback IP. Not recommended; prefer SSH "
+            "tunnels or an authenticated HTTPS reverse proxy on shared servers."
+        ),
+    )
+    parser.add_argument(
         "--token",
         default=None,
         help=(
             "Authentication token for dashboard access. "
-            "Auto-generated if not set and --ip is 0.0.0.0. "
-            "Use --no-token to explicitly disable."
+            "Auto-generated if not set."
         ),
     )
     parser.add_argument(
         "--no-token",
         action="store_true",
-        help="Disable token authentication (NOT recommended for network access)",
+        help="Refused for security; token authentication is mandatory.",
     )
     parser.add_argument(
         "--resume",
@@ -335,50 +462,40 @@ def main(argv=None):
 
     if args.ip is None:
         args.ip = "127.0.0.1"
+    if not _is_loopback_bind(args.ip) and not args.allow_remote_bind:
+        print(
+            "Error: refusing to bind delfin-voila to a non-loopback address "
+            f"({args.ip}). On HPC/login nodes, use the default 127.0.0.1 with "
+            "an SSH tunnel. If you have a secured HTTPS reverse proxy and "
+            "really need this, pass --allow-remote-bind.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # -- Token-based authentication ----------------------------------------
     # Auto-generate a token by default. On shared multi-user hosts (HPC login
     # nodes), even 127.0.0.1 is reachable by other local users, so a token is
-    # required regardless of bind address. Only --no-token disables it.
+    # required regardless of bind address. --no-token is refused above.
     _token = ""
     _token_file: Path | None = None
     if args.no_token:
-        _token = ""
-        print(
-            "\n  ⚠  WARNING: Token auth disabled!\n"
-            "     On shared hosts, ANY local user can reach 127.0.0.1:PORT.\n"
-            "     The DELFIN Agent has FULL CLI ACCESS.\n",
-            file=sys.stderr,
-        )
+        print(_refuse_insecure_no_token(args.ip), file=sys.stderr)
+        sys.exit(2)
     elif args.token:
-        _token = args.token
+        try:
+            _token = _validate_access_token(args.token)
+        except ValueError as exc:
+            print(f"Error: insecure --token: {exc}.", file=sys.stderr)
+            sys.exit(2)
     else:
         import atexit
         import secrets
-        import tempfile
         _token = secrets.token_urlsafe(32)
         # Write token to 0600 file instead of stdout — stdout may be captured
         # by journald/log files where it would be readable by other users on
         # shared hosts. XDG_RUNTIME_DIR is per-user (mode 0700) on Linux; we
-        # fall back to ~/.cache/delfin if it is not set.
-        _runtime_dir = Path(
-            os.environ.get("XDG_RUNTIME_DIR")
-            or (Path.home() / ".cache" / "delfin")
-        )
-        try:
-            _runtime_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            _runtime_dir = Path.home() / ".cache" / "delfin"
-            _runtime_dir.mkdir(parents=True, exist_ok=True)
-        # mkstemp creates a unique file with mode 0600 atomically (TOCTOU-free).
-        _fd, _path_str = tempfile.mkstemp(
-            prefix=f"voila-token-{os.getpid()}-", dir=str(_runtime_dir)
-        )
-        _token_file = Path(_path_str)
-        try:
-            os.write(_fd, _token.encode("utf-8"))
-        finally:
-            os.close(_fd)
+        # fall back to a private DELFIN cache dir if it is absent or unwritable.
+        _token_file = _create_token_file(_token)
 
         def _cleanup_token_file(p: Path = _token_file) -> None:
             try:
@@ -402,11 +519,7 @@ def main(argv=None):
     else:
         open_browser = _is_vscode_session()
     notebook = _find_notebook()
-    root_dir = str(
-        Path(
-            os.environ.get("DELFIN_VOILA_ROOT_DIR", str(Path.home().resolve()))
-        ).resolve()
-    )
+    root_dir = str(_default_voila_root())
     notebook = _stage_notebook_under_root(notebook, root_dir)
     env = _prepare_voila_env(open_browser=open_browser)
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
@@ -427,16 +540,11 @@ def main(argv=None):
         "--VoilaConfiguration.file_allowlist=.*\\.(png|jpg|gif|svg|js|css|html|ico|pdf)",
         "--VoilaConfiguration.preheat_kernel=False",
         "--VoilaConfiguration.default_pool_size=0",
-        # XSRF handled per-mode: disabled for localhost, enabled for network
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
     ]
 
     # Token authentication for Voilà/Jupyter
-    # Always disable XSRF checks — Voilà's internal kernel shutdown POSTs
-    # don't include the _xsrf token, causing spurious 403 errors in the log.
-    # Voilà is not a general-purpose Jupyter server, so XSRF is not needed.
-    cmd.append("--ServerApp.disable_check_xsrf=True")
     if _token:
         # Pass via env var, not CLI: /proc/PID/cmdline is world-readable on
         # shared hosts, so a CLI token would leak to any local user via `ps`.
@@ -457,20 +565,16 @@ def main(argv=None):
         cmd.append("--theme=dark")
 
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
-    # Only embed the token in the printed URL when stdout is an interactive
-    # terminal — when stdout is redirected to a log file or captured by
-    # journald, the token would otherwise be readable by anyone with log
-    # access on shared hosts.  When non-interactive, point to the token file.
-    _stdout_is_tty = sys.stdout.isatty()
-    token_suffix = f"?token={_token}" if (_token and _stdout_is_tty) else ""
-    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}{token_suffix}")
-    if _token and not _stdout_is_tty and _token_file is not None:
+    # Never print the raw token. Terminals, notebooks, service logs, and job
+    # launchers may retain stdout on shared systems.
+    print(f"Starting DELFIN Dashboard on http://{bind_display}:{args.port}")
+    if _token and _token_file is not None:
         print(f"  Append ?token=$(cat {_token_file}) to the URL.")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":
         for ip in _get_local_ips():
-            print(f"  -> http://{ip}:{args.port}{token_suffix}")
+            print(f"  -> http://{ip}:{args.port}")
 
     print()
     if args.ip == "0.0.0.0":
