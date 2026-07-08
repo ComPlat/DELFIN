@@ -267,18 +267,45 @@ def _has_clash(mol, frac: float = 0.60) -> bool:
 def _is_puckerable(mol, ring) -> bool:
     """A ring is puckerable iff it is saturated enough to have out-of-plane
     minima: non-aromatic, size 5-8, and >= 3 sp3 ring atoms (an aromatic /
-    fully-conjugated ring is planar and rigid -> no pucker conformers)."""
+    fully-conjugated ring is planar and rigid -> no pucker conformers).
+
+    Robust for BOTH a sanitised RDKit mol (uses hybridisation) AND a distance-
+    perceived metal-complex mol (no hybridisation, all bonds single -> cannot
+    tell benzene from cyclohexane from the graph, so read sp3 from the 3D SHAPE:
+    a saturated centre is 4-coordinate tetrahedral or 3-coordinate pyramidal,
+    an aromatic/sp2 centre is 3-coordinate planar)."""
     n = len(ring)
     if n < 5 or n > 8:
         return False
-    n_sp3 = 0
+    try:
+        P = mol.GetConformer().GetPositions()
+    except Exception:
+        P = None
+    n_sat = 0
     for idx in ring:
         a = mol.GetAtomWithIdx(int(idx))
         if a.GetIsAromatic():
             return False
-        if a.GetHybridization() == Chem.HybridizationType.SP3:
-            n_sp3 += 1
-    return n_sp3 >= 3
+        hyb = a.GetHybridization()
+        if hyb == Chem.HybridizationType.SP3:
+            n_sat += 1
+            continue
+        if hyb in (Chem.HybridizationType.SP2, Chem.HybridizationType.SP):
+            continue
+        # unspecified (perceived mol) -> geometric sp3 test
+        if P is None:
+            continue
+        nbrs = [nb.GetIdx() for nb in a.GetNeighbors()]
+        if len(nbrs) >= 4:
+            n_sat += 1
+        elif len(nbrs) == 3:
+            c = P[int(idx)]
+            q0, q1, q2 = P[nbrs[0]], P[nbrs[1]], P[nbrs[2]]
+            nrm = _np.cross(q1 - q0, q2 - q0)
+            ln = float(_np.linalg.norm(nrm))
+            if ln > 1e-9 and abs(float(_np.dot(c - q0, nrm / ln))) > 0.25:
+                n_sat += 1   # pyramidal -> sp3-like
+    return n_sat >= 3
 
 
 def _ring_order(mol, ring_set):
