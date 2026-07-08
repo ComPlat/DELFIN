@@ -255,6 +255,15 @@ _MCP_TOOL_PREFIXES = (_DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX)
 # role whitelist below — so we always let them through when KIT permissions
 # have been wired up.
 _KIT_CODING_PREFIX = "mcp__kit-coding__"
+# Source-inspection tools the dashboard agent must NOT use (its prompt hard-rule:
+# "no read_file/grep_file/list_files/glob_files on DELFIN source" — it researches
+# via search_docs and drives the UI via ACTION: slash-commands). These bypass the
+# role whitelist below because they arrive mcp__-namespaced, so they are blocked
+# explicitly by bare name for dashboard_agent (bug 20260708-092217: a dashboard
+# agent read the whole delfin/manta source tree).
+_DASHBOARD_SOURCE_DENY = frozenset({
+    "read_file", "grep_file", "list_files", "glob_files",
+})
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -703,6 +712,12 @@ class AgentEngine:
             perms = self.kit_permissions
             if perms is None:
                 return ""
+            # Plan mode is read-only: the agent must present a plan and stop for
+            # approval, not self-drive a task list. Suppressing the reminder
+            # removes the "keep working the list" pressure while planning
+            # (part of the fix for bug 20260708-092217).
+            if getattr(perms, "mode", "") == "plan":
+                return ""
             from delfin.agent.agent_tasks import get_store
             sid = getattr(perms, "task_session_id", "") or ""
             tasks = get_store(perms.workspace).list(
@@ -960,6 +975,18 @@ class AgentEngine:
                         ):
                             # Block unauthorized tool — don't call on_tool_use
                             continue
+                    # Dashboard scope: the mcp__ exemption above lets KIT-backend
+                    # tools bypass the role whitelist, but the dashboard agent
+                    # must never inspect DELFIN source. Re-block the forbidden
+                    # source-reading tools by their bare (de-namespaced) name.
+                    if role_id == "dashboard_agent":
+                        _bare = event.tool_name
+                        for _pfx in (*_MCP_TOOL_PREFIXES, _KIT_CODING_PREFIX):
+                            if _bare.startswith(_pfx):
+                                _bare = _bare[len(_pfx):]
+                                break
+                        if _bare in _DASHBOARD_SOURCE_DENY:
+                            continue  # dashboard scope: no source inspection
                     # Defense-in-depth: dashboard_agent Write restricted to workspace
                     if (role_id == "dashboard_agent"
                             and event.tool_name == "Write"

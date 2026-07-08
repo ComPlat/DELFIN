@@ -797,6 +797,17 @@ _DELFIN_ONLY_TOOL_NAMES: frozenset[str] = frozenset({
     "search_docs", "read_section", "list_docs", "list_sections",
 })
 
+# Refusal returned when a task tool would START execution while in plan mode.
+# Creating a task list, or moving a task to in_progress/completed, is an
+# execution act — plan mode is read-only and must wait for user approval.
+_PLAN_MODE_TASK_REJECT = (
+    "plan mode (read-only) — creating or starting tasks is blocked while "
+    "planning. Present the plan in chat and call exit_plan_mode to submit it "
+    "for approval (the user can also click 'Plan akzeptieren & ausführen' or "
+    "switch the mode chip to 'acceptEdits'). Tasks are created once the plan "
+    "is approved."
+)
+
 # Tools advertised to the dashboard-agent role. Mutating tools (bash,
 # write_file, edit_file, ...) are deliberately excluded — the dashboard
 # agent drives the UI via ACTION: slash-commands, not via direct file or
@@ -3673,9 +3684,11 @@ class _DocToolExecutor:
         if name in ("find_definition", "find_references"):
             return self._execute_code_nav(name, arguments, permissions)
 
-        # Planning tools — pure metadata operations on the workspace's
-        # task store; no permission gate needed (the JSON file lives
-        # under the workspace, sandboxed by definition).
+        # Planning tools — metadata operations on the workspace's task store
+        # (the JSON file lives under the workspace, sandboxed by definition).
+        # Read paths (task_list/task_get) need no gate; the create/start paths
+        # gate on plan mode INSIDE the executors (a task going in_progress is an
+        # execution act — see _execute_task_create / _execute_task_update).
         if name in ("task_create", "task_update", "task_list"):
             if permissions is None:
                 return json.dumps({"error": (
@@ -6198,6 +6211,14 @@ class _DocToolExecutor:
     def _execute_task_create(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
+        # Plan mode is read-only: creating a task list STARTS execution (the
+        # per-turn open-tasks reminder then auto-drives the agent through it).
+        # In plan mode the agent must present the plan and stop for approval —
+        # tasks are created once the user accepts (exit_plan_mode / "Accept
+        # plan & execute"). Bug 20260708-092217: a plan-mode dashboard agent
+        # self-created + started a task and ran off into auto-continue.
+        if getattr(perms, "mode", "") == "plan":
+            return json.dumps({"error": _PLAN_MODE_TASK_REJECT})
         subject = (arguments.get("subject", "") or "").strip()
         description = arguments.get("description", "") or ""
         active_form = arguments.get("active_form", "") or ""
@@ -6249,6 +6270,14 @@ class _DocToolExecutor:
     def _execute_task_update(
         self, arguments: dict, perms: "KitToolPermissions"
     ) -> str:
+        # Plan mode is read-only: moving a task to in_progress/completed STARTS
+        # or advances execution, which must wait for plan approval. Metadata-only
+        # edits are harmless, but a status escalation is the "auto-continue"
+        # trigger (bug 20260708-092217), so gate it in plan mode.
+        if getattr(perms, "mode", "") == "plan":
+            _status = str(arguments.get("status", "") or "").strip().lower()
+            if _status in ("in_progress", "completed"):
+                return json.dumps({"error": _PLAN_MODE_TASK_REJECT})
         try:
             task_id = int(arguments.get("task_id"))
         except (TypeError, ValueError):
