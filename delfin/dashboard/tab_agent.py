@@ -1382,6 +1382,74 @@ def _extract_action_commands(agent_text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Command safety tiers (enforced at CODE level, not prompt level).
+# Pure + module-level so the classification is unit-testable and shared by the
+# auto-exec loop and the hard destructive-action confirmation gate.
+# ---------------------------------------------------------------------------
+
+_TIER3_EXACT = {
+    "/submit", "/orca submit", "/recalc auto",
+    "/cancel all", "/cancel running", "/cancel pending",
+}
+_TIER3_PREFIX = ("/recalc ", "/cancel ")
+_TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0 (read-only)
+
+
+def _command_tier(cmd: str) -> int:
+    """Classify a slash command: 0=read, 1=navigate, 2=configure, 3=mutate."""
+    cl = cmd.lower().strip()
+    # Tier 3: destructive / irreversible
+    if cl in _TIER3_EXACT:
+        return 3
+    for pfx in _TIER3_PREFIX:
+        if cl.startswith(pfx):
+            if any(cl.startswith(sp) for sp in _TIER3_SAFE_PREFIX):
+                return 0
+            return 3
+    # Tier 2: session-only config changes
+    if cl.startswith(("/control set", "/control key", "/orca set")):
+        return 2
+    # /ui: tier depends on property and target widget
+    if cl.startswith("/ui "):
+        _ui_sub = cl[4:].strip().split(None, 2)
+        if cl == "/ui list":
+            return 0
+        if len(_ui_sub) >= 2 and _ui_sub[1] in ("show", "options"):
+            return 0
+        if len(_ui_sub) >= 2 and _ui_sub[1] == "click":
+            # Clicking submit/recalc/transfer buttons = Tier 3
+            _btn = _ui_sub[0] if _ui_sub else ""
+            if any(k in _btn for k in ("submit", "recalc", "ssh", "archive", "transfer", "cancel", "override")):
+                return 3
+            return 2  # other button clicks = Tier 2
+        if len(_ui_sub) >= 2 and _ui_sub[1] in ("value", "replace"):
+            return 2
+        return 1  # style, text, visible, width, height, disabled
+    # Tier 1: navigation
+    if cl.startswith(("/tab ", "/jobs", "/mode ", "/model ", "/provider ")):
+        return 1
+    # Tier 0: read-only
+    return 0
+
+
+def _proposed_actions_need_gate(commands, needs_confirm) -> bool:
+    """Hard confirm-gate decision (code-level, MODEL-INDEPENDENT).
+
+    Any proposed tier-3 command (submit / recalc / cancel / destructive UI
+    click) must get an explicit Approve before it runs — UNLESS the active
+    permission profile auto-approves its zone (``needs_confirm(cmd)`` False,
+    e.g. the 'all_free' profile). This does NOT depend on the model asking in
+    prose: trusting the model's ``_should_show_action_confirmation`` prose was
+    the hole that let a bare ``ACTION: /submit`` execute unconfirmed
+    (bug follow-up 20260708-092217, point 4).
+    """
+    return any(
+        _command_tier(c) == 3 and needs_confirm(c)
+        for c in (commands or [])
+    )
+
+
+# ---------------------------------------------------------------------------
 # D2 — context-aware suggestion when the user switches dashboard tabs
 # ---------------------------------------------------------------------------
 
@@ -10812,50 +10880,9 @@ def create_tab(ctx):
             # jobs + calc_path intentionally omitted for solo
         )
 
-    # -- command safety tiers (enforced at CODE level, not prompt) ----------
-
-    _TIER3_EXACT = {
-        "/submit", "/orca submit", "/recalc auto",
-        "/cancel all", "/cancel running", "/cancel pending",
-    }
-    _TIER3_PREFIX = ("/recalc ", "/cancel ")
-    _TIER3_SAFE_PREFIX = ("/recalc check",)  # these stay tier 0
-
-    def _command_tier(cmd: str) -> int:
-        """Classify a slash command: 0=read, 1=navigate, 2=configure, 3=mutate."""
-        cl = cmd.lower().strip()
-        # Tier 3: destructive / irreversible
-        if cl in _TIER3_EXACT:
-            return 3
-        for pfx in _TIER3_PREFIX:
-            if cl.startswith(pfx):
-                if any(cl.startswith(sp) for sp in _TIER3_SAFE_PREFIX):
-                    return 0
-                return 3
-        # Tier 2: session-only config changes
-        if cl.startswith(("/control set", "/control key", "/orca set")):
-            return 2
-        # /ui: tier depends on property and target widget
-        if cl.startswith("/ui "):
-            _ui_sub = cl[4:].strip().split(None, 2)
-            if cl == "/ui list":
-                return 0
-            if len(_ui_sub) >= 2 and _ui_sub[1] in ("show", "options"):
-                return 0
-            if len(_ui_sub) >= 2 and _ui_sub[1] == "click":
-                # Clicking submit/recalc/transfer buttons = Tier 3
-                _btn = _ui_sub[0] if _ui_sub else ""
-                if any(k in _btn for k in ("submit", "recalc", "ssh", "archive", "transfer", "cancel", "override")):
-                    return 3
-                return 2  # other button clicks = Tier 2
-            if len(_ui_sub) >= 2 and _ui_sub[1] in ("value", "replace"):
-                return 2
-            return 1  # style, text, visible, width, height, disabled
-        # Tier 1: navigation
-        if cl.startswith(("/tab ", "/jobs", "/mode ", "/model ", "/provider ")):
-            return 1
-        # Tier 0: read-only
-        return 0
+    # Command safety tiers are classified by the module-level _command_tier()
+    # (hoisted so the destructive-command classification is unit-testable and
+    # shared with the hard confirmation gate in _dashboard_auto_exec).
 
     # -- permission profiles -------------------------------------------------
     # Each profile maps zone → (max_tier, confirm_tier3).
@@ -11163,6 +11190,18 @@ def create_tab(ctx):
                     i += 1
             else:
                 i += 1
+
+        # Hard destructive-action gate (code-level, MODEL-INDEPENDENT): if the
+        # batch proposes any tier-3 command that its zone requires confirmation
+        # for (submit / recalc / cancel …), surface Approve/Deny and run NOTHING
+        # until the user approves. This backstops _should_show_action_confirmation,
+        # which only fired when the MODEL asked in prose — a bare `ACTION: /submit`
+        # otherwise executed unconfirmed. Approve re-runs with force_no_confirm.
+        if not force_no_confirm and _proposed_actions_need_gate(
+            commands, _zone_needs_confirm
+        ):
+            _show_action_confirmation(agent_text, commands)
+            return []
 
         results: list[str] = []
         mutate_count = 0
