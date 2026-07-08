@@ -3270,7 +3270,10 @@ _SCAN_SKIP_DIRS = frozenset({
 })
 _SCAN_SKIP_SUFFIXES = frozenset({
     ".pyc", ".pyo", ".so", ".o", ".a", ".lib", ".dll", ".dylib", ".class",
-    ".jar", ".exe", ".bin", ".dat", ".npy", ".npz", ".pkl", ".pickle", ".pt",
+    # The ".npz" below is a generic binary suffix the workspace file-scan skips
+    # (a performance filter), NOT a CCDC/CSD data reference — hence the inline
+    # license-guard allow on that exact line.
+    ".jar", ".exe", ".bin", ".dat", ".npy", ".npz", ".pkl", ".pickle", ".pt",  # license-guard: allow
     ".pth", ".ckpt", ".onnx", ".h5", ".hdf5", ".parquet", ".gz", ".bz2", ".xz",
     ".zip", ".tar", ".7z", ".whl", ".pdf", ".png", ".jpg", ".jpeg", ".gif",
     ".ico", ".bmp", ".webp", ".svg", ".mp4", ".mp3", ".wav", ".ogg", ".woff",
