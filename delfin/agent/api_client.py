@@ -3256,6 +3256,103 @@ def _elide_old_tool_results(
     return elided
 
 
+# --- Workspace file-scan tuning (grep_file / list_files) --------------------
+# The scan walked the WHOLE tree (rglob("*")) and read every file as text —
+# including .venv (41k files) and agent_workspace (27k files), plus binary
+# .dat locale blobs. A single grep spent 4+ minutes and returned binary junk.
+# The walk now prunes ignored directories in place, skips binaries, and caps
+# file size, so a repo grep drops from ~240s to milliseconds.
+_SCAN_SKIP_DIRS = frozenset({
+    ".git", "__pycache__", ".venv", "venv", "env", ".env", "node_modules",
+    "site-packages", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    ".nox", "build", "dist", ".runtime_cache", ".delfin", ".claude", ".idea",
+    ".vscode", ".ipynb_checkpoints", ".cache", ".eggs", "htmlcov",
+})
+_SCAN_SKIP_SUFFIXES = frozenset({
+    ".pyc", ".pyo", ".so", ".o", ".a", ".lib", ".dll", ".dylib", ".class",
+    ".jar", ".exe", ".bin", ".dat", ".npy", ".npz", ".pkl", ".pickle", ".pt",
+    ".pth", ".ckpt", ".onnx", ".h5", ".hdf5", ".parquet", ".gz", ".bz2", ".xz",
+    ".zip", ".tar", ".7z", ".whl", ".pdf", ".png", ".jpg", ".jpeg", ".gif",
+    ".ico", ".bmp", ".webp", ".svg", ".mp4", ".mp3", ".wav", ".ogg", ".woff",
+    ".woff2", ".ttf", ".eot", ".db", ".sqlite", ".sqlite3",
+})
+_SCAN_MAX_FILE_BYTES = 5 * 1024 * 1024  # skip files larger than 5 MB
+
+
+def _gitignore_skip_dirs(root: Path) -> frozenset[str]:
+    """Directory names to prune, harvested from the repo-root ``.gitignore``.
+
+    Only SIMPLE directory entries are honored (``foo`` or ``foo/`` with no
+    slash-in-the-middle and no glob metacharacters) — enough to catch the real
+    bloat dirs (``.venv/``, ``agent_workspace/``, ``.runtime_cache/``) without
+    reimplementing full gitignore semantics. Anything the user gitignores as a
+    plain directory is thus pruned automatically.
+    """
+    names: set[str] = set()
+    try:
+        text = (root / ".gitignore").read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return frozenset()
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("!"):
+            continue
+        entry = line.rstrip("/")
+        if not entry or any(ch in entry for ch in "/*?[]"):
+            continue
+        names.add(entry)
+    return frozenset(names)
+
+
+def _looks_binary(path: Path) -> bool:
+    """Heuristic binary sniff: a NUL byte in the first 8 KiB (as grep/rg do)."""
+    try:
+        with open(path, "rb") as fh:
+            return b"\x00" in fh.read(8192)
+    except Exception:
+        return True  # unreadable -> treat as skippable
+
+
+def _as_int(value, default: int) -> int:
+    """Coerce a tool-call argument to int, tolerating weak-model quirks.
+
+    Weak models (qwen3.5, gpt-4-mini, ...) routinely emit numeric tool args as
+    STRINGS (``"offset": "200"``) or floats. Without coercion, downstream
+    arithmetic/slicing (``offset + limit``, ``len(m) >= max_results``) raises a
+    ``TypeError`` that crashes the whole turn. Accepts int / "200" / 200.0 /
+    "200.0"; anything unparseable falls back to ``default``.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+
+def _iter_scan_files(search_path: Path, extra_skip_dirs: frozenset[str]):
+    """Yield candidate files under ``search_path``, pruning ignored dirs.
+
+    Uses ``os.walk(topdown=True)`` so ignored directories are pruned BEFORE
+    descending into them — the walk never stats the 68k files inside
+    ``.venv``/``agent_workspace``. Order is deterministic (sorted).
+    """
+    if search_path.is_file():
+        yield search_path
+        return
+    skip = _SCAN_SKIP_DIRS | extra_skip_dirs
+    for dirpath, dirnames, filenames in os.walk(search_path, topdown=True):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in skip and not d.startswith(".venv")
+        )
+        for name in sorted(filenames):
+            yield Path(dirpath) / name
+
+
 class _DocToolExecutor:
     """Lazy-loaded local executor for doc and calc search tools."""
 
@@ -3802,8 +3899,12 @@ class _DocToolExecutor:
             lines = full.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception as exc:
             return json.dumps({"error": str(exc)})
-        offset = arguments.get("offset", 0) or 0
-        limit = arguments.get("limit", 200) or 200
+        offset = _as_int(arguments.get("offset"), 0)
+        limit = _as_int(arguments.get("limit"), 200)
+        if offset < 0:
+            offset = 0
+        if limit <= 0:
+            limit = 200
         selected = lines[offset:offset + limit]
         result = "\n".join(f"{i + offset}  {line}" for i, line in enumerate(selected))
         if len(lines) > offset + limit:
@@ -3877,7 +3978,9 @@ class _DocToolExecutor:
         root = perms.workspace if perms is not None else self._repo_root()
         rel = arguments.get("path", "") or ""
         search_path = (root / rel) if not Path(rel).is_absolute() else Path(rel)
-        max_results = arguments.get("max_results", 30) or 30
+        max_results = _as_int(arguments.get("max_results"), 30)
+        if max_results <= 0:
+            max_results = 30
 
         # Read-gate on the search root: secret-deny is hard, outside-workspace
         # needs user confirm. (Per-file deny still applies inside the loop.)
@@ -3889,23 +3992,29 @@ class _DocToolExecutor:
             regex = _re.compile(pattern, _re.IGNORECASE)
         except _re.error as exc:
             return json.dumps({"error": f"Invalid regex: {exc}"})
+        extra_skip = _gitignore_skip_dirs(root)
         matches = []
-        files = [search_path] if search_path.is_file() else sorted(search_path.rglob("*"))
-        for fp in files:
-            if not fp.is_file() or fp.suffix in (".pyc", ".so", ".gz", ".pdf", ".png", ".jpg"):
-                continue
-            if "/__pycache__/" in str(fp) or "/.git/" in str(fp):
+        for fp in _iter_scan_files(search_path, extra_skip):
+            if fp.suffix.lower() in _SCAN_SKIP_SUFFIXES:
                 continue
             try:
-                for i, line in enumerate(fp.read_text(encoding="utf-8", errors="replace").splitlines()):
-                    if regex.search(line):
-                        try:
-                            rel_match = fp.relative_to(root)
-                        except ValueError:
-                            rel_match = fp
-                        matches.append(f"{rel_match}:{i + 1}: {line.rstrip()[:200]}")
-                        if len(matches) >= max_results:
-                            break
+                if fp.stat().st_size > _SCAN_MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            if _looks_binary(fp):
+                continue
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as fh:
+                    for i, line in enumerate(fh):
+                        if regex.search(line):
+                            try:
+                                rel_match = fp.relative_to(root)
+                            except ValueError:
+                                rel_match = fp
+                            matches.append(f"{rel_match}:{i + 1}: {line.rstrip()[:200]}")
+                            if len(matches) >= max_results:
+                                break
             except Exception:
                 continue
             if len(matches) >= max_results:
@@ -3915,17 +4024,18 @@ class _DocToolExecutor:
     def _execute_list_files(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
-        import fnmatch
         pattern = arguments.get("pattern", "*")
         root = perms.workspace if perms is not None else self._repo_root()
+        extra_skip = _gitignore_skip_dirs(root)
         matches = []
-        for fp in sorted(root.rglob("*")):
-            if not fp.is_file():
+        for fp in _iter_scan_files(root, extra_skip):
+            try:
+                rel = str(fp.relative_to(root))
+            except ValueError:
                 continue
-            rel = str(fp.relative_to(root))
-            if "/__pycache__/" in rel or "/.git/" in rel:
-                continue
-            if fnmatch.fnmatch(rel, pattern):
+            # Match against the bare filename too, so a pattern like "*.py"
+            # (no directory component) matches nested files as users expect.
+            if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(fp.name, pattern):
                 matches.append(rel)
                 if len(matches) >= 50:
                     break
