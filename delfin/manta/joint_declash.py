@@ -65,6 +65,32 @@ import delfin.manta._bond_decollapse as _bd
 from delfin.manta import torsion_relax as _TR
 from delfin.manta.refine import _vdw
 
+# --- Metalloid-donor awareness (env-gated, default OFF) ----------------------
+# _bond_decollapse._METALS mis-classifies the heavy metalloid sigma-donors
+# Sb/Sn/Pb/Ge/Bi as METALS, so this inter-ligand declash treats them as
+# coordination CENTRES: the len(metals)==1 guard no-ops and the SbPh3/AsPh3
+# ligand BODY is mis-partitioned, so the bulky metalloid ligand is never spun to
+# relieve the inter-ligand clash that the short metalloid M-D distance
+# (DELFIN_FFFREE_METALLOID_MD_LEN) exposes.  When
+# DELFIN_FFFREE_DECLASH_METALLOID_LIGAND=1 a metalloid DONOR counts as a LIGAND
+# atom (not a centre), recovering the whole-ligand M-D-axis spin DOF.  The declash
+# spins about the M-D axis, so the M-D distance stays EXACTLY invariant -> this can
+# never re-detach.  Default OFF -> _is_center == _bd._is_metal (byte-identical).
+try:
+    from delfin.manta.decompose import _METALLOID_DONORS as _MLD
+except Exception:  # pragma: no cover - defensive
+    _MLD = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+
+def _is_center(sym: str) -> bool:
+    """Coordination-CENTRE test for the declash partition.  Same as ``_bd._is_metal``
+    except that, with DELFIN_FFFREE_DECLASH_METALLOID_LIGAND=1, a heavy metalloid
+    sigma-donor is a LIGAND atom, not a centre."""
+    if sym in _MLD and os.environ.get("DELFIN_FFFREE_DECLASH_METALLOID_LIGAND", "0") == "1":
+        return False
+    return _bd._is_metal(sym)
+
+
 # Geometric clash factor — identical to the self-gate / #308 / the spec's f.
 _CLASH_F = 0.75
 
@@ -101,7 +127,7 @@ def _ligand_of_atom(n: int, syms: Sequence[str],
     objective).  Falls back to geometric perception when ``bond_pairs`` is None.
     """
     adj, _bonds = _TR._adjacency(syms, P, bond_pairs)
-    metals = {i for i in range(n) if _bd._is_metal(syms[i])}
+    metals = {i for i in range(n) if _is_center(syms[i])}
     lig = np.full(n, -1, dtype=int)
     cur = 0
     for start in range(n):
@@ -146,7 +172,7 @@ def _inter_mask(syms: Sequence[str], lig: np.ndarray,
     heavy = np.zeros((n, n), dtype=bool)
     light = np.zeros((n, n), dtype=bool)
     is_h = np.array([s == "H" for s in syms])
-    is_m = np.array([_bd._is_metal(s) for s in syms])
+    is_m = np.array([_is_center(s) for s in syms])
     iu, ju = np.triu_indices(n, k=1)
     for k in range(len(iu)):
         i, j = int(iu[k]), int(ju[k])
@@ -227,7 +253,7 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     # Reorder: whole-ligand M-D spins (anchor == metal) first, then internal
     # torsions; both already sorted bulkiest-first within #308's identify_dofs,
     # so this is a stable partition preserving determinism.
-    metals = {i for i in range(n) if _bd._is_metal(syms[i])}
+    metals = {i for i in range(n) if _is_center(syms[i])}
     md_spins = [d for d in dofs if d["anchor"] in metals]
     internal = [d for d in dofs if d["anchor"] not in metals]
     ordered = md_spins + internal
