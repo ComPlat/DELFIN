@@ -30879,37 +30879,51 @@ def _smiles_to_xyz_isomers_impl(
             )
         except Exception:
             _iter85_hard_dispatch = False
+    # ===== DETERMINISTIC TOTAL ORDER (DELFIN_FFFREE_DET_SELECT) ================================
+    # ROOT of the cross-run nondeterminism (2026-07-09).  EVERY conformer selection in this chain
+    # decides with a bare float comparison, in GENERATION order:
+    #     if fp not in D or sc < D[fp][2]:        # an exact tie keeps whichever came FIRST
+    # Two conformers of one fingerprint whose scores tie (or differ in the last bits) therefore
+    # elect a winner that depends on insertion order and float noise.  The LABEL stays, the
+    # GEOMETRY jumps -- exactly the observed defect (ZIZLUT "Isomer 1" moves 4-7 A between two runs
+    # of the identical construction).  The fix is neither a seed nor a flag: make the order TOTAL.
+    #   * quantise the score to 1e-6      -> immune to last-bit wobble
+    #   * break ties by (cid, fp)         -> intrinsic, run-independent
+    # This must wrap the WHOLE chain: _merged elects a winner per fingerprint BEFORE seen_fps ever
+    # runs, so hardening only the later passes leaves the first one deciding by arrival time.
+    # Element- and graph-agnostic; never SMILES- or refcode-specific.
+    _det_select = _delfin_env_int("DELFIN_FFFREE_DET_SELECT", 0)
+
+    def _skey(_sc: float, _cid: int, _fp) -> tuple:
+        return (round(float(_sc), 6), int(_cid), repr(_fp))
+
+    def _take(_d: dict, _fp, _lbl, _cid, _sc) -> None:
+        """Insert (label, cid, score) for _fp iff it beats the incumbent under a TOTAL order."""
+        _cur = _d.get(_fp)
+        if _cur is None:
+            _d[_fp] = (_lbl, _cid, _sc)
+        elif _det_select:
+            if _skey(_sc, _cid, _fp) < _skey(_cur[2], _cur[1], _fp):
+                _d[_fp] = (_lbl, _cid, _sc)
+        elif _sc < _cur[2]:
+            _d[_fp] = (_lbl, _cid, _sc)
+
     if _iter85_hard_dispatch:
         # Strict-only contract: drop relaxed-pass entirely
         _merged: Dict[tuple, Tuple[str, int, float]] = {}
         for fp, lbl, cid, sc in _strict:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
     else:
         # HEAD baseline: union-merge of strict + relaxed
         _merged = {}
         for fp, lbl, cid, sc in _strict:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
         for fp, lbl, cid, sc in _relaxed:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = [
         (fp, lbl, cid, sc) for fp, (lbl, cid, sc) in _merged.items()
     ]
-    # ===== DETERMINISTIC TOTAL ORDER (DELFIN_FFFREE_DET_SELECT) ================================
-    # ROOT of the cross-run nondeterminism (2026-07-09): every conformer selection below decides
-    # with a bare float comparison over a dict in GENERATION order.  Two conformers of the same
-    # fingerprint whose scores differ only in the last bits, or that tie exactly, therefore elect
-    # a winner that depends on (a) insertion order and (b) float noise.  The LABEL stays the same
-    # and the GEOMETRY jumps -- exactly the observed defect (ZIZLUT "Isomer 1" differs by 4-7 A
-    # between two runs of the identical construction; AFICIC "trans"/"cis" likewise).
-    # The fix is not a seed and not a flag: give the selection a TOTAL, deterministic order.
-    # Quantising the score to 1e-6 makes it immune to last-bit wobble; (cid, fp) breaks every
-    # remaining tie by an intrinsic, run-independent property.  Element/graph-agnostic, universal.
-    _det_select = _delfin_env_int("DELFIN_FFFREE_DET_SELECT", 0)
-    def _skey(_sc: float, _cid: int, _fp) -> tuple:
-        return (round(float(_sc), 6), int(_cid), repr(_fp))
+    # Generation order must stop mattering from here on: sort the pairs under the same total order.
     if _det_select:
         fp_label_pairs.sort(key=lambda t: _skey(t[3], t[2], t[0]))
 
@@ -30917,14 +30931,7 @@ def _smiles_to_xyz_isomers_impl(
     # fp -> (label, conf_id, score)
     seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
     for fp, label, cid, score in fp_label_pairs:
-        if fp not in seen_fps:
-            seen_fps[fp] = (label, cid, score)
-        elif _det_select:
-            _pl, _pc, _ps = seen_fps[fp]
-            if _skey(score, cid, fp) < _skey(_ps, _pc, fp):
-                seen_fps[fp] = (label, cid, score)
-        elif score < seen_fps[fp][2]:
-            seen_fps[fp] = (label, cid, score)
+        _take(seen_fps, fp, label, cid, score)
         if len(seen_fps) >= max_isomers:
             break
 
