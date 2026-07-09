@@ -22483,7 +22483,7 @@ def _embed_fragment_procrustes(
         # for an sp3-C makes the bisector the true vacant-slot direction -> M-C-X ~109 deg.  Not a
         # post-hoc bend; sets the placement.
         _sp3c_tet = (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
-                     and d_atom.GetSymbol() == "C")
+                     and d_atom.GetSymbol() == "C" and not d_atom.GetIsAromatic())  # sp3 alkyl only
         nbr_idx = [
             nb.GetIdx() for nb in d_atom.GetNeighbors()
             if nb.GetAtomicNum() > 1 or _sp3c_tet
@@ -25317,7 +25317,8 @@ def _build_topology_xyz_from_template(
                 # vacant slot (metal) at ~109 deg.
                 if os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1" and frag_donors:
                     try:
-                        if mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() == "C":
+                        _dca = mol.GetAtomWithIdx(int(frag_donors[0]))
+                        if _dca.GetSymbol() == "C" and not _dca.GetIsAromatic():   # sp3 alkyl only, not sp2 carbene/aryl
                             _acc = np.zeros(3); _ns = 0
                             for _row in frag_xyz:
                                 _v = _row - src_d; _vn = float(np.linalg.norm(_v))
@@ -28096,7 +28097,10 @@ def _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers):
             _extra = set()
             for _fi in list(frozen):
                 _fa = m.GetAtomWithIdx(_fi)
-                if _fa.GetSymbol() != "C":
+                # sp3 ALKYL donor only -- exclude sp2 carbene/aryl C donors (NHC, sigma-aryl): an aromatic
+                # C is planar, has NO vacant tetrahedral slot, and freezing its ring neighbours distorts the
+                # ring (eye's sp3c detector excludes sp2 via a pyramidality guard; mirror that here).
+                if _fa.GetSymbol() != "C" or _fa.GetIsAromatic():
                     continue
                 if not any(_nb.GetSymbol() in _METAL_SET for _nb in _fa.GetNeighbors()):
                     continue
@@ -34768,9 +34772,10 @@ def _build_coordination_constraints_from_xyz(
                 # no M-C-X angle term for the unparameterised metal).  Confirmed via DELFIN_TRACE_SEATING:
                 # placement + orient give M-C-X 106, UFF then emits 178.  Freeze the sp3-C's heavy
                 # first-shell substituent(s) too so the tetrahedral M-C-X survives UFF.  Byte-identical off.
+                _dca = mol_template.GetAtomWithIdx(d_idx)
                 if (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
-                        and mol_template.GetAtomWithIdx(d_idx).GetSymbol() == "C"):
-                    for _nb in mol_template.GetAtomWithIdx(d_idx).GetNeighbors():
+                        and _dca.GetSymbol() == "C" and not _dca.GetIsAromatic()):   # sp3 alkyl only
+                    for _nb in _dca.GetNeighbors():
                         if (_nb.GetAtomicNum() > 1 and _nb.GetIdx() != m_idx
                                 and _nb.GetIdx() not in base["fix_atoms"]):
                             base["fix_atoms"].append(_nb.GetIdx())
