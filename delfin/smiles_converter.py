@@ -24585,6 +24585,29 @@ def _build_topology_xyz_from_scratch(
                 "Balloon orientation optimiser failed: %s", orient_exc
             )
 
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _mp = np.array(coords[metal_idx], dtype=float)
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = np.array(coords[_d], dtype=float); _mc = _mp - _dp
+                    _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _cx = np.array(coords[_nb.GetIdx()], dtype=float) - _dp
+                        _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("SCRATCH_POST donor=%d M-C-Xheavy=%.0f" % (_d, _ang))
+            except Exception:
+                pass
+
         # Build XYZ string.
         lines: List[str] = []
         for i in range(n_atoms):
@@ -25407,6 +25430,40 @@ def _build_topology_xyz_from_template(
                 logger.debug(
                     "Template-topology UFF failed, keeping pre-UFF: %s", uff_exc
                 )
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _pos = {}
+                for _i, _ln in enumerate(xyz.strip().split("\n")):
+                    _p = _ln.split()
+                    if len(_p) >= 4:
+                        _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                _mp = _pos.get(metal_idx)
+                _kept = "no_uff" if not apply_uff else (
+                    "UFF_kept" if xyz is not xyz_pre_uff else "pre_uff(UFF_reverted_or_failed)")
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = _pos.get(_d)
+                    if _mp is None or _dp is None:
+                        continue
+                    _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _xp = _pos.get(_nb.GetIdx())
+                        if _xp is None:
+                            continue
+                        _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("POST_UFF donor=%d M-C-Xheavy=%.0f %s geom=%s" % (
+                                _d, _ang, _kept, geometry))
+            except Exception:
+                pass
         return xyz
     except Exception as e:
         logger.debug("_build_topology_xyz_from_template failed: %s", e)
@@ -25973,15 +26030,52 @@ def _generate_topological_isomers(
                     _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
                     for inp in _uff_inputs
                 ]
+            def _tr_mcx(_xyzs, _tag):
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") != "1":
+                    return
+                try:
+                    _pos = {}
+                    for _i, _ln in enumerate(_xyzs.strip().split("\n")):
+                        _p = _ln.split()
+                        if len(_p) >= 4:
+                            _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                    _mp = _pos.get(metal_idx)
+                    _cdonors = [nb.GetIdx() for nb in mol.GetAtomWithIdx(metal_idx).GetNeighbors()
+                                if nb.GetSymbol() == "C"]
+                    for _d in _cdonors:
+                        if _mp is None:
+                            continue
+                        _dp = _pos.get(_d)
+                        if _dp is None:
+                            continue
+                        _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                        if _mcn < 1e-6:
+                            continue
+                        _mc /= _mcn
+                        for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                            if _nb.GetAtomicNum() <= 1:
+                                continue
+                            _xp = _pos.get(_nb.GetIdx())
+                            if _xp is None:
+                                continue
+                            _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                            if 1.3 < _cxn < 1.9:
+                                _ang = float(np.degrees(np.arccos(
+                                    max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                                _trace_seating("%s donor=%d M-C-Xheavy=%.0f" % (_tag, _d, _ang))
+                except Exception:
+                    pass
             for idx, (cf, pm, gn, xyz_pre, _cstr, _ci) in enumerate(_pre_uff_batch):
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                _tr_mcx(xyz_opt, "BATCH_POST_UFF")
                 # Post-UFF polish: project sp2 3-coordinate atoms onto
                 # their neighbours' plane to remove residual
                 # pyramidalisation that the torsion constraints could not
                 # fully eliminate.
                 xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol)
+                _tr_mcx(xyz_opt, "BATCH_POST_FLATTEN")
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
                     xyz_opt = xyz_pre
