@@ -44,6 +44,9 @@ _CHAMPION_FLAGS = (
     "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
     "METALLOID_MD_LEN",   # correct M-metalloid bond length (no row-offset overshoot); landed 2026-07-09:
                           # heavy_donor cap-never-worse (+8 valid frames, 0 lost), byte-id off metalloids
+    "JOINT_DECLASH", "DECLASH_METALLOID_LIGAND",  # general inter-ligand azimuthal declash (hard M-D
+                          # invariant + rollback) + metalloid-ligand awareness; landed 2026-07-09:
+                          # full:120 whole-space cap-never-worse, +3 valid frames, mean -0.3
     "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
     "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
 )
