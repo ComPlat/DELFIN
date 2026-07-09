@@ -30787,7 +30787,28 @@ def _smiles_to_xyz_isomers_impl(
             return None
 
     def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
+        # ===== DATA RACE ON THE SHARED MOL (DELFIN_FFFREE_DET_CLASSIFY) ==========================
+        # ROOT of the residual cross-run nondeterminism (2026-07-09).  `_classify_one_conf` reads the
+        # SHARED `mol` from up to os.cpu_count() threads (384 on this box), calling _has_atom_clash,
+        # _compute_coordination_fingerprint, _geometry_quality_score and _classify_isomer_label.
+        # An RDKit Mol populates its ring info and property caches LAZILY, on first access, and is
+        # not thread-safe while doing so.  Concurrent readers therefore race on that initialisation:
+        #   * the SCORES wobble  -> a different conformer wins its fingerprint -> same label, other
+        #     geometry (ZIZLUT "Isomer 1" moves 4-7 A between two runs of the identical build)
+        #   * the FILTERS flip   -> a different set of conformers survives -> different frame COUNT
+        #     (AFICIC 12 vs 13 frames)
+        # This is why a deterministic total order over the selection (DET_SELECT) changed the output
+        # but could not stabilise it: it sorts by numbers that are themselves produced in a race.
+        # Same shape as the documented, already-written DELFIN_5G_T6_1_RACE_FIX (embedding against a
+        # shared mol) -- which is likewise still default-OFF.
+        # The fix is to stop sharing: classify sequentially.  Parallelism is not lost, it moves up a
+        # level (the loop builds 64 SYSTEMS at once), and 384 threads per system x 64 systems was a
+        # 24k-thread oversubscription anyway.  Element/graph-agnostic; byte-identical when unset.
+        _det_classify = _delfin_env_int("DELFIN_FFFREE_DET_CLASSIFY", 0)
         _n_cw = min(len(conf_ids), os.cpu_count() or 4) if conf_ids else 1
+        if _det_classify:
+            return [r for r in (_classify_one_conf(c, relax_hard_chem_filters)
+                                for c in conf_ids) if r is not None]
         if _n_cw > 1 and len(conf_ids) > 4:
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_cw) as _cp:
                 _futs = [
