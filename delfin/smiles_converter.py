@@ -22499,6 +22499,10 @@ def _embed_fragment_procrustes(
             raw = src[0] - frag_center
             rn = np.linalg.norm(raw)
             src_dir = raw / rn if rn > 1e-8 else np.array([1.0, 0.0, 0.0])
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            _trace_seating("procrustes_single_donor elem=%s n_heavy_nbrs=%d method=%s" % (
+                d_atom.GetSymbol(), len(nbr_idx),
+                "anti_bisector_HEAVY_ONLY" if nbr_idx else "centroid"))
         # Target LP direction: donor -> metal (metal is at origin).
         tgt_dir = -tgt[0]
         tn = np.linalg.norm(tgt_dir)
@@ -24584,6 +24588,18 @@ def _build_topology_xyz_from_scratch(
         return None
 
 
+def _trace_seating(*parts):
+    """DIAGNOSTIC (env DELFIN_TRACE_SEATING=1, default OFF -> byte-identical): log which seating
+    branch a donor takes, to stderr.  Pure OBSERVABILITY -- changes NO geometry.  Surfaced per system
+    by loop.py --debug <rid> (which captures the build subprocess stderr)."""
+    if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+        try:
+            import sys as _sys
+            print("[SEATING]", *parts, file=_sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
 def _build_topology_xyz(
     mol,
     metal_idx: int,
@@ -24629,13 +24645,19 @@ def _build_topology_xyz(
         # candidate pool — it is not used here as a replacement so that
         # mono-metallic σ complexes keep the tried-and-tested template
         # geometry that powers Ir(ppy)2(acac), Fe(CO)3(NHC)2 etc.
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            _trace_seating("build_topology_xyz geom=%s nconf=%d donors=%s" % (
+                geometry, mol.GetNumConformers(),
+                [mol.GetAtomWithIdx(d).GetSymbol() + str(d) for d in donor_atom_indices]))
         if mol.GetNumConformers() > 0:
             xyz_from_template = _build_topology_xyz_from_template(
                 mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff,
                 conf_id=conf_id, chelate_rank=chelate_rank,
             )
             if xyz_from_template is not None:
+                _trace_seating("path=TEMPLATE_OK geom=%s" % geometry)
                 return xyz_from_template
+            _trace_seating("path=TEMPLATE_returned_None -> FALLBACK (procrustes/BFS) geom=%s" % geometry)
 
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
@@ -25249,6 +25271,11 @@ def _build_topology_xyz_from_template(
             else:
                 src_d = src[0]
                 tgt_d = tgt[0]
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                    _trace_seating("template_mono donor=%d elem=%s nsubst_frag(<1.9A)=%d" % (
+                        int(frag_donors[0]) if frag_donors else -1,
+                        mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() if frag_donors else "?",
+                        int(sum(1 for _r in frag_xyz if 0.4 < float(np.linalg.norm(_r - src_d)) < 1.9))))
                 src_com = frag_xyz.mean(axis=0)
                 # Keep the fragment extending away from the metal.
                 v_from = src_com - src_d
