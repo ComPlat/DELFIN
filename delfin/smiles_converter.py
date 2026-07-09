@@ -759,6 +759,13 @@ def _target_mc_dist(metal_sym: str, eta: int) -> float:
 # root fix below (default OFF -> byte-identical).
 _METALLOID_MD_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
 
+# Thread-local override for the DELFIN_FFFREE_METALLOID_MD_BOTH dual-distance pass:
+# when its ``.value`` is True the metalloid M-D length is forced to the SHORT
+# (covalent-sum) target even if the env flag is off, so smiles_to_xyz_isomers can
+# build a SECOND, short-distance manifold and append it to the offset one.  Default
+# unset -> byte-identical.  (Same threading.local pattern as _CONF_COMPLETE_ACTIVE.)
+_METALLOID_MD_FORCE_SHORT = threading.local()
+
 
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     """Return estimated M-L bond length in Å.
@@ -788,8 +795,9 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
         # byte-identical; a construction-chain ROOT fix -- it sets the seat / UFF-pin
         # / snap / tolerance target BEFORE emit, so the raw geometry is built
         # correct (NOT a post-hoc geometry repair).
-        if (donor_symbol in _METALLOID_MD_DONORS
-                and os.environ.get("DELFIN_FFFREE_METALLOID_MD_LEN", "0") == "1"):
+        if donor_symbol in _METALLOID_MD_DONORS and (
+                getattr(_METALLOID_MD_FORCE_SHORT, "value", False)
+                or os.environ.get("DELFIN_FFFREE_METALLOID_MD_LEN", "0") == "1"):
             return r_m + r_d
         offset = _METAL_ROW_OFFSET.get(metal_symbol, 0.5)
         return r_m + r_d + offset
@@ -29574,6 +29582,33 @@ def _arg_deterministic(args, kwargs) -> bool:
     return True
 
 
+def _smiles_arg(args, kwargs):
+    """The SMILES passed to the public wrapper (positional index 0 / kwargs)."""
+    if "smiles" in kwargs:
+        return kwargs["smiles"]
+    return args[0] if args else None
+
+
+def _has_metalloid_donor(smiles) -> bool:
+    """True iff the molecule has a heavy metalloid (Sb/As/Bi/Te/Se/Ge/Sn/Pb) atom
+    bonded to a metal centre -- the only systems the dual-M-D-distance pass targets
+    (so the second build pass is skipped elsewhere).  Graph/element only, never
+    SMILES-specific; any parse failure -> False (pass skipped = base behaviour)."""
+    if not smiles or not isinstance(smiles, str):
+        return False
+    try:
+        m = Chem.MolFromSmiles(smiles, sanitize=False)
+        if m is None:
+            return False
+        for a in m.GetAtoms():
+            if a.GetSymbol() in _METALLOID_MD_DONORS and any(
+                    nb.GetSymbol() in _METAL_SET for nb in a.GetNeighbors()):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
@@ -29629,6 +29664,31 @@ def smiles_to_xyz_isomers(*args, **kwargs):
             _det_env_set = True
     try:
         r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+        # --- Metalloid dual-M-D-distance pass (DELFIN_FFFREE_METALLOID_MD_BOTH; default OFF) ------
+        # For systems with a metalloid donor, ALSO build the manifold at the SHORT covalent-sum
+        # M-metalloid distance and APPEND it (never drops the offset frames).  The eye's gate is
+        # min-over-frames, so a system whose offset build is already good KEEPS that good frame
+        # (cannot regress) while a detached system GAINS a good short frame (improves).  The short
+        # frames flow through the SAME finalisation chain below: _clean_gate_filter is per-frame
+        # asymmetric (drops broken frames, keeps good ones) so a short frame that only CLASHES
+        # (crowded metalloid ligand) is dropped -> no broken_frac penalty; only a genuinely better
+        # short frame survives.  Structurally never-worse via completeness (frames appended, never
+        # dropped).  Second pass forces the short distance via the thread-local (env stays off ->
+        # byte-identical when METALLOID_MD_BOTH is off).  Metalloid-gated so non-metalloid systems
+        # are byte-identical (no wasted second build).
+        if (outermost
+                and os.environ.get("DELFIN_FFFREE_METALLOID_MD_BOTH", "0") == "1"
+                and isinstance(r, tuple) and len(r) == 2
+                and isinstance(r[0], list) and r[0]
+                and _has_metalloid_donor(_smiles_arg(args, kwargs))):
+            _METALLOID_MD_FORCE_SHORT.value = True
+            try:
+                r2 = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+            finally:
+                _METALLOID_MD_FORCE_SHORT.value = False
+            if isinstance(r2, tuple) and len(r2) == 2 and isinstance(r2[0], list) and r2[0]:
+                _short = [(xyz, (f"{lbl}-mdshort" if lbl else "mdshort")) for xyz, lbl in r2[0]]
+                r = (r[0] + _short, r[1])
         # Conformer-completeness AND permutation-dedup run only at the OUTERMOST
         # public call (over the final, dual-parse-unioned ensemble); identity on
         # inner re-entries.  Permutation-dedup runs LAST over the expanded union
