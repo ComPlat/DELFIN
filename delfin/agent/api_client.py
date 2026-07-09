@@ -825,6 +825,46 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     "remember",
 })
 
+
+# --- Central execution authorization (deny-by-default per role) -------------
+# The single source of truth for "which tools may this role EXECUTE", enforced
+# at the one choke point every tool passes through (``_DocToolExecutor.execute``)
+# — independent of how the tool was advertised or namespaced. This closes the
+# structural bypass behind bug 20260708-092217: the engine's per-role tool
+# whitelist exempts every ``mcp__delfin-docs__``/``mcp__kit-coding__`` tool
+# ("already permission-gated"), so the dashboard guide reached read_file /
+# grep_file / list_files / bash through the KIT backend. Re-checking at
+# execution time makes that leak impossible regardless of the advertising path,
+# and gives a defense-in-depth net for any tool whose own handler forgets a
+# check. Only roles that appear here are restricted; every other role stays
+# unrestricted at this layer (its per-tool + plan-mode gates still apply).
+_ROLE_EXEC_ALLOWLIST: dict[str, frozenset[str]] = {
+    "dashboard_agent": _DASHBOARD_AGENT_ALLOWED_TOOLS,
+}
+
+# Meta/plumbing tools with no side effects or scope concern — always permitted
+# even for a role that carries an allow-list.
+_ALWAYS_ALLOWED_TOOLS: frozenset[str] = frozenset({
+    "exit_plan_mode", "ask_user_question", "subagent_result",
+})
+
+
+def _tool_denied_for_role(role: str, name: str) -> bool:
+    """Deny-by-default per-role execution check (pure, testable).
+
+    Returns True when *role* has a defined execution allow-list AND *name*
+    is not on it. Roles without an allow-list are never denied here. The
+    ``mcp__server__tool`` namespace is stripped so a namespaced call is
+    judged by its underlying tool name.
+    """
+    allow = _ROLE_EXEC_ALLOWLIST.get(role or "")
+    if allow is None:
+        return False
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    if name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS:
+        return False
+    return base not in allow
+
 # Tools advertised to weak local models (gemma-7b, llama-8b, qwen-7b,
 # phi-3.5, mistral-7b, codellama-7b). 15-tool core that covers 95% of
 # real agent use without overwhelming the model's tool-routing
@@ -3455,7 +3495,19 @@ class _DocToolExecutor:
             except Exception:
                 pass
 
-        if block_reason:
+        # Central authorization checkpoint (deny-by-default per role). Every
+        # tool passes through here before dispatch, so a role's execution
+        # allow-list holds even if the tool was advertised or mcp__-namespaced
+        # by another layer, and even if a per-tool handler forgot its own gate.
+        auth_role = getattr(permissions, "agent_role", "") if permissions else ""
+        if permissions is not None and _tool_denied_for_role(auth_role, name):
+            result = json.dumps({"error": (
+                f"Tool '{name}' is not available to the '{auth_role}' role. "
+                "The dashboard guide operates the UI via ACTION: slash-commands "
+                "and researches via search_docs — it does not read/edit source "
+                "or run shell commands."
+            )})
+        elif block_reason:
             result = json.dumps({
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
