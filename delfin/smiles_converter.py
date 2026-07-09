@@ -753,6 +753,13 @@ def _target_mc_dist(metal_sym: str, eta: int) -> float:
     return dist
 
 
+# Heavy metalloid sigma-donor elements (stibine Sb, arsine As, bismuthine Bi,
+# telluro/seleno-ether Te/Se, heavy tetrel Ge/Sn/Pb).  Mirrors
+# decompose._METALLOID_DONORS.  Used ONLY by the DELFIN_FFFREE_METALLOID_MD_LEN
+# root fix below (default OFF -> byte-identical).
+_METALLOID_MD_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     """Return estimated M-L bond length in Å.
 
@@ -767,6 +774,23 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     r_m = _COVALENT_RADII.get(metal_symbol)
     r_d = _COVALENT_RADII.get(donor_symbol)
     if r_m is not None and r_d is not None:
+        # Heavy metalloid sigma-donors (Sb/As/Bi/Te/Se/Ge/Sn/Pb): the generic
+        # +_METAL_ROW_OFFSET coordination-bond correction is calibrated for HARD
+        # N/O/P/S donors, where the covalent-radius sum UNDER-estimates the M-L
+        # bond.  For these SOFT, already-large-radius donors it OVER-shoots: the
+        # seated AND UFF-pinned M-D bond lands ~0.4 Å too long (e.g. Cu-Sb
+        # 1.32+1.39+0.40 = 3.11 vs real ~2.6), so the donor reads as DETACHED
+        # (eye: mdbreak "M-D too_long" + smiles_topology on ~70% of heavy_donor
+        # frames; silent on the CCDC crystals -> a real construction defect).
+        # When DELFIN_FFFREE_METALLOID_MD_LEN=1, drop the row offset for metalloid
+        # donors so the target is the plain covalent sum (~2.7 Å == polyhedra.
+        # md_distance), the physical M-metalloid distance.  Env-gated, default
+        # byte-identical; a construction-chain ROOT fix -- it sets the seat / UFF-pin
+        # / snap / tolerance target BEFORE emit, so the raw geometry is built
+        # correct (NOT a post-hoc geometry repair).
+        if (donor_symbol in _METALLOID_MD_DONORS
+                and os.environ.get("DELFIN_FFFREE_METALLOID_MD_LEN", "0") == "1"):
+            return r_m + r_d
         offset = _METAL_ROW_OFFSET.get(metal_symbol, 0.5)
         return r_m + r_d + offset
     return 2.0
