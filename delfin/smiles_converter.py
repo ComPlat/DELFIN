@@ -22475,9 +22475,18 @@ def _embed_fragment_procrustes(
         # to fix LP alignment at clash cost).
         d_new = donor_new_indices[0]
         d_atom = frag_mol.GetAtomWithIdx(d_new)
+        # ROOT FIX (DELFIN_FFFREE_SP3C_TET_SEAT=1, default OFF -> byte-identical): a monodentate sp3-C
+        # donor (M-CH2-R, M-CH3) has NO lone pair -- the metal occupies the 4th tetrahedral vertex.  The
+        # HEAVY-ONLY bisector below leaves only the single heavy tail (R) for an M-CH2-R, so
+        # src_dir = -unit(donor->R) and aligning it with donor->metal drives R ANTI to the metal ->
+        # M-C-R ~180 deg (eye: sp3c_donor_linear; a top sigma_coord defect).  Including the H neighbours
+        # for an sp3-C makes the bisector the true vacant-slot direction -> M-C-X ~109 deg.  Not a
+        # post-hoc bend; sets the placement.
+        _sp3c_tet = (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
+                     and d_atom.GetSymbol() == "C")
         nbr_idx = [
             nb.GetIdx() for nb in d_atom.GetNeighbors()
-            if nb.GetAtomicNum() > 1
+            if nb.GetAtomicNum() > 1 or _sp3c_tet
         ]
         src_dir = None
         if nbr_idx:
@@ -25276,12 +25285,45 @@ def _build_topology_xyz_from_template(
                         int(frag_donors[0]) if frag_donors else -1,
                         mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() if frag_donors else "?",
                         int(sum(1 for _r in frag_xyz if 0.4 < float(np.linalg.norm(_r - src_d)) < 1.9))))
-                src_com = frag_xyz.mean(axis=0)
-                # Keep the fragment extending away from the metal.
-                v_from = src_com - src_d
+                v_from = None
+                # ROOT FIX (DELFIN_FFFREE_SP3C_TET_SEAT=1, default OFF -> byte-identical): sp3-C donor ->
+                # seat the metal in the vacant tetrahedral slot.  The centroid heuristic below is skewed
+                # by the heavy substituent (M-CH2-R: centroid ~ R) -> R anti to metal -> M-C-X ~180.
+                # Sum of unit(donor->substituent) over all 3 bonded frag atoms (incl H, geometrically
+                # detected) points opposite the vacant slot; aligning it with the outward radial puts the
+                # vacant slot (metal) at ~109 deg.
+                if os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1" and frag_donors:
+                    try:
+                        if mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() == "C":
+                            _acc = np.zeros(3); _ns = 0
+                            for _row in frag_xyz:
+                                _v = _row - src_d; _vn = float(np.linalg.norm(_v))
+                                if 0.4 < _vn < 1.9:
+                                    _acc += _v / _vn; _ns += 1
+                            if _ns == 3 and float(np.linalg.norm(_acc)) > 1e-6:
+                                v_from = _acc
+                    except Exception:
+                        v_from = None
+                if v_from is None:
+                    src_com = frag_xyz.mean(axis=0)
+                    # Keep the fragment extending away from the metal.
+                    v_from = src_com - src_d
                 v_to = tgt_d
                 R = _rotation_from_vectors(v_from, v_to)
                 transformed = (frag_xyz - src_d) @ R.T + tgt_d
+                if (os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and frag_donors
+                        and mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() == "C"):
+                    try:
+                        _mc = -tgt_d / (float(np.linalg.norm(tgt_d)) + 1e-9)
+                        for _row in transformed:
+                            _v = _row - tgt_d; _vn = float(np.linalg.norm(_v))
+                            if 1.3 < _vn < 1.9:
+                                _ang = float(np.degrees(np.arccos(
+                                    max(-1.0, min(1.0, float(np.dot(_mc, _v / _vn)))))))
+                                _trace_seating("template_mono_POST donor=%d M-C-Xheavy=%.0f" % (
+                                    int(frag_donors[0]), _ang))
+                    except Exception:
+                        pass
 
             for li, atom_idx in enumerate(frag_list):
                 coords[atom_idx] = transformed[li]
@@ -25299,6 +25341,29 @@ def _build_topology_xyz_from_template(
             )
         except Exception as _orient_exc:
             logger.debug("Ligand orientation (template path) failed: %s", _orient_exc)
+
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _mp = np.array(coords[metal_idx], dtype=float)
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = np.array(coords[_d], dtype=float); _mc = _mp - _dp
+                    _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _cx = np.array(coords[_nb.GetIdx()], dtype=float) - _dp
+                        _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("POST_ALIGN donor=%d M-C-Xheavy=%.0f" % (_d, _ang))
+            except Exception:
+                pass
 
         lines = []
         for i in range(n_atoms):
@@ -34501,6 +34566,18 @@ def _build_coordination_constraints_from_xyz(
                     continue
                 if d_idx not in base["fix_atoms"]:
                     base["fix_atoms"].append(d_idx)
+                # sp3-C tetrahedral seating companion (DELFIN_FFFREE_SP3C_TET_SEAT): the seating now
+                # places an sp3-C donor's substituents tetrahedrally (M-C-X ~109), but UFF with the donor
+                # C frozen and its heavy substituent FREE swings that substituent back to linear (there is
+                # no M-C-X angle term for the unparameterised metal).  Confirmed via DELFIN_TRACE_SEATING:
+                # placement + orient give M-C-X 106, UFF then emits 178.  Freeze the sp3-C's heavy
+                # first-shell substituent(s) too so the tetrahedral M-C-X survives UFF.  Byte-identical off.
+                if (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
+                        and mol_template.GetAtomWithIdx(d_idx).GetSymbol() == "C"):
+                    for _nb in mol_template.GetAtomWithIdx(d_idx).GetNeighbors():
+                        if (_nb.GetAtomicNum() > 1 and _nb.GetIdx() != m_idx
+                                and _nb.GetIdx() not in base["fix_atoms"]):
+                            base["fix_atoms"].append(_nb.GetIdx())
 
         # Hapto protection: fix hapto metal atoms + all Cp ring atoms
         # during UFF. Without metal FF parameters, UFF treats the metal
