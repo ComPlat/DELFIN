@@ -47,6 +47,11 @@ _CHAMPION_FLAGS = (
     "JOINT_DECLASH", "DECLASH_METALLOID_LIGAND",  # general inter-ligand azimuthal declash (hard M-D
                           # invariant + rollback) + metalloid-ligand awareness; landed 2026-07-09:
                           # full:120 whole-space cap-never-worse, +3 valid frames, mean -0.3
+    "SP3C_TET_SEAT",      # tetrahedral seating of PENDANT sp3-alkyl C donors (M-C-X ~114 deg, not 180);
+                          # landed 2026-07-09: class:sigma_coord:100 cap-never-worse (n=94, 0 lost,
+                          # mean -2.009) + full:120 whole-space (n=105, 0 lost, +1 perfect manifold).
+                          # Scoped by element+graph only: not aromatic, not in-ring (sp2 carbene/aryl
+                          # have no vacant tetrahedral slot; ring C orientation is fixed by the scaffold)
     "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
     "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
 )
