@@ -1309,6 +1309,42 @@ class AgentEngine:
             trimmed += 1
         return trimmed
 
+    def _hard_clear_old_tool_results(self, old_msgs: list[dict]) -> int:
+        """Deterministic context-editing pass: stub the body of old, bulky
+        TOOL-OUTPUT / assistant-payload messages down to a short marker so the
+        lossy + non-deterministic + paid LLM summary becomes a genuine LAST
+        RESORT rather than the default at the 95% cliff.
+
+        Structure-preserving: only NON-user string-content messages are
+        touched (user turns are the GOALS; list-content tool_use blocks and
+        their tool_call pairing are left intact), so the message list stays
+        valid for the backend. Returns how many messages were cleared.
+
+        Runs AFTER the 0.70 sliding-window trim, so it only bites when a
+        session is genuinely at the compaction cliff; then, if it frees enough,
+        ``_compact_history`` skips the summary entirely.
+        """
+        pct = float(self.auto_compact_pct or 0.95)
+        budget = int(self.context_window_tokens * pct)
+        cleared = 0
+        for msg in old_msgs:
+            if self._estimate_context_tokens() <= budget:
+                break
+            if msg.get("role", "") == "user":
+                continue
+            content = msg.get("content", "")
+            if not isinstance(content, str) or len(content) < 800:
+                continue
+            if content.startswith("[cleared:"):
+                continue  # already stubbed on an earlier compaction
+            head = content[:200]
+            msg["content"] = (
+                f"[cleared: {len(content)} chars of old tool output elided "
+                f"to save context]\n{head}"
+            )
+            cleared += 1
+        return cleared
+
     def _llm_summarize_old_messages(self, old_msgs: list[dict]) -> str:
         """Call a cheap model to summarise the older half of the
         conversation into a high-fidelity recap. Falls back to ``""`` on
@@ -1455,7 +1491,25 @@ class AgentEngine:
         old_msgs = self.messages[:-self._KEEP_RECENT]
         recent = self.messages[-self._KEEP_RECENT:]
 
-        # 1) Try LLM summarisation
+        # Stage 2a: deterministic context-editing BEFORE any LLM summary.
+        # Structure-preserving hard-clear of old bulky tool output — free,
+        # deterministic, lossless for user goals + assistant reasoning. If it
+        # brings us back under the auto-compact budget, skip the lossy/paid
+        # summary and keep the (edited) history intact.
+        try:
+            _cleared = self._hard_clear_old_tool_results(old_msgs)
+            if _cleared and not self._should_auto_compact():
+                self.last_compaction_info = {
+                    "kind": "context_edit",
+                    "tool_results_cleared": _cleared,
+                    "tokens_after": self._estimate_context_tokens(),
+                    "archived_at": _time.time(),
+                }
+                return
+        except Exception:
+            pass
+
+        # 1) Try LLM summarisation (only when hard-clear wasn't enough)
         summary = ""
         try:
             from delfin.user_settings import load_settings as _load_settings
