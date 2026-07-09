@@ -31154,6 +31154,7 @@ def _smiles_to_xyz_isomers_impl(
                     existing_fps.add(topo_fp)
                 if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
                     try:
+                        import numpy as np
                         _mi = next((a.GetIdx() for a in topo_mol.GetAtoms()
                                     if a.GetSymbol() in _METAL_SET), None)
                         _pos = {}
@@ -32877,6 +32878,7 @@ def _smiles_to_xyz_isomers_impl(
         # (metal-bonded C donor; worst M-C-X over distance neighbours) -- reconciles eye-vs-trace + finds
         # which emitted frame carries the linear geometry, regardless of which append path produced it.
         try:
+            import numpy as np
             _trace_seating("RESULTS_RETURN_REACHED n_frames=%d len_tup0=%d" % (
                 len(results), len(results[0]) if results else 0))
             for _fi, _tup in enumerate(results):
@@ -32885,11 +32887,21 @@ def _smiles_to_xyz_isomers_impl(
                 for _ln in str(_xyz).strip().split("\n"):
                     _p = _ln.split()
                     if len(_p) >= 4:
-                        _syms.append(_p[0]); _P.append(np.array([float(_p[1]), float(_p[2]), float(_p[3])]))
+                        try:
+                            _c = [float(_p[1]), float(_p[2]), float(_p[3])]
+                        except Exception:
+                            continue          # skip count/comment header lines robustly
+                        _syms.append(_p[0]); _P.append(np.array(_c))
                 _mi = next((i for i, s in enumerate(_syms) if s in _METAL_SET), None)
                 if _mi is None:
+                    _trace_seating("RESULTS_RETURN frame=%d NO_METAL n_atoms=%d syms=%s" % (
+                        _fi, len(_syms), ",".join(sorted(set(_syms)))[:40]))
                     continue
                 _mp = _P[_mi]
+                _cdist = sorted(round(float(np.linalg.norm(_P[_k] - _mp)), 2)
+                                for _k, _s in enumerate(_syms) if _s == "C")
+                _trace_seating("RESULTS_RETURN frame=%d metal=%s nC=%d minMC=%s" % (
+                    _fi, _syms[_mi], len(_cdist), (_cdist[0] if _cdist else "no_C")))
                 for _d, (_s, _dp) in enumerate(zip(_syms, _P)):
                     _mcn = float(np.linalg.norm(_dp - _mp))
                     if _s != "C" or _mcn > 2.8 or _mcn < 1e-6:   # eye uses M-C < 2.8
@@ -32907,8 +32919,8 @@ def _smiles_to_xyz_isomers_impl(
                                 _worst = _ang
                     _trace_seating("RESULTS_RETURN frame=%d Cdonor=%d M-C=%.2f worst_M-C-X=%s" % (
                         _fi, _d, _mcn, ("%.0f" % _worst) if _worst is not None else "no_heavy_nbr<2.0"))
-        except Exception:
-            pass
+        except Exception as _rre:
+            _trace_seating("RESULTS_RETURN_ERR %s: %s" % (type(_rre).__name__, str(_rre)[:80]))
 
     return results, None
 
