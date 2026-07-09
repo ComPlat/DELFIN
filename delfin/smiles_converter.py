@@ -28086,6 +28086,24 @@ def _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers):
                 frozen.add(a.GetIdx())
                 for nb in a.GetNeighbors():
                     frozen.add(nb.GetIdx())
+        # sp3-C tetrahedral seating companion (DELFIN_FFFREE_SP3C_TET_SEAT): the metal + its donor atoms
+        # are frozen above, but a monodentate sp3-C donor's HEAVY SUBSTITUENT stays FREE, so the pucker
+        # relax swings it back to linear (M-C-X 180) even though the coordination sphere holds -- the
+        # ring-pucker generator is the last construction path that re-linearises the seated sp3-C.  Freeze
+        # each metal-bonded sp3-C donor's directly-bonded heavy substituent(s) too, locking the C-X vector
+        # so the tetrahedral M-C-X survives puckering.  Element+graph only (universal); byte-identical off.
+        if os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1":
+            _extra = set()
+            for _fi in list(frozen):
+                _fa = m.GetAtomWithIdx(_fi)
+                if _fa.GetSymbol() != "C":
+                    continue
+                if not any(_nb.GetSymbol() in _METAL_SET for _nb in _fa.GetNeighbors()):
+                    continue
+                for _nb in _fa.GetNeighbors():
+                    if _nb.GetSymbol() not in _METAL_SET and _nb.GetAtomicNum() > 1:
+                        _extra.add(_nb.GetIdx())
+            frozen |= _extra
         n_added = 0
         for _px, _plabel in _rpuck.generate(m, frozen=frozen, budget=48):
             if len(results) + n_added >= max_isomers:
