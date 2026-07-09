@@ -30897,12 +30897,33 @@ def _smiles_to_xyz_isomers_impl(
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = [
         (fp, lbl, cid, sc) for fp, (lbl, cid, sc) in _merged.items()
     ]
+    # ===== DETERMINISTIC TOTAL ORDER (DELFIN_FFFREE_DET_SELECT) ================================
+    # ROOT of the cross-run nondeterminism (2026-07-09): every conformer selection below decides
+    # with a bare float comparison over a dict in GENERATION order.  Two conformers of the same
+    # fingerprint whose scores differ only in the last bits, or that tie exactly, therefore elect
+    # a winner that depends on (a) insertion order and (b) float noise.  The LABEL stays the same
+    # and the GEOMETRY jumps -- exactly the observed defect (ZIZLUT "Isomer 1" differs by 4-7 A
+    # between two runs of the identical construction; AFICIC "trans"/"cis" likewise).
+    # The fix is not a seed and not a flag: give the selection a TOTAL, deterministic order.
+    # Quantising the score to 1e-6 makes it immune to last-bit wobble; (cid, fp) breaks every
+    # remaining tie by an intrinsic, run-independent property.  Element/graph-agnostic, universal.
+    _det_select = _delfin_env_int("DELFIN_FFFREE_DET_SELECT", 0)
+    def _skey(_sc: float, _cid: int, _fp) -> tuple:
+        return (round(float(_sc), 6), int(_cid), repr(_fp))
+    if _det_select:
+        fp_label_pairs.sort(key=lambda t: _skey(t[3], t[2], t[0]))
 
     # Second pass: deduplicate, keeping the best-scoring conformer per group.
     # fp -> (label, conf_id, score)
     seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
     for fp, label, cid, score in fp_label_pairs:
-        if fp not in seen_fps or score < seen_fps[fp][2]:
+        if fp not in seen_fps:
+            seen_fps[fp] = (label, cid, score)
+        elif _det_select:
+            _pl, _pc, _ps = seen_fps[fp]
+            if _skey(score, cid, fp) < _skey(_ps, _pc, fp):
+                seen_fps[fp] = (label, cid, score)
+        elif score < seen_fps[fp][2]:
             seen_fps[fp] = (label, cid, score)
         if len(seen_fps) >= max_isomers:
             break
@@ -30916,7 +30937,12 @@ def _smiles_to_xyz_isomers_impl(
                 return ''
             return re.sub(r'-\d+$', '',str(lbl))
 
+        # Same root: `fps_list` inherits the dict's GENERATION order, and the pairwise survivor is
+        # picked with `si <= sj` -- a tie (or a last-bit difference) hands the decision to whichever
+        # conformer happened to be generated first.  Impose the same total order here.
         fps_list = list(seen_fps.keys())
+        if _det_select:
+            fps_list.sort(key=lambda _f: _skey(seen_fps[_f][2], seen_fps[_f][1], _f))
         removed: set = set()
         for i in range(len(fps_list)):
             if i in removed:
@@ -30939,7 +30965,9 @@ def _smiles_to_xyz_isomers_impl(
                 # chemically different systems being wrongly merged.
                 rmsd_threshold = 2.5 if base_i == base_j else 0.8
                 if rmsd < rmsd_threshold:
-                    if si <= sj:
+                    _i_wins = (_skey(si, cid_i, fps_list[i]) <= _skey(sj, cid_j, fps_list[j])
+                               if _det_select else si <= sj)
+                    if _i_wins:
                         removed.add(j)
                     else:
                         removed.add(i)
