@@ -31152,6 +31152,40 @@ def _smiles_to_xyz_isomers_impl(
                 existing_xyz_keys.add(topo_key)
                 if topo_fp is not None:
                     existing_fps.add(topo_fp)
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                    try:
+                        _mi = next((a.GetIdx() for a in topo_mol.GetAtoms()
+                                    if a.GetSymbol() in _METAL_SET), None)
+                        _pos = {}
+                        for _i, _ln in enumerate(topo_xyz.strip().split("\n")):
+                            _p = _ln.split()
+                            if len(_p) >= 4:
+                                _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                        _mp = _pos.get(_mi)
+                        _cds = [nb.GetIdx() for nb in topo_mol.GetAtomWithIdx(_mi).GetNeighbors()
+                                if nb.GetSymbol() == "C"] if _mi is not None else []
+                        for _d in _cds:
+                            _dp = _pos.get(_d)
+                            if _mp is None or _dp is None:
+                                continue
+                            _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                            if _mcn < 1e-6:
+                                continue
+                            _mc /= _mcn
+                            for _nb in topo_mol.GetAtomWithIdx(_d).GetNeighbors():
+                                if _nb.GetAtomicNum() <= 1:
+                                    continue
+                                _xp = _pos.get(_nb.GetIdx())
+                                if _xp is None:
+                                    continue
+                                _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                                if 1.3 < _cxn < 1.9:
+                                    _ang = float(np.degrees(np.arccos(
+                                        max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                                    _trace_seating("EMIT_TOPO donor=%d M-C-Xheavy=%.0f disp=%s" % (
+                                        _d, _ang, str(display)[:18]))
+                    except Exception:
+                        pass
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
@@ -32837,6 +32871,44 @@ def _smiles_to_xyz_isomers_impl(
             results = [(_vr(_rx), _rl) for _rx, _rl in results]
     except Exception as _vr_exc:
         logger.debug("Welle-5r VSEPR terminal-group repair failed: %s", _vr_exc)
+
+    if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+        # FINAL emit-level M-C-X over EVERY frame in results, measured DISTANCE-based like the eye
+        # (metal-bonded C donor; worst M-C-X over distance neighbours) -- reconciles eye-vs-trace + finds
+        # which emitted frame carries the linear geometry, regardless of which append path produced it.
+        try:
+            _trace_seating("RESULTS_RETURN_REACHED n_frames=%d len_tup0=%d" % (
+                len(results), len(results[0]) if results else 0))
+            for _fi, _tup in enumerate(results):
+                _xyz = _tup[0]; _disp = _tup[1] if len(_tup) > 1 else ""
+                _syms = []; _P = []
+                for _ln in str(_xyz).strip().split("\n"):
+                    _p = _ln.split()
+                    if len(_p) >= 4:
+                        _syms.append(_p[0]); _P.append(np.array([float(_p[1]), float(_p[2]), float(_p[3])]))
+                _mi = next((i for i, s in enumerate(_syms) if s in _METAL_SET), None)
+                if _mi is None:
+                    continue
+                _mp = _P[_mi]
+                for _d, (_s, _dp) in enumerate(zip(_syms, _P)):
+                    _mcn = float(np.linalg.norm(_dp - _mp))
+                    if _s != "C" or _mcn > 2.8 or _mcn < 1e-6:   # eye uses M-C < 2.8
+                        continue
+                    _mc = (_mp - _dp) / _mcn
+                    _worst = None
+                    for _j, (_sj, _xp) in enumerate(zip(_syms, _P)):
+                        if _j == _d or _sj == "H":
+                            continue
+                        _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 2.0:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            if _worst is None or _ang > _worst:
+                                _worst = _ang
+                    _trace_seating("RESULTS_RETURN frame=%d Cdonor=%d M-C=%.2f worst_M-C-X=%s" % (
+                        _fi, _d, _mcn, ("%.0f" % _worst) if _worst is not None else "no_heavy_nbr<2.0"))
+        except Exception:
+            pass
 
     return results, None
 
