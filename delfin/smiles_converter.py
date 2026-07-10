@@ -24260,6 +24260,83 @@ def _snap_md_distances_to_ideal(
     return n_snapped
 
 
+def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
+    """POST-UFF metalloid M-D clamp (root fix, env-gated DELFIN_FFFREE_METALLOID_MD_CLAMP).
+
+    OB-UFF has no force-field parameters for the soft, large heavy-metalloid sigma-donors
+    (Sb/As/Bi/Te/Se/Ge/Sn/Pb) and, when the seat target is short, COLLAPSES the M-metalloid bond
+    below its ideal length -- QIGFOF Ag-Sb lands at 2.01 A against an ideal 2.65, wrecking realism
+    even though the seat target (r_Ag+r_Sb = 2.84) was correct.  This runs AFTER UFF and rigidly
+    re-snaps ONLY metalloid M-D bonds to _get_ml_bond_length by translating the donor's BFS fragment
+    along the M-D axis -- the same proven mechanism as _snap_md_distances_to_ideal, but at the XYZ
+    level and metalloid-only, so the N/O/P/S bonds UFF handles well are never touched.  Default OFF
+    -> not called -> byte-identical.  Bare-atom-list XYZ (no header), format matches
+    _flatten_sp2_atoms_xyz.  Deterministic (sorted metals).  Skips bridging donors (a single
+    translation cannot satisfy two M-D ideals; leave those to the UFF pins), exactly like the pre-UFF
+    snap."""
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return xyz_delfin
+    try:
+        import numpy as np
+        lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_delfin
+        symbols: List[str] = []
+        coords_list: List[List[float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return xyz_delfin
+            symbols.append(parts[0])
+            coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        coords = np.array(coords_list, dtype=float)
+        metal_indices = {
+            a.GetIdx() for a in mol_template.GetAtoms() if a.GetSymbol() in _METAL_SET
+        }
+        if not metal_indices:
+            return xyz_delfin
+        moved = False
+        for m_idx in sorted(metal_indices):
+            m_atom = mol_template.GetAtomWithIdx(m_idx)
+            m_sym = m_atom.GetSymbol()
+            m_pos = coords[m_idx]
+            for nbr in m_atom.GetNeighbors():
+                d_idx = nbr.GetIdx()
+                d_sym = nbr.GetSymbol()
+                if d_sym not in _METALLOID_MD_DONORS:
+                    continue                       # metalloid donors ONLY -- N/O/P/S left to UFF
+                if d_idx in metal_indices:
+                    continue                       # M-M bonds
+                if sum(1 for nb in nbr.GetNeighbors() if nb.GetIdx() in metal_indices) >= 2:
+                    continue                       # bridging donor: leave to the UFF pins
+                d_pos = coords[d_idx]
+                cur_d = float(np.linalg.norm(d_pos - m_pos))
+                if cur_d < 1e-8:
+                    continue
+                try:
+                    target_d = float(_get_ml_bond_length(m_sym, d_sym))
+                except Exception:
+                    continue
+                if target_d <= 0 or abs(cur_d - target_d) / target_d < 0.05:
+                    continue
+                frag = _bfs_ligand_fragment(mol_template, d_idx, metal_indices)
+                unit = (d_pos - m_pos) / cur_d
+                delta = (m_pos + unit * target_d) - d_pos
+                for fi in frag:
+                    coords[fi] = coords[fi] + delta
+                moved = True
+        if not moved:
+            return xyz_delfin
+        out_lines = [
+            f"{sym:4s} {coords[i][0]:12.6f} {coords[i][1]:12.6f} {coords[i][2]:12.6f}"
+            for i, sym in enumerate(symbols)
+        ]
+        return "\n".join(out_lines) + "\n"
+    except Exception as exc:
+        logger.debug("Metalloid M-D clamp failed: %s", exc)
+        return xyz_delfin
+
+
 def _md_distance_in_tolerance(
     mol,
     conf_id: int,
@@ -36108,6 +36185,14 @@ def _optimize_xyz_openbabel_safe(
     # atoms (e.g. the fused-bicycle C in triazolothiadiazine ligands).
     if mol_template is not None and RDKIT_AVAILABLE:
         xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol_template)
+
+    # POST-UFF metalloid M-D clamp (root fix): OB-UFF collapses soft, unparameterised M-metalloid
+    # bonds (Sb/As/Bi/Te/Se/Ge/Sn/Pb) -- QIGFOF Ag-Sb -> 2.01 A vs ideal 2.65.  Re-snap them to ideal
+    # here, BEFORE the connectivity/quality checks below so those judge the corrected geometry.
+    # Env-gated, default OFF -> byte-identical.  N/O/P/S bonds (UFF handles them) are untouched.
+    if (mol_template is not None and RDKIT_AVAILABLE
+            and os.environ.get("DELFIN_FFFREE_METALLOID_MD_CLAMP", "0") == "1"):
+        xyz_opt = _clamp_metalloid_md_xyz(xyz_opt, mol_template)
 
     # Fundamental check: UFF must not change the metal-donor connectivity.
     # If a donor drifted away or a non-donor collapsed onto the metal,
