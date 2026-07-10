@@ -30746,42 +30746,47 @@ def _smiles_to_xyz_isomers_impl(
     # frozen-broken frames cannot leak through. Default OFF.
     _pre_uff_md_gate = has_metal and _pre_uff_topology_gate_enabled()
 
-    def _classify_one_conf(_cid, _relax):
+    def _classify_one_conf(_cid, _relax, _m=None, _cc=None):
+        """Classify conformer _cid.  _m/_cc let a worker pass a PRIVATE mol copy carrying only that
+        conformer, so no thread ever touches the shared molecule (see DET_CLASSIFY_PAR below).  The
+        returned conformer id is always the ORIGINAL _cid -- downstream indexes the real mol."""
+        _M = mol if _m is None else _m
+        _C = _cid if _cc is None else _cc
         try:
             if _pre_uff_md_gate:
                 try:
-                    if not _md_distance_in_tolerance(mol, _cid):
+                    if not _md_distance_in_tolerance(_M, _C):
                         return None
                 except Exception:
                     pass
-            if _has_atom_clash(mol, _cid, min_dist=0.3):
+            if _has_atom_clash(_M, _C, min_dist=0.3):
                 return None
             try:
-                xyz_check = _mol_to_xyz_conformer(mol, _cid)
-                if not _metal_donor_distances_realistic(xyz_check, mol):
+                xyz_check = _mol_to_xyz_conformer(_M, _C)
+                if not _metal_donor_distances_realistic(xyz_check, _M):
                     return None
             except Exception:
                 return None
-            if _has_pi_ring_nonplanarity(mol, _cid):
+            if _has_pi_ring_nonplanarity(_M, _C):
                 return None
             penalty = 0.0
-            if _has_unphysical_metal_nonbonded_contact(mol, _cid):
+            if _has_unphysical_metal_nonbonded_contact(_M, _C):
                 if not _relax:
                     return None
                 penalty += 350.0
-            if _has_unphysical_oco_geometry(mol, _cid):
+            if _has_unphysical_oco_geometry(_M, _C):
                 if not _relax:
                     return None
                 penalty += 250.0
-            if _has_atom_clash(mol, _cid):
+            if _has_atom_clash(_M, _C):
                 penalty += 500.0
-            if _has_bad_geometry(mol, _cid):
+            if _has_bad_geometry(_M, _C):
                 penalty += 300.0
-            if _has_ligand_intertwining(mol, _cid):
+            if _has_ligand_intertwining(_M, _C):
                 penalty += 200.0
-            fp = _compute_coordination_fingerprint(mol, _cid, dtype_map=dtype_map)
-            score = _geometry_quality_score(mol, _cid) + penalty
-            label = _classify_isomer_label(fp, mol)
+            fp = _compute_coordination_fingerprint(_M, _C, dtype_map=dtype_map)
+            score = _geometry_quality_score(_M, _C) + penalty
+            label = _classify_isomer_label(fp, _M)
             return (fp, label, _cid, score)
         except Exception:
             return None
@@ -30804,9 +30809,38 @@ def _smiles_to_xyz_isomers_impl(
         # The fix is to stop sharing: classify sequentially.  Parallelism is not lost, it moves up a
         # level (the loop builds 64 SYSTEMS at once), and 384 threads per system x 64 systems was a
         # 24k-thread oversubscription anyway.  Element/graph-agnostic; byte-identical when unset.
+        # DET_CLASSIFY_PAR: determinism WITHOUT giving up the cores.  The race was never the threads,
+        # it was the SHARING.  Pre-warm the lazy ring/property caches on the template ONCE (so no
+        # worker triggers a lazy init), then hand every worker a private conformer-free copy carrying
+        # exactly the conformer it must classify.  Results are collected in SUBMISSION order, so the
+        # output is bit-identical to the sequential path -- and that is the acceptance test.
         _det_classify = _delfin_env_int("DELFIN_FFFREE_DET_CLASSIFY", 0)
+        _det_classify_par = _delfin_env_int("DELFIN_FFFREE_DET_CLASSIFY_PAR", 0)
         _n_cw = min(len(conf_ids), os.cpu_count() or 4) if conf_ids else 1
-        if _det_classify:
+        if _det_classify_par and conf_ids and len(conf_ids) > 4:
+            try:
+                mol.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+            try:
+                Chem.GetSymmSSSR(mol); mol.GetRingInfo()
+            except Exception:
+                pass
+            _tmpl = Chem.Mol(mol); _tmpl.RemoveAllConformers()
+
+            def _classify_private(_cid):
+                try:
+                    _m2 = Chem.Mol(_tmpl)
+                    _c2 = _m2.AddConformer(Chem.Conformer(mol.GetConformer(_cid)), assignId=True)
+                    return _classify_one_conf(_cid, relax_hard_chem_filters, _m2, _c2)
+                except Exception:
+                    return None
+            _w = min(len(conf_ids), DELFIN_MAX_THREAD_WORKERS, os.cpu_count() or 4)
+            if _w > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=_w) as _cp:
+                    _futs = [_cp.submit(_classify_private, c) for c in conf_ids]
+                    return [r for r in (f.result() for f in _futs) if r is not None]
+        if _det_classify or _det_classify_par:
             return [r for r in (_classify_one_conf(c, relax_hard_chem_filters)
                                 for c in conf_ids) if r is not None]
         if _n_cw > 1 and len(conf_ids) > 4:
