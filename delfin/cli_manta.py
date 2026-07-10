@@ -40,6 +40,14 @@ _ALL_ISOMERS = 100_000
 # git history + remain individually env-gated (DELFIN_FFFREE_<flag>). Spot-verified: KITNEJ/QIDGEP/
 # VULMOE (50-junk topo-wrong manifolds under the old stack) now build the crystal topology.
 _CHAMPION_FLAGS = (
+    "DET_CLASSIFY",       # DETERMINISM: classify conformers without sharing one RDKit mol across
+                          # threads (its ring/property caches init lazily and are not thread-safe, so
+                          # the SCORES raced -> another conformer won its fingerprint -> same label,
+                          # different geometry; and the FILTERS raced -> a different frame COUNT).
+                          # landed 2026-07-10, whole-pool byte-determinism, full-fidelity, all pillars:
+                          #   main            108 systems, byte_identical 101, nondeterministic 7
+                          #   main+DET_CLASSIFY                        108,                    0
+                          # capability never-worse: valid 85->85, cap_LOST=0, build_lost=0, rt 0 lost
     "AROM_PLANARIZE", "ARYL_RING_SIZE", "DIATOMIC_ORIENT", "HAPTO_AXIS_ROT",
     "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
     "METALLOID_MD_LEN",   # correct M-metalloid bond length (no row-offset overshoot); landed 2026-07-09:
