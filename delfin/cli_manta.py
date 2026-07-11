@@ -62,6 +62,12 @@ _CHAMPION_FLAGS = (
                           # have no vacant tetrahedral slot; ring C orientation is fixed by the scaffold)
     "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
     "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
+    "METALLOID_MD_CLAMP", # post-UFF re-snap of M-metalloid bonds (Sb/As/Bi/Te/Se/Ge/Sn/Pb) to ideal;
+                          # OB-UFF has no params for these soft donors and collapses them (QIGFOF Ag-Sb
+                          # 2.01 vs 2.65).  Completes METALLOID_MD_LEN (which sets the target; this holds
+                          # it through UFF).  landed 2026-07-11 under the NOISE-BAND gate: champion+CLAMP
+                          # vs champion never-worse BOTH directions, mean -0.204, 0 regressions, whole-
+                          # pool byte-determinism 109/109 (TOCSAI needed per_timeout 1800, then identical)
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
