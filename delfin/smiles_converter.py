@@ -35048,9 +35048,42 @@ def _build_coordination_constraints_from_xyz(
             _uff_relax_donors = bool(
                 _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 0)
             )
+            # d8 SQUARE-PLANAR angle targets (env-gated DELFIN_FFFREE_D8_SQ_ANGLES): this function
+            # leaves L-M-L angles FREE, and UFF's default for CN4 is tetrahedral -> a d8 CN4
+            # (Pd/Pt/Ni/Au/Rh/Ir) built by ETKDG comes out tetrahedral/seesaw.  Give UFF explicit
+            # 90/180 angle targets so it optimises toward SQUARE-planar, and do NOT freeze the donors
+            # (below) so UFF can move them there.  This works WITH UFF -- it arranges bulky ligands
+            # (no rigid-placement clash) and relaxes chelate backbones (handles the chelate majority
+            # the geometric flatten could not).  Default OFF -> byte-identical.
+            _d8_sq_angles = (os.environ.get("DELFIN_FFFREE_D8_SQ_ANGLES", "0") == "1"
+                             and m_sym in _D8_SQ_METALS and len(donor_indices) == 4)
+            if _d8_sq_angles:
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dv = {di: _np.array(coords[di], dtype=float) - _mp for di in donor_indices}
+                    _dn = {di: (_dv[di] / (float(_np.linalg.norm(_dv[di])) + 1e-12)) for di in donor_indices}
+                    _rem = list(donor_indices)
+                    _trans_set = set()
+                    while len(_rem) >= 2:                    # pair each donor with its most-opposite
+                        a = _rem[0]
+                        b = min(_rem[1:], key=lambda x: float(_np.dot(_dn[a], _dn[x])))
+                        base["angles"].append((a, m_idx, b, 180.0))
+                        _trans_set.add((a, b)); _trans_set.add((b, a))
+                        _rem.remove(a); _rem.remove(b)
+                    for _ii in range(len(donor_indices)):    # all remaining pairs are cis = 90
+                        for _jj in range(_ii + 1, len(donor_indices)):
+                            _a, _b = donor_indices[_ii], donor_indices[_jj]
+                            if (_a, _b) not in _trans_set:
+                                base["angles"].append((_a, m_idx, _b, 90.0))
+                except Exception:
+                    _d8_sq_angles = False
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
                     continue
+                if _d8_sq_angles:
+                    continue                                 # let UFF move donors to the square
+
                 # Baustein-5+6 Phase 3: record monodentate M-D pair (used by
                 # opt-in soft-donor UFF mode downstream).
                 _soft_meta["donor_indices"].append(d_idx)
