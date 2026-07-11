@@ -24337,6 +24337,111 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
         return xyz_delfin
 
 
+# d8 metals with a strong square-planar preference (mirror of _PREFERRED_CN4_GEOMETRY 'SQ' set).
+_D8_SQ_METALS = frozenset({"Ni", "Pd", "Pt", "Au", "Rh", "Ir"})
+
+
+def _flatten_d8_sq_planar_xyz(xyz_delfin: str, mol_template) -> str:
+    """POST-UFF d8 square-planar flatten (root fix, env-gated DELFIN_FFFREE_D8_SQ_FLATTEN).
+
+    A d8 CN4 centre (Pd/Pt/Ni/Au/Rh/Ir) MUST be square-planar: metal + 4 donors coplanar.  The ETKDG
+    embed treats M-D like organic bonds and knows no square-planar preference, so it lifts the metal
+    out of the donor plane -> SS-4 seesaw (CODSIA Pd 1.17 A out-of-plane; the chelate_oop_mer /
+    poly_match SS-4->SP-4 defect, the #1 cluster).  A rigid rotation of the donors about M CANNOT fix
+    this (M's out-of-plane distance is rotation-invariant); the donors must move RELATIVE to M.
+
+    This projects each donor's M-D vector into the best-fit plane through M (v' = v - (v.n) n, rescaled
+    to |v| so the M-D bond length is preserved exactly), and drags the donor's BFS fragment.  All 4
+    donors then lie in one plane through M = square-planar.  For chelates the donors are backbone-
+    linked, so an independent projection can strain the backbone; that strain shows up as broken
+    frames and the per-system never-worse gate rejects it -- so this is SAFE to test broadly.
+    Default OFF -> not called -> byte-identical.  Only fires on a genuine CN4 d8 centre.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return xyz_delfin
+    try:
+        import numpy as np
+        lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_delfin
+        symbols: List[str] = []
+        coords_list: List[List[float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return xyz_delfin
+            symbols.append(parts[0])
+            coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        coords = np.array(coords_list, dtype=float)
+        metal_indices = {
+            a.GetIdx() for a in mol_template.GetAtoms() if a.GetSymbol() in _METAL_SET
+        }
+        moved = False
+        for m_idx in sorted(metal_indices):
+            m_atom = mol_template.GetAtomWithIdx(m_idx)
+            if m_atom.GetSymbol() not in _D8_SQ_METALS:
+                continue
+            donor_idxs = [nbr.GetIdx() for nbr in m_atom.GetNeighbors()
+                          if nbr.GetIdx() not in metal_indices and nbr.GetSymbol() != "H"]
+            if len(donor_idxs) != 4:           # square-planar flatten is defined for CN4 only
+                continue
+            m_pos = coords[m_idx]
+            V = np.array([coords[d] - m_pos for d in donor_idxs], dtype=float)
+            # best-fit plane THROUGH M (minimise sum((Di-M).n)^2): n = smallest right-singular vector.
+            try:
+                _u, _s, vh = np.linalg.svd(V, full_matrices=False)
+            except Exception:
+                continue
+            n = vh[-1]
+            nn = float(np.linalg.norm(n))
+            if nn < 1e-9:
+                continue
+            n = n / nn
+            # skip if already essentially planar (max out-of-plane below 0.30 A, the detector's cut)
+            oop = float(np.max(np.abs(V @ n)))
+            if oop <= 0.30:
+                continue
+            # BACKBONE-COUPLING GUARD: a chelate's donors share a backbone, so their BFS fragments
+            # OVERLAP -- moving them independently would multiply-shift the shared atoms and wreck the
+            # ligand.  Only flatten when the 4 donor fragments are pairwise DISJOINT (monodentate
+            # donors).  Chelate d8 centres are left untouched (a rigid-body flatten is invariant; they
+            # need a backbone-aware embed-level fix, not this).
+            frags = [set(_bfs_ligand_fragment(mol_template, d, metal_indices)) for d in donor_idxs]
+            _union = set()
+            _overlap = False
+            for fr in frags:
+                if _union & fr:
+                    _overlap = True
+                    break
+                _union |= fr
+            if _overlap:
+                continue
+            for d, fr in zip(donor_idxs, frags):
+                v = coords[d] - m_pos
+                L = float(np.linalg.norm(v))
+                if L < 1e-8:
+                    continue
+                v_in = v - float(np.dot(v, n)) * n          # project into the plane through M
+                Lin = float(np.linalg.norm(v_in))
+                if Lin < 1e-8:
+                    continue
+                v_new = v_in * (L / Lin)                     # preserve the M-D bond length exactly
+                delta = (m_pos + v_new) - coords[d]
+                for fi in fr:
+                    coords[fi] = coords[fi] + delta
+                moved = True
+        if not moved:
+            return xyz_delfin
+        out_lines = [
+            f"{sym:4s} {coords[i][0]:12.6f} {coords[i][1]:12.6f} {coords[i][2]:12.6f}"
+            for i, sym in enumerate(symbols)
+        ]
+        return "\n".join(out_lines) + "\n"
+    except Exception as exc:
+        logger.debug("d8 square-planar flatten failed: %s", exc)
+        return xyz_delfin
+
+
 def _md_distance_in_tolerance(
     mol,
     conf_id: int,
@@ -36193,6 +36298,14 @@ def _optimize_xyz_openbabel_safe(
     if (mol_template is not None and RDKIT_AVAILABLE
             and os.environ.get("DELFIN_FFFREE_METALLOID_MD_CLAMP", "0") == "1"):
         xyz_opt = _clamp_metalloid_md_xyz(xyz_opt, mol_template)
+
+    # d8 square-planar flatten (root fix): the ETKDG embed lifts a d8 CN4 metal out of its donor
+    # plane (SS-4 seesaw).  Project the (monodentate) donors into the plane through M so the centre is
+    # square-planar.  Runs before the checks below so they judge the flattened geometry.  Env-gated,
+    # default OFF -> byte-identical; chelate d8 centres are skipped (backbone-coupling guard inside).
+    if (mol_template is not None and RDKIT_AVAILABLE
+            and os.environ.get("DELFIN_FFFREE_D8_SQ_FLATTEN", "0") == "1"):
+        xyz_opt = _flatten_d8_sq_planar_xyz(xyz_opt, mol_template)
 
     # Fundamental check: UFF must not change the metal-donor connectivity.
     # If a donor drifted away or a non-donor collapsed onto the metal,
