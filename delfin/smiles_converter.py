@@ -24416,18 +24416,35 @@ def _flatten_d8_sq_planar_xyz(xyz_delfin: str, mol_template) -> str:
                 _union |= fr
             if _overlap:
                 continue
-            for d, fr in zip(donor_idxs, frags):
-                v = coords[d] - m_pos
-                L = float(np.linalg.norm(v))
-                if L < 1e-8:
-                    continue
-                v_in = v - float(np.dot(v, n)) * n          # project into the plane through M
-                Lin = float(np.linalg.norm(v_in))
-                if Lin < 1e-8:
-                    continue
-                v_new = v_in * (L / Lin)                     # preserve the M-D bond length exactly
-                delta = (m_pos + v_new) - coords[d]
-                for fi in fr:
+            # SQUARE REARRANGEMENT: place the 4 monodentate donors at ideal square-planar slots
+            # (0/90/180/270 deg) in the plane through M, preserving each M-D length.  Coplanarity
+            # alone leaves a tetrahedron coplanar-but-not-square; d8 CN4 must be SP-4 (90 deg spacing).
+            # Runs PRE-UFF so the downstream freeze (_build_coordination_constraints_from_xyz freezes
+            # monodentate donors at their positions) locks in the SQUARE, and UFF preserves it.
+            vecs = [coords[d] - m_pos for d in donor_idxs]
+            lens = [float(np.linalg.norm(v)) for v in vecs]
+            if min(lens) < 1e-8:
+                continue
+            e1_raw = vecs[0] - float(np.dot(vecs[0], n)) * n
+            if float(np.linalg.norm(e1_raw)) < 1e-8:
+                continue
+            e1 = e1_raw / float(np.linalg.norm(e1_raw))
+            e2 = np.cross(n, e1)
+            e2 = e2 / (float(np.linalg.norm(e2)) + 1e-15)
+            import math as _math
+            # BULKY-TRANS assignment: put the 2 largest donor fragments at a TRANS pair (0/180 deg,
+            # 180 deg apart) and the 2 smallest at the other trans pair (90/270).  A naive angle-sort
+            # can place two bulky ligands cis (90 deg) -> phenyl clash (real Pd(PPh3)2 is trans).
+            # Order by fragment size (desc) and map to [0, 180, 90, 270] so big<->big and small<->small
+            # are each trans.  Deterministic tie-break by donor index.
+            order = sorted(range(4), key=lambda i: (-len(frags[i]), donor_idxs[i]))
+            slots = [0.0, _math.pi, _math.pi / 2.0, 3.0 * _math.pi / 2.0]
+            for slot_rank, di in enumerate(order):
+                d = donor_idxs[di]
+                phi = slots[slot_rank]
+                v_ideal = lens[di] * (_math.cos(phi) * e1 + _math.sin(phi) * e2)
+                delta = (m_pos + v_ideal) - coords[d]
+                for fi in frags[di]:
                     coords[fi] = coords[fi] + delta
                 moved = True
         if not moved:
@@ -36253,6 +36270,16 @@ def _optimize_xyz_openbabel_safe(
     ``mol_template`` is available, mild OCO/aromatic planarity constraints
     are passed to OB-UFF.
     """
+    # d8 SQUARE-PLANAR seating (root fix): a d8 CN4 centre (Pd/Pt/Ni/Au/Rh/Ir) built by ETKDG comes
+    # out TETRAHEDRAL (UFF's default for CN4 has no square-planar knowledge).  Rearrange the 4
+    # monodentate donors to square-planar HERE -- BEFORE the constraint build below freezes the
+    # monodentate donors at their positions -- so the freeze locks in the SQUARE and UFF preserves it.
+    # (A post-UFF rearrange is undone: the freeze has already pinned the tetrahedron.)  Env-gated,
+    # default OFF -> byte-identical; chelate d8 centres are skipped (backbone-coupling guard inside).
+    if (mol_template is not None and RDKIT_AVAILABLE
+            and os.environ.get("DELFIN_FFFREE_D8_SQ_FLATTEN", "0") == "1"):
+        xyz_delfin = _flatten_d8_sq_planar_xyz(xyz_delfin, mol_template)
+
     constraints = coord_constraints
     if constraints is None and mol_template is not None:
         # Universal principle: EVERY UFF call on a metal complex gets
@@ -36298,14 +36325,6 @@ def _optimize_xyz_openbabel_safe(
     if (mol_template is not None and RDKIT_AVAILABLE
             and os.environ.get("DELFIN_FFFREE_METALLOID_MD_CLAMP", "0") == "1"):
         xyz_opt = _clamp_metalloid_md_xyz(xyz_opt, mol_template)
-
-    # d8 square-planar flatten (root fix): the ETKDG embed lifts a d8 CN4 metal out of its donor
-    # plane (SS-4 seesaw).  Project the (monodentate) donors into the plane through M so the centre is
-    # square-planar.  Runs before the checks below so they judge the flattened geometry.  Env-gated,
-    # default OFF -> byte-identical; chelate d8 centres are skipped (backbone-coupling guard inside).
-    if (mol_template is not None and RDKIT_AVAILABLE
-            and os.environ.get("DELFIN_FFFREE_D8_SQ_FLATTEN", "0") == "1"):
-        xyz_opt = _flatten_d8_sq_planar_xyz(xyz_opt, mol_template)
 
     # Fundamental check: UFF must not change the metal-donor connectivity.
     # If a donor drifted away or a non-donor collapsed onto the metal,
