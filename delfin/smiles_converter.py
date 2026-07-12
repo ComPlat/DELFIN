@@ -1529,12 +1529,12 @@ def _multihapto_etkdg_fallback_enabled(mol) -> bool:
     )
 
 
-def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
+def _apply_coord_angle_fix_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-13 Baustein 3 dispatch helper.
 
     Apply post-ETKDG/UFF coordination-angle correction to ``results`` if a
     metal is present, this is the outer (non dual-parse) call, and the
-    DELFIN_BAUSTEIN3 env-flag is set.  Fail-safe: any exception in the
+    DELFIN_FFFREE_COORD_ANGLE_FIX env-flag is set.  Fail-safe: any exception in the
     corrector returns ``results`` unchanged.
 
     Centralised here so every scaffold-path return point in
@@ -1542,7 +1542,7 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
     σ-hapto, multi hapto-hapto, fallback single-conformer) can share one
     insertion site without code drift.
 
-    Bit-exact when ``DELFIN_BAUSTEIN3=0`` (default).  No effect on results
+    Bit-exact when ``DELFIN_FFFREE_COORD_ANGLE_FIX=0`` (default).  No effect on results
     that contain no metal.  ``mol`` may be ``None`` — the underlying
     corrector operates on XYZ text only.
     """
@@ -1550,7 +1550,7 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
         return results
     if dual_parse_done:
         return results
-    if not _delfin_env_int("DELFIN_BAUSTEIN3", 0):
+    if not _delfin_env_int("DELFIN_FFFREE_COORD_ANGLE_FIX", 0):
         return results
     # Quick element scan — if no metal symbol appears in any result XYZ,
     # the corrector would no-op anyway.  Cheap pre-check avoids import
@@ -1599,7 +1599,7 @@ def _apply_5j_a_cp_piano_stool_if_enabled(mol, results, dual_parse_done: bool):
     ideal η⁵ piano-stool geometry, which makes the detector classify the
     ring as Cp (CN=5 polyhedron) instead of arene.
 
-    Insertion order: AFTER ``_apply_baustein3_if_enabled`` (B3 rotates
+    Insertion order: AFTER ``_apply_coord_angle_fix_if_enabled`` (B3 rotates
     donor X-side) and BEFORE ``_apply_baustein4_if_enabled`` (B4 then
     re-projects ring-attached H onto the post-snap ring plane).
 
@@ -30633,7 +30633,7 @@ def _smiles_to_xyz_isomers_impl(
                 pass
             if _n_metals_hapto <= 1:
                 # Iter-13: apply Baustein 3 to mono-hapto path (env-gated).
-                results_hapto = _apply_baustein3_if_enabled(
+                results_hapto = _apply_coord_angle_fix_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
                 # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
@@ -30650,7 +30650,7 @@ def _smiles_to_xyz_isomers_impl(
             # sampling would produce conformers with broken Cp rings.
             # Return the hapto results directly.
             # Iter-13: apply Baustein 3 to multi-metal hapto path (env-gated).
-            results_hapto = _apply_baustein3_if_enabled(
+            results_hapto = _apply_coord_angle_fix_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
             # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
@@ -30715,7 +30715,7 @@ def _smiles_to_xyz_isomers_impl(
         # Iter-13: apply Baustein 3 to fallback single-conformer path (env-gated).
         _fallback_results = [(xyz, '')]
         if has_metal:
-            _fallback_results = _apply_baustein3_if_enabled(
+            _fallback_results = _apply_coord_angle_fix_if_enabled(
                 None, _fallback_results, _dual_parse_done
             )
         # Iter-14: apply Baustein 4 (rigid-π H projection) — runs on metal
@@ -32379,7 +32379,7 @@ def _smiles_to_xyz_isomers_impl(
     # systems where rms = 0).
 
     # ── Iter-12/13 Baustein 3: post-ETKDG/UFF coord-angle correction ────────
-    # Per-conformer, opt-in via DELFIN_BAUSTEIN3=1.  No effect when disabled.
+    # Per-conformer, opt-in via DELFIN_FFFREE_COORD_ANGLE_FIX=1.  No effect when disabled.
     # Operates on already-finalised XYZs; rotates rigid X-side around the
     # axis perpendicular to (M, D, X) plane through D to bring observed
     # M-D-X angle to expected (sp/sp2/sp3 inferred geometrically).
@@ -32392,11 +32392,11 @@ def _smiles_to_xyz_isomers_impl(
     # deferring correction to the outer call (after union), all results pass
     # through one consistent correction step.
     #
-    # Iter-13: routed through ``_apply_baustein3_if_enabled`` so every
+    # Iter-13: routed through ``_apply_coord_angle_fix_if_enabled`` so every
     # scaffold-path return point shares the same gate (mono σ here, plus
     # mono hapto / multi-metal hapto / fallback above).
     if has_metal:
-        results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
+        results = _apply_coord_angle_fix_if_enabled(mol, results, _dual_parse_done)
 
     # ── Welle-5j Agent A: Cp piano-stool hapticity refinement ──────────────
     # Welle-5i Agent C catalogued 28 / 34 (83 %) hapto BROKEN-TO-BROKEN

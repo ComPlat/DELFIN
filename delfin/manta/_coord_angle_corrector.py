@@ -21,7 +21,7 @@ Universal properties:
 Doctrine:
     - Co-evolution safe (Iter-10): post-ETKDG/UFF, no embedding disturbance.
     - Diversity safe (Iter-11): per-conformer; n_frames invariant.
-    - Opt-in via DELFIN_BAUSTEIN3=1; bit-exact when disabled.
+    - Opt-in via DELFIN_FFFREE_COORD_ANGLE_FIX=1; bit-exact when disabled.
 """
 from __future__ import annotations
 
@@ -601,6 +601,37 @@ def _try_fix_one_violation(
         return False
     if M in side_X:
         return False
+
+    # Ring guard: a rigid rotation of side_X only preserves the rest's internal
+    # geometry if side_X attaches to the fixed part through EXACTLY one bond --
+    # the X-D pivot.  If 2+ bonds cross the side_X boundary, the pivot D-X lies
+    # inside a ring (an aromatic/chelate ligand ring), and rotating side_X about
+    # D deforms that ring: every gate here (clash, triangle-H, M-D) passes on a
+    # smooth ring bend, yet xyz2mol can no longer perceive the ring -> the input
+    # graph is not recovered (round-trip loss, e.g. OYUGAR's NHC ring).  UFF owns
+    # ring equilibrium; skip.  Universal (bond-topology only, no element list).
+    _cross = sum(1 for a in side_X for b in nbrs[a] if b not in side_X)
+    if _cross > 1:
+        return False
+
+    # Chelate/polydentate-donor guard: the corrector only owns FREE monodentate
+    # donors; a chelating donor's group is UFF's job.  D chelates iff the metal M
+    # has ANOTHER coordinated donor D' on the SAME ligand -- i.e. D' is reachable
+    # from D through the ligand graph WITHOUT passing through M.  The existing
+    # "side_X reaches a metal" guard misses this when the chelate ring is broken
+    # in the covalent adjacency: a bidentate nitrate/carboxylate's 2nd M-O is a
+    # long dative bond absent from nbrs, so the rotated side_X excludes the 2nd
+    # donor and never trips.  Yet rotating ANY part of that small rigid group
+    # (here just N + terminal O) distorts it while every M-D DISTANCE stays intact
+    # (M-D invariant passes) -> xyz2mol perception flips -> round-trip loss
+    # (NASQAB).  Detect via M-D snapshot (metal-distance geometry) + ligand
+    # connectivity (topology); universal, no element/SMILES list.
+    if pre_md_snapshot is not None:
+        _m_donors = {d for (m, d) in pre_md_snapshot.keys() if m == M and d != D}
+        if _m_donors:
+            _lig = _bfs_side_X(nbrs, D, {M})  # D's ligand, not crossing the metal
+            if any(dd in _lig for dd in _m_donors):
+                return False
 
     v_DM = pts[M] - pts[D]
     v_DX = pts[X] - pts[D]
