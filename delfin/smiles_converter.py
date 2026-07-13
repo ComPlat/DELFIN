@@ -26091,8 +26091,16 @@ def _generate_topological_isomers(
                     coord_c = None
                     if apply_uff:
                         try:
+                            _d8t = None
+                            if gn == 'SQ':                 # per-isomer trans from the enumerator (perm)
+                                try:
+                                    _tp = _TOPO_TRANS_POSITIONS.get(gn) or []
+                                    _d8t = [(donor_indices[pm[_p1]], donor_indices[pm[_p2]])
+                                            for (_p1, _p2) in _tp]
+                                except Exception:
+                                    _d8t = None
                             coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz0,
+                                mol, xyz0, d8_trans=_d8t,
                             )
                         except Exception:
                             pass
@@ -31205,6 +31213,19 @@ def _smiles_to_xyz_isomers_impl(
         if _det_select:
             fps_list.sort(key=lambda _f: _skey(seen_fps[_f][2], seen_fps[_f][1], _f))
         removed: set = set()
+        # RMSD must NOT override the chemistry-based coordination fingerprint.
+        # Every pair here has DISTINCT fingerprints (fps_list = seen_fps keys);
+        # when their base labels ALSO differ they are distinct coordination
+        # isomers (cis vs trans, fac vs mer, linkage isomers) and the current
+        # code still merges them if they happen to sit within 0.8 A -- but RMSD
+        # is an unreliable isomer-identity measure (distinct isomers can be
+        # geometrically close; the whole-space measurement showed distinct
+        # isomers merged at median 0.35 A, driving 58% of systems below their
+        # theoretical isomer count).  Env-gated (default-OFF = byte-identical):
+        # when set, cross-label merges are skipped entirely (and their expensive
+        # _conformer_rmsd call avoided -> faster), trusting the fingerprint;
+        # same-label conformer merging is unaffected (separate axis).
+        _fp_strict = _delfin_env_int("DELFIN_FFFREE_ISOMER_FP_STRICT", 0)
         for i in range(len(fps_list)):
             if i in removed:
                 continue
@@ -31215,6 +31236,8 @@ def _smiles_to_xyz_isomers_impl(
                     continue
                 _lj, cid_j, sj = seen_fps[fps_list[j]]
                 base_j = _base_label(_lj)
+                if _fp_strict and base_i != base_j:
+                    continue  # distinct isomers -> trust fingerprint, never RMSD-merge
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
                 # Same-label: aggressive merge (RMSD < 2.5 A) —
                 # these are supposed to be the same isomer anyway.
@@ -32167,6 +32190,30 @@ def _smiles_to_xyz_isomers_impl(
                     return 0.0
 
             scored: List[Tuple[float, float, float, str, str]] = []
+            # d8 CN4 square-planar rank preference (env-gated, default-OFF =
+            # byte-identical).  ROOT of the SS-4->SP-4 poly_match cluster: the
+            # bucket sort below is keyed on the UFF energy bucket FIRST, and
+            # UFF favours tetrahedral for d8, so the tetrahedral ETKDG conformer
+            # out-ranks the (correct, already-built) square-planar placement —
+            # even though _geometry_quality_score / _preferred_cn4_geometry_score
+            # already prefer SP-4 for these metals (the preference just never
+            # dominates the energy bucket).  When enabled, for systems bearing a
+            # d8 CN4 centre (Ni/Pd/Pt/Au — exactly the metals the CN4 scorer
+            # biases toward square) the geometry+topology score becomes the
+            # PRIMARY key, so the correct polyhedron wins; energy stays the
+            # tie-break.  Reorders frames only (never drops) -> isomer-complete
+            # by construction; the isomers_lost floor guards regardless.  No new
+            # per-frame geometry work (reuses g) -> construction stays fast.
+            _d8cn4_square = False
+            if _delfin_env_int("DELFIN_FFFREE_D8_RANK_PREFER", 0):
+                try:
+                    for _a in mol.GetAtoms():
+                        if (_a.GetSymbol() in {'Ni', 'Pd', 'Pt', 'Au'}
+                                and _a.GetDegree() == 4):
+                            _d8cn4_square = True
+                            break
+                except Exception:
+                    _d8cn4_square = False
             for xyz, lbl in results:
                 try:
                     cstr = _build_coordination_constraints_from_xyz(mol, xyz)
@@ -32227,6 +32274,9 @@ def _smiles_to_xyz_isomers_impl(
                 def _bucket_key(_t):
                     _e, _g, _tp, _x, _l = _t
                     _bucket = int((_e - e_min) / bucket_width)
+                    if _d8cn4_square:
+                        # Correct polyhedron (via g) dominates; energy tie-breaks.
+                        return (_g + _tp, _bucket, _e)
                     return (_bucket, _g + _tp, _e)
                 scored.sort(key=_bucket_key)
             if scored:
@@ -34921,8 +34971,16 @@ def _detect_chelate_donors(mol, metal_idx: int, donor_indices: List[int]) -> set
 def _build_coordination_constraints_from_xyz(
     mol_template,
     xyz_delfin: str,
+    d8_trans=None,
 ) -> Optional[Dict]:
     """Auto-detect metal coordination from template graph and pin it during UFF.
+
+    ``d8_trans`` (optional): the EXACT per-isomer trans donor-atom-index pairs
+    from the topology enumerator (perm + _TOPO_TRANS_POSITIONS['SQ']).  When
+    given and DELFIN_FFFREE_D8_SQ_ISO is on, the d8 square is imposed on THESE
+    pairs (authoritative — no geometric guessing), which rescues strained
+    macrocyclic frames the geometry alone cannot and cannot collapse isomers.
+    Default None -> geometry fallback (byte-identical when the flag is off).
 
     Unlike ``_build_coordination_uff_constraints`` (which needs explicit
     perm/geometry arguments from the topology enumerator), this function
@@ -35078,6 +35136,136 @@ def _build_coordination_constraints_from_xyz(
                                 base["angles"].append((_a, m_idx, _b, 90.0))
                 except Exception:
                     _d8_sq_angles = False
+            # d8 SQUARE-PLANAR, PERM path (env-gated DELFIN_FFFREE_D8_SQ_ISO): when the topology
+            # enumerator handed us the EXACT per-isomer trans pairs (perm + _TOPO_TRANS_POSITIONS['SQ']),
+            # impose the square on THOSE pairs -- authoritative, no geometric guessing.  This rescues the
+            # strained macrocyclic frames whose geometry alone is too ambiguous, and cannot collapse
+            # isomers (each isomer's OWN trans is imposed).  Sets _d8_sq_angles so the geometry fallback
+            # below is skipped (its `not _d8_sq_angles` guard).
+            if (not _d8_sq_angles and d8_trans
+                    and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
+                    and m_sym in _D8_SQ_METALS and len(donor_indices) == 4):
+                try:
+                    _dset = set(donor_indices)
+                    _pt = [(int(_a), int(_b)) for (_a, _b) in d8_trans
+                           if int(_a) in _dset and int(_b) in _dset]
+                    _flat = [_x for _pr in _pt for _x in _pr]
+                    if len(_pt) == 2 and len(set(_flat)) == 4:
+                        _trans_set = set()
+                        for (_a, _b) in _pt:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(4):
+                            for _jj in range(_ii + 1, 4):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True
+                except Exception:
+                    pass
+            # d8 SQUARE-PLANAR, ISOMER-PRESERVING (env-gated DELFIN_FFFREE_D8_SQ_ISO, default-OFF).
+            # ROOT fix for the D8_SQ_ANGLES isomer collapse: the plain pass pairs donors by geometric
+            # most-opposite, which on an AMBIGUOUS tetrahedral ETKDG frame guesses an arbitrary trans and
+            # forces cis and trans isomers into the SAME square (FONKOL/WIRFUA 2->1).  Instead: only impose
+            # the square when the frame ALREADY shows a CLEAR trans pair (largest L-M-L angle > 135 deg).
+            # That clear pair reflects the ISOMER's own arrangement (topology-builder SP-4 / seesaw carries
+            # it), so reinforcing it -- plus the second trans pair by elimination -- preserves cis vs trans
+            # and flattens seesaw -> square, WITHOUT guessing.  A purely tetrahedral frame (no angle > 135)
+            # is left untouched (it is a conformer, not a distinct isomer) so nothing collapses.
+            if (not _d8_sq_angles
+                    and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
+                    and m_sym in _D8_SQ_METALS and len(donor_indices) == 4):
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dn = {}
+                    for _di in donor_indices:
+                        _v = _np.array(coords[_di], dtype=float) - _mp
+                        _dn[_di] = _v / (float(_np.linalg.norm(_v)) + 1e-12)
+                    def _ang(_a, _b):
+                        _c = max(-1.0, min(1.0, float(_np.dot(_dn[_a], _dn[_b]))))
+                        return math.degrees(math.acos(_c))
+                    _d = list(donor_indices)
+                    # Global 3-way matching: the ONLY 3 ways to split 4 donors into 2 trans
+                    # pairs.  Pick the partition that best fits a square (2 trans ~180, 4 cis
+                    # ~90).  This reads the ISOMER's arrangement from the WHOLE frame geometry
+                    # (robust) instead of one greedy most-opposite pair (which collapsed cis/
+                    # trans) or a single >135 deg pair (which missed strained macrocycles).
+                    _parts = [((_d[0], _d[1]), (_d[2], _d[3])),
+                              ((_d[0], _d[2]), (_d[1], _d[3])),
+                              ((_d[0], _d[3]), (_d[1], _d[2]))]
+                    _cand = []
+                    for _p in _parts:
+                        (_a, _b), (_c, _e) = _p
+                        _t1, _t2 = _ang(_a, _b), _ang(_c, _e)
+                        _cr = (_ang(_a, _c), _ang(_a, _e), _ang(_b, _c), _ang(_b, _e))
+                        _dev = abs(180 - _t1) + abs(180 - _t2) + sum(abs(90 - _x) for _x in _cr)
+                        _cand.append((_dev, min(_t1, _t2), _p))
+                    _cand.sort(key=lambda t: t[0])
+                    _best_dev, _min_trans, _bestp = _cand[0]
+                    _runner_dev = _cand[1][0]
+                    # Impose the square ONLY when this partition is CLEARLY a square: both its
+                    # trans angles are open (>120 deg) AND it clearly beats the runner-up
+                    # (margin >30 deg-sum).  A truly tetrahedral frame has no clear winner
+                    # (small margin) -> left untouched (it is a conformer, not a distinct
+                    # isomer), so nothing collapses.  A strained-but-square macrocycle frame
+                    # DOES have a clear winner even at 120-135 deg -> rescued.
+                    if _min_trans > 120.0 and (_runner_dev - _best_dev) > 30.0:
+                        (_a, _b), (_c, _e) = _bestp
+                        base["angles"].append((_a, m_idx, _b, 180.0))
+                        base["angles"].append((_c, m_idx, _e, 180.0))
+                        _trans_set = {(_a, _b), (_b, _a), (_c, _e), (_e, _c)}
+                        for _ii in range(4):
+                            for _jj in range(_ii + 1, 4):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True           # reuse the donor-free UFF path below (no freeze)
+                except Exception:
+                    pass
+            # CN6 OCTAHEDRAL angle targets (env-gated DELFIN_FFFREE_CN6_OH_ANGLES, default-OFF).
+            # Analogue of the d8 CN4 SP-4 pass for CN6: ETKDG/UFF can leave an OH-preferring CN6 metal
+            # (Mo/W/Re/Ru/... -> _PREFERRED_CN6_GEOMETRY 'OH') as a TRIGONAL PRISM (whole-space measurement:
+            # 30 systems TPR-6 built, OC-6 in the crystal -- the biggest single poly_match defect, and
+            # UNLIKE d8 the frames are already VALID/topo-correct, just the wrong twist).  Give UFF octahedral
+            # 90/180 targets so it relaxes the twist TPR -> OC.  Isomer-safe: the 3 trans pairs are taken
+            # from THIS frame's own most-opposite donors (preserves fac/mer -- it's a twist correction, not
+            # a donor-arrangement change), and only imposed when all 3 are clearly trans (>120 deg; a valid
+            # TPR/OC frame sits at ~140-180, an ambiguous one does not -> skipped, nothing collapses).
+            if (not _d8_sq_angles
+                    and os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1"
+                    and len(donor_indices) == 6
+                    and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dn = {}
+                    for _di in donor_indices:
+                        _v = _np.array(coords[_di], dtype=float) - _mp
+                        _dn[_di] = _v / (float(_np.linalg.norm(_v)) + 1e-12)
+                    _rem = list(donor_indices)
+                    _tp6 = []
+                    _min_t6 = 999.0
+                    while len(_rem) >= 2:               # greedy: pair each donor with its most-opposite
+                        _a = _rem[0]
+                        _b = min(_rem[1:], key=lambda x: float(_np.dot(_dn[_a], _dn[x])))
+                        _cc = max(-1.0, min(1.0, float(_np.dot(_dn[_a], _dn[_b]))))
+                        _min_t6 = min(_min_t6, math.degrees(math.acos(_cc)))
+                        _tp6.append((_a, _b))
+                        _rem.remove(_a); _rem.remove(_b)
+                    if len(_tp6) == 3 and _min_t6 > 120.0:
+                        _trans_set = set()
+                        for (_a, _b) in _tp6:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(6):
+                            for _jj in range(_ii + 1, 6):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True           # reuse the donor-free UFF path below (no freeze)
+                except Exception:
+                    pass
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
                     continue
