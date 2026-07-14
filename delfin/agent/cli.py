@@ -251,6 +251,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
             return 1
         entries = _bm.audit_run(records)
         print(_bm.format_audit_report(entries))
+        _print_behavior_rates(_bm, records)
         return 0
 
     if action == "latest":
@@ -393,7 +394,129 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"avg-quality {s['avg_quality']:.1f}   "
           f"total ${s['total_cost_usd']:.4f}   "
           f"{s['total_duration_s']:.1f}s")
+    _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
+    return 0
+
+
+def _print_behavior_rates(_bm, records) -> None:
+    """Print per-behaviour parity rates for a run, if any task carried a
+    ``behavior:`` tag.  No-op for suites without behaviour tasks."""
+    rates = _bm.behavior_rates(records)
+    if not rates:
+        return
+    print("\nBehaviour rates (planning / scouting / verifying / asking):")
+    for flag in ("planned", "scouted", "verified", "asked"):
+        r = rates.get(flag)
+        if r:
+            print(f"  {flag:<9} {r['rate']:>4.0%}  (n={r['n']})")
+
+
+def cmd_bug(args: argparse.Namespace) -> int:
+    """Triage / watch the user bug-report archive (auto-analyse → Solved)."""
+    from . import bug_watcher as _bw
+    from . import bug_report as _br
+    action = getattr(args, "bug_action", "") or "ls"
+    archive_arg = getattr(args, "archive", "") or ""
+    archive = (Path(archive_arg).expanduser() if archive_arg
+               else _bw.resolve_watch_archive())
+
+    if action == "ls":
+        pending = _bw.find_unsolved(archive)
+        if not pending:
+            print(f"No un-triaged reports in {archive}")
+            return 0
+        for d in pending:
+            try:
+                rep = _br.load_report(d)
+            except Exception:
+                rep = {}
+            desc = str(rep.get("description") or "").replace(chr(10), " ")[:56]
+            print(f"  {d.name:<44} {str(rep.get('model', '?')):<22} {desc}")
+        print(f"\n{len(pending)} pending in {archive}")
+        return 0
+
+    if action == "triage":
+        name = getattr(args, "name", "") or ""
+        if name:
+            target = archive / name
+            if not (target / "report.json").exists():
+                print(f"ERROR: no report.json in {target}", file=sys.stderr)
+                return 2
+            targets = [target]
+        else:
+            targets = _bw.find_unsolved(archive)
+        if not targets:
+            print(f"No reports to triage in {archive}")
+            return 0
+        for d in targets:
+            print(f"→ analysing {d.name} …", flush=True)
+            t = _bw.triage_report(d)
+            if t.error:
+                print(f"  [ERROR] {t.error}")
+            else:
+                print(f"  [OK] {t.summary[:200].strip()}")
+                print(f"       triage → {d / 'triage.md'}"
+                      + ("  · fix → fix_proposal.patch" if t.has_fix else ""))
+        print("\nReports stay put (not solved yet). After you apply + verify "
+              "a fix, run `bug solve <name>` to move it to Solved.")
+        return 0
+
+    if action == "solve":
+        name = getattr(args, "name", "") or ""
+        target = archive / name
+        if not target.is_dir():
+            print(f"ERROR: no such report dir: {target}", file=sys.stderr)
+            return 2
+        dest = _bw.mark_solved(target, archive=archive)
+        if dest:
+            print(f"Moved → {dest}")
+            return 0
+        print(f"ERROR: could not move {target} (permissions?)", file=sys.stderr)
+        return 1
+
+    if action == "watch":
+        # Build an optional settings override for --archive / --interval.
+        settings = None
+        interval = int(getattr(args, "interval", 0) or 0)
+        if archive_arg or interval:
+            try:
+                from delfin.user_settings import load_settings
+                settings = load_settings() or {}
+            except Exception:
+                settings = {}
+            bw_cfg = settings.setdefault("agent", {}).setdefault("bug_watcher", {})
+            if archive_arg:
+                bw_cfg["archive_dir"] = str(archive)
+            if interval:
+                bw_cfg["interval_s"] = interval
+
+        if getattr(args, "once", False):
+            print(f"Triaging {archive} once …", flush=True)
+            results = _bw.run_once(archive=archive, settings=settings)
+            for t in results:
+                tag = "ERROR" if t.error else "OK"
+                print(f"  [{tag}] {t.report_name}: "
+                      f"{(t.error or t.summary)[:150].strip()}")
+            print(f"Done — {len(results)} report(s) triaged.")
+            return 0
+
+        cfg = _bw.watcher_settings(settings)
+        if not cfg["enabled"]:
+            print("bug_watcher is disabled (agent.bug_watcher.enabled=false). "
+                  "Enable it in Settings, or use `bug watch --once` / "
+                  "`bug triage`.")
+            return 2
+        if not _bw.acquire_pid_lock():
+            print("bug_watcher is already running (PID lock).")
+            return 3
+        try:
+            print(f"bug_watcher started (interval {cfg['interval_s']}s, "
+                  f"archive={archive}).")
+            return _bw.run_loop(settings=settings)
+        finally:
+            _bw.release_pid_lock()
+
     return 0
 
 
@@ -623,6 +746,50 @@ def build_parser() -> argparse.ArgumentParser:
     srch = sess_sub.add_parser("search", help="Grep across session chats")
     srch.add_argument("query")
     sess.set_defaults(func=cmd_session)
+
+    # bug — triage / watch the user bug-report archive (maintainer tool)
+    bug = sub.add_parser(
+        "bug",
+        help="Triage the bug-report archive: auto-analyse + propose a fix "
+             "(read-only; never moves to Solved automatically)",
+    )
+    bug_sub = bug.add_subparsers(dest="bug_action", required=False)
+
+    bug_ls = bug_sub.add_parser("ls", help="List un-triaged reports")
+    bug_ls.add_argument("--archive", default="",
+                        help="Archive dir (default: settings / ~/.delfin/agent_bugs)")
+    bug_ls.set_defaults(bug_action="ls")
+
+    bug_tri = bug_sub.add_parser(
+        "triage",
+        help="Analyse un-triaged reports + propose a fix (read-only; writes "
+             "triage.md + fix_proposal.patch; does NOT move to Solved)",
+    )
+    bug_tri.add_argument("name", nargs="?",
+                         help="Only this report dir (default: all pending)")
+    bug_tri.add_argument("--archive", default="")
+    bug_tri.set_defaults(bug_action="triage")
+
+    bug_solve = bug_sub.add_parser(
+        "solve",
+        help="Move a report to Solved/ (do this only AFTER the fix is "
+             "applied + verified)",
+    )
+    bug_solve.add_argument("name", help="Report dir name to mark solved")
+    bug_solve.add_argument("--archive", default="")
+    bug_solve.set_defaults(bug_action="solve")
+
+    bug_watch = bug_sub.add_parser(
+        "watch", help="Watcher daemon: poll archive + triage new reports",
+    )
+    bug_watch.add_argument("--interval", type=int, default=0,
+                           help="Poll seconds (default: settings interval_s)")
+    bug_watch.add_argument("--once", action="store_true",
+                           help="One pass then exit (no daemon loop)")
+    bug_watch.add_argument("--archive", default="")
+    bug_watch.set_defaults(bug_action="watch")
+
+    bug.set_defaults(func=cmd_bug, bug_action="ls")
 
     return p
 
