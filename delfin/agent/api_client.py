@@ -788,6 +788,23 @@ _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
 )
 
+# Shell-executing MCP tools (by their un-namespaced base name). An MCP
+# backend such as KIT-Toolbox exposes ``mcp__kit-coding__bash``, which runs
+# the command REMOTELY and therefore never reaches the native bash executor
+# — bypassing the deny-list, secret/egress scan, and confirm/head-less gate.
+# Any MCP tool whose base name is in this set is routed through the SAME bash
+# content-gate before it is forwarded (see ``_gate_mcp_tool``). Kept
+# conservative — only unmistakable shell executors — so ordinary MCP tools
+# (read_file, search, …) are never touched.
+_MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
+    "bash", "bash_background", "shell", "sh",
+    "run", "run_command", "run_bash", "exec", "execute",
+})
+# Argument keys an MCP shell tool may carry the command under. The verified
+# key for ``mcp__kit-coding__bash`` is ``command``; the others cover common
+# MCP-server conventions so a differently-named shell tool is still gated.
+_MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
+
 
 # DELFIN-only tool names. Filtered out of the advertised tool list when
 # the workspace isn't a DELFIN repo, so generic projects don't see a
@@ -4597,6 +4614,50 @@ class _DocToolExecutor:
 
         return None
 
+    def _gate_mcp_tool(
+        self, name: str, args: dict, perms: Optional["KitToolPermissions"]
+    ) -> Optional[str]:
+        """Apply the native bash content-gate to shell-executing MCP tools.
+
+        MCP tools (``mcp__<server>__<tool>``) are dispatched straight to the
+        remote server, bypassing ``_run_permission_gate``. When the tool is a
+        shell (``mcp__kit-coding__bash`` etc.) that lets a model run arbitrary
+        commands — ``git push``, ``rm -rf``, secret reads, data exfiltration —
+        with none of the safety checks the native ``bash`` tool enforces. This
+        remaps such a call onto the bash gate so the deny-list, secret/egress
+        scan and confirm/head-less policy apply identically.
+
+        Returns an error string to BLOCK the call, or None to allow it.
+        Non-shell MCP tools are never gated here (returns None immediately),
+        so ordinary MCP tools keep their existing behaviour untouched.
+        """
+        if not isinstance(name, str) or not name.startswith("mcp__"):
+            return None
+        base = name.rsplit("__", 1)[-1]
+        if base not in _MCP_BASH_TOOL_BASES:
+            return None
+        cmd = ""
+        if isinstance(args, dict):
+            for key in _MCP_BASH_CMD_KEYS:
+                val = args.get(key)
+                if isinstance(val, str) and val.strip():
+                    cmd = val
+                    break
+        # A shell tool we can't read the command from — leave dispatch to the
+        # server rather than mis-gating an unknown payload (conservative).
+        if not cmd:
+            return None
+        if perms is None:
+            _record_security_event("mcp_bash_no_perms", name, cmd[:80],
+                                   blocked=True)
+            return (
+                f"'{name}' executes shell commands but no permissions are "
+                "configured, so it is refused."
+            )
+        # Reuse the bash gate verbatim: same deny-list, secret/egress scan,
+        # auto-allow, and confirm/head-less block as the native bash tool.
+        return self._run_permission_gate("bash", {**args, "command": cmd}, perms)
+
     def _build_change_preview(
         self, name: str, args: dict, resolved_path: Optional[Path]
     ) -> str:
@@ -7542,15 +7603,25 @@ class OpenAIClient(_BaseClient):
                                 "error": f"subagent failed: {exc}"
                             })
                     elif is_mcp:
-                        try:
-                            from . import mcp_client as _mcp
-                            _ws = (self._permissions.workspace
-                                   if self._permissions else None)
-                            result = _mcp.get_registry(_ws).call(fn_name, fn_args)
-                        except Exception as exc:
-                            result = json.dumps({
-                                "error": f"MCP dispatch failed: {exc}"
-                            })
+                        # Shell-executing MCP tools (mcp__kit-coding__bash …)
+                        # run REMOTELY and would bypass the native bash gate;
+                        # apply the same content-gate (deny-list, secret/egress
+                        # scan, confirm/head-less block) before forwarding.
+                        _mcp_block = _doc_executor._gate_mcp_tool(
+                            fn_name, fn_args, self._permissions)
+                        if _mcp_block is not None:
+                            result = json.dumps({"error": _mcp_block})
+                        else:
+                            try:
+                                from . import mcp_client as _mcp
+                                _ws = (self._permissions.workspace
+                                       if self._permissions else None)
+                                result = _mcp.get_registry(_ws).call(
+                                    fn_name, fn_args)
+                            except Exception as exc:
+                                result = json.dumps({
+                                    "error": f"MCP dispatch failed: {exc}"
+                                })
                     elif is_mcp_meta:
                         try:
                             from . import mcp_client as _mcp
