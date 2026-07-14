@@ -1045,7 +1045,10 @@ or ask the user to run it manually. Then move on.
 
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
-- Don't push unless the user asks
+- **Commit or push only when the user asks — never commit unprompted.** Fixing or
+  changing a file is NOT a licence to commit it: make the change, leave it in the
+  working tree, and let the user decide when to commit. (Applies even in the user's
+  own project. Same rule as push, now also for commit.)
 - **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
   with a protected `main`)? First READ the context** — is this a git repo at all, and is
   it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
@@ -1056,7 +1059,8 @@ or ask the user to run it manually. Then move on.
   **Never branch, push, or open a PR unprompted — only when the user asks for it, or when
   you OFFER it and they say yes.** This does NOT apply to a non-git folder or to the
   user's OWN project / encapsulated build — there, work normally (committing to `main` is
-  fine). Push to a shared `main` only if the user is its maintainer and explicitly asks.
+  fine **once the user asks you to commit**; never commit unprompted). Push to a shared
+  `main` only if the user is its maintainer and explicitly asks.
 
 ## Dashboard access
 
