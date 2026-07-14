@@ -128,7 +128,7 @@ def _format_action(name: str, tool_input) -> str:
 def _running_update(sa_id: str, entry: dict | None) -> None:
     """Maintain the live per-subagent status file (entry=None removes).
 
-    File-based so the dashboard can render a Claude-Code-style live drill-down
+    File-based so the dashboard can render a live drill-down
     (name · task · steps · status) without sharing memory with the worker
     thread."""
     try:
@@ -159,7 +159,7 @@ def read_running() -> dict:
     return out
 
 
-# Finished-subagent sessions (Claude-Code SendMessage analog): each run
+# Finished-subagent sessions (resume-by-id): each run
 # persists its conversation so a later ``resume_id`` call can continue
 # the same subagent with its context intact.
 _SESSIONS_DIR = Path.home() / ".delfin" / "subagent_sessions"
@@ -763,7 +763,7 @@ def run_subagent(
     _sa_actions: list[str] = []
     # Rich live transcript (text the subagent writes + tool calls with brief
     # in/out) so the dashboard can let you "go INTO" a running subagent and
-    # watch its activity in the chat window, Claude-Code style.
+    # watch its activity in the chat window.
     _sa_transcript: list = []
     _sa_text_buf: list[str] = []
 
@@ -894,7 +894,7 @@ def run_subagent(
         error = "sub-agent returned no text"
     elapsed_s = time.monotonic() - t0
     # Persist the conversation so the parent can resume this subagent
-    # later via ``resume_id`` (Claude-Code SendMessage analog). Store the
+    # later via ``resume_id`` (resume-by-id). Store the
     # LOGICAL conversation (clean user/assistant turns) + the tool
     # interactions WITH outputs, accumulating across resumes — decoupled
     # from the recap-laden ``messages`` actually sent to the model.

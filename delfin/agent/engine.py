@@ -1,4 +1,4 @@
-"""DELFIN Agent Engine: orchestrates Claude conversations with role-based prompts."""
+"""DELFIN Agent Engine: orchestrates model conversations with role-based prompts."""
 
 from __future__ import annotations
 

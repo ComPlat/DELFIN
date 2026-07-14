@@ -2,7 +2,7 @@
 
 The BM25 memory recall (``memory_store.format_memory_context``) already
 injects relevant facts into every turn — but nothing ever FED it
-automatically.  This module closes that loop, Claude-Code-style: when a
+automatically.  This module closes that loop automatically: when a
 session ends (new/loaded session) one cheap LLM turn extracts the few
 facts worth keeping across sessions (user preferences, project
 constraints, recurring failure→fix pairs) and stores them.
@@ -187,8 +187,8 @@ def distill_and_save(
 
     Respects the opt-in unless ``force=True`` (the manual /memorize).
     Skips trivially short sessions. Never raises. When ``repo_root`` is given
-    the facts land in the typed project-memory store (recalled like Claude
-    Code's memory); otherwise the legacy flat store.
+    the facts land in the typed project-memory store (recalled by the
+    prompt loader each turn); otherwise the legacy flat store.
     """
     try:
         cfg = auto_memory_settings(settings)

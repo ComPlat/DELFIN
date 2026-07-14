@@ -34,7 +34,7 @@ def _auto_install(package: str, pip_spec: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 class StreamEvent:
-    """A single event from a streaming Claude response."""
+    """A single event from a streaming model response."""
 
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
@@ -4435,7 +4435,7 @@ class _DocToolExecutor:
         if name in ("write_file", "edit_file", "multi_edit"):
             # Tolerate the `file_path` / `filename` / … aliases here too — the
             # permission gate runs BEFORE the executor, so reading only `path`
-            # rejected a model that used `file_path` (Claude-Code convention)
+            # rejected a model that used `file_path` (a common tool-arg convention)
             # with "path is required", even though the executor itself accepts
             # it (bug 2026-06-25: qwen on KIT fell back to bash heredoc writes).
             path_arg = self._get_path_arg(args)
@@ -5990,7 +5990,7 @@ class _DocToolExecutor:
         # Only pass resume_from when set — externally attached runners
         # (tests, custom embeddings) may predate the parameter.
         _resume_kw = {"resume_from": resume_id} if resume_id else {}
-        # Background mode (Claude-Code-style): spawn the subagent on a
+        # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
         # (running registry + telemetry); limits still apply per child.
@@ -6612,8 +6612,8 @@ def _is_transient_api_error(exc: Exception) -> bool:
 
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
-    pool so a multi-subagent turn runs concurrently (Claude-Code-style
-    parallel fan-out).
+    pool so a multi-subagent turn runs concurrently (parallel
+    fan-out).
 
     Returns ``(futures_by_id, executor)``.  When fewer than two subagent
     calls are present, returns ``({}, None)`` so the caller's sequential
@@ -7390,7 +7390,7 @@ class OpenAIClient(_BaseClient):
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
 
-                # Parallel subagent fan-out (Claude-Code-style): when the
+                # Parallel subagent fan-out: when the
                 # model emits ≥2 `subagent` calls in ONE turn, run them
                 # concurrently instead of sequentially.  The sequential
                 # loop below resolves each future in tc_list order, so

@@ -4104,7 +4104,7 @@ def create_tab(ctx):
     status_line_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="4px 0 0 0"),
     )
-    # Claude-Code-style subagent panel: live (running) + recent (telemetry).
+    # Subagent panel: live (running) + recent (telemetry).
     subagent_panel_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="2px 0 0 0"),
     )
@@ -4119,7 +4119,7 @@ def create_tab(ctx):
             import time as _t
             running = read_running()
             # Each RUNNING subagent is an expandable block (open by default)
-            # showing its live steps (read/write/bash …) — the Claude-Code-style
+            # showing its live steps (read/write/bash …) — the live
             # drill-down the user asked for ("man sieht nicht was die machen").
             # COMPACT one-liners only — the full per-step activity (and the noisy
             # tool names) now lives in the "• Subagent" drill-in chips above, so
@@ -8657,7 +8657,7 @@ def create_tab(ctx):
             return True
 
         if cmd.startswith("/loop"):
-            # Recurring agent loop (like Claude Code's /loop): re-run a prompt
+            # Recurring agent loop: re-run a prompt
             # on a fixed interval via the scheduler — the existing fire-callback
             # injects the prompt as a turn each time.
             from delfin.agent import scheduler as _sch_mod
@@ -12625,7 +12625,7 @@ def create_tab(ctx):
                     # KIT-Toolbox emits MCP-style names ("mcp__kit-coding__
                     # edit_file"); strip the prefix so the renderer cascade
                     # below can match on the bare tool name and produce the
-                    # same diff-block UX as Claude CLI's Edit/Write tools.
+                    # same diff-block UX as the native edit/write tools.
                     if tool_name and tool_name.startswith("mcp__"):
                         parts = tool_name.split("__")
                         if len(parts) >= 3:
