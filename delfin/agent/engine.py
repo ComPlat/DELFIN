@@ -398,6 +398,11 @@ class AgentEngine:
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
         self._live_state: str = ""
+        # Project-directory pin: the dir of the FIRST project write this
+        # session. Re-injected every turn so the agent keeps writing there and
+        # doesn't drift into sibling folders over a long session (a framework
+        # guarantee, not a prompt nudge). Reset when the conversation resets.
+        self._project_dir: str = ""
 
         # Context engineering features (all opt-in, default off)
         self._context_tracker = None  # type: Any  # ContextUsageTracker
@@ -760,6 +765,53 @@ class AgentEngine:
             )
         return "\n".join(lines)
 
+    _MUTATE_TOOLS_FOR_PIN = frozenset({
+        "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    })
+
+    def _maybe_pin_project_dir(self, tool_name: str, tool_input: Any) -> None:
+        """Record the directory of the FIRST project write this session so the
+        prompt can re-pin the agent there every turn (anti-drift). First write
+        wins; never overwritten until the conversation resets."""
+        if self._project_dir:
+            return
+        name = (tool_name.rsplit("__", 1)[-1]
+                if isinstance(tool_name, str) and tool_name.startswith("mcp__")
+                else tool_name)
+        if name not in self._MUTATE_TOOLS_FOR_PIN:
+            return
+        path = ""
+        try:
+            data = json.loads(tool_input) if isinstance(tool_input, str) else tool_input
+            if isinstance(data, dict):
+                path = str(data.get("file_path") or data.get("path")
+                           or data.get("notebook_path") or "")
+        except Exception:
+            m = re.search(r'"(?:file_path|path|notebook_path)"\s*:\s*"([^"]+)"',
+                          tool_input if isinstance(tool_input, str) else "")
+            path = m.group(1) if m else ""
+        path = path.strip().rstrip("/")
+        if not path:
+            return
+        # Directory of the first project write ("." == workspace root).
+        self._project_dir = path.rsplit("/", 1)[0] if "/" in path else "."
+
+    def _build_project_dir_block(self) -> str:
+        """High-salience per-turn reminder pinning the project to its first-write
+        directory — keeps a long session from drifting into sibling folders."""
+        d = self._project_dir
+        if not d:
+            return ""
+        if d == ".":
+            where, rule = ("the workspace ROOT",
+                           "keep writing this project's files at the workspace root")
+        else:
+            where, rule = (f"`{d}/`", f"put EVERY further file of this project under `{d}/`")
+        return (f"📁 PROJECT LOCATION (locked for this task): {where}. You already "
+                f"started the project here — {rule}. Do NOT create a sibling "
+                f"folder or switch to a different directory name mid-task; that "
+                f"splits the project and breaks imports/tests.")
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -786,6 +838,9 @@ class AgentEngine:
             # mode with their own budgets); the open-tasks reminder applies to
             # both interactive roles that drive the task list.
             if role == "solo_agent":
+                proj_block = self._build_project_dir_block()
+                if proj_block:
+                    extra_blocks.append(proj_block)
                 ctx_status = self._build_context_status_block()
                 if ctx_status:
                     extra_blocks.append(ctx_status)
@@ -1007,6 +1062,8 @@ class AgentEngine:
                     _turn_tool_calls += 1
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
+                    self._maybe_pin_project_dir(
+                        event.tool_name, event.tool_input)
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
 
@@ -2010,6 +2067,7 @@ class AgentEngine:
         if not preserve_messages:
             self.messages.clear()
             self.role_outputs.clear()
+            self._project_dir = ""   # new conversation → re-pin on first write
             self.compaction_summaries.clear()
             self.current_role_index = 0
             self.token_usage = {"input": 0, "output": 0, "cached": 0}

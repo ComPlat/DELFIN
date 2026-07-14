@@ -1467,3 +1467,26 @@ def test_reset_cycle_resets_outcome_cost_baseline(agent_tree, tmp_path, monkeypa
     engine.record_cycle_outcome(verdict="PASS", user_task="new task")
     outcomes = ot.load_outcomes(path=history, max_entries=10)
     assert outcomes[-1].cost_usd_delta == 1.5
+
+
+def test_project_dir_pin_first_write_wins_and_resets():
+    """Framework anti-drift: the engine pins the FIRST project-write directory
+    and re-injects it every turn; later writes don't move it; reset clears it."""
+    from delfin.agent.engine import AgentEngine
+    e = AgentEngine.__new__(AgentEngine)
+    e._project_dir = ""
+    e._maybe_pin_project_dir("mcp__kit-coding__write_file",
+                             '{"file_path": "greencalc/atoms.py"}')
+    assert e._project_dir == "greencalc"                 # pinned on first write
+    e._maybe_pin_project_dir("write_file", '{"file_path": "other/x.py"}')
+    assert e._project_dir == "greencalc"                 # first write wins
+    assert "greencalc/" in e._build_project_dir_block()
+    e._maybe_pin_project_dir("read_file", '{"file_path": "z/y.py"}')  # non-mutate
+    assert e._project_dir == "greencalc"                 # reads never pin
+    # root write pins "."
+    e2 = AgentEngine.__new__(AgentEngine); e2._project_dir = ""
+    e2._maybe_pin_project_dir("write_file", '{"file_path": "main.py"}')
+    assert e2._project_dir == "." and "ROOT" in e2._build_project_dir_block()
+    # no pin → no block
+    e3 = AgentEngine.__new__(AgentEngine); e3._project_dir = ""
+    assert e3._build_project_dir_block() == ""
