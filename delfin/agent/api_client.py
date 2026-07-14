@@ -7030,6 +7030,31 @@ class OpenAIClient(_BaseClient):
         except Exception:
             pass
 
+        # Surface the available skills IN the `skill` tool description so the
+        # agent knows which curated playbooks it can invoke (mirrors the MCP
+        # resources/prompts listing above). Without this the model has a skill
+        # tool but no idea what skills exist, so it never uses them. Build a
+        # fresh dict — never mutate the shared _DOC_TOOLS_OPENAI.
+        try:
+            from .skills import discover_skills as _disc_skills
+            _ws_sk = self._permissions.workspace if self._permissions else None
+            _skills = _disc_skills(_ws_sk)
+            if _skills:
+                _listing = "; ".join(
+                    s.name + (f" — {s.description[:70]}" if s.description else "")
+                    for s in _skills[:40]
+                )
+                advertised_tools = [
+                    ({**t, "function": {
+                        **t["function"],
+                        "description": (t["function"].get("description", "")
+                                        + f"\nAvailable skills: {_listing}"),
+                    }} if t.get("function", {}).get("name") == "skill" else t)
+                    for t in advertised_tools
+                ]
+        except Exception:
+            pass
+
         # No-native-tools gate (defence-in-depth behind the dashboard/CLI
         # preflight): a model with no native tool support would only choke on
         # the tool schema and leak malformed calls. Suppress tool advertising
