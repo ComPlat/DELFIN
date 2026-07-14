@@ -26188,6 +26188,35 @@ def _generate_topological_isomers(
                                         (cf, pm, gn, xyz0, coord_c_sq, _variant_counter[_key] - 1))
                         except Exception:
                             pass
+                    # ADDITIVE CN6 OCTAHEDRON (DELFIN_FFFREE_CN6_OH_ADD, default off -> byte-identical).  Same
+                    # self-contained-additive pattern as the d8 SP-4 above, for the biggest poly cluster
+                    # (TPR-6 built, OC-6 in the crystal).  The PRIMARY frame is the NORMAL build; a UFF-OC
+                    # octahedron (force_cn6_oh, on THIS isomer's OWN enumerator trans axes -> fac/mer-safe) is
+                    # added as a PURELY ADDITIVE sibling.  Never REPLACES the frame, so a TPR isomer keeps its
+                    # valid frame while the OC twist-corrected frame is added -> no isomer collapse (the old
+                    # CN6_OH_ANGLES replace collapsed TPR<->OC), and the crystal's OC is realised.
+                    if (apply_uff and gn == 'OH' and len(donor_indices) == 6
+                            and _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0)
+                            and len(_pre_uff_batch) + len(results) < _PRE_UFF_CAP):
+                        try:
+                            _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
+                            if _PREFERRED_CN6_GEOMETRY.get(_m_sym, 'OH') == 'OH':
+                                _oht = None                    # OH enumerator trans pairs for THIS isomer
+                                try:
+                                    _tp6 = _TOPO_TRANS_POSITIONS.get('OH') or []
+                                    _oht = [(donor_indices[pm[_p1]], donor_indices[pm[_p2]])
+                                            for (_p1, _p2) in _tp6]
+                                except Exception:
+                                    _oht = None
+                                coord_c_oh = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0, d8_trans=_oht, force_cn6_oh=True,
+                                )
+                                if coord_c_oh != coord_c:   # OC constraints differ from the primary
+                                    _variant_counter[_key] += 1
+                                    _pre_uff_batch.append(
+                                        (cf, pm, gn, xyz0, coord_c_oh, _variant_counter[_key] - 1))
+                        except Exception:
+                            pass
                     # Iter-8.5b INNER site 1 (template-loop): when the parent
                     # mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, take
                     # only the first successful template seed per perm
@@ -35067,6 +35096,8 @@ def _build_coordination_constraints_from_xyz(
     d8_trans=None,
     suppress_d8_sq: bool = False,
     force_d8_sq: bool = False,
+    suppress_cn6_oh: bool = False,
+    force_cn6_oh: bool = False,
 ) -> Optional[Dict]:
     """Auto-detect metal coordination from template graph and pin it during UFF.
 
@@ -35333,8 +35364,8 @@ def _build_coordination_constraints_from_xyz(
             # the octahedron on THIS isomer's own 3 trans axes -- no guessing -> preserves fac/mer/cis/trans
             # (fixes the isomer collapse the greedy fallback caused).  Sets _d8_sq_angles so the greedy
             # geometry fallback below is skipped.
-            if (not _d8_sq_angles and d8_trans
-                    and os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1"
+            if (not _d8_sq_angles and d8_trans and not suppress_cn6_oh
+                    and (os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1" or force_cn6_oh)
                     and len(donor_indices) == 6
                     and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
                 try:
@@ -35364,8 +35395,8 @@ def _build_coordination_constraints_from_xyz(
             # from THIS frame's own most-opposite donors (preserves fac/mer -- it's a twist correction, not
             # a donor-arrangement change), and only imposed when all 3 are clearly trans (>120 deg; a valid
             # TPR/OC frame sits at ~140-180, an ambiguous one does not -> skipped, nothing collapses).
-            if (not _d8_sq_angles
-                    and os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1"
+            if (not _d8_sq_angles and not suppress_cn6_oh
+                    and (os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1" or force_cn6_oh)
                     and len(donor_indices) == 6
                     and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
                 try:
