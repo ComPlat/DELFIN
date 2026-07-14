@@ -1696,6 +1696,34 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_stereocenter_enum_if_enabled(mol, results, dual_parse_done: bool):
+    """Stereocentre-fold completeness dispatch (env-gated DELFIN_STEREOCENTER_ENUM, default OFF).
+
+    ADDITIVELY appends every buildable coordination-created X-H stereocentre fold (both R and S at
+    each such donor — the completeness law) that the base manifold does not already contain, so the
+    eye's ``ccdc_isomer_realized`` hard floor (is the crystal's N-H fold present?) can go
+    FALSE->TRUE without ever dropping an existing frame.  Deterministic; bit-exact no-op when the
+    env-flag is unset or the structure has no metal-created X-H stereocentre.  Skipped on the inner
+    dual-parse call (matches the B3/B4 dispatch contract — the union dedup must see one consistent
+    frame set).  ``mol`` is unused (the corrector operates on XYZ text only, like Baustein 3).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    try:
+        from delfin.manta import _stereocenter_enum as _sc
+        if not _sc._is_enabled():
+            return results
+        return _sc.expand_results(results)
+    except Exception as _sc_exc:
+        try:
+            logger.debug("stereocentre-enum expansion skipped: %s", _sc_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_bond_decollapse_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-25 (2026-05-20) dispatch — final bond-decollapse corrector.
 
@@ -25059,9 +25087,17 @@ def _build_topology_xyz(
                 # cannot distort the octahedral/PBP/etc. cage even when
                 # it lacks force-field parameters for the metal.
                 coord_constraints = None
+                _perm_tr = None                 # exact per-isomer trans pairs (perm) -> no collapse
+                try:
+                    _tp = _TOPO_TRANS_POSITIONS.get(geometry) or []
+                    if _tp:
+                        _perm_tr = [(donor_atom_indices[perm[_p1]], donor_atom_indices[perm[_p2]])
+                                    for (_p1, _p2) in _tp]
+                except Exception:
+                    _perm_tr = None
                 try:
                     coord_constraints = _build_coordination_constraints_from_xyz(
-                        mol, xyz,
+                        mol, xyz, d8_trans=_perm_tr,
                     )
                 except Exception as cexc:
                     logger.debug(
@@ -25609,9 +25645,22 @@ def _build_topology_xyz_from_template(
             xyz_pre_uff = xyz
             try:
                 coord_constraints = None
+                # ARCHITECTURE (2026-07-13): hand the constraint builder the EXACT per-isomer trans
+                # donor pairs from THIS frame's perm (perm + _TOPO_TRANS_POSITIONS[geometry]).  The
+                # DELFIN_FFFREE_D8_SQ_ISO / CN6_OH_ANGLES passes then impose the correct polyhedron on
+                # each isomer's OWN arrangement (no geometric guessing) -> no isomer collapse.  Root fix
+                # for the whole poly cluster; None (non-SQ/OH geoms) = geometry fallback / byte-identical.
+                _perm_tr = None
+                try:
+                    _tp = _TOPO_TRANS_POSITIONS.get(geometry) or []
+                    if _tp:
+                        _perm_tr = [(donor_atom_indices[perm[_p1]], donor_atom_indices[perm[_p2]])
+                                    for (_p1, _p2) in _tp]
+                except Exception:
+                    _perm_tr = None
                 try:
                     coord_constraints = _build_coordination_constraints_from_xyz(
-                        mol, xyz,
+                        mol, xyz, d8_trans=_perm_tr,
                     )
                 except Exception:
                     pass
@@ -33105,6 +33154,19 @@ def _smiles_to_xyz_isomers_impl(
     except Exception:
         pass
 
+    # --- Stereocentre-fold completeness (env-flag gated, default OFF) --------
+    # Coordination-created X-H stereocentres (secondary amine [NH+] / P-H …) have an up/down
+    # N-H fold (R/S) that ETKDG only samples by accident -> the crystal's fold (USEMOW's
+    # alternating N1+N1-N1+N1-) is often MISSING even when the polyhedron + coordination
+    # isomers are perfect (eye: ccdc_isomer_realized=FALSE under DELFIN_EYE_NH_STEREO).  This
+    # pass ADDITIVELY appends every buildable fold -- both + and - at each such donor
+    # (completeness law) -- so the crystal's fold AND all other feasible folds enter the
+    # manifold.  Runs AFTER the final dedup so folds (heavy-atom-close to their base) are never
+    # collapsed, and BEFORE the rotamer/conformer expansions so each fold gets conformer
+    # diversity too.  Additive + deterministic -> never-worse by construction.  Bit-exact
+    # no-op when DELFIN_STEREOCENTER_ENUM=0 or no coordination-created X-H stereocentre exists.
+    results = _apply_stereocenter_enum_if_enabled(mol, results, _dual_parse_done)
+
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
     # For each emitted isomer, sample staggered rotamers around bulky single
     # bonds (tBu / PMe3 / iPr / NMe2 …) and append the top-K best-energy
@@ -35221,6 +35283,33 @@ def _build_coordination_constraints_from_xyz(
                                 if (_x, _y) not in _trans_set:
                                     base["angles"].append((_x, m_idx, _y, 90.0))
                         _d8_sq_angles = True           # reuse the donor-free UFF path below (no freeze)
+                except Exception:
+                    pass
+            # CN6 OCTAHEDRAL, PERM path (env-gated DELFIN_FFFREE_CN6_OH_ANGLES): the enumerator's EXACT
+            # per-isomer trans pairs (perm + _TOPO_TRANS_POSITIONS['OH'], threaded in via d8_trans) impose
+            # the octahedron on THIS isomer's own 3 trans axes -- no guessing -> preserves fac/mer/cis/trans
+            # (fixes the isomer collapse the greedy fallback caused).  Sets _d8_sq_angles so the greedy
+            # geometry fallback below is skipped.
+            if (not _d8_sq_angles and d8_trans
+                    and os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1"
+                    and len(donor_indices) == 6
+                    and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
+                try:
+                    _ds6 = set(donor_indices)
+                    _cand6 = [(int(_a), int(_b)) for (_a, _b) in d8_trans
+                              if int(_a) in _ds6 and int(_b) in _ds6]
+                    _fl6 = [_x for _pr in _cand6 for _x in _pr]
+                    if len(_cand6) == 3 and len(set(_fl6)) == 6:
+                        _trans_set = set()
+                        for (_a, _b) in _cand6:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(6):
+                            for _jj in range(_ii + 1, 6):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True
                 except Exception:
                     pass
             # CN6 OCTAHEDRAL angle targets (env-gated DELFIN_FFFREE_CN6_OH_ANGLES, default-OFF).

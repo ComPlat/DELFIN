@@ -284,6 +284,9 @@ _MANTA_CHAMPION_FLAGS = (
     "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
     "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
     "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
+    "STEREOCENTER_ENUM",  # #18 (2026-07-14): additive pnictogen X-H/X-R stereocentre-fold completeness
+                          # (crystal N-H fold no longer missing). never-worse full:120 gate, all floors 0,
+                          # byte-det. See cli_manta._CHAMPION_FLAGS + delfin/manta/_stereocenter_enum.py.
 )
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
 _MANTA_OPT_TOPN = 10

@@ -68,6 +68,16 @@ _CHAMPION_FLAGS = (
                           # it through UFF).  landed 2026-07-11 under the NOISE-BAND gate: champion+CLAMP
                           # vs champion never-worse BOTH directions, mean -0.204, 0 regressions, whole-
                           # pool byte-determinism 109/109 (TOCSAI needed per_timeout 1800, then identical)
+    "STEREOCENTER_ENUM",  # #18: coordination-created STEREOCENTRE completeness -- additively builds every
+                          # buildable +/- fold of a pnictogen (N/P/As/Sb/Bi) X-H or X-R stereocentre (the
+                          # metal locks the pyramidal inversion), so the crystal's N-H fold is no longer
+                          # missing.  Eye: ccdc_isomer_realized false->true (USEMOW [..N+N-N+N-], OFAJOV).
+                          # landed 2026-07-14, complete eye+battery gate (NO mogul, per user), full:120
+                          # never-worse: cap/build/poly/isomers/roundtrip/realism/battery/good_regr ALL 0,
+                          # 0 ccdc-breaks, mean_delta ~0, whole-pool byte-determinism 108/108 (TOCSAI a
+                          # no-op timeout).  Additive+deterministic; scoped to group-15 (O/C are NOT stable
+                          # centres and broke the ccdc floor when included -> restricted).  Impl:
+                          # delfin/manta/_stereocenter_enum.py; env DELFIN_(FFFREE_)STEREOCENTER_ENUM.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
