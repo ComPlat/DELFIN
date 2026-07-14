@@ -26124,8 +26124,13 @@ def _generate_topological_isomers(
         # step (otherwise all puckers share the CF label and only the
         # best-scoring one survives).
         _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
+        # PURELY-ADDITIVE d8/CN6 poly siblings (D8_SQ_ADD/CN6_OH_ADD) must NOT crowd the ISOMER budget
+        # out (completeness heilig): count them so the _PRE_UFF_CAP break below sees only the PRIMARY
+        # frames.  Without this the OC/SP-4 siblings filled the cap and the isomer loop broke early
+        # (measured: VOYWUD 6->5 isomers).  The siblings are bounded (<=1 per OC/SQ isomer).
+        _n_add_sib = 0
         for cf, pm in feasible_isomers:
-            if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+            if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                 break
             gn = cf[0]
             # Iterate ALL template conformer CIDs (not break on first):
@@ -26134,7 +26139,7 @@ def _generate_topological_isomers(
             # identical outputs deterministically.
             try:
                 for _tc in topo_template_cids:
-                    if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                    if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                         break
                     xyz0 = _build_topology_xyz(
                         mol, metal_idx, donor_indices, pm, gn,
@@ -26175,7 +26180,7 @@ def _generate_topological_isomers(
                     # a d8-no-valid system GAINS its valid SP-4 frame.  Topology gate culls a clashing SP-4.
                     if (apply_uff and gn == 'SQ' and len(donor_indices) == 4
                             and _delfin_env_int("DELFIN_FFFREE_D8_SQ_ADD", 0)
-                            and len(_pre_uff_batch) + len(results) < _PRE_UFF_CAP):
+                            and len(_pre_uff_batch) + len(results) - _n_add_sib < _PRE_UFF_CAP):
                         try:
                             _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
                             if _m_sym in _D8_SQ_ISO_METALS:
@@ -26186,6 +26191,7 @@ def _generate_topological_isomers(
                                     _variant_counter[_key] += 1
                                     _pre_uff_batch.append(
                                         (cf, pm, gn, xyz0, coord_c_sq, _variant_counter[_key] - 1))
+                                    _n_add_sib += 1         # additive -> does not count vs the isomer cap
                         except Exception:
                             pass
                     # ADDITIVE CN6 OCTAHEDRON (DELFIN_FFFREE_CN6_OH_ADD, default off -> byte-identical).  Same
@@ -26197,7 +26203,7 @@ def _generate_topological_isomers(
                     # CN6_OH_ANGLES replace collapsed TPR<->OC), and the crystal's OC is realised.
                     if (apply_uff and gn == 'OH' and len(donor_indices) == 6
                             and _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0)
-                            and len(_pre_uff_batch) + len(results) < _PRE_UFF_CAP):
+                            and len(_pre_uff_batch) + len(results) - _n_add_sib < _PRE_UFF_CAP):
                         try:
                             _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
                             if _PREFERRED_CN6_GEOMETRY.get(_m_sym, 'OH') == 'OH':
@@ -26215,6 +26221,7 @@ def _generate_topological_isomers(
                                     _variant_counter[_key] += 1
                                     _pre_uff_batch.append(
                                         (cf, pm, gn, xyz0, coord_c_oh, _variant_counter[_key] - 1))
+                                    _n_add_sib += 1         # additive -> does not count vs the isomer cap
                         except Exception:
                             pass
                     # Iter-8.5b INNER site 1 (template-loop): when the parent
