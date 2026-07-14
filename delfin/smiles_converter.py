@@ -26166,28 +26166,26 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
-                    # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical): the
-                    # SP-4 imposition above (D8_SQ_ISO) REPLACES this isomer's frame with a square, which
-                    # RESCUES the d8-no-valid systems but CLASHES bulky ligands (an existing frame degrades
-                    # -> broken_regressed/cap_lost).  Instead of choosing, emit BOTH: keep the SP-4 frame
-                    # (rescue) AND add its TETRAHEDRAL sibling (suppress_d8_sq) from the SAME seed.  Purely
-                    # additive -> the downstream topology gate culls whichever clashes, so a bulky system
-                    # keeps its valid tetrahedral frame while a rescue system keeps its valid SP-4 frame.
-                    if (apply_uff and coord_c is not None and gn == 'SQ'
+                    # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical).  ONE
+                    # self-contained axis: the PRIMARY frame above is the NORMAL (tetrahedral) build, and a
+                    # UFF-SP-4 square is added as a PURELY ADDITIVE sibling from the SAME seed (force_d8_sq,
+                    # independent of DELFIN_FFFREE_D8_SQ_ISO).  Never touches the primary -> a bulky ligand
+                    # that clashes under SP-4 keeps its valid tetrahedral primary (NO broken_regressed -- the
+                    # earlier "REPLACE the frame with SP-4" cost HAKQES a frame: +1 broken, +0 frames), while
+                    # a d8-no-valid system GAINS its valid SP-4 frame.  Topology gate culls a clashing SP-4.
+                    if (apply_uff and gn == 'SQ' and len(donor_indices) == 4
                             and _delfin_env_int("DELFIN_FFFREE_D8_SQ_ADD", 0)
-                            and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
-                            and len(donor_indices) == 4
                             and len(_pre_uff_batch) + len(results) < _PRE_UFF_CAP):
                         try:
                             _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
                             if _m_sym in _D8_SQ_ISO_METALS:
-                                coord_c_tet = _build_coordination_constraints_from_xyz(
-                                    mol, xyz0, d8_trans=_d8t, suppress_d8_sq=True,
+                                coord_c_sq = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0, d8_trans=_d8t, force_d8_sq=True,
                                 )
-                                if coord_c_tet != coord_c:   # SP-4 actually changed the constraints
+                                if coord_c_sq != coord_c:   # SP-4 constraints differ from the primary
                                     _variant_counter[_key] += 1
                                     _pre_uff_batch.append(
-                                        (cf, pm, gn, xyz0, coord_c_tet, _variant_counter[_key] - 1))
+                                        (cf, pm, gn, xyz0, coord_c_sq, _variant_counter[_key] - 1))
                         except Exception:
                             pass
                     # Iter-8.5b INNER site 1 (template-loop): when the parent
@@ -35068,6 +35066,7 @@ def _build_coordination_constraints_from_xyz(
     xyz_delfin: str,
     d8_trans=None,
     suppress_d8_sq: bool = False,
+    force_d8_sq: bool = False,
 ) -> Optional[Dict]:
     """Auto-detect metal coordination from template graph and pin it during UFF.
 
@@ -35079,10 +35078,14 @@ def _build_coordination_constraints_from_xyz(
     Default None -> geometry fallback (byte-identical when the flag is off).
 
     ``suppress_d8_sq`` (default False): force the d8 SP-4 imposition OFF for this
-    call even when DELFIN_FFFREE_D8_SQ_ISO is on.  Used by the ADDITIVE d8 pass
-    (DELFIN_FFFREE_D8_SQ_ADD) to build the TETRAHEDRAL sibling constraints next to
-    the SP-4 ones, so a bulky ligand that clashes under SP-4 keeps a valid,
-    un-squared frame (completeness heilig; the SP-4 frame is purely additive).
+    call even when DELFIN_FFFREE_D8_SQ_ISO is on.
+
+    ``force_d8_sq`` (default False): impose the d8 SP-4 square for THIS call even when
+    DELFIN_FFFREE_D8_SQ_ISO is off.  Used by the ADDITIVE d8 pass (DELFIN_FFFREE_D8_SQ_ADD)
+    so the whole feature is ONE self-contained axis: the primary frame is the normal
+    (tetrahedral) build and the SP-4 frame is added as a PURELY ADDITIVE sibling.  A bulky
+    ligand that clashes under SP-4 keeps its valid tetrahedral primary (never a regression);
+    a d8-no-valid system gains its valid SP-4 frame.  suppress overrides force.
 
     Unlike ``_build_coordination_uff_constraints`` (which needs explicit
     perm/geometry arguments from the topology enumerator), this function
@@ -35245,7 +35248,7 @@ def _build_coordination_constraints_from_xyz(
             # isomers (each isomer's OWN trans is imposed).  Sets _d8_sq_angles so the geometry fallback
             # below is skipped (its `not _d8_sq_angles` guard).
             if (not _d8_sq_angles and d8_trans and not suppress_d8_sq
-                    and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
+                    and (os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1" or force_d8_sq)
                     and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
                 try:
                     _dset = set(donor_indices)
@@ -35275,7 +35278,7 @@ def _build_coordination_constraints_from_xyz(
             # and flattens seesaw -> square, WITHOUT guessing.  A purely tetrahedral frame (no angle > 135)
             # is left untouched (it is a conformer, not a distinct isomer) so nothing collapses.
             if (not _d8_sq_angles and not suppress_d8_sq
-                    and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
+                    and (os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1" or force_d8_sq)
                     and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
                 try:
                     import numpy as _np
