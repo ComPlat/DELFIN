@@ -805,6 +805,24 @@ _MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
 # MCP-server conventions so a differently-named shell tool is still gated.
 _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 
+# File-mutating MCP tools mapped to the native tool whose permission gate
+# governs them. Like the shell tools above, these dispatch straight to the
+# remote server and would otherwise bypass the write gate (sandbox +
+# read-only/self-mod-guard/calc-confirm). Verified from traces that the KIT
+# backend exposes them with the SAME arg shape as the native tools
+# (write_file→path/content, edit_file→path/old_string/new_string,
+# multi_edit→path/edits, notebook_edit→path/cell_idx/source) and that they
+# operate on the same local workspace paths, so the native path-based gate
+# applies unchanged. notebook_edit reuses edit_file's gate — exactly as the
+# native dispatch does. apply_patch is deliberately absent: it gates itself
+# inside its own executor, not via ``_run_permission_gate``.
+_MCP_WRITE_GATE_MAP: dict[str, str] = {
+    "write_file": "write_file",
+    "edit_file": "edit_file",
+    "multi_edit": "multi_edit",
+    "notebook_edit": "edit_file",
+}
+
 
 # DELFIN-only tool names. Filtered out of the advertised tool list when
 # the workspace isn't a DELFIN repo, so generic projects don't see a
@@ -4617,46 +4635,67 @@ class _DocToolExecutor:
     def _gate_mcp_tool(
         self, name: str, args: dict, perms: Optional["KitToolPermissions"]
     ) -> Optional[str]:
-        """Apply the native bash content-gate to shell-executing MCP tools.
+        """Apply the native permission gate to side-effecting MCP tools.
 
         MCP tools (``mcp__<server>__<tool>``) are dispatched straight to the
-        remote server, bypassing ``_run_permission_gate``. When the tool is a
-        shell (``mcp__kit-coding__bash`` etc.) that lets a model run arbitrary
-        commands — ``git push``, ``rm -rf``, secret reads, data exfiltration —
-        with none of the safety checks the native ``bash`` tool enforces. This
-        remaps such a call onto the bash gate so the deny-list, secret/egress
-        scan and confirm/head-less policy apply identically.
+        remote server, bypassing ``_run_permission_gate``. Two families let a
+        model reach past the sandbox that way:
 
-        Returns an error string to BLOCK the call, or None to allow it.
-        Non-shell MCP tools are never gated here (returns None immediately),
-        so ordinary MCP tools keep their existing behaviour untouched.
+        * shells (``mcp__kit-coding__bash`` …) — arbitrary commands (``git
+          push``, ``rm -rf``, secret reads, data exfiltration) with none of
+          the native ``bash`` checks; remapped onto the bash gate.
+        * file mutators (``mcp__kit-coding__write_file`` / ``edit_file`` /
+          ``multi_edit`` / ``notebook_edit``) — writes outside the sandbox,
+          into the read-only archive, the agent's own safety layer, or a
+          stored calc; remapped onto the matching write gate.
+
+        Returns an error string to BLOCK the call, or None to allow it. Every
+        other (read-only / neutral) MCP tool returns None immediately, so its
+        existing behaviour is untouched.
         """
         if not isinstance(name, str) or not name.startswith("mcp__"):
             return None
         base = name.rsplit("__", 1)[-1]
-        if base not in _MCP_BASH_TOOL_BASES:
-            return None
-        cmd = ""
-        if isinstance(args, dict):
-            for key in _MCP_BASH_CMD_KEYS:
-                val = args.get(key)
-                if isinstance(val, str) and val.strip():
-                    cmd = val
-                    break
-        # A shell tool we can't read the command from — leave dispatch to the
-        # server rather than mis-gating an unknown payload (conservative).
-        if not cmd:
-            return None
-        if perms is None:
-            _record_security_event("mcp_bash_no_perms", name, cmd[:80],
-                                   blocked=True)
-            return (
-                f"'{name}' executes shell commands but no permissions are "
-                "configured, so it is refused."
-            )
-        # Reuse the bash gate verbatim: same deny-list, secret/egress scan,
-        # auto-allow, and confirm/head-less block as the native bash tool.
-        return self._run_permission_gate("bash", {**args, "command": cmd}, perms)
+
+        # (1) Shell executors → the bash gate (command payload remapped).
+        if base in _MCP_BASH_TOOL_BASES:
+            cmd = ""
+            if isinstance(args, dict):
+                for key in _MCP_BASH_CMD_KEYS:
+                    val = args.get(key)
+                    if isinstance(val, str) and val.strip():
+                        cmd = val
+                        break
+            # A shell tool we can't read the command from — leave dispatch to
+            # the server rather than mis-gating an unknown payload.
+            if not cmd:
+                return None
+            if perms is None:
+                _record_security_event("mcp_bash_no_perms", name, cmd[:80],
+                                       blocked=True)
+                return (
+                    f"'{name}' executes shell commands but no permissions are "
+                    "configured, so it is refused."
+                )
+            # Reuse the bash gate verbatim: same deny-list, secret/egress
+            # scan, auto-allow, and confirm/head-less block as native bash.
+            return self._run_permission_gate(
+                "bash", {**args, "command": cmd}, perms)
+
+        # (2) File mutators → the matching write gate (path-based). The MCP
+        # arg shape matches the native tool, so args pass through unchanged.
+        gate_name = _MCP_WRITE_GATE_MAP.get(base)
+        if gate_name is not None:
+            if perms is None:
+                _record_security_event("mcp_write_no_perms", name, "",
+                                       blocked=True)
+                return (
+                    f"'{name}' mutates files but no permissions are "
+                    "configured, so it is refused."
+                )
+            return self._run_permission_gate(gate_name, args, perms)
+
+        return None
 
     def _build_change_preview(
         self, name: str, args: dict, resolved_path: Optional[Path]

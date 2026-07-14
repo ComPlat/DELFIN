@@ -192,3 +192,75 @@ def test_unreadable_shell_payload_not_mis_gated(workspace):
                                confirm_callback=None)
     assert _mcp_gate(perms, "mcp__kit-coding__bash",
                      {"stdin": "whatever"}) is None
+
+
+# ---------------------------------------------------------------------------
+# File-mutating MCP tools are gated identically to the native write tools.
+# ---------------------------------------------------------------------------
+
+def _native_write_gate(perms, native_name, args):
+    return _doc_executor._run_permission_gate(native_name, args, perms)
+
+
+@pytest.mark.parametrize("mcp_name,native_name,args", [
+    ("mcp__kit-coding__write_file", "write_file",
+     {"path": "hello.py", "content": "x = 1"}),
+    ("mcp__kit-coding__edit_file", "edit_file",
+     {"path": "hello.py", "old_string": "x", "new_string": "y"}),
+    ("mcp__kit-coding__multi_edit", "multi_edit",
+     {"path": "hello.py", "edits": [{"old_string": "x", "new_string": "y"}]}),
+    # notebook_edit reuses edit_file's gate, exactly as the native dispatch.
+    ("mcp__kit-coding__notebook_edit", "edit_file",
+     {"path": "nb.ipynb", "cell_idx": 0, "mode": "replace", "source": "x"}),
+])
+def test_mcp_write_in_workspace_allowed_like_native(workspace, mcp_name,
+                                                    native_name, args):
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    mcp = _mcp_gate(perms, mcp_name, args)
+    native = _native_write_gate(perms, native_name, args)
+    assert mcp == native, f"{mcp_name}: mcp={mcp!r} native={native!r}"
+    assert mcp is None  # writable workspace root → allowed
+
+
+@pytest.mark.parametrize("mcp_name,native_name,content_args", [
+    ("mcp__kit-coding__write_file", "write_file", {"content": "x = 1"}),
+    ("mcp__kit-coding__edit_file", "edit_file",
+     {"old_string": "x", "new_string": "y"}),
+    ("mcp__kit-coding__notebook_edit", "edit_file",
+     {"cell_idx": 0, "mode": "replace", "source": "x"}),
+])
+def test_mcp_write_outside_workspace_blocked_like_native(
+        workspace, tmp_path, mcp_name, native_name, content_args):
+    """A write that escapes the sandbox is blocked identically whether it
+    arrives natively or as an MCP tool."""
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    foreign = tmp_path / "outside"
+    foreign.mkdir()
+    args = {"path": str(foreign / "x.py"), **content_args}
+    mcp = _mcp_gate(perms, mcp_name, args)
+    native = _native_write_gate(perms, native_name, args)
+    assert mcp == native
+    assert mcp is not None  # outside the sandbox → blocked
+
+
+def test_mcp_write_blocked_in_plan_mode(workspace):
+    perms = KitToolPermissions(workspace=workspace, mode="plan")
+    err = _mcp_gate(perms, "mcp__kit-coding__write_file",
+                    {"path": "hello.py", "content": "x = 1"})
+    assert err is not None and "plan mode" in err.lower()
+
+
+def test_mcp_write_refused_without_permissions():
+    err = _doc_executor._gate_mcp_tool(
+        "mcp__kit-coding__write_file",
+        {"path": "hello.py", "content": "x = 1"}, None)
+    assert err is not None and "permission" in err.lower()
+
+
+def test_mcp_apply_patch_not_remapped(workspace):
+    """apply_patch gates itself in its own executor (not via the write gate),
+    so _gate_mcp_tool must NOT claim to handle it (would give a false pass)."""
+    perms = KitToolPermissions(workspace=workspace, mode="default")
+    # Not in the write map → returns None here; its own executor gates it.
+    assert _mcp_gate(perms, "mcp__kit-coding__apply_patch",
+                     {"path": "hello.py", "patch": "..."}) is None
