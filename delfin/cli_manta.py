@@ -78,6 +78,18 @@ _CHAMPION_FLAGS = (
                           # no-op timeout).  Additive+deterministic; scoped to group-15 (O/C are NOT stable
                           # centres and broke the ccdc floor when included -> restricted).  Impl:
                           # delfin/manta/_stereocenter_enum.py; env DELFIN_(FFFREE_)STEREOCENTER_ENUM.
+    "D8_SQ_ADD",          # #19: ADDITIVE d8 CN4 square-planar completeness.  A UFF-SP-4 octahedron... no:
+                          # a UFF SQUARE frame is added as a PURELY ADDITIVE sibling (force_d8_sq) next to
+                          # the normal build; the PRIMARY frame is untouched, so a bulky ligand keeps its
+                          # valid tetrahedral primary (NO broken_regressed -- the earlier REPLACE-the-frame
+                          # SP-4 cost HAKQES a frame) while a d8-no-valid system GAINS its valid SP-4 frame.
+                          # landed 2026-07-14, full:120 never-worse: cap_LOST=0, good_regressions=0,
+                          # broken_regressed=0, no ccdc_isomer_lost / poly_cshm_regressed, mean_delta -0.116
+                          # (slightly BETTER); rescues the d8-no-valid tail (+2 on pool_d8novalid,
+                          # ITANUN/XETKAI 0->topo).  Byte-deterministic (29/29).  Only blockers were the
+                          # TOCSAI build-TIMEOUT (additive is a bit slower -> raise per-timeout) and an
+                          # axis-record artefact.  Env DELFIN_FFFREE_D8_SQ_ADD; impl smiles_converter batch
+                          # loop.  CN4 SQ has ONE polyhedron so no OC/TPR isomer ambiguity (unlike CN6).
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
