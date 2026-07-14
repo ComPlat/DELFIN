@@ -6116,7 +6116,24 @@ class _DocToolExecutor:
                 f"exit_plan_mode is only valid while in 'plan' mode "
                 f"(current mode: {perms.mode!r})"
             )})
-        approved = True
+        if perms.plan_approval_callback is None:
+            # No approval channel (headless / non-interactive). Plan mode is a
+            # HARD human gate: NEVER self-approve. Submit the plan, keep
+            # ``perms.mode == 'plan'`` so all edits/writes/bash stay blocked,
+            # and stop. (Fixed 2026-07-14: this used to auto-approve and flip
+            # to 'default', letting the agent leave plan mode on its own and
+            # keep editing — plan mode must not be self-exitable.)
+            return json.dumps({
+                "status": "awaiting_approval",
+                "message": (
+                    "Plan submitted. No approval channel is available in this "
+                    "context, so the plan cannot be approved here — plan mode "
+                    "stays ACTIVE and all edits/writes remain blocked. Stop "
+                    "now; do NOT edit, do NOT resubmit. Only the user can "
+                    "approve, which resumes execution on a later turn."
+                ),
+            })
+        approved = False
         new_mode = "default"
         if perms.plan_approval_callback is not None:
             try:
