@@ -26197,25 +26197,21 @@ def _generate_topological_isomers(
                     # ADDITIVE CN6 OCTAHEDRON (DELFIN_FFFREE_CN6_OH_ADD, default off -> byte-identical).  Same
                     # self-contained-additive pattern as the d8 SP-4 above, for the biggest poly cluster
                     # (TPR-6 built, OC-6 in the crystal).  The PRIMARY frame is the NORMAL build; a UFF-OC
-                    # octahedron (force_cn6_oh, on THIS isomer's OWN enumerator trans axes -> fac/mer-safe) is
-                    # added as a PURELY ADDITIVE sibling.  Never REPLACES the frame, so a TPR isomer keeps its
-                    # valid frame while the OC twist-corrected frame is added -> no isomer collapse (the old
-                    # CN6_OH_ANGLES replace collapsed TPR<->OC), and the crystal's OC is realised.
+                    # octahedron is added as a PURELY ADDITIVE sibling from the SAME seed.  ISOMER-ORTHOGONAL:
+                    # the sibling uses the GEOMETRY-FALLBACK twist-correction (d8_trans=None -> impose OC on
+                    # the frame's OWN most-opposite donor pairs), NOT the OH-PERM path.  Measured 2026-07-14:
+                    # the PERM path (enumerator OH positions via pm) COLLAPSED distinct isomers (VOYWUD lost
+                    # all-trans + trans-OH) -- that OH-perm mapping was never validated (dead before) and
+                    # imposes the WRONG trans set on some arrangements.  The twist-correction keeps whatever
+                    # trans pairs the frame already has, so it can NEVER reshape one isomer into another.
                     if (apply_uff and gn == 'OH' and len(donor_indices) == 6
                             and _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0)
                             and len(_pre_uff_batch) + len(results) - _n_add_sib < _PRE_UFF_CAP):
                         try:
                             _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
                             if _PREFERRED_CN6_GEOMETRY.get(_m_sym, 'OH') == 'OH':
-                                _oht = None                    # OH enumerator trans pairs for THIS isomer
-                                try:
-                                    _tp6 = _TOPO_TRANS_POSITIONS.get('OH') or []
-                                    _oht = [(donor_indices[pm[_p1]], donor_indices[pm[_p2]])
-                                            for (_p1, _p2) in _tp6]
-                                except Exception:
-                                    _oht = None
                                 coord_c_oh = _build_coordination_constraints_from_xyz(
-                                    mol, xyz0, d8_trans=_oht, force_cn6_oh=True,
+                                    mol, xyz0, d8_trans=None, force_cn6_oh=True,
                                 )
                                 if coord_c_oh != coord_c:   # OC constraints differ from the primary
                                     _variant_counter[_key] += 1
