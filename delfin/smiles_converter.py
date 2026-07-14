@@ -24368,6 +24368,15 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
 # d8 metals with a strong square-planar preference (mirror of _PREFERRED_CN4_GEOMETRY 'SQ' set).
 _D8_SQ_METALS = frozenset({"Ni", "Pd", "Pt", "Au", "Rh", "Ir"})
 
+# UNAMBIGUOUS d8 square-planar metals for the DELFIN_FFFREE_D8_SQ_ISO SP-4 imposition ONLY.  Rh and Ir
+# are DROPPED here: their +1 state is d8 square-planar (Vaska/Wilkinson) but +3 is d6 OCTAHEDRAL, and a
+# CN4-looking projection of a 5/6-coordinate Rh(III)/Ir(III) (e.g. a pincer HYDRIDE) has a real trans
+# axis that fooled the isomer-preserving pass into forcing a square -> it collapsed distinct isomers
+# (measured 2026-07-14: TIQWUN [IrH-2] pincer, n_isomers 2->1).  Pd(II)/Pt(II)/Ni(II)/Au(III) at CN4 are
+# reliably SP-4, so restricting to them fixes TIQWUN while KEEPING every measured gain (all Pd/Pt).  The
+# broader _D8_SQ_METALS (incl. Rh/Ir) is left untouched for the other, separate d8 paths.
+_D8_SQ_ISO_METALS = frozenset({"Ni", "Pd", "Pt", "Au"})
+
 
 def _flatten_d8_sq_planar_xyz(xyz_delfin: str, mol_template) -> str:
     """POST-UFF d8 square-planar flatten (root fix, env-gated DELFIN_FFFREE_D8_SQ_FLATTEN).
@@ -26157,6 +26166,30 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                    # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical): the
+                    # SP-4 imposition above (D8_SQ_ISO) REPLACES this isomer's frame with a square, which
+                    # RESCUES the d8-no-valid systems but CLASHES bulky ligands (an existing frame degrades
+                    # -> broken_regressed/cap_lost).  Instead of choosing, emit BOTH: keep the SP-4 frame
+                    # (rescue) AND add its TETRAHEDRAL sibling (suppress_d8_sq) from the SAME seed.  Purely
+                    # additive -> the downstream topology gate culls whichever clashes, so a bulky system
+                    # keeps its valid tetrahedral frame while a rescue system keeps its valid SP-4 frame.
+                    if (apply_uff and coord_c is not None and gn == 'SQ'
+                            and _delfin_env_int("DELFIN_FFFREE_D8_SQ_ADD", 0)
+                            and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
+                            and len(donor_indices) == 4
+                            and len(_pre_uff_batch) + len(results) < _PRE_UFF_CAP):
+                        try:
+                            _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
+                            if _m_sym in _D8_SQ_ISO_METALS:
+                                coord_c_tet = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0, d8_trans=_d8t, suppress_d8_sq=True,
+                                )
+                                if coord_c_tet != coord_c:   # SP-4 actually changed the constraints
+                                    _variant_counter[_key] += 1
+                                    _pre_uff_batch.append(
+                                        (cf, pm, gn, xyz0, coord_c_tet, _variant_counter[_key] - 1))
+                        except Exception:
+                            pass
                     # Iter-8.5b INNER site 1 (template-loop): when the parent
                     # mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, take
                     # only the first successful template seed per perm
@@ -35034,6 +35067,7 @@ def _build_coordination_constraints_from_xyz(
     mol_template,
     xyz_delfin: str,
     d8_trans=None,
+    suppress_d8_sq: bool = False,
 ) -> Optional[Dict]:
     """Auto-detect metal coordination from template graph and pin it during UFF.
 
@@ -35043,6 +35077,12 @@ def _build_coordination_constraints_from_xyz(
     pairs (authoritative — no geometric guessing), which rescues strained
     macrocyclic frames the geometry alone cannot and cannot collapse isomers.
     Default None -> geometry fallback (byte-identical when the flag is off).
+
+    ``suppress_d8_sq`` (default False): force the d8 SP-4 imposition OFF for this
+    call even when DELFIN_FFFREE_D8_SQ_ISO is on.  Used by the ADDITIVE d8 pass
+    (DELFIN_FFFREE_D8_SQ_ADD) to build the TETRAHEDRAL sibling constraints next to
+    the SP-4 ones, so a bulky ligand that clashes under SP-4 keeps a valid,
+    un-squared frame (completeness heilig; the SP-4 frame is purely additive).
 
     Unlike ``_build_coordination_uff_constraints`` (which needs explicit
     perm/geometry arguments from the topology enumerator), this function
@@ -35204,9 +35244,9 @@ def _build_coordination_constraints_from_xyz(
             # strained macrocyclic frames whose geometry alone is too ambiguous, and cannot collapse
             # isomers (each isomer's OWN trans is imposed).  Sets _d8_sq_angles so the geometry fallback
             # below is skipped (its `not _d8_sq_angles` guard).
-            if (not _d8_sq_angles and d8_trans
+            if (not _d8_sq_angles and d8_trans and not suppress_d8_sq
                     and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
-                    and m_sym in _D8_SQ_METALS and len(donor_indices) == 4):
+                    and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
                 try:
                     _dset = set(donor_indices)
                     _pt = [(int(_a), int(_b)) for (_a, _b) in d8_trans
@@ -35234,9 +35274,9 @@ def _build_coordination_constraints_from_xyz(
             # it), so reinforcing it -- plus the second trans pair by elimination -- preserves cis vs trans
             # and flattens seesaw -> square, WITHOUT guessing.  A purely tetrahedral frame (no angle > 135)
             # is left untouched (it is a conformer, not a distinct isomer) so nothing collapses.
-            if (not _d8_sq_angles
+            if (not _d8_sq_angles and not suppress_d8_sq
                     and os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1"
-                    and m_sym in _D8_SQ_METALS and len(donor_indices) == 4):
+                    and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
                 try:
                     import numpy as _np
                     _mp = _np.array(coords[m_idx], dtype=float)
