@@ -26125,10 +26125,12 @@ def _generate_topological_isomers(
         # best-scoring one survives).
         _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
         # PURELY-ADDITIVE d8/CN6 poly siblings (D8_SQ_ADD/CN6_OH_ADD) must NOT crowd the ISOMER budget
-        # out (completeness heilig): count them so the _PRE_UFF_CAP break below sees only the PRIMARY
-        # frames.  Without this the OC/SP-4 siblings filled the cap and the isomer loop broke early
-        # (measured: VOYWUD 6->5 isomers).  The siblings are bounded (<=1 per OC/SQ isomer).
+        # out (completeness heilig): count them so the caps below see only the PRIMARY frames.  Without
+        # this the OC/SP-4 siblings filled the cap and the isomer loop broke early (measured: VOYWUD
+        # 6->5 isomers).  `_n_add_sib` corrects the PRE-UFF caps; `_sib_idxs` (the batch indices of the
+        # siblings) corrects the POST-UFF append cap at ~26413 (the same hole, one stage later).
         _n_add_sib = 0
+        _sib_idxs: set = set()
         for cf, pm in feasible_isomers:
             if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                 break
@@ -26191,6 +26193,7 @@ def _generate_topological_isomers(
                                     _variant_counter[_key] += 1
                                     _pre_uff_batch.append(
                                         (cf, pm, gn, xyz0, coord_c_sq, _variant_counter[_key] - 1))
+                                    _sib_idxs.add(len(_pre_uff_batch) - 1)
                                     _n_add_sib += 1         # additive -> does not count vs the isomer cap
                         except Exception:
                             pass
@@ -26217,6 +26220,7 @@ def _generate_topological_isomers(
                                     _variant_counter[_key] += 1
                                     _pre_uff_batch.append(
                                         (cf, pm, gn, xyz0, coord_c_oh, _variant_counter[_key] - 1))
+                                    _sib_idxs.add(len(_pre_uff_batch) - 1)
                                     _n_add_sib += 1         # additive -> does not count vs the isomer cap
                         except Exception:
                             pass
@@ -26409,8 +26413,13 @@ def _generate_topological_isomers(
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
         # checks that were too aggressive for topo-generated structures).
-        for cf, pm, gn, xyz, _cstr, _cidx in _pre_uff_batch:
-            if len(results) >= max_isomers:
+        # The max_isomers cap must count only PRIMARY frames, not the purely-additive d8/CN6 poly
+        # siblings (else an interleaved sibling crowds a later isomer's PRIMARY out of results ->
+        # VOYWUD 6->5).  `_n_sib_appended` mirrors the pre-UFF `-_n_add_sib`; empty _sib_idxs (flags
+        # off) -> byte-identical to the original `len(results) >= max_isomers`.
+        _n_sib_appended = 0
+        for _batch_i, (cf, pm, gn, xyz, _cstr, _cidx) in enumerate(_pre_uff_batch):
+            if (len(results) - _n_sib_appended) >= max_isomers:
                 break
             try:
                 if not _verify_topology_from_graph(xyz, mol):
@@ -26443,6 +26452,8 @@ def _generate_topological_isomers(
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 results.append((xyz, lbl))
+                if _batch_i in _sib_idxs:      # additive sibling -> does not count vs max_isomers
+                    _n_sib_appended += 1
             except Exception as exc:
                 logger.debug("Topo post-UFF check failed (%s): %s", gn, exc)
                 continue
