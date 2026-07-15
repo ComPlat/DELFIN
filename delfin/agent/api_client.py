@@ -814,13 +814,14 @@ _MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
 # multi_edit→path/edits, notebook_edit→path/cell_idx/source) and that they
 # operate on the same local workspace paths, so the native path-based gate
 # applies unchanged. notebook_edit reuses edit_file's gate — exactly as the
-# native dispatch does. apply_patch is deliberately absent: it gates itself
-# inside its own executor, not via ``_run_permission_gate``.
+# native dispatch does. apply_patch maps to its own ``_run_permission_gate``
+# branch, which gates every file the diff touches with the write tiers.
 _MCP_WRITE_GATE_MAP: dict[str, str] = {
     "write_file": "write_file",
     "edit_file": "edit_file",
     "multi_edit": "multi_edit",
     "notebook_edit": "edit_file",
+    "apply_patch": "apply_patch",
 }
 
 
@@ -4451,6 +4452,79 @@ class _DocToolExecutor:
             return f"read denied: user declined read of '{resolved}'"
         return None
 
+    def _gate_write_path(
+        self, path_arg: str, perms: "KitToolPermissions",
+        name: str, args: dict,
+    ) -> Optional[str]:
+        """Per-path write policy: sandbox+deny (resolve), read-only-archive
+        hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
+        write_file/edit_file/multi_edit and by every file an apply_patch diff
+        touches. Returns an error string to block, or None to allow."""
+        # for_read=True: recognise every reachable root so the per-tier policy
+        # below can fire (deny read-only, confirm calc). The write EXECUTOR
+        # re-resolves writable-only — defense in depth.
+        resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
+        if err:
+            return err
+        # READ-ONLY data — archive of stored calculations, or the DELFIN
+        # checkout when you didn't launch there. Writes are HARD-denied; copy
+        # into calc/agent_workspace and edit the copy ("archive sind fix …
+        # wenn man arbeiten will muss man in calc bringen").
+        if perms.is_read_only_path(resolved):
+            _record_security_event(
+                "read_only_write", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"'{path_arg}' is in a READ-ONLY location (the archive of "
+                f"stored calculations, or the DELFIN checkout). It is fixed "
+                f"— to work on it, COPY it into calc or agent_workspace and "
+                f"edit the copy. Refusing to modify it in place."
+            )
+        try:
+            rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+        except Exception:
+            rel_str = path_arg.replace("\\", "/")
+        is_protected = perms.matches_path_protected(rel_str)
+        # calc holds the user's ACTIVE calculations — editing one always needs
+        # an explicit confirm even in acceptEdits, so the agent can't silently
+        # destroy results ("nur Bearbeitung mit Nachfrage").
+        is_calc = perms.is_confirm_write_path(resolved)
+        if is_protected or is_calc:
+            _record_security_event(
+                "self_mod" if is_protected else "calc_edit", name, rel_str,
+                blocked=perms.confirm_callback is None)
+            if perms.confirm_callback is None:
+                _what = ("the agent's own safety layer" if is_protected
+                         else "a stored calculation under calc")
+                return (
+                    f"'{name}' targets {_what} ('{rel_str}') — this requires "
+                    "explicit user confirmation but no confirm_callback is "
+                    "configured, so it is refused."
+                )
+            if is_protected:
+                preview = (
+                    "[SELF-MODIFICATION GUARD]\n"
+                    "This file is part of the agent's own safety layer.\n"
+                    "Approving this will let the agent rewrite the code that "
+                    "controls its own permissions.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            else:
+                preview = (
+                    "[CALC EDIT — STORED CALCULATION]\n"
+                    "This file is under calc (an active/stored calculation). "
+                    "Approving this lets the agent modify it.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            _w = "protected path" if is_protected else "calc file"
+            return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
+        # Writable roots (workspace + agent_workspace + grants): allow.
+        return None
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -4473,70 +4547,32 @@ class _DocToolExecutor:
             # rejected a model that used `file_path` (a common tool-arg convention)
             # with "path is required", even though the executor itself accepts
             # it (bug 2026-06-25: qwen on KIT fell back to bash heredoc writes).
-            path_arg = self._get_path_arg(args)
-            # for_read=True: recognise every reachable root so the per-tier
-            # policy below can fire (deny read-only, confirm calc). The write
-            # EXECUTOR re-resolves writable-only — defense in depth.
-            resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
-            if err:
-                return err
-            # READ-ONLY data — archive of stored calculations, or the DELFIN
-            # checkout when you didn't launch there. Writes are HARD-denied;
-            # copy into calc/agent_workspace and edit the copy ("archive sind
-            # fix … wenn man arbeiten will muss man in calc bringen").
-            if perms.is_read_only_path(resolved):
-                _record_security_event(
-                    "read_only_write", name, self._display_path(resolved, perms),
-                    blocked=True)
-                return (
-                    f"'{path_arg}' is in a READ-ONLY location (the archive of "
-                    f"stored calculations, or the DELFIN checkout). It is fixed "
-                    f"— to work on it, COPY it into calc or agent_workspace and "
-                    f"edit the copy. Refusing to modify it in place."
-                )
+            # The per-path tiers live in _gate_write_path so apply_patch below
+            # can gate every file its diff touches with the identical policy.
+            return self._gate_write_path(
+                self._get_path_arg(args), perms, name, args)
+
+        if name == "apply_patch":
+            # A real apply mutates every file the diff touches, so gate each
+            # one with the same tiers as a direct write (deny-list, read-only
+            # archive, self-mod guard, calc-confirm). Historically apply_patch
+            # only ran the self-mod guard, so a diff could create .git/hooks/*,
+            # .env, keys or credentials, or silently overwrite a stored calc —
+            # everything write_file hard-denies. check_only is `git apply
+            # --check` (read-only) → allowed; a real apply in plan mode is
+            # already refused by the mode=="plan" guard above.
+            if bool(args.get("check_only", False)):
+                return None
+            diff = args.get("diff", "") or ""
             try:
-                rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+                from . import patch_apply as _pa
+                files = _pa._files_in_diff(diff)
             except Exception:
-                rel_str = path_arg.replace("\\", "/")
-            is_protected = perms.matches_path_protected(rel_str)
-            # calc holds the user's ACTIVE calculations — editing one always
-            # needs an explicit confirm even in acceptEdits, so the agent can't
-            # silently destroy results ("nur Bearbeitung mit Nachfrage").
-            is_calc = perms.is_confirm_write_path(resolved)
-            if is_protected or is_calc:
-                _record_security_event(
-                    "self_mod" if is_protected else "calc_edit", name, rel_str,
-                    blocked=perms.confirm_callback is None)
-                if perms.confirm_callback is None:
-                    _what = ("the agent's own safety layer" if is_protected
-                             else "a stored calculation under calc")
-                    return (
-                        f"'{name}' targets {_what} ('{rel_str}') — this requires "
-                        "explicit user confirmation but no confirm_callback is "
-                        "configured, so it is refused."
-                    )
-                if is_protected:
-                    preview = (
-                        "[SELF-MODIFICATION GUARD]\n"
-                        "This file is part of the agent's own safety layer.\n"
-                        "Approving this will let the agent rewrite the code that "
-                        "controls its own permissions.\n\n"
-                        + self._build_change_preview(name, args, resolved)
-                    )
-                else:
-                    preview = (
-                        "[CALC EDIT — STORED CALCULATION]\n"
-                        "This file is under calc (an active/stored calculation). "
-                        "Approving this lets the agent modify it.\n\n"
-                        + self._build_change_preview(name, args, resolved)
-                    )
-                try:
-                    ok = bool(perms.confirm_callback(name, args, preview))
-                except Exception as exc:
-                    return f"confirm_callback raised: {exc}"
-                _w = "protected path" if is_protected else "calc file"
-                return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
-            # Writable roots (workspace + agent_workspace + grants): allow.
+                files = []
+            for rel in files:
+                err = self._gate_write_path(rel, perms, "apply_patch", args)
+                if err is not None:
+                    return err
             return None
 
         if name == "bash":
@@ -4745,6 +4781,15 @@ class _DocToolExecutor:
                     new_text = new_text.replace(o, n)
                 else:
                     new_text = new_text.replace(o, n, 1)
+        elif name == "apply_patch":
+            # The patch itself IS the change preview — show it verbatim rather
+            # than a synthetic old→new content diff (the new content isn't in
+            # args; it's encoded in the unified diff).
+            _d = str(args.get("diff", "") or "").splitlines()
+            body = "\n".join(_d[:200])
+            if len(_d) > 200:
+                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
+            return body or "(empty diff)"
         else:
             return ""
         return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
@@ -5778,29 +5823,16 @@ class _DocToolExecutor:
                 "check_only=true is allowed; use exit_plan_mode to "
                 "actually apply."
             )})
-        # Self-Mod-Guard: scan diff file headers for protected paths
-        # and require explicit confirm even in bypass mode.
-        try:
-            files = _pa._files_in_diff(diff)
-        except Exception:
-            files = []
-        for rel in files:
-            if perms.matches_path_protected(rel):
-                if perms.confirm_callback is None:
-                    return json.dumps({"error": (
-                        f"path is self-mod-guarded: {rel}. "
-                        "apply_patch refuses without an explicit "
-                        "user-confirm binding."
-                    )})
-                preview = "\n".join(diff.splitlines()[:30])
-                if not perms.confirm_callback(
-                    "apply_patch",
-                    {"file": rel, "files": files},
-                    preview,
-                ):
-                    return json.dumps({"error": (
-                        f"user denied apply_patch on protected {rel}"
-                    )})
+        # Gate every file the diff touches through the same per-path write
+        # policy as write_file: sandbox+deny-list, read-only-archive hard-deny,
+        # self-mod guard, and calc-confirm. (Previously only the self-mod guard
+        # ran here, so a diff could reach .git/hooks, .env, keys or a stored
+        # calc that write_file refuses.) check_only is `git apply --check`
+        # (read-only) → skip the write gate so it stays allowed in plan mode.
+        if not check_only:
+            gate_err = self._run_permission_gate("apply_patch", arguments, perms)
+            if gate_err is not None:
+                return json.dumps({"error": gate_err})
         result = _pa.apply_patch(
             workspace=perms.workspace,
             diff_text=diff,
