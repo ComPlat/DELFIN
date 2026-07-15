@@ -96,12 +96,37 @@ def _check_url(url: str) -> Optional[str]:
     return None
 
 
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target through _check_url. Without this a
+    public URL could 3xx-redirect to http://169.254.169.254/… (cloud metadata)
+    or http://127.0.0.1/… — SSRF that defeats the initial host/IP deny-list."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        err = _check_url(newurl)
+        if err is not None:
+            raise urllib.error.HTTPError(
+                newurl, code, f"blocked redirect target: {err}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_GUARDED_OPENER = None
+
+
+def _guarded_opener():
+    global _GUARDED_OPENER
+    if _GUARDED_OPENER is None:
+        _GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirectHandler())
+    return _GUARDED_OPENER
+
+
 def _fetch_bytes(url: str, timeout_s: int) -> tuple[bytes, str]:
     """GET a URL with a strict cap. Returns (body, content_type)."""
     req = urllib.request.Request(
         url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    # Use the redirect-guarding opener so each hop is re-checked against the
+    # deny-list (the initial URL is already validated by the caller).
+    with _guarded_opener().open(req, timeout=timeout_s) as resp:
         ctype = resp.headers.get("Content-Type", "")
         body = resp.read(_MAX_BYTES + 1)
     return body, ctype

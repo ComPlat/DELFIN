@@ -202,3 +202,17 @@ def test_output_backstop_stops_runaway_turn(client, monkeypatch):
                                 _tool_round("read_file", "{}"), _final()])
     md = [e for e in events if getattr(e, "type", "") == "message_delta"]
     assert md and md[-1].stop_reason == "max_turn_output"
+
+
+# --- Tier C: max-tokens truncation is surfaced, not silently swallowed ------
+
+def test_max_tokens_truncation_is_surfaced(client):
+    truncated = _Stream([
+        _Chunk([_Choice(_Delta(content="partial answer"), finish="length")],
+               usage=_Usage()),
+    ])
+    events, _ = _drive(client, [truncated])
+    assert any("truncated" in (getattr(e, "text", "") or "").lower()
+               for e in events if getattr(e, "type", "") == "text_delta")
+    md = [e for e in events if getattr(e, "type", "") == "message_delta"]
+    assert md and md[-1].stop_reason == "length"

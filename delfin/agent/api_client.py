@@ -1010,10 +1010,19 @@ def _is_forbidden_workspace_root(path: Path | str | None) -> bool:
 _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".git/**", "**/.git/**",
     ".env", ".env.*", "**/.env", "**/.env.*",
-    "**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx",
-    "**/.ssh/**", "**/.gnupg/**",
-    "**/credentials*", "**/secrets*", "**/*.secret",
-    "**/.netrc", "**/.aws/credentials",
+    # fnmatch treats ``**/`` as "…/…" — it needs a slash, so ``**/*.key`` does
+    # NOT match a bare root-level ``secrets.key`` / ``id_rsa``. Pair every
+    # subdir glob with a root-level (no-slash) twin so a secret written at the
+    # workspace root is denied too.
+    "*.key", "**/*.key", "*.pem", "**/*.pem",
+    "*.p12", "**/*.p12", "*.pfx", "**/*.pfx",
+    ".ssh/**", "**/.ssh/**", ".gnupg/**", "**/.gnupg/**",
+    "credentials*", "**/credentials*", "secrets*", "**/secrets*",
+    "*.secret", "**/*.secret",
+    ".netrc", "**/.netrc", "**/.aws/credentials",
+    # Common SSH private-key names even outside a .ssh/ directory.
+    "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
+    "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -8217,7 +8226,15 @@ class OpenAIClient(_BaseClient):
                     type="text_delta", text="\n\n↻ auto-continue → next task\n")
                 continue
 
-            # No tool calls — emit final message_delta and break
+            # No tool calls — emit final message_delta and break. When the
+            # backend cut the response at max_tokens (finish_reason=="length"),
+            # surface it explicitly: otherwise a response (possibly a
+            # half-emitted tool call) just vanishes and the turn looks "done".
+            if finish_reason == "length":
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⚠️ Response truncated at the max-tokens limit — the "
+                    "output above may be incomplete (a tool call may have been "
+                    "cut). Send 'continue' to resume.\n"))
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",
