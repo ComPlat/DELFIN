@@ -2370,6 +2370,58 @@ def _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done: bool):
+    """SP2C-PLANARIZE sp2-CARBON planarisation fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect an acyclic sp2 CARBON (azomethine /
+    imine / vinyl / enone =CH- or =CR-: 3-coordinate, RDKit-sp2, a double bond to
+    N/C/O) that the force-field-free ETKDG embed has left PYRAMIDALISED (out of
+    the plane of its three neighbours), and project it back into that plane
+    (geometry-only; bond lengths shift only by the small residual).  Closes the
+    exact gap the N-only ``_fix_sp2n_planarize`` left open: a backbone N=CH-C
+    carbon (NAYKOQ C36: Walsh ~19°, angle-sum 324° = the sp3 fallback, in 17/30
+    ETKDG folds) was planarised by NOTHING.  Ring C is skipped (owned by the
+    aromatic ring passes); metal-bonded C is skipped (obeys coordination).
+
+    Env-flags:
+        DELFIN_FFFREE_SP2C_PLANARIZE=0    (default OFF — bit-exact when disabled;
+                                           champion-ON via _CHAMPION_FLAGS)
+        DELFIN_FIX_SP2C_OOP_A=0.20        (out-of-plane trigger, Å)
+        DELFIN_FFFREE_SP2C_PLANARIZE_CLASSES=  (optional class allow-list)
+
+    Insertion order: AFTER SP2N-PLANARIZE (they touch disjoint atoms: N vs C).
+    Per-atom rollback on new clash / no-improvement; per-frame fallback to input
+    on any failure.  Bit-exact when the flag is 0.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FFFREE_SP2C_PLANARIZE", mol,
+                                   default=0):
+        return results
+    if mol is None:
+        return results
+    try:
+        from delfin.manta._fix_sp2c_planarize import planarize_sp2_carbon
+        oop_thr = _delfin_env_float("DELFIN_FIX_SP2C_OOP_A", 0.20)
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, _report = planarize_sp2_carbon(
+                    xyz, mol, oop_threshold_A=oop_thr)
+                new_results.append((new_xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _sp2c_exc:
+        try:
+            logger.debug("Fixer SP2C-PLANARIZE skipped: %s", _sp2c_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_fixer_wuxqak_if_enabled(mol, results, dual_parse_done: bool):
     """WUXQAK sp3-C linear-collapse fixer dispatch helper.
 
@@ -32648,6 +32700,9 @@ def _smiles_to_xyz_isomers_impl(
     results = _apply_hydroxyl_geom_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_f25_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_sp2n_planarize_if_enabled(
+        mol, results, _dual_parse_done,
+    )
+    results = _apply_fixer_sp2c_planarize_if_enabled(
         mol, results, _dual_parse_done,
     )
     results = _apply_fixer_wuxqak_if_enabled(mol, results, _dual_parse_done)
