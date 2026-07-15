@@ -1460,9 +1460,21 @@ class AgentEngine:
             return ""
 
         rendered: list[str] = []
+        carried_summary = ""   # a prior compaction's recap, carried forward verbatim
         for msg in old_msgs:
             role = msg.get("role", "")
             content = msg.get("content", "")
+            if isinstance(content, str) and content.lstrip().startswith(
+                    self._SUMMARY_BLOCK_PREFIX):
+                # A prior summary block is ALREADY a faithful recap of many
+                # messages. Re-summarising it compounds loss across repeated
+                # compactions on a long session, so carry it forward verbatim
+                # (header stripped) and summarise only the newer messages.
+                body = (content.split("\n", 1)[1].strip()
+                        if "\n" in content else content.strip())
+                if body:
+                    carried_summary = body
+                continue
             if not isinstance(content, str):
                 # Flatten tool/structured content for the summariser
                 try:
@@ -1481,7 +1493,8 @@ class AgentEngine:
                 content = content[:2000] + "\n... [truncated for summary] ...\n" + content[-1500:]
             rendered.append(f"[{role}]\n{content}")
         if not rendered:
-            return ""
+            # Nothing new to summarise beyond a prior recap — carry it forward.
+            return carried_summary
 
         system_prompt = (
             "You are a conversation-summarisation assistant. Produce a "
@@ -1528,6 +1541,11 @@ class AgentEngine:
         except Exception:
             return ""
         summary = "".join(text_parts).strip()
+        # Keep the earlier recap AHEAD of the new one so the oldest context
+        # isn't re-compressed (and eroded) on every compaction.
+        if carried_summary:
+            summary = (carried_summary + "\n\n" + summary).strip() if summary \
+                else carried_summary
         return summary
 
     def _compact_history(self) -> None:

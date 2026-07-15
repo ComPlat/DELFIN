@@ -87,6 +87,36 @@ def test_compaction_yields_alternating_roles():
     assert eng.messages[-1]["content"] == "latest question"
 
 
+def test_llm_summary_preserves_prior_summary_block_only(tmp_path):
+    eng = _bare_engine()
+    eng.backend = "api"
+    prior = ("[Conversation summary — older messages compacted]\n"
+             "GOAL: build X\nDID: step 1")
+    out = eng._llm_summarize_old_messages([{"role": "user", "content": prior}])
+    # No new messages beyond the prior recap → it is carried forward verbatim,
+    # never re-summarised (which would erode it).
+    assert "GOAL: build X" in out and "DID: step 1" in out
+
+
+def test_llm_summary_carries_prior_and_appends_new():
+    from delfin.agent.api_client import StreamEvent
+
+    class _Stub:
+        def stream_message(self, **k):
+            yield StreamEvent(type="text_delta", text="NEW-RECAP")
+
+    eng = _bare_engine()
+    eng.backend = "api"
+    eng.client = _Stub()
+    prior = ("[Conversation summary — older messages compacted]\n"
+             "OLD-CONTEXT-Z")
+    msgs = [{"role": "user", "content": prior},
+            {"role": "assistant", "content": "detail " * 200}]
+    out = eng._llm_summarize_old_messages(msgs)
+    assert "OLD-CONTEXT-Z" in out and "NEW-RECAP" in out
+    assert out.index("OLD-CONTEXT-Z") < out.index("NEW-RECAP")
+
+
 def test_compaction_resets_stale_input_floor():
     eng = _bare_engine()
     eng.context_window_tokens = 2000
