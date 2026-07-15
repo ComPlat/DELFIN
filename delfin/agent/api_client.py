@@ -7554,6 +7554,11 @@ class OpenAIClient(_BaseClient):
         _tool_budget = _tool_context_char_budget(_caps)
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            # Semantic context editing: once accumulated tool output over
+            # this loop grows large, elide the OLDEST tool results (keep
+            # the recent ones + all reasoning) so a long agentic turn
+            # doesn't blow the input-token budget. No-op under budget.
+            _elide_old_tool_results(api_messages, char_budget=_tool_budget)
             # Output backstop: stop cleanly if this turn's total generated
             # tokens crossed the (very high) per-turn ceiling. Text emitted so
             # far was already streamed to the caller, so nothing is lost.
@@ -7568,11 +7573,6 @@ class OpenAIClient(_BaseClient):
                     cost_usd=self._estimate_cost(_total_in, _total_out),
                     cached_tokens=_total_cached, stop_reason="max_turn_output")
                 return
-            # Semantic context editing: once accumulated tool output over
-            # this loop grows large, elide the OLDEST tool results (keep
-            # the recent ones + all reasoning) so a long agentic turn
-            # doesn't blow the input-token budget. No-op under budget.
-            _elide_old_tool_results(api_messages, char_budget=_tool_budget)
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": api_messages,
