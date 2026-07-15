@@ -7581,7 +7581,11 @@ class OpenAIClient(_BaseClient):
                 for idx in sorted(_tool_calls):
                     entry = _tool_calls[idx]
                     tc_list.append({
-                        "id": entry["id"],
+                        # Backfill a unique id when the backend streamed none
+                        # (some vLLM/Ollama builds omit tool_call ids): an empty
+                        # or duplicated tool_call_id makes the NEXT request's
+                        # assistant/tool pairing ambiguous and can 400.
+                        "id": entry["id"] or f"call_{idx}",
                         "type": "function",
                         "function": {
                             "name": entry["name"],
@@ -7607,9 +7611,20 @@ class OpenAIClient(_BaseClient):
                 # Execute each tool call and append results
                 for tc in tc_list:
                     fn_name = (tc["function"]["name"] or "").strip()
-                    try:
-                        fn_args = json.loads(tc["function"]["arguments"])
-                    except json.JSONDecodeError:
+                    # Parse arguments defensively: a backend may stream a dict
+                    # already, invalid JSON, or valid JSON that is NOT an object
+                    # (e.g. "true", "[1,2]", "42"). Every downstream handler does
+                    # arguments.get(...), so anything but a dict must become {}
+                    # here or it raises AttributeError and crashes the whole turn.
+                    _raw_args = tc["function"]["arguments"]
+                    if isinstance(_raw_args, dict):
+                        fn_args = _raw_args
+                    else:
+                        try:
+                            fn_args = json.loads(_raw_args or "{}")
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            fn_args = {}
+                    if not isinstance(fn_args, dict):
                         fn_args = {}
 
                     # Empty-name guard: malformed tool-call from the model
@@ -7752,9 +7767,19 @@ class OpenAIClient(_BaseClient):
                                     "error": f"MCP {fn_name} failed: {exc}"
                                 })
                     else:
-                        result = _doc_executor.execute(
-                            fn_name, fn_args, permissions=self._permissions
-                        )
+                        # Wrap like the MCP/subagent paths above: an uncaught
+                        # exception in any tool handler would otherwise escape
+                        # the generator and kill the ENTIRE turn, discarding
+                        # every round's ephemeral progress. A per-tool failure
+                        # must degrade to a recoverable error the model can see.
+                        try:
+                            result = _doc_executor.execute(
+                                fn_name, fn_args, permissions=self._permissions
+                            )
+                        except Exception as exc:
+                            result = json.dumps({
+                                "error": f"tool '{fn_name}' failed: {exc}"
+                            })
 
                     # Emit tool_result event for UI display
                     yield StreamEvent(

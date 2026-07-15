@@ -596,14 +596,40 @@ class SubagentResult:
         }
 
 
+# Permission modes ordered from most to least restrictive. Used to clamp a
+# child's mode so a subagent is never MORE permissive than its parent.
+_MODE_RESTRICTIVENESS = {
+    "plan": 0, "default": 1, "acceptEdits": 2, "bypassPermissions": 3,
+}
+
+
+def _clamp_child_mode(parent_mode: str, preset_mode: str) -> str:
+    """Return the more restrictive of the parent's and the preset's mode.
+
+    A subagent must never be able to do what its parent may not. Without this,
+    a parent pinned to ``plan`` (the human-approval gate that ``exit_plan_mode``
+    deliberately refuses to self-exit) could call ``subagent(...)`` whose preset
+    carries ``mode="default"`` and obtain a child that writes/bashes on its
+    behalf — an indirect plan-mode escape. Taking the lower (more restrictive)
+    rank also preserves a preset that is intentionally stricter than the parent
+    (e.g. read-only explore presets stay ``plan`` even from a ``default`` parent).
+    """
+    rank = _MODE_RESTRICTIVENESS
+    if rank.get(parent_mode, 1) <= rank.get(preset_mode, 1):
+        return parent_mode
+    return preset_mode
+
+
 def _derive_perms(parent_perms, mode: str, workspace=None):
     """Clone parent_perms with the sub-agent's mode + optional workspace.
 
     Both fields are optional — the caller passes ``workspace=None`` when
-    no isolation is requested and the parent's workspace inherits.
+    no isolation is requested and the parent's workspace inherits. The child's
+    mode is clamped so it is never more permissive than the parent's.
     """
     if parent_perms is None:
         return None
+    mode = _clamp_child_mode(getattr(parent_perms, "mode", "") or "default", mode)
     try:
         if workspace is not None:
             return dataclasses.replace(parent_perms, mode=mode, workspace=workspace)
