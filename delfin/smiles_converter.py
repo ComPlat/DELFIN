@@ -32378,7 +32378,22 @@ def _smiles_to_xyz_isomers_impl(
                 if e_med <= _UFF_PLAUSIBLE_MAX:
                     natural_spread = max(e_med - e_min, 1.0)
                     cutoff = e_min + max(50.0 * natural_spread, 5000.0)
-                    scored = [t for t in scored if t[0] <= cutoff]
+                    # ADDITIVE-SAFE energy cut (DELFIN_FFFREE_CN6_OH_ADD; byte-identical when OFF).
+                    # The cut targets RUNAWAY UFF energies -- LARGE *FINITE* values thousands of kcal
+                    # above e_min.  A frame with e == inf is NOT a runaway: it is UFF-UNSCOREABLE (the
+                    # energy eval returned None, typical for an unparametrised metal centre like Mn),
+                    # and it already passed the graph-topology output gate above.  The `e_med <= 1e5`
+                    # guard was meant to SKIP the cut precisely when energies are unreliable, but an
+                    # ADDITIVE OC/SP-4 sibling (genuine low finite energy) can drag e_med below that
+                    # floor and so TURN THE CUT ON for a system where it was skipped, deleting valid
+                    # unscoreable isomer primaries (measured: VOYWUD all-trans + trans-OH, manifold
+                    # 72->44, isomers 6->5).  Keeping unscoreable frames makes the additive pass truly
+                    # additive (it can only ADD frames, never remove one) and lets the downstream
+                    # geometry/clean/coord-integrity gates -- not an unreliable UFF number -- decide.
+                    if _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0):
+                        scored = [t for t in scored if (not math.isfinite(t[0])) or t[0] <= cutoff]
+                    else:
+                        scored = [t for t in scored if t[0] <= cutoff]
 
             # Energy-bucket sort — UFF absolute energies are not
             # trustworthy for metals without parameters
