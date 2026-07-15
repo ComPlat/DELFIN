@@ -159,3 +159,46 @@ def test_empty_tool_call_id_is_backfilled(client):
     assert tc_id, "tool_call id was left empty"
     # the tool result must reference the SAME (backfilled) id
     assert any(m.get("tool_call_id") == tc_id for m in tool)
+
+
+# --- B3: context-length overflow ends the turn cleanly, not with a crash ----
+
+def test_is_context_length_error_matches_signatures():
+    from delfin.agent.api_client import _is_context_length_error
+
+    class _E(Exception):
+        pass
+    assert _is_context_length_error(_E("This model's maximum context length "
+                                       "is 8192 tokens"))
+    assert _is_context_length_error(_E("context_length_exceeded"))
+    assert _is_context_length_error(_E("please reduce the length of the "
+                                       "messages"))
+    assert not _is_context_length_error(_E("invalid api key"))
+
+
+def test_context_length_error_ends_turn_gracefully(client):
+    class _CtxErr(Exception):
+        pass
+
+    def _raise_ctx(**kwargs):
+        raise _CtxErr("This model's maximum context length is 8192 tokens; "
+                      "however you requested 9000")
+
+    client.client.chat.completions.create = _raise_ctx
+    # Must NOT raise out of the generator.
+    events = list(client.stream_message(
+        "sys", [{"role": "user", "content": "go"}], max_tokens=100))
+    md = [e for e in events if getattr(e, "type", "") == "message_delta"]
+    assert md and md[-1].stop_reason == "max_context"
+
+
+# --- B3: per-turn output backstop stops a runaway emitter -------------------
+
+def test_output_backstop_stops_runaway_turn(client, monkeypatch):
+    monkeypatch.setenv("DELFIN_MAX_TURN_OUTPUT_TOKENS", "1")
+    # round 0 emits a tool call (so the loop advances); by round 1 the tiny
+    # output cap is already exceeded and the turn stops via the backstop.
+    events, _ = _drive(client, [_tool_round("read_file", "{}"),
+                                _tool_round("read_file", "{}"), _final()])
+    md = [e for e in events if getattr(e, "type", "") == "message_delta"]
+    assert md and md[-1].stop_reason == "max_turn_output"

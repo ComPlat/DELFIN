@@ -6777,6 +6777,25 @@ def _is_transient_api_error(exc: Exception) -> bool:
     return False
 
 
+_CONTEXT_LENGTH_HINTS = (
+    "context_length_exceeded", "context length exceeded",
+    "maximum context length", "reduce the length", "too many tokens",
+    "exceeds the maximum", "prompt is too long", "input is too long",
+)
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    """Whether an API error means the request exceeded the model's context
+    window. Such a 400 is deterministic (retrying the identical request just
+    fails again), so instead of crashing the turn we end it cleanly and let the
+    engine compact before the next turn."""
+    msg = str(exc).lower()
+    if any(h in msg for h in _CONTEXT_LENGTH_HINTS):
+        return True
+    name = type(exc).__name__.lower()
+    return "contextwindow" in name or "contextlength" in name
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
     pool so a multi-subagent turn runs concurrently (parallel
@@ -7331,6 +7350,18 @@ class OpenAIClient(_BaseClient):
         # exhausts the budget, the message_delta below surfaces
         # "max_tool_rounds" and the user can resume with a "continue".
         _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds()
+        # Per-turn OUTPUT-token backstop, independent of _MAX_TOOL_ROUNDS: a
+        # loop that keeps emitting (successful or varied-error calls that dodge
+        # the round / consecutive-fail limits) could otherwise run up unbounded
+        # cost within the round budget. The ceiling is very high — real work
+        # never reaches it; override via DELFIN_MAX_TURN_OUTPUT_TOKENS.
+        try:
+            _max_turn_out = int(os.environ.get(
+                "DELFIN_MAX_TURN_OUTPUT_TOKENS", "") or 0)
+        except (TypeError, ValueError):
+            _max_turn_out = 0
+        if _max_turn_out <= 0:
+            _max_turn_out = 400_000
 
         # Consecutive identical-error abort.
         # Some weaker models (qwen3.5 on KIT vllm) occasionally produce a
@@ -7365,6 +7396,20 @@ class OpenAIClient(_BaseClient):
         _tool_budget = _tool_context_char_budget(_caps)
 
         for _round in range(_MAX_TOOL_ROUNDS + 1):
+            # Output backstop: stop cleanly if this turn's total generated
+            # tokens crossed the (very high) per-turn ceiling. Text emitted so
+            # far was already streamed to the caller, so nothing is lost.
+            if _total_out > _max_turn_out:
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⚠️ This turn generated an unusually large amount of "
+                    "output and was stopped as a safety backstop. Send "
+                    "'continue' to resume if this was intended.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached, stop_reason="max_turn_output")
+                return
             # Semantic context editing: once accumulated tool output over
             # this loop grows large, elide the OLDEST tool results (keep
             # the recent ones + all reasoning) so a long agentic turn
@@ -7490,6 +7535,20 @@ class OpenAIClient(_BaseClient):
                             f"{_delay:.0f}s…\n"))
                         time.sleep(_delay)
                         continue
+                    # Context-window overflow is deterministic — retrying the
+                    # same request just fails again. End the turn cleanly with a
+                    # terminal stop instead of crashing the generator (which
+                    # would discard every round's progress); the engine compacts
+                    # before the next turn. Whatever text/tool results already
+                    # streamed this turn are preserved.
+                    if _is_context_length_error(_stream_exc):
+                        yield StreamEvent(type="text_delta", text=(
+                            "\n⚠️ The request exceeded the model's context "
+                            "window. Ending this turn; the conversation will be "
+                            "compacted before the next one.\n"))
+                        yield StreamEvent(
+                            type="message_delta", stop_reason="max_context")
+                        return
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
