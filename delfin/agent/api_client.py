@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1108,6 +1109,9 @@ class KitToolPermissions:
     # Dashboard / UI session that owns the current task list. Empty means
     # "no active session-scoped task filter".
     task_session_id: str = ""
+    # Sub-agent nesting depth (0 = the top-level agent). _derive_perms bumps it
+    # per child so a delegated agent can't recursively fan out sub-agents.
+    subagent_depth: int = 0
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
@@ -6137,6 +6141,15 @@ class _DocToolExecutor:
                     "have set perms.subagent_runner. Currently None."
                 ),
             })
+        # Nesting guard: a sub-agent at/above the depth cap may not spawn
+        # further sub-agents. Depth rides on the perms (bumped per child in
+        # _derive_perms), not the shared executor. Without it a delegated agent
+        # could recursively fan out (4^depth threads + worktrees).
+        if getattr(perms, "subagent_depth", 0) >= _max_subagent_depth():
+            return json.dumps({"error": (
+                "subagent nesting limit reached: a sub-agent may not spawn "
+                "further sub-agents. Do this part of the work directly."
+            )})
         # Only pass resume_from when set — externally attached runners
         # (tests, custom embeddings) may predate the parameter.
         _resume_kw = {"resume_from": resume_id} if resume_id else {}
@@ -6147,6 +6160,16 @@ class _DocToolExecutor:
         if bool(arguments.get("background")):
             import threading as _th
             import uuid as _uuid
+            # Bound the number of concurrent background sub-agents so a session
+            # can't leak unbounded daemon threads + worktrees. Saturated → tell
+            # the model to wait or run in the foreground instead of spawning.
+            _bg_release = _acquire_bg_subagent_slot()
+            if _bg_release is None:
+                return json.dumps({"error": (
+                    "too many background sub-agents are already running. Wait "
+                    "for some to finish (collect with subagent_result), or run "
+                    "this one in the foreground."
+                )})
             # Reserve the id up-front so the parent can poll/collect this
             # specific run via subagent_result(sa_id) once it finishes.
             _bg_sa_id = _uuid.uuid4().hex[:8]
@@ -6173,6 +6196,11 @@ class _DocToolExecutor:
                         )
                 except Exception:
                     pass
+                finally:
+                    try:
+                        _bg_release()
+                    except Exception:
+                        pass
 
             _th.Thread(target=_bg_run, daemon=True,
                        name=f"subagent-bg-{sa_type}").start()
@@ -6796,6 +6824,56 @@ def _is_context_length_error(exc: Exception) -> bool:
     return "contextwindow" in name or "contextlength" in name
 
 
+def _max_subagent_depth() -> int:
+    """Deepest sub-agent nesting allowed. A child at this depth may not spawn
+    further sub-agents, preventing 4^depth thread/worktree fan-out. Default 1
+    (top-level agent spawns children; children don't spawn). Override via
+    DELFIN_MAX_SUBAGENT_DEPTH."""
+    try:
+        v = int(os.environ.get("DELFIN_MAX_SUBAGENT_DEPTH", "") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else 1
+
+
+# Bound concurrent BACKGROUND sub-agents (the foreground fan-out is already
+# capped at 4 workers). Each background call spawns a daemon thread + possibly
+# a worktree; without a cap a session could leak unbounded threads. Created
+# lazily so the env override is read once, at first use.
+_BG_SUBAGENT_SEM: Optional[threading.BoundedSemaphore] = None
+_BG_SUBAGENT_SEM_LOCK = threading.Lock()
+
+
+def _acquire_bg_subagent_slot():
+    """Non-blocking acquire of a background-subagent slot. Returns a release
+    callable on success, or None when the cap is saturated."""
+    global _BG_SUBAGENT_SEM
+    if _BG_SUBAGENT_SEM is None:
+        with _BG_SUBAGENT_SEM_LOCK:
+            if _BG_SUBAGENT_SEM is None:
+                try:
+                    n = int(os.environ.get("DELFIN_MAX_BG_SUBAGENTS", "") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                _BG_SUBAGENT_SEM = threading.BoundedSemaphore(n if n > 0 else 8)
+    if _BG_SUBAGENT_SEM.acquire(blocking=False):
+        return _BG_SUBAGENT_SEM.release
+    return None
+
+
+def _subagent_collect_timeout() -> float:
+    """Upper bound for waiting on a fanned-out sub-agent future. The child's own
+    wall-clock guard fires per streamed event, but a fully STALLED stream (no
+    events) would never trip it — so the parent abandons the wait a bit past the
+    child's wall budget instead of blocking the whole turn indefinitely."""
+    try:
+        from . import subagents as _sa
+        wall = float(_sa._subagent_limits().get("max_wall_s", 300) or 300)
+    except Exception:
+        wall = 300.0
+    return wall + 120.0
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
     pool so a multi-subagent turn runs concurrently (parallel
@@ -6929,6 +7007,16 @@ class OpenAIClient(_BaseClient):
         kwargs: dict[str, Any] = {"api_key": resolved_key}
         if base_url:
             kwargs["base_url"] = base_url
+        # Explicit per-request timeout so a stalled endpoint (no bytes) is
+        # abandoned on a bounded schedule instead of hanging on the SDK's
+        # implicit default. Generous — legitimate streams emit chunks far more
+        # often; override via DELFIN_REQUEST_TIMEOUT_S.
+        try:
+            _req_timeout = float(os.environ.get(
+                "DELFIN_REQUEST_TIMEOUT_S", "") or 0)
+        except (TypeError, ValueError):
+            _req_timeout = 0.0
+        kwargs["timeout"] = _req_timeout if _req_timeout > 0 else 600.0
         self.client = openai.OpenAI(**kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
@@ -7768,11 +7856,18 @@ class OpenAIClient(_BaseClient):
 
                     if tc["id"] in _sub_futures:
                         # Pre-dispatched parallel subagent — collect result.
+                        # Bounded wait: a stalled child (its per-event wall guard
+                        # can't fire without events) must not freeze the parent
+                        # turn. On timeout the daemon thread keeps running but
+                        # the parent moves on with an error result.
                         try:
-                            result = _sub_futures[tc["id"]].result()
+                            result = _sub_futures[tc["id"]].result(
+                                timeout=_subagent_collect_timeout())
                         except Exception as exc:
+                            _msg = str(exc) or type(exc).__name__
                             result = json.dumps({
-                                "error": f"subagent failed: {exc}"
+                                "error": f"subagent did not finish in time "
+                                         f"or failed: {_msg}"
                             })
                     elif is_mcp:
                         # Shell-executing MCP tools (mcp__kit-coding__bash …)

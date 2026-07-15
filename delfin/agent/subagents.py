@@ -630,12 +630,24 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
     if parent_perms is None:
         return None
     mode = _clamp_child_mode(getattr(parent_perms, "mode", "") or "default", mode)
+    # Bump nesting depth so the child's own subagent calls are refused once the
+    # depth cap is hit (anti-recursion). Falls back gracefully if the perms
+    # type predates the field.
+    depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
     try:
+        extra = {"subagent_depth": depth}
         if workspace is not None:
-            return dataclasses.replace(parent_perms, mode=mode, workspace=workspace)
-        return dataclasses.replace(parent_perms, mode=mode)
+            return dataclasses.replace(
+                parent_perms, mode=mode, workspace=workspace, **extra)
+        return dataclasses.replace(parent_perms, mode=mode, **extra)
     except Exception:
-        return parent_perms
+        try:
+            if workspace is not None:
+                return dataclasses.replace(
+                    parent_perms, mode=mode, workspace=workspace)
+            return dataclasses.replace(parent_perms, mode=mode)
+        except Exception:
+            return parent_perms
 
 
 def run_subagent(
