@@ -366,6 +366,10 @@ class AgentEngine:
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
         self.context_window_tokens: int = 100_000
+        # Last authoritative input-token count the provider reported for a full
+        # request (from message_start). Used as the ground-truth floor of the
+        # compaction estimate so system prompt + tool schemas are never missed.
+        self._last_input_tokens: int = 0
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -799,7 +803,7 @@ class AgentEngine:
     def _build_project_dir_block(self) -> str:
         """High-salience per-turn reminder pinning the project to its first-write
         directory — keeps a long session from drifting into sibling folders."""
-        d = self._project_dir
+        d = getattr(self, "_project_dir", "")
         if not d:
             return ""
         if d == ".":
@@ -1089,6 +1093,12 @@ class AgentEngine:
                     # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
+                        # Snapshot the real per-request input count so the
+                        # compaction budget can use it as a ground-truth floor
+                        # (it includes the system prompt + tool schemas that
+                        # self.messages omits).
+                        if event.input_tokens:
+                            self._last_input_tokens = int(event.input_tokens)
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -1293,7 +1303,18 @@ class AgentEngine:
     _SUMMARY_BLOCK_PREFIX = "[Conversation summary"
 
     def _estimate_context_tokens(self) -> int:
-        """Rough char/4 estimate of tokens in the current message list."""
+        """Estimate the tokens in the NEXT request, not just self.messages.
+
+        The system prompt (repo map, memory, playbook, live-state, tasks) and
+        the advertised tool schemas ride on every request but are not in
+        self.messages. Counting only the messages undercounts the budget, so a
+        request could satisfy ``auto_compact_pct`` yet still blow the provider
+        window (400 context_length_exceeded). So fold in the last built system
+        prompt, and never estimate below the last real tokenizer count the
+        provider reported for this context (that count already includes the
+        tool schemas, so no separate schema constant is needed once a turn has
+        run — and the first turn is far too short to compact anyway).
+        """
         total_chars = 0
         for m in self.messages:
             content = m.get("content", "")
@@ -1301,9 +1322,20 @@ class AgentEngine:
                 total_chars += len(content)
             elif isinstance(content, list):
                 for part in content:
-                    if isinstance(part, dict):
-                        total_chars += len(str(part.get("text", "")))
-        return total_chars // 4
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("text"):
+                        total_chars += len(str(part["text"]))
+                    elif (part.get("type") in ("image", "image_url")
+                          or "image_url" in part or "source" in part):
+                        # An image is invisible to char/4 but real to the model;
+                        # count a fixed ~1500-token allowance instead of 0.
+                        total_chars += 6000
+                    else:
+                        total_chars += len(str(part))
+        est = total_chars // 4
+        est += len(getattr(self, "last_system_prompt", "") or "") // 4
+        return max(est, int(getattr(self, "_last_input_tokens", 0) or 0))
 
     def _should_auto_compact(self) -> bool:
         """True if estimated context exceeds the configured fraction."""
@@ -1651,6 +1683,16 @@ class AgentEngine:
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + recent
+        # `recent` starts with an assistant turn whenever compaction fires right
+        # after a user message was appended, so the assistant_ack above lands
+        # next to it → two consecutive assistant messages. Strict chat templates
+        # (vLLM/KIT/Ollama) reject a non-alternating list; sanitize BEFORE the
+        # request goes out rather than relying on the next turn's cleanup.
+        self._sanitize_messages()
+        # The context just shrank a lot; drop the stale pre-compaction input
+        # floor so the estimate reflects the compacted size immediately (the
+        # next request's message_start repopulates the real count).
+        self._last_input_tokens = 0
 
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {
