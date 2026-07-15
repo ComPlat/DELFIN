@@ -3497,6 +3497,67 @@ class _DocToolExecutor:
         except Exception:
             return False
 
+    def _run_pre_tool_hooks(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+    ) -> Optional[str]:
+        """Run pre_tool_hook + settings PreToolUse hooks. Returns a block-reason
+        string if a hook blocks, else None. Shared by execute() and the MCP
+        dispatch path (which skips execute()) so a PreToolUse matcher on e.g.
+        ``bash`` also catches ``mcp__kit-coding__bash`` (call with the base
+        name)."""
+        if permissions is None:
+            return None
+        if permissions.pre_tool_hook:
+            try:
+                permissions.pre_tool_hook(name, arguments)
+            except Exception:
+                pass
+        try:
+            from . import hooks as _hooks_mod
+            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            if not cfg.is_empty():
+                pre_results = _hooks_mod.run_hooks(
+                    "PreToolUse", cfg, tool_name=name, arguments=arguments,
+                    workspace=permissions.workspace,
+                )
+                blk = _hooks_mod.first_block(pre_results)
+                if blk is not None:
+                    return blk.reason or blk.stderr or "blocked by PreToolUse hook"
+        except Exception:
+            pass
+        return None
+
+    def _run_post_tool_hooks(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], result: str,
+    ) -> None:
+        """Run post_tool_hook + settings PostToolUse hooks + the audit log.
+        Shared with the MCP path so a code-modifying MCP call is audited and
+        post-hooked like its native twin."""
+        if permissions is None:
+            return
+        if permissions.post_tool_hook:
+            try:
+                permissions.post_tool_hook(name, arguments, result)
+            except Exception:
+                pass
+        try:
+            from . import hooks as _hooks_mod
+            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            if not cfg.is_empty():
+                _hooks_mod.run_hooks(
+                    "PostToolUse", cfg, tool_name=name,
+                    arguments={**arguments, "result_preview": (result or "")[:400]},
+                    workspace=permissions.workspace,
+                )
+        except Exception:
+            pass
+        try:
+            self._audit_call(name, arguments, permissions, result)
+        except Exception:
+            pass
+
     def execute(
         self,
         name: str,
@@ -7870,13 +7931,24 @@ class OpenAIClient(_BaseClient):
                                          f"or failed: {_msg}"
                             })
                     elif is_mcp:
-                        # Shell-executing MCP tools (mcp__kit-coding__bash …)
-                        # run REMOTELY and would bypass the native bash gate;
-                        # apply the same content-gate (deny-list, secret/egress
-                        # scan, confirm/head-less block) before forwarding.
+                        # MCP tools skip _DocToolExecutor.execute(), so run the
+                        # SAME PreToolUse hooks + content-gate + audit/PostToolUse
+                        # here, keyed on the un-namespaced base name so a hook or
+                        # audit rule on e.g. `bash`/`write_file` also covers
+                        # `mcp__kit-coding__bash`. Shell-executing MCP tools run
+                        # REMOTELY and would otherwise bypass the native gate.
+                        _mcp_base = (fn_name.rsplit("__", 1)[-1]
+                                     if fn_name.startswith("mcp__") else fn_name)
+                        _hook_block = _doc_executor._run_pre_tool_hooks(
+                            _mcp_base, fn_args, self._permissions)
                         _mcp_block = _doc_executor._gate_mcp_tool(
                             fn_name, fn_args, self._permissions)
-                        if _mcp_block is not None:
+                        if _hook_block is not None:
+                            result = json.dumps({
+                                "error": "blocked_by_hook",
+                                "reason": _hook_block[:1200],
+                            })
+                        elif _mcp_block is not None:
                             result = json.dumps({"error": _mcp_block})
                         else:
                             try:
@@ -7889,6 +7961,8 @@ class OpenAIClient(_BaseClient):
                                 result = json.dumps({
                                     "error": f"MCP dispatch failed: {exc}"
                                 })
+                        _doc_executor._run_post_tool_hooks(
+                            _mcp_base, fn_args, self._permissions, result)
                     elif is_mcp_meta:
                         # MCP resource/prompt meta-tools also skip execute()'s
                         # role check — apply the same deny-by-default so a
