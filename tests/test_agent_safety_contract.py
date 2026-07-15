@@ -69,6 +69,38 @@ def test_coding_role_not_scope_denied_end_to_end(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 1b. The SAME scope deny reaches MCP-dispatched tools. MCP tools skip
+# execute() (they route straight to the registry), so _gate_mcp_tool must
+# re-apply the role allow-list — else the guide reaches source/shell/edit
+# through an MCP backend (bug 20260708-092217, MCP dispatch path).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name,args", [
+    ("mcp__kit-coding__bash", {"command": "cat delfin/agent/engine.py"}),
+    ("mcp__delfin-docs__read_file", {"path": "delfin/agent/engine.py"}),
+    ("mcp__delfin-docs__grep_file", {"pattern": "token"}),
+    ("mcp__delfin-docs__list_files", {"pattern": "**/*.py"}),
+    ("mcp__kit-coding__write_file", {"path": "x.py", "content": "x"}),
+    ("mcp__kit-coding__edit_file",
+     {"path": "x.py", "old_string": "a", "new_string": "b"}),
+])
+def test_dashboard_guide_denied_for_mcp_tools(tmp_path, name, args):
+    ex = _DocToolExecutor()
+    err = ex._gate_mcp_tool(name, args, _dashboard_perms(tmp_path))
+    assert err is not None and "dashboard_agent" in err, \
+        f"{name} not role-denied via MCP dispatch: {err!r}"
+
+
+def test_dashboard_guide_mcp_research_tool_not_scope_denied(tmp_path):
+    # search_docs is on the guide's allow-list → not role-denied even via MCP.
+    ex = _DocToolExecutor()
+    err = ex._gate_mcp_tool(
+        "mcp__delfin-docs__search_docs", {"query": "PBE0"},
+        _dashboard_perms(tmp_path))
+    assert err is None
+
+
+# ---------------------------------------------------------------------------
 # 2. Prompt hygiene: guide role vs coding role
 # ---------------------------------------------------------------------------
 

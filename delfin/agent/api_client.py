@@ -4657,6 +4657,24 @@ class _DocToolExecutor:
             return None
         base = name.rsplit("__", 1)[-1]
 
+        # (0) Per-role execution allow-list. MCP tools are dispatched without
+        # passing through ``execute()``'s deny-by-default role check, so a
+        # restricted role (e.g. dashboard_agent) could otherwise reach
+        # read_file / bash / write_file via an MCP backend. Re-check here so
+        # the allow-list holds regardless of the dispatch path — same intent
+        # as the checkpoint in ``execute``. Roles without an allow-list are
+        # never denied (returns False), so the solo agent is unaffected.
+        if perms is not None:
+            role = getattr(perms, "agent_role", "") or ""
+            if _tool_denied_for_role(role, name):
+                _record_security_event("role_denied_mcp", name, role,
+                                       blocked=True)
+                return (
+                    f"Tool '{name}' is not available to the '{role}' role — "
+                    "its execution allow-list does not include this tool, "
+                    "including via an MCP backend."
+                )
+
         # (1) Shell executors → the bash gate (command payload remapped).
         if base in _MCP_BASH_TOOL_BASES:
             cmd = ""
@@ -7169,7 +7187,14 @@ class OpenAIClient(_BaseClient):
             _ws = self._permissions.workspace if self._permissions else None
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()
+            # Honour the per-role execution allow-list at advertising time too:
+            # a restricted role (dashboard_agent) must not even be OFFERED MCP
+            # tools it may not run. The gate in _gate_mcp_tool is the execution
+            # backstop; this keeps them out of the surface in the first place.
+            _adv_role = getattr(self._permissions, "agent_role", "") or ""
             for _tool in _mcp_tools:
+                if _tool_denied_for_role(_adv_role, _tool.namespaced_name):
+                    continue
                 advertised_tools.append({
                     "type": "function",
                     "function": {
@@ -7190,7 +7215,8 @@ class OpenAIClient(_BaseClient):
                 _mcp_prompts = _registry.discover_prompts()
             except Exception:
                 _mcp_prompts = []
-            if _mcp_resources:
+            if _mcp_resources and not _tool_denied_for_role(
+                    _adv_role, "mcp_read_resource"):
                 _res_list = "; ".join(
                     f"{r.server}:{r.uri}" + (f" ({r.name})" if r.name else "")
                     for r in _mcp_resources[:40]
@@ -7216,7 +7242,8 @@ class OpenAIClient(_BaseClient):
                         },
                     },
                 })
-            if _mcp_prompts:
+            if _mcp_prompts and not _tool_denied_for_role(
+                    _adv_role, "mcp_get_prompt"):
                 _prompt_list = "; ".join(
                     p.namespaced_name
                     + (f" — {p.description}" if p.description else "")
@@ -7662,23 +7689,36 @@ class OpenAIClient(_BaseClient):
                                     "error": f"MCP dispatch failed: {exc}"
                                 })
                     elif is_mcp_meta:
-                        try:
-                            from . import mcp_client as _mcp
-                            _ws = (self._permissions.workspace
-                                   if self._permissions else None)
-                            _reg = _mcp.get_registry(_ws)
-                            if fn_name == "mcp_read_resource":
-                                result = _reg.read_resource(
-                                    str(fn_args.get("server", "")),
-                                    str(fn_args.get("uri", "")))
-                            else:
-                                result = _reg.get_prompt(
-                                    str(fn_args.get("name", "")),
-                                    fn_args.get("arguments") or {})
-                        except Exception as exc:
-                            result = json.dumps({
-                                "error": f"MCP {fn_name} failed: {exc}"
-                            })
+                        # MCP resource/prompt meta-tools also skip execute()'s
+                        # role check — apply the same deny-by-default so a
+                        # restricted role can't read MCP resources it isn't
+                        # allowed to.
+                        _meta_role = getattr(self._permissions, "agent_role",
+                                             "") or ""
+                        if (self._permissions is not None
+                                and _tool_denied_for_role(_meta_role, fn_name)):
+                            result = json.dumps({"error": (
+                                f"Tool '{fn_name}' is not available to the "
+                                f"'{_meta_role}' role."
+                            )})
+                        else:
+                            try:
+                                from . import mcp_client as _mcp
+                                _ws = (self._permissions.workspace
+                                       if self._permissions else None)
+                                _reg = _mcp.get_registry(_ws)
+                                if fn_name == "mcp_read_resource":
+                                    result = _reg.read_resource(
+                                        str(fn_args.get("server", "")),
+                                        str(fn_args.get("uri", "")))
+                                else:
+                                    result = _reg.get_prompt(
+                                        str(fn_args.get("name", "")),
+                                        fn_args.get("arguments") or {})
+                            except Exception as exc:
+                                result = json.dumps({
+                                    "error": f"MCP {fn_name} failed: {exc}"
+                                })
                     else:
                         result = _doc_executor.execute(
                             fn_name, fn_args, permissions=self._permissions

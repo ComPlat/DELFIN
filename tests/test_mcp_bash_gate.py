@@ -264,3 +264,54 @@ def test_mcp_apply_patch_not_remapped(workspace):
     # Not in the write map → returns None here; its own executor gates it.
     assert _mcp_gate(perms, "mcp__kit-coding__apply_patch",
                      {"path": "hello.py", "patch": "..."}) is None
+
+
+# ---------------------------------------------------------------------------
+# Per-role deny-by-default reaches MCP tools too (dashboard_agent leak).
+# MCP tools skip execute()'s role check, so _gate_mcp_tool re-applies it.
+# ---------------------------------------------------------------------------
+
+def _dash(workspace, **kw):
+    return KitToolPermissions(workspace=workspace, mode="default",
+                              agent_role="dashboard_agent", **kw)
+
+
+@pytest.mark.parametrize("name,args", [
+    ("mcp__kit-coding__bash", {"command": "ls"}),          # shell
+    ("mcp__kit-coding__write_file", {"path": "a.py", "content": "x"}),  # write
+    ("mcp__delfin-docs__read_file", {"path": "a.py"}),     # read
+    ("mcp__delfin-docs__grep_file", {"pattern": "x"}),     # search
+])
+def test_dashboard_role_denied_for_forbidden_mcp_tools(workspace, name, args):
+    """dashboard_agent may not reach bash/write/read/grep via an MCP backend —
+    its role allow-list excludes them, and that now holds for MCP dispatch."""
+    err = _mcp_gate(_dash(workspace), name, args)
+    assert err is not None
+    assert "dashboard_agent" in err and "not available" in err.lower()
+
+
+def test_dashboard_role_allows_its_own_mcp_tools(workspace):
+    """A tool that IS on the dashboard allow-list (search_docs) is not
+    role-denied — it returns None (and, being neither shell nor write, is
+    otherwise ungated)."""
+    assert _mcp_gate(_dash(workspace), "mcp__delfin-docs__search_docs",
+                     {"query": "kinetics"}) is None
+
+
+def test_role_deny_takes_precedence_over_content_gate(workspace):
+    """Even a benign auto-allowed shell command is refused for a role that may
+    not run shells at all — the role check fires before the bash gate."""
+    err = _mcp_gate(_dash(workspace), "mcp__kit-coding__bash", {"command": "ls"})
+    assert err is not None and "dashboard_agent" in err
+
+
+def test_unrestricted_role_not_affected_by_role_check(workspace):
+    """A role with no allow-list (the solo agent, agent_role='') is never
+    role-denied; its MCP bash still flows through the normal content gate."""
+    perms = KitToolPermissions(workspace=workspace, mode="default",
+                               agent_role="", confirm_callback=None)
+    # benign auto-allowed → allowed
+    assert _mcp_gate(perms, "mcp__kit-coding__bash", {"command": "ls"}) is None
+    # dangerous → still blocked by the content gate, not the role check
+    err = _mcp_gate(perms, "mcp__kit-coding__bash", {"command": "rm -rf /"})
+    assert err is not None and "deny-pattern" in err.lower()
