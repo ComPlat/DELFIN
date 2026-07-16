@@ -90,6 +90,22 @@ _CHAMPION_FLAGS = (
                           # TOCSAI build-TIMEOUT (additive is a bit slower -> raise per-timeout) and an
                           # axis-record artefact.  Env DELFIN_FFFREE_D8_SQ_ADD; impl smiles_converter batch
                           # loop.  CN4 SQ has ONE polyhedron so no OC/TPR isomer ambiguity (unlike CN6).
+    "CN6_OH_ADD",         # #20: ADDITIVE CN6 octahedron completeness -- adds the OC-6 octahedron isomer as a
+                          # PURELY ADDITIVE sibling for CN6 systems missing it (AVEDOW iso_theory=2: coverage
+                          # 50%->100%, builds the theory-expected 2nd isomer).  landed 2026-07-16, smart-1000
+                          # (full:1000 --ab): 243 affected + 728 byte-identical, cap_LOST=0, cap_gained=4
+                          # (ALUDAO/APIKER/QUHWAT/TADYIJ), good_regressions=0, poly_lost=0, ccdc_isomer_lost=0,
+                          # mean_delta -0.402 (BETTER); never_worse_ok=False ONLY because REALISM+RT not
+                          # measured (--no-mogul), topology_floor=True.  ENABLED BY two two-sided-verified
+                          # eye/gate sharpenings the user's per-frame push surfaced (agent_workspace): (1) the
+                          # polyhedron floor now reads the BEST (min CShM to crystal shape) over ANY realistic
+                          # frame, not the single min-RMSD best_valid frame -- RMSD-selection had hijacked
+                          # AVEDOW/MOYDOV onto the added-isomer sibling -> false poly_lost on a completeness
+                          # WIN; firing-side kept (16 systems still poly_cshm>2, max 33).  (2) ccdc_isomer_lost
+                          # valid-baseline-scoped like ccdc_pucker_lost (SUPTON: NO valid frame either way ->
+                          # its 'realisation' was on a broken frame; firing-side kept -- FONKOL still fires).
+                          # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
+                          # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
