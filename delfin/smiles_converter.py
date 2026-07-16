@@ -22889,12 +22889,59 @@ def _scale_aromatic_rings_to_ideal_cc(
             p = conf.GetAtomPosition(int(i))
             return np.array([p.x, p.y, p.z], dtype=float)
 
+        # --- FUSE-AWARE SCOPING (root fix, never-worse-by-construction) -------
+        # Reconstructing each aromatic ring about ITS OWN centroid is only sound
+        # for an ISOLATED monocyclic aryl.  On a FUSED poly-aromatic backbone
+        # (naphthalene / acenaphthene / quinoline / phenanthroline / indole /
+        # carbazole ...) two rings SHARE atoms: reconstructing ring A drags the
+        # fused ring B (its shared atom's rigid branch carries B along), then B
+        # is rebuilt about a DIFFERENT centroid dragging A back — the shared /
+        # adjacent atoms get inconsistent targets and SUPERIMPOSE, tearing the
+        # backbone (measured: SIBXOS C30-C32 @ 0.07 Å; BIBMEH torn C-N / C-C).
+        # So any ring that shares an atom or edge with ANOTHER aromatic ring is
+        # part of a fused π-system and must NOT be reconstructed in isolation.
+        # We reuse the fused-component union logic from ``_arom_planarize`` and
+        # skip every fused ring, restoring the pass to its intended
+        # isolated-monocyclic-aryl case (crushed pendant phenyls, e.g.
+        # ATABOM / AFALOK — they share no ring atom with any other ring and are
+        # untouched).  The hardened guard below is the belt-and-suspenders for
+        # any fusion this skip cannot see.
+        def _is_arom_candidate(_r):
+            _e = len(_r)
+            if _e < 5 or _e > 6:
+                return False
+            if any(mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                   or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET for i in _r):
+                return False
+            _u = 0
+            for _i in range(_e):
+                _a, _b = _r[_i], _r[(_i + 1) % _e]
+                _bd = mol.GetBondBetweenAtoms(_a, _b)
+                if _bd is None:
+                    continue
+                if _bd.GetBondType() != Chem.BondType.SINGLE or _bd.GetIsAromatic():
+                    _u += 1
+            return _u >= 2
+        _fused_atoms: set = set()
+        try:
+            from delfin.manta._arom_planarize import _fuse_components as _arom_fuse
+            _cand_rings = [tuple(r) for r in ri.AtomRings() if _is_arom_candidate(r)]
+            if len(_cand_rings) >= 2:
+                for _comp in _arom_fuse(_cand_rings):
+                    _cs = set(_comp)
+                    if sum(1 for _r in _cand_rings if set(_r) <= _cs) >= 2:
+                        _fused_atoms |= _cs
+        except Exception:
+            _fused_atoms = set()
+
         changed = False
         for ring in ri.AtomRings():
             eta = len(ring)
             if eta < 5 or eta > 6:
                 continue
             ring_set = set(ring)
+            if ring_set & _fused_atoms:
+                continue  # fused π-system ring — skip isolated rebuild (root fix)
             if any(
                 mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
                 or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
@@ -23091,6 +23138,42 @@ def _scale_aromatic_rings_to_ideal_cc(
             # that would create a fresh inter-fragment crash is reverted.
             moved = list(new_positions.keys())
             moved_set = set(moved)
+            # --- HARD crush floors (fused-ring safety, absolute) --------------
+            # The moved-vs-NON-moved check below is BLIND to a superposition
+            # WITHIN the moved set itself (the fused-ring tug-of-war signature:
+            # ring A places the shared atoms, ring B's later rebuild drags them
+            # to an inconsistent target -> two moved atoms land on top of each
+            # other).  Add (1) a moved-vs-MOVED heavy crush floor and (2) a hard
+            # bond-length-collapse floor over every bond touching a moved atom.
+            # A legitimate isolated-ring repair yields a clean 1.39 Å polygon
+            # (moved-moved min ~1.0 Å, no collapsed bond) so it always passes;
+            # only a crush/collapse — which is never physical — is reverted.
+            _FLOOR = 0.90
+            _mh = [j for j in moved
+                   if mol.GetAtomWithIdx(j).GetAtomicNum() > 1]
+            _crush = False
+            if len(_mh) >= 2:
+                _MP = np.array([new_positions[j] for j in _mh])
+                for _k in range(len(_mh) - 1):
+                    _dd = np.linalg.norm(_MP[_k + 1:] - _MP[_k], axis=1)
+                    if _dd.size and float(_dd.min()) < _FLOOR:
+                        _crush = True
+                        break
+            if not _crush:
+                for _b in mol.GetBonds():
+                    _a1, _a2 = _b.GetBeginAtomIdx(), _b.GetEndAtomIdx()
+                    if _a1 not in moved_set and _a2 not in moved_set:
+                        continue
+                    if (mol.GetAtomWithIdx(_a1).GetAtomicNum() <= 1
+                            or mol.GetAtomWithIdx(_a2).GetAtomicNum() <= 1):
+                        continue
+                    _p1 = new_positions.get(_a1, _pos(_a1))
+                    _p2 = new_positions.get(_a2, _pos(_a2))
+                    if float(np.linalg.norm(_p1 - _p2)) < _FLOOR:
+                        _crush = True
+                        break
+            if _crush:
+                continue  # revert: reconstruction crushed atoms / collapsed a bond
             others = [j for j in range(n_atoms) if j not in moved_set]
             if others:
                 old_moved = np.array([_pos(j) for j in moved])
@@ -23512,6 +23595,24 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
             if all(len([x for x in cadj[m] if x in r]) == 2 for m in rl):
                 clean_rings.append(rl)
 
+        # FUSE-AWARE SCOPING (root fix): reconstructing a ring of a FUSED
+        # π-system about its own centroid tears the backbone (see the RDKit
+        # twin _scale_aromatic_rings_to_ideal_cc — SIBXOS acenaphthene is an
+        # all-carbon fused system this geometry pass also perceives).  Skip any
+        # ring that shares an atom with another perceived ring; only isolated
+        # monocyclic aryls are reconstructed.  Reuses the _arom_planarize union.
+        _fused_atoms = set()
+        try:
+            from delfin.manta._arom_planarize import _fuse_components as _arom_fuse
+            _cr_t = [tuple(r) for r in clean_rings]
+            if len(_cr_t) >= 2:
+                for _comp in _arom_fuse(_cr_t):
+                    _cs = set(_comp)
+                    if sum(1 for _r in _cr_t if set(_r) <= _cs) >= 2:
+                        _fused_atoms |= _cs
+        except Exception:
+            _fused_atoms = set()
+
         def _pos(i):
             return coords[i]
 
@@ -23519,6 +23620,8 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
         for ring in clean_rings:
             eta = len(ring)
             ring_set = set(ring)
+            if ring_set & _fused_atoms:
+                continue  # fused π-system ring — skip isolated rebuild (root fix)
             # ordered ring traversal via connectivity
             radj = {m: [x for x in cadj[m] if x in ring_set] for m in ring}
             order = []
@@ -23675,6 +23778,47 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
                     break
             if not ok or not updates:
                 continue
+            # --- HARD NEVER-WORSE guard (this pass had NONE) ------------------
+            # Never commit a reconstruction that crushes two heavy atoms of the
+            # moved set together (fused tug-of-war), drives a moved atom into a
+            # fixed atom, or collapses a bond.  A clean isolated-ring repair
+            # (1.39 Å polygon, rigid substituent drag) never trips these.
+            _FLOOR = 0.90
+            _mset = set(updates.keys())
+            _mh = [j for j in _mset if syms[j] != 'H']
+            _crush = False
+            if len(_mh) >= 2:
+                _MP = np.array([updates[j] for j in _mh])
+                for _k in range(len(_mh) - 1):
+                    _dd = np.linalg.norm(_MP[_k + 1:] - _MP[_k], axis=1)
+                    if _dd.size and float(_dd.min()) < _FLOOR:
+                        _crush = True
+                        break
+            if not _crush:
+                _oh = [j for j in heavy if j not in _mset]
+                if _oh and _mh:
+                    _OP = np.array([_pos(j) for j in _oh])
+                    for j in _mh:
+                        _dd = np.linalg.norm(_OP - updates[j], axis=1)
+                        if _dd.size and float(_dd.min()) < _FLOOR:
+                            _crush = True
+                            break
+            if not _crush:
+                for j in _mset:
+                    if syms[j] == 'H':
+                        continue
+                    _pj = updates[j]
+                    for _nb in adj[j]:
+                        if syms[_nb] == 'H' or _nb in metal_idx:
+                            continue
+                        _pn = updates.get(_nb, _pos(_nb))
+                        if float(np.linalg.norm(_pj - _pn)) < _FLOOR:
+                            _crush = True
+                            break
+                    if _crush:
+                        break
+            if _crush:
+                continue  # revert this ring: reconstruction would crush / collapse
             for idx, p in updates.items():
                 coords[idx] = p
             changed = True
