@@ -1830,6 +1830,46 @@ def _apply_arom_planarize_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_arom_bond_length_if_enabled(mol, results, dual_parse_done: bool):
+    """Resonance-aware aromatic bond-length equalisation (eye organic-bond-length
+    axis).
+
+    MANTA seats aromatic rings from covalent/distance-geometry priors, leaving the
+    ring bonds drifting toward the SINGLE-bond covalent length and/or alternating
+    (Kekulé-localised) rather than at the DELOCALISED, mesomerism-equalised length
+    — the largest systematic organic-geometry defect on the champion pool.  This
+    final pass reshapes each perceived aromatic ring system so every ring bond
+    sits at its first-principles delocalised target (Pyykkö single↔double radius
+    interpolation at the Hückel benzene fraction f = 2/3: C–C 1.393, C–N 1.333,
+    …), preserving angles/planarity (in-plane PBD, metal-coordinated ring atoms
+    anchored) and rigidly dragging substituents — LENGTHS ONLY.  Per-frame
+    never-worse rollback (ring bond-length deviation must strictly drop, M–D
+    invariant + clash guarded).
+
+    Default-OFF, byte-identical to the build commit when
+    ``DELFIN_FFFREE_AROM_BOND_LENGTH`` is unset (or 0).  Universal (geometric
+    aromatic-ring perception + first-principles covalent-radius target, no SMILES
+    specialisation).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_FFFREE_AROM_BOND_LENGTH", mol, default=0,
+    ):
+        return results
+    try:
+        from delfin.manta._arom_bond_length import correct_results as _abl_correct
+        return _abl_correct(mol, results)
+    except Exception as _abl_exc:
+        try:
+            logger.debug("arom-bond-length skipped: %s", _abl_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_pi_coplanar_m_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-34 (2026-06-19) dispatch — coordinated planar π-donor co-planar-M
     orienter (eye-flagged ABIZIW).
@@ -32886,6 +32926,18 @@ def _smiles_to_xyz_isomers_impl(
     # reduce rollback).  Fixes the ~79% hapto ligand-collapse (validated
     # -20.5pp).  Class-cond default-ON {hapto, multi_hapto}; runs LAST.
     results = _apply_bond_decollapse_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Resonance-aware aromatic bond-length equalisation ───────────────────
+    # Runs AFTER bond-decollapse (whose single-bond-ideal spring would otherwise
+    # re-stretch equalised aromatic bonds): reshape every perceived aromatic ring
+    # system so each ring bond sits at its first-principles DELOCALISED target
+    # (Pyykko single<->double radius interpolation at the Huckel benzene fraction
+    # f=2/3 -> C-C 1.393, C-N 1.333 ...), equalising Kekule alternation and
+    # pulling single-drifted rings back to ~1.39.  In-plane PBD, metal-coordinated
+    # ring atoms anchored, substituents rigidly dragged (lengths only -- angles/
+    # planarity preserved); per-frame ring-bond-deviation never-worse rollback.
+    # Default-OFF byte-id (DELFIN_FFFREE_AROM_BOND_LENGTH).
+    results = _apply_arom_bond_length_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
