@@ -337,6 +337,26 @@ def correct_xyz(xyz: str) -> str:
         if x in coordinated:
             frozen.add(a)
 
+    # NEVER-WORSE SCOPE (2026-07-17, arom_v1 A/B): a ring SYSTEM that touches the
+    # coordination sphere (ANY frozen atom) is left BYTE-IDENTICAL — do not reshape
+    # it at all.  Anchoring only the donor still lets the rest of a coordinated ring
+    # reshape + re-planarise, which SILENTLY distorts the coordination geometry: the
+    # M–D-bond guard checks only donor distances and the clash proxy excludes metals,
+    # so neither sees it — but the eye does (round-trip lost / polyhedron distorted /
+    # graph-geometry regressed on HEGCEC, ZEYMUL, EFEFAZ, SEJFOF, VIBTAC, ERIBEM,
+    # RETFON, LUMTAP).  The mesomeric equalisation is applied ONLY to FREE organic
+    # aromatic systems, where the rigid substituent drag cannot perturb an M–D
+    # relationship.  Coordinated aromatics need their correct delocalised lengths
+    # seated at CONSTRUCTION time (root fix), which is deferred.
+    _act_old = active_atoms
+    active_atoms = set()
+    for atoms in systems:
+        aset = set(atoms)
+        if (aset & _act_old) and not (aset & frozen):
+            active_atoms |= aset
+    if not active_atoms:
+        return xyz                                   # only coordinated rings were off-target
+
     work = _relax_ring_bonds(
         pts, syms, systems, active_atoms, ring_bonds, target, frozen
     )
