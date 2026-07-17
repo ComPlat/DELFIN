@@ -33836,6 +33836,38 @@ def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[
         return None  # fall through
 
 
+def _uff_seat_aromatic_bonds(mol, max_iters: int = 200,
+                             force_constant: float = 1.0e4) -> None:
+    """UFF-minimise ``mol`` with every AROMATIC ring bond harmonically pinned to
+    its delocalised CCDC target length (DELFIN_FFFREE_AROM_SEAT root seat).
+
+    This is the metal-FREE lever: metal-free molecules return from the isomer
+    pool before the post-hoc aromatic corrector ever runs, so the only place a
+    free organic aromatic ring can be seated at its delocalised length is the UFF
+    starting-structure minimisation.  A strong distance constraint holds each
+    aromatic bond at its target while UFF relaxes the ring angles and the
+    substituents coherently (so junction angles co-adapt rather than the ring
+    staying at the covalent-sum length).  Falls back to a plain UFF minimisation
+    when the force field cannot be built.  Mutates ``mol``'s conformer in place,
+    exactly like ``AllChem.UFFOptimizeMolecule``."""
+    from delfin.fffree.aromatic_bond_targets import aromatic_target
+    ff = AllChem.UFFGetMoleculeForceField(mol)
+    if ff is None:                                   # unparametrised → plain UFF
+        AllChem.UFFOptimizeMolecule(mol, maxIters=max_iters)
+        return
+    for bond in mol.GetBonds():
+        if not bond.GetIsAromatic():
+            continue
+        a = bond.GetBeginAtom()
+        b = bond.GetEndAtom()
+        tgt = aromatic_target(a.GetSymbol(), b.GetSymbol())
+        if tgt is None:                              # untabulated pair → leave to UFF
+            continue
+        ff.AddDistanceConstraint(a.GetIdx(), b.GetIdx(), tgt, tgt, force_constant)
+    ff.Initialize()
+    ff.Minimize(maxIts=max_iters)
+
+
 def smiles_to_xyz(
     smiles: str,
     output_path: Optional[str] = None,
@@ -34668,11 +34700,22 @@ def smiles_to_xyz(
 
         # Optional UFF refinement for better starting structures
         if apply_uff and not has_metal:
-            try:
-                AllChem.UFFOptimizeMolecule(mol, maxIters=200)
-                logger.debug("RDKit UFF optimization successful")
-            except Exception as e:
-                logger.info(f"RDKit UFF optimization skipped: {e}")
+            if os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1":
+                # ROOT seat (metal-free path): constrain aromatic ring bonds to
+                # their delocalised CCDC targets during the UFF minimisation so
+                # free organic aromatics are BUILT at the right length.  Default
+                # OFF → the else-branch below is the unchanged original path.
+                try:
+                    _uff_seat_aromatic_bonds(mol, max_iters=200)
+                    logger.debug("RDKit UFF (aromatic-seat) optimization successful")
+                except Exception as e:
+                    logger.info(f"RDKit UFF (aromatic-seat) optimization skipped: {e}")
+            else:
+                try:
+                    AllChem.UFFOptimizeMolecule(mol, maxIters=200)
+                    logger.debug("RDKit UFF optimization successful")
+                except Exception as e:
+                    logger.info(f"RDKit UFF optimization skipped: {e}")
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)

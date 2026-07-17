@@ -63,9 +63,32 @@ _ANGLE_MIN_DEG = 70.0   # optional angle proxy: heavy-heavy-heavy angle < this =
 _F20_OOP_TOL = 0.20     # ring-H out-of-plane tolerance (Å)   (matches detector)
 _F20_RING_TOL = 0.10    # ring planarity tolerance (Å)        (matches detector)
 _F20_AROMATIC = {"C", "N", "O", "S"}
+_AROMATIC_BOND_MAX = 1.46   # mean intra-ring heavy-bond gate (matches
+                            # _arom_planarize._AROMATIC_BOND_MAX)
+_AROM_M_COORD_DIST = 2.6    # atom within this of a metal counts as coordinated;
+                            # a ring TOUCHING the coordination sphere is never
+                            # aromatic-retargeted (LUMTAP never-worse scope)
+
+# Iter 31 (aromatic bond-length ROOT seat, DELFIN_FFFREE_AROM_SEAT): when on, the
+# per-bond SPRING TARGET of this final decollapse pass uses the delocalised CCDC
+# aromatic length for bonds KNOWN to be aromatic ring bonds, so the spring cannot
+# re-elongate an aromatic ring bond that refine/UFF already seated back toward the
+# single-bond covalent sum (~1.52 for C–C).  Default OFF → byte-identical.  ONLY
+# the spring target consults this (via aromatic=True); the bond-graph, collapse
+# and M–D primitives keep the covalent-sum ideal (aromatic=False) so connectivity
+# perception is unchanged.
+_AROM_SEAT = os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1"
 
 
-def _ideal_bond(a: str, b: str) -> float:
+def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
+    if aromatic and _AROM_SEAT:
+        try:
+            from delfin.fffree.aromatic_bond_targets import aromatic_target
+            t = aromatic_target(a, b)
+        except Exception:
+            t = None
+        if t is not None:
+            return t
     return _COV.get(a, 0.9) + _COV.get(b, 0.9)
 
 
@@ -140,6 +163,71 @@ def _geometric_bonds(syms, P) -> List[Tuple[int, int]]:
             if d < 1.30 * _ideal_bond(syms[i], syms[j]):
                 bonds.append((i, j))
     return bonds
+
+
+def _aromatic_ring_bonds(syms, P, bonds) -> set:
+    """Set of (min,max) heavy–heavy bonds lying in a geometric 5/6-ring of
+    aromatic-eligible atoms (C/N/O/S) whose mean intra-ring bond is in the
+    aromatic band (< _AROMATIC_BOND_MAX).  Self-contained (mirrors the
+    _arom_planarize detector but stays inside this module, so the graph path
+    keeps no cross-import) and used only to select the aromatic spring target;
+    returns the empty set unless the seat flag is on (caller guards)."""
+    n = len(syms)
+    arom_nbr: List[List[int]] = [[] for _ in range(n)]
+    for i, j in bonds:
+        if (syms[i] in _F20_AROMATIC and syms[j] in _F20_AROMATIC
+                and not _is_metal(syms[i]) and not _is_metal(syms[j])):
+            arom_nbr[i].append(j); arom_nbr[j].append(i)
+    # coordination sphere (atoms within _AROM_M_COORD_DIST of a metal) + full heavy
+    # +H adjacency, so a ring that TOUCHES it (a ring atom is, or is bonded to, a
+    # coordinated atom) is left byte-identical: reshaping a coordinated ring distorts
+    # the coordination geometry the eye perceives (the LUMTAP never-worse scope that
+    # the refine seat also uses).
+    coord: set = set()
+    metals = [i for i in range(n) if _is_metal(syms[i])]
+    for m in metals:
+        for a in range(n):
+            if a != m and float(np.linalg.norm(P[a] - P[m])) < _AROM_M_COORD_DIST:
+                coord.add(a)
+    full_adj: List[List[int]] = [[] for _ in range(n)]
+    if coord:
+        for i, j in bonds:
+            full_adj[i].append(j); full_adj[j].append(i)
+    rings: set = set()
+    for start in range(n):
+        if syms[start] not in _F20_AROMATIC:
+            continue
+        stack = [(start, [start])]
+        while stack:
+            cur, path = stack.pop()
+            if len(path) > 6:
+                continue
+            for nx in arom_nbr[cur]:
+                if nx == path[0] and len(path) >= 5:
+                    rings.add(tuple(sorted(path)))
+                    continue
+                if nx in path:
+                    continue
+                if len(path) < 6:
+                    stack.append((nx, path + [nx]))
+    out: set = set()
+    for ring in rings:
+        rset = set(ring)
+        if coord and any((a in coord) or any(nb in coord for nb in full_adj[a])
+                         for a in ring):
+            continue                       # coordinated ring — leave byte-identical
+        lens: List[float] = []
+        edges: List[Tuple[int, int]] = []
+        for i in ring:
+            for j in arom_nbr[i]:
+                if j in rset and j > i:
+                    lens.append(float(np.linalg.norm(P[i] - P[j])))
+                    edges.append((i, j))
+        if not lens or (sum(lens) / len(lens)) >= _AROMATIC_BOND_MAX:
+            continue                       # saturated / non-aromatic ring
+        for (i, j) in edges:
+            out.add((min(i, j), max(i, j)))
+    return out
 
 
 def _neighbor_exclusion(n: int, bonds: List[Tuple[int, int]]) -> List[set]:
@@ -356,10 +444,16 @@ def correct_xyz(mol, xyz: str) -> str:
     _bi: List[int] = []
     _bj: List[int] = []
     _btgt: List[float] = []
+    # Aromatic ring bonds get the delocalised spring target when the seat flag is
+    # on; empty set otherwise → every _ideal_bond call below is aromatic=False →
+    # byte-identical spring targets.
+    _arom_set = _aromatic_ring_bonds(syms, P, bonds) if _AROM_SEAT else frozenset()
     for i, j in bonds:
         if syms[i] == 'H' or syms[j] == 'H':
             continue
-        _bi.append(i); _bj.append(j); _btgt.append(_ideal_bond(syms[i], syms[j]))
+        _bi.append(i); _bj.append(j)
+        _btgt.append(_ideal_bond(
+            syms[i], syms[j], (min(i, j), max(i, j)) in _arom_set))
     bond_i = np.asarray(_bi, dtype=np.intp)
     bond_j = np.asarray(_bj, dtype=np.intp)
     bond_tgt = np.asarray(_btgt, dtype=float)
