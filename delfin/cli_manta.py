@@ -106,6 +106,14 @@ _CHAMPION_FLAGS = (
                           # its 'realisation' was on a broken frame; firing-side kept -- FONKOL still fires).
                           # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
                           # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
+    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the CCDC delocalised
+                          # targets (C-C 1.387 / C-N 1.349 / C-O 1.369 / C-S 1.732 / N-N 1.364 = the eye's
+                          # org_prior "ar" mu).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
+                          # coordination byte-identical, never-worse by construction) + UFF AddDistanceConstraint
+                          # on the metal-free path + bond_decollapse target.  landed 2026-07-17 (night):
+                          # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
+                          # never-worse (n=3, within band).  Reach = FREE aromatics only; coordinated aromatics
+                          # deferred to embed-time seating (AROM_EMBED_SEAT, separate).  Env DELFIN_FFFREE_AROM_SEAT.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
