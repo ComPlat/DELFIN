@@ -20,8 +20,8 @@ It needs no live model and no network.  Exit code 0 = safe to ship,
 3. **Agent prompts present** — the role prompts the modes depend on exist
    and are non-empty.
 
-This makes the same regression discipline we use here in Claude CLI a
-one-command gate for anyone optimising the agent.
+This makes the regression discipline a one-command gate for anyone
+optimising the agent.
 """
 
 from __future__ import annotations

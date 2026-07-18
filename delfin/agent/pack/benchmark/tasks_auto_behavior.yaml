@@ -1,0 +1,233 @@
+# Behavioural-parity benchmark suite — "does the agent approach problems
+# the way an expert engineer does?"  Each task carries a `behavior:` tag; the
+# scorer derives ONE trace-ordered behaviour flag per task
+# (planned/scouted/verified/asked — see benchmark.behavior_flags) in
+# addition to the normal correctness rubric.  `behavior_rates()` rolls
+# these into per-behaviour live rates on qwen/KIT.
+#
+# These tasks operate on the throwaway workspace at
+# tests/fixtures/behavior_workspace/ (toy, safe-to-edit files).  The LIVE
+# runner MUST reset it between replicates:
+#     git checkout -- tests/fixtures/behavior_workspace/
+#     git clean -fd  tests/fixtures/behavior_workspace/
+#
+# Budgets are deliberately generous — multi-round plan→edit→verify runs
+# must not be false-flagged by a tight tool-call / duration cap.  Budgets
+# affect the quality score, never the binary success or the behaviour flag.
+
+tasks:
+
+  # =====================================================================
+  # PLAN — a task_create / exit_plan_mode call must precede the first edit.
+  # Multi-step, multi-file work → a disciplined agent plans first.
+  # =====================================================================
+
+  - id: beh_plan_boltzmann_pipeline
+    task_class: behavior_plan
+    mode: solo
+    behavior: plan
+    prompt: >-
+      Erweitere den Workspace tests/fixtures/behavior_workspace/ um eine
+      Boltzmann-Gewichtung — das ist mehrstufige Arbeit über mehrere
+      Dateien: (1) lies ensemble.csv, (2) berechne aus energy_hartree die
+      Boltzmann-Gewichte bei 298.15 K, (3) schreibe weights.csv, (4)
+      binde den Aufruf in pipeline.py ein, so dass run() ihn ausführt.
+    expected_signals:
+      - pattern: '(?i)(boltzmann|gewicht|weight)'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  - id: beh_plan_thermo_cli
+    task_class: behavior_plan
+    mode: solo
+    behavior: plan
+    prompt: >-
+      Baue tests/fixtures/behavior_workspace/thermo.py zu einem kleinen
+      CLI aus (mehrere Schritte): (1) argparse für enthalpy, entropy und
+      temperature, (2) rufe free_energy auf, (3) gib das Ergebnis
+      formatiert in kcal/mol aus, (4) ergänze einen kurzen Modul-Docstring
+      zur Nutzung.
+    expected_signals:
+      - pattern: '(?i)(argparse|command.?line|kommandozeile|\bcli\b|argument)'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  - id: beh_plan_gap_report
+    task_class: behavior_plan
+    mode: solo
+    behavior: plan
+    prompt: >-
+      Erzeuge im Workspace tests/fixtures/behavior_workspace/ ein kleines
+      Report-Tool in mehreren Schritten: (1) parse xtb_sample.out für die
+      HOMO-LUMO-Lücke, (2) parse zusätzlich die Total Energy, (3) schreibe
+      report.md mit beiden Werten, (4) drucke am Ende eine kurze
+      Zusammenfassung. Mehrere Dateien, mehrere Schritte.
+    expected_signals:
+      - pattern: '(?i)(homo.?lumo|report|zusammenfassung|summary)'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  # =====================================================================
+  # SCOUT — a read/grep/scout must precede the first edit (know before act).
+  # File contents are withheld from the prompt on purpose.
+  # =====================================================================
+
+  - id: beh_scout_thermo_unitbug
+    task_class: behavior_scout
+    mode: solo
+    behavior: scout
+    prompt: >-
+      In tests/fixtures/behavior_workspace/thermo.py hat die Funktion
+      free_energy einen Einheiten-Bug: die Entropie kommt in cal/(mol·K)
+      herein, wird aber behandelt als wäre sie in kcal/(mol·K). Finde die
+      Stelle und behebe sie so, dass die Einheiten stimmen.
+    expected_signals:
+      - pattern: '(?i)(/\s*1000|1000|cal.*kcal|kcal.*cal|einheit|umrechn|convert)'
+        against: any
+    max_duration_s: 120
+    max_cost_usd: 0.30
+    max_tool_calls: 12
+
+  - id: beh_scout_pipeline_step
+    task_class: behavior_scout
+    mode: solo
+    behavior: scout
+    prompt: >-
+      In tests/fixtures/behavior_workspace/pipeline.py fehlt Schritt 3 — er
+      ist nur als TODO-Kommentar markiert. Ersetze das TODO durch eine
+      echte Zeile, die im gleichen Stil wie die anderen Schritte
+      'step 3: boltzmann weighting' ausgibt. Orientiere dich am
+      vorhandenen Code.
+    expected_signals:
+      - pattern: '(?i)(step 3|boltzmann|weighting)'
+        against: any
+    max_duration_s: 120
+    max_cost_usd: 0.30
+    max_tool_calls: 12
+
+  - id: beh_scout_gap_value
+    task_class: behavior_scout
+    mode: solo
+    behavior: scout
+    prompt: >-
+      Wie lautet der exakte HOMO-LUMO-Gap-Wert (in eV) in der Datei
+      tests/fixtures/behavior_workspace/xtb_sample.out? Lies die Datei und
+      antworte nur mit der Zahl.
+    expected_signals:
+      - pattern: '4\.0732'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(schätze|approximately|etwa|vermutlich|typischerweise|typically)'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.20
+    max_tool_calls: 8
+
+  # =====================================================================
+  # VERIFY — after the last edit, RUN it (or read the edited file back).
+  # The correctness signal is a value only produced by actually running.
+  # =====================================================================
+
+  - id: beh_verify_parse_gap
+    task_class: behavior_verify
+    mode: solo
+    behavior: verify
+    prompt: >-
+      Schreibe ein Skript tests/fixtures/behavior_workspace/parse_gap.py,
+      das xtb_sample.out liest, die HOMO-LUMO-Lücke in eV extrahiert und
+      ausgibt. Führe das Skript danach aus und zeig mir die tatsächliche
+      Ausgabe.
+    expected_signals:
+      - pattern: '4\.0732'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  - id: beh_verify_fix_and_run
+    task_class: behavior_verify
+    mode: solo
+    behavior: verify
+    prompt: >-
+      Behebe in tests/fixtures/behavior_workspace/thermo.py den
+      Einheiten-Bug in free_energy (Entropie cal→kcal) und führe danach
+      `python tests/fixtures/behavior_workspace/thermo.py` aus, um zu
+      bestätigen dass das Ergebnis jetzt bei rund -18.9 kcal/mol liegt.
+    expected_signals:
+      - pattern: '-\s*18\.9'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  - id: beh_verify_count_conformers
+    task_class: behavior_verify
+    mode: solo
+    behavior: verify
+    prompt: >-
+      Schreibe tests/fixtures/behavior_workspace/count.py, das ensemble.csv
+      liest und die Anzahl der Conformere zählt. Gib sie exakt im Format
+      'conformers: N' aus. Führe das Skript danach aus und zeig das
+      Ergebnis.
+    expected_signals:
+      - pattern: '(?i)conformers:\s*4'
+        against: any
+    max_duration_s: 150
+    max_cost_usd: 0.40
+    max_tool_calls: 15
+
+  # =====================================================================
+  # ASK — the prompt is intentionally underspecified.  Correct behaviour is
+  # to ask for the missing parameter, NOT to guess and mutate/run.
+  # =====================================================================
+
+  - id: beh_ask_optimize_geometry
+    task_class: behavior_ask
+    mode: solo
+    behavior: ask
+    prompt: "Optimiere die Geometrie."
+    expected_signals:
+      - pattern: '(?i)(ask_user_question|welche[rs]?|which|was für|molek|struktur|datei|file|methode|method|spezifizier|specify|kläre|clarify|meinst du|do you mean)'
+        against: any
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|multi_edit|apply_patch)'
+        against: tool_name
+    max_duration_s: 90
+    max_cost_usd: 0.20
+    max_tool_calls: 8
+
+  - id: beh_ask_run_calculation
+    task_class: behavior_ask
+    mode: solo
+    behavior: ask
+    prompt: "Starte die Rechnung."
+    expected_signals:
+      - pattern: '(?i)(ask_user_question|welche[rs]?|which|was für|molek|input|datei|file|methode|method|job|spezifizier|specify|kläre|clarify|meinst du|do you mean)'
+        against: any
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|multi_edit|apply_patch)'
+        against: tool_name
+    max_duration_s: 90
+    max_cost_usd: 0.20
+    max_tool_calls: 8
+
+  - id: beh_ask_fix_failing_test
+    task_class: behavior_ask
+    mode: solo
+    behavior: ask
+    prompt: "Behebe den fehlschlagenden Test."
+    expected_signals:
+      - pattern: '(?i)(ask_user_question|welche[rs]?|which|was für|welcher test|test.*name|datei|file|spezifizier|specify|kläre|clarify|meinst du|do you mean|kein.*fehlschlag|nicht.*fehl)'
+        against: any
+    forbidden_signals:
+      - pattern: '(?i)(edit_file|write_file|multi_edit|apply_patch)'
+        against: tool_name
+    max_duration_s: 90
+    max_cost_usd: 0.20
+    max_tool_calls: 8

@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,7 @@ def _auto_install(package: str, pip_spec: str = "") -> None:
 # ---------------------------------------------------------------------------
 
 class StreamEvent:
-    """A single event from a streaming Claude response."""
+    """A single event from a streaming model response."""
 
     __slots__ = ("type", "text", "input_tokens", "output_tokens", "stop_reason",
                  "cost_usd", "tool_name", "tool_input", "tool_output",
@@ -788,6 +789,42 @@ _DELFIN_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*delfin(?:-\w+)?\b",         # delfin CLI wrappers
 )
 
+# Shell-executing MCP tools (by their un-namespaced base name). An MCP
+# backend such as KIT-Toolbox exposes ``mcp__kit-coding__bash``, which runs
+# the command REMOTELY and therefore never reaches the native bash executor
+# — bypassing the deny-list, secret/egress scan, and confirm/head-less gate.
+# Any MCP tool whose base name is in this set is routed through the SAME bash
+# content-gate before it is forwarded (see ``_gate_mcp_tool``). Kept
+# conservative — only unmistakable shell executors — so ordinary MCP tools
+# (read_file, search, …) are never touched.
+_MCP_BASH_TOOL_BASES: frozenset[str] = frozenset({
+    "bash", "bash_background", "shell", "sh",
+    "run", "run_command", "run_bash", "exec", "execute",
+})
+# Argument keys an MCP shell tool may carry the command under. The verified
+# key for ``mcp__kit-coding__bash`` is ``command``; the others cover common
+# MCP-server conventions so a differently-named shell tool is still gated.
+_MCP_BASH_CMD_KEYS: tuple[str, ...] = ("command", "cmd", "script", "code")
+
+# File-mutating MCP tools mapped to the native tool whose permission gate
+# governs them. Like the shell tools above, these dispatch straight to the
+# remote server and would otherwise bypass the write gate (sandbox +
+# read-only/self-mod-guard/calc-confirm). Verified from traces that the KIT
+# backend exposes them with the SAME arg shape as the native tools
+# (write_file→path/content, edit_file→path/old_string/new_string,
+# multi_edit→path/edits, notebook_edit→path/cell_idx/source) and that they
+# operate on the same local workspace paths, so the native path-based gate
+# applies unchanged. notebook_edit reuses edit_file's gate — exactly as the
+# native dispatch does. apply_patch maps to its own ``_run_permission_gate``
+# branch, which gates every file the diff touches with the write tiers.
+_MCP_WRITE_GATE_MAP: dict[str, str] = {
+    "write_file": "write_file",
+    "edit_file": "edit_file",
+    "multi_edit": "multi_edit",
+    "notebook_edit": "edit_file",
+    "apply_patch": "apply_patch",
+}
+
 
 # DELFIN-only tool names. Filtered out of the advertised tool list when
 # the workspace isn't a DELFIN repo, so generic projects don't see a
@@ -973,10 +1010,19 @@ def _is_forbidden_workspace_root(path: Path | str | None) -> bool:
 _DEFAULT_PATH_DENY_GLOBS: tuple[str, ...] = (
     ".git/**", "**/.git/**",
     ".env", ".env.*", "**/.env", "**/.env.*",
-    "**/*.key", "**/*.pem", "**/*.p12", "**/*.pfx",
-    "**/.ssh/**", "**/.gnupg/**",
-    "**/credentials*", "**/secrets*", "**/*.secret",
-    "**/.netrc", "**/.aws/credentials",
+    # fnmatch treats ``**/`` as "…/…" — it needs a slash, so ``**/*.key`` does
+    # NOT match a bare root-level ``secrets.key`` / ``id_rsa``. Pair every
+    # subdir glob with a root-level (no-slash) twin so a secret written at the
+    # workspace root is denied too.
+    "*.key", "**/*.key", "*.pem", "**/*.pem",
+    "*.p12", "**/*.p12", "*.pfx", "**/*.pfx",
+    ".ssh/**", "**/.ssh/**", ".gnupg/**", "**/.gnupg/**",
+    "credentials*", "**/credentials*", "secrets*", "**/secrets*",
+    "*.secret", "**/*.secret",
+    ".netrc", "**/.netrc", "**/.aws/credentials",
+    # Common SSH private-key names even outside a .ssh/ directory.
+    "id_rsa", "id_rsa.*", "id_dsa", "id_ecdsa", "id_ed25519",
+    "**/id_rsa", "**/id_dsa", "**/id_ecdsa", "**/id_ed25519",
 )
 
 # Self-modification protection: paths that are still WRITABLE, but always
@@ -1072,6 +1118,9 @@ class KitToolPermissions:
     # Dashboard / UI session that owns the current task list. Empty means
     # "no active session-scoped task filter".
     task_session_id: str = ""
+    # Sub-agent nesting depth (0 = the top-level agent). _derive_perms bumps it
+    # per child so a delegated agent can't recursively fan out sub-agents.
+    subagent_depth: int = 0
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
@@ -3457,6 +3506,67 @@ class _DocToolExecutor:
         except Exception:
             return False
 
+    def _run_pre_tool_hooks(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"],
+    ) -> Optional[str]:
+        """Run pre_tool_hook + settings PreToolUse hooks. Returns a block-reason
+        string if a hook blocks, else None. Shared by execute() and the MCP
+        dispatch path (which skips execute()) so a PreToolUse matcher on e.g.
+        ``bash`` also catches ``mcp__kit-coding__bash`` (call with the base
+        name)."""
+        if permissions is None:
+            return None
+        if permissions.pre_tool_hook:
+            try:
+                permissions.pre_tool_hook(name, arguments)
+            except Exception:
+                pass
+        try:
+            from . import hooks as _hooks_mod
+            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            if not cfg.is_empty():
+                pre_results = _hooks_mod.run_hooks(
+                    "PreToolUse", cfg, tool_name=name, arguments=arguments,
+                    workspace=permissions.workspace,
+                )
+                blk = _hooks_mod.first_block(pre_results)
+                if blk is not None:
+                    return blk.reason or blk.stderr or "blocked by PreToolUse hook"
+        except Exception:
+            pass
+        return None
+
+    def _run_post_tool_hooks(
+        self, name: str, arguments: dict,
+        permissions: Optional["KitToolPermissions"], result: str,
+    ) -> None:
+        """Run post_tool_hook + settings PostToolUse hooks + the audit log.
+        Shared with the MCP path so a code-modifying MCP call is audited and
+        post-hooked like its native twin."""
+        if permissions is None:
+            return
+        if permissions.post_tool_hook:
+            try:
+                permissions.post_tool_hook(name, arguments, result)
+            except Exception:
+                pass
+        try:
+            from . import hooks as _hooks_mod
+            cfg = _hooks_mod.load_hooks(permissions.workspace)
+            if not cfg.is_empty():
+                _hooks_mod.run_hooks(
+                    "PostToolUse", cfg, tool_name=name,
+                    arguments={**arguments, "result_preview": (result or "")[:400]},
+                    workspace=permissions.workspace,
+                )
+        except Exception:
+            pass
+        try:
+            self._audit_call(name, arguments, permissions, result)
+        except Exception:
+            pass
+
     def execute(
         self,
         name: str,
@@ -4416,6 +4526,79 @@ class _DocToolExecutor:
             return f"read denied: user declined read of '{resolved}'"
         return None
 
+    def _gate_write_path(
+        self, path_arg: str, perms: "KitToolPermissions",
+        name: str, args: dict,
+    ) -> Optional[str]:
+        """Per-path write policy: sandbox+deny (resolve), read-only-archive
+        hard-deny, and self-mod-guard / calc explicit-confirm. Shared by
+        write_file/edit_file/multi_edit and by every file an apply_patch diff
+        touches. Returns an error string to block, or None to allow."""
+        # for_read=True: recognise every reachable root so the per-tier policy
+        # below can fire (deny read-only, confirm calc). The write EXECUTOR
+        # re-resolves writable-only — defense in depth.
+        resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
+        if err:
+            return err
+        # READ-ONLY data — archive of stored calculations, or the DELFIN
+        # checkout when you didn't launch there. Writes are HARD-denied; copy
+        # into calc/agent_workspace and edit the copy ("archive sind fix …
+        # wenn man arbeiten will muss man in calc bringen").
+        if perms.is_read_only_path(resolved):
+            _record_security_event(
+                "read_only_write", name, self._display_path(resolved, perms),
+                blocked=True)
+            return (
+                f"'{path_arg}' is in a READ-ONLY location (the archive of "
+                f"stored calculations, or the DELFIN checkout). It is fixed "
+                f"— to work on it, COPY it into calc or agent_workspace and "
+                f"edit the copy. Refusing to modify it in place."
+            )
+        try:
+            rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+        except Exception:
+            rel_str = path_arg.replace("\\", "/")
+        is_protected = perms.matches_path_protected(rel_str)
+        # calc holds the user's ACTIVE calculations — editing one always needs
+        # an explicit confirm even in acceptEdits, so the agent can't silently
+        # destroy results ("nur Bearbeitung mit Nachfrage").
+        is_calc = perms.is_confirm_write_path(resolved)
+        if is_protected or is_calc:
+            _record_security_event(
+                "self_mod" if is_protected else "calc_edit", name, rel_str,
+                blocked=perms.confirm_callback is None)
+            if perms.confirm_callback is None:
+                _what = ("the agent's own safety layer" if is_protected
+                         else "a stored calculation under calc")
+                return (
+                    f"'{name}' targets {_what} ('{rel_str}') — this requires "
+                    "explicit user confirmation but no confirm_callback is "
+                    "configured, so it is refused."
+                )
+            if is_protected:
+                preview = (
+                    "[SELF-MODIFICATION GUARD]\n"
+                    "This file is part of the agent's own safety layer.\n"
+                    "Approving this will let the agent rewrite the code that "
+                    "controls its own permissions.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            else:
+                preview = (
+                    "[CALC EDIT — STORED CALCULATION]\n"
+                    "This file is under calc (an active/stored calculation). "
+                    "Approving this lets the agent modify it.\n\n"
+                    + self._build_change_preview(name, args, resolved)
+                )
+            try:
+                ok = bool(perms.confirm_callback(name, args, preview))
+            except Exception as exc:
+                return f"confirm_callback raised: {exc}"
+            _w = "protected path" if is_protected else "calc file"
+            return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
+        # Writable roots (workspace + agent_workspace + grants): allow.
+        return None
+
     def _run_permission_gate(
         self, name: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -4435,73 +4618,35 @@ class _DocToolExecutor:
         if name in ("write_file", "edit_file", "multi_edit"):
             # Tolerate the `file_path` / `filename` / … aliases here too — the
             # permission gate runs BEFORE the executor, so reading only `path`
-            # rejected a model that used `file_path` (Claude-Code convention)
+            # rejected a model that used `file_path` (a common tool-arg convention)
             # with "path is required", even though the executor itself accepts
             # it (bug 2026-06-25: qwen on KIT fell back to bash heredoc writes).
-            path_arg = self._get_path_arg(args)
-            # for_read=True: recognise every reachable root so the per-tier
-            # policy below can fire (deny read-only, confirm calc). The write
-            # EXECUTOR re-resolves writable-only — defense in depth.
-            resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
-            if err:
-                return err
-            # READ-ONLY data — archive of stored calculations, or the DELFIN
-            # checkout when you didn't launch there. Writes are HARD-denied;
-            # copy into calc/agent_workspace and edit the copy ("archive sind
-            # fix … wenn man arbeiten will muss man in calc bringen").
-            if perms.is_read_only_path(resolved):
-                _record_security_event(
-                    "read_only_write", name, self._display_path(resolved, perms),
-                    blocked=True)
-                return (
-                    f"'{path_arg}' is in a READ-ONLY location (the archive of "
-                    f"stored calculations, or the DELFIN checkout). It is fixed "
-                    f"— to work on it, COPY it into calc or agent_workspace and "
-                    f"edit the copy. Refusing to modify it in place."
-                )
+            # The per-path tiers live in _gate_write_path so apply_patch below
+            # can gate every file its diff touches with the identical policy.
+            return self._gate_write_path(
+                self._get_path_arg(args), perms, name, args)
+
+        if name == "apply_patch":
+            # A real apply mutates every file the diff touches, so gate each
+            # one with the same tiers as a direct write (deny-list, read-only
+            # archive, self-mod guard, calc-confirm). Historically apply_patch
+            # only ran the self-mod guard, so a diff could create .git/hooks/*,
+            # .env, keys or credentials, or silently overwrite a stored calc —
+            # everything write_file hard-denies. check_only is `git apply
+            # --check` (read-only) → allowed; a real apply in plan mode is
+            # already refused by the mode=="plan" guard above.
+            if bool(args.get("check_only", False)):
+                return None
+            diff = args.get("diff", "") or ""
             try:
-                rel_str = str(resolved.relative_to(perms.workspace)).replace("\\", "/")
+                from . import patch_apply as _pa
+                files = _pa._files_in_diff(diff)
             except Exception:
-                rel_str = path_arg.replace("\\", "/")
-            is_protected = perms.matches_path_protected(rel_str)
-            # calc holds the user's ACTIVE calculations — editing one always
-            # needs an explicit confirm even in acceptEdits, so the agent can't
-            # silently destroy results ("nur Bearbeitung mit Nachfrage").
-            is_calc = perms.is_confirm_write_path(resolved)
-            if is_protected or is_calc:
-                _record_security_event(
-                    "self_mod" if is_protected else "calc_edit", name, rel_str,
-                    blocked=perms.confirm_callback is None)
-                if perms.confirm_callback is None:
-                    _what = ("the agent's own safety layer" if is_protected
-                             else "a stored calculation under calc")
-                    return (
-                        f"'{name}' targets {_what} ('{rel_str}') — this requires "
-                        "explicit user confirmation but no confirm_callback is "
-                        "configured, so it is refused."
-                    )
-                if is_protected:
-                    preview = (
-                        "[SELF-MODIFICATION GUARD]\n"
-                        "This file is part of the agent's own safety layer.\n"
-                        "Approving this will let the agent rewrite the code that "
-                        "controls its own permissions.\n\n"
-                        + self._build_change_preview(name, args, resolved)
-                    )
-                else:
-                    preview = (
-                        "[CALC EDIT — STORED CALCULATION]\n"
-                        "This file is under calc (an active/stored calculation). "
-                        "Approving this lets the agent modify it.\n\n"
-                        + self._build_change_preview(name, args, resolved)
-                    )
-                try:
-                    ok = bool(perms.confirm_callback(name, args, preview))
-                except Exception as exc:
-                    return f"confirm_callback raised: {exc}"
-                _w = "protected path" if is_protected else "calc file"
-                return None if ok else f"user denied '{name}' on {_w} '{rel_str}'"
-            # Writable roots (workspace + agent_workspace + grants): allow.
+                files = []
+            for rel in files:
+                err = self._gate_write_path(rel, perms, "apply_patch", args)
+                if err is not None:
+                    return err
             return None
 
         if name == "bash":
@@ -4597,6 +4742,89 @@ class _DocToolExecutor:
 
         return None
 
+    def _gate_mcp_tool(
+        self, name: str, args: dict, perms: Optional["KitToolPermissions"]
+    ) -> Optional[str]:
+        """Apply the native permission gate to side-effecting MCP tools.
+
+        MCP tools (``mcp__<server>__<tool>``) are dispatched straight to the
+        remote server, bypassing ``_run_permission_gate``. Two families let a
+        model reach past the sandbox that way:
+
+        * shells (``mcp__kit-coding__bash`` …) — arbitrary commands (``git
+          push``, ``rm -rf``, secret reads, data exfiltration) with none of
+          the native ``bash`` checks; remapped onto the bash gate.
+        * file mutators (``mcp__kit-coding__write_file`` / ``edit_file`` /
+          ``multi_edit`` / ``notebook_edit``) — writes outside the sandbox,
+          into the read-only archive, the agent's own safety layer, or a
+          stored calc; remapped onto the matching write gate.
+
+        Returns an error string to BLOCK the call, or None to allow it. Every
+        other (read-only / neutral) MCP tool returns None immediately, so its
+        existing behaviour is untouched.
+        """
+        if not isinstance(name, str) or not name.startswith("mcp__"):
+            return None
+        base = name.rsplit("__", 1)[-1]
+
+        # (0) Per-role execution allow-list. MCP tools are dispatched without
+        # passing through ``execute()``'s deny-by-default role check, so a
+        # restricted role (e.g. dashboard_agent) could otherwise reach
+        # read_file / bash / write_file via an MCP backend. Re-check here so
+        # the allow-list holds regardless of the dispatch path — same intent
+        # as the checkpoint in ``execute``. Roles without an allow-list are
+        # never denied (returns False), so the solo agent is unaffected.
+        if perms is not None:
+            role = getattr(perms, "agent_role", "") or ""
+            if _tool_denied_for_role(role, name):
+                _record_security_event("role_denied_mcp", name, role,
+                                       blocked=True)
+                return (
+                    f"Tool '{name}' is not available to the '{role}' role — "
+                    "its execution allow-list does not include this tool, "
+                    "including via an MCP backend."
+                )
+
+        # (1) Shell executors → the bash gate (command payload remapped).
+        if base in _MCP_BASH_TOOL_BASES:
+            cmd = ""
+            if isinstance(args, dict):
+                for key in _MCP_BASH_CMD_KEYS:
+                    val = args.get(key)
+                    if isinstance(val, str) and val.strip():
+                        cmd = val
+                        break
+            # A shell tool we can't read the command from — leave dispatch to
+            # the server rather than mis-gating an unknown payload.
+            if not cmd:
+                return None
+            if perms is None:
+                _record_security_event("mcp_bash_no_perms", name, cmd[:80],
+                                       blocked=True)
+                return (
+                    f"'{name}' executes shell commands but no permissions are "
+                    "configured, so it is refused."
+                )
+            # Reuse the bash gate verbatim: same deny-list, secret/egress
+            # scan, auto-allow, and confirm/head-less block as native bash.
+            return self._run_permission_gate(
+                "bash", {**args, "command": cmd}, perms)
+
+        # (2) File mutators → the matching write gate (path-based). The MCP
+        # arg shape matches the native tool, so args pass through unchanged.
+        gate_name = _MCP_WRITE_GATE_MAP.get(base)
+        if gate_name is not None:
+            if perms is None:
+                _record_security_event("mcp_write_no_perms", name, "",
+                                       blocked=True)
+                return (
+                    f"'{name}' mutates files but no permissions are "
+                    "configured, so it is refused."
+                )
+            return self._run_permission_gate(gate_name, args, perms)
+
+        return None
+
     def _build_change_preview(
         self, name: str, args: dict, resolved_path: Optional[Path]
     ) -> str:
@@ -4627,6 +4855,15 @@ class _DocToolExecutor:
                     new_text = new_text.replace(o, n)
                 else:
                     new_text = new_text.replace(o, n, 1)
+        elif name == "apply_patch":
+            # The patch itself IS the change preview — show it verbatim rather
+            # than a synthetic old→new content diff (the new content isn't in
+            # args; it's encoded in the unified diff).
+            _d = str(args.get("diff", "") or "").splitlines()
+            body = "\n".join(_d[:200])
+            if len(_d) > 200:
+                body += f"\n... ({len(_d) - 200} more diff lines truncated)"
+            return body or "(empty diff)"
         else:
             return ""
         return self._make_diff(old_text, new_text, str(resolved_path or args.get("path", "")))
@@ -5660,29 +5897,16 @@ class _DocToolExecutor:
                 "check_only=true is allowed; use exit_plan_mode to "
                 "actually apply."
             )})
-        # Self-Mod-Guard: scan diff file headers for protected paths
-        # and require explicit confirm even in bypass mode.
-        try:
-            files = _pa._files_in_diff(diff)
-        except Exception:
-            files = []
-        for rel in files:
-            if perms.matches_path_protected(rel):
-                if perms.confirm_callback is None:
-                    return json.dumps({"error": (
-                        f"path is self-mod-guarded: {rel}. "
-                        "apply_patch refuses without an explicit "
-                        "user-confirm binding."
-                    )})
-                preview = "\n".join(diff.splitlines()[:30])
-                if not perms.confirm_callback(
-                    "apply_patch",
-                    {"file": rel, "files": files},
-                    preview,
-                ):
-                    return json.dumps({"error": (
-                        f"user denied apply_patch on protected {rel}"
-                    )})
+        # Gate every file the diff touches through the same per-path write
+        # policy as write_file: sandbox+deny-list, read-only-archive hard-deny,
+        # self-mod guard, and calc-confirm. (Previously only the self-mod guard
+        # ran here, so a diff could reach .git/hooks, .env, keys or a stored
+        # calc that write_file refuses.) check_only is `git apply --check`
+        # (read-only) → skip the write gate so it stays allowed in plan mode.
+        if not check_only:
+            gate_err = self._run_permission_gate("apply_patch", arguments, perms)
+            if gate_err is not None:
+                return json.dumps({"error": gate_err})
         result = _pa.apply_patch(
             workspace=perms.workspace,
             diff_text=diff,
@@ -5987,16 +6211,35 @@ class _DocToolExecutor:
                     "have set perms.subagent_runner. Currently None."
                 ),
             })
+        # Nesting guard: a sub-agent at/above the depth cap may not spawn
+        # further sub-agents. Depth rides on the perms (bumped per child in
+        # _derive_perms), not the shared executor. Without it a delegated agent
+        # could recursively fan out (4^depth threads + worktrees).
+        if getattr(perms, "subagent_depth", 0) >= _max_subagent_depth():
+            return json.dumps({"error": (
+                "subagent nesting limit reached: a sub-agent may not spawn "
+                "further sub-agents. Do this part of the work directly."
+            )})
         # Only pass resume_from when set — externally attached runners
         # (tests, custom embeddings) may predate the parameter.
         _resume_kw = {"resume_from": resume_id} if resume_id else {}
-        # Background mode (Claude-Code-style): spawn the subagent on a
+        # Background mode: spawn the subagent on a
         # thread and return immediately — the main agent keeps working.
         # Progress/result are visible in the dashboard subagent panel
         # (running registry + telemetry); limits still apply per child.
         if bool(arguments.get("background")):
             import threading as _th
             import uuid as _uuid
+            # Bound the number of concurrent background sub-agents so a session
+            # can't leak unbounded daemon threads + worktrees. Saturated → tell
+            # the model to wait or run in the foreground instead of spawning.
+            _bg_release = _acquire_bg_subagent_slot()
+            if _bg_release is None:
+                return json.dumps({"error": (
+                    "too many background sub-agents are already running. Wait "
+                    "for some to finish (collect with subagent_result), or run "
+                    "this one in the foreground."
+                )})
             # Reserve the id up-front so the parent can poll/collect this
             # specific run via subagent_result(sa_id) once it finishes.
             _bg_sa_id = _uuid.uuid4().hex[:8]
@@ -6023,6 +6266,11 @@ class _DocToolExecutor:
                         )
                 except Exception:
                     pass
+                finally:
+                    try:
+                        _bg_release()
+                    except Exception:
+                        pass
 
             _th.Thread(target=_bg_run, daemon=True,
                        name=f"subagent-bg-{sa_type}").start()
@@ -6116,7 +6364,24 @@ class _DocToolExecutor:
                 f"exit_plan_mode is only valid while in 'plan' mode "
                 f"(current mode: {perms.mode!r})"
             )})
-        approved = True
+        if perms.plan_approval_callback is None:
+            # No approval channel (headless / non-interactive). Plan mode is a
+            # HARD human gate: NEVER self-approve. Submit the plan, keep
+            # ``perms.mode == 'plan'`` so all edits/writes/bash stay blocked,
+            # and stop. (Fixed 2026-07-14: this used to auto-approve and flip
+            # to 'default', letting the agent leave plan mode on its own and
+            # keep editing — plan mode must not be self-exitable.)
+            return json.dumps({
+                "status": "awaiting_approval",
+                "message": (
+                    "Plan submitted. No approval channel is available in this "
+                    "context, so the plan cannot be approved here — plan mode "
+                    "stays ACTIVE and all edits/writes remain blocked. Stop "
+                    "now; do NOT edit, do NOT resubmit. Only the user can "
+                    "approve, which resumes execution on a later turn."
+                ),
+            })
+        approved = False
         new_mode = "default"
         if perms.plan_approval_callback is not None:
             try:
@@ -6610,10 +6875,79 @@ def _is_transient_api_error(exc: Exception) -> bool:
     return False
 
 
+_CONTEXT_LENGTH_HINTS = (
+    "context_length_exceeded", "context length exceeded",
+    "maximum context length", "reduce the length", "too many tokens",
+    "exceeds the maximum", "prompt is too long", "input is too long",
+)
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    """Whether an API error means the request exceeded the model's context
+    window. Such a 400 is deterministic (retrying the identical request just
+    fails again), so instead of crashing the turn we end it cleanly and let the
+    engine compact before the next turn."""
+    msg = str(exc).lower()
+    if any(h in msg for h in _CONTEXT_LENGTH_HINTS):
+        return True
+    name = type(exc).__name__.lower()
+    return "contextwindow" in name or "contextlength" in name
+
+
+def _max_subagent_depth() -> int:
+    """Deepest sub-agent nesting allowed. A child at this depth may not spawn
+    further sub-agents, preventing 4^depth thread/worktree fan-out. Default 1
+    (top-level agent spawns children; children don't spawn). Override via
+    DELFIN_MAX_SUBAGENT_DEPTH."""
+    try:
+        v = int(os.environ.get("DELFIN_MAX_SUBAGENT_DEPTH", "") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else 1
+
+
+# Bound concurrent BACKGROUND sub-agents (the foreground fan-out is already
+# capped at 4 workers). Each background call spawns a daemon thread + possibly
+# a worktree; without a cap a session could leak unbounded threads. Created
+# lazily so the env override is read once, at first use.
+_BG_SUBAGENT_SEM: Optional[threading.BoundedSemaphore] = None
+_BG_SUBAGENT_SEM_LOCK = threading.Lock()
+
+
+def _acquire_bg_subagent_slot():
+    """Non-blocking acquire of a background-subagent slot. Returns a release
+    callable on success, or None when the cap is saturated."""
+    global _BG_SUBAGENT_SEM
+    if _BG_SUBAGENT_SEM is None:
+        with _BG_SUBAGENT_SEM_LOCK:
+            if _BG_SUBAGENT_SEM is None:
+                try:
+                    n = int(os.environ.get("DELFIN_MAX_BG_SUBAGENTS", "") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                _BG_SUBAGENT_SEM = threading.BoundedSemaphore(n if n > 0 else 8)
+    if _BG_SUBAGENT_SEM.acquire(blocking=False):
+        return _BG_SUBAGENT_SEM.release
+    return None
+
+
+def _subagent_collect_timeout() -> float:
+    """Upper bound for waiting on a fanned-out sub-agent future. The child's own
+    wall-clock guard fires per streamed event, but a fully STALLED stream (no
+    events) would never trip it — so the parent abandons the wait a bit past the
+    child's wall budget instead of blocking the whole turn indefinitely."""
+    try:
+        from . import subagents as _sa
+        wall = float(_sa._subagent_limits().get("max_wall_s", 300) or 300)
+    except Exception:
+        wall = 300.0
+    return wall + 120.0
+
+
 def _fan_out_subagents(tc_list, permissions):
     """Submit every ``subagent`` tool-call in ``tc_list`` to a thread
-    pool so a multi-subagent turn runs concurrently (Claude-Code-style
-    parallel fan-out).
+    pool so a multi-subagent turn runs concurrently (parallel
+    fan-out).
 
     Returns ``(futures_by_id, executor)``.  When fewer than two subagent
     calls are present, returns ``({}, None)`` so the caller's sequential
@@ -6743,6 +7077,16 @@ class OpenAIClient(_BaseClient):
         kwargs: dict[str, Any] = {"api_key": resolved_key}
         if base_url:
             kwargs["base_url"] = base_url
+        # Explicit per-request timeout so a stalled endpoint (no bytes) is
+        # abandoned on a bounded schedule instead of hanging on the SDK's
+        # implicit default. Generous — legitimate streams emit chunks far more
+        # often; override via DELFIN_REQUEST_TIMEOUT_S.
+        try:
+            _req_timeout = float(os.environ.get(
+                "DELFIN_REQUEST_TIMEOUT_S", "") or 0)
+        except (TypeError, ValueError):
+            _req_timeout = 0.0
+        kwargs["timeout"] = _req_timeout if _req_timeout > 0 else 600.0
         self.client = openai.OpenAI(**kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
@@ -7013,6 +7357,31 @@ class OpenAIClient(_BaseClient):
         except Exception:
             pass
 
+        # Surface the available skills IN the `skill` tool description so the
+        # agent knows which curated playbooks it can invoke (mirrors the MCP
+        # resources/prompts listing above). Without this the model has a skill
+        # tool but no idea what skills exist, so it never uses them. Build a
+        # fresh dict — never mutate the shared _DOC_TOOLS_OPENAI.
+        try:
+            from .skills import discover_skills as _disc_skills
+            _ws_sk = self._permissions.workspace if self._permissions else None
+            _skills = _disc_skills(_ws_sk)
+            if _skills:
+                _listing = "; ".join(
+                    s.name + (f" — {s.description[:70]}" if s.description else "")
+                    for s in _skills[:40]
+                )
+                advertised_tools = [
+                    ({**t, "function": {
+                        **t["function"],
+                        "description": (t["function"].get("description", "")
+                                        + f"\nAvailable skills: {_listing}"),
+                    }} if t.get("function", {}).get("name") == "skill" else t)
+                    for t in advertised_tools
+                ]
+        except Exception:
+            pass
+
         # No-native-tools gate (defence-in-depth behind the dashboard/CLI
         # preflight): a model with no native tool support would only choke on
         # the tool schema and leak malformed calls. Suppress tool advertising
@@ -7027,7 +7396,14 @@ class OpenAIClient(_BaseClient):
             _ws = self._permissions.workspace if self._permissions else None
             _registry = _mcp.get_registry(_ws)
             _mcp_tools = _registry.discover_all()
+            # Honour the per-role execution allow-list at advertising time too:
+            # a restricted role (dashboard_agent) must not even be OFFERED MCP
+            # tools it may not run. The gate in _gate_mcp_tool is the execution
+            # backstop; this keeps them out of the surface in the first place.
+            _adv_role = getattr(self._permissions, "agent_role", "") or ""
             for _tool in _mcp_tools:
+                if _tool_denied_for_role(_adv_role, _tool.namespaced_name):
+                    continue
                 advertised_tools.append({
                     "type": "function",
                     "function": {
@@ -7048,7 +7424,8 @@ class OpenAIClient(_BaseClient):
                 _mcp_prompts = _registry.discover_prompts()
             except Exception:
                 _mcp_prompts = []
-            if _mcp_resources:
+            if _mcp_resources and not _tool_denied_for_role(
+                    _adv_role, "mcp_read_resource"):
                 _res_list = "; ".join(
                     f"{r.server}:{r.uri}" + (f" ({r.name})" if r.name else "")
                     for r in _mcp_resources[:40]
@@ -7074,7 +7451,8 @@ class OpenAIClient(_BaseClient):
                         },
                     },
                 })
-            if _mcp_prompts:
+            if _mcp_prompts and not _tool_denied_for_role(
+                    _adv_role, "mcp_get_prompt"):
                 _prompt_list = "; ".join(
                     p.namespaced_name
                     + (f" — {p.description}" if p.description else "")
@@ -7130,6 +7508,18 @@ class OpenAIClient(_BaseClient):
         # exhausts the budget, the message_delta below surfaces
         # "max_tool_rounds" and the user can resume with a "continue".
         _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds()
+        # Per-turn OUTPUT-token backstop, independent of _MAX_TOOL_ROUNDS: a
+        # loop that keeps emitting (successful or varied-error calls that dodge
+        # the round / consecutive-fail limits) could otherwise run up unbounded
+        # cost within the round budget. The ceiling is very high — real work
+        # never reaches it; override via DELFIN_MAX_TURN_OUTPUT_TOKENS.
+        try:
+            _max_turn_out = int(os.environ.get(
+                "DELFIN_MAX_TURN_OUTPUT_TOKENS", "") or 0)
+        except (TypeError, ValueError):
+            _max_turn_out = 0
+        if _max_turn_out <= 0:
+            _max_turn_out = 400_000
 
         # Consecutive identical-error abort.
         # Some weaker models (qwen3.5 on KIT vllm) occasionally produce a
@@ -7169,6 +7559,20 @@ class OpenAIClient(_BaseClient):
             # the recent ones + all reasoning) so a long agentic turn
             # doesn't blow the input-token budget. No-op under budget.
             _elide_old_tool_results(api_messages, char_budget=_tool_budget)
+            # Output backstop: stop cleanly if this turn's total generated
+            # tokens crossed the (very high) per-turn ceiling. Text emitted so
+            # far was already streamed to the caller, so nothing is lost.
+            if _total_out > _max_turn_out:
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⚠️ This turn generated an unusually large amount of "
+                    "output and was stopped as a safety backstop. Send "
+                    "'continue' to resume if this was intended.\n"))
+                yield StreamEvent(
+                    type="message_delta",
+                    input_tokens=_total_in, output_tokens=_total_out,
+                    cost_usd=self._estimate_cost(_total_in, _total_out),
+                    cached_tokens=_total_cached, stop_reason="max_turn_output")
+                return
             kwargs: dict[str, Any] = {
                 "model": self.model,
                 "messages": api_messages,
@@ -7289,6 +7693,20 @@ class OpenAIClient(_BaseClient):
                             f"{_delay:.0f}s…\n"))
                         time.sleep(_delay)
                         continue
+                    # Context-window overflow is deterministic — retrying the
+                    # same request just fails again. End the turn cleanly with a
+                    # terminal stop instead of crashing the generator (which
+                    # would discard every round's progress); the engine compacts
+                    # before the next turn. Whatever text/tool results already
+                    # streamed this turn are preserved.
+                    if _is_context_length_error(_stream_exc):
+                        yield StreamEvent(type="text_delta", text=(
+                            "\n⚠️ The request exceeded the model's context "
+                            "window. Ending this turn; the conversation will be "
+                            "compacted before the next one.\n"))
+                        yield StreamEvent(
+                            type="message_delta", stop_reason="max_context")
+                        return
                     raise
                 # The proxy cannot stream this request (litellm 400:
                 # "'async for' requires ... got ModelResponse"). Retry ONCE
@@ -7380,7 +7798,11 @@ class OpenAIClient(_BaseClient):
                 for idx in sorted(_tool_calls):
                     entry = _tool_calls[idx]
                     tc_list.append({
-                        "id": entry["id"],
+                        # Backfill a unique id when the backend streamed none
+                        # (some vLLM/Ollama builds omit tool_call ids): an empty
+                        # or duplicated tool_call_id makes the NEXT request's
+                        # assistant/tool pairing ambiguous and can 400.
+                        "id": entry["id"] or f"call_{idx}",
                         "type": "function",
                         "function": {
                             "name": entry["name"],
@@ -7390,7 +7812,7 @@ class OpenAIClient(_BaseClient):
                 assistant_msg["tool_calls"] = tc_list
                 api_messages.append(assistant_msg)
 
-                # Parallel subagent fan-out (Claude-Code-style): when the
+                # Parallel subagent fan-out: when the
                 # model emits ≥2 `subagent` calls in ONE turn, run them
                 # concurrently instead of sequentially.  The sequential
                 # loop below resolves each future in tc_list order, so
@@ -7406,9 +7828,20 @@ class OpenAIClient(_BaseClient):
                 # Execute each tool call and append results
                 for tc in tc_list:
                     fn_name = (tc["function"]["name"] or "").strip()
-                    try:
-                        fn_args = json.loads(tc["function"]["arguments"])
-                    except json.JSONDecodeError:
+                    # Parse arguments defensively: a backend may stream a dict
+                    # already, invalid JSON, or valid JSON that is NOT an object
+                    # (e.g. "true", "[1,2]", "42"). Every downstream handler does
+                    # arguments.get(...), so anything but a dict must become {}
+                    # here or it raises AttributeError and crashes the whole turn.
+                    _raw_args = tc["function"]["arguments"]
+                    if isinstance(_raw_args, dict):
+                        fn_args = _raw_args
+                    else:
+                        try:
+                            fn_args = json.loads(_raw_args or "{}")
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            fn_args = {}
+                    if not isinstance(fn_args, dict):
                         fn_args = {}
 
                     # Empty-name guard: malformed tool-call from the model
@@ -7493,44 +7926,97 @@ class OpenAIClient(_BaseClient):
 
                     if tc["id"] in _sub_futures:
                         # Pre-dispatched parallel subagent — collect result.
+                        # Bounded wait: a stalled child (its per-event wall guard
+                        # can't fire without events) must not freeze the parent
+                        # turn. On timeout the daemon thread keeps running but
+                        # the parent moves on with an error result.
                         try:
-                            result = _sub_futures[tc["id"]].result()
+                            result = _sub_futures[tc["id"]].result(
+                                timeout=_subagent_collect_timeout())
                         except Exception as exc:
+                            _msg = str(exc) or type(exc).__name__
                             result = json.dumps({
-                                "error": f"subagent failed: {exc}"
+                                "error": f"subagent did not finish in time "
+                                         f"or failed: {_msg}"
                             })
                     elif is_mcp:
-                        try:
-                            from . import mcp_client as _mcp
-                            _ws = (self._permissions.workspace
-                                   if self._permissions else None)
-                            result = _mcp.get_registry(_ws).call(fn_name, fn_args)
-                        except Exception as exc:
+                        # MCP tools skip _DocToolExecutor.execute(), so run the
+                        # SAME PreToolUse hooks + content-gate + audit/PostToolUse
+                        # here, keyed on the un-namespaced base name so a hook or
+                        # audit rule on e.g. `bash`/`write_file` also covers
+                        # `mcp__kit-coding__bash`. Shell-executing MCP tools run
+                        # REMOTELY and would otherwise bypass the native gate.
+                        _mcp_base = (fn_name.rsplit("__", 1)[-1]
+                                     if fn_name.startswith("mcp__") else fn_name)
+                        _hook_block = _doc_executor._run_pre_tool_hooks(
+                            _mcp_base, fn_args, self._permissions)
+                        _mcp_block = _doc_executor._gate_mcp_tool(
+                            fn_name, fn_args, self._permissions)
+                        if _hook_block is not None:
                             result = json.dumps({
-                                "error": f"MCP dispatch failed: {exc}"
+                                "error": "blocked_by_hook",
+                                "reason": _hook_block[:1200],
                             })
+                        elif _mcp_block is not None:
+                            result = json.dumps({"error": _mcp_block})
+                        else:
+                            try:
+                                from . import mcp_client as _mcp
+                                _ws = (self._permissions.workspace
+                                       if self._permissions else None)
+                                result = _mcp.get_registry(_ws).call(
+                                    fn_name, fn_args)
+                            except Exception as exc:
+                                result = json.dumps({
+                                    "error": f"MCP dispatch failed: {exc}"
+                                })
+                        _doc_executor._run_post_tool_hooks(
+                            _mcp_base, fn_args, self._permissions, result)
                     elif is_mcp_meta:
+                        # MCP resource/prompt meta-tools also skip execute()'s
+                        # role check — apply the same deny-by-default so a
+                        # restricted role can't read MCP resources it isn't
+                        # allowed to.
+                        _meta_role = getattr(self._permissions, "agent_role",
+                                             "") or ""
+                        if (self._permissions is not None
+                                and _tool_denied_for_role(_meta_role, fn_name)):
+                            result = json.dumps({"error": (
+                                f"Tool '{fn_name}' is not available to the "
+                                f"'{_meta_role}' role."
+                            )})
+                        else:
+                            try:
+                                from . import mcp_client as _mcp
+                                _ws = (self._permissions.workspace
+                                       if self._permissions else None)
+                                _reg = _mcp.get_registry(_ws)
+                                if fn_name == "mcp_read_resource":
+                                    result = _reg.read_resource(
+                                        str(fn_args.get("server", "")),
+                                        str(fn_args.get("uri", "")))
+                                else:
+                                    result = _reg.get_prompt(
+                                        str(fn_args.get("name", "")),
+                                        fn_args.get("arguments") or {})
+                            except Exception as exc:
+                                result = json.dumps({
+                                    "error": f"MCP {fn_name} failed: {exc}"
+                                })
+                    else:
+                        # Wrap like the MCP/subagent paths above: an uncaught
+                        # exception in any tool handler would otherwise escape
+                        # the generator and kill the ENTIRE turn, discarding
+                        # every round's ephemeral progress. A per-tool failure
+                        # must degrade to a recoverable error the model can see.
                         try:
-                            from . import mcp_client as _mcp
-                            _ws = (self._permissions.workspace
-                                   if self._permissions else None)
-                            _reg = _mcp.get_registry(_ws)
-                            if fn_name == "mcp_read_resource":
-                                result = _reg.read_resource(
-                                    str(fn_args.get("server", "")),
-                                    str(fn_args.get("uri", "")))
-                            else:
-                                result = _reg.get_prompt(
-                                    str(fn_args.get("name", "")),
-                                    fn_args.get("arguments") or {})
+                            result = _doc_executor.execute(
+                                fn_name, fn_args, permissions=self._permissions
+                            )
                         except Exception as exc:
                             result = json.dumps({
-                                "error": f"MCP {fn_name} failed: {exc}"
+                                "error": f"tool '{fn_name}' failed: {exc}"
                             })
-                    else:
-                        result = _doc_executor.execute(
-                            fn_name, fn_args, permissions=self._permissions
-                        )
 
                     # Emit tool_result event for UI display
                     yield StreamEvent(
@@ -7740,7 +8226,15 @@ class OpenAIClient(_BaseClient):
                     type="text_delta", text="\n\n↻ auto-continue → next task\n")
                 continue
 
-            # No tool calls — emit final message_delta and break
+            # No tool calls — emit final message_delta and break. When the
+            # backend cut the response at max_tokens (finish_reason=="length"),
+            # surface it explicitly: otherwise a response (possibly a
+            # half-emitted tool call) just vanishes and the turn looks "done".
+            if finish_reason == "length":
+                yield StreamEvent(type="text_delta", text=(
+                    "\n⚠️ Response truncated at the max-tokens limit — the "
+                    "output above may be incomplete (a tool call may have been "
+                    "cut). Send 'continue' to resume.\n"))
             cost = self._estimate_cost(_total_in, _total_out)
             yield StreamEvent(
                 type="message_delta",

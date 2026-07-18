@@ -160,7 +160,7 @@ def format_memory_context(
 #
 # The typed per-project memory lives under DELFIN's OWN namespace
 # ``~/.delfin/projects/<slug>/memory/`` (MEMORY.md index + typed sidecar
-# files) — NOT ``~/.claude`` (that is Claude Code's directory). An existing
+# files) — NOT ``~/.claude`` (a different tool's directory). An existing
 # store at the legacy ~/.claude location is migrated on first access. This is
 # the single source of truth the prompt loader recalls each turn; the flat
 # ``~/.delfin/agent_memory.json`` store is kept only for backwards-compat.
@@ -258,7 +258,7 @@ def _migrate_legacy_dir(old: Path, new: Path) -> None:
 
 def _delfin_memory_dir(repo_root: Path) -> Path:
     """DELFIN's OWN per-project memory store: ``~/.delfin/projects/<slug>/
-    memory`` (not ``~/.claude`` — that is Claude Code's namespace). Migrates
+    memory`` (not ``~/.claude`` — a different tool's namespace). Migrates
     an existing store from the legacy ~/.claude location on first access."""
     slug = _project_slug(repo_root)
     new = Path.home() / ".delfin" / "projects" / slug / "memory"

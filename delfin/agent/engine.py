@@ -1,4 +1,4 @@
-"""DELFIN Agent Engine: orchestrates Claude conversations with role-based prompts."""
+"""DELFIN Agent Engine: orchestrates model conversations with role-based prompts."""
 
 from __future__ import annotations
 
@@ -366,6 +366,10 @@ class AgentEngine:
         # context is almost full, trading a bit more API cost for far
         # fewer context-loss double-work cycles.
         self.context_window_tokens: int = 100_000
+        # Last authoritative input-token count the provider reported for a full
+        # request (from message_start). Used as the ground-truth floor of the
+        # compaction estimate so system prompt + tool schemas are never missed.
+        self._last_input_tokens: int = 0
         # Resolved per active model below (real window for Ollama/local/cloud)
         # so compaction matches each model's true context — and small local
         # models stop overflowing while large ones stop being throttled to 100k.
@@ -398,6 +402,11 @@ class AgentEngine:
         # etc.) appended to the system prompt — keeps it OUT of the user
         # message body so it doesn't accumulate in self.messages history.
         self._live_state: str = ""
+        # Project-directory pin: the dir of the FIRST project write this
+        # session. Re-injected every turn so the agent keeps writing there and
+        # doesn't drift into sibling folders over a long session (a framework
+        # guarantee, not a prompt nudge). Reset when the conversation resets.
+        self._project_dir: str = ""
 
         # Context engineering features (all opt-in, default off)
         self._context_tracker = None  # type: Any  # ContextUsageTracker
@@ -760,6 +769,53 @@ class AgentEngine:
             )
         return "\n".join(lines)
 
+    _MUTATE_TOOLS_FOR_PIN = frozenset({
+        "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+    })
+
+    def _maybe_pin_project_dir(self, tool_name: str, tool_input: Any) -> None:
+        """Record the directory of the FIRST project write this session so the
+        prompt can re-pin the agent there every turn (anti-drift). First write
+        wins; never overwritten until the conversation resets."""
+        if self._project_dir:
+            return
+        name = (tool_name.rsplit("__", 1)[-1]
+                if isinstance(tool_name, str) and tool_name.startswith("mcp__")
+                else tool_name)
+        if name not in self._MUTATE_TOOLS_FOR_PIN:
+            return
+        path = ""
+        try:
+            data = json.loads(tool_input) if isinstance(tool_input, str) else tool_input
+            if isinstance(data, dict):
+                path = str(data.get("file_path") or data.get("path")
+                           or data.get("notebook_path") or "")
+        except Exception:
+            m = re.search(r'"(?:file_path|path|notebook_path)"\s*:\s*"([^"]+)"',
+                          tool_input if isinstance(tool_input, str) else "")
+            path = m.group(1) if m else ""
+        path = path.strip().rstrip("/")
+        if not path:
+            return
+        # Directory of the first project write ("." == workspace root).
+        self._project_dir = path.rsplit("/", 1)[0] if "/" in path else "."
+
+    def _build_project_dir_block(self) -> str:
+        """High-salience per-turn reminder pinning the project to its first-write
+        directory — keeps a long session from drifting into sibling folders."""
+        d = getattr(self, "_project_dir", "")
+        if not d:
+            return ""
+        if d == ".":
+            where, rule = ("the workspace ROOT",
+                           "keep writing this project's files at the workspace root")
+        else:
+            where, rule = (f"`{d}/`", f"put EVERY further file of this project under `{d}/`")
+        return (f"📁 PROJECT LOCATION (locked for this task): {where}. You already "
+                f"started the project here — {rule}. Do NOT create a sibling "
+                f"folder or switch to a different directory name mid-task; that "
+                f"splits the project and breaks imports/tests.")
+
     def _build_current_system_prompt(
         self,
         memory_context: str = "",
@@ -786,6 +842,9 @@ class AgentEngine:
             # mode with their own budgets); the open-tasks reminder applies to
             # both interactive roles that drive the task list.
             if role == "solo_agent":
+                proj_block = self._build_project_dir_block()
+                if proj_block:
+                    extra_blocks.append(proj_block)
                 ctx_status = self._build_context_status_block()
                 if ctx_status:
                     extra_blocks.append(ctx_status)
@@ -1007,6 +1066,8 @@ class AgentEngine:
                     _turn_tool_calls += 1
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
+                    self._maybe_pin_project_dir(
+                        event.tool_name, event.tool_input)
                     if on_tool_use:
                         on_tool_use(event.tool_name, event.tool_input)
 
@@ -1032,6 +1093,12 @@ class AgentEngine:
                     # including cache).  Do NOT also add in message_delta.
                     with self._lock:
                         self.token_usage["input"] += event.input_tokens
+                        # Snapshot the real per-request input count so the
+                        # compaction budget can use it as a ground-truth floor
+                        # (it includes the system prompt + tool schemas that
+                        # self.messages omits).
+                        if event.input_tokens:
+                            self._last_input_tokens = int(event.input_tokens)
                         # Prompt tokens served from the endpoint cache (Anthropic
                         # reports it here). Visibility into how much of the input
                         # was free — drives the caching/efficiency work.
@@ -1236,7 +1303,18 @@ class AgentEngine:
     _SUMMARY_BLOCK_PREFIX = "[Conversation summary"
 
     def _estimate_context_tokens(self) -> int:
-        """Rough char/4 estimate of tokens in the current message list."""
+        """Estimate the tokens in the NEXT request, not just self.messages.
+
+        The system prompt (repo map, memory, playbook, live-state, tasks) and
+        the advertised tool schemas ride on every request but are not in
+        self.messages. Counting only the messages undercounts the budget, so a
+        request could satisfy ``auto_compact_pct`` yet still blow the provider
+        window (400 context_length_exceeded). So fold in the last built system
+        prompt, and never estimate below the last real tokenizer count the
+        provider reported for this context (that count already includes the
+        tool schemas, so no separate schema constant is needed once a turn has
+        run — and the first turn is far too short to compact anyway).
+        """
         total_chars = 0
         for m in self.messages:
             content = m.get("content", "")
@@ -1244,9 +1322,20 @@ class AgentEngine:
                 total_chars += len(content)
             elif isinstance(content, list):
                 for part in content:
-                    if isinstance(part, dict):
-                        total_chars += len(str(part.get("text", "")))
-        return total_chars // 4
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("text"):
+                        total_chars += len(str(part["text"]))
+                    elif (part.get("type") in ("image", "image_url")
+                          or "image_url" in part or "source" in part):
+                        # An image is invisible to char/4 but real to the model;
+                        # count a fixed ~1500-token allowance instead of 0.
+                        total_chars += 6000
+                    else:
+                        total_chars += len(str(part))
+        est = total_chars // 4
+        est += len(getattr(self, "last_system_prompt", "") or "") // 4
+        return max(est, int(getattr(self, "_last_input_tokens", 0) or 0))
 
     def _should_auto_compact(self) -> bool:
         """True if estimated context exceeds the configured fraction."""
@@ -1371,9 +1460,21 @@ class AgentEngine:
             return ""
 
         rendered: list[str] = []
+        carried_summary = ""   # a prior compaction's recap, carried forward verbatim
         for msg in old_msgs:
             role = msg.get("role", "")
             content = msg.get("content", "")
+            if isinstance(content, str) and content.lstrip().startswith(
+                    self._SUMMARY_BLOCK_PREFIX):
+                # A prior summary block is ALREADY a faithful recap of many
+                # messages. Re-summarising it compounds loss across repeated
+                # compactions on a long session, so carry it forward verbatim
+                # (header stripped) and summarise only the newer messages.
+                body = (content.split("\n", 1)[1].strip()
+                        if "\n" in content else content.strip())
+                if body:
+                    carried_summary = body
+                continue
             if not isinstance(content, str):
                 # Flatten tool/structured content for the summariser
                 try:
@@ -1392,7 +1493,8 @@ class AgentEngine:
                 content = content[:2000] + "\n... [truncated for summary] ...\n" + content[-1500:]
             rendered.append(f"[{role}]\n{content}")
         if not rendered:
-            return ""
+            # Nothing new to summarise beyond a prior recap — carry it forward.
+            return carried_summary
 
         system_prompt = (
             "You are a conversation-summarisation assistant. Produce a "
@@ -1439,6 +1541,11 @@ class AgentEngine:
         except Exception:
             return ""
         summary = "".join(text_parts).strip()
+        # Keep the earlier recap AHEAD of the new one so the oldest context
+        # isn't re-compressed (and eroded) on every compaction.
+        if carried_summary:
+            summary = (carried_summary + "\n\n" + summary).strip() if summary \
+                else carried_summary
         return summary
 
     def _compact_history(self) -> None:
@@ -1594,6 +1701,16 @@ class AgentEngine:
             {"role": "user", "content": f"[Conversation summary — older messages compacted]\n{summary}"},
             {"role": "assistant", "content": "Understood. I have the context from our earlier conversation."},
         ] + recent
+        # `recent` starts with an assistant turn whenever compaction fires right
+        # after a user message was appended, so the assistant_ack above lands
+        # next to it → two consecutive assistant messages. Strict chat templates
+        # (vLLM/KIT/Ollama) reject a non-alternating list; sanitize BEFORE the
+        # request goes out rather than relying on the next turn's cleanup.
+        self._sanitize_messages()
+        # The context just shrank a lot; drop the stale pre-compaction input
+        # floor so the estimate reflects the compacted size immediately (the
+        # next request's message_start repopulates the real count).
+        self._last_input_tokens = 0
 
         tokens_after = self._estimate_context_tokens()
         self.last_compaction_info = {
@@ -2010,6 +2127,7 @@ class AgentEngine:
         if not preserve_messages:
             self.messages.clear()
             self.role_outputs.clear()
+            self._project_dir = ""   # new conversation → re-pin on first write
             self.compaction_summaries.clear()
             self.current_role_index = 0
             self.token_usage = {"input": 0, "output": 0, "cached": 0}

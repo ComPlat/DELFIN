@@ -85,8 +85,16 @@ def _first_heading(body: str) -> str:
     return ""
 
 
+# Built-in "curated set" skills shipped with the package.
+_PACK_SKILLS_DIR = Path(__file__).resolve().parent / "pack" / "skills"
+
+
 def _skill_dirs(workspace: Path | None) -> list[Path]:
-    out: list[Path] = [Path.home() / ".delfin" / "skills"]
+    # Pack (built-in) skills first — the lowest-precedence curated base — then
+    # user-global, then project-scoped. Later dirs override earlier ones on a
+    # name collision (project > user > pack). Without the pack dir the 9
+    # shipped chemistry skills were undiscoverable by the `skill` tool.
+    out: list[Path] = [_PACK_SKILLS_DIR, Path.home() / ".delfin" / "skills"]
     if workspace is not None:
         out.append(Path(workspace) / ".delfin" / "skills")
     return out
