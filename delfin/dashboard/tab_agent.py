@@ -2826,7 +2826,13 @@ def create_tab(ctx):
                 # 400 ("does not support chat") at send time. Detected by name.
                 if _nonchat(mid):
                     continue
-                label = mid.replace("azure.", "Azure ").replace("kit.", "KIT ")
+                label = (
+                    mid.replace("google.claude-", "Claude ")
+                    .replace("google.gemini-", "Gemini ")
+                    .replace("google.", "Google ")
+                    .replace("azure.", "Azure ")
+                    .replace("kit.", "KIT ")
+                )
                 result.append((label, mid))
             # Sort: azure/cloud first, then local, alphabetically within groups
             result.sort(key=lambda x: (
@@ -2981,8 +2987,25 @@ def create_tab(ctx):
         _saved_provider = _saved.get("provider", "")
         if _saved_provider in ("claude", "openai", "kit"):
             provider_dropdown.value = _saved_provider
-            model_dropdown.options = _PROVIDER_MODELS[_saved_provider]
-            model_dropdown.value = _PROVIDER_DEFAULTS[_saved_provider]
+            # Load the model list LIVE for the restored provider on EVERY
+            # dashboard start, so newly-available models (KIT / Anthropic /
+            # Azure / Gemini) always show up automatically. Only the first
+            # provider is live-fetched at init above; fetch the restored one
+            # too instead of showing the static fallback. Falls back to the
+            # static list only when the live fetch fails (offline / no key).
+            if _saved_provider != _init_provider or not _init_fetched:
+                _restored_fetched = _fetch_models(_saved_provider)
+                if _restored_fetched:
+                    _PROVIDER_MODELS[_saved_provider] = _restored_fetched
+            _restored_models = _PROVIDER_MODELS[_saved_provider]
+            model_dropdown.options = _restored_models
+            _restored_default = _PROVIDER_DEFAULTS.get(
+                _saved_provider, _restored_models[0][1])
+            _restored_valid = {v for _, v in _restored_models}
+            model_dropdown.value = (
+                _restored_default if _restored_default in _restored_valid
+                else _restored_models[0][1]
+            )
         _saved_model = _saved.get("model", "")
         _valid_models = {v for _, v in model_dropdown.options}
         if _saved_model in _valid_models:

@@ -30,7 +30,9 @@ def _estimate_tokens(text: str) -> int:
     "filename, max_tokens",
     [
         ("dashboard_agent.md", 7500),
-        ("solo_agent.md", 13800),
+        # Raised 13800 -> 14000 for the workspace/CLI orchestration guidance
+        # (launch-dir = workspace). Content is intentional; keep growth in check.
+        ("solo_agent.md", 14000),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
