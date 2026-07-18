@@ -67,7 +67,7 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -92,7 +92,16 @@ def test_main_stages_out_of_root_notebook_before_launch(monkeypatch, tmp_path, c
         "jupyter",
         "server",
     ]
-    assert "--ServerApp.jpserver_extensions={'voila': True}" in captured["cmd"]
+    # voila MUST be enabled under jupyter-server; the other auto-loading
+    # extensions (jupyterlab/notebook/lsp/terminals) are explicitly DISABLED to
+    # shrink the exposed HTTP surface. A refactor that drops voila or re-enables
+    # the extras must fail here.
+    _ext_arg = next(
+        a for a in captured["cmd"] if a.startswith("--ServerApp.jpserver_extensions=")
+    )
+    assert "'voila': True" in _ext_arg
+    for _disabled in ("jupyterlab", "notebook", "jupyter_lsp", "jupyter_server_terminals"):
+        assert f"'{_disabled}': False" in _ext_arg
     staged_rel = staged_path.resolve().relative_to(root_dir.resolve()).as_posix()
     assert f"--ServerApp.default_url=/voila/render/{staged_rel}" in captured["cmd"]
     assert "--no-browser" in captured["cmd"]
@@ -175,7 +184,7 @@ def test_main_defaults_to_no_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: False)
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -244,7 +253,7 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli_voila, "_open_browser_url", lambda url, env: browser_urls.append(url))
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         return FakeProc()
 
@@ -257,9 +266,15 @@ def test_main_defaults_to_open_browser_in_vscode(monkeypatch, tmp_path, capsys):
         assert exc.code == 0
 
     assert observed["open_browser"] is True
-    assert browser_urls == ["http://localhost:8866"]
-    assert "--ServerApp.open_browser=True" in captured["cmd"]
-    assert "--no-browser" not in captured["cmd"]
+    # Auto-open must land DIRECTLY in the dashboard: the render URL WITH the
+    # token embedded, never the bare "/" (which would show the login page).
+    assert len(browser_urls) == 1
+    opened = browser_urls[0]
+    assert opened.startswith("http://localhost:8866/voila/render/")
+    assert "?token=" in opened
+    # jupyter must NOT open its own (token-less) tab; the launcher controls it.
+    assert "--no-browser" in captured["cmd"]
+    assert "--ServerApp.open_browser=True" not in captured["cmd"]
     assert "--ServerApp.ip=127.0.0.1" in captured["cmd"]
 
     stdout = capsys.readouterr().out
@@ -294,8 +309,11 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_prepare_voila_env", lambda open_browser: {})
     monkeypatch.setattr(cli_voila, "_get_voila_static_root", lambda: "/tmp/voila-static")
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
+    monkeypatch.setattr(cli_voila, "_wait_for_port", lambda host, port, timeout=10.0: True)
+    browser_urls = []
+    monkeypatch.setattr(cli_voila, "_open_browser_url", lambda url, env: browser_urls.append(url))
     monkeypatch.setattr(cli_voila.subprocess, "run", fake_run)
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -308,14 +326,18 @@ def test_main_can_explicitly_open_browser(monkeypatch, tmp_path):
     except SystemExit as exc:
         assert exc.code == 0
 
-    assert "--ServerApp.open_browser=True" in captured["cmd"]
+    # jupyter is told NOT to open (the launcher opens the token URL itself).
+    assert "--no-browser" in captured["cmd"]
+    assert "--ServerApp.open_browser=True" not in captured["cmd"]
+    # The opened URL is the dashboard render URL WITH the token (direct login).
+    assert browser_urls and "/voila/render/" in browser_urls[0]
+    assert "?token=" in browser_urls[0]
     assert "--ServerApp.disable_check_xsrf=True" not in captured["cmd"]
     # Token via env var, not CLI
     assert "--ServerApp.token=" not in captured["cmd"]
     assert "JUPYTER_TOKEN" in captured["env"]
     assert "--ServerApp.websocket_ping_interval=30000" in captured["cmd"]
     assert "--ServerApp.websocket_ping_timeout=30000" in captured["cmd"]
-    assert "--no-browser" not in captured["cmd"]
 
 
 def test_no_token_is_refused(monkeypatch, tmp_path, capsys):
@@ -385,7 +407,7 @@ def test_generated_token_is_never_printed(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()
@@ -447,7 +469,7 @@ def test_remote_bind_requires_explicit_override(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_voila, "_select_port", lambda port: port)
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(root_dir))
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env=None, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = env
         return FakeProc()

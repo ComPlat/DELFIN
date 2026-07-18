@@ -17,6 +17,7 @@ import shutil
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -403,6 +404,116 @@ def _dashboard_default_url(notebook: str, root_dir: str) -> str:
     return "/voila/render/" + quote(rel)
 
 
+def _login_logo_data_uri() -> str:
+    """Return the packaged DELFIN logo as a base64 ``data:`` URI, or ''.
+
+    Mirrors the dashboard logo loader (``dashboard.__init__._load_logo_data_uri``)
+    so the branded login page shows the same mark as the running dashboard.
+    """
+    import base64
+
+    try:
+        logo = importlib.resources.files("delfin").joinpath("logo", "DELFIN_logo.png")
+        if logo.is_file():
+            data = logo.read_bytes()
+            if data:
+                return "data:image/png;base64," + base64.b64encode(data).decode("ascii")
+    except Exception:
+        pass
+    return ""
+
+
+def _prepare_login_template_dir() -> str | None:
+    """Materialise the DELFIN-branded ``login.html`` for jupyter_server.
+
+    Reads the shipped template, inlines the DELFIN logo as a ``data:`` URI, and
+    writes the result into a private 0700 directory that is handed to
+    jupyter_server via ``extra_template_paths`` (searched before the packaged
+    template, so ours wins). Returns the directory path, or ``None`` if the
+    template is unavailable (jupyter_server then falls back to its own page —
+    auth is unaffected either way).
+    """
+    try:
+        src = importlib.resources.files("delfin.voila_assets").joinpath(
+            "login_templates", "login.html"
+        )
+        template = src.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+    logo_uri = _login_logo_data_uri()
+    if logo_uri:
+        rendered = template.replace("__DELFIN_LOGO_URI__", logo_uri)
+    else:
+        # No logo available: drop the whole tile so no broken image shows.
+        import re
+
+        rendered = re.sub(
+            r"<!--LOGO_TILE_START-->.*?<!--LOGO_TILE_END-->",
+            "",
+            template,
+            flags=re.DOTALL,
+        ).replace("__DELFIN_LOGO_URI__", "")
+
+    try:
+        target_dir = _secure_cache_dir("voila-login")
+        (target_dir / "login.html").write_text(rendered, encoding="utf-8")
+        return str(target_dir)
+    except Exception:
+        return None
+
+
+# Benign lines jupyter_server emits that only confuse users without signalling
+# any real problem: an internal "ServerApp.token config is deprecated" warning
+# (jupyter_server reads its OWN deprecated trait during startup) and a routine
+# login-cookie clear. jupyter_server force-shows some of these past Python's
+# warning filters (it resets them at startup), so the only reliable way to keep
+# them out of the terminal is to filter the child's stderr.
+_BENIGN_STDERR_SUBSTRINGS = (
+    "ServerApp.token config is deprecated",
+    "Clearing invalid/expired login cookie",
+    "cannot be longer than the websocket_ping_interval",
+    "Setting websocket_ping_timeout",
+    # Routine shutdown chatter on Ctrl+C — we print our own "Stopping…/Stopped."
+    "Shutting down",
+    "received signal",
+)
+
+
+def _forward_filtered_stderr(stream) -> None:
+    """Forward the child's stderr to ours, dropping only benign noise lines.
+
+    Matches an explicit allowlist of known-harmless messages and passes
+    EVERYTHING else through unchanged — genuine warnings and errors are never
+    hidden (fail-loud preserved). A ``warnings.warn`` header is printed with an
+    indented source snippet on the next line; that snippet is dropped too when
+    its header was dropped.
+    """
+    drop_indented_continuation = False
+    out = getattr(sys.stderr, "buffer", None)
+    try:
+        for raw in iter(stream.readline, b""):
+            text = raw.decode("utf-8", "replace")
+            if drop_indented_continuation and text[:1].isspace():
+                drop_indented_continuation = False
+                continue
+            drop_indented_continuation = False
+            if any(sub in text for sub in _BENIGN_STDERR_SUBSTRINGS):
+                if "Warning:" in text:
+                    drop_indented_continuation = True
+                continue
+            if out is not None:
+                out.write(raw)
+                out.flush()
+            else:
+                sys.stderr.write(text)
+                sys.stderr.flush()
+    except Exception:
+        # A daemon log-pump must never crash the launcher; go silent on this
+        # stream rather than raise in a background thread.
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="delfin-voila",
@@ -577,6 +688,16 @@ def main(argv=None):
     env.setdefault("DELFIN_VOILA_ROOT_DIR", root_dir)
     env["DELFIN_VOILA_PORT"] = str(args.port)
 
+    # Quieter startup (cosmetic only — no endpoint/auth change). Suppress the
+    # third-party DeprecationWarning spam (traitlets) and the Node url.parse
+    # deprecation so the terminal shows the DELFIN banner, not a wall of noise.
+    # Scoped to the Voilà subprocess env; DELFIN's own runtime is untouched.
+    env.setdefault("PYTHONWARNINGS", "ignore::DeprecationWarning")
+    _node_opts = env.get("NODE_OPTIONS", "").strip()
+    env["NODE_OPTIONS"] = (
+        f"{_node_opts} --no-deprecation".strip() if _node_opts else "--no-deprecation"
+    )
+
     # Trust the notebook so Voilà doesn't warn about untrusted content.
     _trust_notebook(notebook)
 
@@ -591,16 +712,27 @@ def main(argv=None):
     # `default_url` sends the browser straight to the rendered dashboard, so
     # `http://localhost:PORT/?token=…` behaves exactly as before for the user.
     dashboard_url = _dashboard_default_url(notebook, root_dir)
+    # Voilà only needs the `voila` extension. Explicitly DISABLE the others that
+    # auto-load from entry points (jupyterlab/notebook/lsp/terminals): each adds
+    # HTTP endpoints = attack surface, boot time and log noise the dashboard
+    # never uses. notebook_shim is left alone (harmless redirect shim).
+    _extensions = (
+        "{'voila': True, 'jupyterlab': False, 'notebook': False, "
+        "'jupyter_lsp': False, 'jupyter_server_terminals': False}"
+    )
     cmd = [
         sys.executable,
         "-m",
         "jupyter",
         "server",
-        "--ServerApp.jpserver_extensions={'voila': True}",
+        f"--ServerApp.jpserver_extensions={_extensions}",
         f"--port={args.port}",
         f"--ServerApp.ip={args.ip}",
         f"--ServerApp.root_dir={root_dir}",
         f"--ServerApp.default_url={dashboard_url}",
+        # Quieter startup: drop the [I …] link/load/serving/302 flood; WARN
+        # still surfaces genuine warnings and errors (fail-loud preserved).
+        "--ServerApp.log_level=WARN",
         # Info-disclosure: never surface Python tracebacks to the browser
         # (they leak paths, usernames, code). Off by default; set explicitly.
         "--VoilaConfiguration.show_tracebacks=False",
@@ -609,9 +741,23 @@ def main(argv=None):
         "--VoilaConfiguration.default_pool_size=0",
         # Shrink the RCE surface: the dashboard never needs server terminals.
         "--ServerApp.terminals_enabled=False",
+        # Ctrl+C stops immediately instead of prompting "Shut down (y/[n])?".
+        "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
     ]
+
+    # DELFIN-branded login page: drop our own login.html (logo inlined) onto
+    # extra_template_paths so jupyter_server renders it instead of its generic
+    # "Password or token" page. Appearance only — the LoginHandler still
+    # validates the token/password server-side, so auth is unchanged.
+    _login_dir = _prepare_login_template_dir()
+    if _login_dir:
+        import json
+
+        cmd.append(
+            "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
+        )
 
     # Token authentication — now actually ENFORCED by jupyter_server. Pass via
     # env var, not CLI: /proc/PID/cmdline is world-readable on shared hosts, so
@@ -638,26 +784,47 @@ def main(argv=None):
             file=sys.stderr,
         )
 
-    if open_browser:
-        cmd.append("--ServerApp.open_browser=True")
-    else:
-        cmd.append("--no-browser")
+    # We ALWAYS open the browser ourselves (below), with the token embedded so
+    # the runner lands directly in the dashboard. Letting jupyter open it too
+    # would race us and could open a token-less URL (-> login page), so disable
+    # jupyter's own auto-open unconditionally.
+    cmd.append("--no-browser")
 
     if args.dark:
         cmd.append("--VoilaConfiguration.theme=dark")
 
     scheme = "https" if (args.certfile and args.keyfile) else "http"
     bind_display = "localhost" if args.ip == "127.0.0.1" else args.ip
-    # Never print the raw token. Terminals, notebooks, service logs, and job
-    # launchers may retain stdout on shared systems.
     print(f"Starting DELFIN Dashboard on {scheme}://{bind_display}:{args.port}")
-    if _token and _token_file is not None:
+
+    # The token is what keeps everyone else out: opening the port WITHOUT it
+    # lands on the login page, so no other local user on this shared host can
+    # get in. On an interactive terminal (YOUR own private session) show the
+    # ready-to-open URL with the token embedded, so you are logged in with a
+    # single click. When stdout is redirected/captured (service logs, job
+    # launchers) isatty() is False and we fall back to the token-file path — the
+    # raw token is never written to a shared log.
+    # Point straight at the dashboard render URL (not "/"). Going through "/"
+    # relies on a redirect to default_url that can DROP the token when the
+    # browser still holds a stale login cookie for a reused port (localhost:PORT
+    # accumulates cookies across sessions, each with a fresh cookie-secret) —
+    # the token then never reaches the target and you land on /login. Hitting
+    # the render URL directly consumes the token at the target handler, which
+    # sets a fresh cookie regardless of any stale one.
+    _show_url = bool(_token) and sys.stdout.isatty()
+    if _show_url and args.ip != "0.0.0.0":
+        print(
+            f"  🔗 Open (you are logged in directly): "
+            f"{scheme}://{bind_display}:{args.port}{dashboard_url}?token={_token}"
+        )
+    elif _token and _token_file is not None:
         print(f"  Append ?token=$(cat {_token_file}) to the URL.")
 
     # Show all reachable URLs so remote users know exactly what to type.
     if args.ip == "0.0.0.0":
         for ip in _get_local_ips():
-            print(f"  -> {scheme}://{ip}:{args.port}")
+            suffix = f"{dashboard_url}?token={_token}" if _show_url else ""
+            print(f"  -> {scheme}://{ip}:{args.port}{suffix}")
 
     print()
     if args.ip == "0.0.0.0":
@@ -678,13 +845,31 @@ def main(argv=None):
         )
     print("Press Ctrl+C to stop.\n")
 
-    proc = subprocess.Popen(cmd, env=env)
-    if open_browser and _is_vscode_session(env):
+    # Pipe stderr so we can drop the few benign jupyter noise lines that survive
+    # Python's warning filters; stdout stays inherited (banner is untouched).
+    proc = subprocess.Popen(cmd, env=env, stderr=subprocess.PIPE)
+    stderr_stream = getattr(proc, "stderr", None)
+    stderr_thread = None
+    if stderr_stream is not None:
+        stderr_thread = threading.Thread(
+            target=_forward_filtered_stderr, args=(stderr_stream,), daemon=True
+        )
+        stderr_thread.start()
+    # Auto-open straight INTO the dashboard: open the render URL with the token
+    # embedded (not bare "/", which would land on the login page). Only the
+    # runner gets this URL; anyone else opening the port still hits the login.
+    if open_browser and _token:
         browser_host = "localhost" if args.ip in {"127.0.0.1", "0.0.0.0"} else args.ip
+        direct_url = (
+            f"{scheme}://{browser_host}:{args.port}{dashboard_url}?token={_token}"
+        )
         if _wait_for_port("127.0.0.1", args.port):
-            _open_browser_url(f"http://{browser_host}:{args.port}", env)
+            _open_browser_url(direct_url, env)
     try:
-        sys.exit(proc.wait())
+        rc = proc.wait()
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=2)
+        sys.exit(rc)
     except KeyboardInterrupt:
         print("\nStopping...")
         proc.terminate()
@@ -693,6 +878,8 @@ def main(argv=None):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+        if stderr_thread is not None:
+            stderr_thread.join(timeout=2)
         print("Stopped.")
 
 
