@@ -762,6 +762,14 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
     r"pip\s+show|pip\s+list|pip\s+freeze|"
     r"compileall|json\.tool|http\.server|delfin(?:\.\w+)*)\b",
+    # Run a user's OWN module: `python -m <module> [args]` is exactly as safe
+    # as `python <script>.py` (already auto-allowed below) — same arbitrary-code
+    # capability, same deny-list + egress checks apply to the whole command. So
+    # the agent can run the CLI it just built (bug 20260718-193300: it could not
+    # run `python -m molkit "…"`). Excludes pip install/uninstall/download,
+    # which stay behind the confirm gate.
+    r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?!pip\s+(?:install|uninstall|download)\b)"
+    r"[A-Za-z_][\w.]*",
     r"^\s*python(?:3(?:\.\d+)?)?\s+\S+\.py\b",                             # run a script in repo
     r"^\s*pip\s+(?:show|list|freeze|check)\b",
     r"^\s*conda\s+(?:info|list|env\s+list|search)\b",
