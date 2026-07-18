@@ -206,6 +206,29 @@ def test_output_backstop_stops_runaway_turn(client, monkeypatch):
 
 # --- Tier C: max-tokens truncation is surfaced, not silently swallowed ------
 
+def test_plan_mode_block_injects_exit_plan_mode_redirect(client):
+    # Put the client in plan mode so task_create is read-only-rejected.
+    from delfin.agent.api_client import KitToolPermissions
+    import tempfile
+    from pathlib import Path
+    ws = Path(tempfile.mkdtemp())
+    client._permissions = KitToolPermissions(workspace=ws, mode="plan")
+    # Round 1: the model batches a task_create (blocked by plan mode).
+    _, captured = _drive(client, [
+        _tool_round("task_create",
+                    '{"subject": "step 1", "description": "do the thing"}'),
+        _final(),
+    ])
+    assert len(captured) >= 2, "second round never happened"
+    round2 = captured[1].get("messages") or []
+    # A decisive redirect to exit_plan_mode must have been injected.
+    assert any(m.get("role") == "user"
+               and "exit_plan_mode" in str(m.get("content", ""))
+               and "PLAN MODE" in str(m.get("content", ""))
+               for m in round2), \
+        "no plan-mode redirect injected after a blocked task_create"
+
+
 def test_max_tokens_truncation_is_surfaced(client):
     truncated = _Stream([
         _Chunk([_Choice(_Delta(content="partial answer"), finish="length")],

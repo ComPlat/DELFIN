@@ -7546,6 +7546,14 @@ class OpenAIClient(_BaseClient):
         _AUTO_CONT_CAP = 12
         _auto_cont_count = 0
         _did_tools_since_cont = False
+        # Plan-mode redirect: fired once per turn when a round is blocked by the
+        # plan-mode gate. Weaker models (qwen) batch every task_create/edit in
+        # ONE round, so they can't react to the first block before the whole
+        # batch is out; then they re-batch the same blocked calls for several
+        # rounds instead of presenting a plan. A single decisive nudge steers
+        # them to exit_plan_mode. (bug 20260718-185356: 20 blocked task_create
+        # calls, ~318s / $0.17, before the model called exit_plan_mode.)
+        _plan_redirect_sent = False
 
         # Scale the tool-output elision budget to the model's real context
         # window so a big-context model keeps its earlier file reads instead
@@ -8106,6 +8114,30 @@ class OpenAIClient(_BaseClient):
                     api_messages.append({"role": "user", "content": _steer})
                     yield StreamEvent(
                         type="text_delta", text="\n\n💬 [you, mid-run]: " + _steer + "\n")
+
+                # Plan-mode redirect. When this round hit the plan-mode gate
+                # (task_create / write / bash / apply_patch all reject with
+                # "plan mode (read-only)"), the agent is trying to ACT before
+                # its plan is approved. Inject ONE decisive steer to
+                # exit_plan_mode so it stops re-batching blocked calls and
+                # presents the plan instead (the consecutive-failure abort below
+                # can't catch this — it needs 3 rounds, but the model batches a
+                # whole plan's worth of blocked calls into a single round).
+                if (not _plan_redirect_sent and _round_results
+                        and any("plan mode (read-only)" in r
+                                for r in _round_results)):
+                    _plan_redirect_sent = True
+                    api_messages.append({"role": "user", "content": (
+                        "[system] You are in PLAN MODE. Tools that create tasks "
+                        "or change files/run commands are read-only-REJECTED "
+                        "here, and retrying them only wastes turns — do NOT call "
+                        "them again. To proceed you MUST present your plan: call "
+                        "`exit_plan_mode` with the full plan (as prose, including "
+                        "the steps you were trying to create as tasks) as its "
+                        "argument. That submits the plan for the user's approval, "
+                        "which is the ONLY way execution begins. Call "
+                        "exit_plan_mode now — nothing else."
+                    )})
 
                 # Consecutive-failure check. A "failure round" is one
                 # where every tool_result this round is an `{"error": …}`
