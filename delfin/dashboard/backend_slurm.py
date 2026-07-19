@@ -259,12 +259,19 @@ class SlurmJobBackend(JobBackend):
         if array:
             cmd.append(f'--array={array}')
         cmd.append(str(submit_script))
+        submit_env = {**os.environ, **self._env_vars_to_dict(env_vars)}
+        # Inherited SBATCH_* input variables act like sbatch CLI options.
+        # SBATCH_GET_USER_ENV has NO command-line negation, so if a user's
+        # shell exports it, env retrieval would come back despite
+        # --export=ALL. SBATCH_EXPORT could likewise fight our flag.
+        submit_env.pop('SBATCH_GET_USER_ENV', None)
+        submit_env.pop('SBATCH_EXPORT', None)
         result = subprocess.run(
             cmd,
             cwd=str(job_dir),
             capture_output=True,
             text=True,
-            env={**os.environ, **self._env_vars_to_dict(env_vars)},
+            env=submit_env,
         )
         if result.returncode == 0:
             # Best-effort recovery for the transient env-retrieval hold.

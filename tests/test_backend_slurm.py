@@ -205,6 +205,40 @@ def test_sbatch_passes_vars_via_process_env_not_export_flag(tmp_path):
     assert "PATH" in env
 
 
+def test_sbatch_strips_inherited_sbatch_input_env_vars(tmp_path):
+    """Inherited SBATCH_GET_USER_ENV / SBATCH_EXPORT must be stripped.
+
+    sbatch reads SBATCH_* input environment variables as if they were CLI
+    options; SBATCH_GET_USER_ENV has no command-line negation, so a shell
+    that exports it would re-enable the compute-node env retrieval despite
+    our --export=ALL. Other SBATCH_* vars (e.g. SBATCH_EXCLUDE) pass through.
+    """
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _fake_completed("Submitted batch job 100\n")
+
+    with patch.dict("os.environ", {
+            "SBATCH_GET_USER_ENV": "1",
+            "SBATCH_EXPORT": "NONE",
+            "SBATCH_EXCLUDE": "badnode01"}), \
+         patch("delfin.dashboard.backend_slurm.subprocess.run",
+               side_effect=fake_run), \
+         patch.object(SlurmJobBackend, "_release_env_hold"):
+        backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="x", mode="delfin",
+            time_limit="24:00:00", pal=1, maxcore=600,
+        )
+
+    env = captured["env"]
+    assert "SBATCH_GET_USER_ENV" not in env
+    assert "SBATCH_EXPORT" not in env
+    assert env.get("SBATCH_EXCLUDE") == "badnode01"  # benign ones survive
+
+
 def test_env_vars_to_dict_parses_export_grammar():
     parse = SlurmJobBackend._env_vars_to_dict
     assert parse("A=1,B=two,C=/some/path") == {
