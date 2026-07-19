@@ -165,6 +165,57 @@ def test_list_jobs_releases_env_hold_on_refresh():
     )
 
 
+def test_sbatch_passes_vars_via_process_env_not_export_flag(tmp_path):
+    """DELFIN vars must travel via the sbatch process environment.
+
+    Regression: ``--export=ALL,VAR=…`` (explicit variables) makes slurmd
+    fetch the user's login environment on the compute node at launch;
+    on bwUniCluster3 that intermittently exceeds GetEnvTimeout (2 s) and
+    the job is requeued/held with "user env retrieval failed". Verified
+    by an A/B test pinned to the same node: plain/ALL-only completed,
+    ALL,VARS failed repeatedly (jobs 5897358 vs 5897359/5897343).
+    """
+    backend = SlurmJobBackend("/tmp", slurm_profile="bwunicluster3")
+
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _fake_completed("Submitted batch job 99\n")
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run), \
+         patch.object(SlurmJobBackend, "_release_env_hold"):
+        backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="myjob", mode="delfin",
+            time_limit="24:00:00", pal=4, maxcore=1000,
+        )
+
+    cmd = captured["cmd"]
+    env = captured["env"]
+    # Exactly --export=ALL — never with an appended variable list.
+    assert "--export=ALL" in cmd
+    assert not any(a.startswith("--export=ALL,") for a in cmd), cmd
+    # The DELFIN variables (incl. profile env) must be in the process env.
+    assert env is not None
+    assert env.get("DELFIN_MODE") == "delfin"
+    assert env.get("DELFIN_JOB_NAME") == "myjob"
+    assert env.get("DELFIN_STAGE_ORCA") == "1"  # bwunicluster3 profile env
+    # And the surrounding user environment must still be inherited.
+    assert "PATH" in env
+
+
+def test_env_vars_to_dict_parses_export_grammar():
+    parse = SlurmJobBackend._env_vars_to_dict
+    assert parse("A=1,B=two,C=/some/path") == {
+        "A": "1", "B": "two", "C": "/some/path"}
+    # First '=' splits key/value; later '=' stay in the value.
+    assert parse("OPTS=a=b") == {"OPTS": "a=b"}
+    # Malformed chunks are skipped, not fatal.
+    assert parse("A=1,,novalue,B=2") == {"A": "1", "B": "2"}
+    assert parse("") == {}
+
+
 def test_is_env_hold_matches_both_scontrol_and_squeue_forms():
     """The detector must match underscores (scontrol) and spaces (squeue)."""
     assert SlurmJobBackend._is_env_hold(

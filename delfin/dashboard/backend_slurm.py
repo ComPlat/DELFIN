@@ -233,9 +233,18 @@ class SlurmJobBackend(JobBackend):
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
         total_secs = self._time_limit_seconds(time_limit)
         usr1_offset = max(30, min(300, total_secs // 2))
+        # Pass DELFIN_* variables via the sbatch process environment, NOT via
+        # `--export=ALL,VAR=…`. Passing explicit variables with --export makes
+        # slurmd fetch the user's login environment on the compute node at
+        # launch (bounded by GetEnvTimeout, default 2 s) — on bwUniCluster3
+        # that times out intermittently and the job is requeued/held with
+        # "user env retrieval failed". A plain `--export=ALL` propagates the
+        # full submission environment (including these variables) without
+        # triggering that retrieval. Verified by an A/B test pinned to the
+        # same node (uc3n003): plain/ALL-only completed, ALL,VARS failed.
         cmd = [
             'sbatch',
-            f'--export=ALL,{env_vars}',
+            '--export=ALL',
             f'--time={time_limit}',
             f'--signal=B:USR1@{usr1_offset}',
             '--ntasks=1',
@@ -255,6 +264,7 @@ class SlurmJobBackend(JobBackend):
             cwd=str(job_dir),
             capture_output=True,
             text=True,
+            env={**os.environ, **self._env_vars_to_dict(env_vars)},
         )
         if result.returncode == 0:
             # Best-effort recovery for the transient env-retrieval hold.
@@ -262,6 +272,24 @@ class SlurmJobBackend(JobBackend):
             # (downstream extracts the job id from its last token).
             self._release_env_hold(result.stdout)
         return result
+
+    @staticmethod
+    def _env_vars_to_dict(env_vars: str) -> dict[str, str]:
+        """Parse the ``KEY=val,KEY2=val2`` export string into a dict.
+
+        Same comma/equals grammar sbatch used for ``--export=ALL,<str>``, so
+        the constraint (no commas inside values) is unchanged.
+        """
+        parsed: dict[str, str] = {}
+        for chunk in (env_vars or '').split(','):
+            chunk = chunk.strip()
+            if not chunk or '=' not in chunk:
+                continue
+            key, value = chunk.split('=', 1)
+            key = key.strip()
+            if key:
+                parsed[key] = value
+        return parsed
 
     @staticmethod
     def _job_id_from_submit(stdout: str) -> str | None:
