@@ -23,14 +23,16 @@ def _exec_plan(plan: str, perms: KitToolPermissions) -> dict:
     return json.loads(out)
 
 
-def test_exit_plan_silent_approval_without_callback():
-    """No callback → auto-approve, switch to default."""
+def test_exit_plan_no_callback_does_not_self_approve():
+    """No approval channel → plan mode is a HARD human gate: the agent must
+    NOT self-approve. Mode stays 'plan' so edits/writes remain blocked; the
+    call returns 'awaiting_approval' and the agent should stop and wait.
+    (Regression guard for the self-exit bug fixed 2026-07-14.)"""
     perms = _make_perms(mode="plan")
     result = _exec_plan("1. step one\n2. step two", perms)
-    assert result["status"] == "approved"
-    assert result["new_mode"] == "default"
-    assert perms.mode == "default"
-    assert "step one" in perms.last_approved_plan
+    assert result["status"] == "awaiting_approval"
+    assert perms.mode == "plan"                    # NOT flipped to 'default'
+    assert not perms.last_approved_plan            # nothing was approved
 
 
 def test_exit_plan_blocked_outside_plan_mode():
@@ -69,7 +71,8 @@ def test_approval_result_anchors_on_the_plan():
     Tetris build presented a correct spreadsheet plan, got it approved, then
     built Tetris from the leftover context."""
     plan = "# Plan: Mini-Spreadsheet\n1. grid.py\n2. formula.py\n3. tests"
-    result = _exec_plan(plan, _make_perms(mode="plan"))
+    result = _exec_plan(plan, _make_perms(
+        mode="plan", plan_approval_callback=lambda _p: {"approved": True}))
     assert result["status"] == "approved"
     instr = result.get("instruction", "")
     assert "grid.py" in instr and "formula.py" in instr   # full plan echoed
@@ -129,7 +132,8 @@ def test_plan_mode_lifecycle_unblocks_writes():
         confirms.append(name)
         return True
 
-    perms = _make_perms(mode="plan", confirm_callback=confirm)
+    perms = _make_perms(mode="plan", confirm_callback=confirm,
+                        plan_approval_callback=lambda _p: {"approved": True})
     _exec_plan("step 1", perms)
     assert perms.mode == "default"
     out = _DocToolExecutor().execute(

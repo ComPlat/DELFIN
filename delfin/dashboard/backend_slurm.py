@@ -1,8 +1,11 @@
 """SLURM job backend: sbatch / squeue / scancel."""
 
 import os
+import re
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -55,6 +58,17 @@ class SlurmJobBackend(JobBackend):
             'DELFIN_HIGHMEM_MB': str(2304 * 1024),
         },
     }
+
+    # SLURM holds a job (state PENDING, reason "…requeued held") when the
+    # controller's user-environment retrieval fails: it runs a login shell as
+    # the user, bounded by GetEnvTimeout (default 2 s), and a slow ~/.bashrc on
+    # a busy login node pushes it over. The hold is transient — releasing the
+    # job re-attempts retrieval, which almost always succeeds. DELFIN releases
+    # such holds automatically so submits are not silently stuck.
+    _ENV_HOLD_MARKERS = (
+        'user_env_retrieval_failed',
+        'launch_failed_requeued_held',
+    )
 
     @staticmethod
     def _detect_profile() -> str:
@@ -219,9 +233,18 @@ class SlurmJobBackend(JobBackend):
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
         total_secs = self._time_limit_seconds(time_limit)
         usr1_offset = max(30, min(300, total_secs // 2))
+        # Pass DELFIN_* variables via the sbatch process environment, NOT via
+        # `--export=ALL,VAR=…`. Passing explicit variables with --export makes
+        # slurmd fetch the user's login environment on the compute node at
+        # launch (bounded by GetEnvTimeout, default 2 s) — on bwUniCluster3
+        # that times out intermittently and the job is requeued/held with
+        # "user env retrieval failed". A plain `--export=ALL` propagates the
+        # full submission environment (including these variables) without
+        # triggering that retrieval. Verified by an A/B test pinned to the
+        # same node (uc3n003): plain/ALL-only completed, ALL,VARS failed.
         cmd = [
             'sbatch',
-            f'--export=ALL,{env_vars}',
+            '--export=ALL',
             f'--time={time_limit}',
             f'--signal=B:USR1@{usr1_offset}',
             '--ntasks=1',
@@ -236,12 +259,132 @@ class SlurmJobBackend(JobBackend):
         if array:
             cmd.append(f'--array={array}')
         cmd.append(str(submit_script))
-        return subprocess.run(
+        submit_env = {**os.environ, **self._env_vars_to_dict(env_vars)}
+        # Inherited SBATCH_* input variables act like sbatch CLI options.
+        # SBATCH_GET_USER_ENV has NO command-line negation, so if a user's
+        # shell exports it, env retrieval would come back despite
+        # --export=ALL. SBATCH_EXPORT could likewise fight our flag.
+        submit_env.pop('SBATCH_GET_USER_ENV', None)
+        submit_env.pop('SBATCH_EXPORT', None)
+        result = subprocess.run(
             cmd,
             cwd=str(job_dir),
             capture_output=True,
             text=True,
+            env=submit_env,
         )
+        if result.returncode == 0:
+            # Best-effort recovery for the transient env-retrieval hold.
+            # Silent side effect: never raises, never mutates result.stdout
+            # (downstream extracts the job id from its last token).
+            self._release_env_hold(result.stdout)
+        return result
+
+    @staticmethod
+    def _env_vars_to_dict(env_vars: str) -> dict[str, str]:
+        """Parse the ``KEY=val,KEY2=val2`` export string into a dict.
+
+        Same comma/equals grammar sbatch used for ``--export=ALL,<str>``, so
+        the constraint (no commas inside values) is unchanged.
+        """
+        parsed: dict[str, str] = {}
+        for chunk in (env_vars or '').split(','):
+            chunk = chunk.strip()
+            if not chunk or '=' not in chunk:
+                continue
+            key, value = chunk.split('=', 1)
+            key = key.strip()
+            if key:
+                parsed[key] = value
+        return parsed
+
+    @staticmethod
+    def _job_id_from_submit(stdout: str) -> str | None:
+        """Extract the numeric job id from ``Submitted batch job N``."""
+        match = re.search(r'Submitted batch job (\d+)', stdout or '')
+        return match.group(1) if match else None
+
+    @classmethod
+    def _is_env_hold(cls, text: str) -> bool:
+        """True if ``text`` (an scontrol Reason token or a squeue reason
+        field) describes the transient user-env-retrieval hold. ``scontrol``
+        writes it with underscores, ``squeue`` with spaces — normalise both."""
+        normalized = (text or '').lower().replace('_', ' ')
+        return any(marker.replace('_', ' ') in normalized
+                   for marker in cls._ENV_HOLD_MARKERS)
+
+    @staticmethod
+    def _release_job_quietly(job_id: str) -> None:
+        """Best-effort ``scontrol release`` — never raises. Idempotent: a
+        release on an already-pending job is a harmless no-op."""
+        try:
+            subprocess.run(
+                ['scontrol', 'release', str(job_id)],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            pass
+
+    def _scontrol_job_state(self, job_id: str) -> str | None:
+        """Return ``scontrol show job`` output (lowercased) or None if the job
+        cannot be queried (finished, gone, or scontrol unavailable)."""
+        try:
+            result = subprocess.run(
+                ['scontrol', 'show', 'job', str(job_id), '-o'],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        text = (result.stdout or '').lower()
+        return text if 'jobstate=' in text else None
+
+    def _release_env_hold(self, stdout: str, *, attempts: int = 6,
+                          delay: float = 0.5, max_releases: int = 2) -> None:
+        """Release a job SLURM held because user-env retrieval failed.
+
+        Polls briefly after submit for the hold to appear, then runs
+        ``scontrol release``. Best-effort: never raises, never touches the
+        SubmitResult so job-id parsing downstream stays intact.
+        """
+        job_id = self._job_id_from_submit(stdout)
+        if not job_id:
+            return
+        releases = 0
+        try:
+            for _ in range(max(1, attempts)):
+                info = self._scontrol_job_state(job_id)
+                if info is None:
+                    return  # not queryable -> nothing to recover
+                reason_match = re.search(r'reason=(\S+)', info)
+                reason = reason_match.group(1) if reason_match else ''
+                if self._is_env_hold(reason):
+                    subprocess.run(
+                        ['scontrol', 'release', str(job_id)],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    releases += 1
+                    print(
+                        f'[DELFIN] Auto-released SLURM env-retrieval hold on '
+                        f'job {job_id} (attempt {releases}).',
+                        file=sys.stderr, flush=True,
+                    )
+                    if releases >= max_releases:
+                        return
+                    time.sleep(delay)
+                    continue
+                # A concrete non-hold scheduler reason (Priority, Resources, …)
+                # or a running/completing state means the controller accepted
+                # the job past env retrieval — nothing to do.
+                if reason and reason not in ('none', 'null', '(null)'):
+                    return
+                if ('jobstate=running' in info or 'jobstate=completing' in info
+                        or 'jobstate=completed' in info):
+                    return
+                time.sleep(delay)  # reason not set yet; re-check shortly
+        except Exception:
+            return
 
     # ------------------------------------------------------------------
     # Public interface
@@ -501,7 +644,13 @@ class SlurmJobBackend(JobBackend):
             status = parts[4].strip() if len(parts) > 4 else ''
             time_used = parts[5].strip() if len(parts) > 5 else ''
             nodes = parts[6].strip() if len(parts) > 6 else ''
+            # squeue's %R reason may contain spaces ("user env retrieval
+            # failed requeued held"), so detect on the raw line, not parts[7].
             reason = parts[7].strip() if len(parts) > 7 else ''
+            if self._is_env_hold(line):
+                # Dispatch-time env-retrieval holds recur after submit; clear
+                # them on every refresh so DELFIN jobs don't stay stuck.
+                self._release_job_quietly(job_id)
 
             jobs.append(JobInfo(
                 job_id=job_id,

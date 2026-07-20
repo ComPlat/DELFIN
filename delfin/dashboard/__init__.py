@@ -874,7 +874,24 @@ def _find_root_dir(start_dir):
 
 
 def _find_delfin_root():
-    """Find the DELFIN repo root (directory containing ``delfin/__init__.py``)."""
+    """Find the DELFIN repo root (directory containing ``delfin/__init__.py``).
+
+    Resolve it from the INSTALLED package location, NOT the cwd: the dashboard's
+    repo / git / branch / HOME indicators must always reflect the DELFIN
+    checkout, no matter where ``delfin-voila`` was launched. Only the agent tab
+    follows the launch dir (via DELFIN_LAUNCH_CWD /
+    ``_agent_workspace_from_launch``); everything else stays pinned to the repo.
+    Launching from an agent workspace previously made this return ``None``
+    (cwd had no ``delfin/``) → the header showed ``git: repo n/a``.
+    """
+    try:
+        import delfin as _delfin
+        pkg_root = Path(_delfin.__file__).resolve().parent.parent
+        if (pkg_root / 'delfin' / '__init__.py').exists():
+            return pkg_root
+    except Exception:
+        pass
+    # Fallback: legacy cwd-based search (e.g. delfin not importable yet).
     for base in [Path.cwd(), *Path.cwd().parents]:
         if (base / 'delfin' / '__init__.py').exists():
             return base

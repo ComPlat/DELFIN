@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import html as _html
 import ipaddress
+import json
 import re
 import socket
 import urllib.error
@@ -95,12 +96,37 @@ def _check_url(url: str) -> Optional[str]:
     return None
 
 
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target through _check_url. Without this a
+    public URL could 3xx-redirect to http://169.254.169.254/… (cloud metadata)
+    or http://127.0.0.1/… — SSRF that defeats the initial host/IP deny-list."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        err = _check_url(newurl)
+        if err is not None:
+            raise urllib.error.HTTPError(
+                newurl, code, f"blocked redirect target: {err}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_GUARDED_OPENER = None
+
+
+def _guarded_opener():
+    global _GUARDED_OPENER
+    if _GUARDED_OPENER is None:
+        _GUARDED_OPENER = urllib.request.build_opener(_GuardedRedirectHandler())
+    return _GUARDED_OPENER
+
+
 def _fetch_bytes(url: str, timeout_s: int) -> tuple[bytes, str]:
     """GET a URL with a strict cap. Returns (body, content_type)."""
     req = urllib.request.Request(
         url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+    # Use the redirect-guarding opener so each hop is re-checked against the
+    # deny-list (the initial URL is already validated by the caller).
+    with _guarded_opener().open(req, timeout=timeout_s) as resp:
         ctype = resp.headers.get("Content-Type", "")
         body = resp.read(_MAX_BYTES + 1)
     return body, ctype
@@ -178,9 +204,52 @@ def web_fetch(url: str, *, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
     }
 
 
+def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
+    """Fallback search via the DuckDuckGo Instant Answer JSON API.
+
+    A real API (not HTML scraping), so it still works where the ``/html/``
+    endpoint is blocked by anti-bot 202 challenges (e.g. datacenter IPs).
+    Returns result-shaped dicts from the entity Abstract + RelatedTopics —
+    strong for factual / chemistry-entity queries (Wikipedia-sourced).
+    Best-effort: any failure returns ``[]``.
+    """
+    url = "https://api.duckduckgo.com/?" + urllib.parse.urlencode({
+        "q": query, "format": "json", "no_html": 1, "skip_disambig": 1,
+    })
+    if _check_url(url):
+        return []
+    try:
+        body, _ctype = _fetch_bytes(url, timeout_s)
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    out: list[dict] = []
+    abstract = (data.get("AbstractText") or "").strip()
+    if abstract:
+        out.append({
+            "title": (data.get("Heading") or query).strip(),
+            "url": data.get("AbstractURL") or "",
+            "snippet": abstract[:300],
+        })
+    for topic in (data.get("RelatedTopics") or []):
+        if not isinstance(topic, dict):
+            continue
+        # RelatedTopics may nest a category's items under "Topics".
+        items = topic.get("Topics") if "Topics" in topic else [topic]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            t = (it.get("Text") or "").strip()
+            u = it.get("FirstURL") or ""
+            if t and u.startswith(("http://", "https://")):
+                out.append({"title": t[:80], "url": u, "snippet": t[:300]})
+    return out
+
+
 def web_search(query: str, *, max_results: int = 8,
                timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
-    """DuckDuckGo HTML search with a plain-text result list."""
+    """DuckDuckGo search: HTML result list, with an Instant-Answer fallback
+    when the HTML endpoint returns nothing (e.g. blocked by a 202 anomaly)."""
     if not query.strip():
         return {"error": "query must be non-empty"}
     encoded = urllib.parse.urlencode({"q": query})
@@ -231,4 +300,12 @@ def web_search(query: str, *, max_results: int = 8,
         if len(hits) >= max_results:
             break
 
-    return {"query": query, "results": hits, "result_count": len(hits)}
+    source = "duckduckgo-html"
+    if not hits:
+        ia = _ddg_instant_answer(query, timeout_s)
+        if ia:
+            hits = ia[:max_results]
+            source = "duckduckgo-instant-answer"
+
+    return {"query": query, "results": hits, "result_count": len(hits),
+            "source": source}

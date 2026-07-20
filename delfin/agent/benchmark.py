@@ -71,6 +71,11 @@ class Task:
     max_duration_s: float = 60.0
     max_cost_usd: float = 0.10
     max_tool_calls: int = 5
+    # Optional behaviour tag: "plan" | "scout" | "verify" | "ask".
+    # When set, ``score_outcome`` computes one trace-derived behaviour
+    # flag for this task (did it plan/scout/verify/ask?) into
+    # ``BenchmarkResult.behavior`` — orthogonal to the quality rubric.
+    behavior: str = ""
 
 
 @dataclass
@@ -138,6 +143,12 @@ class BenchmarkResult:
     # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
     text_excerpt: str = ""              # first ≤400 chars of model output
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
+    # --- trace-derived behaviour flags (behavioural-parity eval) ---
+    # Only populated for tasks carrying a ``behavior:`` tag.  Per-run this
+    # is {flag: 0|1}; aggregated across replicates it is {flag: rate}.
+    # Kept OUT of ``components`` on purpose — ``quality = sum(components)``,
+    # so mixing behaviour flags in would corrupt the quality score.
+    behavior: dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +183,7 @@ def _coerce_task(raw: dict) -> Task:
         max_duration_s=float(raw.get("max_duration_s", 60.0)),
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
+        behavior=str(raw.get("behavior", "") or "").strip().lower(),
     )
 
 
@@ -236,6 +248,280 @@ def _signal_matches(signal: Signal, traj: Trajectory) -> bool:
     else:                                                       # any
         haystacks = [traj.as_string()]
     return any(rx.search(h or "") for h in haystacks)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour classifier  (behavioural-parity eval)
+#
+# Three of the four target behaviours are ORDER-derived ("plan BEFORE act",
+# "read BEFORE edit", "run AFTER edit"), which the presence-only signal
+# rubric above cannot express.  This block derives four booleans from the
+# already-ordered ``Trajectory.tool_calls`` using the agent's REAL tool
+# vocabulary (snake_case: ``read_file``/``edit_file``/``bash`` — the tool
+# names this harness actually emits).  Pure functions, unit-tested against
+# synthetic trajectories before any live/token spend.
+# ---------------------------------------------------------------------------
+
+# Read/scout tools (knowing state before acting).
+_READ_TOOLS = frozenset({
+    "read_file", "grep_file", "list_files", "search_docs", "read_section",
+    "list_docs", "list_sections", "search_calcs", "get_calc_info",
+    "calc_summary", "find_definition", "find_references", "notebook_read",
+    "project_introspect", "view_image", "glob_files",
+})
+# File-mutating tools.
+_MUTATE_TOOLS = frozenset({
+    "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+})
+# Execution tools (running code = verifying).  ``bash`` is dual-use and
+# split below into read-only vs acting by inspecting its command.
+_EXEC_TOOLS = frozenset({"bash", "bash_background", "run_tests"})
+_PLAN_TOOLS = frozenset({"task_create", "exit_plan_mode"})
+_ASK_TOOLS = frozenset({"ask_user_question"})
+
+# First token of a read-only shell command (scouting via bash, not mutating).
+_RO_BASH_CMDS = frozenset({
+    "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "wc",
+    "which", "file", "stat", "tree", "diff", "less", "more", "column",
+    "sort", "uniq", "cut", "nl", "basename", "dirname", "realpath",
+})
+_RO_GIT_SUB = frozenset({
+    "status", "log", "diff", "show", "branch", "ls-files", "rev-parse",
+})
+# Anything that mutates the filesystem disqualifies a bash cmd from "read-only".
+_BASH_WRITE_RE = re.compile(
+    r"(^|\s)(rm|mv|cp|mkdir|touch|tee|dd|chmod|chown|ln)\s"
+    r"|>>?|;\s*>|sed\s+-i|\bpip\s+install|\bgit\s+(add|commit|push|checkout|reset)"
+)
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Strip an MCP server namespace so classification matches the bare tool.
+
+    Live backends (KIT-Toolbox, MCP servers) advertise tools as
+    ``mcp__<server>__<tool>`` (e.g. ``mcp__delfin-docs__read_file``).  The
+    classifier reasons about the bare tool (``read_file``), so normalise
+    first — otherwise a genuine read/edit/run is invisible to the flags.
+    """
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        if len(parts) >= 3 and parts[-1]:
+            return parts[-1]
+    return name
+
+
+def _input_str(inp: Any) -> str:
+    """Best-effort string view of a tool_call input (dict or str)."""
+    if inp is None:
+        return ""
+    if isinstance(inp, str):
+        return inp
+    if isinstance(inp, dict):
+        try:
+            return json.dumps(inp, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(inp)
+    return str(inp)
+
+
+def _is_readonly_bash(cmd: str) -> bool:
+    """True if a bash command only reads/inspects, never mutates."""
+    c = (cmd or "").strip()
+    if not c:
+        return False
+    if _BASH_WRITE_RE.search(c):
+        return False
+    # First meaningful token (skip a leading VAR=val env assignment).
+    tokens = c.split()
+    head = tokens[0]
+    if "=" in head and not head.startswith("/"):
+        tokens = tokens[1:]
+        head = tokens[0] if tokens else ""
+    head = head.rsplit("/", 1)[-1]                # strip any path prefix
+    if head == "git":
+        sub = tokens[1] if len(tokens) > 1 else ""
+        return sub in _RO_GIT_SUB
+    return head in _RO_BASH_CMDS
+
+
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _edited_paths(calls: list[dict]) -> list[str]:
+    """Extract edited-file basenames from MUTATE calls' inputs."""
+    out: list[str] = []
+    for c in calls:
+        if c["name"] not in _MUTATE_TOOLS:
+            continue
+        m = re.search(r'"(?:file_path|path|notebook_path)"\s*:\s*"([^"]+)"',
+                      c["input"])
+        if m:
+            base = _basename(m.group(1))
+            if base and base not in out:
+                out.append(base)
+    return out
+
+
+def _classify_calls(tool_calls: list[dict]) -> list[dict]:
+    """Annotate each ordered tool call with behaviour ``kinds``.
+
+    Kinds: ``mutate`` | ``plan`` | ``ask`` | ``read`` (scout) |
+    ``exec_act`` (acting execution: run_tests / non-read-only bash).
+    A read-only bash is ``read`` (scouting), never ``exec_act``.
+    """
+    out: list[dict] = []
+    for i, c in enumerate(tool_calls or []):
+        name = _normalize_tool_name(str((c or {}).get("name") or ""))
+        inp = _input_str((c or {}).get("input"))
+        kinds: set[str] = set()
+        if name in _MUTATE_TOOLS:
+            kinds.add("mutate")
+        if name in _PLAN_TOOLS:
+            kinds.add("plan")
+        if name in _ASK_TOOLS:
+            kinds.add("ask")
+        if name in _READ_TOOLS:
+            kinds.add("read")
+        if name == "subagent" and "explore" in inp.lower():
+            kinds.add("read")                     # explore subagent = scouting
+        if name in _EXEC_TOOLS:
+            if name in ("bash", "bash_background") and _is_readonly_bash(inp):
+                kinds.add("read")                 # read-only shell = scouting
+            else:
+                kinds.add("exec_act")
+        out.append({"idx": i, "name": name, "input": inp, "kinds": kinds})
+    return out
+
+
+def _first_idx(calls: list[dict], kind: str) -> int | None:
+    for c in calls:
+        if kind in c["kinds"]:
+            return c["idx"]
+    return None
+
+
+def _last_idx(calls: list[dict], kind: str) -> int | None:
+    found: int | None = None
+    for c in calls:
+        if kind in c["kinds"]:
+            found = c["idx"]
+    return found
+
+
+def _behavior_planned(calls: list[dict]) -> bool:
+    """A PLAN tool call precedes the first mutate AND the first acting exec."""
+    plan_idx = _first_idx(calls, "plan")
+    if plan_idx is None:
+        return False
+    mut_idx = _first_idx(calls, "mutate")
+    act_idx = _first_idx(calls, "exec_act")
+    if mut_idx is not None and plan_idx > mut_idx:
+        return False
+    if act_idx is not None and plan_idx > act_idx:
+        return False
+    return True
+
+
+def _behavior_scouted(calls: list[dict]) -> bool:
+    """A read/scout precedes the first mutate (read before edit)."""
+    read_idx = _first_idx(calls, "read")
+    mut_idx = _first_idx(calls, "mutate")
+    if read_idx is None:
+        return False
+    return mut_idx is None or read_idx < mut_idx
+
+
+def _behavior_verified(calls: list[dict]) -> bool:
+    """After the LAST mutate, the agent runs something OR reads an edited
+    file back.  No mutate at all → nothing to verify → False."""
+    last_mut = _last_idx(calls, "mutate")
+    if last_mut is None:
+        return False
+    edited = _edited_paths(calls)
+    for c in calls:
+        if c["idx"] <= last_mut:
+            continue
+        if "exec_act" in c["kinds"]:
+            return True                           # ran it (pytest/script/…)
+        # read-back: read_file or read-only bash referencing an edited file
+        if "read" in c["kinds"] and edited:
+            if any(b in c["input"] for b in edited):
+                return True
+    return False
+
+
+_ASK_TEXT_RE = re.compile(
+    r"(?is)(which|what|welche[rs]?|which file|which molecule|specify|"
+    r"do you mean|which one|should i|please (?:confirm|clarify|specify)|"
+    r"could you (?:clarify|specify)|need(?: to know| more)|"
+    r"can you (?:clarify|specify)).*\?"
+)
+
+
+def _behavior_asked(calls: list[dict], traj: Trajectory) -> bool:
+    """Asked-correctly: emitted a clarifying question (tool or prose) AND
+    did NOT guess (no mutate, no acting exec).  Guessing overrides asking."""
+    guessed = (_first_idx(calls, "mutate") is not None
+               or _first_idx(calls, "exec_act") is not None)
+    if guessed:
+        return False
+    asked_tool = _first_idx(calls, "ask") is not None
+    asked_prose = bool(_ASK_TEXT_RE.search(traj.text or ""))
+    return asked_tool or asked_prose
+
+
+def behavior_flags(task: Task, traj: Trajectory) -> dict[str, int]:
+    """Compute the ONE trace-derived behaviour flag for ``task``.
+
+    Returns ``{}`` for untagged tasks, else a single-key dict such as
+    ``{"planned": 1}`` / ``{"scouted": 0}``.  Only the flag matching the
+    task's ``behavior`` tag is computed (a scout task says nothing about
+    planning), so downstream rates are per-behaviour and unpolluted.
+    """
+    beh = (getattr(task, "behavior", "") or "").strip().lower()
+    if not beh:
+        return {}
+    calls = _classify_calls(traj.tool_calls)
+    if beh == "plan":
+        return {"planned": int(_behavior_planned(calls))}
+    if beh == "scout":
+        return {"scouted": int(_behavior_scouted(calls))}
+    if beh == "verify":
+        return {"verified": int(_behavior_verified(calls))}
+    if beh == "ask":
+        return {"asked": int(_behavior_asked(calls, traj))}
+    return {}
+
+
+def behavior_rates(
+    records: list[dict] | list[BenchmarkResult],
+) -> dict[str, dict[str, float]]:
+    """Aggregate behaviour flags across a run into per-flag rates.
+
+    Returns ``{flag: {"rate": mean, "n": count}}`` over every record that
+    carries that flag (a task's untagged behaviours contribute nothing).
+    ``rate`` is the fraction of tasks that exhibited the behaviour.
+    """
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for r in records:
+        beh = r.behavior if isinstance(r, BenchmarkResult) else (r.get("behavior") or {})
+        if not isinstance(beh, dict):
+            continue
+        for k, v in beh.items():
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            sums[k] = sums.get(k, 0.0) + fv
+            counts[k] = counts.get(k, 0) + 1
+    return {
+        k: {"rate": sums[k] / counts[k], "n": counts[k]}
+        for k in sorted(sums) if counts[k]
+    }
 
 
 def score_outcome(
@@ -373,6 +659,7 @@ def score_outcome(
         error=traj.error,
         text_excerpt=excerpt,
         tool_names=tool_names,
+        behavior=behavior_flags(task, traj),
     )
 
 
@@ -472,6 +759,22 @@ def aggregate_replicates(
             if n_name and n_name not in tool_names_union:
                 tool_names_union.append(n_name)
 
+    # Behaviour flags: mean per flag across replicates → a 0..1 rate.
+    beh_sums: dict[str, float] = {}
+    beh_counts: dict[str, int] = {}
+    for r in results:
+        for k, v in (r.behavior or {}).items():
+            if v is None:
+                continue
+            try:
+                beh_sums[k] = beh_sums.get(k, 0.0) + float(v)
+                beh_counts[k] = beh_counts.get(k, 0) + 1
+            except (TypeError, ValueError):
+                continue
+    behavior_agg = {
+        k: beh_sums[k] / beh_counts[k] for k in beh_sums if beh_counts[k]
+    }
+
     return BenchmarkResult(
         task_id=first.task_id,
         task_class=first.task_class,
@@ -499,6 +802,7 @@ def aggregate_replicates(
         per_run_success=list(success_flags),
         text_excerpt=excerpt,
         tool_names=tool_names_union,
+        behavior=behavior_agg,
     )
 
 
@@ -1025,6 +1329,8 @@ __all__ = [
     "BenchmarkResult",
     "load_tasks",
     "score_outcome",
+    "behavior_flags",
+    "behavior_rates",
     "write_run",
     "read_run",
     "summarise_run",

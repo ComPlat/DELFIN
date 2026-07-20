@@ -47,10 +47,26 @@ def test_dashboard_prompt_has_guide_orientation():
     assert "Current role: dashboard_agent" in p
 
 
-def test_coding_role_keeps_pipeline_scaffolding():
-    # Regression guard: the else-branch is unchanged for coding roles.
+def test_pipeline_role_keeps_scaffolding():
+    # Regression guard: the else-branch is unchanged for TRUE pipeline roles.
     p = _prompt("builder_agent",
                 ["session_manager", "builder_agent", "test_agent"])
     assert "Collaboration protocol" in p
     assert "Efficiency rules" in p
     assert "Self-reflection" in p
+
+
+def test_solo_agent_prompt_has_no_pipeline_scaffolding():
+    # solo_agent already has a DEDICATED terminal-CLI composition path that
+    # omits the multi-agent pipeline scaffolding (it is single-step + talks to
+    # the user, not a next agent). Regression guard: if that dedicated path is
+    # removed and solo falls into the pipeline branch, this fails.
+    p = PromptLoader().build_system_prompt(
+        role_id="solo_agent", mode_id="solo", route=["solo_agent"],
+        task_text="fix the bug in foo.py")
+    for frag in ("automated multi-agent pipeline",
+                 "The next agent in the route will parse your output",
+                 "correct structured format",
+                 "Collaboration protocol"):
+        assert frag not in p, f"solo prompt regressed — carries {frag!r}"
+    assert len(p) > 500  # a real prompt was composed

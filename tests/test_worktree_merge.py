@@ -74,3 +74,33 @@ def test_merge_tool_registered():
     assert '"name": "worktree_merge"' in src
     assert 'name == "worktree_merge"' in src
     assert "_execute_worktree_merge" in src
+
+
+def test_merge_cleans_up_worktree_and_branch(tmp_path):
+    """A successful merge must remove the isolated worktree AND delete its
+    throwaway agent/* branch — otherwise parallel-writer fan-outs leak /tmp
+    worktrees + orphan branches. (Regression 2026-07-14.)"""
+    repo = _repo(tmp_path)
+    info = wt.enter_worktree(repo)
+    wtdir = info.final_path or info.path
+    (wtdir / "new.py").write_text("x = 1\n")
+    res = wt.merge_worktree(info)
+    assert res.ok and res.applied
+    assert (repo / "new.py").exists()                 # change merged into target
+    assert not wtdir.exists()                         # worktree removed
+    branches = subprocess.run(["git", "branch"], cwd=str(repo),
+                              capture_output=True, text=True).stdout
+    assert "agent/" not in branches                   # throwaway branch gone
+    wl = subprocess.run(["git", "worktree", "list"], cwd=str(repo),
+                        capture_output=True, text=True).stdout.strip().splitlines()
+    assert len(wl) == 1                               # only main worktree left
+
+
+def test_merge_cleanup_can_be_disabled(tmp_path):
+    """cleanup=False keeps the worktree (callers that want to inspect it)."""
+    repo = _repo(tmp_path)
+    info = wt.enter_worktree(repo)
+    wtdir = info.final_path or info.path
+    (wtdir / "new.py").write_text("x = 1\n")
+    res = wt.merge_worktree(info, cleanup=False)
+    assert res.ok and res.applied and wtdir.exists()

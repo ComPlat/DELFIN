@@ -1193,6 +1193,13 @@ class PromptLoader:
                 )
                 sections.append(cycle_info)
             else:
+                # TRUE multi-agent PIPELINE roles (builder / critic / test /
+                # session_manager / …). NOTE: solo_agent never reaches here — it
+                # has its own dedicated terminal-CLI composition path above
+                # (``if role_id == "solo_agent"``) that deliberately omits this
+                # pipeline scaffolding, and dashboard_agent is handled in the
+                # branch above. So this collaboration protocol only ever applies
+                # to roles that genuinely hand structured output to a next agent.
                 cycle_info = header + (
                     f"Collaboration protocol:\n"
                     f"- You are part of an automated multi-agent pipeline.\n"
@@ -1261,7 +1268,8 @@ class PromptLoader:
                         f"You are the only role allowed to modify production code."
                     )
 
-                # Self-reflection instruction
+                # Self-reflection instruction (pipeline roles verify structured
+                # output for the next agent).
                 cycle_info += (
                     f"\n---\n"
                     f"Self-reflection (mandatory before submitting output):\n"

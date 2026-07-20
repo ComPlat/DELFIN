@@ -179,3 +179,26 @@ def test_first_heading_used_when_no_description():
             sk = S.get_skill("noheader", ws)
         assert sk is not None
         assert sk.description == "Auto-Header"
+
+
+def test_builtin_pack_skills_are_discoverable():
+    """Regression: the 9 shipped 'curated set' pack skills must be reachable
+    via the skill tool (they were previously undiscovered because _skill_dirs
+    omitted the pack dir, so get_skill returned None for all of them)."""
+    names = {s.name for s in S.discover_skills()}
+    for expected in ("diagnose-failed-run", "casscf-setup",
+                     "tddft-excited-states"):
+        assert expected in names, f"pack skill {expected!r} not discovered"
+        assert S.get_skill(expected) is not None
+
+
+def test_project_skill_overrides_pack_skill(tmp_path):
+    """A project-scoped skill wins over a same-named pack skill."""
+    d = tmp_path / ".delfin" / "skills"
+    d.mkdir(parents=True)
+    (d / "casscf-setup.md").write_text(
+        "---\nname: casscf-setup\ndescription: PROJECT_OVERRIDE\n---\nbody",
+        encoding="utf-8",
+    )
+    sk = S.get_skill("casscf-setup", tmp_path)
+    assert sk is not None and sk.description == "PROJECT_OVERRIDE"

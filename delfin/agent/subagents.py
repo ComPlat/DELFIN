@@ -128,7 +128,7 @@ def _format_action(name: str, tool_input) -> str:
 def _running_update(sa_id: str, entry: dict | None) -> None:
     """Maintain the live per-subagent status file (entry=None removes).
 
-    File-based so the dashboard can render a Claude-Code-style live drill-down
+    File-based so the dashboard can render a live drill-down
     (name · task · steps · status) without sharing memory with the worker
     thread."""
     try:
@@ -159,7 +159,7 @@ def read_running() -> dict:
     return out
 
 
-# Finished-subagent sessions (Claude-Code SendMessage analog): each run
+# Finished-subagent sessions (resume-by-id): each run
 # persists its conversation so a later ``resume_id`` call can continue
 # the same subagent with its context intact.
 _SESSIONS_DIR = Path.home() / ".delfin" / "subagent_sessions"
@@ -596,20 +596,58 @@ class SubagentResult:
         }
 
 
+# Permission modes ordered from most to least restrictive. Used to clamp a
+# child's mode so a subagent is never MORE permissive than its parent.
+_MODE_RESTRICTIVENESS = {
+    "plan": 0, "default": 1, "acceptEdits": 2, "bypassPermissions": 3,
+}
+
+
+def _clamp_child_mode(parent_mode: str, preset_mode: str) -> str:
+    """Return the more restrictive of the parent's and the preset's mode.
+
+    A subagent must never be able to do what its parent may not. Without this,
+    a parent pinned to ``plan`` (the human-approval gate that ``exit_plan_mode``
+    deliberately refuses to self-exit) could call ``subagent(...)`` whose preset
+    carries ``mode="default"`` and obtain a child that writes/bashes on its
+    behalf — an indirect plan-mode escape. Taking the lower (more restrictive)
+    rank also preserves a preset that is intentionally stricter than the parent
+    (e.g. read-only explore presets stay ``plan`` even from a ``default`` parent).
+    """
+    rank = _MODE_RESTRICTIVENESS
+    if rank.get(parent_mode, 1) <= rank.get(preset_mode, 1):
+        return parent_mode
+    return preset_mode
+
+
 def _derive_perms(parent_perms, mode: str, workspace=None):
     """Clone parent_perms with the sub-agent's mode + optional workspace.
 
     Both fields are optional — the caller passes ``workspace=None`` when
-    no isolation is requested and the parent's workspace inherits.
+    no isolation is requested and the parent's workspace inherits. The child's
+    mode is clamped so it is never more permissive than the parent's.
     """
     if parent_perms is None:
         return None
+    mode = _clamp_child_mode(getattr(parent_perms, "mode", "") or "default", mode)
+    # Bump nesting depth so the child's own subagent calls are refused once the
+    # depth cap is hit (anti-recursion). Falls back gracefully if the perms
+    # type predates the field.
+    depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
     try:
+        extra = {"subagent_depth": depth}
         if workspace is not None:
-            return dataclasses.replace(parent_perms, mode=mode, workspace=workspace)
-        return dataclasses.replace(parent_perms, mode=mode)
+            return dataclasses.replace(
+                parent_perms, mode=mode, workspace=workspace, **extra)
+        return dataclasses.replace(parent_perms, mode=mode, **extra)
     except Exception:
-        return parent_perms
+        try:
+            if workspace is not None:
+                return dataclasses.replace(
+                    parent_perms, mode=mode, workspace=workspace)
+            return dataclasses.replace(parent_perms, mode=mode)
+        except Exception:
+            return parent_perms
 
 
 def run_subagent(
@@ -763,7 +801,7 @@ def run_subagent(
     _sa_actions: list[str] = []
     # Rich live transcript (text the subagent writes + tool calls with brief
     # in/out) so the dashboard can let you "go INTO" a running subagent and
-    # watch its activity in the chat window, Claude-Code style.
+    # watch its activity in the chat window.
     _sa_transcript: list = []
     _sa_text_buf: list[str] = []
 
@@ -894,7 +932,7 @@ def run_subagent(
         error = "sub-agent returned no text"
     elapsed_s = time.monotonic() - t0
     # Persist the conversation so the parent can resume this subagent
-    # later via ``resume_id`` (Claude-Code SendMessage analog). Store the
+    # later via ``resume_id`` (resume-by-id). Store the
     # LOGICAL conversation (clean user/assistant turns) + the tool
     # interactions WITH outputs, accumulating across resumes — decoupled
     # from the recap-laden ``messages`` actually sent to the model.

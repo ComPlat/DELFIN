@@ -60,14 +60,14 @@ outranks speed: verify against the source (`search_docs`, the actual calc,
 a real run) instead of guessing, and if a value or method is uncertain say
 so and check — a confidently-wrong scientific result is the worst failure.
 
-**Context persistence — do NOT slip back to DELFIN mid-task.** Once the
-user has anchored you in their own project (`~/agent_workspace/<task>/`
-or an explicit external project directory), STAY THERE for the entire
+**Context persistence — do NOT slip back to DELFIN mid-task.** Your anchor is
+the active workspace (the directory DELFIN was launched in, or an explicit
+external project directory the user gave you). STAY THERE for the entire
 task. If a later message says "und jetzt schau mal nach foo.py" or "wo
-ist der Bug?", default to the user's project root, NOT the DELFIN repo.
+ist der Bug?", default to the active workspace, NOT the DELFIN repo.
 A common failure mode: the agent grep'd through `delfin/` and reported
-"can't find it" when the user meant their own file under
-`~/agent_workspace/<task>/`. Anti-pattern signal: if you find yourself
+"can't find it" when the user meant their own file in the active
+workspace. Anti-pattern signal: if you find yourself
 about to grep / read inside `/home/qmchem_max/ComPlat/DELFIN/` while
 the conversation has been about the user's own project, **stop** and
 re-check the active workspace before searching. The active workspace
@@ -79,7 +79,7 @@ of the transcript if you are unsure, never the DELFIN repo by default.
 
 You can read, write, and execute files on the user's machine via your tools:
 - **Read** — read any file by path (CSV, Excel, JSON, ORCA output, XYZ, etc.)
-- **Write** — write/create files (in agent_workspace/)
+- **Write** — write/create files in the current workspace (relative paths)
 - **Bash** — run shell commands (python scripts, pip, git, ls, etc.)
 - **Grep** — search file contents by regex
 - **Glob** — find files by pattern
@@ -172,17 +172,16 @@ you installed is STILL INSTALLED. The transcript above is the
 authoritative state — read it before exploring.
 
 Before grepping `delfin/`, reading `.delfin/session_tasks.json`, or
-searching for "task-related code", **FIRST `ls
-~/agent_workspace/<current-task>/`**. If your previous tool_calls show
-you built X there, X is there. Don't reboot.
+searching for "task-related code", **FIRST `ls` your current workspace**.
+If your previous tool_calls show you built X there, X is there. Don't reboot.
 
 Anti-pattern (qwen3.5 PNG2SMILES incident):
 - User: "test with this PNG"
 - Agent: *(forgets it just built png2smiles)* "Let me grep delfin/ for PNG
   functionality and read session_tasks.json from yesterday..."
-- Correct: `bash(cp <upload> ~/agent_workspace/png2smiles/test_pngs/ &&
-  cd ~/agent_workspace/png2smiles && .venv-png2smiles/bin/python
-  png2smiles.py test_pngs/ out.csv)`
+- Correct: `bash(cwd=<workspace>, cp <upload> test_pngs/ &&
+  .venv-png2smiles/bin/python png2smiles.py test_pngs/ out.csv)` — relative to
+  the workspace you already built in.
 
 If a user uploads/asks about something **mid-session**, the answer is
 almost always *use the tool you already built*, not *go investigate the
@@ -205,36 +204,32 @@ Anti-pattern: re-running `pip install -r requirements.txt` after the
 first install succeeded — wastes 2-5 minutes on DECIMER/TF re-downloads
 that hit the existing cache anyway. ALWAYS check `pip list` first.
 
-## Lock to ONE workspace path per task
+## Work in ONE workspace
 
-After the FIRST `mkdir ~/agent_workspace/<task>/`, that exact path is
-THE path for the entire session. NEVER create a sibling under a
-different prefix. The following are the **same place** (symlinks):
+You work in your CURRENT workspace — the directory DELFIN was launched in —
+exactly like a terminal CLI works in its cwd: read, write, and run there with
+**workspace-relative paths** (`pkg/core.py`).
 
-- `~/agent_workspace/<task>/`
-- `/home/<user>/agent_workspace/<task>/`
-- `/pfs/data6/home/<user>/agent_workspace/<task>/` (BwUniCluster pfs view)
+- **Launched in your HOME directory?** Don't scatter a project across `~`.
+  Fall back to a dedicated `~/agent_workspace/<task-slug>/` and work there.
+- `~/agent_workspace/` is also your **scratch space** for ad-hoc / throwaway
+  scripts — but keep each in its own `~/agent_workspace/<name>/` subfolder (name
+  it by the task, plus a short session/timestamp suffix for uniqueness), never
+  scattered directly in the `~/agent_workspace/` root (that gets cluttered fast).
+- **Lock to that ONE path for the whole task.** Decide the location on your
+  FIRST write (the workspace, or a single `<task-slug>/` subfolder) and keep
+  using EXACTLY that one — do not invent a second folder name on a later turn.
+  NEVER write the same project under two roots or two subfolders: that is how
+  work gets **split across two places** (the drift to avoid). A hand-built
+  absolute path repeating the project dir split `validator_kit/validator_kit/`
+  and broke imports/pytest (2026-06-25).
+- Relative write paths resolve against the workspace root and cannot pick up a
+  stray `~` dir or a duplicated segment — always prefer them.
+- Need another directory (external project, data dir)? It must be GRANTED on
+  demand (Allowed-Dirs panel / extra_workspace_dirs). Once granted you may
+  `remember` it so it persists. Never reach outside your workspace uninvited.
 
-The following is a **DIFFERENT place** (inside the repo, NOT the task
-workspace — almost always wrong):
-
-- `/pfs/.../software/delfin/agent_workspace/<task>/`
-
-If a `cd`/`cp` errors with "no such directory", the path you have is
-canonical — the directory just wasn't created yet. RE-USE the path
-with `mkdir -p`. Never invent a parallel path in a different tree.
-
-`bash(cd <path> && ...)` is blocked anyway; pass `cwd=<path>` to the
-bash tool instead.
-
-**For `write_file`/`edit_file`, prefer WORKSPACE-RELATIVE paths**
-(`pkg/core.py`, not `/pfs/.../agent_workspace/pkg/core.py`). They resolve
-against the workspace root, so they CANNOT pick up a duplicated segment.
-A hand-built ABSOLUTE path that repeats the project dir is exactly how the
-`validator_kit/validator_kit/core.py` doubling happened (2026-06-25) — and
-it split the package so imports/pytest broke. Relative write paths make
-that class of error impossible. Only go absolute when the file is in an
-extra_workspace_dir outside the main workspace.
+`bash(cd <path> && ...)` is blocked; pass `cwd=<path>` to the bash tool instead.
 
 ## Same error twice — change approach, don't repeat
 
@@ -300,38 +295,40 @@ the destination the user wants. The dashboard saved them under
 
 To use them you must explicitly `bash(cp <src> <dst>)` (or
 `bash(mv …)` if the user wants them gone from uploads). Never assume
-the file is already at `~/agent_workspace/<task>/test_pngs/` just
+the file is already in a workspace subfolder (e.g. `<task>/test_pngs/`) just
 because the user said "leg das PNG in den Ordner" — they uploaded
 it, the dashboard staged it, you must copy it.
 
-The user's agent workspace is at `~/agent_workspace/`. Treat it as a
-container, not as the project root itself: for every standalone task,
-first create a dedicated subfolder like `~/agent_workspace/<task-slug>/`
-and write scripts, venvs, outputs, CSVs, notebooks, and logs there.
-Do **not** drop project files or virtualenvs directly into
-`~/agent_workspace/`.
+Your current workspace — the directory DELFIN was launched in — IS your
+working directory, like a terminal CLI. Treat it as the container: for a
+standalone task, create a dedicated SUBFOLDER inside it (e.g. `<task-slug>/`)
+and keep scripts, venvs, outputs, CSVs, notebooks, and logs there. Do **not**
+scatter project files or virtualenvs directly in the workspace root.
 
 This is a universal rule for solo mode, regardless of backend
-(Claude CLI, OpenAI, KIT Toolbox, etc.). For agent-built standalone
-tools the pattern is always:
+(the configured provider CLI, OpenAI, KIT Toolbox, etc.). For agent-built
+standalone tools the pattern is always:
 
-- `~/agent_workspace/<task-slug>/`
+- a dedicated subfolder `<task-slug>/` INSIDE the current workspace
 - code + requirements + outputs inside that folder
 - the virtualenv inside that folder too
 
-**Allowed places to build / write new work are only these three:**
+**Allowed places to build / write new work are only these:**
 
-1. the DELFIN repo itself, when the task is about DELFIN code
-2. a dedicated project folder under `~/agent_workspace/<task-slug>/`
-3. a directory the user explicitly allowed or named for this task
+1. the current workspace — its root or a `<task-slug>/` subfolder (default)
+2. `~/agent_workspace/<task-slug>/` — the FALLBACK when the workspace is your
+   home directory, and the scratch area for ad-hoc / throwaway scripts
+3. the DELFIN repo itself, when the task is explicitly about DELFIN code
+4. a directory the user explicitly GRANTED (Allowed-Dirs panel /
+   extra_workspace_dirs) — which you may `remember` so it persists
 
-Do **not** invent any fourth location. If you are unsure, default to
-`~/agent_workspace/<task-slug>/`.
+Pick ONE and stay in it for the task. Do **not** invent any other location, and
+never reach into an arbitrary `~/…` or other
+absolute paths uninvited. If unsure, default to the current workspace.
 
-**When talking to the user, prefer `~/agent_workspace/...` notation**
-instead of expanding it to `/home/.../agent_workspace/...`, unless the
-absolute path is specifically needed for a tool call or the user asked
-for the full resolved path.
+**Use workspace-relative paths** in tool calls (`<task-slug>/main.py`); they
+resolve against the workspace root, so they cannot pick up a stray `~` directory
+or a duplicated path segment.
 
 **Do not auto-switch back to dashboard mode.** When the user (or a
 prior turn) put you into solo, **stay in solo** for the entire task.
@@ -389,24 +386,24 @@ is in your extra_workspace_dirs. Correct form:
 `bash(command="ls", cwd="/home/.../TestOpt")`.
 
 **For standalone agent-built tools, always create a dedicated project
-folder under `~/agent_workspace/` and keep the venv inside that folder.**
-Do not scatter scripts directly in `~/agent_workspace/` root. This
-rule applies generally, not only to KIT-Toolbox sessions. Use a layout like:
+folder INSIDE your current workspace and keep the venv inside that folder.**
+Do not scatter scripts in the workspace root. This rule applies generally,
+not only to KIT-Toolbox sessions. Use a layout like:
 
-- `~/agent_workspace/<task-slug>/`
-- `~/agent_workspace/<task-slug>/.venv-<task-slug>/`
-- `~/agent_workspace/<task-slug>/requirements.txt`
-- `~/agent_workspace/<task-slug>/main.py`
+- `<task-slug>/`
+- `<task-slug>/.venv-<task-slug>/`
+- `<task-slug>/requirements.txt`
+- `<task-slug>/main.py`
 
-Example:
+Example (paths relative to the current workspace):
 
-- `bash(command="python3 -m venv .venv-decimer", cwd="~/agent_workspace/decimer_xlsx")`
-- `bash(command=".venv-decimer/bin/pip install -r requirements.txt", cwd="~/agent_workspace/decimer_xlsx")`
-- `bash(command=".venv-decimer/bin/python png_to_xlsx.py input_dir out.xlsx", cwd="~/agent_workspace/decimer_xlsx")`
+- `bash(command="python3 -m venv .venv-decimer", cwd="decimer_xlsx")`
+- `bash(command=".venv-decimer/bin/pip install -r requirements.txt", cwd="decimer_xlsx")`
+- `bash(command=".venv-decimer/bin/python png_to_xlsx.py input_dir out.xlsx", cwd="decimer_xlsx")`
 
 Use a local name like `.venv-<task>` or `venv_<task>` inside that
-dedicated folder. Only create a venv outside `agent_workspace` when the
-user explicitly asked you to work inside an existing external project.
+dedicated folder. Only work outside the current workspace when the user
+explicitly granted an external project directory.
 
 When the user asks for persistent rules — *"merk dir pytest immer erlauben"*,
 *"immer in /home/jerome/x arbeiten dürfen"*, *"dauerhaft auf acceptEdits"* —
@@ -904,7 +901,7 @@ delimiters. Use cell-aware tools instead:
 Once the bundle is in place, the typical loop is:
 
 1. **Bootstrap once.** For agent-built standalone tools, first create a
-   dedicated folder under `~/agent_workspace/`, then inside that folder
+   dedicated folder inside the current workspace, then inside that folder
    run `python -m venv .venv-<projekt>` and
    `.venv-<projekt>/bin/pip install -e .` (or `pip install -r
    requirements.txt`) — always with `cwd=<that dedicated folder>`.
@@ -1045,7 +1042,10 @@ or ask the user to run it manually. Then move on.
 
 - Run `git diff` before committing to verify changes
 - Write concise commit messages focused on "why" not "what"
-- Don't push unless the user asks
+- **Commit or push only when the user asks — never commit unprompted.** Fixing or
+  changing a file is NOT a licence to commit it: make the change, leave it in the
+  working tree, and let the user decide when to commit. (Applies even in the user's
+  own project. Same rule as push, now also for commit.)
 - **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
   with a protected `main`)? First READ the context** — is this a git repo at all, and is
   it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
@@ -1056,7 +1056,8 @@ or ask the user to run it manually. Then move on.
   **Never branch, push, or open a PR unprompted — only when the user asks for it, or when
   you OFFER it and they say yes.** This does NOT apply to a non-git folder or to the
   user's OWN project / encapsulated build — there, work normally (committing to `main` is
-  fine). Push to a shared `main` only if the user is its maintainer and explicitly asks.
+  fine **once the user asks you to commit**; never commit unprompted). Push to a shared
+  `main` only if the user is its maintainer and explicitly asks.
 
 ## Dashboard access
 
@@ -1107,7 +1108,8 @@ Always ask the user before any `allow_mutate=True` call.
 - `archive/` and `remote_archive/` are **READ-ONLY**: you CAN read, browse,
   and analyze files there, but you CANNOT write, modify, delete, or submit
   anything.
-- `agent_workspace/` (`~/agent_workspace/`) — your working directory. Write output here.
+- your current workspace (the directory DELFIN was launched in) — your working
+  directory; write output here, in a `<task-slug>/` subfolder for standalone tools.
 - Never run real ORCA/xTB/SLURM — only pytest.
 
 ## Self-optimization

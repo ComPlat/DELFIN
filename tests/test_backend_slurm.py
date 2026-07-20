@@ -66,6 +66,201 @@ def _fake_completed(stdout: str = "Submitted batch job 1\n"):
     return r
 
 
+def _result(stdout="", returncode=0):
+    class R:
+        pass
+    r = R()
+    r.stdout = stdout
+    r.stderr = ""
+    r.returncode = returncode
+    return r
+
+
+def test_release_env_hold_releases_held_job(tmp_path):
+    """A job SLURM held for failed user-env retrieval is auto-released."""
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "sbatch":
+            return _result("Submitted batch job 42\n")
+        if cmd[:2] == ["scontrol", "show"]:
+            # First check: held with the env-retrieval reason.
+            return _result(
+                "JobId=42 JobState=PENDING "
+                "Reason=user_env_retrieval_failed_requeued_held Requeue=1"
+            )
+        return _result("")  # scontrol release
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run), \
+         patch("delfin.dashboard.backend_slurm.time.sleep"):
+        result = backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="x", mode="delfin",
+            time_limit="24:00:00", pal=1, maxcore=600,
+        )
+
+    # Job id parsing must stay intact (last stdout token = the id).
+    assert result.stdout.strip().split()[-1] == "42"
+    assert ["scontrol", "release", "42"] in calls, (
+        f"expected an scontrol release for the held job, got: {calls}"
+    )
+
+
+def test_release_env_hold_leaves_normal_job_alone(tmp_path):
+    """A normally-pending job (Reason=Priority) is never released."""
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "sbatch":
+            return _result("Submitted batch job 7\n")
+        if cmd[:2] == ["scontrol", "show"]:
+            return _result("JobId=7 JobState=PENDING Reason=Priority")
+        return _result("")
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run), \
+         patch("delfin.dashboard.backend_slurm.time.sleep"):
+        backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="x", mode="delfin",
+            time_limit="24:00:00", pal=1, maxcore=600,
+        )
+
+    assert not any(c[:2] == ["scontrol", "release"] for c in calls), (
+        f"must not release a normally-pending job, got: {calls}"
+    )
+
+
+def test_list_jobs_releases_env_hold_on_refresh():
+    """A dispatch-time env-retrieval hold seen in squeue is auto-released,
+    while a normally-pending job on the same refresh is left alone."""
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    squeue_out = (
+        "       JOBID    PARTITION       NAME       USER  ST         TIME  "
+        "NODES NODELIST(REASON)\n"
+        "     5880813          cpu    stuckjob  ka_ew7404  PD         0:00  "
+        "    1 (user env retrieval failed requeued held)\n"
+        "     5880814          cpu   normaljob  ka_ew7404  PD         0:00  "
+        "    1 (Priority)\n"
+    )
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "squeue":
+            return _result(squeue_out)
+        return _result("")  # scontrol release
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run):
+        jobs = backend.list_jobs()
+
+    assert {j.job_id for j in jobs} == {"5880813", "5880814"}
+    releases = [c for c in calls if c[:2] == ["scontrol", "release"]]
+    assert releases == [["scontrol", "release", "5880813"]], (
+        f"expected exactly the held job released, got: {releases}"
+    )
+
+
+def test_sbatch_passes_vars_via_process_env_not_export_flag(tmp_path):
+    """DELFIN vars must travel via the sbatch process environment.
+
+    Regression: ``--export=ALL,VAR=…`` (explicit variables) makes slurmd
+    fetch the user's login environment on the compute node at launch;
+    on bwUniCluster3 that intermittently exceeds GetEnvTimeout (2 s) and
+    the job is requeued/held with "user env retrieval failed". Verified
+    by an A/B test pinned to the same node: plain/ALL-only completed,
+    ALL,VARS failed repeatedly (jobs 5897358 vs 5897359/5897343).
+    """
+    backend = SlurmJobBackend("/tmp", slurm_profile="bwunicluster3")
+
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _fake_completed("Submitted batch job 99\n")
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run), \
+         patch.object(SlurmJobBackend, "_release_env_hold"):
+        backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="myjob", mode="delfin",
+            time_limit="24:00:00", pal=4, maxcore=1000,
+        )
+
+    cmd = captured["cmd"]
+    env = captured["env"]
+    # Exactly --export=ALL — never with an appended variable list.
+    assert "--export=ALL" in cmd
+    assert not any(a.startswith("--export=ALL,") for a in cmd), cmd
+    # The DELFIN variables (incl. profile env) must be in the process env.
+    assert env is not None
+    assert env.get("DELFIN_MODE") == "delfin"
+    assert env.get("DELFIN_JOB_NAME") == "myjob"
+    assert env.get("DELFIN_STAGE_ORCA") == "1"  # bwunicluster3 profile env
+    # And the surrounding user environment must still be inherited.
+    assert "PATH" in env
+
+
+def test_sbatch_strips_inherited_sbatch_input_env_vars(tmp_path):
+    """Inherited SBATCH_GET_USER_ENV / SBATCH_EXPORT must be stripped.
+
+    sbatch reads SBATCH_* input environment variables as if they were CLI
+    options; SBATCH_GET_USER_ENV has no command-line negation, so a shell
+    that exports it would re-enable the compute-node env retrieval despite
+    our --export=ALL. Other SBATCH_* vars (e.g. SBATCH_EXCLUDE) pass through.
+    """
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _fake_completed("Submitted batch job 100\n")
+
+    with patch.dict("os.environ", {
+            "SBATCH_GET_USER_ENV": "1",
+            "SBATCH_EXPORT": "NONE",
+            "SBATCH_EXCLUDE": "badnode01"}), \
+         patch("delfin.dashboard.backend_slurm.subprocess.run",
+               side_effect=fake_run), \
+         patch.object(SlurmJobBackend, "_release_env_hold"):
+        backend.submit_delfin(
+            job_dir=str(tmp_path), job_name="x", mode="delfin",
+            time_limit="24:00:00", pal=1, maxcore=600,
+        )
+
+    env = captured["env"]
+    assert "SBATCH_GET_USER_ENV" not in env
+    assert "SBATCH_EXPORT" not in env
+    assert env.get("SBATCH_EXCLUDE") == "badnode01"  # benign ones survive
+
+
+def test_env_vars_to_dict_parses_export_grammar():
+    parse = SlurmJobBackend._env_vars_to_dict
+    assert parse("A=1,B=two,C=/some/path") == {
+        "A": "1", "B": "two", "C": "/some/path"}
+    # First '=' splits key/value; later '=' stay in the value.
+    assert parse("OPTS=a=b") == {"OPTS": "a=b"}
+    # Malformed chunks are skipped, not fatal.
+    assert parse("A=1,,novalue,B=2") == {"A": "1", "B": "2"}
+    assert parse("") == {}
+
+
+def test_is_env_hold_matches_both_scontrol_and_squeue_forms():
+    """The detector must match underscores (scontrol) and spaces (squeue)."""
+    assert SlurmJobBackend._is_env_hold(
+        "user_env_retrieval_failed_requeued_held")
+    assert SlurmJobBackend._is_env_hold(
+        "(user env retrieval failed requeued held)")
+    assert not SlurmJobBackend._is_env_hold("Priority")
+    assert not SlurmJobBackend._is_env_hold("(Resources)")
+    assert not SlurmJobBackend._is_env_hold("JobHeldUser")
+
+
 def test_submit_delfin_recalc_extracts_inline_pal_from_inp(tmp_path):
     """Recalc submit must derive pal=N from inline ``%pal nprocs N end``.
 
@@ -100,7 +295,11 @@ def test_submit_delfin_recalc_extracts_inline_pal_from_inp(tmp_path):
             maxcore=6000,
         )
 
-    args = run_mock.call_args.args[0]
+    # _sbatch now also calls subprocess.run for the post-submit env-hold
+    # check, so pick the sbatch invocation explicitly (not the last call).
+    sbatch_calls = [c.args[0] for c in run_mock.call_args_list
+                    if c.args and c.args[0] and c.args[0][0] == 'sbatch']
+    args = sbatch_calls[-1]
     assert "--cpus-per-task=40" in args, (
         f"Expected pal=40 from inline %pal nprocs 40 end, got cmd: {args}"
     )
@@ -128,7 +327,11 @@ def test_submit_delfin_recalc_extracts_multiline_pal_from_inp(tmp_path):
             time_limit="24:00:00", pal=12, maxcore=6000,
         )
 
-    args = run_mock.call_args.args[0]
+    # _sbatch now also calls subprocess.run for the post-submit env-hold
+    # check, so pick the sbatch invocation explicitly (not the last call).
+    sbatch_calls = [c.args[0] for c in run_mock.call_args_list
+                    if c.args and c.args[0] and c.args[0][0] == 'sbatch']
+    args = sbatch_calls[-1]
     assert "--cpus-per-task=24" in args
     assert "--mem=96000M" in args
 
@@ -149,6 +352,10 @@ def test_submit_delfin_recalc_extracts_pal_keyword_shortcut(tmp_path):
             time_limit="24:00:00", pal=12, maxcore=6000,
         )
 
-    args = run_mock.call_args.args[0]
+    # _sbatch now also calls subprocess.run for the post-submit env-hold
+    # check, so pick the sbatch invocation explicitly (not the last call).
+    sbatch_calls = [c.args[0] for c in run_mock.call_args_list
+                    if c.args and c.args[0] and c.args[0][0] == 'sbatch']
+    args = sbatch_calls[-1]
     assert "--cpus-per-task=8" in args
     assert "--mem=24000M" in args

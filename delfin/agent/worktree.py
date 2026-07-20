@@ -188,10 +188,31 @@ def _git_apply(repo: Path, patch: str, *, check: bool) -> tuple[bool, str]:
     return proc.returncode == 0, proc.stderr.strip()
 
 
+def _cleanup_merged_worktree(info: WorktreeInfo) -> None:
+    """Remove a worktree + its throwaway ``agent/*`` branch after a successful
+    merge (the changes now live in the target tree, so both are redundant).
+    Best-effort — never raises; the worktree must be removed BEFORE the branch
+    so git isn't holding the branch checked out. Prevents parallel-writer
+    fan-outs from leaking ``/tmp`` worktrees and orphan branches."""
+    wt = info.final_path or info.path
+    try:
+        _run_git(info.repo_dir, "worktree", "remove", "--force", str(wt))
+    except WorktreeError:
+        if wt.exists():
+            shutil.rmtree(wt, ignore_errors=True)
+    try:
+        _run_git(info.repo_dir, "branch", "-D", info.branch)
+    except WorktreeError:
+        pass
+    info.cleaned_up = True
+    info.final_path = None
+
+
 def merge_worktree(
     info: WorktreeInfo,
     *,
     target_repo: Path | str | None = None,
+    cleanup: bool = True,
 ) -> MergeResult:
     """Bring a worktree's changes (vs its ``base_ref``) into the target repo's
     working tree — but ONLY if they apply cleanly. Never forces, never leaves a
@@ -229,6 +250,10 @@ def merge_worktree(
             False, False, files,
             f"merge failed mid-apply into {repo}: {err2}"[:600],
         )
+    # Success: the changes now live in the target working tree, so the
+    # isolated worktree + its throwaway branch have served their purpose.
+    if cleanup:
+        _cleanup_merged_worktree(info)
     return MergeResult(
         True, True, files,
         f"merged {len(files)} file(s) into the working tree of {repo}; "
