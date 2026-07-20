@@ -753,6 +753,20 @@ def _target_mc_dist(metal_sym: str, eta: int) -> float:
     return dist
 
 
+# Heavy metalloid sigma-donor elements (stibine Sb, arsine As, bismuthine Bi,
+# telluro/seleno-ether Te/Se, heavy tetrel Ge/Sn/Pb).  Mirrors
+# decompose._METALLOID_DONORS.  Used ONLY by the DELFIN_FFFREE_METALLOID_MD_LEN
+# root fix below (default OFF -> byte-identical).
+_METALLOID_MD_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+# Thread-local override for the DELFIN_FFFREE_METALLOID_MD_BOTH dual-distance pass:
+# when its ``.value`` is True the metalloid M-D length is forced to the SHORT
+# (covalent-sum) target even if the env flag is off, so smiles_to_xyz_isomers can
+# build a SECOND, short-distance manifold and append it to the offset one.  Default
+# unset -> byte-identical.  (Same threading.local pattern as _CONF_COMPLETE_ACTIVE.)
+_METALLOID_MD_FORCE_SHORT = threading.local()
+
+
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     """Return estimated M-L bond length in Å.
 
@@ -767,6 +781,24 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str) -> float:
     r_m = _COVALENT_RADII.get(metal_symbol)
     r_d = _COVALENT_RADII.get(donor_symbol)
     if r_m is not None and r_d is not None:
+        # Heavy metalloid sigma-donors (Sb/As/Bi/Te/Se/Ge/Sn/Pb): the generic
+        # +_METAL_ROW_OFFSET coordination-bond correction is calibrated for HARD
+        # N/O/P/S donors, where the covalent-radius sum UNDER-estimates the M-L
+        # bond.  For these SOFT, already-large-radius donors it OVER-shoots: the
+        # seated AND UFF-pinned M-D bond lands ~0.4 Å too long (e.g. Cu-Sb
+        # 1.32+1.39+0.40 = 3.11 vs real ~2.6), so the donor reads as DETACHED
+        # (eye: mdbreak "M-D too_long" + smiles_topology on ~70% of heavy_donor
+        # frames; silent on the CCDC crystals -> a real construction defect).
+        # When DELFIN_FFFREE_METALLOID_MD_LEN=1, drop the row offset for metalloid
+        # donors so the target is the plain covalent sum (~2.7 Å == polyhedra.
+        # md_distance), the physical M-metalloid distance.  Env-gated, default
+        # byte-identical; a construction-chain ROOT fix -- it sets the seat / UFF-pin
+        # / snap / tolerance target BEFORE emit, so the raw geometry is built
+        # correct (NOT a post-hoc geometry repair).
+        if donor_symbol in _METALLOID_MD_DONORS and (
+                getattr(_METALLOID_MD_FORCE_SHORT, "value", False)
+                or os.environ.get("DELFIN_FFFREE_METALLOID_MD_LEN", "0") == "1"):
+            return r_m + r_d
         offset = _METAL_ROW_OFFSET.get(metal_symbol, 0.5)
         return r_m + r_d + offset
     return 2.0
@@ -1497,12 +1529,12 @@ def _multihapto_etkdg_fallback_enabled(mol) -> bool:
     )
 
 
-def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
+def _apply_coord_angle_fix_if_enabled(mol, results, dual_parse_done: bool):
     """Iter-13 Baustein 3 dispatch helper.
 
     Apply post-ETKDG/UFF coordination-angle correction to ``results`` if a
     metal is present, this is the outer (non dual-parse) call, and the
-    DELFIN_BAUSTEIN3 env-flag is set.  Fail-safe: any exception in the
+    DELFIN_FFFREE_COORD_ANGLE_FIX env-flag is set.  Fail-safe: any exception in the
     corrector returns ``results`` unchanged.
 
     Centralised here so every scaffold-path return point in
@@ -1510,7 +1542,7 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
     σ-hapto, multi hapto-hapto, fallback single-conformer) can share one
     insertion site without code drift.
 
-    Bit-exact when ``DELFIN_BAUSTEIN3=0`` (default).  No effect on results
+    Bit-exact when ``DELFIN_FFFREE_COORD_ANGLE_FIX=0`` (default).  No effect on results
     that contain no metal.  ``mol`` may be ``None`` — the underlying
     corrector operates on XYZ text only.
     """
@@ -1518,7 +1550,7 @@ def _apply_baustein3_if_enabled(mol, results, dual_parse_done: bool):
         return results
     if dual_parse_done:
         return results
-    if not _delfin_env_int("DELFIN_BAUSTEIN3", 0):
+    if not _delfin_env_int("DELFIN_FFFREE_COORD_ANGLE_FIX", 0):
         return results
     # Quick element scan — if no metal symbol appears in any result XYZ,
     # the corrector would no-op anyway.  Cheap pre-check avoids import
@@ -1567,7 +1599,7 @@ def _apply_5j_a_cp_piano_stool_if_enabled(mol, results, dual_parse_done: bool):
     ideal η⁵ piano-stool geometry, which makes the detector classify the
     ring as Cp (CN=5 polyhedron) instead of arene.
 
-    Insertion order: AFTER ``_apply_baustein3_if_enabled`` (B3 rotates
+    Insertion order: AFTER ``_apply_coord_angle_fix_if_enabled`` (B3 rotates
     donor X-side) and BEFORE ``_apply_baustein4_if_enabled`` (B4 then
     re-projects ring-attached H onto the post-snap ring plane).
 
@@ -1659,6 +1691,34 @@ def _apply_baustein4_if_enabled(mol, results, dual_parse_done: bool):
     except Exception as _b4_exc:
         try:
             logger.debug("Baustein 4 H-projection skipped: %s", _b4_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_stereocenter_enum_if_enabled(mol, results, dual_parse_done: bool):
+    """Stereocentre-fold completeness dispatch (env-gated DELFIN_STEREOCENTER_ENUM, default OFF).
+
+    ADDITIVELY appends every buildable coordination-created X-H stereocentre fold (both R and S at
+    each such donor — the completeness law) that the base manifold does not already contain, so the
+    eye's ``ccdc_isomer_realized`` hard floor (is the crystal's N-H fold present?) can go
+    FALSE->TRUE without ever dropping an existing frame.  Deterministic; bit-exact no-op when the
+    env-flag is unset or the structure has no metal-created X-H stereocentre.  Skipped on the inner
+    dual-parse call (matches the B3/B4 dispatch contract — the union dedup must see one consistent
+    frame set).  ``mol`` is unused (the corrector operates on XYZ text only, like Baustein 3).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    try:
+        from delfin.manta import _stereocenter_enum as _sc
+        if not _sc._is_enabled():
+            return results
+        return _sc.expand_results(results)
+    except Exception as _sc_exc:
+        try:
+            logger.debug("stereocentre-enum expansion skipped: %s", _sc_exc)
         except Exception:
             pass
         return results
@@ -1765,6 +1825,46 @@ def _apply_arom_planarize_if_enabled(mol, results, dual_parse_done: bool):
     except Exception as _ap_exc:
         try:
             logger.debug("Iter-33 arom-planarize skipped: %s", _ap_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_arom_bond_length_if_enabled(mol, results, dual_parse_done: bool):
+    """Resonance-aware aromatic bond-length equalisation (eye organic-bond-length
+    axis).
+
+    MANTA seats aromatic rings from covalent/distance-geometry priors, leaving the
+    ring bonds drifting toward the SINGLE-bond covalent length and/or alternating
+    (Kekulé-localised) rather than at the DELOCALISED, mesomerism-equalised length
+    — the largest systematic organic-geometry defect on the champion pool.  This
+    final pass reshapes each perceived aromatic ring system so every ring bond
+    sits at its first-principles delocalised target (Pyykkö single↔double radius
+    interpolation at the Hückel benzene fraction f = 2/3: C–C 1.393, C–N 1.333,
+    …), preserving angles/planarity (in-plane PBD, metal-coordinated ring atoms
+    anchored) and rigidly dragging substituents — LENGTHS ONLY.  Per-frame
+    never-worse rollback (ring bond-length deviation must strictly drop, M–D
+    invariant + clash guarded).
+
+    Default-OFF, byte-identical to the build commit when
+    ``DELFIN_FFFREE_AROM_BOND_LENGTH`` is unset (or 0).  Universal (geometric
+    aromatic-ring perception + first-principles covalent-radius target, no SMILES
+    specialisation).
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag(
+        "DELFIN_FFFREE_AROM_BOND_LENGTH", mol, default=0,
+    ):
+        return results
+    try:
+        from delfin.manta._arom_bond_length import correct_results as _abl_correct
+        return _abl_correct(mol, results)
+    except Exception as _abl_exc:
+        try:
+            logger.debug("arom-bond-length skipped: %s", _abl_exc)
         except Exception:
             pass
         return results
@@ -2310,6 +2410,58 @@ def _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done: bool):
         return results
 
 
+def _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done: bool):
+    """SP2C-PLANARIZE sp2-CARBON planarisation fixer dispatch helper.
+
+    Per-frame surgical post-pass: detect an acyclic sp2 CARBON (azomethine /
+    imine / vinyl / enone =CH- or =CR-: 3-coordinate, RDKit-sp2, a double bond to
+    N/C/O) that the force-field-free ETKDG embed has left PYRAMIDALISED (out of
+    the plane of its three neighbours), and project it back into that plane
+    (geometry-only; bond lengths shift only by the small residual).  Closes the
+    exact gap the N-only ``_fix_sp2n_planarize`` left open: a backbone N=CH-C
+    carbon (NAYKOQ C36: Walsh ~19°, angle-sum 324° = the sp3 fallback, in 17/30
+    ETKDG folds) was planarised by NOTHING.  Ring C is skipped (owned by the
+    aromatic ring passes); metal-bonded C is skipped (obeys coordination).
+
+    Env-flags:
+        DELFIN_FFFREE_SP2C_PLANARIZE=0    (default OFF — bit-exact when disabled;
+                                           champion-ON via _CHAMPION_FLAGS)
+        DELFIN_FIX_SP2C_OOP_A=0.20        (out-of-plane trigger, Å)
+        DELFIN_FFFREE_SP2C_PLANARIZE_CLASSES=  (optional class allow-list)
+
+    Insertion order: AFTER SP2N-PLANARIZE (they touch disjoint atoms: N vs C).
+    Per-atom rollback on new clash / no-improvement; per-frame fallback to input
+    on any failure.  Bit-exact when the flag is 0.
+    """
+    if not results:
+        return results
+    if dual_parse_done:
+        return results
+    if not _class_conditional_flag("DELFIN_FFFREE_SP2C_PLANARIZE", mol,
+                                   default=0):
+        return results
+    if mol is None:
+        return results
+    try:
+        from delfin.manta._fix_sp2c_planarize import planarize_sp2_carbon
+        oop_thr = _delfin_env_float("DELFIN_FIX_SP2C_OOP_A", 0.20)
+        new_results: List[Tuple[str, str]] = []
+        for (xyz, label) in results:
+            try:
+                new_xyz, _report = planarize_sp2_carbon(
+                    xyz, mol, oop_threshold_A=oop_thr)
+                new_results.append((new_xyz, label))
+            except Exception:
+                new_results.append((xyz, label))
+        return new_results
+    except Exception as _sp2c_exc:
+        try:
+            logger.debug("Fixer SP2C-PLANARIZE skipped: %s", _sp2c_exc)
+        except Exception:
+            pass
+        return results
+
+
 def _apply_fixer_wuxqak_if_enabled(mol, results, dual_parse_done: bool):
     """WUXQAK sp3-C linear-collapse fixer dispatch helper.
 
@@ -2722,12 +2874,27 @@ def _resolve_top_level_seed_count(mol) -> int:
     """
     fallback = max(1, int(DELFIN_TOP_LEVEL_SEED_COUNT))
     if not _delfin_env_int("DELFIN_CLASS_AWARE_SEEDS", 0):
-        return fallback
+        n = fallback
+    else:
+        try:
+            cls = _classify_complex_class(mol) if mol is not None else None
+            n = _class_aware_seed_count(cls)
+        except Exception:
+            n = fallback
+    # OPT-IN speed/quality knob (2026-07-06, default OFF -> full quality, byte-identical): fewer ETKDG
+    # seeds LOWERS conformer quality, so we NEVER cut seeds automatically — the user decides the trade
+    # (this cap is off unless DELFIN_ADAPTIVE_SEED_CAP=1).  The correct same-quality-faster path is
+    # PARALLELISING all seeds across cores (see the embed pipeline), not reducing them.  When explicitly
+    # enabled, scales seeds down for very large molecules (>120 heavy) as a last-resort finish guarantee.
     try:
-        cls = _classify_complex_class(mol) if mol is not None else None
+        if _delfin_env_int("DELFIN_ADAPTIVE_SEED_CAP", 0) and mol is not None:
+            n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
+            if n_heavy > 120:
+                cap = 3 if n_heavy > 200 else (4 if n_heavy > 160 else 6)
+                n = min(n, cap)
     except Exception:
-        return fallback
-    return _class_aware_seed_count(cls)
+        pass
+    return n
 
 
 # --- Multi-sigma path V2 (Iter-multi_sigma audit, class-conditional default-ON) ---
@@ -22428,9 +22595,19 @@ def _embed_fragment_procrustes(
         # to fix LP alignment at clash cost).
         d_new = donor_new_indices[0]
         d_atom = frag_mol.GetAtomWithIdx(d_new)
+        # ROOT FIX (DELFIN_FFFREE_SP3C_TET_SEAT=1, default OFF -> byte-identical): a monodentate sp3-C
+        # donor (M-CH2-R, M-CH3) has NO lone pair -- the metal occupies the 4th tetrahedral vertex.  The
+        # HEAVY-ONLY bisector below leaves only the single heavy tail (R) for an M-CH2-R, so
+        # src_dir = -unit(donor->R) and aligning it with donor->metal drives R ANTI to the metal ->
+        # M-C-R ~180 deg (eye: sp3c_donor_linear; a top sigma_coord defect).  Including the H neighbours
+        # for an sp3-C makes the bisector the true vacant-slot direction -> M-C-X ~109 deg.  Not a
+        # post-hoc bend; sets the placement.
+        _sp3c_tet = (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
+                     and d_atom.GetSymbol() == "C" and not d_atom.GetIsAromatic()
+                     and not d_atom.IsInRing())        # PENDANT sp3 alkyl donor only
         nbr_idx = [
             nb.GetIdx() for nb in d_atom.GetNeighbors()
-            if nb.GetAtomicNum() > 1
+            if nb.GetAtomicNum() > 1 or _sp3c_tet
         ]
         src_dir = None
         if nbr_idx:
@@ -22452,6 +22629,10 @@ def _embed_fragment_procrustes(
             raw = src[0] - frag_center
             rn = np.linalg.norm(raw)
             src_dir = raw / rn if rn > 1e-8 else np.array([1.0, 0.0, 0.0])
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            _trace_seating("procrustes_single_donor elem=%s n_heavy_nbrs=%d method=%s" % (
+                d_atom.GetSymbol(), len(nbr_idx),
+                "anti_bisector_HEAVY_ONLY" if nbr_idx else "centroid"))
         # Target LP direction: donor -> metal (metal is at origin).
         tgt_dir = -tgt[0]
         tn = np.linalg.norm(tgt_dir)
@@ -22748,12 +22929,59 @@ def _scale_aromatic_rings_to_ideal_cc(
             p = conf.GetAtomPosition(int(i))
             return np.array([p.x, p.y, p.z], dtype=float)
 
+        # --- FUSE-AWARE SCOPING (root fix, never-worse-by-construction) -------
+        # Reconstructing each aromatic ring about ITS OWN centroid is only sound
+        # for an ISOLATED monocyclic aryl.  On a FUSED poly-aromatic backbone
+        # (naphthalene / acenaphthene / quinoline / phenanthroline / indole /
+        # carbazole ...) two rings SHARE atoms: reconstructing ring A drags the
+        # fused ring B (its shared atom's rigid branch carries B along), then B
+        # is rebuilt about a DIFFERENT centroid dragging A back — the shared /
+        # adjacent atoms get inconsistent targets and SUPERIMPOSE, tearing the
+        # backbone (measured: SIBXOS C30-C32 @ 0.07 Å; BIBMEH torn C-N / C-C).
+        # So any ring that shares an atom or edge with ANOTHER aromatic ring is
+        # part of a fused π-system and must NOT be reconstructed in isolation.
+        # We reuse the fused-component union logic from ``_arom_planarize`` and
+        # skip every fused ring, restoring the pass to its intended
+        # isolated-monocyclic-aryl case (crushed pendant phenyls, e.g.
+        # ATABOM / AFALOK — they share no ring atom with any other ring and are
+        # untouched).  The hardened guard below is the belt-and-suspenders for
+        # any fusion this skip cannot see.
+        def _is_arom_candidate(_r):
+            _e = len(_r)
+            if _e < 5 or _e > 6:
+                return False
+            if any(mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
+                   or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET for i in _r):
+                return False
+            _u = 0
+            for _i in range(_e):
+                _a, _b = _r[_i], _r[(_i + 1) % _e]
+                _bd = mol.GetBondBetweenAtoms(_a, _b)
+                if _bd is None:
+                    continue
+                if _bd.GetBondType() != Chem.BondType.SINGLE or _bd.GetIsAromatic():
+                    _u += 1
+            return _u >= 2
+        _fused_atoms: set = set()
+        try:
+            from delfin.manta._arom_planarize import _fuse_components as _arom_fuse
+            _cand_rings = [tuple(r) for r in ri.AtomRings() if _is_arom_candidate(r)]
+            if len(_cand_rings) >= 2:
+                for _comp in _arom_fuse(_cand_rings):
+                    _cs = set(_comp)
+                    if sum(1 for _r in _cand_rings if set(_r) <= _cs) >= 2:
+                        _fused_atoms |= _cs
+        except Exception:
+            _fused_atoms = set()
+
         changed = False
         for ring in ri.AtomRings():
             eta = len(ring)
             if eta < 5 or eta > 6:
                 continue
             ring_set = set(ring)
+            if ring_set & _fused_atoms:
+                continue  # fused π-system ring — skip isolated rebuild (root fix)
             if any(
                 mol.GetAtomWithIdx(i).GetAtomicNum() <= 1
                 or mol.GetAtomWithIdx(i).GetSymbol() in _METAL_SET
@@ -22950,6 +23178,42 @@ def _scale_aromatic_rings_to_ideal_cc(
             # that would create a fresh inter-fragment crash is reverted.
             moved = list(new_positions.keys())
             moved_set = set(moved)
+            # --- HARD crush floors (fused-ring safety, absolute) --------------
+            # The moved-vs-NON-moved check below is BLIND to a superposition
+            # WITHIN the moved set itself (the fused-ring tug-of-war signature:
+            # ring A places the shared atoms, ring B's later rebuild drags them
+            # to an inconsistent target -> two moved atoms land on top of each
+            # other).  Add (1) a moved-vs-MOVED heavy crush floor and (2) a hard
+            # bond-length-collapse floor over every bond touching a moved atom.
+            # A legitimate isolated-ring repair yields a clean 1.39 Å polygon
+            # (moved-moved min ~1.0 Å, no collapsed bond) so it always passes;
+            # only a crush/collapse — which is never physical — is reverted.
+            _FLOOR = 0.90
+            _mh = [j for j in moved
+                   if mol.GetAtomWithIdx(j).GetAtomicNum() > 1]
+            _crush = False
+            if len(_mh) >= 2:
+                _MP = np.array([new_positions[j] for j in _mh])
+                for _k in range(len(_mh) - 1):
+                    _dd = np.linalg.norm(_MP[_k + 1:] - _MP[_k], axis=1)
+                    if _dd.size and float(_dd.min()) < _FLOOR:
+                        _crush = True
+                        break
+            if not _crush:
+                for _b in mol.GetBonds():
+                    _a1, _a2 = _b.GetBeginAtomIdx(), _b.GetEndAtomIdx()
+                    if _a1 not in moved_set and _a2 not in moved_set:
+                        continue
+                    if (mol.GetAtomWithIdx(_a1).GetAtomicNum() <= 1
+                            or mol.GetAtomWithIdx(_a2).GetAtomicNum() <= 1):
+                        continue
+                    _p1 = new_positions.get(_a1, _pos(_a1))
+                    _p2 = new_positions.get(_a2, _pos(_a2))
+                    if float(np.linalg.norm(_p1 - _p2)) < _FLOOR:
+                        _crush = True
+                        break
+            if _crush:
+                continue  # revert: reconstruction crushed atoms / collapsed a bond
             others = [j for j in range(n_atoms) if j not in moved_set]
             if others:
                 old_moved = np.array([_pos(j) for j in moved])
@@ -23371,6 +23635,24 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
             if all(len([x for x in cadj[m] if x in r]) == 2 for m in rl):
                 clean_rings.append(rl)
 
+        # FUSE-AWARE SCOPING (root fix): reconstructing a ring of a FUSED
+        # π-system about its own centroid tears the backbone (see the RDKit
+        # twin _scale_aromatic_rings_to_ideal_cc — SIBXOS acenaphthene is an
+        # all-carbon fused system this geometry pass also perceives).  Skip any
+        # ring that shares an atom with another perceived ring; only isolated
+        # monocyclic aryls are reconstructed.  Reuses the _arom_planarize union.
+        _fused_atoms = set()
+        try:
+            from delfin.manta._arom_planarize import _fuse_components as _arom_fuse
+            _cr_t = [tuple(r) for r in clean_rings]
+            if len(_cr_t) >= 2:
+                for _comp in _arom_fuse(_cr_t):
+                    _cs = set(_comp)
+                    if sum(1 for _r in _cr_t if set(_r) <= _cs) >= 2:
+                        _fused_atoms |= _cs
+        except Exception:
+            _fused_atoms = set()
+
         def _pos(i):
             return coords[i]
 
@@ -23378,6 +23660,8 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
         for ring in clean_rings:
             eta = len(ring)
             ring_set = set(ring)
+            if ring_set & _fused_atoms:
+                continue  # fused π-system ring — skip isolated rebuild (root fix)
             # ordered ring traversal via connectivity
             radj = {m: [x for x in cadj[m] if x in ring_set] for m in ring}
             order = []
@@ -23534,6 +23818,47 @@ def _scale_aromatic_rings_in_xyz_geom(xyz_str: str) -> str:
                     break
             if not ok or not updates:
                 continue
+            # --- HARD NEVER-WORSE guard (this pass had NONE) ------------------
+            # Never commit a reconstruction that crushes two heavy atoms of the
+            # moved set together (fused tug-of-war), drives a moved atom into a
+            # fixed atom, or collapses a bond.  A clean isolated-ring repair
+            # (1.39 Å polygon, rigid substituent drag) never trips these.
+            _FLOOR = 0.90
+            _mset = set(updates.keys())
+            _mh = [j for j in _mset if syms[j] != 'H']
+            _crush = False
+            if len(_mh) >= 2:
+                _MP = np.array([updates[j] for j in _mh])
+                for _k in range(len(_mh) - 1):
+                    _dd = np.linalg.norm(_MP[_k + 1:] - _MP[_k], axis=1)
+                    if _dd.size and float(_dd.min()) < _FLOOR:
+                        _crush = True
+                        break
+            if not _crush:
+                _oh = [j for j in heavy if j not in _mset]
+                if _oh and _mh:
+                    _OP = np.array([_pos(j) for j in _oh])
+                    for j in _mh:
+                        _dd = np.linalg.norm(_OP - updates[j], axis=1)
+                        if _dd.size and float(_dd.min()) < _FLOOR:
+                            _crush = True
+                            break
+            if not _crush:
+                for j in _mset:
+                    if syms[j] == 'H':
+                        continue
+                    _pj = updates[j]
+                    for _nb in adj[j]:
+                        if syms[_nb] == 'H' or _nb in metal_idx:
+                            continue
+                        _pn = updates.get(_nb, _pos(_nb))
+                        if float(np.linalg.norm(_pj - _pn)) < _FLOOR:
+                            _crush = True
+                            break
+                    if _crush:
+                        break
+            if _crush:
+                continue  # revert this ring: reconstruction would crush / collapse
             for idx, p in updates.items():
                 coords[idx] = p
             changed = True
@@ -24199,6 +24524,214 @@ def _snap_md_distances_to_ideal(
     return n_snapped
 
 
+def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
+    """POST-UFF metalloid M-D clamp (root fix, env-gated DELFIN_FFFREE_METALLOID_MD_CLAMP).
+
+    OB-UFF has no force-field parameters for the soft, large heavy-metalloid sigma-donors
+    (Sb/As/Bi/Te/Se/Ge/Sn/Pb) and, when the seat target is short, COLLAPSES the M-metalloid bond
+    below its ideal length -- QIGFOF Ag-Sb lands at 2.01 A against an ideal 2.65, wrecking realism
+    even though the seat target (r_Ag+r_Sb = 2.84) was correct.  This runs AFTER UFF and rigidly
+    re-snaps ONLY metalloid M-D bonds to _get_ml_bond_length by translating the donor's BFS fragment
+    along the M-D axis -- the same proven mechanism as _snap_md_distances_to_ideal, but at the XYZ
+    level and metalloid-only, so the N/O/P/S bonds UFF handles well are never touched.  Default OFF
+    -> not called -> byte-identical.  Bare-atom-list XYZ (no header), format matches
+    _flatten_sp2_atoms_xyz.  Deterministic (sorted metals).  Skips bridging donors (a single
+    translation cannot satisfy two M-D ideals; leave those to the UFF pins), exactly like the pre-UFF
+    snap."""
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return xyz_delfin
+    try:
+        import numpy as np
+        lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_delfin
+        symbols: List[str] = []
+        coords_list: List[List[float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return xyz_delfin
+            symbols.append(parts[0])
+            coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        coords = np.array(coords_list, dtype=float)
+        metal_indices = {
+            a.GetIdx() for a in mol_template.GetAtoms() if a.GetSymbol() in _METAL_SET
+        }
+        if not metal_indices:
+            return xyz_delfin
+        moved = False
+        for m_idx in sorted(metal_indices):
+            m_atom = mol_template.GetAtomWithIdx(m_idx)
+            m_sym = m_atom.GetSymbol()
+            m_pos = coords[m_idx]
+            for nbr in m_atom.GetNeighbors():
+                d_idx = nbr.GetIdx()
+                d_sym = nbr.GetSymbol()
+                if d_sym not in _METALLOID_MD_DONORS:
+                    continue                       # metalloid donors ONLY -- N/O/P/S left to UFF
+                if d_idx in metal_indices:
+                    continue                       # M-M bonds
+                if sum(1 for nb in nbr.GetNeighbors() if nb.GetIdx() in metal_indices) >= 2:
+                    continue                       # bridging donor: leave to the UFF pins
+                d_pos = coords[d_idx]
+                cur_d = float(np.linalg.norm(d_pos - m_pos))
+                if cur_d < 1e-8:
+                    continue
+                try:
+                    target_d = float(_get_ml_bond_length(m_sym, d_sym))
+                except Exception:
+                    continue
+                if target_d <= 0 or abs(cur_d - target_d) / target_d < 0.05:
+                    continue
+                frag = _bfs_ligand_fragment(mol_template, d_idx, metal_indices)
+                unit = (d_pos - m_pos) / cur_d
+                delta = (m_pos + unit * target_d) - d_pos
+                for fi in frag:
+                    coords[fi] = coords[fi] + delta
+                moved = True
+        if not moved:
+            return xyz_delfin
+        out_lines = [
+            f"{sym:4s} {coords[i][0]:12.6f} {coords[i][1]:12.6f} {coords[i][2]:12.6f}"
+            for i, sym in enumerate(symbols)
+        ]
+        return "\n".join(out_lines) + "\n"
+    except Exception as exc:
+        logger.debug("Metalloid M-D clamp failed: %s", exc)
+        return xyz_delfin
+
+
+# d8 metals with a strong square-planar preference (mirror of _PREFERRED_CN4_GEOMETRY 'SQ' set).
+_D8_SQ_METALS = frozenset({"Ni", "Pd", "Pt", "Au", "Rh", "Ir"})
+
+# UNAMBIGUOUS d8 square-planar metals for the DELFIN_FFFREE_D8_SQ_ISO SP-4 imposition ONLY.  Rh and Ir
+# are DROPPED here: their +1 state is d8 square-planar (Vaska/Wilkinson) but +3 is d6 OCTAHEDRAL, and a
+# CN4-looking projection of a 5/6-coordinate Rh(III)/Ir(III) (e.g. a pincer HYDRIDE) has a real trans
+# axis that fooled the isomer-preserving pass into forcing a square -> it collapsed distinct isomers
+# (measured 2026-07-14: TIQWUN [IrH-2] pincer, n_isomers 2->1).  Pd(II)/Pt(II)/Ni(II)/Au(III) at CN4 are
+# reliably SP-4, so restricting to them fixes TIQWUN while KEEPING every measured gain (all Pd/Pt).  The
+# broader _D8_SQ_METALS (incl. Rh/Ir) is left untouched for the other, separate d8 paths.
+_D8_SQ_ISO_METALS = frozenset({"Ni", "Pd", "Pt", "Au"})
+
+
+def _flatten_d8_sq_planar_xyz(xyz_delfin: str, mol_template) -> str:
+    """POST-UFF d8 square-planar flatten (root fix, env-gated DELFIN_FFFREE_D8_SQ_FLATTEN).
+
+    A d8 CN4 centre (Pd/Pt/Ni/Au/Rh/Ir) MUST be square-planar: metal + 4 donors coplanar.  The ETKDG
+    embed treats M-D like organic bonds and knows no square-planar preference, so it lifts the metal
+    out of the donor plane -> SS-4 seesaw (CODSIA Pd 1.17 A out-of-plane; the chelate_oop_mer /
+    poly_match SS-4->SP-4 defect, the #1 cluster).  A rigid rotation of the donors about M CANNOT fix
+    this (M's out-of-plane distance is rotation-invariant); the donors must move RELATIVE to M.
+
+    This projects each donor's M-D vector into the best-fit plane through M (v' = v - (v.n) n, rescaled
+    to |v| so the M-D bond length is preserved exactly), and drags the donor's BFS fragment.  All 4
+    donors then lie in one plane through M = square-planar.  For chelates the donors are backbone-
+    linked, so an independent projection can strain the backbone; that strain shows up as broken
+    frames and the per-system never-worse gate rejects it -- so this is SAFE to test broadly.
+    Default OFF -> not called -> byte-identical.  Only fires on a genuine CN4 d8 centre.
+    """
+    if not RDKIT_AVAILABLE or mol_template is None or not xyz_delfin:
+        return xyz_delfin
+    try:
+        import numpy as np
+        lines = [l for l in xyz_delfin.splitlines() if l.strip()]
+        if len(lines) != mol_template.GetNumAtoms():
+            return xyz_delfin
+        symbols: List[str] = []
+        coords_list: List[List[float]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                return xyz_delfin
+            symbols.append(parts[0])
+            coords_list.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        coords = np.array(coords_list, dtype=float)
+        metal_indices = {
+            a.GetIdx() for a in mol_template.GetAtoms() if a.GetSymbol() in _METAL_SET
+        }
+        moved = False
+        for m_idx in sorted(metal_indices):
+            m_atom = mol_template.GetAtomWithIdx(m_idx)
+            if m_atom.GetSymbol() not in _D8_SQ_METALS:
+                continue
+            donor_idxs = [nbr.GetIdx() for nbr in m_atom.GetNeighbors()
+                          if nbr.GetIdx() not in metal_indices and nbr.GetSymbol() != "H"]
+            if len(donor_idxs) != 4:           # square-planar flatten is defined for CN4 only
+                continue
+            m_pos = coords[m_idx]
+            V = np.array([coords[d] - m_pos for d in donor_idxs], dtype=float)
+            # best-fit plane THROUGH M (minimise sum((Di-M).n)^2): n = smallest right-singular vector.
+            try:
+                _u, _s, vh = np.linalg.svd(V, full_matrices=False)
+            except Exception:
+                continue
+            n = vh[-1]
+            nn = float(np.linalg.norm(n))
+            if nn < 1e-9:
+                continue
+            n = n / nn
+            # skip if already essentially planar (max out-of-plane below 0.30 A, the detector's cut)
+            oop = float(np.max(np.abs(V @ n)))
+            if oop <= 0.30:
+                continue
+            # BACKBONE-COUPLING GUARD: a chelate's donors share a backbone, so their BFS fragments
+            # OVERLAP -- moving them independently would multiply-shift the shared atoms and wreck the
+            # ligand.  Only flatten when the 4 donor fragments are pairwise DISJOINT (monodentate
+            # donors).  Chelate d8 centres are left untouched (a rigid-body flatten is invariant; they
+            # need a backbone-aware embed-level fix, not this).
+            frags = [set(_bfs_ligand_fragment(mol_template, d, metal_indices)) for d in donor_idxs]
+            _union = set()
+            _overlap = False
+            for fr in frags:
+                if _union & fr:
+                    _overlap = True
+                    break
+                _union |= fr
+            if _overlap:
+                continue
+            # SQUARE REARRANGEMENT: place the 4 monodentate donors at ideal square-planar slots
+            # (0/90/180/270 deg) in the plane through M, preserving each M-D length.  Coplanarity
+            # alone leaves a tetrahedron coplanar-but-not-square; d8 CN4 must be SP-4 (90 deg spacing).
+            # Runs PRE-UFF so the downstream freeze (_build_coordination_constraints_from_xyz freezes
+            # monodentate donors at their positions) locks in the SQUARE, and UFF preserves it.
+            vecs = [coords[d] - m_pos for d in donor_idxs]
+            lens = [float(np.linalg.norm(v)) for v in vecs]
+            if min(lens) < 1e-8:
+                continue
+            e1_raw = vecs[0] - float(np.dot(vecs[0], n)) * n
+            if float(np.linalg.norm(e1_raw)) < 1e-8:
+                continue
+            e1 = e1_raw / float(np.linalg.norm(e1_raw))
+            e2 = np.cross(n, e1)
+            e2 = e2 / (float(np.linalg.norm(e2)) + 1e-15)
+            import math as _math
+            # BULKY-TRANS assignment: put the 2 largest donor fragments at a TRANS pair (0/180 deg,
+            # 180 deg apart) and the 2 smallest at the other trans pair (90/270).  A naive angle-sort
+            # can place two bulky ligands cis (90 deg) -> phenyl clash (real Pd(PPh3)2 is trans).
+            # Order by fragment size (desc) and map to [0, 180, 90, 270] so big<->big and small<->small
+            # are each trans.  Deterministic tie-break by donor index.
+            order = sorted(range(4), key=lambda i: (-len(frags[i]), donor_idxs[i]))
+            slots = [0.0, _math.pi, _math.pi / 2.0, 3.0 * _math.pi / 2.0]
+            for slot_rank, di in enumerate(order):
+                d = donor_idxs[di]
+                phi = slots[slot_rank]
+                v_ideal = lens[di] * (_math.cos(phi) * e1 + _math.sin(phi) * e2)
+                delta = (m_pos + v_ideal) - coords[d]
+                for fi in frags[di]:
+                    coords[fi] = coords[fi] + delta
+                moved = True
+        if not moved:
+            return xyz_delfin
+        out_lines = [
+            f"{sym:4s} {coords[i][0]:12.6f} {coords[i][1]:12.6f} {coords[i][2]:12.6f}"
+            for i, sym in enumerate(symbols)
+        ]
+        return "\n".join(out_lines) + "\n"
+    except Exception as exc:
+        logger.debug("d8 square-planar flatten failed: %s", exc)
+        return xyz_delfin
+
+
 def _md_distance_in_tolerance(
     mol,
     conf_id: int,
@@ -24525,6 +25058,29 @@ def _build_topology_xyz_from_scratch(
                 "Balloon orientation optimiser failed: %s", orient_exc
             )
 
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _mp = np.array(coords[metal_idx], dtype=float)
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = np.array(coords[_d], dtype=float); _mc = _mp - _dp
+                    _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _cx = np.array(coords[_nb.GetIdx()], dtype=float) - _dp
+                        _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("SCRATCH_POST donor=%d M-C-Xheavy=%.0f" % (_d, _ang))
+            except Exception:
+                pass
+
         # Build XYZ string.
         lines: List[str] = []
         for i in range(n_atoms):
@@ -24535,6 +25091,18 @@ def _build_topology_xyz_from_scratch(
     except Exception as exc:
         logger.debug("_build_topology_xyz_from_scratch failed: %s", exc)
         return None
+
+
+def _trace_seating(*parts):
+    """DIAGNOSTIC (env DELFIN_TRACE_SEATING=1, default OFF -> byte-identical): log which seating
+    branch a donor takes, to stderr.  Pure OBSERVABILITY -- changes NO geometry.  Surfaced per system
+    by loop.py --debug <rid> (which captures the build subprocess stderr)."""
+    if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+        try:
+            import sys as _sys
+            print("[SEATING]", *parts, file=_sys.stderr, flush=True)
+        except Exception:
+            pass
 
 
 def _build_topology_xyz(
@@ -24582,13 +25150,19 @@ def _build_topology_xyz(
         # candidate pool — it is not used here as a replacement so that
         # mono-metallic σ complexes keep the tried-and-tested template
         # geometry that powers Ir(ppy)2(acac), Fe(CO)3(NHC)2 etc.
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            _trace_seating("build_topology_xyz geom=%s nconf=%d donors=%s" % (
+                geometry, mol.GetNumConformers(),
+                [mol.GetAtomWithIdx(d).GetSymbol() + str(d) for d in donor_atom_indices]))
         if mol.GetNumConformers() > 0:
             xyz_from_template = _build_topology_xyz_from_template(
                 mol, metal_idx, donor_atom_indices, perm, geometry, apply_uff,
                 conf_id=conf_id, chelate_rank=chelate_rank,
             )
             if xyz_from_template is not None:
+                _trace_seating("path=TEMPLATE_OK geom=%s" % geometry)
                 return xyz_from_template
+            _trace_seating("path=TEMPLATE_returned_None -> FALLBACK (procrustes/BFS) geom=%s" % geometry)
 
         vectors = _TOPO_GEOMETRY_VECTORS[geometry]
         n_atoms = mol.GetNumAtoms()
@@ -24758,9 +25332,17 @@ def _build_topology_xyz(
                 # cannot distort the octahedral/PBP/etc. cage even when
                 # it lacks force-field parameters for the metal.
                 coord_constraints = None
+                _perm_tr = None                 # exact per-isomer trans pairs (perm) -> no collapse
+                try:
+                    _tp = _TOPO_TRANS_POSITIONS.get(geometry) or []
+                    if _tp:
+                        _perm_tr = [(donor_atom_indices[perm[_p1]], donor_atom_indices[perm[_p2]])
+                                    for (_p1, _p2) in _tp]
+                except Exception:
+                    _perm_tr = None
                 try:
                     coord_constraints = _build_coordination_constraints_from_xyz(
-                        mol, xyz,
+                        mol, xyz, d8_trans=_perm_tr,
                     )
                 except Exception as cexc:
                     logger.debug(
@@ -25202,12 +25784,56 @@ def _build_topology_xyz_from_template(
             else:
                 src_d = src[0]
                 tgt_d = tgt[0]
-                src_com = frag_xyz.mean(axis=0)
-                # Keep the fragment extending away from the metal.
-                v_from = src_com - src_d
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                    _trace_seating("template_mono donor=%d elem=%s nsubst_frag(<1.9A)=%d" % (
+                        int(frag_donors[0]) if frag_donors else -1,
+                        mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() if frag_donors else "?",
+                        int(sum(1 for _r in frag_xyz if 0.4 < float(np.linalg.norm(_r - src_d)) < 1.9))))
+                v_from = None
+                # ROOT FIX (DELFIN_FFFREE_SP3C_TET_SEAT=1, default OFF -> byte-identical): sp3-C donor ->
+                # seat the metal in the vacant tetrahedral slot.  The centroid heuristic below is skewed
+                # by the heavy substituent (M-CH2-R: centroid ~ R) -> R anti to metal -> M-C-X ~180.
+                # Sum of unit(donor->substituent) over all 3 bonded frag atoms (incl H, geometrically
+                # detected) points opposite the vacant slot; aligning it with the outward radial puts the
+                # vacant slot (metal) at ~109 deg.
+                if os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1" and frag_donors:
+                    try:
+                        _dca = mol.GetAtomWithIdx(int(frag_donors[0]))
+                        # PENDANT sp3 alkyl donor only: not aromatic (no sp2 carbene/aryl -> no vacant
+                        # tetrahedral slot) and NOT in a ring (a ring-embedded C donor's orientation is
+                        # already fixed by the rigid scaffold; re-orienting the ring breaks the topology,
+                        # e.g. XIKSEQ's Cd-bound diazaborole C loses its crystal-matching frame).
+                        if (_dca.GetSymbol() == "C" and not _dca.GetIsAromatic()
+                                and not _dca.IsInRing()):
+                            _acc = np.zeros(3); _ns = 0
+                            for _row in frag_xyz:
+                                _v = _row - src_d; _vn = float(np.linalg.norm(_v))
+                                if 0.4 < _vn < 1.9:
+                                    _acc += _v / _vn; _ns += 1
+                            if _ns == 3 and float(np.linalg.norm(_acc)) > 1e-6:
+                                v_from = _acc
+                    except Exception:
+                        v_from = None
+                if v_from is None:
+                    src_com = frag_xyz.mean(axis=0)
+                    # Keep the fragment extending away from the metal.
+                    v_from = src_com - src_d
                 v_to = tgt_d
                 R = _rotation_from_vectors(v_from, v_to)
                 transformed = (frag_xyz - src_d) @ R.T + tgt_d
+                if (os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and frag_donors
+                        and mol.GetAtomWithIdx(int(frag_donors[0])).GetSymbol() == "C"):
+                    try:
+                        _mc = -tgt_d / (float(np.linalg.norm(tgt_d)) + 1e-9)
+                        for _row in transformed:
+                            _v = _row - tgt_d; _vn = float(np.linalg.norm(_v))
+                            if 1.3 < _vn < 1.9:
+                                _ang = float(np.degrees(np.arccos(
+                                    max(-1.0, min(1.0, float(np.dot(_mc, _v / _vn)))))))
+                                _trace_seating("template_mono_POST donor=%d M-C-Xheavy=%.0f" % (
+                                    int(frag_donors[0]), _ang))
+                    except Exception:
+                        pass
 
             for li, atom_idx in enumerate(frag_list):
                 coords[atom_idx] = transformed[li]
@@ -25226,6 +25852,29 @@ def _build_topology_xyz_from_template(
         except Exception as _orient_exc:
             logger.debug("Ligand orientation (template path) failed: %s", _orient_exc)
 
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _mp = np.array(coords[metal_idx], dtype=float)
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = np.array(coords[_d], dtype=float); _mc = _mp - _dp
+                    _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _cx = np.array(coords[_nb.GetIdx()], dtype=float) - _dp
+                        _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("POST_ALIGN donor=%d M-C-Xheavy=%.0f" % (_d, _ang))
+            except Exception:
+                pass
+
         lines = []
         for i in range(n_atoms):
             atom = mol.GetAtomWithIdx(i)
@@ -25241,9 +25890,22 @@ def _build_topology_xyz_from_template(
             xyz_pre_uff = xyz
             try:
                 coord_constraints = None
+                # ARCHITECTURE (2026-07-13): hand the constraint builder the EXACT per-isomer trans
+                # donor pairs from THIS frame's perm (perm + _TOPO_TRANS_POSITIONS[geometry]).  The
+                # DELFIN_FFFREE_D8_SQ_ISO / CN6_OH_ANGLES passes then impose the correct polyhedron on
+                # each isomer's OWN arrangement (no geometric guessing) -> no isomer collapse.  Root fix
+                # for the whole poly cluster; None (non-SQ/OH geoms) = geometry fallback / byte-identical.
+                _perm_tr = None
+                try:
+                    _tp = _TOPO_TRANS_POSITIONS.get(geometry) or []
+                    if _tp:
+                        _perm_tr = [(donor_atom_indices[perm[_p1]], donor_atom_indices[perm[_p2]])
+                                    for (_p1, _p2) in _tp]
+                except Exception:
+                    _perm_tr = None
                 try:
                     coord_constraints = _build_coordination_constraints_from_xyz(
-                        mol, xyz,
+                        mol, xyz, d8_trans=_perm_tr,
                     )
                 except Exception:
                     pass
@@ -25268,6 +25930,40 @@ def _build_topology_xyz_from_template(
                 logger.debug(
                     "Template-topology UFF failed, keeping pre-UFF: %s", uff_exc
                 )
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            try:
+                _pos = {}
+                for _i, _ln in enumerate(xyz.strip().split("\n")):
+                    _p = _ln.split()
+                    if len(_p) >= 4:
+                        _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                _mp = _pos.get(metal_idx)
+                _kept = "no_uff" if not apply_uff else (
+                    "UFF_kept" if xyz is not xyz_pre_uff else "pre_uff(UFF_reverted_or_failed)")
+                for _d in donor_atom_indices:
+                    if mol.GetAtomWithIdx(_d).GetSymbol() != "C":
+                        continue
+                    _dp = _pos.get(_d)
+                    if _mp is None or _dp is None:
+                        continue
+                    _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                    if _mcn < 1e-6:
+                        continue
+                    _mc /= _mcn
+                    for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                        if _nb.GetAtomicNum() <= 1:
+                            continue
+                        _xp = _pos.get(_nb.GetIdx())
+                        if _xp is None:
+                            continue
+                        _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 1.9:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            _trace_seating("POST_UFF donor=%d M-C-Xheavy=%.0f %s geom=%s" % (
+                                _d, _ang, _kept, geometry))
+            except Exception:
+                pass
         return xyz
     except Exception as e:
         logger.debug("_build_topology_xyz_from_template failed: %s", e)
@@ -25664,8 +26360,15 @@ def _generate_topological_isomers(
         # step (otherwise all puckers share the CF label and only the
         # best-scoring one survives).
         _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
+        # PURELY-ADDITIVE d8/CN6 poly siblings (D8_SQ_ADD/CN6_OH_ADD) must NOT crowd the ISOMER budget
+        # out (completeness heilig): count them so the caps below see only the PRIMARY frames.  Without
+        # this the OC/SP-4 siblings filled the cap and the isomer loop broke early (measured: VOYWUD
+        # 6->5 isomers).  `_n_add_sib` corrects the PRE-UFF caps; `_sib_idxs` (the batch indices of the
+        # siblings) corrects the POST-UFF append cap at ~26413 (the same hole, one stage later).
+        _n_add_sib = 0
+        _sib_idxs: set = set()
         for cf, pm in feasible_isomers:
-            if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+            if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                 break
             gn = cf[0]
             # Iterate ALL template conformer CIDs (not break on first):
@@ -25674,7 +26377,7 @@ def _generate_topological_isomers(
             # identical outputs deterministically.
             try:
                 for _tc in topo_template_cids:
-                    if len(_pre_uff_batch) + len(results) >= _PRE_UFF_CAP:
+                    if len(_pre_uff_batch) + len(results) - _n_add_sib >= _PRE_UFF_CAP:
                         break
                     xyz0 = _build_topology_xyz(
                         mol, metal_idx, donor_indices, pm, gn,
@@ -25689,8 +26392,16 @@ def _generate_topological_isomers(
                     coord_c = None
                     if apply_uff:
                         try:
+                            _d8t = None
+                            if gn == 'SQ':                 # per-isomer trans from the enumerator (perm)
+                                try:
+                                    _tp = _TOPO_TRANS_POSITIONS.get(gn) or []
+                                    _d8t = [(donor_indices[pm[_p1]], donor_indices[pm[_p2]])
+                                            for (_p1, _p2) in _tp]
+                                except Exception:
+                                    _d8t = None
                             coord_c = _build_coordination_constraints_from_xyz(
-                                mol, xyz0,
+                                mol, xyz0, d8_trans=_d8t,
                             )
                         except Exception:
                             pass
@@ -25698,6 +26409,57 @@ def _generate_topological_isomers(
                     _variant_counter[_key] = _variant_counter.get(_key, 0) + 1
                     _conf_idx = _variant_counter[_key] - 1
                     _pre_uff_batch.append((cf, pm, gn, xyz0, coord_c, _conf_idx))
+                    # ADDITIVE d8 SP-4 (DELFIN_FFFREE_D8_SQ_ADD, default off -> byte-identical).  ONE
+                    # self-contained axis: the PRIMARY frame above is the NORMAL (tetrahedral) build, and a
+                    # UFF-SP-4 square is added as a PURELY ADDITIVE sibling from the SAME seed (force_d8_sq,
+                    # independent of DELFIN_FFFREE_D8_SQ_ISO).  Never touches the primary -> a bulky ligand
+                    # that clashes under SP-4 keeps its valid tetrahedral primary (NO broken_regressed -- the
+                    # earlier "REPLACE the frame with SP-4" cost HAKQES a frame: +1 broken, +0 frames), while
+                    # a d8-no-valid system GAINS its valid SP-4 frame.  Topology gate culls a clashing SP-4.
+                    if (apply_uff and gn == 'SQ' and len(donor_indices) == 4
+                            and _delfin_env_int("DELFIN_FFFREE_D8_SQ_ADD", 0)
+                            and len(_pre_uff_batch) + len(results) - _n_add_sib < _PRE_UFF_CAP):
+                        try:
+                            _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
+                            if _m_sym in _D8_SQ_ISO_METALS:
+                                coord_c_sq = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0, d8_trans=_d8t, force_d8_sq=True,
+                                )
+                                if coord_c_sq != coord_c:   # SP-4 constraints differ from the primary
+                                    _variant_counter[_key] += 1
+                                    _pre_uff_batch.append(
+                                        (cf, pm, gn, xyz0, coord_c_sq, _variant_counter[_key] - 1))
+                                    _sib_idxs.add(len(_pre_uff_batch) - 1)
+                                    _n_add_sib += 1         # additive -> does not count vs the isomer cap
+                        except Exception:
+                            pass
+                    # ADDITIVE CN6 OCTAHEDRON (DELFIN_FFFREE_CN6_OH_ADD, default off -> byte-identical).  Same
+                    # self-contained-additive pattern as the d8 SP-4 above, for the biggest poly cluster
+                    # (TPR-6 built, OC-6 in the crystal).  The PRIMARY frame is the NORMAL build; a UFF-OC
+                    # octahedron is added as a PURELY ADDITIVE sibling from the SAME seed.  ISOMER-ORTHOGONAL:
+                    # the sibling uses the GEOMETRY-FALLBACK twist-correction (d8_trans=None -> impose OC on
+                    # the frame's OWN most-opposite donor pairs), NOT the OH-PERM path.  Measured 2026-07-14:
+                    # the PERM path (enumerator OH positions via pm) COLLAPSED distinct isomers (VOYWUD lost
+                    # all-trans + trans-OH) -- that OH-perm mapping was never validated (dead before) and
+                    # imposes the WRONG trans set on some arrangements.  The twist-correction keeps whatever
+                    # trans pairs the frame already has, so it can NEVER reshape one isomer into another.
+                    if (apply_uff and gn == 'OH' and len(donor_indices) == 6
+                            and _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0)
+                            and len(_pre_uff_batch) + len(results) - _n_add_sib < _PRE_UFF_CAP):
+                        try:
+                            _m_sym = mol.GetAtomWithIdx(int(metal_idx)).GetSymbol()
+                            if _PREFERRED_CN6_GEOMETRY.get(_m_sym, 'OH') == 'OH':
+                                coord_c_oh = _build_coordination_constraints_from_xyz(
+                                    mol, xyz0, d8_trans=None, force_cn6_oh=True,
+                                )
+                                if coord_c_oh != coord_c:   # OC constraints differ from the primary
+                                    _variant_counter[_key] += 1
+                                    _pre_uff_batch.append(
+                                        (cf, pm, gn, xyz0, coord_c_oh, _variant_counter[_key] - 1))
+                                    _sib_idxs.add(len(_pre_uff_batch) - 1)
+                                    _n_add_sib += 1         # additive -> does not count vs the isomer cap
+                        except Exception:
+                            pass
                     # Iter-8.5b INNER site 1 (template-loop): when the parent
                     # mol's class is in DELFIN_ITER85_PUMP_SKIP_CLASSES, take
                     # only the first successful template seed per perm
@@ -25834,15 +26596,52 @@ def _generate_topological_isomers(
                     _optimize_xyz_openbabel(inp[0], inp[1], inp[2])
                     for inp in _uff_inputs
                 ]
+            def _tr_mcx(_xyzs, _tag):
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") != "1":
+                    return
+                try:
+                    _pos = {}
+                    for _i, _ln in enumerate(_xyzs.strip().split("\n")):
+                        _p = _ln.split()
+                        if len(_p) >= 4:
+                            _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                    _mp = _pos.get(metal_idx)
+                    _cdonors = [nb.GetIdx() for nb in mol.GetAtomWithIdx(metal_idx).GetNeighbors()
+                                if nb.GetSymbol() == "C"]
+                    for _d in _cdonors:
+                        if _mp is None:
+                            continue
+                        _dp = _pos.get(_d)
+                        if _dp is None:
+                            continue
+                        _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                        if _mcn < 1e-6:
+                            continue
+                        _mc /= _mcn
+                        for _nb in mol.GetAtomWithIdx(_d).GetNeighbors():
+                            if _nb.GetAtomicNum() <= 1:
+                                continue
+                            _xp = _pos.get(_nb.GetIdx())
+                            if _xp is None:
+                                continue
+                            _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                            if 1.3 < _cxn < 1.9:
+                                _ang = float(np.degrees(np.arccos(
+                                    max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                                _trace_seating("%s donor=%d M-C-Xheavy=%.0f" % (_tag, _d, _ang))
+                except Exception:
+                    pass
             for idx, (cf, pm, gn, xyz_pre, _cstr, _ci) in enumerate(_pre_uff_batch):
                 xyz_opt = _uff_results[idx] if idx < len(_uff_results) else xyz_pre
                 if not xyz_opt:
                     xyz_opt = xyz_pre
+                _tr_mcx(xyz_opt, "BATCH_POST_UFF")
                 # Post-UFF polish: project sp2 3-coordinate atoms onto
                 # their neighbours' plane to remove residual
                 # pyramidalisation that the torsion constraints could not
                 # fully eliminate.
                 xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol)
+                _tr_mcx(xyz_opt, "BATCH_POST_FLATTEN")
                 # Conservative UFF: if UFF broke topology, keep pre-UFF.
                 if not _verify_topology_from_graph(xyz_opt, mol):
                     xyz_opt = xyz_pre
@@ -25850,8 +26649,13 @@ def _generate_topological_isomers(
 
         # Post-UFF: graph-based topology check (replaces the 5 legacy
         # checks that were too aggressive for topo-generated structures).
-        for cf, pm, gn, xyz, _cstr, _cidx in _pre_uff_batch:
-            if len(results) >= max_isomers:
+        # The max_isomers cap must count only PRIMARY frames, not the purely-additive d8/CN6 poly
+        # siblings (else an interleaved sibling crowds a later isomer's PRIMARY out of results ->
+        # VOYWUD 6->5).  `_n_sib_appended` mirrors the pre-UFF `-_n_add_sib`; empty _sib_idxs (flags
+        # off) -> byte-identical to the original `len(results) >= max_isomers`.
+        _n_sib_appended = 0
+        for _batch_i, (cf, pm, gn, xyz, _cstr, _cidx) in enumerate(_pre_uff_batch):
+            if (len(results) - _n_sib_appended) >= max_isomers:
                 break
             try:
                 if not _verify_topology_from_graph(xyz, mol):
@@ -25884,6 +26688,8 @@ def _generate_topological_isomers(
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 results.append((xyz, lbl))
+                if _batch_i in _sib_idxs:      # additive sibling -> does not count vs max_isomers
+                    _n_sib_appended += 1
             except Exception as exc:
                 logger.debug("Topo post-UFF check failed (%s): %s", gn, exc)
                 continue
@@ -27492,6 +28298,116 @@ def _organic_conformer_pool(
             if any(_heavy_atom_rmsd_xyz(xyz, x) < rmsd_threshold for x, _ in pool):
                 continue
             pool.append((xyz, f"conf-{len(pool) + 1}"))
+    pool = _append_ring_puckers(mol_h, pool, rmsd_threshold)
+    if _delfin_env_int("DELFIN_TFD_DEDUP", 1):
+        pool = _tfd_dedup_pool(mol_h, pool)
+    return pool
+
+
+def _tfd_dedup_pool(mol_h, pool, tfd_thr: float = 0.008):
+    """Group-theoretic (symmetry-aware) dedup of the WHOLE conformer pool.
+
+    ETKDG + rotamer sampling on a molecule with a symmetric group (a symmetric
+    phosphine PCy3 / PPh3, a tert-butyl, three equivalent chelate arms, ...)
+    rotates ONE bond many times and deposits the SAME rotamer over and over,
+    because heavy-atom RMSD sees the relabelled-but-identical structures as
+    distinct.  Torsion-Fingerprint-Deviation compares all ring + rotatable-bond
+    torsions with the molecule's topological automorphisms folded in, so those
+    symmetry-equivalent duplicates collapse to ONE while genuinely distinct
+    conformers (a different pucker, a non-equivalent rotamer) survive — pucker
+    and rotation deduped HOLISTICALLY under one symmetry-aware criterion.
+
+    CRITICAL (user guardrail 2026-07-07): must NEVER drop a realistic,
+    genuinely-distinct conformer — only TRUE duplicates.  Measured: symmetry-
+    equivalent duplicates sit at TFD ~= 0.0 (TFD minimises over automorphisms),
+    while genuinely distinct conformers start at TFD ~0.01-0.02 (ibuprofen 8->2
+    at the 0.05 literature "same-cluster" threshold WRONGLY merged distinct
+    rotamers).  So the threshold is deliberately TIGHT (0.008): it removes only
+    the true relabelled duplicates and keeps every distinct realistic conformer.
+    Frames whose atom order does not match ``mol_h`` are kept untouched.
+    """
+    if not RDKIT_AVAILABLE or len(pool) < 2:
+        return pool
+    try:
+        from rdkit.Chem import TorsionFingerprints as _TF
+    except Exception:
+        return pool
+    try:
+        acc = Chem.Mol(mol_h)
+        acc.RemoveAllConformers()
+        loaded = []           # (pool_index, conf_id or None)
+        for i, (xyz, _lbl) in enumerate(pool):
+            conf = _xyz_to_rdkit_conformer(mol_h, xyz)
+            if conf is None:
+                loaded.append((i, None))
+            else:
+                loaded.append((i, acc.AddConformer(conf, assignId=True)))
+        keep = [True] * len(pool)
+        kept_ids = []
+        for i, cid in loaded:
+            if cid is None:
+                continue          # unmatched order -> cannot compare, keep it
+            dup = False
+            for kid in kept_ids:
+                try:
+                    if _TF.GetTFDBetweenConformers(acc, [kid], [cid])[0] < tfd_thr:
+                        dup = True
+                        break
+                except Exception:
+                    pass
+            if dup:
+                keep[i] = False
+            else:
+                kept_ids.append(cid)
+        deduped = [pool[i] for i in range(len(pool)) if keep[i]]
+        # renumber conf-N labels sequentially, preserve non-"conf-" labels
+        out = []
+        for xyz, lbl in deduped:
+            out.append((xyz, f"conf-{len(out) + 1}" if str(lbl).startswith("conf-") else lbl))
+        return out
+    except Exception:
+        return pool
+
+
+def _append_ring_puckers(mol_h, pool, rmsd_threshold):
+    """Add explicitly-CONSTRUCTED ring-pucker conformers to an organic pool.
+
+    ETKDG samples only the ground ring pucker (cyclohexane embeds 300/300 as the
+    chair, never the twist-boat; a 5/7/8-ring never leaves its lowest pucker).
+    Those higher ring basins are genuine, distinct, populated conformers a
+    COMPLETE manifold must contain, but no seed count reaches them.  This pass
+    constructs them for EVERY puckerable (saturated, size 5-8) ring via
+    Cremer-Pople displacement + a torsion-held relax, and builds the multi-ring
+    CARTESIAN PRODUCT (Cy3P: 3 cyclohexyls -> 3xchair, 2xchair+twist, ...) with a
+    whole-molecule clash gate so the combined puckers stay sterically realistic.
+    Deterministic, license-clean, TFD-deduped.  Byte-identical when
+    ``DELFIN_RING_PUCKER=0`` or the molecule has no puckerable ring.
+    """
+    if not RDKIT_AVAILABLE or not pool:
+        return pool
+    if not _delfin_env_int("DELFIN_RING_PUCKER", 1):
+        return pool
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+        mol_base = Chem.Mol(mol_h)
+        params = AllChem.ETKDGv3()
+        params.randomSeed = 42
+        params.useRandomCoords = True
+        if AllChem.EmbedMolecule(mol_base, params) != 0:
+            return pool
+        # The module already TFD-dedups internally (chair vs twist-boat differ
+        # by only ~0.2 A heavy-atom RMSD, so the coarse pool RMSD gate would
+        # wrongly reject the constructed puckers); append them directly, guarding
+        # only against a near-exact coordinate duplicate.
+        for _px, _plabel in _rpuck.generate(mol_base, budget=64):
+            if any(_heavy_atom_rmsd_xyz(_px, x) < 0.05 for x, _ in pool):
+                continue
+            pool.append((_px, f"conf-{len(pool) + 1}"))
+    except Exception as _rp_exc:
+        try:
+            logger.debug("ring-pucker construction skipped: %s", _rp_exc)
+        except Exception:
+            pass
     return pool
 
 
@@ -27696,6 +28612,85 @@ def _emit_chelate_pucker_variants(
     return n_added
 
 
+def _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers):
+    """Correct, combinatorial ring-pucker construction for the METAL path via
+    ``delfin.manta._ring_pucker`` (Cremer-Pople displacement + torsion-held
+    relax + whole-molecule clash gate).
+
+    Covers BOTH ring kinds the user needs (rings with metal / rings without):
+      * chelate rings that close THROUGH the metal — the metal and its
+        coordinating donor atoms are FROZEN so the coordination sphere is
+        preserved while the chelate backbone runs through its puckers (en
+        delta/lambda, 6-ring chair/boat/twist, ...);
+      * peripheral non-metal rings on the ligands (cyclohexyl, piperidinyl,
+        sugar, ...), including their multi-ring CARTESIAN PRODUCT.
+
+    Additive; every new frame still passes the final graph-topology gate.  Byte-
+    identical when ``DELFIN_RING_PUCKER=0`` or no puckerable ring is present.
+    """
+    if not RDKIT_AVAILABLE or not results:
+        return 0
+    if not _delfin_env_int("DELFIN_RING_PUCKER", 1):
+        return 0
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+    except Exception:
+        return 0
+    base_xyz = results[0][0]
+    # need an RDKit mol whose atom order matches the emitted XYZ (incl. H) so the
+    # UFF relax + TFD are well-defined; try the mol as-is, then an H-added copy.
+    conf = _xyz_to_rdkit_conformer(mol, base_xyz)
+    work = mol
+    if conf is None:
+        try:
+            work = Chem.AddHs(mol)
+            conf = _xyz_to_rdkit_conformer(work, base_xyz)
+        except Exception:
+            conf = None
+    if conf is None:
+        return 0
+    try:
+        m = Chem.Mol(work)
+        m.RemoveAllConformers()
+        m.AddConformer(conf, assignId=True)
+        frozen = set()
+        for a in m.GetAtoms():
+            if a.GetSymbol() in _METAL_SET:
+                frozen.add(a.GetIdx())
+                for nb in a.GetNeighbors():
+                    frozen.add(nb.GetIdx())
+        # sp3-C tetrahedral seating companion (DELFIN_FFFREE_SP3C_TET_SEAT): the metal + its donor atoms
+        # are frozen above, but a monodentate sp3-C donor's HEAVY SUBSTITUENT stays FREE, so the pucker
+        # relax swings it back to linear (M-C-X 180) even though the coordination sphere holds -- the
+        # ring-pucker generator is the last construction path that re-linearises the seated sp3-C.  Freeze
+        # each metal-bonded sp3-C donor's directly-bonded heavy substituent(s) too, locking the C-X vector
+        # so the tetrahedral M-C-X survives puckering.  Element+graph only (universal); byte-identical off.
+        if os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1":
+            _extra = set()
+            for _fi in list(frozen):
+                _fa = m.GetAtomWithIdx(_fi)
+                # sp3 ALKYL donor only -- exclude sp2 carbene/aryl C donors (NHC, sigma-aryl): an aromatic
+                # C is planar, has NO vacant tetrahedral slot, and freezing its ring neighbours distorts the
+                # ring (eye's sp3c detector excludes sp2 via a pyramidality guard; mirror that here).
+                if _fa.GetSymbol() != "C" or _fa.GetIsAromatic() or _fa.IsInRing():
+                    continue        # PENDANT sp3 alkyl donor only (ring C: orientation fixed by scaffold)
+                if not any(_nb.GetSymbol() in _METAL_SET for _nb in _fa.GetNeighbors()):
+                    continue
+                for _nb in _fa.GetNeighbors():
+                    if _nb.GetSymbol() not in _METAL_SET and _nb.GetAtomicNum() > 1:
+                        _extra.add(_nb.GetIdx())
+            frozen |= _extra
+        n_added = 0
+        for _px, _plabel in _rpuck.generate(m, frozen=frozen, budget=48):
+            if len(results) + n_added >= max_isomers:
+                break
+            results.append((_px, _plabel))
+            n_added += 1
+        return n_added
+    except Exception:
+        return 0
+
+
 # ---------------------------------------------------------------------------
 # Ring-conformer (pucker) enumeration for NON-METAL rings — the pucker
 # analogue of Pólya coordination-isomer enumeration.
@@ -27793,6 +28788,63 @@ def _ring_canonical_snap_z(basin: str, size: int):
         # (theta = 90).
         return [+1.0, -0.5, -0.5, +1.0, -0.5, -0.5]
     return None
+
+
+def _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers):
+    """Additive d8-CN4 square-planar SEATING pass (eye-driven: Weddell flags "d8 CN4 built
+    TETRAHEDRAL; must be square-planar" — HUPJUY Pd, VIHFAT Pt).  A d8 metal (Pt/Pd/Ni/Au/Rh/Ir)
+    at CN4 is ALWAYS square-planar in the crystal; the chelate ETKDG embed can leave the donors
+    TETRAHEDRAL and the SP-4 preference is silently lost (whole manifold -> ALARM).  For every
+    emitted frame carrying a d8 metal, append a square-planarized variant (rigid per-ligand de-tilt
+    of the donors into their common plane; ligand internals preserved).  The final graph-topology
+    gate downstream drops any variant whose flattening introduced a ligand-ligand contact, so this
+    is strictly ADDITIVE / never-worse.  Toggle DELFIN_D8_SP4_SEAT (default 0 -> byte-identical)."""
+    if not _delfin_env_int("DELFIN_D8_SP4_SEAT", 0):
+        return 0
+    try:
+        from delfin.manta._d8_square_planar import square_planarize_frame, _D8
+    except Exception:
+        return 0
+
+    def _sig(xyz_str):
+        try:
+            return tuple(sorted(
+                (p[0], round(float(p[1]), 2), round(float(p[2]), 2), round(float(p[3]), 2))
+                for p in (ln.split() for ln in xyz_str.strip().splitlines())
+                if len(p) >= 4 and p[0] not in ("H", "h")))
+        except Exception:
+            return tuple()
+
+    def _parse(xyz_str):
+        syms, P = [], []
+        for ln in xyz_str.strip().splitlines()[2:]:
+            t = ln.split()
+            if len(t) >= 4:
+                syms.append(t[0]); P.append([float(t[1]), float(t[2]), float(t[3])])
+        return syms, np.array(P, float)
+
+    seen = {_sig(x) for x, _ in results}
+    added = 0
+    for xyz, lbl in list(results):
+        try:
+            syms, P = _parse(xyz)
+            if not any(s in _D8 for s in syms):
+                continue
+            sp = square_planarize_frame(syms, P)
+            if sp is None:
+                continue
+            head = xyz.strip().splitlines()[:2]
+            new_xyz = "\n".join(head + [f"{syms[i]} {sp[i][0]:.6f} {sp[i][1]:.6f} {sp[i][2]:.6f}"
+                                        for i in range(len(syms))])
+            sg = _sig(new_xyz)
+            if sg in seen:
+                continue
+            seen.add(sg)
+            results.append((new_xyz, (lbl or "") + " SP-4 square planar (d8 seat)"))
+            added += 1
+        except Exception:
+            continue
+    return added
 
 
 def _emit_nonmetal_ring_pucker_variants(
@@ -29310,6 +30362,33 @@ def _arg_deterministic(args, kwargs) -> bool:
     return True
 
 
+def _smiles_arg(args, kwargs):
+    """The SMILES passed to the public wrapper (positional index 0 / kwargs)."""
+    if "smiles" in kwargs:
+        return kwargs["smiles"]
+    return args[0] if args else None
+
+
+def _has_metalloid_donor(smiles) -> bool:
+    """True iff the molecule has a heavy metalloid (Sb/As/Bi/Te/Se/Ge/Sn/Pb) atom
+    bonded to a metal centre -- the only systems the dual-M-D-distance pass targets
+    (so the second build pass is skipped elsewhere).  Graph/element only, never
+    SMILES-specific; any parse failure -> False (pass skipped = base behaviour)."""
+    if not smiles or not isinstance(smiles, str):
+        return False
+    try:
+        m = Chem.MolFromSmiles(smiles, sanitize=False)
+        if m is None:
+            return False
+        for a in m.GetAtoms():
+            if a.GetSymbol() in _METALLOID_MD_DONORS and any(
+                    nb.GetSymbol() in _METAL_SET for nb in a.GetNeighbors()):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def smiles_to_xyz_isomers(*args, **kwargs):
     """Public entry point.  Thin wrapper enforcing the finite-coordinate output
     contract (#36) over EVERY return path of the implementation, applying the
@@ -29365,6 +30444,31 @@ def smiles_to_xyz_isomers(*args, **kwargs):
             _det_env_set = True
     try:
         r = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+        # --- Metalloid dual-M-D-distance pass (DELFIN_FFFREE_METALLOID_MD_BOTH; default OFF) ------
+        # For systems with a metalloid donor, ALSO build the manifold at the SHORT covalent-sum
+        # M-metalloid distance and APPEND it (never drops the offset frames).  The eye's gate is
+        # min-over-frames, so a system whose offset build is already good KEEPS that good frame
+        # (cannot regress) while a detached system GAINS a good short frame (improves).  The short
+        # frames flow through the SAME finalisation chain below: _clean_gate_filter is per-frame
+        # asymmetric (drops broken frames, keeps good ones) so a short frame that only CLASHES
+        # (crowded metalloid ligand) is dropped -> no broken_frac penalty; only a genuinely better
+        # short frame survives.  Structurally never-worse via completeness (frames appended, never
+        # dropped).  Second pass forces the short distance via the thread-local (env stays off ->
+        # byte-identical when METALLOID_MD_BOTH is off).  Metalloid-gated so non-metalloid systems
+        # are byte-identical (no wasted second build).
+        if (outermost
+                and os.environ.get("DELFIN_FFFREE_METALLOID_MD_BOTH", "0") == "1"
+                and isinstance(r, tuple) and len(r) == 2
+                and isinstance(r[0], list) and r[0]
+                and _has_metalloid_donor(_smiles_arg(args, kwargs))):
+            _METALLOID_MD_FORCE_SHORT.value = True
+            try:
+                r2 = _smiles_to_xyz_isomers_impl(*args, **kwargs)
+            finally:
+                _METALLOID_MD_FORCE_SHORT.value = False
+            if isinstance(r2, tuple) and len(r2) == 2 and isinstance(r2[0], list) and r2[0]:
+                _short = [(xyz, (f"{lbl}-mdshort" if lbl else "mdshort")) for xyz, lbl in r2[0]]
+                r = (r[0] + _short, r[1])
         # Conformer-completeness AND permutation-dedup run only at the OUTERMOST
         # public call (over the final, dual-parse-unioned ensemble); identity on
         # inner re-entries.  Permutation-dedup runs LAST over the expanded union
@@ -29896,7 +31000,7 @@ def _smiles_to_xyz_isomers_impl(
                 pass
             if _n_metals_hapto <= 1:
                 # Iter-13: apply Baustein 3 to mono-hapto path (env-gated).
-                results_hapto = _apply_baustein3_if_enabled(
+                results_hapto = _apply_coord_angle_fix_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
                 # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
@@ -29913,7 +31017,7 @@ def _smiles_to_xyz_isomers_impl(
             # sampling would produce conformers with broken Cp rings.
             # Return the hapto results directly.
             # Iter-13: apply Baustein 3 to multi-metal hapto path (env-gated).
-            results_hapto = _apply_baustein3_if_enabled(
+            results_hapto = _apply_coord_angle_fix_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
             # Iter-14: apply Baustein 4 (rigid-π H projection) AFTER B3.
@@ -29978,7 +31082,7 @@ def _smiles_to_xyz_isomers_impl(
         # Iter-13: apply Baustein 3 to fallback single-conformer path (env-gated).
         _fallback_results = [(xyz, '')]
         if has_metal:
-            _fallback_results = _apply_baustein3_if_enabled(
+            _fallback_results = _apply_coord_angle_fix_if_enabled(
                 None, _fallback_results, _dual_parse_done
             )
         # Iter-14: apply Baustein 4 (rigid-π H projection) — runs on metal
@@ -30208,48 +31312,103 @@ def _smiles_to_xyz_isomers_impl(
     # frozen-broken frames cannot leak through. Default OFF.
     _pre_uff_md_gate = has_metal and _pre_uff_topology_gate_enabled()
 
-    def _classify_one_conf(_cid, _relax):
+    def _classify_one_conf(_cid, _relax, _m=None, _cc=None):
+        """Classify conformer _cid.  _m/_cc let a worker pass a PRIVATE mol copy carrying only that
+        conformer, so no thread ever touches the shared molecule (see DET_CLASSIFY_PAR below).  The
+        returned conformer id is always the ORIGINAL _cid -- downstream indexes the real mol."""
+        _M = mol if _m is None else _m
+        _C = _cid if _cc is None else _cc
         try:
             if _pre_uff_md_gate:
                 try:
-                    if not _md_distance_in_tolerance(mol, _cid):
+                    if not _md_distance_in_tolerance(_M, _C):
                         return None
                 except Exception:
                     pass
-            if _has_atom_clash(mol, _cid, min_dist=0.3):
+            if _has_atom_clash(_M, _C, min_dist=0.3):
                 return None
             try:
-                xyz_check = _mol_to_xyz_conformer(mol, _cid)
-                if not _metal_donor_distances_realistic(xyz_check, mol):
+                xyz_check = _mol_to_xyz_conformer(_M, _C)
+                if not _metal_donor_distances_realistic(xyz_check, _M):
                     return None
             except Exception:
                 return None
-            if _has_pi_ring_nonplanarity(mol, _cid):
+            if _has_pi_ring_nonplanarity(_M, _C):
                 return None
             penalty = 0.0
-            if _has_unphysical_metal_nonbonded_contact(mol, _cid):
+            if _has_unphysical_metal_nonbonded_contact(_M, _C):
                 if not _relax:
                     return None
                 penalty += 350.0
-            if _has_unphysical_oco_geometry(mol, _cid):
+            if _has_unphysical_oco_geometry(_M, _C):
                 if not _relax:
                     return None
                 penalty += 250.0
-            if _has_atom_clash(mol, _cid):
+            if _has_atom_clash(_M, _C):
                 penalty += 500.0
-            if _has_bad_geometry(mol, _cid):
+            if _has_bad_geometry(_M, _C):
                 penalty += 300.0
-            if _has_ligand_intertwining(mol, _cid):
+            if _has_ligand_intertwining(_M, _C):
                 penalty += 200.0
-            fp = _compute_coordination_fingerprint(mol, _cid, dtype_map=dtype_map)
-            score = _geometry_quality_score(mol, _cid) + penalty
-            label = _classify_isomer_label(fp, mol)
+            fp = _compute_coordination_fingerprint(_M, _C, dtype_map=dtype_map)
+            score = _geometry_quality_score(_M, _C) + penalty
+            label = _classify_isomer_label(fp, _M)
             return (fp, label, _cid, score)
         except Exception:
             return None
 
     def _collect_fp_label_pairs(relax_hard_chem_filters: bool = False) -> List[Tuple[tuple, str, int, float]]:
+        # ===== DATA RACE ON THE SHARED MOL (DELFIN_FFFREE_DET_CLASSIFY) ==========================
+        # ROOT of the residual cross-run nondeterminism (2026-07-09).  `_classify_one_conf` reads the
+        # SHARED `mol` from up to os.cpu_count() threads (384 on this box), calling _has_atom_clash,
+        # _compute_coordination_fingerprint, _geometry_quality_score and _classify_isomer_label.
+        # An RDKit Mol populates its ring info and property caches LAZILY, on first access, and is
+        # not thread-safe while doing so.  Concurrent readers therefore race on that initialisation:
+        #   * the SCORES wobble  -> a different conformer wins its fingerprint -> same label, other
+        #     geometry (ZIZLUT "Isomer 1" moves 4-7 A between two runs of the identical build)
+        #   * the FILTERS flip   -> a different set of conformers survives -> different frame COUNT
+        #     (AFICIC 12 vs 13 frames)
+        # This is why a deterministic total order over the selection (DET_SELECT) changed the output
+        # but could not stabilise it: it sorts by numbers that are themselves produced in a race.
+        # Same shape as the documented, already-written DELFIN_5G_T6_1_RACE_FIX (embedding against a
+        # shared mol) -- which is likewise still default-OFF.
+        # The fix is to stop sharing: classify sequentially.  Parallelism is not lost, it moves up a
+        # level (the loop builds 64 SYSTEMS at once), and 384 threads per system x 64 systems was a
+        # 24k-thread oversubscription anyway.  Element/graph-agnostic; byte-identical when unset.
+        # DET_CLASSIFY_PAR: determinism WITHOUT giving up the cores.  The race was never the threads,
+        # it was the SHARING.  Pre-warm the lazy ring/property caches on the template ONCE (so no
+        # worker triggers a lazy init), then hand every worker a private conformer-free copy carrying
+        # exactly the conformer it must classify.  Results are collected in SUBMISSION order, so the
+        # output is bit-identical to the sequential path -- and that is the acceptance test.
+        _det_classify = _delfin_env_int("DELFIN_FFFREE_DET_CLASSIFY", 0)
+        _det_classify_par = _delfin_env_int("DELFIN_FFFREE_DET_CLASSIFY_PAR", 0)
         _n_cw = min(len(conf_ids), os.cpu_count() or 4) if conf_ids else 1
+        if _det_classify_par and conf_ids and len(conf_ids) > 4:
+            try:
+                mol.UpdatePropertyCache(strict=False)
+            except Exception:
+                pass
+            try:
+                Chem.GetSymmSSSR(mol); mol.GetRingInfo()
+            except Exception:
+                pass
+            _tmpl = Chem.Mol(mol); _tmpl.RemoveAllConformers()
+
+            def _classify_private(_cid):
+                try:
+                    _m2 = Chem.Mol(_tmpl)
+                    _c2 = _m2.AddConformer(Chem.Conformer(mol.GetConformer(_cid)), assignId=True)
+                    return _classify_one_conf(_cid, relax_hard_chem_filters, _m2, _c2)
+                except Exception:
+                    return None
+            _w = min(len(conf_ids), DELFIN_MAX_THREAD_WORKERS, os.cpu_count() or 4)
+            if _w > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=_w) as _cp:
+                    _futs = [_cp.submit(_classify_private, c) for c in conf_ids]
+                    return [r for r in (f.result() for f in _futs) if r is not None]
+        if _det_classify or _det_classify_par:
+            return [r for r in (_classify_one_conf(c, relax_hard_chem_filters)
+                                for c in conf_ids) if r is not None]
         if _n_cw > 1 and len(conf_ids) > 4:
             with concurrent.futures.ThreadPoolExecutor(max_workers=_n_cw) as _cp:
                 _futs = [
@@ -30341,31 +31500,59 @@ def _smiles_to_xyz_isomers_impl(
             )
         except Exception:
             _iter85_hard_dispatch = False
+    # ===== DETERMINISTIC TOTAL ORDER (DELFIN_FFFREE_DET_SELECT) ================================
+    # ROOT of the cross-run nondeterminism (2026-07-09).  EVERY conformer selection in this chain
+    # decides with a bare float comparison, in GENERATION order:
+    #     if fp not in D or sc < D[fp][2]:        # an exact tie keeps whichever came FIRST
+    # Two conformers of one fingerprint whose scores tie (or differ in the last bits) therefore
+    # elect a winner that depends on insertion order and float noise.  The LABEL stays, the
+    # GEOMETRY jumps -- exactly the observed defect (ZIZLUT "Isomer 1" moves 4-7 A between two runs
+    # of the identical construction).  The fix is neither a seed nor a flag: make the order TOTAL.
+    #   * quantise the score to 1e-6      -> immune to last-bit wobble
+    #   * break ties by (cid, fp)         -> intrinsic, run-independent
+    # This must wrap the WHOLE chain: _merged elects a winner per fingerprint BEFORE seen_fps ever
+    # runs, so hardening only the later passes leaves the first one deciding by arrival time.
+    # Element- and graph-agnostic; never SMILES- or refcode-specific.
+    _det_select = _delfin_env_int("DELFIN_FFFREE_DET_SELECT", 0)
+
+    def _skey(_sc: float, _cid: int, _fp) -> tuple:
+        return (round(float(_sc), 6), int(_cid), repr(_fp))
+
+    def _take(_d: dict, _fp, _lbl, _cid, _sc) -> None:
+        """Insert (label, cid, score) for _fp iff it beats the incumbent under a TOTAL order."""
+        _cur = _d.get(_fp)
+        if _cur is None:
+            _d[_fp] = (_lbl, _cid, _sc)
+        elif _det_select:
+            if _skey(_sc, _cid, _fp) < _skey(_cur[2], _cur[1], _fp):
+                _d[_fp] = (_lbl, _cid, _sc)
+        elif _sc < _cur[2]:
+            _d[_fp] = (_lbl, _cid, _sc)
+
     if _iter85_hard_dispatch:
         # Strict-only contract: drop relaxed-pass entirely
         _merged: Dict[tuple, Tuple[str, int, float]] = {}
         for fp, lbl, cid, sc in _strict:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
     else:
         # HEAD baseline: union-merge of strict + relaxed
         _merged = {}
         for fp, lbl, cid, sc in _strict:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
         for fp, lbl, cid, sc in _relaxed:
-            if fp not in _merged or sc < _merged[fp][2]:
-                _merged[fp] = (lbl, cid, sc)
+            _take(_merged, fp, lbl, cid, sc)
     fp_label_pairs: List[Tuple[tuple, str, int, float]] = [
         (fp, lbl, cid, sc) for fp, (lbl, cid, sc) in _merged.items()
     ]
+    # Generation order must stop mattering from here on: sort the pairs under the same total order.
+    if _det_select:
+        fp_label_pairs.sort(key=lambda t: _skey(t[3], t[2], t[0]))
 
     # Second pass: deduplicate, keeping the best-scoring conformer per group.
     # fp -> (label, conf_id, score)
     seen_fps: Dict[tuple, Tuple[str, int, float]] = {}
     for fp, label, cid, score in fp_label_pairs:
-        if fp not in seen_fps or score < seen_fps[fp][2]:
-            seen_fps[fp] = (label, cid, score)
+        _take(seen_fps, fp, label, cid, score)
         if len(seen_fps) >= max_isomers:
             break
 
@@ -30378,8 +31565,26 @@ def _smiles_to_xyz_isomers_impl(
                 return ''
             return re.sub(r'-\d+$', '',str(lbl))
 
+        # Same root: `fps_list` inherits the dict's GENERATION order, and the pairwise survivor is
+        # picked with `si <= sj` -- a tie (or a last-bit difference) hands the decision to whichever
+        # conformer happened to be generated first.  Impose the same total order here.
         fps_list = list(seen_fps.keys())
+        if _det_select:
+            fps_list.sort(key=lambda _f: _skey(seen_fps[_f][2], seen_fps[_f][1], _f))
         removed: set = set()
+        # RMSD must NOT override the chemistry-based coordination fingerprint.
+        # Every pair here has DISTINCT fingerprints (fps_list = seen_fps keys);
+        # when their base labels ALSO differ they are distinct coordination
+        # isomers (cis vs trans, fac vs mer, linkage isomers) and the current
+        # code still merges them if they happen to sit within 0.8 A -- but RMSD
+        # is an unreliable isomer-identity measure (distinct isomers can be
+        # geometrically close; the whole-space measurement showed distinct
+        # isomers merged at median 0.35 A, driving 58% of systems below their
+        # theoretical isomer count).  Env-gated (default-OFF = byte-identical):
+        # when set, cross-label merges are skipped entirely (and their expensive
+        # _conformer_rmsd call avoided -> faster), trusting the fingerprint;
+        # same-label conformer merging is unaffected (separate axis).
+        _fp_strict = _delfin_env_int("DELFIN_FFFREE_ISOMER_FP_STRICT", 0)
         for i in range(len(fps_list)):
             if i in removed:
                 continue
@@ -30390,6 +31595,8 @@ def _smiles_to_xyz_isomers_impl(
                     continue
                 _lj, cid_j, sj = seen_fps[fps_list[j]]
                 base_j = _base_label(_lj)
+                if _fp_strict and base_i != base_j:
+                    continue  # distinct isomers -> trust fingerprint, never RMSD-merge
                 rmsd = _conformer_rmsd(mol, cid_i, cid_j)
                 # Same-label: aggressive merge (RMSD < 2.5 A) —
                 # these are supposed to be the same isomer anyway.
@@ -30401,7 +31608,9 @@ def _smiles_to_xyz_isomers_impl(
                 # chemically different systems being wrongly merged.
                 rmsd_threshold = 2.5 if base_i == base_j else 0.8
                 if rmsd < rmsd_threshold:
-                    if si <= sj:
+                    _i_wins = (_skey(si, cid_i, fps_list[i]) <= _skey(sj, cid_j, fps_list[j])
+                               if _det_select else si <= sj)
+                    if _i_wins:
                         removed.add(j)
                     else:
                         removed.add(i)
@@ -30642,6 +31851,41 @@ def _smiles_to_xyz_isomers_impl(
                 existing_xyz_keys.add(topo_key)
                 if topo_fp is not None:
                     existing_fps.add(topo_fp)
+                if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                    try:
+                        import numpy as np
+                        _mi = next((a.GetIdx() for a in topo_mol.GetAtoms()
+                                    if a.GetSymbol() in _METAL_SET), None)
+                        _pos = {}
+                        for _i, _ln in enumerate(topo_xyz.strip().split("\n")):
+                            _p = _ln.split()
+                            if len(_p) >= 4:
+                                _pos[_i] = np.array([float(_p[1]), float(_p[2]), float(_p[3])])
+                        _mp = _pos.get(_mi)
+                        _cds = [nb.GetIdx() for nb in topo_mol.GetAtomWithIdx(_mi).GetNeighbors()
+                                if nb.GetSymbol() == "C"] if _mi is not None else []
+                        for _d in _cds:
+                            _dp = _pos.get(_d)
+                            if _mp is None or _dp is None:
+                                continue
+                            _mc = _mp - _dp; _mcn = float(np.linalg.norm(_mc))
+                            if _mcn < 1e-6:
+                                continue
+                            _mc /= _mcn
+                            for _nb in topo_mol.GetAtomWithIdx(_d).GetNeighbors():
+                                if _nb.GetAtomicNum() <= 1:
+                                    continue
+                                _xp = _pos.get(_nb.GetIdx())
+                                if _xp is None:
+                                    continue
+                                _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                                if 1.3 < _cxn < 1.9:
+                                    _ang = float(np.degrees(np.arccos(
+                                        max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                                    _trace_seating("EMIT_TOPO donor=%d M-C-Xheavy=%.0f disp=%s" % (
+                                        _d, _ang, str(display)[:18]))
+                    except Exception:
+                        pass
                 results.append((topo_xyz, display))
         except Exception as _topo_exc:
             logger.debug("Topological isomer generation failed: %s", _topo_exc)
@@ -31169,6 +32413,28 @@ def _smiles_to_xyz_isomers_impl(
         except Exception as _nm_pucker_exc:
             logger.debug("Non-metal ring-pucker pass skipped: %s", _nm_pucker_exc)
 
+    # --- Correct combinatorial ring-pucker construction (metal path) ----------
+    # Supersedes the two legacy pucker passes above with the Cremer-Pople +
+    # torsion-held-relax constructor, which reaches the higher ring basins ETKDG
+    # never samples AND runs the multi-ring product, for chelate rings (metal +
+    # donors frozen -> coordination preserved) and peripheral ligand rings.
+    # Additive; the final topology gate drops any that violate the graph.
+    if not DELFIN_TOPOLOGY_STRICT_MODE:
+        try:
+            _emit_ring_puckers_rp(mol, results, apply_uff, max_isomers)
+        except Exception as _rp_metal_exc:
+            logger.debug("RP ring-pucker pass skipped: %s", _rp_metal_exc)
+
+    # --- Additive d8-CN4 square-planar seating pass (eye-driven; DELFIN_D8_SP4_SEAT, default 0) ---
+    # d8 metals (Pt/Pd/Ni/Au/Rh/Ir) at CN4 are square-planar in the crystal; the chelate embed can
+    # leave them tetrahedral (whole manifold ALARM).  Appends a de-tilted SP-4 variant; the final
+    # topology gate below drops any that overlap -> strictly additive / never-worse.
+    if has_metal and not DELFIN_TOPOLOGY_STRICT_MODE:
+        try:
+            _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers)
+        except Exception as _d8_exc:
+            logger.debug("d8-SP4 seating pass skipped: %s", _d8_exc)
+
     # --- Final output gate: graph-based topology verification ---
     # Every output structure must preserve the bond topology from the
     # input SMILES.  Uses _verify_topology_from_graph which checks
@@ -31283,6 +32549,30 @@ def _smiles_to_xyz_isomers_impl(
                     return 0.0
 
             scored: List[Tuple[float, float, float, str, str]] = []
+            # d8 CN4 square-planar rank preference (env-gated, default-OFF =
+            # byte-identical).  ROOT of the SS-4->SP-4 poly_match cluster: the
+            # bucket sort below is keyed on the UFF energy bucket FIRST, and
+            # UFF favours tetrahedral for d8, so the tetrahedral ETKDG conformer
+            # out-ranks the (correct, already-built) square-planar placement —
+            # even though _geometry_quality_score / _preferred_cn4_geometry_score
+            # already prefer SP-4 for these metals (the preference just never
+            # dominates the energy bucket).  When enabled, for systems bearing a
+            # d8 CN4 centre (Ni/Pd/Pt/Au — exactly the metals the CN4 scorer
+            # biases toward square) the geometry+topology score becomes the
+            # PRIMARY key, so the correct polyhedron wins; energy stays the
+            # tie-break.  Reorders frames only (never drops) -> isomer-complete
+            # by construction; the isomers_lost floor guards regardless.  No new
+            # per-frame geometry work (reuses g) -> construction stays fast.
+            _d8cn4_square = False
+            if _delfin_env_int("DELFIN_FFFREE_D8_RANK_PREFER", 0):
+                try:
+                    for _a in mol.GetAtoms():
+                        if (_a.GetSymbol() in {'Ni', 'Pd', 'Pt', 'Au'}
+                                and _a.GetDegree() == 4):
+                            _d8cn4_square = True
+                            break
+                except Exception:
+                    _d8cn4_square = False
             for xyz, lbl in results:
                 try:
                     cstr = _build_coordination_constraints_from_xyz(mol, xyz)
@@ -31324,7 +32614,22 @@ def _smiles_to_xyz_isomers_impl(
                 if e_med <= _UFF_PLAUSIBLE_MAX:
                     natural_spread = max(e_med - e_min, 1.0)
                     cutoff = e_min + max(50.0 * natural_spread, 5000.0)
-                    scored = [t for t in scored if t[0] <= cutoff]
+                    # ADDITIVE-SAFE energy cut (DELFIN_FFFREE_CN6_OH_ADD; byte-identical when OFF).
+                    # The cut targets RUNAWAY UFF energies -- LARGE *FINITE* values thousands of kcal
+                    # above e_min.  A frame with e == inf is NOT a runaway: it is UFF-UNSCOREABLE (the
+                    # energy eval returned None, typical for an unparametrised metal centre like Mn),
+                    # and it already passed the graph-topology output gate above.  The `e_med <= 1e5`
+                    # guard was meant to SKIP the cut precisely when energies are unreliable, but an
+                    # ADDITIVE OC/SP-4 sibling (genuine low finite energy) can drag e_med below that
+                    # floor and so TURN THE CUT ON for a system where it was skipped, deleting valid
+                    # unscoreable isomer primaries (measured: VOYWUD all-trans + trans-OH, manifold
+                    # 72->44, isomers 6->5).  Keeping unscoreable frames makes the additive pass truly
+                    # additive (it can only ADD frames, never remove one) and lets the downstream
+                    # geometry/clean/coord-integrity gates -- not an unreliable UFF number -- decide.
+                    if _delfin_env_int("DELFIN_FFFREE_CN6_OH_ADD", 0):
+                        scored = [t for t in scored if (not math.isfinite(t[0])) or t[0] <= cutoff]
+                    else:
+                        scored = [t for t in scored if t[0] <= cutoff]
 
             # Energy-bucket sort — UFF absolute energies are not
             # trustworthy for metals without parameters
@@ -31343,6 +32648,9 @@ def _smiles_to_xyz_isomers_impl(
                 def _bucket_key(_t):
                     _e, _g, _tp, _x, _l = _t
                     _bucket = int((_e - e_min) / bucket_width)
+                    if _d8cn4_square:
+                        # Correct polyhedron (via g) dominates; energy tie-breaks.
+                        return (_g + _tp, _bucket, _e)
                     return (_bucket, _g + _tp, _e)
                 scored.sort(key=_bucket_key)
             if scored:
@@ -31495,7 +32803,7 @@ def _smiles_to_xyz_isomers_impl(
     # systems where rms = 0).
 
     # ── Iter-12/13 Baustein 3: post-ETKDG/UFF coord-angle correction ────────
-    # Per-conformer, opt-in via DELFIN_BAUSTEIN3=1.  No effect when disabled.
+    # Per-conformer, opt-in via DELFIN_FFFREE_COORD_ANGLE_FIX=1.  No effect when disabled.
     # Operates on already-finalised XYZs; rotates rigid X-side around the
     # axis perpendicular to (M, D, X) plane through D to bring observed
     # M-D-X angle to expected (sp/sp2/sp3 inferred geometrically).
@@ -31508,11 +32816,11 @@ def _smiles_to_xyz_isomers_impl(
     # deferring correction to the outer call (after union), all results pass
     # through one consistent correction step.
     #
-    # Iter-13: routed through ``_apply_baustein3_if_enabled`` so every
+    # Iter-13: routed through ``_apply_coord_angle_fix_if_enabled`` so every
     # scaffold-path return point shares the same gate (mono σ here, plus
     # mono hapto / multi-metal hapto / fallback above).
     if has_metal:
-        results = _apply_baustein3_if_enabled(mol, results, _dual_parse_done)
+        results = _apply_coord_angle_fix_if_enabled(mol, results, _dual_parse_done)
 
     # ── Welle-5j Agent A: Cp piano-stool hapticity refinement ──────────────
     # Welle-5i Agent C catalogued 28 / 34 (83 %) hapto BROKEN-TO-BROKEN
@@ -31578,6 +32886,9 @@ def _smiles_to_xyz_isomers_impl(
     results = _apply_fixer_sp2n_planarize_if_enabled(
         mol, results, _dual_parse_done,
     )
+    results = _apply_fixer_sp2c_planarize_if_enabled(
+        mol, results, _dual_parse_done,
+    )
     results = _apply_fixer_wuxqak_if_enabled(mol, results, _dual_parse_done)
     results = _apply_fixer_bridging_anion_if_enabled(
         mol, results, _dual_parse_done,
@@ -31615,6 +32926,18 @@ def _smiles_to_xyz_isomers_impl(
     # reduce rollback).  Fixes the ~79% hapto ligand-collapse (validated
     # -20.5pp).  Class-cond default-ON {hapto, multi_hapto}; runs LAST.
     results = _apply_bond_decollapse_if_enabled(mol, results, _dual_parse_done)
+
+    # ── Resonance-aware aromatic bond-length equalisation ───────────────────
+    # Runs AFTER bond-decollapse (whose single-bond-ideal spring would otherwise
+    # re-stretch equalised aromatic bonds): reshape every perceived aromatic ring
+    # system so each ring bond sits at its first-principles DELOCALISED target
+    # (Pyykko single<->double radius interpolation at the Huckel benzene fraction
+    # f=2/3 -> C-C 1.393, C-N 1.333 ...), equalising Kekule alternation and
+    # pulling single-drifted rings back to ~1.39.  In-plane PBD, metal-coordinated
+    # ring atoms anchored, substituents rigidly dragged (lengths only -- angles/
+    # planarity preserved); per-frame ring-bond-deviation never-worse rollback.
+    # Default-OFF byte-id (DELFIN_FFFREE_AROM_BOND_LENGTH).
+    results = _apply_arom_bond_length_if_enabled(mol, results, _dual_parse_done)
 
     # ── Iter-3 General-Isomer Enumerator (env-gated, default ON) ───────────
     # Restores the historical "Isomer 1, Isomer 2, ... Isomer N" emission
@@ -32171,6 +33494,19 @@ def _smiles_to_xyz_isomers_impl(
     except Exception:
         pass
 
+    # --- Stereocentre-fold completeness (env-flag gated, default OFF) --------
+    # Coordination-created X-H stereocentres (secondary amine [NH+] / P-H …) have an up/down
+    # N-H fold (R/S) that ETKDG only samples by accident -> the crystal's fold (USEMOW's
+    # alternating N1+N1-N1+N1-) is often MISSING even when the polyhedron + coordination
+    # isomers are perfect (eye: ccdc_isomer_realized=FALSE under DELFIN_EYE_NH_STEREO).  This
+    # pass ADDITIVELY appends every buildable fold -- both + and - at each such donor
+    # (completeness law) -- so the crystal's fold AND all other feasible folds enter the
+    # manifold.  Runs AFTER the final dedup so folds (heavy-atom-close to their base) are never
+    # collapsed, and BEFORE the rotamer/conformer expansions so each fold gets conformer
+    # diversity too.  Additive + deterministic -> never-worse by construction.  Bit-exact
+    # no-op when DELFIN_STEREOCENTER_ENUM=0 or no coordination-created X-H stereocentre exists.
+    results = _apply_stereocenter_enum_if_enabled(mol, results, _dual_parse_done)
+
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
     # For each emitted isomer, sample staggered rotamers around bulky single
     # bonds (tBu / PMe3 / iPr / NMe2 …) and append the top-K best-energy
@@ -32265,6 +33601,95 @@ def _smiles_to_xyz_isomers_impl(
                 )
     except Exception as _post_exc:
         logger.debug("Welle-5p-A post-emit gate failed: %s", _post_exc)
+
+    # --- Welle-5q: final all-class collapse-repair (env-flag gated, default OFF) ---
+    # A collapsed heavy-heavy pair (0.24-1.2 A: fused substituents / overlapping
+    # rings from a strained ETKDG embed) is a construction DEFECT in ANY class,
+    # not only hapto.  The early ``_apply_bond_decollapse_if_enabled`` pass is
+    # class-gated (default-ON {hapto, multi_hapto}) AND runs *before* the H-VSEPR /
+    # rotamer / xtb correctors, so a collapse left in a sigma-class core (e.g. an
+    # NHC-carbene benzimidazole ring, DUZFIQ) is never repaired.  The per-frame
+    # corrector freezes metals + the M-D sphere, spring-relaxes the non-metal
+    # heavy graph to physical bond lengths, and rolls back per frame unless the
+    # collapsed-bond count strictly drops with no M-D break and no vdw / h-planar /
+    # bond-distort regression -> byte-identical when no collapse is present.  Run
+    # once more here on the TRULY-FINAL geometry (after every upstream corrector),
+    # for ALL classes, so it is non-dormant and never-worse by construction.
+    # Default OFF: when DELFIN_FINAL_COLLAPSE_REPAIR=0 this is a byte-exact no-op.
+    try:
+        if results and _delfin_env_int("DELFIN_FINAL_COLLAPSE_REPAIR", 0) == 1:
+            from delfin.manta._bond_decollapse import correct_results as _fc_correct
+            results = _fc_correct(mol, results)
+    except Exception as _fc_exc:
+        logger.debug("Welle-5q final collapse-repair failed: %s", _fc_exc)
+
+    # --- Welle-5r: final VSEPR terminal-group repair (env-flag gated, default OFF) ---
+    # A rigid terminal EX3 group (CF3/CCl3/CBr3/CH3/SO3/...) has NO conformational
+    # freedom -- it is tetrahedral -- so any distortion is a construction defect,
+    # not a legitimate conformer.  The metal embed/seating sometimes splays one
+    # (LUXWIL CF3 F-C-F up to 157deg while the coordination sphere is fine).  This
+    # final pass rebuilds each distorted group's terminal atoms at their ideal
+    # VSEPR positions, anchored by the group's attachment bond so the rest of the
+    # molecule (and the coordination sphere) is untouched.  Pure geometry,
+    # license-clean, byte-identical when every terminal group is already ideal.
+    # Default OFF: when DELFIN_VSEPR_REPAIR=0 this is a byte-exact no-op.
+    try:
+        _vsepr_on = (_delfin_env_int("DELFIN_VSEPR_REPAIR", 0) == 1
+                     or _delfin_env_int("DELFIN_FFFREE_VSEPR_REPAIR", 0) == 1)
+        if results and _vsepr_on:
+            from delfin.manta._vsepr_repair import repair_terminal_groups as _vr
+            results = [(_vr(_rx), _rl) for _rx, _rl in results]
+    except Exception as _vr_exc:
+        logger.debug("Welle-5r VSEPR terminal-group repair failed: %s", _vr_exc)
+
+    if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+        # FINAL emit-level M-C-X over EVERY frame in results, measured DISTANCE-based like the eye
+        # (metal-bonded C donor; worst M-C-X over distance neighbours) -- reconciles eye-vs-trace + finds
+        # which emitted frame carries the linear geometry, regardless of which append path produced it.
+        try:
+            import numpy as np
+            _trace_seating("RESULTS_RETURN_REACHED n_frames=%d len_tup0=%d" % (
+                len(results), len(results[0]) if results else 0))
+            for _fi, _tup in enumerate(results):
+                _xyz = _tup[0]; _disp = _tup[1] if len(_tup) > 1 else ""
+                _syms = []; _P = []
+                for _ln in str(_xyz).strip().split("\n"):
+                    _p = _ln.split()
+                    if len(_p) >= 4:
+                        try:
+                            _c = [float(_p[1]), float(_p[2]), float(_p[3])]
+                        except Exception:
+                            continue          # skip count/comment header lines robustly
+                        _syms.append(_p[0]); _P.append(np.array(_c))
+                _mi = next((i for i, s in enumerate(_syms) if s in _METAL_SET), None)
+                if _mi is None:
+                    _trace_seating("RESULTS_RETURN frame=%d NO_METAL n_atoms=%d syms=%s" % (
+                        _fi, len(_syms), ",".join(sorted(set(_syms)))[:40]))
+                    continue
+                _mp = _P[_mi]
+                _cdist = sorted(round(float(np.linalg.norm(_P[_k] - _mp)), 2)
+                                for _k, _s in enumerate(_syms) if _s == "C")
+                _trace_seating("RESULTS_RETURN frame=%d metal=%s nC=%d minMC=%s" % (
+                    _fi, _syms[_mi], len(_cdist), (_cdist[0] if _cdist else "no_C")))
+                for _d, (_s, _dp) in enumerate(zip(_syms, _P)):
+                    _mcn = float(np.linalg.norm(_dp - _mp))
+                    if _s != "C" or _mcn > 2.8 or _mcn < 1e-6:   # eye uses M-C < 2.8
+                        continue
+                    _mc = (_mp - _dp) / _mcn
+                    _worst = None
+                    for _j, (_sj, _xp) in enumerate(zip(_syms, _P)):
+                        if _j == _d or _sj == "H":
+                            continue
+                        _cx = _xp - _dp; _cxn = float(np.linalg.norm(_cx))
+                        if 1.3 < _cxn < 2.0:
+                            _ang = float(np.degrees(np.arccos(
+                                max(-1.0, min(1.0, float(np.dot(_mc, _cx / _cxn)))))))
+                            if _worst is None or _ang > _worst:
+                                _worst = _ang
+                    _trace_seating("RESULTS_RETURN frame=%d Cdonor=%d M-C=%.2f worst_M-C-X=%s" % (
+                        _fi, _d, _mcn, ("%.0f" % _worst) if _worst is not None else "no_heavy_nbr<2.0"))
+        except Exception as _rre:
+            _trace_seating("RESULTS_RETURN_ERR %s: %s" % (type(_rre).__name__, str(_rre)[:80]))
 
     return results, None
 
@@ -32409,6 +33834,38 @@ def _try_ensemble_router(smiles: str) -> Optional[Tuple[Optional[str], Optional[
     except Exception as exc:
         logger.debug("ensemble_router skipped due to exception: %s", exc)
         return None  # fall through
+
+
+def _uff_seat_aromatic_bonds(mol, max_iters: int = 200,
+                             force_constant: float = 1.0e4) -> None:
+    """UFF-minimise ``mol`` with every AROMATIC ring bond harmonically pinned to
+    its delocalised CCDC target length (DELFIN_FFFREE_AROM_SEAT root seat).
+
+    This is the metal-FREE lever: metal-free molecules return from the isomer
+    pool before the post-hoc aromatic corrector ever runs, so the only place a
+    free organic aromatic ring can be seated at its delocalised length is the UFF
+    starting-structure minimisation.  A strong distance constraint holds each
+    aromatic bond at its target while UFF relaxes the ring angles and the
+    substituents coherently (so junction angles co-adapt rather than the ring
+    staying at the covalent-sum length).  Falls back to a plain UFF minimisation
+    when the force field cannot be built.  Mutates ``mol``'s conformer in place,
+    exactly like ``AllChem.UFFOptimizeMolecule``."""
+    from delfin.fffree.aromatic_bond_targets import aromatic_target
+    ff = AllChem.UFFGetMoleculeForceField(mol)
+    if ff is None:                                   # unparametrised → plain UFF
+        AllChem.UFFOptimizeMolecule(mol, maxIters=max_iters)
+        return
+    for bond in mol.GetBonds():
+        if not bond.GetIsAromatic():
+            continue
+        a = bond.GetBeginAtom()
+        b = bond.GetEndAtom()
+        tgt = aromatic_target(a.GetSymbol(), b.GetSymbol())
+        if tgt is None:                              # untabulated pair → leave to UFF
+            continue
+        ff.AddDistanceConstraint(a.GetIdx(), b.GetIdx(), tgt, tgt, force_constant)
+    ff.Initialize()
+    ff.Minimize(maxIts=max_iters)
 
 
 def smiles_to_xyz(
@@ -33120,7 +34577,24 @@ def smiles_to_xyz(
                     # Run with timeout to avoid hanging on single seed
                     _multi_ids = [None]
                     def _do_multi(m=mol, n=per_seed, p=params_multi):
-                        _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
+                        try:
+                            _multi_ids[0] = list(AllChem.EmbedMultipleConfs(m, numConfs=n, params=p))
+                        except Exception:
+                            # Kekulize / embed failure on a charged aromatic metal
+                            # complex (Zn/Cu/Co-porphyrin, salen: RDKit "Can't
+                            # kekulize") -> embed on a DE-AROMATISED copy (same atom
+                            # order) and transfer the coordinates back, so the
+                            # metallo-macrocycle still builds instead of dropping.
+                            try:
+                                _dc = _dearomatized_embedding_copy(m)
+                                if _dc is not None:
+                                    _kids = list(AllChem.EmbedMultipleConfs(_dc, numConfs=n, params=p))
+                                    _multi_ids[0] = [
+                                        m.AddConformer(Chem.Conformer(_dc.GetConformer(int(_c))), assignId=True)
+                                        for _c in _kids
+                                    ]
+                            except Exception:
+                                _multi_ids[0] = None
                     _mt = threading.Thread(target=_do_multi, daemon=True)
                     _mt.start()
                     _mt.join(timeout=None if _det_multi else _EMBED_TIMEOUT)
@@ -33226,11 +34700,22 @@ def smiles_to_xyz(
 
         # Optional UFF refinement for better starting structures
         if apply_uff and not has_metal:
-            try:
-                AllChem.UFFOptimizeMolecule(mol, maxIters=200)
-                logger.debug("RDKit UFF optimization successful")
-            except Exception as e:
-                logger.info(f"RDKit UFF optimization skipped: {e}")
+            if os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1":
+                # ROOT seat (metal-free path): constrain aromatic ring bonds to
+                # their delocalised CCDC targets during the UFF minimisation so
+                # free organic aromatics are BUILT at the right length.  Default
+                # OFF → the else-branch below is the unchanged original path.
+                try:
+                    _uff_seat_aromatic_bonds(mol, max_iters=200)
+                    logger.debug("RDKit UFF (aromatic-seat) optimization successful")
+                except Exception as e:
+                    logger.info(f"RDKit UFF (aromatic-seat) optimization skipped: {e}")
+            else:
+                try:
+                    AllChem.UFFOptimizeMolecule(mol, maxIters=200)
+                    logger.debug("RDKit UFF optimization successful")
+                except Exception as e:
+                    logger.info(f"RDKit UFF optimization skipped: {e}")
 
         # Convert to XYZ format
         xyz_content = _mol_to_xyz(mol)
@@ -33931,8 +35416,30 @@ def _detect_chelate_donors(mol, metal_idx: int, donor_indices: List[int]) -> set
 def _build_coordination_constraints_from_xyz(
     mol_template,
     xyz_delfin: str,
+    d8_trans=None,
+    suppress_d8_sq: bool = False,
+    force_d8_sq: bool = False,
+    suppress_cn6_oh: bool = False,
+    force_cn6_oh: bool = False,
 ) -> Optional[Dict]:
     """Auto-detect metal coordination from template graph and pin it during UFF.
+
+    ``d8_trans`` (optional): the EXACT per-isomer trans donor-atom-index pairs
+    from the topology enumerator (perm + _TOPO_TRANS_POSITIONS['SQ']).  When
+    given and DELFIN_FFFREE_D8_SQ_ISO is on, the d8 square is imposed on THESE
+    pairs (authoritative — no geometric guessing), which rescues strained
+    macrocyclic frames the geometry alone cannot and cannot collapse isomers.
+    Default None -> geometry fallback (byte-identical when the flag is off).
+
+    ``suppress_d8_sq`` (default False): force the d8 SP-4 imposition OFF for this
+    call even when DELFIN_FFFREE_D8_SQ_ISO is on.
+
+    ``force_d8_sq`` (default False): impose the d8 SP-4 square for THIS call even when
+    DELFIN_FFFREE_D8_SQ_ISO is off.  Used by the ADDITIVE d8 pass (DELFIN_FFFREE_D8_SQ_ADD)
+    so the whole feature is ONE self-contained axis: the primary frame is the normal
+    (tetrahedral) build and the SP-4 frame is added as a PURELY ADDITIVE sibling.  A bulky
+    ligand that clashes under SP-4 keeps its valid tetrahedral primary (never a regression);
+    a d8-no-valid system gains its valid SP-4 frame.  suppress overrides force.
 
     Unlike ``_build_coordination_uff_constraints`` (which needs explicit
     perm/geometry arguments from the topology enumerator), this function
@@ -34058,9 +35565,199 @@ def _build_coordination_constraints_from_xyz(
             _uff_relax_donors = bool(
                 _delfin_env_int("DELFIN_UFF_RELAX_DONORS", 0)
             )
+            # d8 SQUARE-PLANAR angle targets (env-gated DELFIN_FFFREE_D8_SQ_ANGLES): this function
+            # leaves L-M-L angles FREE, and UFF's default for CN4 is tetrahedral -> a d8 CN4
+            # (Pd/Pt/Ni/Au/Rh/Ir) built by ETKDG comes out tetrahedral/seesaw.  Give UFF explicit
+            # 90/180 angle targets so it optimises toward SQUARE-planar, and do NOT freeze the donors
+            # (below) so UFF can move them there.  This works WITH UFF -- it arranges bulky ligands
+            # (no rigid-placement clash) and relaxes chelate backbones (handles the chelate majority
+            # the geometric flatten could not).  Default OFF -> byte-identical.
+            _d8_sq_angles = (os.environ.get("DELFIN_FFFREE_D8_SQ_ANGLES", "0") == "1"
+                             and m_sym in _D8_SQ_METALS and len(donor_indices) == 4)
+            if _d8_sq_angles:
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dv = {di: _np.array(coords[di], dtype=float) - _mp for di in donor_indices}
+                    _dn = {di: (_dv[di] / (float(_np.linalg.norm(_dv[di])) + 1e-12)) for di in donor_indices}
+                    _rem = list(donor_indices)
+                    _trans_set = set()
+                    while len(_rem) >= 2:                    # pair each donor with its most-opposite
+                        a = _rem[0]
+                        b = min(_rem[1:], key=lambda x: float(_np.dot(_dn[a], _dn[x])))
+                        base["angles"].append((a, m_idx, b, 180.0))
+                        _trans_set.add((a, b)); _trans_set.add((b, a))
+                        _rem.remove(a); _rem.remove(b)
+                    for _ii in range(len(donor_indices)):    # all remaining pairs are cis = 90
+                        for _jj in range(_ii + 1, len(donor_indices)):
+                            _a, _b = donor_indices[_ii], donor_indices[_jj]
+                            if (_a, _b) not in _trans_set:
+                                base["angles"].append((_a, m_idx, _b, 90.0))
+                except Exception:
+                    _d8_sq_angles = False
+            # d8 SQUARE-PLANAR, PERM path (env-gated DELFIN_FFFREE_D8_SQ_ISO): when the topology
+            # enumerator handed us the EXACT per-isomer trans pairs (perm + _TOPO_TRANS_POSITIONS['SQ']),
+            # impose the square on THOSE pairs -- authoritative, no geometric guessing.  This rescues the
+            # strained macrocyclic frames whose geometry alone is too ambiguous, and cannot collapse
+            # isomers (each isomer's OWN trans is imposed).  Sets _d8_sq_angles so the geometry fallback
+            # below is skipped (its `not _d8_sq_angles` guard).
+            if (not _d8_sq_angles and d8_trans and not suppress_d8_sq
+                    and (os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1" or force_d8_sq)
+                    and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
+                try:
+                    _dset = set(donor_indices)
+                    _pt = [(int(_a), int(_b)) for (_a, _b) in d8_trans
+                           if int(_a) in _dset and int(_b) in _dset]
+                    _flat = [_x for _pr in _pt for _x in _pr]
+                    if len(_pt) == 2 and len(set(_flat)) == 4:
+                        _trans_set = set()
+                        for (_a, _b) in _pt:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(4):
+                            for _jj in range(_ii + 1, 4):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True
+                except Exception:
+                    pass
+            # d8 SQUARE-PLANAR, ISOMER-PRESERVING (env-gated DELFIN_FFFREE_D8_SQ_ISO, default-OFF).
+            # ROOT fix for the D8_SQ_ANGLES isomer collapse: the plain pass pairs donors by geometric
+            # most-opposite, which on an AMBIGUOUS tetrahedral ETKDG frame guesses an arbitrary trans and
+            # forces cis and trans isomers into the SAME square (FONKOL/WIRFUA 2->1).  Instead: only impose
+            # the square when the frame ALREADY shows a CLEAR trans pair (largest L-M-L angle > 135 deg).
+            # That clear pair reflects the ISOMER's own arrangement (topology-builder SP-4 / seesaw carries
+            # it), so reinforcing it -- plus the second trans pair by elimination -- preserves cis vs trans
+            # and flattens seesaw -> square, WITHOUT guessing.  A purely tetrahedral frame (no angle > 135)
+            # is left untouched (it is a conformer, not a distinct isomer) so nothing collapses.
+            if (not _d8_sq_angles and not suppress_d8_sq
+                    and (os.environ.get("DELFIN_FFFREE_D8_SQ_ISO", "0") == "1" or force_d8_sq)
+                    and m_sym in _D8_SQ_ISO_METALS and len(donor_indices) == 4):
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dn = {}
+                    for _di in donor_indices:
+                        _v = _np.array(coords[_di], dtype=float) - _mp
+                        _dn[_di] = _v / (float(_np.linalg.norm(_v)) + 1e-12)
+                    def _ang(_a, _b):
+                        _c = max(-1.0, min(1.0, float(_np.dot(_dn[_a], _dn[_b]))))
+                        return math.degrees(math.acos(_c))
+                    _d = list(donor_indices)
+                    # Global 3-way matching: the ONLY 3 ways to split 4 donors into 2 trans
+                    # pairs.  Pick the partition that best fits a square (2 trans ~180, 4 cis
+                    # ~90).  This reads the ISOMER's arrangement from the WHOLE frame geometry
+                    # (robust) instead of one greedy most-opposite pair (which collapsed cis/
+                    # trans) or a single >135 deg pair (which missed strained macrocycles).
+                    _parts = [((_d[0], _d[1]), (_d[2], _d[3])),
+                              ((_d[0], _d[2]), (_d[1], _d[3])),
+                              ((_d[0], _d[3]), (_d[1], _d[2]))]
+                    _cand = []
+                    for _p in _parts:
+                        (_a, _b), (_c, _e) = _p
+                        _t1, _t2 = _ang(_a, _b), _ang(_c, _e)
+                        _cr = (_ang(_a, _c), _ang(_a, _e), _ang(_b, _c), _ang(_b, _e))
+                        _dev = abs(180 - _t1) + abs(180 - _t2) + sum(abs(90 - _x) for _x in _cr)
+                        _cand.append((_dev, min(_t1, _t2), _p))
+                    _cand.sort(key=lambda t: t[0])
+                    _best_dev, _min_trans, _bestp = _cand[0]
+                    _runner_dev = _cand[1][0]
+                    # Impose the square ONLY when this partition is CLEARLY a square: both its
+                    # trans angles are open (>120 deg) AND it clearly beats the runner-up
+                    # (margin >30 deg-sum).  A truly tetrahedral frame has no clear winner
+                    # (small margin) -> left untouched (it is a conformer, not a distinct
+                    # isomer), so nothing collapses.  A strained-but-square macrocycle frame
+                    # DOES have a clear winner even at 120-135 deg -> rescued.
+                    if _min_trans > 120.0 and (_runner_dev - _best_dev) > 30.0:
+                        (_a, _b), (_c, _e) = _bestp
+                        base["angles"].append((_a, m_idx, _b, 180.0))
+                        base["angles"].append((_c, m_idx, _e, 180.0))
+                        _trans_set = {(_a, _b), (_b, _a), (_c, _e), (_e, _c)}
+                        for _ii in range(4):
+                            for _jj in range(_ii + 1, 4):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True           # reuse the donor-free UFF path below (no freeze)
+                except Exception:
+                    pass
+            # CN6 OCTAHEDRAL, PERM path (env-gated DELFIN_FFFREE_CN6_OH_ANGLES): the enumerator's EXACT
+            # per-isomer trans pairs (perm + _TOPO_TRANS_POSITIONS['OH'], threaded in via d8_trans) impose
+            # the octahedron on THIS isomer's own 3 trans axes -- no guessing -> preserves fac/mer/cis/trans
+            # (fixes the isomer collapse the greedy fallback caused).  Sets _d8_sq_angles so the greedy
+            # geometry fallback below is skipped.
+            if (not _d8_sq_angles and d8_trans and not suppress_cn6_oh
+                    and (os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1" or force_cn6_oh)
+                    and len(donor_indices) == 6
+                    and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
+                try:
+                    _ds6 = set(donor_indices)
+                    _cand6 = [(int(_a), int(_b)) for (_a, _b) in d8_trans
+                              if int(_a) in _ds6 and int(_b) in _ds6]
+                    _fl6 = [_x for _pr in _cand6 for _x in _pr]
+                    if len(_cand6) == 3 and len(set(_fl6)) == 6:
+                        _trans_set = set()
+                        for (_a, _b) in _cand6:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(6):
+                            for _jj in range(_ii + 1, 6):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True
+                except Exception:
+                    pass
+            # CN6 OCTAHEDRAL angle targets (env-gated DELFIN_FFFREE_CN6_OH_ANGLES, default-OFF).
+            # Analogue of the d8 CN4 SP-4 pass for CN6: ETKDG/UFF can leave an OH-preferring CN6 metal
+            # (Mo/W/Re/Ru/... -> _PREFERRED_CN6_GEOMETRY 'OH') as a TRIGONAL PRISM (whole-space measurement:
+            # 30 systems TPR-6 built, OC-6 in the crystal -- the biggest single poly_match defect, and
+            # UNLIKE d8 the frames are already VALID/topo-correct, just the wrong twist).  Give UFF octahedral
+            # 90/180 targets so it relaxes the twist TPR -> OC.  Isomer-safe: the 3 trans pairs are taken
+            # from THIS frame's own most-opposite donors (preserves fac/mer -- it's a twist correction, not
+            # a donor-arrangement change), and only imposed when all 3 are clearly trans (>120 deg; a valid
+            # TPR/OC frame sits at ~140-180, an ambiguous one does not -> skipped, nothing collapses).
+            if (not _d8_sq_angles and not suppress_cn6_oh
+                    and (os.environ.get("DELFIN_FFFREE_CN6_OH_ANGLES", "0") == "1" or force_cn6_oh)
+                    and len(donor_indices) == 6
+                    and _PREFERRED_CN6_GEOMETRY.get(m_sym, 'OH') == 'OH'):
+                try:
+                    import numpy as _np
+                    _mp = _np.array(coords[m_idx], dtype=float)
+                    _dn = {}
+                    for _di in donor_indices:
+                        _v = _np.array(coords[_di], dtype=float) - _mp
+                        _dn[_di] = _v / (float(_np.linalg.norm(_v)) + 1e-12)
+                    _rem = list(donor_indices)
+                    _tp6 = []
+                    _min_t6 = 999.0
+                    while len(_rem) >= 2:               # greedy: pair each donor with its most-opposite
+                        _a = _rem[0]
+                        _b = min(_rem[1:], key=lambda x: float(_np.dot(_dn[_a], _dn[x])))
+                        _cc = max(-1.0, min(1.0, float(_np.dot(_dn[_a], _dn[_b]))))
+                        _min_t6 = min(_min_t6, math.degrees(math.acos(_cc)))
+                        _tp6.append((_a, _b))
+                        _rem.remove(_a); _rem.remove(_b)
+                    if len(_tp6) == 3 and _min_t6 > 120.0:
+                        _trans_set = set()
+                        for (_a, _b) in _tp6:
+                            base["angles"].append((_a, m_idx, _b, 180.0))
+                            _trans_set |= {(_a, _b), (_b, _a)}
+                        for _ii in range(6):
+                            for _jj in range(_ii + 1, 6):
+                                _x, _y = donor_indices[_ii], donor_indices[_jj]
+                                if (_x, _y) not in _trans_set:
+                                    base["angles"].append((_x, m_idx, _y, 90.0))
+                        _d8_sq_angles = True           # reuse the donor-free UFF path below (no freeze)
+                except Exception:
+                    pass
             for d_idx in donor_indices:
                 if d_idx in chelate_donors:
                     continue
+                if _d8_sq_angles:
+                    continue                                 # let UFF move donors to the square
+
                 # Baustein-5+6 Phase 3: record monodentate M-D pair (used by
                 # opt-in soft-donor UFF mode downstream).
                 _soft_meta["donor_indices"].append(d_idx)
@@ -34071,6 +35768,20 @@ def _build_coordination_constraints_from_xyz(
                     continue
                 if d_idx not in base["fix_atoms"]:
                     base["fix_atoms"].append(d_idx)
+                # sp3-C tetrahedral seating companion (DELFIN_FFFREE_SP3C_TET_SEAT): the seating now
+                # places an sp3-C donor's substituents tetrahedrally (M-C-X ~109), but UFF with the donor
+                # C frozen and its heavy substituent FREE swings that substituent back to linear (there is
+                # no M-C-X angle term for the unparameterised metal).  Confirmed via DELFIN_TRACE_SEATING:
+                # placement + orient give M-C-X 106, UFF then emits 178.  Freeze the sp3-C's heavy
+                # first-shell substituent(s) too so the tetrahedral M-C-X survives UFF.  Byte-identical off.
+                _dca = mol_template.GetAtomWithIdx(d_idx)
+                if (os.environ.get("DELFIN_FFFREE_SP3C_TET_SEAT", "0") == "1"
+                        and _dca.GetSymbol() == "C" and not _dca.GetIsAromatic()
+                        and not _dca.IsInRing()):        # PENDANT sp3 alkyl donor only
+                    for _nb in _dca.GetNeighbors():
+                        if (_nb.GetAtomicNum() > 1 and _nb.GetIdx() != m_idx
+                                and _nb.GetIdx() not in base["fix_atoms"]):
+                            base["fix_atoms"].append(_nb.GetIdx())
 
         # Hapto protection: fix hapto metal atoms + all Cp ring atoms
         # during UFF. Without metal FF parameters, UFF treats the metal
@@ -35266,6 +36977,16 @@ def _optimize_xyz_openbabel_safe(
     ``mol_template`` is available, mild OCO/aromatic planarity constraints
     are passed to OB-UFF.
     """
+    # d8 SQUARE-PLANAR seating (root fix): a d8 CN4 centre (Pd/Pt/Ni/Au/Rh/Ir) built by ETKDG comes
+    # out TETRAHEDRAL (UFF's default for CN4 has no square-planar knowledge).  Rearrange the 4
+    # monodentate donors to square-planar HERE -- BEFORE the constraint build below freezes the
+    # monodentate donors at their positions -- so the freeze locks in the SQUARE and UFF preserves it.
+    # (A post-UFF rearrange is undone: the freeze has already pinned the tetrahedron.)  Env-gated,
+    # default OFF -> byte-identical; chelate d8 centres are skipped (backbone-coupling guard inside).
+    if (mol_template is not None and RDKIT_AVAILABLE
+            and os.environ.get("DELFIN_FFFREE_D8_SQ_FLATTEN", "0") == "1"):
+        xyz_delfin = _flatten_d8_sq_planar_xyz(xyz_delfin, mol_template)
+
     constraints = coord_constraints
     if constraints is None and mol_template is not None:
         # Universal principle: EVERY UFF call on a metal complex gets
@@ -35303,6 +37024,14 @@ def _optimize_xyz_openbabel_safe(
     # atoms (e.g. the fused-bicycle C in triazolothiadiazine ligands).
     if mol_template is not None and RDKIT_AVAILABLE:
         xyz_opt = _flatten_sp2_atoms_xyz(xyz_opt, mol_template)
+
+    # POST-UFF metalloid M-D clamp (root fix): OB-UFF collapses soft, unparameterised M-metalloid
+    # bonds (Sb/As/Bi/Te/Se/Ge/Sn/Pb) -- QIGFOF Ag-Sb -> 2.01 A vs ideal 2.65.  Re-snap them to ideal
+    # here, BEFORE the connectivity/quality checks below so those judge the corrected geometry.
+    # Env-gated, default OFF -> byte-identical.  N/O/P/S bonds (UFF handles them) are untouched.
+    if (mol_template is not None and RDKIT_AVAILABLE
+            and os.environ.get("DELFIN_FFFREE_METALLOID_MD_CLAMP", "0") == "1"):
+        xyz_opt = _clamp_metalloid_md_xyz(xyz_opt, mol_template)
 
     # Fundamental check: UFF must not change the metal-donor connectivity.
     # If a donor drifted away or a non-donor collapsed onto the metal,

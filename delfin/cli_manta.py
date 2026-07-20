@@ -40,10 +40,80 @@ _ALL_ISOMERS = 100_000
 # git history + remain individually env-gated (DELFIN_FFFREE_<flag>). Spot-verified: KITNEJ/QIDGEP/
 # VULMOE (50-junk topo-wrong manifolds under the old stack) now build the crystal topology.
 _CHAMPION_FLAGS = (
+    "DET_CLASSIFY",       # DETERMINISM: classify conformers without sharing one RDKit mol across
+                          # threads (its ring/property caches init lazily and are not thread-safe, so
+                          # the SCORES raced -> another conformer won its fingerprint -> same label,
+                          # different geometry; and the FILTERS raced -> a different frame COUNT).
+                          # landed 2026-07-10, whole-pool byte-determinism, full-fidelity, all pillars:
+                          #   main            108 systems, byte_identical 101, nondeterministic 7
+                          #   main+DET_CLASSIFY                        108,                    0
+                          # capability never-worse: valid 85->85, cap_LOST=0, build_lost=0, rt 0 lost
     "AROM_PLANARIZE", "ARYL_RING_SIZE", "DIATOMIC_ORIENT", "HAPTO_AXIS_ROT",
     "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
+    "METALLOID_MD_LEN",   # correct M-metalloid bond length (no row-offset overshoot); landed 2026-07-09:
+                          # heavy_donor cap-never-worse (+8 valid frames, 0 lost), byte-id off metalloids
+    "JOINT_DECLASH", "DECLASH_METALLOID_LIGAND",  # general inter-ligand azimuthal declash (hard M-D
+                          # invariant + rollback) + metalloid-ligand awareness; landed 2026-07-09:
+                          # full:120 whole-space cap-never-worse, +3 valid frames, mean -0.3
+    "SP3C_TET_SEAT",      # tetrahedral seating of PENDANT sp3-alkyl C donors (M-C-X ~114 deg, not 180);
+                          # landed 2026-07-09: class:sigma_coord:100 cap-never-worse (n=94, 0 lost,
+                          # mean -2.009) + full:120 whole-space (n=105, 0 lost, +1 perfect manifold).
+                          # Scoped by element+graph only: not aromatic, not in-ring (sp2 carbene/aryl
+                          # have no vacant tetrahedral slot; ring C orientation is fixed by the scaffold)
     "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
     "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
+    "METALLOID_MD_CLAMP", # post-UFF re-snap of M-metalloid bonds (Sb/As/Bi/Te/Se/Ge/Sn/Pb) to ideal;
+                          # OB-UFF has no params for these soft donors and collapses them (QIGFOF Ag-Sb
+                          # 2.01 vs 2.65).  Completes METALLOID_MD_LEN (which sets the target; this holds
+                          # it through UFF).  landed 2026-07-11 under the NOISE-BAND gate: champion+CLAMP
+                          # vs champion never-worse BOTH directions, mean -0.204, 0 regressions, whole-
+                          # pool byte-determinism 109/109 (TOCSAI needed per_timeout 1800, then identical)
+    "STEREOCENTER_ENUM",  # #18: coordination-created STEREOCENTRE completeness -- additively builds every
+                          # buildable +/- fold of a pnictogen (N/P/As/Sb/Bi) X-H or X-R stereocentre (the
+                          # metal locks the pyramidal inversion), so the crystal's N-H fold is no longer
+                          # missing.  Eye: ccdc_isomer_realized false->true (USEMOW [..N+N-N+N-], OFAJOV).
+                          # landed 2026-07-14, complete eye+battery gate (NO mogul, per user), full:120
+                          # never-worse: cap/build/poly/isomers/roundtrip/realism/battery/good_regr ALL 0,
+                          # 0 ccdc-breaks, mean_delta ~0, whole-pool byte-determinism 108/108 (TOCSAI a
+                          # no-op timeout).  Additive+deterministic; scoped to group-15 (O/C are NOT stable
+                          # centres and broke the ccdc floor when included -> restricted).  Impl:
+                          # delfin/manta/_stereocenter_enum.py; env DELFIN_(FFFREE_)STEREOCENTER_ENUM.
+    "D8_SQ_ADD",          # #19: ADDITIVE d8 CN4 square-planar completeness.  A UFF-SP-4 octahedron... no:
+                          # a UFF SQUARE frame is added as a PURELY ADDITIVE sibling (force_d8_sq) next to
+                          # the normal build; the PRIMARY frame is untouched, so a bulky ligand keeps its
+                          # valid tetrahedral primary (NO broken_regressed -- the earlier REPLACE-the-frame
+                          # SP-4 cost HAKQES a frame) while a d8-no-valid system GAINS its valid SP-4 frame.
+                          # landed 2026-07-14, full:120 never-worse: cap_LOST=0, good_regressions=0,
+                          # broken_regressed=0, no ccdc_isomer_lost / poly_cshm_regressed, mean_delta -0.116
+                          # (slightly BETTER); rescues the d8-no-valid tail (+2 on pool_d8novalid,
+                          # ITANUN/XETKAI 0->topo).  Byte-deterministic (29/29).  Only blockers were the
+                          # TOCSAI build-TIMEOUT (additive is a bit slower -> raise per-timeout) and an
+                          # axis-record artefact.  Env DELFIN_FFFREE_D8_SQ_ADD; impl smiles_converter batch
+                          # loop.  CN4 SQ has ONE polyhedron so no OC/TPR isomer ambiguity (unlike CN6).
+    "CN6_OH_ADD",         # #20: ADDITIVE CN6 octahedron completeness -- adds the OC-6 octahedron isomer as a
+                          # PURELY ADDITIVE sibling for CN6 systems missing it (AVEDOW iso_theory=2: coverage
+                          # 50%->100%, builds the theory-expected 2nd isomer).  landed 2026-07-16, smart-1000
+                          # (full:1000 --ab): 243 affected + 728 byte-identical, cap_LOST=0, cap_gained=4
+                          # (ALUDAO/APIKER/QUHWAT/TADYIJ), good_regressions=0, poly_lost=0, ccdc_isomer_lost=0,
+                          # mean_delta -0.402 (BETTER); never_worse_ok=False ONLY because REALISM+RT not
+                          # measured (--no-mogul), topology_floor=True.  ENABLED BY two two-sided-verified
+                          # eye/gate sharpenings the user's per-frame push surfaced (agent_workspace): (1) the
+                          # polyhedron floor now reads the BEST (min CShM to crystal shape) over ANY realistic
+                          # frame, not the single min-RMSD best_valid frame -- RMSD-selection had hijacked
+                          # AVEDOW/MOYDOV onto the added-isomer sibling -> false poly_lost on a completeness
+                          # WIN; firing-side kept (16 systems still poly_cshm>2, max 33).  (2) ccdc_isomer_lost
+                          # valid-baseline-scoped like ccdc_pucker_lost (SUPTON: NO valid frame either way ->
+                          # its 'realisation' was on a broken frame; firing-side kept -- FONKOL still fires).
+                          # Env DELFIN_FFFREE_CN6_OH_ADD; impl smiles_converter energy-outlier-cut root (keep
+                          # inf-energy topo-valid isomer primaries; VOYWUD 6->5->6).
+    "AROM_SEAT",          # #21: construction-time FREE-aromatic bond-length seat toward the CCDC delocalised
+                          # targets (C-C 1.387 / C-N 1.349 / C-O 1.369 / C-S 1.732 / N-N 1.364 = the eye's
+                          # org_prior "ar" mu).  refine() aromatic-aware (coordinated ring SYSTEMS EXCLUDED ->
+                          # coordination byte-identical, never-worse by construction) + UFF AddDistanceConstraint
+                          # on the metal-free path + bond_decollapse target.  landed 2026-07-17 (night):
+                          # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
+                          # never-worse (n=3, within band).  Reach = FREE aromatics only; coordinated aromatics
+                          # deferred to embed-time seating (AROM_EMBED_SEAT, separate).  Env DELFIN_FFFREE_AROM_SEAT.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 

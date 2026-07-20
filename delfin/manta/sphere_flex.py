@@ -36,6 +36,23 @@ import numpy as np
 import delfin.manta._bond_decollapse as _bd
 from delfin.manta.refine import _vdw
 
+# --- Metalloid-donor awareness (env-gated, default OFF) ----------------------
+# _bond_decollapse._METALS mis-classifies Sb/Sn/Pb/Ge/Bi as METALS; with
+# DELFIN_FFFREE_DECLASH_METALLOID_LIGAND=1 a metalloid sigma-donor counts as a
+# LIGAND atom here so a bulky metalloid ligand is seen by this pass.  Default OFF
+# -> _is_center == _bd._is_metal (byte-identical).  See joint_declash for detail.
+try:
+    from delfin.manta.decompose import _METALLOID_DONORS as _MLD
+except Exception:  # pragma: no cover - defensive
+    _MLD = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"})
+
+
+def _is_center(sym: str) -> bool:
+    if sym in _MLD and os.environ.get("DELFIN_FFFREE_DECLASH_METALLOID_LIGAND", "0") == "1":
+        return False
+    return _bd._is_metal(sym)
+
+
 # inter-ligand heavy-heavy clash factor.  The license-free detector flags only
 # < 0.65*vdwsum, but REAL CSD crystals keep inter-ligand contacts >= ~0.85*vdwsum
 # (the 0.65 gate is deliberately permissive to keep FP=0).  Visual "clashes" the eye
@@ -83,7 +100,7 @@ def _ligand_of_atom(syms: Sequence[str], P: np.ndarray,
         adj = [[] for _ in range(n)]
         for i, j in b:
             adj[i].append(j); adj[j].append(i)
-    metals = {i for i in range(n) if _bd._is_metal(syms[i])}
+    metals = {i for i in range(n) if _is_center(syms[i])}
     lig = np.full(n, -1, dtype=int)
     cur = 0
     for start in range(n):
@@ -105,7 +122,7 @@ def _inter_heavy_pairs(syms: Sequence[str], lig: np.ndarray) -> np.ndarray:
     metal, different ligand)."""
     n = len(syms)
     heavy = [i for i in range(n)
-             if syms[i] != "H" and not _bd._is_metal(syms[i]) and lig[i] >= 0]
+             if syms[i] != "H" and not _is_center(syms[i]) and lig[i] >= 0]
     pairs = []
     for a in range(len(heavy)):
         for b in range(a + 1, len(heavy)):
@@ -169,7 +186,7 @@ def sphere_flex(syms: Sequence[str], P, fixed: Iterable[int],
     if n < 3 or P.shape != (n, 3) or not np.all(np.isfinite(P)):
         return P
     fixed = set(int(x) for x in fixed)
-    metals = [i for i in range(n) if _bd._is_metal(syms[i])]
+    metals = [i for i in range(n) if _is_center(syms[i])]
     if len(metals) != 1:
         return P
     m = metals[0]
