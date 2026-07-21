@@ -279,12 +279,14 @@ def _smiles_to_architector_input(smiles):
 # 2026-07-04 DE-BLOAT (mirrors cli_manta._CHAMPION_FLAGS — CLI + Submit tab ship the identical config;
 # see cli_manta for the forensic result: old 29-flag stack 13.7% vs de-bloated 28.6% topology, 2.1x,
 # never-worse in every donor class). KAPPA4 folded into the tuple; CONF_ENERGY_RANK removed (net-neg).
-_MANTA_CHAMPION_FLAGS = (
-    "AROM_PLANARIZE", "ARYL_RING_SIZE", "DIATOMIC_ORIENT", "HAPTO_AXIS_ROT",
-    "HAPTO_HALFSANDWICH_GATE", "METALLOID_DONOR", "NHC_CARBENE", "RIGID_HAPTO", "KAPPA4",
-    "CAGE_MD_GUARD",   # main's user-approved net-positive cage/over-coord M-D guard (kept)
-    "CN4_BOTH",        # main's native-additive CN4 dual-geometry completeness, never-worse (kept)
-)
+# SINGLE SOURCE OF TRUTH (2026-07-21): the dashboard MUST build with the EXACT
+# same champion construction as the CLI and the development loop -- "das dashboard
+# konstruiert wie wir".  Import cli_manta's champion list instead of a stale
+# hand-copied tuple that silently DRIFTED: it was missing DET_CLASSIFY (so the
+# dashboard was not even byte-deterministic) + METALLOID_MD_LEN/JOINT_DECLASH/
+# DECLASH_METALLOID_LIGAND/SP3C_TET_SEAT/METALLOID_MD_CLAMP(#17)/D8_SQ_ADD(#19)/
+# CN6_OH_ADD(#20)/AROM_SEAT(#21).  Now the dashboard and CLI can never diverge.
+from delfin.cli_manta import _CHAMPION_FLAGS as _MANTA_CHAMPION_FLAGS
 # Top-N to GFN2-optimize + parallel worker count (laptop-bounded; tune here).
 _MANTA_OPT_TOPN = 10
 _MANTA_OPT_WORKERS = 4
@@ -543,11 +545,19 @@ def create_tab(ctx):
                 'GFN2 ground state (parity-correct for open-shell TM). Or FIX it (1=singlet, 2=doublet, '
                 '3=triplet, ...) when you know the state. NOTE: GFN2 spin energetics for TM are '
                 'approximate -> set it explicitly for accuracy.')
+    manta_det = widgets.Dropdown(
+        options=['On', 'Off'], value='On',
+        description='Determinism:', style={'description_width': 'initial'},
+        layout=widgets.Layout(width='160px'),
+        tooltip='DETERMINISTIC construction (DEFAULT On) — byte-identical, reproducible manifold, '
+                'IDENTICAL to what the CLI and the development loop build (ship = validate). '
+                'Off = non-deterministic embedding (racy frame count; only for exploring extra '
+                'ETKDG variety). Keep On for a stable, reproducible isomer x conformer manifold.')
     manta_settings_row = widgets.VBox([
         widgets.HTML("<b style='color:#1FA9C0'>MANTA settings</b> "
                      "<span style='color:#888;font-size:90%'>— complete coordination-isomer "
                      "&times; conformer manifold</span>"),
-        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin],
+        widgets.HBox([manta_quality, manta_seeds, manta_max_iso, manta_rank, manta_opt, manta_spin, manta_det],
                      layout=widgets.Layout(gap='12px', flex_wrap='wrap', align_items='center')),
     ], layout=widgets.Layout(border='1px solid #d0e7ec', padding='8px', margin='4px 0'))
 
@@ -1161,7 +1171,8 @@ def create_tab(ctx):
     def _start_smiles_conversion(*, apply_uff: bool, quick: bool, rank: bool = False,
                                  quality_mode=None, seeds_override=None,
                                  max_isomers=None, opt_topn=None, construction=None,
-                                 method="gfn2", num_confs=None, collapse=None, spin="auto"):
+                                 method="gfn2", num_confs=None, collapse=None, spin="auto",
+                                 deterministic: bool = True):
         cached_smiles = state['converted_xyz_cache'].get('smiles') if quick else None
         raw_input = (cached_smiles or coords_widget.value).strip()
         if not raw_input:
@@ -1243,7 +1254,7 @@ def create_tab(ctx):
                         apply_uff=apply_uff,
                         collapse_label_variants=(bool(collapse) if collapse is not None else False),
                         include_binding_mode_isomers=True,
-                        deterministic=not contains_metal(cleaned_data),
+                        deterministic=deterministic,
                     )
                     # user-exposed completeness/speed switches (MANTA settings row);
                     # None -> library default. max_isomers None/0 -> COMPLETE (no cut).
@@ -1320,6 +1331,9 @@ def create_tab(ctx):
             max_isomers=(int(manta_max_iso.value) or 100000),
             opt_topn=_opt_map.get(manta_opt.value, -1),
             spin=str(manta_spin.value),     # 'auto' (scan) or fixed multiplicity (1/2/3/...)
+            # Determinism toggle (default On) -> byte-identical, IDENTICAL to the CLI
+            # and the development loop (ship = validate).  Off = non-deterministic embed.
+            deterministic=(manta_det.value == 'On'),
             # construction always champion + power-user knobs CLI-only -> pinned here
             **_MANTA_DASH_DEFAULTS,
         )
