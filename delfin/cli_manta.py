@@ -114,6 +114,28 @@ _CHAMPION_FLAGS = (
                           # class:sigma_coord:100 never-worse (n=3 affected, cap_LOST=0, mean -13.5) + full:120
                           # never-worse (n=3, within band).  Reach = FREE aromatics only; coordinated aromatics
                           # deferred to embed-time seating (AROM_EMBED_SEAT, separate).  Env DELFIN_FFFREE_AROM_SEAT.
+    "ENUM_FEAS_PREFERRED", # #22: ISOMER-COMPLETENESS -- recover the LFSE-preferred coordination isomers the
+                          # naive chelate-distance pre-filter over-prunes (bis-tridentate Ir all-cis; GOWFED:
+                          # iso_miss 1->0, best_valid_rmsd 1.244->0.442 = a genuinely missing crystal-matching
+                          # isomer).  BASE-PRESERVATION via TOPOLOGY, not RMSD (user 2026-07-22 "RMSD ist die
+                          # schlechteste Metrik"; Gate = Topologie): on a RIGID scaffold a reach-recovered
+                          # arrangement relaxes (UFF) onto an isomer the base set ALREADY built -> its built
+                          # coordination FINGERPRINT equals a base frame's -> redundant, and the downstream
+                          # fingerprint dedup would then drop the GOOD base frame in its favour (AXOKED: +5
+                          # reach-recoveries cost a good square-pyramidal base conformer).  Fix: keep a recovery
+                          # IFF its built fingerprint is NEW (adds a missing isomer); drop if already realised by
+                          # a base frame = the exact definition of "recovers a MISSING isomer".  Plus geometric
+                          # guards (poly-vs-intended-geom, torn-ligand, donor-H-at-metal).  All topology/geometry,
+                          # no RMSD, no energy, no fitted threshold; additive by construction (primary/champion
+                          # frames never touched -> Goodhart-safe under any present/future eye).  landed 2026-07-22,
+                          # full:1000 --ab (feas4): affected=27, byte-identical=929, good_regr=0, broken_regr=0,
+                          # cap_LOST=0, cap_gained=1 (BAVJUF), AXOKED byte-IDENTICAL (fix fully resolves the only
+                          # broken_regressed), GOWFED win kept, JAMHUB excluded (unverifiable baseline).  Only
+                          # blocker was BUILD LOST on 3 heavy systems = LOAD-DEPENDENT timeouts (LOPTEQ was
+                          # build_lost in a prior run, built in feas4; re-measure tmo3 at per_timeout 3600:
+                          # COTQIL/UXOGAR02 byte-IDENTICAL, TOMGOT additive good 95->95 = all never-worse).  50K/
+                          # ship gate must use per_timeout>=3600 for the heaviest systems.  Env
+                          # DELFIN_FFFREE_ENUM_FEAS_PREFERRED; impl smiles_converter _generate_topological_isomers.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
