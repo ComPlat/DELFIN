@@ -2445,11 +2445,29 @@ def _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done: bool):
     try:
         from delfin.manta._fix_sp2c_planarize import planarize_sp2_carbon
         oop_thr = _delfin_env_float("DELFIN_FIX_SP2C_OOP_A", 0.20)
+        # TOPO-GATE (DELFIN_FFFREE_SP2C_PLANARIZE_TOPOGATE): re-run construction's
+        # OWN broken-frame gate (_fragment_topology_ok) on the PLANARISED frame and
+        # roll the WHOLE frame back if the projection changed the connectivity.  The
+        # fixers run AFTER _clean_gate_filter, so without this a projection that tears
+        # a bond ships a broken frame (AGEPAH broken_regressed).  Re-gating culls the
+        # damage instead of shipping it -- never-worse w.r.t. topology.
+        _topo_gate = bool(_delfin_env_int(
+            "DELFIN_FFFREE_SP2C_PLANARIZE_TOPOGATE", 0))
+        _smi = None
+        if _topo_gate:
+            try:
+                from rdkit import Chem as _Chem
+                _smi = _Chem.MolToSmiles(mol)
+            except Exception:
+                _topo_gate = False
         new_results: List[Tuple[str, str]] = []
         for (xyz, label) in results:
             try:
                 new_xyz, _report = planarize_sp2_carbon(
                     xyz, mol, oop_threshold_A=oop_thr)
+                if (_topo_gate and _smi and new_xyz != xyz
+                        and not _fragment_topology_ok(new_xyz, _smi)):
+                    new_xyz = xyz          # rollback: fix broke the topology
                 new_results.append((new_xyz, label))
             except Exception:
                 new_results.append((xyz, label))
@@ -19027,10 +19045,34 @@ def _preferred_cn4_geometry_score(
     return min(tetra_pen, square_pen)
 
 
+# Ideal L-M-L angle target set per polyhedron NAME (deg).  Mirrors the per-CN best-of table inside
+# _ideal_polyhedron_angle_dev_per_metal, but keyed by the geometry the frame was BUILT for (cf[0] / gn)
+# so a frame can be scored vs its INTENDED polyhedron instead of the most-forgiving one.  Root motive
+# (2026-07-22, AXOKED): the best-of measure lets TPR's 140-deg target absorb a distorted OCTAHEDRON
+# (a rigid-scaffold Cl-Cl-ax that is ~49 deg off OH scores <30 because every angle finds SOME nearby
+# ideal across OH+TPR).  Scoring a recovered arrangement vs the polyhedron it was ENUMERATED as (OH for
+# an OH recovery) correctly flags it, while a genuine trig-prism (enumerated + built AS TPR) is scored
+# vs TPR and kept -- so real prisms (AFAVOV/ADAVUZ) are untouched.
+_GEOM_IDEAL_ANGLES: Dict[str, List[float]] = {
+    'LIN': [180.0], 'TP': [120.0], 'TS': [90.0, 180.0],
+    'TH': [109.47], 'SQ': [90.0, 180.0], 'SS': [90.0, 120.0, 180.0],
+    'TBP': [90.0, 120.0, 180.0], 'SP': [90.0, 180.0],
+    'OH': [90.0, 180.0], 'TPR': [76.0, 82.0, 140.0],
+    'PBP': [72.0, 90.0, 144.0, 180.0],
+    'SAP': [52.4, 73.1, 118.5, 143.1, 180.0],
+    'DD': [62.2, 73.7, 117.4, 143.6, 180.0],
+}
+
+
 def _ideal_polyhedron_angle_dev_per_metal(
-    mol, conf_id: int
+    mol, conf_id: int, only_geom: Optional[str] = None,
 ) -> Dict[int, float]:
     """Return {metal_idx: max-angle-deviation-deg} vs nearest ideal polyhedron.
+
+    ``only_geom`` (default None -> unchanged best-of behaviour): when a polyhedron NAME is given and it
+    is in ``_GEOM_IDEAL_ANGLES``, the metal's angles are scored vs THAT polyhedron's ideal targets only
+    (no best-of).  Used by the FEAS_PREFERRED realism floor to score a recovered arrangement vs the
+    polyhedron it was built for -- so a distorted octahedron cannot hide behind the trig-prism targets.
 
     Pure helper — does NOT reject anything, just measures how far each
     metal's L-M-L angles are from the closest textbook polyhedron for
@@ -19082,9 +19124,12 @@ def _ideal_polyhedron_angle_dev_per_metal(
                 angles.append(math.degrees(math.acos(cos_a)))
         if not angles:
             continue
+        # INTENDED-GEOM scoring (only_geom): score vs the polyhedron the frame was BUILT for, no best-of.
+        if only_geom and only_geom in _GEOM_IDEAL_ANGLES:
+            ideals_list = [_GEOM_IDEAL_ANGLES[only_geom]]
         # Per-CN ideal angle targets, picked best-of over competing
         # polyhedra at the same CN.
-        if cn == 2:
+        elif cn == 2:
             ideals_list = [[180.0]]
         elif cn == 3:
             ideals_list = [[120.0], [90.0, 180.0]]
@@ -19110,6 +19155,45 @@ def _ideal_polyhedron_angle_dev_per_metal(
                 best_max_dev = max_dev
         out[metal_idx] = best_max_dev
     return out
+
+
+def _donor_h_points_at_metal(mol, conf_id: int, max_meh_deg: float = 80.0) -> bool:
+    """FF-FREE geometric realism check -- MANTA-NATIVE (does NOT import WEDDELL: the construction filters
+    with its OWN logic; the eye stays an independent judge).  Return True if ANY coordinating donor (N/O/S/
+    Se/Te bearing an H) has an H pointing TOWARD the metal -- i.e. the smallest M-donor-H angle < max_meh_deg.
+
+    A realistic coordinating N-H / O-H coordinates through its LONE PAIR (toward the metal), so its H points
+    AWAY (M-D-H ~= 100-115 deg tetrahedral/pyramidal).  An H tilted toward the metal (small M-D-H) is
+    physically unrealistic (the H crowds the metal, the lone pair points away).  Pure GEOMETRY (one angle) --
+    no force field, no energy, DELFIN's own H is placed by construction so its position is meaningful."""
+    if not RDKIT_AVAILABLE:
+        return False
+    try:
+        conf = mol.GetConformer(conf_id)
+        for atom in mol.GetAtoms():
+            if atom.GetSymbol() not in _METAL_SET:
+                continue
+            mp = conf.GetAtomPosition(atom.GetIdx())
+            for nb in atom.GetNeighbors():
+                if nb.GetSymbol() not in ("N", "O", "S", "Se", "Te"):
+                    continue
+                dp = conf.GetAtomPosition(nb.GetIdx())
+                for hb in nb.GetNeighbors():
+                    if hb.GetSymbol() != "H":
+                        continue
+                    hp = conf.GetAtomPosition(hb.GetIdx())
+                    v1 = (mp.x - dp.x, mp.y - dp.y, mp.z - dp.z)
+                    v2 = (hp.x - dp.x, hp.y - dp.y, hp.z - dp.z)
+                    n1 = math.sqrt(v1[0] ** 2 + v1[1] ** 2 + v1[2] ** 2)
+                    n2 = math.sqrt(v2[0] ** 2 + v2[1] ** 2 + v2[2] ** 2)
+                    if n1 < 1e-6 or n2 < 1e-6:
+                        continue
+                    cos_a = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2]) / (n1 * n2)))
+                    if math.degrees(math.acos(cos_a)) < max_meh_deg:
+                        return True   # an H points toward the metal -> unrealistic donor orientation
+        return False
+    except Exception:
+        return False
 
 
 def _has_bad_geometry(mol, conf_id: int) -> bool:
@@ -21177,6 +21261,53 @@ def _chelate_pairs(mol, metal_idx: int, donor_indices: List[int],
     return pairs
 
 
+def _chelate_backbone_max_reach(mol, a: int, b: int) -> Optional[float]:
+    """First-principles UPPER BOUND on a chelate's donor-donor bite (Å): the sum of covalent bond
+    lengths along the shortest LIGAND-backbone path a->b with ALL metal atoms removed.
+
+    By the triangle inequality the straight-line donor-donor distance can NEVER exceed this contour
+    length, for ANY conformer -- so this is a SAMPLING-INDEPENDENT, universal feasibility bound derived
+    from FIRST PRINCIPLES (the molecular graph + element covalent radii), NOT from a template conformer
+    that ETKDG happened to embed.  A short backbone physically cannot span a large bite (a 2-atom bridge
+    cannot reach a trans-octahedral separation -> correctly infeasible); a long/flexible backbone can
+    reach any bite up to its contour (Ir bis-tridentate CAN reach octahedral -> correctly feasible).
+
+    Returns the contour length, or None if a and b are not connected once the metals are removed (not a
+    genuine through-backbone chelate).  Never raises."""
+    try:
+        from collections import deque as _deque
+        _metals = {at.GetIdx() for at in mol.GetAtoms() if at.GetSymbol() in _METAL_SET}
+        if a in _metals or b in _metals:
+            return None
+        _prev = {a: -1}
+        _dq = _deque([a])
+        _found = False
+        while _dq:
+            _u = _dq.popleft()
+            if _u == b:
+                _found = True
+                break
+            for _nb in mol.GetAtomWithIdx(_u).GetNeighbors():
+                _v = _nb.GetIdx()
+                if _v in _metals or _v in _prev:
+                    continue
+                _prev[_v] = _u
+                _dq.append(_v)
+        if not _found:
+            return None
+        _pt = Chem.GetPeriodicTable()
+        _total = 0.0
+        _cur = b
+        while _prev[_cur] != -1:
+            _p = _prev[_cur]
+            _total += (_pt.GetRcovalent(mol.GetAtomWithIdx(_cur).GetAtomicNum())
+                       + _pt.GetRcovalent(mol.GetAtomWithIdx(_p).GetAtomicNum()))
+            _cur = _p
+        return _total
+    except Exception:
+        return None
+
+
 def _canonical_oh(types: tuple) -> tuple:
     """Canonical form for octahedral (3 trans pairs: 0-1, 2-3, 4-5)."""
     pairs = tuple(sorted([
@@ -21894,7 +22025,20 @@ def _enumerate_topological_isomers(
     elif n_coord == 6:
         pref6 = _PREFERRED_CN6_GEOMETRY.get(metal_symbol, 'OH')
         other6 = 'TPR' if pref6 == 'OH' else 'OH'
-        geometries = _all_polyhedra_codes(6, metal_symbol, [pref6, other6])
+        _geoms6 = [pref6, other6]
+        # REALISM (DELFIN_FFFREE_CN6_TPR_SUPPRESS, default-OFF -> byte-identical):
+        # trigonal-prismatic CN6 is realistic ONLY for d0-d2 early-TM (dithiolene /
+        # tris-S).  For d3-d10 the octahedron is overwhelmingly ligand-field-favoured
+        # -> a TPR "isomer" is UNREALISTIC junk that twists rigid meridional ligands
+        # out of the metal's pi-plane (the "schiefe pi-Systeme" bloat) and never
+        # matches the crystal.  Drop TPR for d3-d10 so the manifold holds only the
+        # realistic (octahedral) isomers.  d0-d2 / unknown keep BOTH (never lose a
+        # genuine prism -> the CCDC-isomer HARD floor stays safe).
+        if _delfin_env_int("DELFIN_FFFREE_CN6_TPR_SUPPRESS", 0):
+            _d6 = _cn5_d_electron_count(metal_symbol, int(metal_formal_charge or 0))
+            if _d6 is not None and 3 <= _d6 <= 10:
+                _geoms6 = [g for g in _geoms6 if g != 'TPR'] or ['OH']
+        geometries = _all_polyhedra_codes(6, metal_symbol, _geoms6)
     elif n_coord == 7:
         geometries = _all_polyhedra_codes(7, metal_symbol, ['PBP', 'COH'])
     elif n_coord == 8:
@@ -21931,6 +22075,11 @@ def _enumerate_topological_isomers(
     _chir_enabled = (
         _delfin_env_int('DELFIN_CHIRAL_ENUM', 0)
         and len(chelate_pairs) >= 2
+        # When the geometric ENANTIOMER_MIRROR post-pass is active it is the SOLE enantiomer source
+        # (exact mirror -> dedup-able + coincidence-based elimination).  CHIRAL_ENUM here would build a
+        # SECOND, INDEPENDENTLY-embedded Λ/Δ set (not exact mirrors) -> unmergeable duplicates (ATOZUG).
+        # Disable it so the two mechanisms never collide.
+        and not _delfin_env_int('DELFIN_FFFREE_ENANTIOMER_MIRROR', 0)
     )
     _helicity_aware_pairs = None
     if _chir_enabled:
@@ -26061,6 +26210,7 @@ def _generate_topological_isomers(
         _chelate_atom_pairs: List[FrozenSet],
         abs_tol: Optional[float] = None,
         rel_tol: Optional[float] = None,
+        force_reach: bool = False,
     ) -> bool:
         """Reject geometrically impossible chelate placements.
 
@@ -26105,6 +26255,7 @@ def _generate_topological_isomers(
                     vz = vz / mag * bl
                 target_by_donor[d_atom] = (vx, vy, vz)
 
+            _use_reach = force_reach or _delfin_env_int("DELFIN_FFFREE_CHELATE_REACH_FEAS", 0)
             for cp in _chelate_atom_pairs:
                 pair = sorted(cp)
                 if len(pair) != 2:
@@ -26112,18 +26263,31 @@ def _generate_topological_isomers(
                 a, b = pair
                 if a not in target_by_donor or b not in target_by_donor:
                     continue
-
-                pa = conf.GetAtomPosition(a)
-                pb = conf.GetAtomPosition(b)
-                d_src = math.sqrt(
-                    (pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2 + (pa.z - pb.z) ** 2
-                )
                 ta = target_by_donor[a]
                 tb = target_by_donor[b]
                 d_tgt = math.sqrt(
                     (ta[0] - tb[0]) ** 2 + (ta[1] - tb[1]) ** 2 + (ta[2] - tb[2]) ** 2
                 )
 
+                if _use_reach:
+                    # FIRST-PRINCIPLES reachability (triangle inequality, SAMPLING-INDEPENDENT): the
+                    # chelate backbone's contour length is the HARD upper bound on the donor-donor bite for
+                    # ANY conformer.  Reject ONLY when the target bite exceeds it (physically impossible to
+                    # span -- e.g. a short bridge cannot reach a trans separation).  This is the ROOT fix:
+                    # it replaces the rigid single-conformer (conformer-0) bite check below, which
+                    # over-pruned every flexible chelate (Ir all-4-OH rejected; KAFBUS all rejected ->
+                    # fallback) merely because the ONE embedded template conformer's bite missed the target,
+                    # even though the builder (multiple ranked template conformers + UFF) can reach it.
+                    _max_reach = _chelate_backbone_max_reach(_mol, a, b)
+                    if _max_reach is not None and d_tgt > _max_reach + abs_tol:
+                        return False
+                    continue
+
+                pa = conf.GetAtomPosition(a)
+                pb = conf.GetAtomPosition(b)
+                d_src = math.sqrt(
+                    (pa.x - pb.x) ** 2 + (pa.y - pb.y) ** 2 + (pa.z - pb.z) ** 2
+                )
                 tol = max(abs_tol, rel_tol * max(d_src, 1e-8))
                 if abs(d_tgt - d_src) > tol:
                     return False
@@ -26224,23 +26388,95 @@ def _generate_topological_isomers(
             and _cn5_enum_complete_enabled()
             and len(set(donor_labels)) >= 2
         )
+        # COMPLETENESS + QUALITY, NO JUNK (user 2026-07-21 "die Konstruktion soll gar nicht erst schlechte
+        # Geometrien bauen" -> root fix, not post-hoc cull).  The chelate-distance pre-filter over-prunes
+        # polydentate systems (bis-tridentate Ir: 19 enumerated -> 1 feasible, ALL 4 octahedral arrangements
+        # rejected because the one template conformer's rigid bite doesn't fit the ideal OH distance; the
+        # fallback only fires when feasible==0, so keeping 1 silently drops the rest).
+        #   DELFIN_FFFREE_ENUM_FEAS_PREFERRED (default off): skip the pre-filter ONLY for the LFSE-PREFERRED
+        #     polyhedron -> its realistic arrangements (Ir all-cis / N-trans / C-trans) are recovered, while
+        #     the NON-preferred (e.g. TPR "schiefe pi" junk for a d6-mer) still faces feasibility and is
+        #     NEVER BUILT.  Surgical: recover the realistic, never generate the junk.
+        #   DELFIN_FFFREE_ENUM_SKIP_FEASIBILITY (default off): blunt -- skip for ALL geometries (admits the
+        #     junk too; kept only for diagnostics, superseded by FEAS_PREFERRED).
+        _enum_skip_feas = _delfin_env_int("DELFIN_FFFREE_ENUM_SKIP_FEASIBILITY", 0)
+        _enum_feas_pref = _delfin_env_int("DELFIN_FFFREE_ENUM_FEAS_PREFERRED", 0)
+        # Max L-M-L angle deviation (deg) from the nearest ideal VSEPR polyhedron that a RECOVERED
+        # FEAS_PREFERRED arrangement may have and still be kept -- the FF-FREE geometric realism filter.
+        _extra_max_dev = _delfin_env_float("DELFIN_FFFREE_EXTRA_MAX_ANGLE_DEV", 30.0)
+        # Min M-donor-H angle (deg): a recovered arrangement whose coordinating N-H/O-H has an H pointing
+        # TOWARD the metal (angle below this) is dropped -- MANTA-native geometric realism (not WEDDELL).
+        _extra_donor_h_min = _delfin_env_float("DELFIN_FFFREE_EXTRA_DONOR_H_MIN_DEG", 80.0)
+        # LFSE-PREFERRED polyhedron per CN -- GEOMETRY-AWARE for CN4/5/6 (the metal's electron count decides:
+        # d8 CN5 -> SP not TBP, d6/d8 etc.).  The earlier hard-coded 5:'TBP' made FEAS_PREFERRED recover the
+        # WRONG polyhedron for square-pyramidal systems (JAMHUB CN5 crystal is SP -> adding TBP arrangements
+        # confused the isomer count 5->2 and cost build time).  Using _PREFERRED_CN5/6_GEOMETRY adds the
+        # CORRECT preferred polyhedron -> fewer, right arrangements -> resolves JAMHUB + fewer timeouts.
+        _pref_geom = {2: 'LIN', 3: 'TP',
+                      4: _PREFERRED_CN4_GEOMETRY.get(atom.GetSymbol(), 'SQ'),
+                      5: _PREFERRED_CN5_GEOMETRY.get(atom.GetSymbol(), 'TBP'),
+                      6: _PREFERRED_CN6_GEOMETRY.get(atom.GetSymbol(), 'OH'),
+                      7: 'PBP', 8: 'SAP', 9: 'TTP'}.get(n_coord)
         feasible_isomers: List[Tuple[tuple, List[int]]] = []
-        if _cn5_complete:
+        _pref_extra_keys: set = set()   # (cf,pm) of FEAS_PREFERRED extras -> geometric-VSEPR-realism filtered
+        if _cn5_complete or _enum_skip_feas:
             feasible_isomers = list(isomers)
         else:
+            # FEAS_PREFERRED (default off) recovers the LFSE-PREFERRED polyhedron's realistic arrangements
+            # that the naive chelate-distance pre-filter over-prunes (bis-tridentate Ir: all 4 OH
+            # arrangements rejected, only 1 kept).  CRITICAL -- it must be TRULY ADDITIVE: the recovered
+            # preferred-geom isomers are appended AFTER the feasibility-PASSING set, so they can NEVER crowd
+            # the real isomers out of the _PRE_UFF_CAP frame budget (which the build loop below breaks on).
+            # The earlier naive `(pref==geom) OR feasible` mixed them into the enumeration-ORDER stream, so
+            # the preferred-geom flood filled the cap and the loop broke BEFORE the real isomers built ->
+            # measured isomer LOSS (KAFBUS 10->1, polyhedra lost, mean_delta +0.482, gate REJECTED).  Base-
+            # first ordering makes it never-worse: the feasibility-passing set builds EXACTLY as the
+            # baseline; the preferred extras consume only the REMAINING budget -- which is precisely the
+            # sparse systems (Ir base=1) that need the recovery.  A pref-geom isomer that ALSO passes
+            # feasibility stays in the base (it is a real feasible isomer, not an extra).
+            _pref_extra: List[Tuple[tuple, List[int]]] = []
             for canonical_form, perm in isomers:
                 geom_name = canonical_form[0]
                 if _passes_chelate_distance_feasibility(
-                    mol, metal_idx, donor_indices, perm, geom_name, chelate_ps
-                ):
+                        mol, metal_idx, donor_indices, perm, geom_name, chelate_ps):
                     feasible_isomers.append((canonical_form, perm))
+                elif (_enum_feas_pref and geom_name == _pref_geom
+                        and _passes_chelate_distance_feasibility(
+                            mol, metal_idx, donor_indices, perm, geom_name, chelate_ps,
+                            force_reach=True)):
+                    # Recover the LFSE-preferred polyhedron that the rigid single-conformer feasibility
+                    # over-pruned -- but ONLY when it is PHYSICALLY REACHABLE (triangle inequality on the
+                    # backbone contour, sampling-independent).  ADDITIVE (appended after the base + fallback,
+                    # so no fallback suppression) + REACH-gated (no unreachable junk) + preferred-geom-scoped
+                    # (bounded -> no isomer explosion / build blow-up).  The pure reach-REPLACE was too
+                    # lenient (22 build timeouts, JAMHUB fallback loss); this keeps its physics gate while
+                    # staying never-worse.
+                    _pref_extra.append((canonical_form, perm))
             if not feasible_isomers and isomers:
                 logger.debug(
                     "Chelate-distance feasibility rejected all %d topo isomer(s) "
                     "for CN=%d; using unfiltered set.",
                     len(isomers), n_coord,
                 )
-                feasible_isomers = isomers
+                feasible_isomers = list(isomers)   # fallback already contains the preferred-geom isomers
+            elif _pref_extra:
+                # additive extras LAST -> never crowd the feasibility-passing (real) isomers out of the cap
+                feasible_isomers = feasible_isomers + _pref_extra
+                _pref_extra_keys = {(tuple(_cf), tuple(_pm)) for _cf, _pm in _pref_extra}
+
+        # DIAGNOSTIC (gated DELFIN_TRACE_SEATING=1, default-off -> byte-identical): where does the
+        # isomer count collapse?  Logs enumerated vs chelate-feasible canonical forms so a 6->2
+        # loss can be pinned to enumeration (achiral cf merges Λ/Δ) vs feasibility vs downstream build.
+        if os.environ.get("DELFIN_TRACE_SEATING") == "1":
+            try:
+                import sys as _systr
+                _systr.stderr.write(
+                    f"[ISOTRACE] CN={n_coord} enumerated={len(isomers)} feasible={len(feasible_isomers)}\n")
+                for _cf, _pm in isomers:
+                    _feas = "OK " if (_cf, _pm) in feasible_isomers else "REJ"
+                    _systr.stderr.write(f"[ISOTRACE]   {_feas} cf={_cf} perm={_pm}\n")
+            except Exception:
+                pass
 
         # Pre-compute ranked template conformers once per metal centre so each
         # permutation can retry against several templates when the default
@@ -26654,6 +26890,22 @@ def _generate_topological_isomers(
         # VOYWUD 6->5).  `_n_sib_appended` mirrors the pre-UFF `-_n_add_sib`; empty _sib_idxs (flags
         # off) -> byte-identical to the original `len(results) >= max_isomers`.
         _n_sib_appended = 0
+        # BASE-PRESERVATION via TOPOLOGY, NOT RMSD (user 2026-07-22: "RMSD ist die schlechteste Metrik";
+        # doctrine: Gate = Topologie, NIE RMSD).  A FEAS_PREFERRED recovery is a real win ONLY if it adds
+        # a GENUINELY NEW coordination isomer.  On a RIGID scaffold a reach-recovered arrangement relaxes
+        # (UFF) onto an isomer the base set ALREADY built -> its BUILT coordination FINGERPRINT equals a
+        # base frame's -> it is redundant, and worse, the downstream fingerprint dedup then drops the GOOD
+        # base frame in favour of the (distorted) recovery (AXOKED: +5 reach-recoveries cost a good square-
+        # pyramidal base conformer, good 36->35 = the broken_regressed the eye flagged).  Fix, universal,
+        # purely TOPOLOGICAL (coordination fingerprint = which donor sits where; no RMSD, no energy, no
+        # fitted threshold): drop a recovery whose built fingerprint is ALREADY realised by a base frame ->
+        # the redundant recovery never enters, so it can neither pad the manifold nor evict a base frame.
+        # A genuinely-new isomer (GOWFED all-cis: a fingerprint the base set was MISSING) has a NEW
+        # fingerprint -> kept = the real completeness win.  This is EXACTLY the definition of "recovers a
+        # MISSING isomer": keep iff it adds a fingerprint the base does not already have.  Base frames build
+        # FIRST (feasible_isomers = base + _pref_extra), so every base fingerprint a recovery could
+        # duplicate is already recorded by the time the recovery is reached.
+        _base_fps: set = set()
         for _batch_i, (cf, pm, gn, xyz, _cstr, _cidx) in enumerate(_pre_uff_batch):
             if (len(results) - _n_sib_appended) >= max_isomers:
                 break
@@ -26669,6 +26921,36 @@ def _generate_topological_isomers(
                 fp = _compute_coordination_fingerprint(
                     mt.GetMol(), ci, dtype_map=dtype_map
                 )
+                _is_pref_extra = (tuple(cf), tuple(pm)) in _pref_extra_keys
+                if _is_pref_extra:
+                    # Keep a recovery ONLY if it (a) realises a NEW coordination isomer -- its built
+                    # fingerprint is not already among the base frames (the TOPOLOGICAL redundancy test,
+                    # the primary discriminator) -- AND (b) is geometrically sound: achieves its intended
+                    # polyhedron (only_geom=gn), no torn/stretched covalent bond, no donor-H pointing at the
+                    # metal.  All topology/geometry, no RMSD, no energy.  Scoped to extras -> primary/
+                    # champion frames are never touched (additive by construction).  A genuine trig-prism is
+                    # enumerated + built AS TPR -> scored vs TPR -> kept (real prisms untouched).
+                    try:
+                        _mG = mt.GetMol()
+                        _redundant = fp in _base_fps
+                        _devs = _ideal_polyhedron_angle_dev_per_metal(_mG, ci, only_geom=gn)
+                        _drop = (_redundant
+                                 or (_devs and max(_devs.values()) > _extra_max_dev)
+                                 or _has_severe_covalent_distortion(_mG, ci)
+                                 or _donor_h_points_at_metal(_mG, ci, _extra_donor_h_min))
+                        if os.environ.get("DELFIN_TRACE_SEATING") == "1":
+                            try:
+                                import sys as _systr
+                                _systr.stderr.write(
+                                    "[FEASFLOOR] %s gn=%s redundant=%s poly_vs_geom=%.1f drop=%s\n" % (
+                                        _label_from_canonical_form(cf) or str(cf), gn, _redundant,
+                                        (max(_devs.values()) if _devs else -1.0), _drop))
+                            except Exception:
+                                pass
+                        if _drop:
+                            continue
+                    except Exception:
+                        pass
                 # Canonical-form label (see rationale above).
                 lbl = _label_from_canonical_form(cf)
                 if not lbl:
@@ -26688,6 +26970,11 @@ def _generate_topological_isomers(
                 if _cidx and _cidx > 0:
                     lbl = f'{lbl}-conf{_cidx + 1}' if lbl else f'conf{_cidx + 1}'
                 results.append((xyz, lbl))
+                if not _is_pref_extra:
+                    # record the BASE (non-recovery) fingerprint so a later recovery that collapses onto
+                    # this isomer is caught by the topological redundancy test above (keine guten
+                    # verschwinden -- a recovery may never duplicate, and thus displace, a base isomer).
+                    _base_fps.add(fp)
                 if _batch_i in _sib_idxs:      # additive sibling -> does not count vs max_isomers
                     _n_sib_appended += 1
             except Exception as exc:
@@ -30338,6 +30625,377 @@ def _permute_dedup_filter(isomers):
         return isomers
 
 
+def _mirror_xyz_coords(xyz):
+    """Return the MIRROR IMAGE of a frame (reflection through the x=0 plane -> negate
+    x).  An enantiomer IS the exact mirror image, so this is the free, exact partner
+    of a chiral coordination frame — no rebuild.  Preserves atom order and any
+    header/comment lines; only ``sym x y z`` lines flip.  None on any parse issue."""
+    try:
+        out = []
+        for ln in str(xyz).splitlines():
+            parts = ln.split()
+            if len(parts) == 4:
+                try:
+                    x = -float(parts[1]); y = float(parts[2]); z = float(parts[3])
+                    out.append(f"{parts[0]} {x:.6f} {y:.6f} {z:.6f}")
+                    continue
+                except Exception:
+                    pass
+            out.append(ln)
+        return "\n".join(out)
+    except Exception:
+        return None
+
+
+def _coord_sphere_donors(xyz):
+    """(metal_dir_array, donor_symbols) for the coordination sphere: unit vectors
+    metal->donor for the nearest neighbours (< 3.2 Å, up to 9) of the first
+    ``_METAL_SET`` atom.  (None, None) if no metal / < 3 donors."""
+    try:
+        import numpy as _np
+        rows = [l.split() for l in str(xyz).splitlines() if len(l.split()) == 4]
+        syms = [p[0] for p in rows]
+        coords = _np.array([[float(p[1]), float(p[2]), float(p[3])] for p in rows])
+        m_i = next((i for i, s in enumerate(syms) if s in _METAL_SET), None)
+        if m_i is None or coords.shape[0] < 4:
+            return None, None
+        d = coords - coords[m_i]
+        dist = _np.linalg.norm(d, axis=1); dist[m_i] = 1e9
+        idx = [i for i in _np.argsort(dist) if dist[i] < 3.2][:9]
+        if len(idx) < 3:
+            return None, None
+        dirs = _np.array([d[i] / (dist[i] + 1e-12) for i in idx])
+        return dirs, [syms[i] for i in idx]
+    except Exception:
+        return None, None
+
+
+def _proper_kabsch_rmsd(P, Q):
+    """Min RMSD aligning Q onto P by a PROPER rotation (det=+1, NO reflection) +
+    translation.  Reflection-excluding by construction, so a true mirror image can
+    never be aligned away."""
+    import numpy as _np
+    Pc = P - P.mean(0); Qc = Q - Q.mean(0)
+    H = Qc.T @ Pc
+    U, S, Vt = _np.linalg.svd(H)
+    dsign = 1.0 if _np.linalg.det(Vt.T @ U.T) >= 0 else -1.0
+    R = Vt.T @ _np.diag([1.0, 1.0, dsign]) @ U.T
+    Qr = Qc @ R.T
+    return float(_np.sqrt(_np.mean(_np.sum((Pc - Qr) ** 2, axis=1))))
+
+
+def _coord_sphere_chirality_rmsd(xyz):
+    """CONFIGURATIONAL chirality measure (Å): the min-over-same-element-donor-
+    permutations PROPER-rotation Kabsch RMSD between the coordination sphere's donor
+    directions and their MIRROR (reflection-excluding).  ~0 => the mirror superimposes
+    => achiral configuration (mirror plane OR only a slight build deformation from an
+    ideal-achiral arrangement).  Large => a genuine Δ/Λ twist => chiral.  Conformer-
+    robust (donors only, backbone ignored).  A physical Å threshold (tuned) gates it.
+    Returns 0.0 when undetermined (never spuriously chiral)."""
+    try:
+        import itertools as _it
+        import numpy as _np
+        dirs, syms = _coord_sphere_donors(xyz)
+        if dirs is None:
+            return 0.0
+        mirror = dirs.copy(); mirror[:, 0] *= -1.0     # reflect (negate x)
+        n = len(syms)
+        groups: Dict[str, List[int]] = {}
+        for i, s in enumerate(syms):
+            groups.setdefault(s, []).append(i)
+        # permutations = product of within-element permutations; cap the search.
+        per_elem = []
+        _count = 1
+        for s, idxs in groups.items():
+            ps = list(_it.permutations(idxs))
+            _count *= len(ps)
+            per_elem.append((idxs, ps))
+        if _count > 5040:                              # >7! : fall back to identity only
+            perms = [list(range(n))]
+        else:
+            perms = []
+            for combo in _it.product(*[ps for _, ps in per_elem]):
+                perm = [0] * n
+                for (idxs, _), mapped in zip(per_elem, combo):
+                    for src, dst in zip(idxs, mapped):
+                        perm[src] = dst
+                perms.append(perm)
+        best = 1e9
+        for perm in perms:
+            r = _proper_kabsch_rmsd(dirs, mirror[perm])
+            if r < best:
+                best = r
+        return best
+    except Exception:
+        return 0.0
+
+
+def _coord_chirality_sign(xyz):
+    """Sign (+1 / -1 / 0) of the coordination-sphere chirality pseudoscalar — used
+    ONLY to name the Δ/Λ hands (never gates; the RMSD measure gates)."""
+    try:
+        import numpy as _np
+        dirs, _syms = _coord_sphere_donors(xyz)
+        if dirs is None:
+            return 0
+        total = 0.0
+        n = len(dirs)
+        for i in range(n):
+            for j in range(i + 1, n):
+                for k in range(j + 1, n):
+                    total += float(_np.dot(_np.cross(dirs[i], dirs[j]), dirs[k]))
+        if abs(total) < 1e-4:
+            return 0
+        return 1 if total > 0 else -1
+    except Exception:
+        return 0
+
+
+def _arrangement_key(lbl):
+    """Strip conformer / duplicate-disambiguation / Δ-Λ-hand suffixes -> the ARRANGEMENT
+    identity.  All conformers AND both hands of one coordination isomer share this key, so
+    the chirality decision can be made ONCE per arrangement (conformer-consistent) instead
+    of per built conformer (where UFF noise makes the CSM straddle the tolerance)."""
+    import re as _re
+    k = str(lbl or "")
+    k = _re.sub(r"-conf\d+", "", k)
+    k = _re.sub(r"-[ΔΛ](?=-|$)", "", k)
+    k = _re.sub(r"-\d+$", "", k)
+    return k
+
+
+def _mirror_symmetrize_xyz(xyz, tol):
+    """Project a near-mirror-symmetric frame onto its EXACT mirror-symmetric form
+    S = ½(F + R·F'[π]) (F' = mirror, R = best proper rotation, π = best graph automorphism).
+    The antisymmetric (build-noise) component is projected OUT -> higher symmetry + quality,
+    exactly consistent with DELFIN's target of the idealized intrinsic reference (crystal
+    distortions are out of scope).  Returns the symmetrised xyz, or the ORIGINAL unchanged if
+    the mirror is not reachable within ``tol`` (genuinely chiral) or on any error (best-effort,
+    never raises)."""
+    try:
+        import numpy as _np
+        from delfin.manta.permute_dedup import _automorphisms_for_xyz
+        rows = [l.split() for l in str(xyz).splitlines() if len(l.split()) == 4]
+        syms = [r[0] for r in rows]
+        F = _np.array([[float(r[1]), float(r[2]), float(r[3])] for r in rows])
+        n = len(F)
+        if n < 2:
+            return xyz
+        Fm = F.copy(); Fm[:, 0] *= -1.0
+        _s, autos, _h = _automorphisms_for_xyz(xyz, True, 4096)
+        if not autos:
+            autos = [list(range(n))]
+        Fc = F - F.mean(0)
+        best = None; best_r = 1e9
+        for perm in autos:
+            if len(perm) != n:
+                continue
+            Q = Fm[list(perm)]; Qc = Q - Q.mean(0)
+            U, S, Vt = _np.linalg.svd(Qc.T @ Fc)
+            d = 1.0 if _np.linalg.det(Vt.T @ U.T) >= 0 else -1.0
+            Qr = Qc @ (Vt.T @ _np.diag([1.0, 1.0, d]) @ U.T).T
+            r = float(_np.sqrt(_np.mean(_np.sum((Fc - Qr) ** 2, axis=1))))
+            if r < best_r:
+                best_r = r; best = Qr
+        if best is None or best_r >= tol:
+            return None            # no internal mirror within tol -> CHIRAL (caller keeps both hands)
+        Ssym = 0.5 * (Fc + best) + F.mean(0)
+        return "\n".join(f"{syms[i]} {Ssym[i, 0]:.6f} {Ssym[i, 1]:.6f} {Ssym[i, 2]:.6f}"
+                         for i in range(n))
+    except Exception:
+        return None
+
+
+def _pointgroup_symmetrize_xyz(xyz, tol):
+    """Detect the frame's approximate POINT GROUP and PROJECT onto it:
+
+        S = (1/|G|) Σ_{g∈G} g(F)      (the Continuous-Symmetry-Measure ideal)
+
+    giving the structure with EXACT G-symmetry.  This GENERALISES
+    ``_mirror_symmetrize_xyz`` (a σ-only special case: it averaged F with ONE mirror
+    image, so it only ever removed a single mirror-breaking component -> plateaued) to
+    the FULL group: EVERY symmetry operation of the frame is a graph automorphism π
+    whose geometric realisation is the orthogonal matrix O (proper OR improper) that
+    best superimposes F onto F[π]; the operation belongs to G iff that residual < tol.
+    Averaging over ALL such operations removes EVERY symmetry-breaking distortion at
+    once -> both poly-quality (perfect geometry) AND enantiomer elimination improve.
+
+    Returns ``(S_xyz, has_improper)``:
+      * ``has_improper`` True  <=> G contains an IMPROPER element (σ / inversion i / Sn)
+        <=> the configuration is ACHIRAL -> the caller emits ONE symmetric frame
+        (enantiomer ELIMINATED).  This is the FUNDAMENTAL achirality test — it covers
+        the inversion centre and every Sn axis, not just mirror planes.
+      * ``has_improper`` False <=> only proper rotations (Cn / Dn) or E (C1) -> genuinely
+        CHIRAL -> the caller keeps BOTH hands (the projected S is the proper-symmetrised
+        frame of the SAME hand; its exact mirror is the other hand).
+      * |G| == 1 (only E within tol) -> S == F unchanged  ->  C1 SAFE (user: "viele C1
+        dürfen NICHT beeinträchtigt werden").
+
+    Deterministic; best-effort (``(None, False)`` on any error, never raises)."""
+    try:
+        import numpy as _np
+        from delfin.manta.permute_dedup import _automorphisms_for_xyz
+        rows = [l.split() for l in str(xyz).splitlines() if len(l.split()) == 4]
+        syms = [r[0] for r in rows]
+        F = _np.array([[float(r[1]), float(r[2]), float(r[3])] for r in rows])
+        n = len(F)
+        if n < 2:
+            return xyz, False
+        Fc = F - F.mean(0)
+        _s, autos, _h = _automorphisms_for_xyz(xyz, True, 4096)
+        if not autos:
+            autos = [list(range(n))]
+        # Collect the group operations: (O, perm) for every automorphism whose optimal
+        # orthogonal (Procrustes, REFLECTION ALLOWED -> det ±1) superposition of F onto
+        # F[perm] has residual < tol.  O = U Vt for H = F[perm]^T · F (see _mirror_… for
+        # the proper-only sibling; here we do NOT force det=+1, so improper ops appear).
+        ops = []
+        have_id = False
+        for perm in autos:
+            if len(perm) != n:
+                continue
+            Q = Fc[list(perm)]
+            U, _S2, Vt = _np.linalg.svd(Q.T @ Fc)
+            O = U @ Vt                                   # orthogonal, det = ±1
+            r = float(_np.sqrt(_np.mean(_np.sum((Fc @ O.T - Q) ** 2, axis=1))))
+            if r < tol:
+                ops.append((O, Q))                       # keep Q=Fc[perm] for the projection
+                if all(p == i for i, p in enumerate(perm)):
+                    have_id = True
+        if not ops:
+            ops = [(_np.eye(3), Fc.copy())]
+        elif not have_id:
+            ops.append((_np.eye(3), Fc.copy()))
+        # improper element present?  det(O) < 0 for ANY op  <=>  achiral configuration.
+        has_improper = any(bool(_np.linalg.det(O) < 0.0) for O, _ in ops)
+        # PROJECT: S_i = (1/|G|) Σ_k O_k^T · r_{π_k(i)}  =  (1/|G|) Σ_k (Fc[π_k] · O_k)_i .
+        Sacc = _np.zeros_like(Fc)
+        for O, Q in ops:
+            Sacc += Q @ O
+        Sacc /= float(len(ops))
+        Sacc += F.mean(0)
+        out = "\n".join(f"{syms[i]} {Sacc[i, 0]:.6f} {Sacc[i, 1]:.6f} {Sacc[i, 2]:.6f}"
+                        for i in range(n))
+        return out, has_improper
+    except Exception:
+        return None, False
+
+
+def _heavy_dist_fp(xyz, bin_a=0.15):
+    """Rotation- AND permutation-invariant, chirality-INSENSITIVE geometry fingerprint:
+    the sorted multiset of heavy-atom pairwise distances, binned to ``bin_a`` Å.  Two
+    frames of ONE molecule with the same fingerprint are the same geometry up to a rigid
+    motion OR a reflection (distances are reflection-invariant) — so pairing it with the
+    chirality sign gives a canonical isomer key that collapses achiral image/mirror pairs
+    while keeping genuine Δ/Λ.  None on parse error."""
+    try:
+        import numpy as _np
+        pts = []
+        for _l in str(xyz).splitlines():
+            q = _l.split()
+            if len(q) == 4 and q[0] != 'H':
+                pts.append((float(q[1]), float(q[2]), float(q[3])))
+        if len(pts) < 3:
+            return None
+        C = _np.array(pts)
+        n = len(C)
+        ds = []
+        for i in range(n):
+            ds.extend(_np.linalg.norm(C[i + 1:] - C[i], axis=1).tolist())
+        return tuple(sorted(round(d / bin_a) for d in ds))
+    except Exception:
+        return None
+
+
+def _enantiomer_mirror_filter(isomers, smiles=None):
+    """Add the Δ/Λ MIRROR enantiomer for every CHIRAL coordination frame (user
+    2026-07-21: "wir wollen in den Frames auch die jeweiligen Enantiomere").
+
+    An enantiomer IS the exact mirror image -> reflect the built coordinates (free,
+    exact) instead of rebuilding in two directions.  A frame is chiral iff its mirror
+    is NOT superimposable on it under proper rotation + graph automorphism (reflection
+    -EXCLUDING Kabsch) -- tested by the existing ``is_permutation_duplicate`` primitive
+    (NOT gated), so achiral (meso) frames add no duplicate and an enantiomer already
+    present (e.g. built by CHIRAL_ENUM) is not re-added.  UNIVERSAL across every
+    polyhedron (chirality-by-mirror is geometry, not a per-polyhedron formula) and
+    robust where the analytical helicity classifier fails (tridentate wraps).
+
+    CRITICAL (user 2026-07-21): the gate is CONFIGURATIONAL chirality, NOT the
+    conformer's own mirror symmetry.  A conformer of an ACHIRAL molecule can lack a
+    mirror plane (a chiral backbone pucker) yet be the SAME molecule (interconvertible
+    by a conformational flip) -- mirroring it would fabricate a false "enantiomer" and
+    explode the pool.  So we gate on the COORDINATION-SPHERE chirality (the pseudoscalar
+    over metal->donor directions), which is set by the polyhedron and is ROBUST across
+    conformers (donors are pinned; only the backbone puckers).  Achiral configuration
+    -> sign 0 -> NOT mirrored, whatever the conformer pucker.  A ``is_permutation_
+    duplicate`` meso-guard additionally skips internally mirror-symmetric molecules.
+
+    Emits each enantiomer IMMEDIATELY AFTER its partner (Δ, Λ consecutive in the
+    trajectory).  Guard: skip when the SMILES has FIXED ligand stereocentres --
+    mirroring the whole complex would INVERT them (a different compound); those
+    diastereomers come from the arrangement enumeration + STEREOCENTER_ENUM.  Env-gated
+    DELFIN_FFFREE_ENANTIOMER_MIRROR (default off -> byte-identical).  Deterministic; never raises."""
+    if not isomers or os.environ.get("DELFIN_FFFREE_ENANTIOMER_MIRROR", "0") != "1":
+        return isomers
+    try:
+        from delfin.manta.permute_dedup import is_permutation_duplicate
+    except Exception:
+        is_permutation_duplicate = None
+    try:
+        if smiles and RDKIT_AVAILABLE and isinstance(smiles, str):
+            _m = Chem.MolFromSmiles(smiles)
+            if _m is not None and Chem.FindMolChiralCenters(
+                    _m, includeUnassigned=False, useLegacyImplementation=False):
+                return isomers   # fixed ligand stereocentre -> mirroring inverts it
+    except Exception:
+        pass
+    _chi_tol = _delfin_env_float("DELFIN_FFFREE_ENANTIOMER_MIRROR_TOL", 0.40)
+    # ADDITIVE-ONLY (2026-07-21).  A broad full:1000 A/B proved the post-hoc UNITE + point-group PROJECTION
+    # is NOT never-worse: averaging a frame over its APPROXIMATE symmetry ops tears ligands and distorts
+    # polyhedra (measured: poly-distortion 13, ligand-quality 18, ligand-bond-torn 1, tier-2 on 69,
+    # holistic +0.513), and the fp-GROUPING collapses DISTINCT isomers that merely share a distance-bin
+    # (isomers-lost 10, ccdc-isomer-lost 4).  Post-hoc geometry repair on built atoms is exactly the
+    # Leitspruch antipattern.  So this filter now does ONLY the SAFE, purely-ADDITIVE half of the user's
+    # ask ("wir wollen die Enantiomere in den Frames"): for every GENUINELY chiral coordination frame whose
+    # opposite hand is not already built, ADD its EXACT mirror.  A reflection of a good frame is an equally
+    # good frame -> zero distortion, zero isomer loss -> never-worse.  The ELIMINATE-where-possible geometry
+    # symmetrisation is DEFERRED to the IN-CONSTRUCTION poly-seater (seat donors at ideal symmetric vertices;
+    # NEVER move built atoms) -- the correct root architecture.  Gate CONFIGURATIONAL (coord-sphere)
+    # chirality, robust to conformer/peripheral wobble; the mirror's presence is tested by a
+    # reflection-aware (fingerprint, sign) key so an already-built opposite hand is never duplicated.
+    # FAST per-frame key: (reflection-INVARIANT fingerprint, cheap O(donors^3) chirality pseudoscalar).
+    # Deliberately AVOID the expensive permutation-Kabsch _coord_sphere_chirality_rmsd here: on high-frame-
+    # count systems (RILVUD 209 frames) it made the finalisation slow enough to push _one.py over the
+    # per-system build timeout -> partial build -> FALSE isomer loss in the A/B.  The pseudoscalar sign is
+    # a sufficient chiral gate (sign==0 -> treat as achiral -> add nothing; a rare genuinely-chiral frame
+    # with an accidental zero pseudoscalar is merely SKIPPED = a completeness miss, never a regression).
+    _keys = []
+    _present = set()
+    for it in isomers:
+        try:
+            _fp = _heavy_dist_fp(it[0]); _sg = _coord_chirality_sign(it[0])
+        except Exception:
+            _fp, _sg = None, 0
+        _keys.append((_fp, _sg))
+        _present.add((_fp, _sg))
+    out = list(isomers)
+    for _i, it in enumerate(isomers):
+        _fp, _sg = _keys[_i]
+        if _sg == 0:
+            continue   # achiral configuration -> mirror superimposes on itself -> nothing to add
+        _mk = (_fp, -_sg)   # the mirror: fp is reflection-INVARIANT, ONLY the chirality sign flips
+        if _mk in _present:
+            continue   # the opposite hand is already built (arrangement enumeration / CHIRAL_ENUM)
+        _present.add(_mk)
+        _mx = _mirror_xyz_coords(it[0])
+        if _mx is None:
+            continue
+        _lbl = it[1] if len(it) > 1 else ""
+        _hand = "Λ" if _sg < 0 else "Δ"   # mirror hand = opposite of the original's
+        out.append((_mx, (f"{_lbl}-{_hand}" if _lbl else _hand)) + tuple(it[2:]))
+    return out
+
+
 # Re-entrancy guard for the conformer-completeness pass.  ``_smiles_to_xyz_isomers_impl``
 # recurses through this PUBLIC wrapper for the dual-parse augmentation; the
 # completeness pass must run EXACTLY ONCE at the OUTERMOST public boundary over the
@@ -30491,10 +31149,17 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # (the early one runs before _conf re-expands conformers; conformer/declash
         # frames that decoordinate a donor must be caught here). Byte-id when off.
         _coordint_late = _coord_integrity_filter if outermost else (lambda x: x)
+        # ENANTIOMER MIRROR (DELFIN_FFFREE_ENANTIOMER_MIRROR, default off -> byte-identical).
+        # OUTERMOST step so Bild+Spiegelbild stay CONSECUTIVE after ranking.  Adds the Δ/Λ mirror
+        # ONLY for configurationally-chiral frames -- those NOT reducible to a mirror-symmetric
+        # form within tolerance (user: "nur Systeme die sich nicht in die höchstsymmetrische Form
+        # bringen lassen brauchen beide Frames").  Achiral / symmetrizable frames stay single.
+        _smi = _smiles_arg(args, kwargs)
+        _emir = (lambda x: _enantiomer_mirror_filter(x, _smi)) if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
-            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0])))))))))))))), r[1]
+            return _emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r[0]))))))))))))))), r[1]
         if isinstance(r, list):
-            return _rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r))))))))))))))
+            return _emir(_rank_emitted_isomers(_coordint_late(_cofix(_sdeclash(_hdeclash(_grank(_pdedup(_clean_gate_filter(_topology_gate_filter(_apply_pi_coplanar_final(_apply_pi_inplane_final(_conf(_coord_integrity_filter(_filter_nonfinite_isomers(r)))))))))))))))
         return r
     finally:
         if outermost:
