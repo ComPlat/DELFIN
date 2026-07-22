@@ -148,26 +148,18 @@ def create_tab(ctx):
                                       layout=widgets.Layout(width='250px'), style=ws)
     orca_print_basis = widgets.Checkbox(value=False, description='Print Basis',
                                         layout=widgets.Layout(width='250px'), style=ws)
-    orca_additional = widgets.Text(value='', placeholder='e.g. FinalGrid6 NormalPrint',
-                                   description='Additional:',
-                                   layout=widgets.Layout(width='400px'), style=ws)
-    orca_extra_input = widgets.Textarea(
-        value='',
-        placeholder=('Extra ORCA input — any blocks/lines not covered above.\n'
-                     'Inserted verbatim before the coordinate block, e.g.\n'
-                     '%scf maxiter 300 end\n'
-                     '%tddft nroots 10 end'),
-        description='Extra Input:',
-        layout=widgets.Layout(width='100%', height='140px', box_sizing='border-box'), style=ws,
-    )
 
     orca_pal = widgets.IntText(value=12, description='PAL (cores):',
                                layout=widgets.Layout(width='250px'), style=ws)
     orca_maxcore = widgets.IntText(value=6000, description='MaxCore (MB):',
                                    layout=widgets.Layout(width='250px'), style=ws)
-    orca_slurm_time = widgets.Text(value='12:00:00', placeholder='e.g. 02:00:00',
-                                   description='Time Limit:',
-                                   layout=widgets.Layout(width='250px'), style=ws)
+    orca_slurm_time = widgets.Combobox(
+        value='06:00:00', placeholder='e.g. 02:00:00',
+        options=['00:30:00', '01:00:00', '02:00:00', '06:00:00',
+                 '12:00:00', '24:00:00', '48:00:00', '72:00:00'],
+        ensure_option=False,  # allow arbitrary walltimes, not only the presets
+        description='Time Limit:',
+        layout=widgets.Layout(width='250px'), style=ws)
 
     orca_file_upload = widgets.FileUpload(
         accept='', multiple=True, description='',
@@ -535,8 +527,6 @@ def create_tab(ctx):
                 keywords.append('AutoAux')
         if orca_solvation_type.value != 'None':
             keywords.append(f'{orca_solvation_type.value}({orca_solvent.value})')
-        if orca_additional.value.strip():
-            keywords.append(orca_additional.value.strip())
         return '! ' + ' '.join(keywords)
 
     def _build_output_block():
@@ -569,9 +559,6 @@ def create_tab(ctx):
         inp = f'{keyword_line}\n\n{pal_block}\n\n{maxcore_line}\n'
         if output_block:
             inp += f'\n{output_block}\n'
-        extra = orca_extra_input.value.strip()
-        if extra:
-            inp += f'\n{extra}\n'
         inp += f'\n{coord_block}\n'
         return inp
 
@@ -617,11 +604,9 @@ def create_tab(ctx):
             orca_solvent.value = 'acetonitrile'
             orca_print_mos.value = False
             orca_print_basis.value = False
-            orca_additional.value = ''
-            orca_extra_input.value = ''
             orca_pal.value = 12
             orca_maxcore.value = 6000
-            orca_slurm_time.value = '12:00:00'
+            orca_slurm_time.value = '06:00:00'
             orca_path_files.value = ''
             orca_preview.value = ''
             state['extra_files'].clear()
@@ -1304,7 +1289,7 @@ def create_tab(ctx):
 
     for w in [orca_method, orca_job_type, orca_basis, orca_dispersion, orca_ri,
               orca_aux_basis, orca_charge, orca_multiplicity, orca_pal, orca_maxcore,
-              orca_coords, orca_additional, orca_extra_input, orca_solvation_type,
+              orca_coords, orca_solvation_type,
               orca_solvent, orca_print_mos, orca_print_basis, orca_autoaux]:
         w.observe(update_orca_preview, names='value')
 
@@ -1316,17 +1301,17 @@ def create_tab(ctx):
     state['last_auto_keywords'] = _build_keyword_line()
 
     # -- config templates ----------------------------------------------
-    # A named template stores the level of theory, keys, extra input and
-    # resources so a saved setup can be re-applied to a new system. Charge,
-    # multiplicity and coordinates are intentionally NOT stored (they are
-    # system specific). This list is the single source for collect/apply.
+    # A named template stores the level of theory, keys and resources plus the
+    # full editable INP preview body (see inp_body below), so a saved setup can
+    # be re-applied to a new system. Charge, multiplicity and coordinates are
+    # intentionally NOT stored (they are system specific). This list is the
+    # single source for the structured collect/apply.
     _TEMPLATE_FIELDS = [
         ('method', orca_method), ('job_type', orca_job_type), ('basis', orca_basis),
         ('dispersion', orca_dispersion), ('ri', orca_ri), ('aux_basis', orca_aux_basis),
         ('autoaux', orca_autoaux), ('solvation_type', orca_solvation_type),
         ('solvent', orca_solvent), ('print_mos', orca_print_mos),
-        ('print_basis', orca_print_basis), ('additional', orca_additional),
-        ('extra_input', orca_extra_input), ('pal', orca_pal),
+        ('print_basis', orca_print_basis), ('pal', orca_pal),
         ('maxcore', orca_maxcore), ('slurm_time', orca_slurm_time),
     ]
 
@@ -1574,8 +1559,6 @@ def create_tab(ctx):
         _row([orca_autoaux]),
         _row([orca_solvation_type, orca_solvent]),
         _row([orca_print_mos, orca_print_basis]),
-        _row([orca_additional], wrap=False),
-        _row([orca_extra_input], wrap=False),
         _row([orca_pal, orca_maxcore]),
         _row([orca_slurm_time]),
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
@@ -1800,8 +1783,6 @@ def create_tab(ctx):
         'orca_basis': orca_basis,
         'orca_dispersion': orca_dispersion,
         'orca_solvent': orca_solvent,
-        'orca_additional': orca_additional,
-        'orca_extra_input': orca_extra_input,
         'orca_template_dd': orca_template_dd,
         'orca_template_name': orca_template_name,
         'orca_template_save_btn': orca_template_save_btn,
