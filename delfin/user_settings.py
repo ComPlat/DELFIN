@@ -837,3 +837,62 @@ def mark_calc_as_read(folder_path, markers_path=None):
         save_read_markers(markers, markers_path)
 
 
+# --- ORCA Builder config templates ------------------------------------------
+# Named, reusable ORCA Builder configurations (level of theory, keys, extra
+# input, resources) so a user can save a setup once and re-apply it to new
+# coordinates. Stored as a single JSON registry keyed by template name.
+ORCA_TEMPLATES_FILE_NAME = ".delfin_orca_templates.json"
+ORCA_TEMPLATES_KIND = "delfin_orca_builder_templates"
+
+
+def get_orca_templates_path(base_path=None):
+    """Return the path to the ORCA Builder templates registry file."""
+    if base_path:
+        return Path(base_path).expanduser()
+    return Path.home() / ORCA_TEMPLATES_FILE_NAME
+
+
+def load_orca_templates(path=None):
+    """Return ``{name: payload_dict}``.
+
+    A missing or unreadable/malformed file yields ``{}`` (never raises), so the
+    dashboard can always build its template dropdown.
+    """
+    p = get_orca_templates_path(path)
+    if not p.exists():
+        return {}
+    try:
+        data = _read_json(p)
+    except Exception:
+        return {}
+    templates = data.get("templates") if isinstance(data, dict) else None
+    if not isinstance(templates, dict):
+        return {}
+    return {str(k): v for k, v in templates.items() if isinstance(v, dict)}
+
+
+def save_orca_template(name, payload, path=None):
+    """Add/overwrite the template ``name`` with ``payload`` and persist atomically."""
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("Template name must not be empty.")
+    templates = load_orca_templates(path)
+    templates[name] = dict(payload)
+    _write_json_atomic(
+        get_orca_templates_path(path),
+        {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+    )
+
+
+def delete_orca_template(name, path=None):
+    """Remove the template ``name`` if present and persist atomically."""
+    name = str(name or "").strip()
+    templates = load_orca_templates(path)
+    if name in templates:
+        del templates[name]
+        _write_json_atomic(
+            get_orca_templates_path(path),
+            {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+        )
+
+

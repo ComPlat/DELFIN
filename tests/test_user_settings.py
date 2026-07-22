@@ -18,6 +18,10 @@ load_transfer_settings = _MODULE.load_transfer_settings
 normalize_local_directory_setting = _MODULE.normalize_local_directory_setting
 save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
 save_transfer_settings = _MODULE.save_transfer_settings
+get_orca_templates_path = _MODULE.get_orca_templates_path
+load_orca_templates = _MODULE.load_orca_templates
+save_orca_template = _MODULE.save_orca_template
+delete_orca_template = _MODULE.delete_orca_template
 
 
 def test_save_and_load_transfer_settings_roundtrip(tmp_path):
@@ -274,3 +278,48 @@ def test_agent_extras_default_off_and_roundtrip(tmp_path):
     assert loaded["agent"]["eval_loop"]["window"] == 300
     # Non-UI keys (hand-edited in the settings file) survive the merge.
     assert loaded["agent"]["eval_loop"]["threshold"] == 3
+
+
+def test_orca_templates_missing_file_returns_empty(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    assert load_orca_templates(path) == {}
+    assert path == get_orca_templates_path(path)
+
+
+def test_orca_templates_save_load_delete_roundtrip(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    payload = {
+        "method": "PBE0", "job_type": "OPT", "basis": "def2-SVP",
+        "extra_input": "%scf maxiter 300 end\n%tddft nroots 10 end",
+        "additional": "TightSCF", "pal": 24, "autoaux": True,
+    }
+    save_orca_template("classic opt", payload, path=path)
+    save_orca_template("tddft", {"method": "wB97X-D3"}, path=path)
+
+    loaded = load_orca_templates(path)
+    assert set(loaded) == {"classic opt", "tddft"}
+    assert loaded["classic opt"] == payload
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    # Same name overwrites the template entry (not a file deletion).
+    save_orca_template("classic opt", {"method": "B3LYP"}, path=path)
+    assert load_orca_templates(path)["classic opt"] == {"method": "B3LYP"}
+
+    delete_orca_template("tddft", path=path)
+    assert set(load_orca_templates(path)) == {"classic opt"}
+    # Deleting a non-existent template is a no-op.
+    delete_orca_template("nope", path=path)
+    assert set(load_orca_templates(path)) == {"classic opt"}
+
+
+def test_orca_templates_empty_name_raises(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    import pytest
+    with pytest.raises(ValueError):
+        save_orca_template("   ", {"method": "PBE0"}, path=path)
+
+
+def test_orca_templates_malformed_file_returns_empty(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    path.write_text("{ not valid json ]", encoding="utf-8")
+    assert load_orca_templates(path) == {}

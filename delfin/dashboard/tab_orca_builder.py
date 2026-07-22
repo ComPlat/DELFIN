@@ -8,6 +8,7 @@ from itertools import permutations, product
 
 import py3Dmol
 import ipywidgets as widgets
+import html
 import json
 import uuid
 import numpy as np
@@ -16,6 +17,9 @@ from IPython.display import clear_output, display, HTML
 
 from delfin.common.control_validator import (
     ORCA_FUNCTIONALS, ORCA_BASIS_SETS, DISP_CORR_VALUES, _RI_JKX_KEYWORDS,
+)
+from delfin.user_settings import (
+    load_orca_templates, save_orca_template, delete_orca_template,
 )
 
 from .molecule_viewer import (
@@ -28,6 +32,25 @@ from .input_processing import (
     parse_inp_resources, sanitize_orca_input, clean_input_data,
     smiles_to_xyz_quick_with_previews,
 )
+
+
+_COORD_LINE_RE = re.compile(r'^\s*\*\s*(?:xyzfile|xyz|gzmt|internal)\b', re.IGNORECASE)
+
+
+def strip_coord_block(text):
+    """Return the INP text with a trailing ORCA coordinate block removed.
+
+    Cuts everything from the first coordinate specifier line (``* xyz``,
+    ``* xyzfile``, ...) onward, so the remaining ``inp_body`` holds only the
+    settings and can be templated independently of any coordinates.
+    """
+    if not text:
+        return ''
+    lines = text.split('\n')
+    for i, line in enumerate(lines):
+        if _COORD_LINE_RE.match(line):
+            return '\n'.join(lines[:i]).rstrip()
+    return text.rstrip()
 
 
 def create_tab(ctx):
@@ -128,6 +151,15 @@ def create_tab(ctx):
     orca_additional = widgets.Text(value='', placeholder='e.g. FinalGrid6 NormalPrint',
                                    description='Additional:',
                                    layout=widgets.Layout(width='400px'), style=ws)
+    orca_extra_input = widgets.Textarea(
+        value='',
+        placeholder=('Extra ORCA input — any blocks/lines not covered above.\n'
+                     'Inserted verbatim before the coordinate block, e.g.\n'
+                     '%scf maxiter 300 end\n'
+                     '%tddft nroots 10 end'),
+        description='Extra Input:',
+        layout=widgets.Layout(width='100%', height='140px', box_sizing='border-box'), style=ws,
+    )
 
     orca_pal = widgets.IntText(value=12, description='PAL (cores):',
                                layout=widgets.Layout(width='250px'), style=ws)
@@ -517,24 +549,29 @@ def create_tab(ctx):
             return '%output\n' + '\n'.join(lines) + '\nend'
         return ''
 
+    def _build_coord_block():
+        xyz_blocks = parse_xyz_blocks(orca_coords.value)
+        if xyz_blocks:
+            # Use external XYZ file – coordinates are written to the job dir
+            return (
+                f'* xyzfile {orca_charge.value} {orca_multiplicity.value}'
+                f' {xyz_blocks[0][0]}'
+            )
+        coords = strip_xyz_header(orca_coords.value)
+        return f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
+
     def generate_orca_input():
         keyword_line = _build_keyword_line()
         pal_block = f'%pal\n  nprocs {orca_pal.value}\nend'
         maxcore_line = f'%maxcore {orca_maxcore.value}'
         output_block = _build_output_block()
-        xyz_blocks = parse_xyz_blocks(orca_coords.value)
-        if xyz_blocks:
-            # Use external XYZ file – coordinates are written to the job dir
-            coord_block = (
-                f'* xyzfile {orca_charge.value} {orca_multiplicity.value}'
-                f' {xyz_blocks[0][0]}'
-            )
-        else:
-            coords = strip_xyz_header(orca_coords.value)
-            coord_block = f'* xyz {orca_charge.value} {orca_multiplicity.value}\n{coords}\n*'
+        coord_block = _build_coord_block()
         inp = f'{keyword_line}\n\n{pal_block}\n\n{maxcore_line}\n'
         if output_block:
             inp += f'\n{output_block}\n'
+        extra = orca_extra_input.value.strip()
+        if extra:
+            inp += f'\n{extra}\n'
         inp += f'\n{coord_block}\n'
         return inp
 
@@ -581,6 +618,7 @@ def create_tab(ctx):
             orca_print_mos.value = False
             orca_print_basis.value = False
             orca_additional.value = ''
+            orca_extra_input.value = ''
             orca_pal.value = 12
             orca_maxcore.value = 6000
             orca_slurm_time.value = '12:00:00'
@@ -1266,8 +1304,8 @@ def create_tab(ctx):
 
     for w in [orca_method, orca_job_type, orca_basis, orca_dispersion, orca_ri,
               orca_aux_basis, orca_charge, orca_multiplicity, orca_pal, orca_maxcore,
-              orca_coords, orca_additional, orca_solvation_type, orca_solvent,
-              orca_print_mos, orca_print_basis, orca_autoaux]:
+              orca_coords, orca_additional, orca_extra_input, orca_solvation_type,
+              orca_solvent, orca_print_mos, orca_print_basis, orca_autoaux]:
         w.observe(update_orca_preview, names='value')
 
     orca_coords.observe(update_orca_molecule_view, names='value')
@@ -1276,6 +1314,233 @@ def create_tab(ctx):
     update_orca_molecule_view()
     update_orca_preview()
     state['last_auto_keywords'] = _build_keyword_line()
+
+    # -- config templates ----------------------------------------------
+    # A named template stores the level of theory, keys, extra input and
+    # resources so a saved setup can be re-applied to a new system. Charge,
+    # multiplicity and coordinates are intentionally NOT stored (they are
+    # system specific). This list is the single source for collect/apply.
+    _TEMPLATE_FIELDS = [
+        ('method', orca_method), ('job_type', orca_job_type), ('basis', orca_basis),
+        ('dispersion', orca_dispersion), ('ri', orca_ri), ('aux_basis', orca_aux_basis),
+        ('autoaux', orca_autoaux), ('solvation_type', orca_solvation_type),
+        ('solvent', orca_solvent), ('print_mos', orca_print_mos),
+        ('print_basis', orca_print_basis), ('additional', orca_additional),
+        ('extra_input', orca_extra_input), ('pal', orca_pal),
+        ('maxcore', orca_maxcore), ('slurm_time', orca_slurm_time),
+    ]
+
+    orca_template_dd = widgets.Dropdown(
+        options=[], description='Template:',
+        layout=widgets.Layout(width='300px'), style=ws,
+    )
+    orca_template_load_btn = widgets.Button(
+        description='LOAD', button_style='primary',
+        layout=widgets.Layout(width='90px'),
+    )
+    orca_template_save_btn = widgets.Button(
+        description='SAVE TEMPLATE', button_style='info',
+        layout=widgets.Layout(width='150px'),
+    )
+    orca_template_delete_btn = widgets.Button(
+        description='DELETE', button_style='danger',
+        layout=widgets.Layout(width='90px'),
+    )
+    orca_template_status = widgets.HTML(value='')
+
+    orca_template_name = widgets.Text(
+        value='', placeholder='Template name', description='Name:',
+        layout=widgets.Layout(width='320px'), style=ws,
+    )
+    orca_template_save_confirm_btn = widgets.Button(
+        description='SAVE', button_style='success',
+        layout=widgets.Layout(width='90px'),
+    )
+    orca_template_save_cancel_btn = widgets.Button(
+        description='CANCEL', layout=widgets.Layout(width='90px'),
+    )
+    orca_template_save_dialog = widgets.VBox(
+        [
+            widgets.HTML('<b>Save current settings as template:</b>'),
+            widgets.HBox(
+                [orca_template_name, orca_template_save_confirm_btn,
+                 orca_template_save_cancel_btn],
+                layout=widgets.Layout(gap='6px', align_items='center', flex_wrap='wrap'),
+            ),
+        ],
+        layout=widgets.Layout(
+            display='none', flex_flow='column', border='1px solid #1976d2',
+            border_radius='6px', padding='8px', margin='4px 0', gap='4px',
+        ),
+    )
+
+    orca_template_delete_prompt = widgets.HTML(value='')
+    orca_template_delete_confirm_btn = widgets.Button(
+        description='DELETE', button_style='danger',
+        layout=widgets.Layout(width='90px'),
+    )
+    orca_template_delete_cancel_btn = widgets.Button(
+        description='CANCEL', layout=widgets.Layout(width='90px'),
+    )
+    orca_template_delete_dialog = widgets.VBox(
+        [
+            orca_template_delete_prompt,
+            widgets.HBox(
+                [orca_template_delete_confirm_btn, orca_template_delete_cancel_btn],
+                layout=widgets.Layout(gap='6px', align_items='center'),
+            ),
+        ],
+        layout=widgets.Layout(
+            display='none', flex_flow='column', border='1px solid #d32f2f',
+            border_radius='6px', padding='8px', margin='4px 0', gap='4px',
+        ),
+    )
+
+    def _set_template_status(message='', color='#555'):
+        orca_template_status.value = (
+            f'<span style="color:{color};">{message}</span>' if message else ''
+        )
+
+    def _show_save_dialog(show):
+        orca_template_save_dialog.layout.display = 'flex' if show else 'none'
+
+    def _show_delete_dialog(show):
+        orca_template_delete_dialog.layout.display = 'flex' if show else 'none'
+
+    def _refresh_template_dd(select=None):
+        names = sorted(load_orca_templates().keys())
+        current = select if select is not None else orca_template_dd.value
+        orca_template_dd.options = names
+        if names:
+            orca_template_dd.value = current if current in names else names[0]
+        orca_template_load_btn.disabled = not names
+        orca_template_delete_btn.disabled = not names
+
+    def _collect_template_payload():
+        payload = {key: widget.value for key, widget in _TEMPLATE_FIELDS}
+        # Also capture whatever the user typed directly into the editable INP
+        # preview (manual keyword suffixes, %-blocks, extra lines), minus the
+        # coordinate block, so hand edits survive a save/load round-trip.
+        payload['inp_body'] = strip_coord_block(orca_preview.value)
+        return payload
+
+    def _apply_template_payload(payload):
+        skipped = []
+        if not isinstance(payload, dict):
+            return skipped
+        state['is_resetting'] = True
+        try:
+            for key, widget in _TEMPLATE_FIELDS:
+                if key not in payload:
+                    continue
+                val = payload[key]
+                if isinstance(widget, widgets.Dropdown):
+                    if val not in widget.options:
+                        skipped.append(f'{key}={val!r}')
+                        continue
+                    widget.value = val
+                elif isinstance(widget, widgets.Checkbox):
+                    widget.value = bool(val)
+                elif isinstance(widget, widgets.IntText):
+                    try:
+                        widget.value = int(val)
+                    except (TypeError, ValueError):
+                        skipped.append(f'{key}={val!r}')
+                else:
+                    widget.value = '' if val is None else str(val)
+        finally:
+            state['is_resetting'] = False
+        body = payload.get('inp_body')
+        if isinstance(body, str) and body.strip():
+            # Restore the manually edited settings body verbatim and append a
+            # fresh coordinate block from the CURRENT coordinates (empty until
+            # the user pastes new ones). Set last_auto_keywords so subsequent
+            # field edits keep detecting the manual keyword suffix correctly.
+            state['last_auto_keywords'] = _build_keyword_line()
+            orca_preview.value = f'{body.rstrip()}\n\n{_build_coord_block()}\n'
+        else:
+            # No stored body (older template) -> full regen from the fields.
+            orca_preview.value = ''
+            update_orca_preview()
+        return skipped
+
+    def _on_template_save_click(_btn=None):
+        _show_delete_dialog(False)
+        orca_template_name.value = orca_template_dd.value or ''
+        _show_save_dialog(True)
+
+    def _on_template_save_confirm(_btn=None):
+        name = (orca_template_name.value or '').strip()
+        if not name:
+            _set_template_status('Template name must not be empty.', '#d32f2f')
+            return
+        try:
+            save_orca_template(name, _collect_template_payload())
+        except Exception as exc:
+            _set_template_status(f'Could not save template: {html.escape(str(exc))}', '#d32f2f')
+            return
+        _show_save_dialog(False)
+        _refresh_template_dd(select=name)
+        _set_template_status(f"Template '{html.escape(name)}' saved.", '#2e7d32')
+
+    def _on_template_save_cancel(_btn=None):
+        _show_save_dialog(False)
+
+    def _on_template_load_click(_btn=None):
+        name = orca_template_dd.value
+        if not name:
+            _set_template_status('No template selected.', '#d32f2f')
+            return
+        templates = load_orca_templates()
+        if name not in templates:
+            _refresh_template_dd()
+            _set_template_status(f"Template '{html.escape(str(name))}' no longer exists.", '#d32f2f')
+            return
+        skipped = _apply_template_payload(templates[name])
+        if skipped:
+            _set_template_status(
+                f"Loaded template '{html.escape(name)}' "
+                f"(skipped invalid: {html.escape(', '.join(skipped))}).",
+                '#ef6c00',
+            )
+        else:
+            _set_template_status(f"Loaded template '{html.escape(name)}'.", '#2e7d32')
+
+    def _on_template_delete_click(_btn=None):
+        name = orca_template_dd.value
+        if not name:
+            _set_template_status('No template selected.', '#d32f2f')
+            return
+        _show_save_dialog(False)
+        orca_template_delete_prompt.value = (
+            f"Delete template '<b>{html.escape(str(name))}</b>'? This cannot be undone."
+        )
+        _show_delete_dialog(True)
+
+    def _on_template_delete_confirm(_btn=None):
+        name = orca_template_dd.value
+        _show_delete_dialog(False)
+        if not name:
+            return
+        try:
+            delete_orca_template(name)
+        except Exception as exc:
+            _set_template_status(f'Could not delete template: {html.escape(str(exc))}', '#d32f2f')
+            return
+        _refresh_template_dd()
+        _set_template_status(f"Deleted template '{html.escape(str(name))}'.", '#2e7d32')
+
+    def _on_template_delete_cancel(_btn=None):
+        _show_delete_dialog(False)
+
+    orca_template_save_btn.on_click(_on_template_save_click)
+    orca_template_save_confirm_btn.on_click(_on_template_save_confirm)
+    orca_template_save_cancel_btn.on_click(_on_template_save_cancel)
+    orca_template_load_btn.on_click(_on_template_load_click)
+    orca_template_delete_btn.on_click(_on_template_delete_click)
+    orca_template_delete_confirm_btn.on_click(_on_template_delete_confirm)
+    orca_template_delete_cancel_btn.on_click(_on_template_delete_cancel)
+    _refresh_template_dd()
 
     # -- layout ---------------------------------------------------------
     def _row(children, wrap=True):
@@ -1297,6 +1562,11 @@ def create_tab(ctx):
         _row([orca_job_name], wrap=False),
         _row([orca_coords], wrap=False),
         _row([orca_convert_smiles_btn, orca_copy_coords_btn, orca_check_numbering_btn, orca_apply_numbering_btn]),
+        widgets.HTML('<b>Config Templates:</b>'),
+        _row([orca_template_dd, orca_template_load_btn, orca_template_save_btn, orca_template_delete_btn]),
+        orca_template_save_dialog,
+        orca_template_delete_dialog,
+        orca_template_status,
         _row([orca_charge, orca_multiplicity]),
         _row([orca_method, orca_job_type]),
         _row([orca_basis, orca_dispersion]),
@@ -1305,6 +1575,7 @@ def create_tab(ctx):
         _row([orca_solvation_type, orca_solvent]),
         _row([orca_print_mos, orca_print_basis]),
         _row([orca_additional], wrap=False),
+        _row([orca_extra_input], wrap=False),
         _row([orca_pal, orca_maxcore]),
         _row([orca_slurm_time]),
         widgets.VBox([orca_drop_zone, orca_file_upload, orca_uploaded_files_label],
@@ -1529,6 +1800,15 @@ def create_tab(ctx):
         'orca_basis': orca_basis,
         'orca_dispersion': orca_dispersion,
         'orca_solvent': orca_solvent,
+        'orca_additional': orca_additional,
+        'orca_extra_input': orca_extra_input,
+        'orca_template_dd': orca_template_dd,
+        'orca_template_name': orca_template_name,
+        'orca_template_save_btn': orca_template_save_btn,
+        'orca_template_save_confirm_btn': orca_template_save_confirm_btn,
+        'orca_template_load_btn': orca_template_load_btn,
+        'orca_template_delete_btn': orca_template_delete_btn,
+        'orca_template_delete_confirm_btn': orca_template_delete_confirm_btn,
         'orca_preview': orca_preview,
         'orca_submit_btn': orca_submit_btn,          # destructive: starts real ORCA job
         'orca_convert_smiles_btn': orca_convert_smiles_btn,  # safe: SMILES→XYZ conversion
