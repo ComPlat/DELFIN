@@ -1,0 +1,327 @@
+"""ERDBEBEN final pass — re-seat a planar-COLLAPSED ligand fragment from a clean ISOLATED embed.
+
+The decisive finding (2026-07-23): the metal-context whole-complex ETKDG collapses rigid ligand cages
+(AQIBAE bis-phosphite: one cage flattens to a plane, sp3 tetra-volume ~0), while the SAME ligand embedded
+in ISOLATION from the metal builds 3D in 20/20 ETKDG seeds.  A spring-relax (``_bond_decollapse``) only
+spreads the superimposed atoms (sev 5.8->4.6) but cannot pop the flattened cage out of its planar local
+minimum -- only a FRESH embed reconstructs the tetrahedral geometry.
+
+This runs LAST (on the final frame list, after every builder/UFF/bandage), so it catches a collapsed
+fragment no matter which builder produced it.  Per frame:
+  1. perceive non-metal fragments (geometric bonds);
+  2. for a fragment with a planar-collapsed sp3 centre, embed that fragment ALONE (clean, 3D);
+  3. Kabsch-align the clean embed onto the frame's metal-anchored DONOR atoms (they are correctly placed),
+     resolving the residual rotational DOF (2-donor chelate) by minimising clash with the rest of the
+     complex;
+  4. splice the clean fragment coordinates (heavy + H) back in.
+Per-frame ROLLBACK: keep only if the collapse strictly drops AND no metal-donor bond breaks AND
+inter-atom clashes do not increase.  Bit-exact when no fragment is collapsed (early return) or the flag is
+off.  Requires frame atom order == mol atom order (DELFIN convention; guarded by an atom-count match, else
+the frame is skipped).  RDKit-only, no CCDC -- the fragment topology comes from ``mol`` (SMILES)."""
+from __future__ import annotations
+
+import math
+import os
+from typing import Dict, List, Optional
+
+import numpy as np
+
+try:
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+    from rdkit import RDLogger
+    RDLogger.DisableLog("rdApp.*")
+    _HAVE_RDKIT = True
+except Exception:                                                 # pragma: no cover
+    Chem = None
+    _HAVE_RDKIT = False
+
+_METALS = {
+    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",
+    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",
+    "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",
+    "Mg", "Ca", "Sr", "Ba", "Al", "Ga", "In", "Tl", "Sn", "Pb", "Bi", "Sb",
+    "Li", "Na", "K", "Rb", "Cs", "Be",
+    "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu",
+    "Th", "U",
+}
+_COV = {"H": 0.31, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57, "Si": 1.11, "P": 1.07,
+        "S": 1.05, "Cl": 1.02, "As": 1.19, "Br": 1.20, "I": 1.39, "Se": 1.20, "Te": 1.38}
+
+_VOL_MIN = 0.40          # sp3 tetra-volume floor (collapsed below this)
+_MD_FACTOR = 1.35        # metal-donor bond detection factor (x covalent sum)
+_MD_TOL = 0.25           # allowed M-D lengthening after re-seat (A) before rollback
+_CLASH_MIN = 2.2         # heavy-heavy non-bonded clash floor (A)
+
+
+def _cov(s: str) -> float:
+    return _COV.get(s, 0.95)
+
+
+def _parse(xyz: str):
+    syms: List[str] = []
+    pts: List[List[float]] = []
+    for ln in xyz.strip().split("\n"):
+        p = ln.split()
+        if len(p) >= 4:
+            syms.append(p[0])
+            pts.append([float(p[1]), float(p[2]), float(p[3])])
+    return syms, np.array(pts, dtype=float)
+
+
+def _write(syms: List[str], P: np.ndarray) -> str:
+    return "\n".join("%-4s %12.6f %12.6f %12.6f" % (syms[i], P[i, 0], P[i, 1], P[i, 2])
+                     for i in range(len(syms))) + "\n"
+
+
+def _adjacency(syms: List[str], P: np.ndarray):
+    n = len(syms)
+    adj: List[List[int]] = [[] for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = float(np.linalg.norm(P[i] - P[j]))
+            if 0.3 < d < 1.3 * (_cov(syms[i]) + _cov(syms[j])):
+                adj[i].append(j)
+                adj[j].append(i)
+    return adj
+
+
+def _nonmetal_fragments(syms: List[str], adj) -> List[List[int]]:
+    n = len(syms)
+    seen: set = set()
+    frags: List[List[int]] = []
+    for s in range(n):
+        if s in seen or syms[s] in _METALS:
+            continue
+        comp: List[int] = []
+        stack = [s]
+        while stack:
+            u = stack.pop()
+            if u in seen or syms[u] in _METALS:
+                continue
+            seen.add(u)
+            comp.append(u)
+            for v in adj[u]:
+                if v not in seen and syms[v] not in _METALS:
+                    stack.append(v)
+        frags.append(sorted(comp))
+    return frags
+
+
+def _fragment_collapsed(mol, frag: List[int], syms: List[str], P: np.ndarray) -> bool:
+    """True if the fragment (frame indices == mol indices) has a planar-collapsed sp3 centre."""
+    fs = set(frag)
+    for ai in frag:
+        a = mol.GetAtomWithIdx(ai)
+        if a.GetSymbol() in _METALS or a.GetIsAromatic():
+            continue
+        if a.GetHybridization() != Chem.HybridizationType.SP3:
+            continue
+        nb = [nbj.GetIdx() for nbj in a.GetNeighbors() if nbj.GetIdx() in fs]
+        if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
+            continue
+        near = sorted(nb, key=lambda j: float(np.sum((P[j] - P[ai]) ** 2)))[:4]
+        v = [P[j] for j in near]
+        vol = abs(float(np.dot(np.cross(v[1] - v[0], v[2] - v[0]), v[3] - v[0]))) / 6.0
+        if vol < _VOL_MIN:
+            return True
+    return False
+
+
+def _submol_collapsed(m, conf) -> bool:
+    for a in m.GetAtoms():
+        if a.GetIsAromatic() or a.GetHybridization() != Chem.HybridizationType.SP3:
+            continue
+        nb = list(a.GetNeighbors())
+        if len(nb) < 4 or sum(1 for x in nb if x.GetSymbol() != "H") < 2:
+            continue
+        pa = conf.GetAtomPosition(a.GetIdx())
+        near = sorted(nb, key=lambda x: (conf.GetAtomPosition(x.GetIdx()).x - pa.x) ** 2
+                      + (conf.GetAtomPosition(x.GetIdx()).y - pa.y) ** 2
+                      + (conf.GetAtomPosition(x.GetIdx()).z - pa.z) ** 2)[:4]
+        v = [np.array([conf.GetAtomPosition(x.GetIdx()).x, conf.GetAtomPosition(x.GetIdx()).y,
+                       conf.GetAtomPosition(x.GetIdx()).z]) for x in near]
+        vol = abs(float(np.dot(np.cross(v[1] - v[0], v[2] - v[0]), v[3] - v[0]))) / 6.0
+        if vol < _VOL_MIN:
+            return True
+    return False
+
+
+def _embed_fragment_clean(mol, frag: List[int], n_seeds: int = 10) -> Optional[Dict[int, np.ndarray]]:
+    """Extract the fragment (with its explicit H) as a sub-mol, embed it ISOLATED, return {frame_idx: xyz}
+    for the first NON-COLLAPSED embed (None if all embeds fail/collapse)."""
+    amap: Dict[int, int] = {}
+    rw = Chem.RWMol()
+    for i in frag:
+        a = mol.GetAtomWithIdx(i)
+        na = Chem.Atom(a.GetAtomicNum())
+        na.SetFormalCharge(a.GetFormalCharge())
+        na.SetNoImplicit(True)
+        amap[i] = rw.AddAtom(na)
+    for b in mol.GetBonds():
+        i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        if i in amap and j in amap:
+            rw.AddBond(amap[i], amap[j], b.GetBondType())
+    sub = rw.GetMol()
+    try:
+        Chem.SanitizeMol(sub)
+    except Exception:
+        try:
+            Chem.SanitizeMol(sub, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                               & ~Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                                               & ~Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+        except Exception:
+            return None
+    inv = {v: k for k, v in amap.items()}
+    for seed in range(1, n_seeds + 1):
+        m2 = Chem.Mol(sub)
+        params = AllChem.ETKDGv3()
+        params.randomSeed = seed
+        try:
+            if AllChem.EmbedMolecule(m2, params) != 0:
+                continue
+            conf = m2.GetConformer()
+        except Exception:
+            continue
+        if _submol_collapsed(m2, conf):
+            continue
+        return {inv[si]: np.array([conf.GetAtomPosition(si).x, conf.GetAtomPosition(si).y,
+                                   conf.GetAtomPosition(si).z], float)
+                for si in range(sub.GetNumAtoms()) if si in inv}
+    return None
+
+
+def _kabsch(A: np.ndarray, B: np.ndarray):
+    """Rotation R + translation t so that R@A_i + t best matches B_i (least squares)."""
+    ca, cb = A.mean(0), B.mean(0)
+    H = (A - ca).T @ (B - cb)
+    U, _S, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    return R, cb - R @ ca
+
+
+def _metal_donors(frag, syms, P, metal_idxs):
+    """Fragment atoms bonded to a metal in the frame (correctly-placed anchors)."""
+    out = []
+    for i in frag:
+        if syms[i] == "H":
+            continue
+        for m in metal_idxs:
+            if float(np.linalg.norm(P[i] - P[m])) < _MD_FACTOR * (_cov(syms[i]) + _cov(syms[m])):
+                out.append(i)
+                break
+    return out
+
+
+def _clash_count(syms, P, frag_set, exclude_pairs=None) -> int:
+    """Heavy-heavy contacts < _CLASH_MIN between the fragment and the REST (inter-fragment clash)."""
+    other = [k for k in range(len(syms)) if k not in frag_set and syms[k] != "H" and syms[k] not in _METALS]
+    if not other:
+        return 0
+    Q = P[other]
+    n = 0
+    for i in frag_set:
+        if syms[i] == "H":
+            continue
+        d = np.linalg.norm(Q - P[i], axis=1)
+        n += int(np.sum(d < _CLASH_MIN))
+    return n
+
+
+def _reseat_frame(mol, xyz: str) -> Optional[str]:
+    """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
+    syms, P = _parse(xyz)
+    if len(syms) != mol.GetNumAtoms():
+        return None                                               # atom-order assumption broken -> skip
+    adj = _adjacency(syms, P)
+    metal_idxs = [i for i in range(len(syms)) if syms[i] in _METALS]
+    if not metal_idxs:
+        return None
+    changed = False
+    P = P.copy()
+    for frag in _nonmetal_fragments(syms, adj):
+        if not _fragment_collapsed(mol, frag, syms, P):
+            continue
+        donors = _metal_donors(frag, syms, P, metal_idxs)
+        if len(donors) < 1:
+            continue
+        clean = _embed_fragment_clean(mol, frag)
+        if clean is None or any(d not in clean for d in donors):
+            continue
+        A = np.array([clean[d] for d in donors], float)
+        B = np.array([P[d] for d in donors], float)
+        frag_set = set(frag)
+        base_clash = _clash_count(syms, P, frag_set)
+        # candidate placements: Kabsch on donors; for a 2-donor chelate resolve the residual rotation
+        # about the donor-donor axis by minimising clash with the rest of the complex.
+        best_P = None
+        best_key = None
+        R0, t0 = _kabsch(A, B) if len(donors) >= 2 else (np.eye(3), B[0] - clean[donors[0]])
+        base_place = {i: (R0 @ clean[i] + t0) for i in frag}
+        if len(donors) == 2:
+            axis = B[1] - B[0]
+            an = float(np.linalg.norm(axis))
+            u = axis / an if an > 1e-8 else np.array([0.0, 0.0, 1.0])
+            piv = 0.5 * (B[0] + B[1])
+            angles = [2.0 * math.pi * k / 18.0 for k in range(18)]
+        else:
+            u = None
+            angles = [0.0]
+        for th in angles:
+            place = {}
+            if u is not None and th != 0.0:
+                c, s = math.cos(th), math.sin(th)
+                for i in frag:
+                    v = base_place[i] - piv
+                    place[i] = (v * c + np.cross(u, v) * s + np.outer(v @ u, u) * (1.0 - c)) + piv
+            else:
+                place = dict(base_place)
+            cand = P.copy()
+            for i in frag:
+                cand[i] = place[i]
+            # rollback guards: M-D preserved, collapse resolved, clash not worse
+            md_ok = all(float(np.linalg.norm(cand[d] - P[m])) < _MD_FACTOR * (_cov(syms[d]) + _cov(syms[m])) + _MD_TOL
+                        for d in donors for m in metal_idxs
+                        if float(np.linalg.norm(P[d] - P[m])) < _MD_FACTOR * (_cov(syms[d]) + _cov(syms[m])))
+            if not md_ok:
+                continue
+            if _fragment_collapsed(mol, frag, syms, cand):
+                continue
+            clash = _clash_count(syms, cand, frag_set)
+            key = clash
+            if best_key is None or key < best_key:
+                best_key, best_P = key, cand
+        if best_P is not None and best_key is not None and best_key <= base_clash:
+            P = best_P
+            changed = True
+    if not changed:
+        return None
+    return _write(syms, P)
+
+
+def correct_results(mol, results):
+    """Re-seat collapsed fragments across all frames.  Per-frame: keep the re-seated frame only when it
+    changed (a collapse was resolved under the rollback guards); otherwise the original is kept."""
+    if not _HAVE_RDKIT or not results or mol is None:
+        return results
+    out = []
+    n_fixed = 0
+    for xyz in results:
+        try:
+            new = _reseat_frame(mol, xyz)
+        except Exception:
+            new = None
+        if new is not None:
+            out.append(new)
+            n_fixed += 1
+        else:
+            out.append(xyz)
+    if n_fixed and os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+        try:
+            import sys as _sys
+            print("[SEATING] ISOLATED_RESEAT re-seated %d/%d frames" % (n_fixed, len(results)),
+                  file=_sys.stderr, flush=True)
+        except Exception:
+            pass
+    return out

@@ -1739,19 +1739,51 @@ def _apply_bond_decollapse_if_enabled(mol, results, dual_parse_done: bool):
     """
     if not results:
         return results
-    if dual_parse_done:
+    # DIAGNOSTIC/ERDBEBEN: DELFIN_BOND_DECOLLAPSE_FORCE=1 bypasses BOTH the dual-parse skip and the
+    # hapto-only class scope, so the spring-relax de-collapse runs on ANY class (e.g. sigma AQIBAE) -- to
+    # test whether the existing pass fixes the metal-context cage collapse before building a re-embed pass.
+    _bd_force = os.environ.get("DELFIN_BOND_DECOLLAPSE_FORCE", "0") == "1"
+    if dual_parse_done and not _bd_force:
         return results
-    if not _class_conditional_flag(
+    if not _bd_force and not _class_conditional_flag(
         "DELFIN_BOND_DECOLLAPSE", mol, default=0,
         default_classes=["hapto", "multi_hapto"],
     ):
         return results
     try:
         from delfin.manta._bond_decollapse import correct_results as _bd_correct
-        return _bd_correct(mol, results)
+        _bd_out = _bd_correct(mol, results)
+        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+            _trace_seating("BOND_DECOLLAPSE ran: %d frames (force=%s dual_parse=%s)"
+                           % (len(results), _bd_force, dual_parse_done))
+        return _bd_out
     except Exception as _bd_exc:
         try:
             logger.debug("Iter-25 bond-decollapse skipped: %s", _bd_exc)
+        except Exception:
+            pass
+        return results
+
+
+def _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done: bool):
+    """ERDBEBEN dispatch — re-seat planar-COLLAPSED ligand fragments from a clean ISOLATED embed
+    (delfin.manta._isolated_reseat).  The metal-context whole-complex ETKDG collapses rigid cages
+    (AQIBAE) though the isolated fragment embeds 3D 20/20; the spring-relax de-collapse cannot pop the
+    planar local minimum, only a fresh embed can.  Runs FIRST among the final passes so the subsequent
+    aromatic-planarity / bond-length passes refine the re-seated fragment.  Gated
+    DELFIN_FFFREE_ISOLATED_SEAT (default off -> byte-identical); per-frame rollback keeps it never-worse
+    (collapse must drop, no M-D break, no worse clash).  Runs on ALL classes -- the collapse is not
+    class-specific -- and regardless of dual_parse (a collapsed frame must be fixed either way)."""
+    if not results:
+        return results
+    if os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") != "1":
+        return results
+    try:
+        from delfin.manta._isolated_reseat import correct_results as _ir_correct
+        return _ir_correct(mol, results)
+    except Exception as _ir_exc:
+        try:
+            logger.debug("ERDBEBEN isolated-reseat skipped: %s", _ir_exc)
         except Exception:
             pass
         return results
@@ -33790,6 +33822,11 @@ def _smiles_to_xyz_isomers_impl(
     # ── Iter-24 (2026-05-20): post-UFF aromatic-ring planarity enforcement ──
     # Flatten puckered TRUE aromatic rings (M_coord chelate rings excluded via
     # bond-length gate) onto their SVD best-fit plane, centroid-preserving so
+    # ── ERDBEBEN (2026-07-23): re-seat planar-COLLAPSED fragments from a clean ISOLATED embed ──
+    # Runs FIRST among the final passes so the aromatic-planarity / bond-length passes below refine the
+    # re-seated fragment.  Default-OFF byte-id (DELFIN_FFFREE_ISOLATED_SEAT); per-frame rollback.
+    results = _apply_isolated_reseat_if_enabled(mol, results, _dual_parse_done)
+
     # the M-ring distance / M-D invariant is untouched; ring-H dragged.
     # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
     results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
