@@ -782,7 +782,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.1). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.17208145
 - Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
@@ -790,7 +790,7 @@ If you use DELFIN in a scientific publication, please cite:
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.1.1},
+  version = {v1.2.0},
   year    = {2026},
   publisher = {Zenodo},
   doi     = {10.5281/zenodo.17208145},
