@@ -3340,6 +3340,33 @@ DELFIN_SEVERE_DIST_MAX_SCALE: float = _delfin_env_float(
 ``_has_severe_covalent_distortion``.  Raise to tolerate UFF-overstretched
 bonds that still describe the correct topology."""
 
+DELFIN_FFFREE_COLLAPSE_REJECT: int = _delfin_env_int("DELFIN_FFFREE_COLLAPSE_REJECT", 0)
+"""ERDBEBEN collapse-reject (default 0 -> byte-identical).  When 1,
+``_has_severe_covalent_distortion`` ALSO rejects a conformer that has
+PLANAR-COLLAPSED -- a topology that must be 3D squashed into a plane by a
+distance-geometry degeneracy (the eye's AQIBAE blind-spot).  It gives the
+existing gate the symmetric LOWER bound it lacks, via two universal,
+silent-on-clean signals that mirror the WEDDELL ``find_planar_collapse``
+axis: (A) an sp3 centre whose four nearest bonded neighbours have a
+tetra-volume below ``DELFIN_COLLAPSE_TETRA_VOL_MIN`` A^3 (a real sp3 centre
+is ~1.5-2.5, clean-CCDC floor 0.81, even in a flat ring); (B) any covalent
+bond compressed below ``DELFIN_COLLAPSE_BOND_MIN_SCALE`` x the covalent-radius
+sum (below every real bond order -- clean shortest single 0.73x, triple N#N
+~0.77x).  The existing embed-retry then re-embeds the conformer; one that
+stays collapsed is dropped (it is physically impossible)."""
+
+DELFIN_COLLAPSE_TETRA_VOL_MIN: float = _delfin_env_float(
+    "DELFIN_COLLAPSE_TETRA_VOL_MIN", 0.40
+)
+"""sp3 tetra-volume (A^3) floor for the collapse-reject; below this the centre
+is planar-collapsed (clean-CCDC min 0.81, so 0.40 is a 2x silent margin)."""
+
+DELFIN_COLLAPSE_BOND_MIN_SCALE: float = _delfin_env_float(
+    "DELFIN_COLLAPSE_BOND_MIN_SCALE", 0.65
+)
+"""Lower bound on a covalent bond length relative to the covalent-radius sum
+for the collapse-reject (clean-CCDC shortest bond 0.73x -> 0.65 is silent)."""
+
 DELFIN_FINAL_GATE_ENABLED: int = _delfin_env_int("DELFIN_FINAL_GATE_ENABLED", 1)
 """When 1 (default), the three ``_xyz_passes_final_geometry_checks``
 guards in ``smiles_to_xyz_isomers`` (main conformer loop, linkage
@@ -18931,6 +18958,44 @@ def _has_pi_ring_nonplanarity(
     return False
 
 
+def _has_collapsed_sp3_centre(mol, conf, vol_min: float) -> bool:
+    """Return True if any sp3 centre has PLANAR-COLLAPSED: a non-aromatic sp3 atom with >=2 heavy
+    neighbours and >=4 bonded neighbours whose four nearest neighbours have a tetrahedron volume below
+    ``vol_min`` A^3.  A real sp3 centre is tetrahedral (~1.5-2.5 A^3) even inside a flat ring; only a
+    genuine collapse flattens the centre itself -- so this is silent-on-clean by construction (clean-CCDC
+    floor 0.81).  Mirrors signal (A) of the WEDDELL ``find_planar_collapse`` eye axis; uses the RDKit
+    bond graph (robust -- not distance-based adjacency, which a collapse would confuse)."""
+    try:
+        for a in mol.GetAtoms():
+            if a.GetSymbol() in _METAL_SET or a.GetIsAromatic():
+                continue
+            if a.GetHybridization() != Chem.HybridizationType.SP3:
+                continue
+            nbrs = list(a.GetNeighbors())
+            if len(nbrs) < 4 or sum(1 for nb in nbrs if nb.GetSymbol() != "H") < 2:
+                continue
+            pa = conf.GetAtomPosition(a.GetIdx())
+
+            def _d2(nb):
+                q = conf.GetAtomPosition(nb.GetIdx())
+                return (q.x - pa.x) ** 2 + (q.y - pa.y) ** 2 + (q.z - pa.z) ** 2
+
+            near = sorted(nbrs, key=_d2)[:4]
+            p = [conf.GetAtomPosition(nb.GetIdx()) for nb in near]
+            v1 = (p[1].x - p[0].x, p[1].y - p[0].y, p[1].z - p[0].z)
+            v2 = (p[2].x - p[0].x, p[2].y - p[0].y, p[2].z - p[0].z)
+            v3 = (p[3].x - p[0].x, p[3].y - p[0].y, p[3].z - p[0].z)
+            cx = v1[1] * v2[2] - v1[2] * v2[1]
+            cy = v1[2] * v2[0] - v1[0] * v2[2]
+            cz = v1[0] * v2[1] - v1[1] * v2[0]
+            vol = abs(cx * v3[0] + cy * v3[1] + cz * v3[2]) / 6.0
+            if vol < vol_min:
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _has_severe_covalent_distortion(
     mol,
     conf_id: int,
@@ -18943,6 +19008,12 @@ def _has_severe_covalent_distortion(
     and ``DELFIN_SEVERE_DIST_MAX_SCALE`` env-tunable constants so the
     gate can be relaxed or tightened without touching code.  Explicit
     overrides still win.
+
+    When ``DELFIN_FFFREE_COLLAPSE_REJECT`` is set (default off ->
+    byte-identical), the gate also rejects a PLANAR-COLLAPSED conformer via
+    the symmetric lower bound it otherwise lacks: a covalent bond compressed
+    below ``DELFIN_COLLAPSE_BOND_MIN_SCALE`` x the covalent-radius sum, or an
+    sp3 centre flattened into a plane (see ``_has_collapsed_sp3_centre``).
     """
     if not RDKIT_AVAILABLE:
         return False
@@ -18950,6 +19021,9 @@ def _has_severe_covalent_distortion(
         max_abs_bond = DELFIN_SEVERE_DIST_MAX_ABS
     if max_covalent_scale is None:
         max_covalent_scale = DELFIN_SEVERE_DIST_MAX_SCALE
+    # read the on/off gate at CALL time (matches E1' DONOR_PYRAMIDAL) so the loop's --on, set after this
+    # module is imported, actually activates it; the thresholds stay module-level (never toggled per side).
+    _collapse_reject = _delfin_env_int("DELFIN_FFFREE_COLLAPSE_REJECT", 0) == 1
     try:
         conf = mol.GetConformer(conf_id)
         pt = Chem.GetPeriodicTable()
@@ -18972,8 +19046,15 @@ def _has_severe_covalent_distortion(
                 rc2 = float(pt.GetRcovalent(a2.GetAtomicNum()))
                 if rc1 > 0 and rc2 > 0 and d > max_covalent_scale * (rc1 + rc2):
                     return True
+                # collapse-reject (gated): a bond crushed below every real bond order = squashed frame
+                if (_collapse_reject and rc1 > 0 and rc2 > 0
+                        and d < DELFIN_COLLAPSE_BOND_MIN_SCALE * (rc1 + rc2)):
+                    return True
             except Exception:
                 pass
+        # collapse-reject (gated): an sp3 centre flattened into a plane (distance-geometry degeneracy)
+        if _collapse_reject and _has_collapsed_sp3_centre(mol, conf, DELFIN_COLLAPSE_TETRA_VOL_MIN):
+            return True
     except Exception:
         return False
     return False
