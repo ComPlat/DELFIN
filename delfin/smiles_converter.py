@@ -18801,8 +18801,17 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             if not _is_sp2_graph(atom):
                 continue
             if _protect_pyramidal:
+                # Scope to COORDINATING pyramidal donors (SP3 AND bonded to a metal).  RDKit's SP3 is the
+                # pyramidal signal, but only a donor that COORDINATES the metal must keep its lone pair
+                # pointing at it -- so only THOSE must not be flattened.  A NON-coordinating hypervalent S
+                # (CITMUR's O-bound-DMSO sulfoxide-S: SP3 but bonded_metal=False) does not help the crystal
+                # match; protecting it shifted CITMUR's best-valid frame worse and lost its CCDC isomer
+                # (the E1' full:1000 A/B caught it).  Restricting to metal-bonded donors keeps TEXMIT's
+                # Ru-bound sulfoxide-S win while dropping the CITMUR regression -- "fix the coordinating
+                # donor without touching the rest".
                 try:
-                    if str(atom.GetHybridization()) == "SP3":   # RDKit says pyramidal -> never flatten
+                    if (str(atom.GetHybridization()) == "SP3"
+                            and any(nb.GetSymbol() in _METAL_SET for nb in atom.GetNeighbors())):
                         continue
                 except Exception:
                     pass
