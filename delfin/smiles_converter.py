@@ -18779,6 +18779,18 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                     return True
             return False
 
+        # ERDBEBEN E1' (default-off DELFIN_FFFREE_DONOR_PYRAMIDAL -> byte-identical): the bond-graph sp2
+        # test above fires on HYPERVALENT PYRAMIDAL lone-pair donors that merely CARRY a double bond
+        # (sulfoxide S=O, phosphine-oxide P=O, sulfone S) -> the flattener wrongly projects the correctly
+        # built PYRAMIDAL donor (substituent-angle-sum ~298-318) onto its neighbour plane (->360 planar),
+        # so the lone pair no longer points at the metal and M-D can't close (Ru-S 2.8-3.0 vs ~2.28).
+        # Root fix, first-principles + universal: RDKit's CONJUGATION-AWARE hybridisation is authoritative --
+        # an atom RDKit calls SP3 is PYRAMIDAL and must NOT be flattened, whatever its bond orders (RDKit
+        # correctly gives sulfoxide/sulfone/thioether S, phosphine P, aqua/ether O, amine N -> SP3; amide/
+        # aniline/pyridine/carbonyl -> SP2, still flattened).  Verified on TEXMIT: the template BUILDS the
+        # sulfoxide-S pyramidal (298); this flatten step was breaking it.  Matches the landed donor-hyb
+        # detector's expected-pyramidal rule.  Never element- or refcode-specific.
+        _protect_pyramidal = _delfin_env_int("DELFIN_FFFREE_DONOR_PYRAMIDAL", 0)
         for atom in mol_template.GetAtoms():
             if atom.GetSymbol() in _METAL_SET:
                 continue
@@ -18788,6 +18800,12 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
             # consistently on sanitised and unsanitised mols alike.
             if not _is_sp2_graph(atom):
                 continue
+            if _protect_pyramidal:
+                try:
+                    if str(atom.GetHybridization()) == "SP3":   # RDKit says pyramidal -> never flatten
+                        continue
+                except Exception:
+                    pass
             heavy_nbrs = [
                 n.GetIdx()
                 for n in atom.GetNeighbors()
@@ -26000,6 +26018,7 @@ def _build_topology_xyz_from_template(
             )
         except Exception as _orient_exc:
             logger.debug("Ligand orientation (template path) failed: %s", _orient_exc)
+
 
         if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
             try:
