@@ -162,16 +162,29 @@ def _embed_fragment_clean(mol, frag: List[int], n_seeds: int = 10) -> Optional[D
         i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
         if i in amap and j in amap:
             rw.AddBond(amap[i], amap[j], b.GetBondType())
-    sub = rw.GetMol()
-    try:
-        Chem.SanitizeMol(sub)
-    except Exception:
+    sub0 = rw.GetMol()
+    sub = None
+    for _neut in (False, True):                                   # try as-is, then neutralise dative [P+]/[N+]
+        m = Chem.RWMol(sub0)
+        if _neut:
+            for a in m.GetAtoms():
+                a.SetFormalCharge(0)
+        mm = m.GetMol()
         try:
-            Chem.SanitizeMol(sub, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
-                                               & ~Chem.SanitizeFlags.SANITIZE_KEKULIZE
-                                               & ~Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+            Chem.SanitizeMol(mm)
+            sub = mm
+            break
         except Exception:
-            return None
+            try:
+                Chem.SanitizeMol(mm, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                                  & ~Chem.SanitizeFlags.SANITIZE_KEKULIZE
+                                                  & ~Chem.SanitizeFlags.SANITIZE_PROPERTIES))
+                sub = mm
+                break
+            except Exception:
+                continue
+    if sub is None:
+        return None
     inv = {v: k for k, v in amap.items()}
     for seed in range(1, n_seeds + 1):
         m2 = Chem.Mol(sub)
@@ -231,9 +244,23 @@ def _clash_count(syms, P, frag_set, exclude_pairs=None) -> int:
 
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
+    _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
+
+    def _t(msg):
+        if _tr:
+            try:
+                import sys as _s
+                print("[SEATING] RESEAT " + msg, file=_s.stderr, flush=True)
+            except Exception:
+                pass
+
     syms, P = _parse(xyz)
     if len(syms) != mol.GetNumAtoms():
+        _t("skip: natoms frame=%d mol=%d (order guard)" % (len(syms), mol.GetNumAtoms()))
         return None                                               # atom-order assumption broken -> skip
+    if any(syms[i] != mol.GetAtomWithIdx(i).GetSymbol() for i in range(len(syms))):
+        _t("skip: element-sequence mismatch (frame order != mol order)")
+        return None                                               # order not confirmed -> skip (safe)
     adj = _adjacency(syms, P)
     metal_idxs = [i for i in range(len(syms)) if syms[i] in _METALS]
     if not metal_idxs:
@@ -245,10 +272,13 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
             continue
         donors = _metal_donors(frag, syms, P, metal_idxs)
         if len(donors) < 1:
+            _t("collapsed frag (%d atoms) but 0 donors" % len(frag))
             continue
         clean = _embed_fragment_clean(mol, frag)
         if clean is None or any(d not in clean for d in donors):
+            _t("collapsed frag (%d atoms, %d donors): isolated embed FAILED" % (len(frag), len(donors)))
             continue
+        _t("collapsed frag (%d atoms, %d donors): embed OK, aligning" % (len(frag), len(donors)))
         A = np.array([clean[d] for d in donors], float)
         B = np.array([P[d] for d in donors], float)
         frag_set = set(frag)
@@ -305,11 +335,17 @@ def correct_results(mol, results):
     changed (a collapse was resolved under the rollback guards); otherwise the original is kept."""
     if not _HAVE_RDKIT or not results or mol is None:
         return results
+    # DELFIN frames carry explicit H; make the topology mol explicit-H too so frame index == mol index
+    # (verified per frame by the element-sequence guard in _reseat_frame -> a mismatch safely skips).
+    try:
+        molH = Chem.AddHs(mol)
+    except Exception:
+        molH = mol
     out = []
     n_fixed = 0
     for xyz in results:
         try:
-            new = _reseat_frame(mol, xyz)
+            new = _reseat_frame(molH, xyz)
         except Exception:
             new = None
         if new is not None:
