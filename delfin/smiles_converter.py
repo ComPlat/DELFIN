@@ -25770,6 +25770,37 @@ def _rank_template_conformers(mol, *, top_k: Optional[int] = None) -> List[int]:
     return ordered
 
 
+def _frag_xyz_collapsed(mol, frag_list, frag_xyz, vol_min: float = 0.40) -> bool:
+    """True if a fragment's TEMPLATE geometry has a planar-collapsed sp3 centre (tetra-volume < vol_min).
+
+    Scoped version of ``_has_collapsed_sp3_centre`` operating on one fragment's numpy coords (``frag_xyz``
+    rows in ``frag_list`` atom order).  Used by the ERDBEBEN isolated-fragment seating to decide whether to
+    re-seat a fragment from a clean ISOLATED embed rather than the collapsed whole-complex template -- the
+    decisive AQIBAE finding: the isolated ligand embeds 3D in 20/20 ETKDG seeds while the whole-complex
+    ETKDG collapses one cage (a metal-context degeneracy, not a fragment-embed wall)."""
+    try:
+        import numpy as np
+    except Exception:
+        return False
+    pos = {frag_list[i]: frag_xyz[i] for i in range(len(frag_list))}
+    for k, ai in enumerate(frag_list):
+        a = mol.GetAtomWithIdx(ai)
+        if a.GetSymbol() in _METAL_SET or a.GetIsAromatic():
+            continue
+        if a.GetHybridization() != Chem.HybridizationType.SP3:
+            continue
+        nb = [nbj.GetIdx() for nbj in a.GetNeighbors() if nbj.GetIdx() in pos]
+        if len(nb) < 4 or sum(1 for j in nb if mol.GetAtomWithIdx(j).GetSymbol() != "H") < 2:
+            continue
+        pa = frag_xyz[k]
+        near = sorted(nb, key=lambda j: float(np.sum((pos[j] - pa) ** 2)))[:4]
+        p = [pos[j] for j in near]
+        vol = abs(float(np.dot(np.cross(p[1] - p[0], p[2] - p[0]), p[3] - p[0]))) / 6.0
+        if vol < vol_min:
+            return True
+    return False
+
+
 def _build_topology_xyz_from_template(
     mol,
     metal_idx: int,
@@ -25945,12 +25976,24 @@ def _build_topology_xyz_from_template(
             if not frag_donors:
                 continue
 
+            if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                _trace_seating("FRAG donors=%d atoms=%d placed=%d" % (
+                    len(frag_donors), len(frag_list), len(placed)))
+
             frag_xyz = orig[frag_list, :]
             donor_local = [frag_list.index(d) for d in frag_donors]
             src = frag_xyz[donor_local, :]
             tgt = np.array([donor_target_map[d] for d in frag_donors], dtype=float)
             if len(src) != len(tgt) or len(src) == 0:
                 continue
+
+            # ERDBEBEN isolated-fragment seating (gated DELFIN_FFFREE_ISOLATED_SEAT, default off ->
+            # byte-identical): if the WHOLE-COMPLEX template collapsed this fragment's cage into a plane,
+            # re-seat it from a clean ISOLATED embed (proven 20/20 non-collapsed on AQIBAE) instead of the
+            # collapsed template.  The metal context is what collapses the cage; the fragment alone builds
+            # fine -- so we take the fragment geometry from where it is RELIABLE.
+            _reseat_collapse = (os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") == "1"
+                                and _frag_xyz_collapsed(mol, frag_list, frag_xyz))
 
             # Chelate (bidentate or polydentate): if the template's
             # native donor-donor distance pattern is far from the
@@ -25971,7 +26014,7 @@ def _build_topology_xyz_from_template(
                         / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                     )
                 )
-                if mismatch > 0.25:
+                if mismatch > 0.25 or _reseat_collapse:
                     target_for_search = (
                         float(target_mat[0, 1])
                         if len(frag_donors) == 2
@@ -25986,7 +26029,9 @@ def _build_topology_xyz_from_template(
                             [list(coords_map[old]) for old in frag_list],
                             dtype=float,
                         )
-                        # Only accept the re-embed if it improves the fit.
+                        # Accept the re-embed if it improves the bite fit, OR (collapse re-seat) if the
+                        # clean ISOLATED embed resolved the collapse -- the 3D fragment is what we want even
+                        # when the collapsed template's bite happened to already match (AQIBAE).
                         new_src = new_frag_xyz[donor_local, :]
                         new_diffs = new_src[:, None, :] - new_src[None, :, :]
                         new_mat = np.linalg.norm(new_diffs, axis=-1)
@@ -25996,9 +26041,15 @@ def _build_topology_xyz_from_template(
                                 / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                             )
                         )
-                        if new_mismatch < mismatch:
+                        if (new_mismatch < mismatch
+                                or (_reseat_collapse
+                                    and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))):
                             frag_xyz = new_frag_xyz
                             src = new_src
+                            if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and _reseat_collapse:
+                                _trace_seating(
+                                    "ISOLATED_SEAT reseated collapsed fragment (donors=%d) mismatch %.2f->%.2f"
+                                    % (len(frag_donors), mismatch, new_mismatch))
 
             if len(src) >= 2:
                 src_center = src.mean(axis=0)
@@ -26063,6 +26114,9 @@ def _build_topology_xyz_from_template(
                                   if j not in frag and j != metal_idx
                                   and mol.GetAtomWithIdx(j).GetAtomicNum() > 1
                                   and mol.GetAtomWithIdx(j).GetSymbol() not in _METAL_SET]
+                        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                            _trace_seating("RIGID_DECLASH_TRY axn=%.2f bb=%d other=%d" % (
+                                _axn, len(_bb), len(_other)))
                         if _axn > 1e-8 and _bb and _other:
                             _u = _ax / _axn
                             _piv = 0.5 * (_d0 + _d1)
@@ -26084,7 +26138,8 @@ def _build_topology_xyz_from_template(
                                 return (_v * _c + np.cross(_u, _v) * _s
                                         + np.outer(_v @ _u, _u) * (1.0 - _c)) + _piv
 
-                            _bestp = _declash_pen(transformed)
+                            _pen0 = _declash_pen(transformed)
+                            _bestp = _pen0
                             if _bestp > 1e-9:              # only sweep if there is a clash to resolve
                                 _best = transformed
                                 for _k in range(1, 24):    # 15-deg steps around the donor-donor axis
@@ -26094,8 +26149,14 @@ def _build_topology_xyz_from_template(
                                         _bestp = _pen
                                         _best = _cand
                                 transformed = _best
-                    except Exception:
-                        pass
+                            if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                                _trace_seating(
+                                    "RIGID_DECLASH donors=%s bb=%d other=%d pen0=%.3f -> penbest=%.3f%s" % (
+                                        [int(x) for x in frag_donors], len(_bb), len(_other),
+                                        _pen0, _bestp, "" if _pen0 > 1e-9 else " (no-clash)"))
+                    except Exception as _dexc:
+                        if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
+                            _trace_seating("RIGID_DECLASH EXC: %s" % _dexc)
             else:
                 src_d = src[0]
                 tgt_d = tgt[0]
