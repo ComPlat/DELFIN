@@ -26038,6 +26038,64 @@ def _build_topology_xyz_from_template(
                                 transformed = transformed_flip
                 except Exception:
                     pass
+
+                # ERDBEBEN bite-preserving backbone DECLASH (gated DELFIN_FFFREE_RIGID_DECLASH, default
+                # off -> byte-identical).  A BIDENTATE fragment's two donors lie ON the donor-donor axis,
+                # so rotating the WHOLE fragment about that axis keeps both donors EXACTLY on their
+                # polyhedron vertices (bite + polyhedron preserved -- rotating a point on the axis leaves
+                # it fixed) while the backbone sweeps a cone.  Rotate to the angle minimising clash with
+                # the metal AND the already-placed fragments -> a rigid chelate whose backbone would
+                # otherwise collide (BINHIQ 2x diarsine: verify 0/366 -> collapsed fallback wins) reaches
+                # a clash-free placement that PASSES _verify_topology_from_graph, with NO force field.
+                # Only exactly-bidentate: 3+ donors pin the rigid body (0 rotational DOF); monodentate
+                # radial spin is JOINT_DECLASH's job.  This is the FF-free seating co-optimisation.
+                if (os.environ.get("DELFIN_FFFREE_RIGID_DECLASH", "0") == "1"
+                        and len(frag_donors) == 2):
+                    try:
+                        _d0 = donor_target_map[frag_donors[0]]
+                        _d1 = donor_target_map[frag_donors[1]]
+                        _ax = _d1 - _d0
+                        _axn = float(np.linalg.norm(_ax))
+                        _bb = [li for li, ai in enumerate(frag_list)
+                               if ai not in frag_donors
+                               and mol.GetAtomWithIdx(ai).GetAtomicNum() > 1]
+                        _other = [j for j in placed
+                                  if j not in frag and j != metal_idx
+                                  and mol.GetAtomWithIdx(j).GetAtomicNum() > 1
+                                  and mol.GetAtomWithIdx(j).GetSymbol() not in _METAL_SET]
+                        if _axn > 1e-8 and _bb and _other:
+                            _u = _ax / _axn
+                            _piv = 0.5 * (_d0 + _d1)
+                            _P = np.array([coords[j] for j in _other], dtype=float)
+                            _cmin = float(os.environ.get("DELFIN_RIGID_DECLASH_MIN", "2.4") or 2.4)
+
+                            def _declash_pen(_cand):
+                                _p = _metal_proximity_penalty(_cand, frag_list, frag_donors)
+                                for _li in _bb:
+                                    _ov = _cmin - np.linalg.norm(_P - _cand[_li], axis=1)
+                                    _ov = _ov[_ov > 0.0]
+                                    if _ov.size:
+                                        _p += float(np.sum(_ov * _ov))
+                                return _p
+
+                            def _rot_axis(_pts, _th):
+                                _c = math.cos(_th); _s = math.sin(_th)
+                                _v = _pts - _piv
+                                return (_v * _c + np.cross(_u, _v) * _s
+                                        + np.outer(_v @ _u, _u) * (1.0 - _c)) + _piv
+
+                            _bestp = _declash_pen(transformed)
+                            if _bestp > 1e-9:              # only sweep if there is a clash to resolve
+                                _best = transformed
+                                for _k in range(1, 24):    # 15-deg steps around the donor-donor axis
+                                    _cand = _rot_axis(transformed, 2.0 * math.pi * _k / 24.0)
+                                    _pen = _declash_pen(_cand)
+                                    if _pen < _bestp - 1e-9:
+                                        _bestp = _pen
+                                        _best = _cand
+                                transformed = _best
+                    except Exception:
+                        pass
             else:
                 src_d = src[0]
                 tgt_d = tgt[0]
