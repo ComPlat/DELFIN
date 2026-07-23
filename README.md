@@ -284,6 +284,7 @@ DELFIN can run thermodynamics simulations for coordination complexes, including 
 - **OCCUPIER-aware metal treatment**: Both the target complex and the solvated metal reference can use the same converter, preoptimization, multiplicity, and broken-symmetry logic as the main workflow
 - **Efficient sub-workflows**: Duplicate ligands are detected and computed only once, while ligand, solvent, and metal-solvent jobs run in parallel
 - **Free-energy output**: Combines OPT+FREQ free energies for complex, solvated metal, ligand(s), and solvent into `ΔG` and `log K`
+- **Solution entropy post-processing**: The `solution_entropy` tool computes Ariai/Gellrich-style solution-phase entropy components and reaction/barrier entropy corrections from DELFIN geometries and ORCA/Gaussian thermochemistry.
 
 ### Excited-State Dynamics (ESD)
 
@@ -730,6 +731,8 @@ The generic references for ORCA, xTB and CREST are:
 - Frank Neese, Frank Wennmohs, Ute Becker, and Christoph Riplinger. The ORCA quantum chemistry program package. *J. Chem. Phys.*, 152(22):224108, 2020. doi:<https://aip.scitation.org/doi/10.1063/5.0004608>.
 - Christoph Bannwarth, Erik Caldeweyher, Sebastian Ehlert, Andreas Hansen, Philipp Pracht, Jan Seibert, Sebastian Spicher, and Stefan Grimme. Extended tight-binding quantum chemistry methods. *WIREs Comput. Mol. Sci.*, 11:e1493, 2021. doi:<https://doi.org/10.1002/wcms.1493>. *(xTB & GFN methods)*
 - Philipp Pracht, Stefan Grimme, Christoph Bannwarth, Florian Bohle, Sebastian Ehlert, Gunnar Feldmann, Jan Gorges, Max Müller, Timo Neudecker, Christoph Plett, Sebastian Spicher, Pascal Steinbach, Piotr A. Wesołowski, and Fabian Zeller. CREST — A program for the exploration of low-energy molecular chemical space. *J. Chem. Phys.*, 160:114110, 2024. doi:<https://doi.org/10.1063/5.0197592>. *(CREST)*
+- Jama Ariai and Urs Gellrich. The entropic penalty for associative reactions and their physical treatment during routine computations. *Phys. Chem. Chem. Phys.*, 25:14005-14015, 2023. doi:<https://doi.org/10.1039/d3cp00970j>. *(solution entropy correction)*
+- Alejandro J. Garza. Solvation entropy made simple. *J. Chem. Theory Comput.*, 15:3204-3214, 2019. *(solution-phase entropy formalism used by the Ariai/Gellrich correction)*
 
 Please always check the output files—at the end, you will find a list of relevant papers for the calculations. Kindly cite them. Please do not only cite the above generic references, but also cite in addition the
 [original papers](https://www.faccts.de/docs/orca/6.0/manual/contents/public.html) that report the development and ORCA implementation of the methods DELFIN has used! The publications that describe the functionality implemented in ORCA are

@@ -18,7 +18,9 @@ from delfin.tools.templates import (
     conformer_energy,
     full_workflow,
     multi_level_opt,
+    reaction_solution_entropy,
     redox_potential,
+    solution_entropy_workflow,
     xtb_thermochemistry,
 )
 
@@ -230,6 +232,65 @@ full_workflow_app = Application.from_pipeline(
 register_application(full_workflow_app)
 
 
+solution_entropy_app = Application.from_pipeline(
+    solution_entropy_workflow,
+    name="solution_entropy",
+    description="Optimise + frequency workflow followed by Ariai/Gellrich-style "
+                "solution-phase entropy analysis; returns species entropy components.",
+    category="solvation",
+    inputs=(
+        ParamSpec("smiles", "str", required=True, description="Input SMILES string"),
+        key("charge", required=True),
+        key("mult"),
+        key("method"),
+        ParamSpec("basis", "str", default="def2-SVP", description="DFT basis set"),
+        ParamSpec("solvent", "str", default="benzene", description="Solvent name"),
+        ParamSpec("temperature", "float", default=298.15, unit="K",
+                  description="Temperature"),
+        ParamSpec("concentration_standard", "str", default="1M",
+                  enum=("1M", "liquid"),
+                  description="Condensed-phase standard state"),
+    ),
+    outputs=(
+        OutputSpec("S_solv", step="solution_entropy", key="S_solv",
+                   unit="cal/mol/K", description="Solvation entropy correction"),
+        OutputSpec("S_soln", step="solution_entropy", key="S_soln",
+                   unit="cal/mol/K", description="Solution-phase entropy"),
+        OutputSpec("vdw_volume_A3", step="solution_entropy", key="vdw_volume_A3",
+                   unit="A^3", description="Solute vdW volume"),
+        OutputSpec("report_path", step="solution_entropy", key="report_path",
+                   type="str", description="JSON report path"),
+    ),
+)
+register_application(solution_entropy_app)
+
+
+reaction_solution_entropy_app = Application.from_pipeline(
+    reaction_solution_entropy,
+    name="reaction_solution_entropy",
+    description="Combine species solution-entropy reports with stoichiometry to "
+                "obtain reaction or barrier entropy corrections.",
+    category="solvation",
+    inputs=(
+        ParamSpec("species", "dict", required=True,
+                  description="Map species name to report path, dict, or S_solv value"),
+        ParamSpec("stoichiometry", "dict", required=True,
+                  description="Map species name to coefficient; products positive"),
+        ParamSpec("temperature", "float", default=298.15, unit="K",
+                  description="Temperature"),
+    ),
+    outputs=(
+        OutputSpec("delta_S_solv_cal_mol_K", step="reaction_solution_entropy",
+                   key="delta_S_solv_cal_mol_K", unit="cal/mol/K"),
+        OutputSpec("delta_G_entropy_corr_kcal_mol", step="reaction_solution_entropy",
+                   key="delta_G_entropy_corr_kcal_mol", unit="kcal/mol"),
+        OutputSpec("delta_G_corrected_kcal_mol", step="reaction_solution_entropy",
+                   key="delta_G_corrected_kcal_mol", unit="kcal/mol"),
+    ),
+)
+register_application(reaction_solution_entropy_app)
+
+
 __all__ = [
     "opt_freq_energy",
     "redox",
@@ -238,4 +299,6 @@ __all__ = [
     "conformer_energy_app",
     "conformer_dG_app",
     "full_workflow_app",
+    "solution_entropy_app",
+    "reaction_solution_entropy_app",
 ]

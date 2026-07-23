@@ -57,6 +57,7 @@ def _discover_builtin_adapters() -> None:
         "delfin.tools.adapters.guppy",
         "delfin.tools.adapters.mlp",
         "delfin.tools.adapters.xtb_solvator",
+        "delfin.tools.adapters.solution_entropy",
         "delfin.tools.adapters.genarris",
         "delfin.tools.adapters.uv_vis",
         "delfin.tools.adapters.afp",

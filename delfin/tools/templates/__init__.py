@@ -48,6 +48,10 @@ from delfin.tools.templates._redox import redox_potential
 from delfin.tools.templates._screening import conformer_screening, multi_level_opt
 from delfin.tools.templates._occupier import occupier_stages
 from delfin.tools.templates._esd import esd_states
+from delfin.tools.templates._solvation import (
+    reaction_solution_entropy,
+    solution_entropy_workflow,
+)
 
 __all__ = [
     "classic_opt_freq",
@@ -62,4 +66,6 @@ __all__ = [
     "multi_level_opt",
     "occupier_stages",
     "esd_states",
+    "solution_entropy_workflow",
+    "reaction_solution_entropy",
 ]
