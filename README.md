@@ -7,7 +7,7 @@
   <a href="https://github.com/ComPlat/DELFIN/graphs/commit-activity"><img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge" alt="Maintenance"></a>
   <a href="https://github.com/ComPlat/DELFIN/issues"><img src="https://img.shields.io/github/issues/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub issues"></a>
   <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
-  <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208145-blue.svg?style=for-the-badge" alt="DOI"></a>
+  <a href="https://doi.org/10.5281/zenodo.21508364"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21508364-blue.svg?style=for-the-badge" alt="DOI"></a>
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
@@ -782,7 +782,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
 - Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
@@ -793,8 +793,8 @@ If you use DELFIN in a scientific publication, please cite:
   version = {v1.2.0},
   year    = {2026},
   publisher = {Zenodo},
-  doi     = {10.5281/zenodo.17208145},
-  url     = {https://doi.org/10.5281/zenodo.17208145}
+  doi     = {10.5281/zenodo.21508364},
+  url     = {https://doi.org/10.5281/zenodo.21508364}
 }
 
 @article{hartmann2025chemrxiv,
