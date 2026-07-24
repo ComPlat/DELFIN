@@ -108,6 +108,34 @@ def _nonmetal_fragments(syms: List[str], adj) -> List[List[int]]:
     return frags
 
 
+def _mol_fragments(mol, n_atoms: int) -> List[List[int]]:
+    """Non-metal connected components in the TOPOLOGY (mol) -- gives the COMPLETE ligand fragment (e.g. a
+    bis-phosphite = both cages + linker as one) regardless of the collapsed geometry, which a geometric
+    fragmentation would split into disconnected pieces (the '0 donors' failure).  mol index == frame index."""
+    seen: set = set()
+    frags: List[List[int]] = []
+    for s in range(n_atoms):
+        a = mol.GetAtomWithIdx(s)
+        if s in seen or a.GetSymbol() in _METALS:
+            continue
+        comp: List[int] = []
+        stack = [s]
+        while stack:
+            u = stack.pop()
+            if u in seen:
+                continue
+            au = mol.GetAtomWithIdx(u)
+            if au.GetSymbol() in _METALS:
+                continue
+            seen.add(u)
+            comp.append(u)
+            for nb in au.GetNeighbors():
+                if nb.GetIdx() not in seen and nb.GetSymbol() not in _METALS:
+                    stack.append(nb.GetIdx())
+        frags.append(sorted(comp))
+    return frags
+
+
 def _fragment_collapsed(mol, frag: List[int], syms: List[str], P: np.ndarray) -> bool:
     """True if the fragment (frame indices == mol indices) has a planar-collapsed sp3 centre."""
     fs = set(frag)
@@ -147,9 +175,13 @@ def _submol_collapsed(m, conf) -> bool:
     return False
 
 
-def _embed_fragment_clean(mol, frag: List[int], n_seeds: int = 10) -> Optional[Dict[int, np.ndarray]]:
+def _embed_fragment_clean(mol, frag: List[int], donors: List[int], target_donor_P: np.ndarray,
+                          n_seeds: int = 20) -> Optional[Dict[int, np.ndarray]]:
     """Extract the fragment (with its explicit H) as a sub-mol, embed it ISOLATED, return {frame_idx: xyz}
-    for the first NON-COLLAPSED embed (None if all embeds fail/collapse)."""
+    for the NON-COLLAPSED embed whose donor-donor geometry best matches the frame's (so the Kabsch
+    alignment onto the metal-anchored donors keeps the M-D bite -- the metal enforces a bite the isolated
+    ligand does not naturally hold, so a random fold breaks M-D; we pick the fold that matches).  None if
+    all embeds fail/collapse."""
     amap: Dict[int, int] = {}
     rw = Chem.RWMol()
     for i in frag:
@@ -186,6 +218,11 @@ def _embed_fragment_clean(mol, frag: List[int], n_seeds: int = 10) -> Optional[D
     if sub is None:
         return None
     inv = {v: k for k, v in amap.items()}
+    tgt_dd = None
+    if len(donors) >= 2:
+        tgt_dd = np.linalg.norm(target_donor_P[:, None, :] - target_donor_P[None, :, :], axis=-1)
+    best_map = None
+    best_score = 1e18
     for seed in range(1, n_seeds + 1):
         m2 = Chem.Mol(sub)
         params = AllChem.ETKDGv3()
@@ -198,10 +235,21 @@ def _embed_fragment_clean(mol, frag: List[int], n_seeds: int = 10) -> Optional[D
             continue
         if _submol_collapsed(m2, conf):
             continue
-        return {inv[si]: np.array([conf.GetAtomPosition(si).x, conf.GetAtomPosition(si).y,
+        cmap = {inv[si]: np.array([conf.GetAtomPosition(si).x, conf.GetAtomPosition(si).y,
                                    conf.GetAtomPosition(si).z], float)
                 for si in range(sub.GetNumAtoms()) if si in inv}
-    return None
+        if tgt_dd is not None:                                    # score by donor-donor bite match
+            dp = np.array([cmap[d] for d in donors])
+            edd = np.linalg.norm(dp[:, None, :] - dp[None, :, :], axis=-1)
+            score = float(np.sqrt(np.mean((edd - tgt_dd) ** 2)))
+        else:
+            score = 0.0
+        if score < best_score:
+            best_score = score
+            best_map = cmap
+            if best_score < 0.25:                                # good enough -> stop early
+                break
+    return best_map
 
 
 def _kabsch(A: np.ndarray, B: np.ndarray):
@@ -214,10 +262,16 @@ def _kabsch(A: np.ndarray, B: np.ndarray):
     return R, cb - R @ ca
 
 
-def _metal_donors(frag, syms, P, metal_idxs):
-    """Fragment atoms bonded to a metal in the frame (correctly-placed anchors)."""
-    out = []
-    for i in frag:
+def _metal_donors(mol, frag, syms, P, metal_idxs):
+    """Fragment atoms bonded to a metal.  Uses the TOPOLOGY (mol) first -- robust to a collapse that pushed
+    a donor away from the metal (the geometric M-D distance then misses it, the '0 donors' failure mode) --
+    with a geometric fallback."""
+    metal_set = set(metal_idxs)
+    out = [i for i in frag if mol.GetAtomWithIdx(i).GetAtomicNum() != 1
+           and any(nb.GetIdx() in metal_set for nb in mol.GetAtomWithIdx(i).GetNeighbors())]
+    if out:
+        return out
+    for i in frag:                                                # geometric fallback
         if syms[i] == "H":
             continue
         for m in metal_idxs:
@@ -261,20 +315,19 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
     if any(syms[i] != mol.GetAtomWithIdx(i).GetSymbol() for i in range(len(syms))):
         _t("skip: element-sequence mismatch (frame order != mol order)")
         return None                                               # order not confirmed -> skip (safe)
-    adj = _adjacency(syms, P)
     metal_idxs = [i for i in range(len(syms)) if syms[i] in _METALS]
     if not metal_idxs:
         return None
     changed = False
     P = P.copy()
-    for frag in _nonmetal_fragments(syms, adj):
+    for frag in _mol_fragments(mol, len(syms)):
         if not _fragment_collapsed(mol, frag, syms, P):
             continue
-        donors = _metal_donors(frag, syms, P, metal_idxs)
+        donors = _metal_donors(mol, frag, syms, P, metal_idxs)
         if len(donors) < 1:
             _t("collapsed frag (%d atoms) but 0 donors" % len(frag))
             continue
-        clean = _embed_fragment_clean(mol, frag)
+        clean = _embed_fragment_clean(mol, frag, donors, np.array([P[d] for d in donors], float))
         if clean is None or any(d not in clean for d in donors):
             _t("collapsed frag (%d atoms, %d donors): isolated embed FAILED" % (len(frag), len(donors)))
             continue
@@ -337,8 +390,10 @@ def correct_results(mol, results):
         return results
     # DELFIN frames carry explicit H; make the topology mol explicit-H too so frame index == mol index
     # (verified per frame by the element-sequence guard in _reseat_frame -> a mismatch safely skips).
+    # Conditional: if mol already has explicit H, AddHs would be a no-op or (worse) mis-add -> use as-is.
     try:
-        molH = Chem.AddHs(mol)
+        has_h = any(a.GetAtomicNum() == 1 for a in mol.GetAtoms())
+        molH = mol if has_h else Chem.AddHs(mol)
     except Exception:
         molH = mol
     out = []
@@ -361,3 +416,56 @@ def correct_results(mol, results):
         except Exception:
             pass
     return out
+
+
+# ------------------------------------------------------------------ #
+# self-test (full visibility, bypasses the loop/--debug plumbing):
+#   python _isolated_reseat.py <archive.xyz> "<smiles>"
+# ------------------------------------------------------------------ #
+if __name__ == "__main__":
+    import sys
+    os.environ["DELFIN_TRACE_SEATING"] = "1"
+    archive, smi = sys.argv[1], sys.argv[2]
+    mol = Chem.MolFromSmiles(smi)
+    if mol is None:
+        mol = Chem.MolFromSmiles(smi, sanitize=False)
+        try:
+            Chem.SanitizeMol(mol, sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL
+                                               & ~Chem.SanitizeFlags.SANITIZE_KEKULIZE))
+        except Exception:
+            pass
+    molH = Chem.AddHs(mol)
+    print("mol heavy=%d  molH=%d" % (mol.GetNumAtoms(), molH.GetNumAtoms()))
+    # parse archive -> atom-block-only frames (drop count + comment lines)
+    lines = open(archive).read().splitlines()
+    frames = []
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.isdigit():
+            n = int(s)
+            atoms = lines[i + 2:i + 2 + n]
+            frames.append("\n".join(atoms))
+            i += 2 + n
+        else:
+            i += 1
+    print("frames parsed: %d" % len(frames))
+    if frames:
+        syms0, _P0 = _parse(frames[0])
+        print("frame0 atoms=%d  molH atoms=%d" % (len(syms0), molH.GetNumAtoms()))
+        if len(syms0) == molH.GetNumAtoms():
+            mism = [i for i in range(len(syms0)) if syms0[i] != molH.GetAtomWithIdx(i).GetSymbol()]
+            print("element-order MISMATCHES: %d  first: %s" % (len(mism), mism[:8]))
+            print("  frame0 first 12 syms:", syms0[:12])
+            print("  molH   first 12 syms:", [molH.GetAtomWithIdx(k).GetSymbol() for k in range(12)])
+        else:
+            print("ATOM-COUNT MISMATCH (frame != molH) -> heavy-map needed")
+    out = correct_results(mol, frames)
+    n_changed = sum(1 for a, b in zip(frames, out) if a != b)
+    print("=> correct_results changed %d/%d frames" % (n_changed, len(frames)))
+    if len(sys.argv) > 3:                                         # 3rd arg = output path -> write multiframe xyz
+        with open(sys.argv[3], "w") as fh:
+            for k, blk in enumerate(out):
+                lns = [x for x in blk.split("\n") if x.strip()]
+                fh.write("%d\nreseat frame%d\n%s\n" % (len(lns), k, "\n".join(lns)))
+        print("wrote %s" % sys.argv[3])
