@@ -59,13 +59,20 @@ def _cov(s: str) -> float:
 
 
 def _parse(xyz: str):
+    """Parse an xyz block to (syms, P).  ROBUST: skips non-atom lines (a leading count line, or an
+    'AQIBAE frame0 pucker' comment line) so it works whether or not the frame carries an xyz header --
+    the pipeline passes full frames, the self-test passes atom-blocks."""
     syms: List[str] = []
     pts: List[List[float]] = []
     for ln in xyz.strip().split("\n"):
         p = ln.split()
         if len(p) >= 4:
+            try:
+                x, y, z = float(p[1]), float(p[2]), float(p[3])
+            except (ValueError, IndexError):
+                continue                                          # comment / non-coordinate line
             syms.append(p[0])
-            pts.append([float(p[1]), float(p[2]), float(p[3])])
+            pts.append([x, y, z])
     return syms, np.array(pts, dtype=float)
 
 
@@ -299,6 +306,7 @@ def _clash_count(syms, P, frag_set, exclude_pairs=None) -> int:
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
+    _tf = os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1"
 
     def _t(msg):
         if _tr:
@@ -307,6 +315,26 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 print("[SEATING] RESEAT " + msg, file=_s.stderr, flush=True)
             except Exception:
                 pass
+        if _tf:
+            try:
+                with open("/tmp/iseat_dispatch.log", "a") as _f:
+                    _f.write("    RESEAT " + msg + "\n")
+            except Exception:
+                pass
+
+    # capture any leading xyz header (count + comment) so a re-seated frame keeps the exact input format
+    _hdr: List[str] = []
+    for _ln in xyz.split("\n"):
+        _pp = _ln.split()
+        _isatom = False
+        if len(_pp) >= 4:
+            try:
+                float(_pp[1]); float(_pp[2]); float(_pp[3]); _isatom = True
+            except (ValueError, IndexError):
+                pass
+        if _isatom:
+            break
+        _hdr.append(_ln)
 
     syms, P = _parse(xyz)
     if len(syms) != mol.GetNumAtoms():
@@ -317,10 +345,15 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
         return None                                               # order not confirmed -> skip (safe)
     metal_idxs = [i for i in range(len(syms)) if syms[i] in _METALS]
     if not metal_idxs:
+        _t("skip: no metal in frame (natoms=%d, first syms=%s)" % (len(syms), syms[:6]))
         return None
     changed = False
     P = P.copy()
-    for frag in _mol_fragments(mol, len(syms)):
+    _frags = _mol_fragments(mol, len(syms))
+    _t("frame: %d frags, %d collapsed, molSP3=%d" % (
+        len(_frags), sum(1 for f in _frags if _fragment_collapsed(mol, f, syms, P)),
+        sum(1 for a in mol.GetAtoms() if a.GetHybridization() == Chem.HybridizationType.SP3)))
+    for frag in _frags:
         if not _fragment_collapsed(mol, frag, syms, P):
             continue
         donors = _metal_donors(mol, frag, syms, P, metal_idxs)
@@ -380,7 +413,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
             changed = True
     if not changed:
         return None
-    return _write(syms, P)
+    body = _write(syms, P)
+    return ("\n".join(_hdr) + "\n" + body) if _hdr else body
 
 
 def correct_results(mol, results):
@@ -398,16 +432,26 @@ def correct_results(mol, results):
         molH = mol
     out = []
     n_fixed = 0
-    for xyz in results:
+    for item in results:
+        # DELFIN pipeline frames are (xyz, label) tuples; the self-test passes bare xyz strings -> both.
+        is_tuple = isinstance(item, (tuple, list))
+        xyz = item[0] if is_tuple else item
         try:
             new = _reseat_frame(molH, xyz)
         except Exception:
             new = None
+            if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
+                try:
+                    import traceback as _tb
+                    with open("/tmp/iseat_dispatch.log", "a") as _f:
+                        _f.write("    _reseat_frame EXC: %s\n" % _tb.format_exc().strip().splitlines()[-1])
+                except Exception:
+                    pass
         if new is not None:
-            out.append(new)
+            out.append(((new,) + tuple(item[1:])) if is_tuple else new)
             n_fixed += 1
         else:
-            out.append(xyz)
+            out.append(item)
     if n_fixed and os.environ.get("DELFIN_TRACE_SEATING", "0") == "1":
         try:
             import sys as _sys

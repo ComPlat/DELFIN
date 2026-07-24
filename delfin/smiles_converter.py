@@ -1774,13 +1774,30 @@ def _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done: bool):
     DELFIN_FFFREE_ISOLATED_SEAT (default off -> byte-identical); per-frame rollback keeps it never-worse
     (collapse must drop, no M-D break, no worse clash).  Runs on ALL classes -- the collapse is not
     class-specific -- and regardless of dual_parse (a collapsed frame must be fixed either way)."""
+    if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
+        try:
+            with open("/tmp/iseat_dispatch.log", "a") as _f:
+                _f.write("dispatch: flag=%s nresults=%s molatoms=%s dual_parse=%s\n" % (
+                    os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "?"),
+                    len(results) if results else 0,
+                    (mol.GetNumAtoms() if mol is not None else "None"), dual_parse_done))
+        except Exception:
+            pass
     if not results:
         return results
     if os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") != "1":
         return results
     try:
         from delfin.manta._isolated_reseat import correct_results as _ir_correct
-        return _ir_correct(mol, results)
+        _ir_out = _ir_correct(mol, results)
+        if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
+            try:
+                _nch = sum(1 for a, b in zip(results, _ir_out) if a != b)
+                with open("/tmp/iseat_dispatch.log", "a") as _f:
+                    _f.write("  correct_results changed %d/%d\n" % (_nch, len(results)))
+            except Exception:
+                pass
+        return _ir_out
     except Exception as _ir_exc:
         try:
             logger.debug("ERDBEBEN isolated-reseat skipped: %s", _ir_exc)
@@ -33822,11 +33839,6 @@ def _smiles_to_xyz_isomers_impl(
     # ── Iter-24 (2026-05-20): post-UFF aromatic-ring planarity enforcement ──
     # Flatten puckered TRUE aromatic rings (M_coord chelate rings excluded via
     # bond-length gate) onto their SVD best-fit plane, centroid-preserving so
-    # ── ERDBEBEN (2026-07-23): re-seat planar-COLLAPSED fragments from a clean ISOLATED embed ──
-    # Runs FIRST among the final passes so the aromatic-planarity / bond-length passes below refine the
-    # re-seated fragment.  Default-OFF byte-id (DELFIN_FFFREE_ISOLATED_SEAT); per-frame rollback.
-    results = _apply_isolated_reseat_if_enabled(mol, results, _dual_parse_done)
-
     # the M-ring distance / M-D invariant is untouched; ring-H dragged.
     # Class-cond default-ON {hapto, multi_hapto} (where rings pucker 72-75 %).
     results = _apply_aromatic_planarity_if_enabled(mol, results, _dual_parse_done)
@@ -34620,6 +34632,12 @@ def _smiles_to_xyz_isomers_impl(
                         _fi, _d, _mcn, ("%.0f" % _worst) if _worst is not None else "no_heavy_nbr<2.0"))
         except Exception as _rre:
             _trace_seating("RESULTS_RETURN_ERR %s: %s" % (type(_rre).__name__, str(_rre)[:80]))
+
+    # ── ERDBEBEN (2026-07-23): re-seat planar-COLLAPSED fragments from a clean ISOLATED embed.  Runs
+    # ABSOLUTELY LAST -- after every enumerator / conformer-expansion / xtb / stereocenter step -- so it
+    # sees the FINAL collapsed frames those steps add (an earlier hook missed them: the frames were not yet
+    # collapsed).  Default-OFF byte-id (DELFIN_FFFREE_ISOLATED_SEAT); per-frame rollback keeps never-worse.
+    results = _apply_isolated_reseat_if_enabled(mol, results, _dual_parse_done)
 
     return results, None
 
