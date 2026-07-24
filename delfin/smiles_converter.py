@@ -26041,64 +26041,73 @@ def _build_topology_xyz_from_template(
             # re-seat it from a clean ISOLATED embed (proven 20/20 non-collapsed on AQIBAE) instead of the
             # collapsed template.  The metal context is what collapses the cage; the fragment alone builds
             # fine -- so we take the fragment geometry from where it is RELIABLE.
-            _reseat_collapse = (os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") == "1"
-                                and _frag_xyz_collapsed(mol, frag_list, frag_xyz))
+            # ERDBEBEN reseat is an OPTIONAL optimization -- ANY failure inside it (the collapse probe
+            # or the isolated re-embed throwing on an exotic ligand, e.g. QILGIB's o-phenylene-diarsine
+            # chelate) must NEVER abort the build.  On any exception, fall back to the rigid TEMPLATE
+            # fragment = the flag-OFF geometry.  Never-worse by construction: byte-identical when no
+            # exception occurs (the reseat is off/inert), and a system is never dropped when one does.
+            try:
+                _reseat_collapse = (os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") == "1"
+                                    and _frag_xyz_collapsed(mol, frag_list, frag_xyz))
 
-            # Chelate (bidentate or polydentate): if the template's
-            # native donor-donor distance pattern is far from the
-            # polyhedron target pattern, re-embed the fragment alone
-            # with multiple ETKDG seeds and pick the conformer whose
-            # full pairwise donor geometry best matches.  This avoids
-            # rigidly stretching the chelate backbone against the
-            # graph-gate bond-length window.
-            if len(frag_donors) >= 2:
-                # Pairwise distance matrices (template vs target).
-                src_diffs = src[:, None, :] - src[None, :, :]
-                tgt_diffs = tgt[:, None, :] - tgt[None, :, :]
-                template_mat = np.linalg.norm(src_diffs, axis=-1)
-                target_mat = np.linalg.norm(tgt_diffs, axis=-1)
-                mismatch = float(
-                    np.sqrt(
-                        np.triu((template_mat - target_mat) ** 2, k=1).sum()
-                        / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
-                    )
-                )
-                if mismatch > 0.25 or _reseat_collapse:
-                    target_for_search = (
-                        float(target_mat[0, 1])
-                        if len(frag_donors) == 2
-                        else target_mat
-                    )
-                    coords_map = _best_chelate_conformer_coords(
-                        mol, frag, frag_donors, target_for_search,
-                        rank=chelate_rank,
-                    )
-                    if coords_map is not None:
-                        new_frag_xyz = np.array(
-                            [list(coords_map[old]) for old in frag_list],
-                            dtype=float,
+                # Chelate (bidentate or polydentate): if the template's
+                # native donor-donor distance pattern is far from the
+                # polyhedron target pattern, re-embed the fragment alone
+                # with multiple ETKDG seeds and pick the conformer whose
+                # full pairwise donor geometry best matches.  This avoids
+                # rigidly stretching the chelate backbone against the
+                # graph-gate bond-length window.
+                if len(frag_donors) >= 2:
+                    # Pairwise distance matrices (template vs target).
+                    src_diffs = src[:, None, :] - src[None, :, :]
+                    tgt_diffs = tgt[:, None, :] - tgt[None, :, :]
+                    template_mat = np.linalg.norm(src_diffs, axis=-1)
+                    target_mat = np.linalg.norm(tgt_diffs, axis=-1)
+                    mismatch = float(
+                        np.sqrt(
+                            np.triu((template_mat - target_mat) ** 2, k=1).sum()
+                            / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
                         )
-                        # Accept the re-embed if it improves the bite fit, OR (collapse re-seat) if the
-                        # clean ISOLATED embed resolved the collapse -- the 3D fragment is what we want even
-                        # when the collapsed template's bite happened to already match (AQIBAE).
-                        new_src = new_frag_xyz[donor_local, :]
-                        new_diffs = new_src[:, None, :] - new_src[None, :, :]
-                        new_mat = np.linalg.norm(new_diffs, axis=-1)
-                        new_mismatch = float(
-                            np.sqrt(
-                                np.triu((new_mat - target_mat) ** 2, k=1).sum()
-                                / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
+                    )
+                    if mismatch > 0.25 or _reseat_collapse:
+                        target_for_search = (
+                            float(target_mat[0, 1])
+                            if len(frag_donors) == 2
+                            else target_mat
+                        )
+                        coords_map = _best_chelate_conformer_coords(
+                            mol, frag, frag_donors, target_for_search,
+                            rank=chelate_rank,
+                        )
+                        if coords_map is not None:
+                            new_frag_xyz = np.array(
+                                [list(coords_map[old]) for old in frag_list],
+                                dtype=float,
                             )
-                        )
-                        if (new_mismatch < mismatch
-                                or (_reseat_collapse
-                                    and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))):
-                            frag_xyz = new_frag_xyz
-                            src = new_src
-                            if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and _reseat_collapse:
-                                _trace_seating(
-                                    "ISOLATED_SEAT reseated collapsed fragment (donors=%d) mismatch %.2f->%.2f"
-                                    % (len(frag_donors), mismatch, new_mismatch))
+                            # Accept the re-embed if it improves the bite fit, OR (collapse re-seat) if the
+                            # clean ISOLATED embed resolved the collapse -- the 3D fragment is what we want even
+                            # when the collapsed template's bite happened to already match (AQIBAE).
+                            new_src = new_frag_xyz[donor_local, :]
+                            new_diffs = new_src[:, None, :] - new_src[None, :, :]
+                            new_mat = np.linalg.norm(new_diffs, axis=-1)
+                            new_mismatch = float(
+                                np.sqrt(
+                                    np.triu((new_mat - target_mat) ** 2, k=1).sum()
+                                    / max(1, len(frag_donors) * (len(frag_donors) - 1) // 2)
+                                )
+                            )
+                            if (new_mismatch < mismatch
+                                    or (_reseat_collapse
+                                        and not _frag_xyz_collapsed(mol, frag_list, new_frag_xyz))):
+                                frag_xyz = new_frag_xyz
+                                src = new_src
+                                if os.environ.get("DELFIN_TRACE_SEATING", "0") == "1" and _reseat_collapse:
+                                    _trace_seating(
+                                        "ISOLATED_SEAT reseated collapsed fragment (donors=%d) mismatch %.2f->%.2f"
+                                        % (len(frag_donors), mismatch, new_mismatch))
+            except Exception:
+                # Reseat/chelate-search failed -> keep the rigid template fragment (flag-OFF geometry).
+                _reseat_collapse = False
 
             if len(src) >= 2:
                 src_center = src.mean(axis=0)
