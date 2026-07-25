@@ -143,6 +143,19 @@ def _mol_fragments(mol, n_atoms: int) -> List[List[int]]:
     return frags
 
 
+def _sp3_nbrs(mol, ai: int, fs: set, syms: List[str], P: np.ndarray) -> List[int]:
+    """Bonded neighbours of ai that are ALSO within bonding distance (GEOMETRIC).  Matches the eye's
+    find_planar_collapse (which uses geometric adjacency, not mol topology): a centre with a STRETCHED bond
+    has <4 geometric neighbours -> NOT a collapse.  Aligning the reseat trigger with the eye stops the
+    false-fire on e.g. EKAKIK's telluroether-crown centre (a stretched-bond sp3 the eye considers fine)."""
+    out = []
+    for nbj in mol.GetAtomWithIdx(ai).GetNeighbors():
+        j = nbj.GetIdx()
+        if j in fs and 0.3 < float(np.linalg.norm(P[j] - P[ai])) < 1.3 * (_cov(syms[ai]) + _cov(syms[j])):
+            out.append(j)
+    return out
+
+
 def _fragment_collapsed(mol, frag: List[int], syms: List[str], P: np.ndarray) -> bool:
     """True if the fragment (frame indices == mol indices) has a planar-collapsed sp3 centre."""
     fs = set(frag)
@@ -152,7 +165,7 @@ def _fragment_collapsed(mol, frag: List[int], syms: List[str], P: np.ndarray) ->
             continue
         if a.GetHybridization() != Chem.HybridizationType.SP3:
             continue
-        nb = [nbj.GetIdx() for nbj in a.GetNeighbors() if nbj.GetIdx() in fs]
+        nb = _sp3_nbrs(mol, ai, fs, syms, P)
         if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
             continue
         near = sorted(nb, key=lambda j: float(np.sum((P[j] - P[ai]) ** 2)))[:4]
@@ -193,7 +206,7 @@ def _collapsed_free_set(mol, frag: List[int], syms: List[str], orig_P: np.ndarra
         a = mol.GetAtomWithIdx(ai)
         if a.GetSymbol() in _METALS or a.GetIsAromatic() or a.GetHybridization() != Chem.HybridizationType.SP3:
             continue
-        nb = [j.GetIdx() for j in a.GetNeighbors() if j.GetIdx() in fs]
+        nb = _sp3_nbrs(mol, ai, fs, syms, orig_P)                 # geometric-aligned (see _sp3_nbrs)
         if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
             continue
         near = sorted(nb, key=lambda j: float(np.sum((orig_P[j] - orig_P[ai]) ** 2)))[:4]
@@ -433,7 +446,7 @@ def _local_defect_score(mol, syms, P, frag, frag_set, metal_idxs) -> float:
         a = mol.GetAtomWithIdx(ai)
         if a.GetSymbol() in _METALS or a.GetIsAromatic() or a.GetHybridization() != Chem.HybridizationType.SP3:
             continue
-        nb = [j.GetIdx() for j in a.GetNeighbors() if j.GetIdx() in frag_set]
+        nb = _sp3_nbrs(mol, ai, frag_set, syms, P)                # geometric-aligned (see _sp3_nbrs)
         if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
             continue
         near = sorted(nb, key=lambda j: float(np.sum((P[j] - P[ai]) ** 2)))[:4]
