@@ -348,28 +348,24 @@ def _worsens_planarity(mol, frag, syms, P_orig, P_cand,
         return False
 
 
-def _coordination_set(syms, P, m) -> list:
-    """Sorted elements of the heavy atoms within bonding distance of metal m (geometric coord sphere)."""
-    out = []
-    Pm = P[m]
-    for i in range(len(syms)):
-        if i == m or syms[i] == "H":
-            continue
-        if float(np.linalg.norm(P[i] - Pm)) < _MD_FACTOR * (_cov(syms[i]) + _cov(syms[m])):
-            out.append(syms[i])
-    return sorted(out)
-
-
-def _coordination_regressed(syms, P_orig, P_cand, metal_idxs) -> bool:
-    """ROLLBACK GUARD (2026-07-25, COMPLETENESS floor): True if the candidate CHANGED a metal's geometric
-    coordination SET (a new atom drifted into the coordination sphere, or a donor left) -> a CN / donor
-    change that alters the coordination ISOMER and can lose the CCDC isomer (RANFOE: the re-embed pushed a
-    thiourea backbone N into Cu -> CN3 trigonal-planar became CN4 tetrahedron).  The reseat fixes LIGAND
-    geometry and must NEVER disturb the metal coordination sphere."""
+def _coordination_regressed(mol, syms, P_cand, metal_idxs) -> bool:
+    """ROLLBACK GUARD (2026-07-25, COMPLETENESS floor): True if the candidate has a metal contact with an
+    atom that is NOT a metal-neighbour in the mol TOPOLOGY -> a SPURIOUS new M-L bond that raises CN and
+    alters the coordination ISOMER (RANFOE: the re-embed drifted a thiourea backbone N to 2.36 A from Cu ->
+    CN3 trigonal-planar became CN4 tetrahedron; the crystal is CN3, so the CCDC isomer is lost).  The M-D
+    rollback preserves the ORIGINAL donors but does not stop a NEW atom entering.  Checked against the SMILES
+    graph (the coordination authority) with a GENEROUS metal-aware cutoff (metal covalent radius floored at
+    1.3 A -- _COV has no metals -> defaults 0.95, too tight; the eye's donor cutoff is looser)."""
     try:
         for m in metal_idxs:
-            if _coordination_set(syms, P_orig, m) != _coordination_set(syms, P_cand, m):
-                return True
+            mol_nbrs = set(n.GetIdx() for n in mol.GetAtomWithIdx(m).GetNeighbors())
+            r_m = max(_cov(syms[m]), 1.3)
+            Pm = P_cand[m]
+            for i in range(len(syms)):
+                if i == m or syms[i] == "H" or i in metal_idxs or i in mol_nbrs:
+                    continue
+                if float(np.linalg.norm(P_cand[i] - Pm)) < 1.4 * (_cov(syms[i]) + r_m):
+                    return True
         return False
     except Exception:
         return False
@@ -478,8 +474,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue
             if _worsens_planarity(mol, frag, syms, P, cand):
                 continue                                          # reject: pyramidalises an sp2/planar centre
-            if _coordination_regressed(syms, P, cand, metal_idxs):
-                continue                                          # reject: changed the metal coordination set (CN/donor)
+            if _coordination_regressed(mol, syms, cand, metal_idxs):
+                continue                                          # reject: spurious new M-L bond (CN/donor change)
             clash = _clash_count(syms, cand, frag_set)
             key = clash
             if best_key is None or key < best_key:
