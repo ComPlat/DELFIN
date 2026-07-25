@@ -182,8 +182,32 @@ def _submol_collapsed(m, conf) -> bool:
     return False
 
 
+def _collapsed_free_set(mol, frag: List[int], syms: List[str], orig_P: np.ndarray) -> set:
+    """Frag atoms in the COLLAPSE region -- planar-collapsed sp3 centres + their bonded substituents.
+    GRAFT re-embed (2026-07-25, user chose the by-construction root fix): ONLY these embed freely; every
+    other fragment atom is constrained (coordMap) to its ORIGINAL position, so the CCDC-anchored distal
+    geometry (biaryl twist, pyramid, ring fold, poly) is PRESERVED while the collapsed cage pops."""
+    fs = set(frag)
+    free: set = set()
+    for ai in frag:
+        a = mol.GetAtomWithIdx(ai)
+        if a.GetSymbol() in _METALS or a.GetIsAromatic() or a.GetHybridization() != Chem.HybridizationType.SP3:
+            continue
+        nb = [j.GetIdx() for j in a.GetNeighbors() if j.GetIdx() in fs]
+        if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
+            continue
+        near = sorted(nb, key=lambda j: float(np.sum((orig_P[j] - orig_P[ai]) ** 2)))[:4]
+        v = [orig_P[j] for j in near]
+        vol = abs(float(np.dot(np.cross(v[1] - v[0], v[2] - v[0]), v[3] - v[0]))) / 6.0
+        if vol < _VOL_MIN:
+            free.add(ai)
+            free.update(nb)                       # centre + substituents must move to become tetrahedral
+    return free
+
+
 def _embed_fragment_clean(mol, frag: List[int], donors: List[int], target_donor_P: np.ndarray,
-                          n_seeds: int = 20) -> Optional[Dict[int, np.ndarray]]:
+                          n_seeds: int = 20, orig_P: Optional[np.ndarray] = None,
+                          syms: Optional[List[str]] = None) -> Optional[Dict[int, np.ndarray]]:
     """Extract the fragment (with its explicit H) as a sub-mol, embed it ISOLATED, return {frame_idx: xyz}
     for the NON-COLLAPSED embed whose donor-donor geometry best matches the frame's (so the Kabsch
     alignment onto the metal-anchored donors keeps the M-D bite -- the metal enforces a bite the isolated
@@ -225,6 +249,21 @@ def _embed_fragment_clean(mol, frag: List[int], donors: List[int], target_donor_
     if sub is None:
         return None
     inv = {v: k for k, v in amap.items()}
+    # GRAFT (user root fix 2026-07-25): constrain the NON-collapsed fragment atoms to their ORIGINAL
+    # positions so the embed PRESERVES the CCDC-anchored distal geometry (biaryl/pyramid/fold/poly) and
+    # only pops the collapse.  None -> full fresh embed (old behaviour); every failure below falls back to it.
+    coord_map = None
+    if orig_P is not None and syms is not None:
+        try:
+            from rdkit.Geometry import Point3D
+            _free = _collapsed_free_set(mol, frag, syms, orig_P)
+            if 0 < len(_free) < len(frag):
+                coord_map = {amap[fi]: Point3D(float(orig_P[fi][0]), float(orig_P[fi][1]), float(orig_P[fi][2]))
+                             for fi in frag if fi not in _free and fi in amap}
+                if len(coord_map) < 3:            # too few anchors -> not a meaningful constraint
+                    coord_map = None
+        except Exception:
+            coord_map = None
     tgt_dd = None
     if len(donors) >= 2:
         tgt_dd = np.linalg.norm(target_donor_P[:, None, :] - target_donor_P[None, :, :], axis=-1)
@@ -235,7 +274,18 @@ def _embed_fragment_clean(mol, frag: List[int], donors: List[int], target_donor_
         params = AllChem.ETKDGv3()
         params.randomSeed = seed
         try:
-            if AllChem.EmbedMolecule(m2, params) != 0:
+            _ok = -1
+            if coord_map:
+                try:
+                    _ok = AllChem.EmbedMolecule(m2, params, coordMap=coord_map)   # GRAFT: preserve distal geom
+                except TypeError:
+                    _ok = AllChem.EmbedMolecule(m2, randomSeed=seed, coordMap=coord_map)
+                if _ok != 0:                                                       # graft failed -> fresh embed
+                    m2 = Chem.Mol(sub)
+                    _ok = AllChem.EmbedMolecule(m2, params)
+            else:
+                _ok = AllChem.EmbedMolecule(m2, params)
+            if _ok != 0:
                 continue
             conf = m2.GetConformer()
         except Exception:
@@ -428,7 +478,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
         if len(donors) < 1:
             _t("collapsed frag (%d atoms) but 0 donors" % len(frag))
             continue
-        clean = _embed_fragment_clean(mol, frag, donors, np.array([P[d] for d in donors], float))
+        clean = _embed_fragment_clean(mol, frag, donors, np.array([P[d] for d in donors], float),
+                                      orig_P=P, syms=syms)
         if clean is None or any(d not in clean for d in donors):
             _t("collapsed frag (%d atoms, %d donors): isolated embed FAILED" % (len(frag), len(donors)))
             continue
