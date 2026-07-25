@@ -324,22 +324,24 @@ def _worsens_planarity(mol, frag, syms, P_orig, P_cand,
                        planar_thresh: float = 15.0, worsen_margin: float = 15.0) -> bool:
     """ROLLBACK GUARD (2026-07-24): True if the candidate PYRAMIDALISES a fragment centre that the TOPOLOGY
     says is planar (sp2 / aromatic) and that WAS planar in the original.  The isolated re-embed lacks the
-    metal context that keeps a metal-induced-planar donor flat (amide/imine N, sp2 C) and can build it
-    pyramidal -- a hybridisation regression the collapse/M-D/clash rollback misses (FECJIJ/JIMTIM/MAKKOC,
-    erdbeben10k).  sp3 centres (the collapse the reseat is FIXING) are intentionally NOT guarded here."""
+    metal context that keeps a metal-induced-planar donor flat (amide/imine N, sp2 C, cyclometalated aryl
+    carbanion) and can build it pyramidal -- a hybridisation regression the collapse/M-D/clash rollback
+    misses (FECJIJ/JIMTIM/MAKKOC, erdbeben10k).  GEOMETRIC criterion (NOT RDKit hybridisation, which the
+    isolated embed shares and mis-perceives for metal-bonded/carbanion centres -> JIMTIM): guard ANY
+    3-coordinate centre that was PLANAR in the original.  4-coordinate sp3 collapse -- the reseat's actual
+    job -- is excluded by len(nb)==3, so this never blocks the collapse fix.  Over-blocking (skipping a
+    legit pyramidalisation) only reduces coverage, never regresses = never-worse-safe."""
     try:
         for a in frag:
             at = mol.GetAtomWithIdx(a)
-            if not (at.GetHybridization() == Chem.HybridizationType.SP2 or at.GetIsAromatic()):
-                continue
             nb = [n.GetIdx() for n in at.GetNeighbors()]
-            if len(nb) != 3:
+            if len(nb) != 3:                      # only 3-coordinate (sp2-like) centres; 4-coord sp3 = collapse job
                 continue
             dev_orig = _pyramidalisation(P_orig[a], [P_orig[j] for j in nb])
-            if dev_orig > planar_thresh:          # already non-planar in the original -> not our concern
+            if dev_orig > planar_thresh:          # already non-planar (sp3 amine) in the original -> not our concern
                 continue
             dev_cand = _pyramidalisation(P_cand[a], [P_cand[j] for j in nb])
-            if dev_cand > dev_orig + worsen_margin:
+            if dev_cand > dev_orig + worsen_margin:   # a PLANAR 3-coord centre got pyramidalised -> reject
                 return True
         return False
     except Exception:
