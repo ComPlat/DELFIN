@@ -421,6 +421,44 @@ def _coordination_regressed(mol, syms, P_cand, metal_idxs) -> bool:
         return False
 
 
+def _local_defect_score(mol, syms, P, frag, frag_set, metal_idxs) -> float:
+    """Self-contained per-fragment defect severity (NO CCDC, NO eye): collapsed sp3 centres + impossible
+    heavy-heavy short contacts (d/covsum<0.65) + crushed metal contacts (d/covsum<0.6) involving the
+    fragment.  ROLLBACK NET-IMPROVEMENT check (2026-07-25): the candidate's score must be STRICTLY LOWER
+    than the original's, else the reseat is not a net per-frame win and is rejected (ILEDUB: the graft popped
+    a collapse but nudged the holistic quality up on a no_valid system it cannot rescue).  Ends the
+    quality-regression tail by construction -- the reseat only ever LOWERS a frame's defects."""
+    score = 0.0
+    for ai in frag:
+        a = mol.GetAtomWithIdx(ai)
+        if a.GetSymbol() in _METALS or a.GetIsAromatic() or a.GetHybridization() != Chem.HybridizationType.SP3:
+            continue
+        nb = [j.GetIdx() for j in a.GetNeighbors() if j.GetIdx() in frag_set]
+        if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
+            continue
+        near = sorted(nb, key=lambda j: float(np.sum((P[j] - P[ai]) ** 2)))[:4]
+        v = [P[j] for j in near]
+        if abs(float(np.dot(np.cross(v[1] - v[0], v[2] - v[0]), v[3] - v[0]))) / 6.0 < _VOL_MIN:
+            score += 2.0
+    for i in frag:
+        if syms[i] == "H":
+            continue
+        Pi = P[i]
+        for j in range(len(syms)):
+            if j == i or j in frag_set or syms[j] == "H":
+                continue
+            cs = _cov(syms[i]) + _cov(syms[j])
+            if cs <= 0:
+                continue
+            r = float(np.linalg.norm(Pi - P[j])) / cs
+            if syms[j] in _METALS or syms[i] in _METALS:
+                if r < 0.6:
+                    score += 1.5
+            elif r < 0.65:
+                score += 1.0
+    return score
+
+
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
@@ -488,6 +526,7 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
         B = np.array([P[d] for d in donors], float)
         frag_set = set(frag)
         base_clash = _clash_count(syms, P, frag_set)
+        base_defect = _local_defect_score(mol, syms, P, frag, frag_set, metal_idxs)
         # candidate placements: Kabsch on donors; for a 2-donor chelate resolve the residual rotation
         # about the donor-donor axis by minimising clash with the rest of the complex.
         best_P = None
@@ -527,6 +566,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue                                          # reject: pyramidalises an sp2/planar centre
             if _coordination_regressed(mol, syms, cand, metal_idxs):
                 continue                                          # reject: spurious new M-L bond (CN/donor change)
+            if _local_defect_score(mol, syms, cand, frag, frag_set, metal_idxs) >= base_defect:
+                continue                                          # reject: not a strict net per-frame improvement
             clash = _clash_count(syms, cand, frag_set)
             key = clash
             if best_key is None or key < best_key:
