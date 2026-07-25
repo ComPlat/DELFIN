@@ -489,6 +489,33 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
     return ("\n".join(_hdr) + "\n" + body) if _hdr else body
 
 
+def _frame_topology_valid(mol, syms, P) -> bool:
+    """A frame is 'good enough to protect' if it has NO collapsed sp3 fragment AND every heavy-heavy mol
+    bond is realised (not broken/compressed).  ROOT never-worse gate (2026-07-25): if ANY frame of a
+    system is valid, the system already realises its CCDC geometry (isomer/biaryl/pyramid/coordination) in
+    that frame, so the reseat must NEVER touch the system -- the fresh embed of a sibling collapsed frame
+    disturbs that axis (RANFOE/SAQCOC/SUKKAL had CLEAN frames + a collapsed sibling and lost their CCDC
+    axis when the sibling was reseated).  Only FULLY-collapsed systems (AQIBAE: all 32 frames collapsed,
+    no valid frame) are rescued -- there is no realised CCDC axis to lose."""
+    if P is None or len(syms) != mol.GetNumAtoms():
+        return False
+    try:
+        for frag in _mol_fragments(mol, len(syms)):
+            if _fragment_collapsed(mol, frag, syms, P):
+                return False
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i >= len(syms) or j >= len(syms) or syms[i] == "H" or syms[j] == "H":
+                continue
+            d = float(np.linalg.norm(P[i] - P[j]))
+            cs = _cov(syms[i]) + _cov(syms[j])
+            if d < 0.55 * cs or d > 1.4 * cs:                     # compressed or broken bond
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def correct_results(mol, results):
     """Re-seat collapsed fragments across all frames.  Per-frame: keep the re-seated frame only when it
     changed (a collapse was resolved under the rollback guards); otherwise the original is kept."""
@@ -502,6 +529,19 @@ def correct_results(mol, results):
         molH = mol if has_h else Chem.AddHs(mol)
     except Exception:
         molH = mol
+    # ROOT never-worse gate (2026-07-25): only rescue FULLY-collapsed systems (no valid frame).  If ANY
+    # frame already realises the CCDC geometry (topology-valid), NEVER touch the system -- the fresh embed
+    # of a collapsed sibling frame would disturb the axis that frame realises (RANFOE CN3->CN4, SAQCOC
+    # biaryl, SUKKAL pyramid all had clean frames + a collapsed sibling).  AQIBAE = all frames collapsed
+    # -> rescued.  Keeps the no_valid rescues (+valid), removes the CCDC-axis losses by construction.
+    try:
+        for item in results:
+            _xyz = item[0] if isinstance(item, (tuple, list)) else item
+            _s, _P = _parse(_xyz)
+            if _frame_topology_valid(molH, _s, _P):
+                return results                                    # system has a good frame -> skip entirely
+    except Exception:
+        pass
     out = []
     n_fixed = 0
     for item in results:
