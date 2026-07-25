@@ -303,6 +303,49 @@ def _clash_count(syms, P, frag_set, exclude_pairs=None) -> int:
     return n
 
 
+def _pyramidalisation(center, neighbors) -> float:
+    """360 - sum of the three X-centre-X angles (deg).  ~0 = planar sp2, ~31.5 = ideal tetrahedral."""
+    c = np.asarray(center, float)
+    ns = [np.asarray(x, float) for x in neighbors]
+    ssum = 0.0
+    for i in range(3):
+        for j in range(i + 1, 3):
+            v1 = ns[i] - c
+            v2 = ns[j] - c
+            dn = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+            if dn < 1e-8:
+                return 0.0
+            cosang = max(-1.0, min(1.0, float(np.dot(v1, v2)) / dn))
+            ssum += math.degrees(math.acos(cosang))
+    return 360.0 - ssum
+
+
+def _worsens_planarity(mol, frag, syms, P_orig, P_cand,
+                       planar_thresh: float = 15.0, worsen_margin: float = 15.0) -> bool:
+    """ROLLBACK GUARD (2026-07-24): True if the candidate PYRAMIDALISES a fragment centre that the TOPOLOGY
+    says is planar (sp2 / aromatic) and that WAS planar in the original.  The isolated re-embed lacks the
+    metal context that keeps a metal-induced-planar donor flat (amide/imine N, sp2 C) and can build it
+    pyramidal -- a hybridisation regression the collapse/M-D/clash rollback misses (FECJIJ/JIMTIM/MAKKOC,
+    erdbeben10k).  sp3 centres (the collapse the reseat is FIXING) are intentionally NOT guarded here."""
+    try:
+        for a in frag:
+            at = mol.GetAtomWithIdx(a)
+            if not (at.GetHybridization() == Chem.HybridizationType.SP2 or at.GetIsAromatic()):
+                continue
+            nb = [n.GetIdx() for n in at.GetNeighbors()]
+            if len(nb) != 3:
+                continue
+            dev_orig = _pyramidalisation(P_orig[a], [P_orig[j] for j in nb])
+            if dev_orig > planar_thresh:          # already non-planar in the original -> not our concern
+                continue
+            dev_cand = _pyramidalisation(P_cand[a], [P_cand[j] for j in nb])
+            if dev_cand > dev_orig + worsen_margin:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
@@ -404,6 +447,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue
             if _fragment_collapsed(mol, frag, syms, cand):
                 continue
+            if _worsens_planarity(mol, frag, syms, P, cand):
+                continue                                          # reject: pyramidalises an sp2/planar centre
             clash = _clash_count(syms, cand, frag_set)
             key = clash
             if best_key is None or key < best_key:
