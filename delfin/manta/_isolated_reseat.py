@@ -348,6 +348,33 @@ def _worsens_planarity(mol, frag, syms, P_orig, P_cand,
         return False
 
 
+def _coordination_set(syms, P, m) -> list:
+    """Sorted elements of the heavy atoms within bonding distance of metal m (geometric coord sphere)."""
+    out = []
+    Pm = P[m]
+    for i in range(len(syms)):
+        if i == m or syms[i] == "H":
+            continue
+        if float(np.linalg.norm(P[i] - Pm)) < _MD_FACTOR * (_cov(syms[i]) + _cov(syms[m])):
+            out.append(syms[i])
+    return sorted(out)
+
+
+def _coordination_regressed(syms, P_orig, P_cand, metal_idxs) -> bool:
+    """ROLLBACK GUARD (2026-07-25, COMPLETENESS floor): True if the candidate CHANGED a metal's geometric
+    coordination SET (a new atom drifted into the coordination sphere, or a donor left) -> a CN / donor
+    change that alters the coordination ISOMER and can lose the CCDC isomer (RANFOE: the re-embed pushed a
+    thiourea backbone N into Cu -> CN3 trigonal-planar became CN4 tetrahedron).  The reseat fixes LIGAND
+    geometry and must NEVER disturb the metal coordination sphere."""
+    try:
+        for m in metal_idxs:
+            if _coordination_set(syms, P_orig, m) != _coordination_set(syms, P_cand, m):
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
@@ -451,6 +478,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue
             if _worsens_planarity(mol, frag, syms, P, cand):
                 continue                                          # reject: pyramidalises an sp2/planar centre
+            if _coordination_regressed(syms, P, cand, metal_idxs):
+                continue                                          # reject: changed the metal coordination set (CN/donor)
             clash = _clash_count(syms, cand, frag_set)
             key = clash
             if best_key is None or key < best_key:
