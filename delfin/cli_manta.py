@@ -136,6 +136,24 @@ _CHAMPION_FLAGS = (
                           # COTQIL/UXOGAR02 byte-IDENTICAL, TOMGOT additive good 95->95 = all never-worse).  50K/
                           # ship gate must use per_timeout>=3600 for the heaviest systems.  Env
                           # DELFIN_FFFREE_ENUM_FEAS_PREFERRED; impl smiles_converter _generate_topological_isomers.
+    "ISOLATED_SEAT",      # #23 ERDBEBEN (block #1): FF-free isolated-fragment re-seating.  The metal-context
+                          # whole-complex ETKDG collapses rigid cages / polydentate ligands into a PLANAR local
+                          # minimum (AQIBAE: cage RMSD 0.000, crushed bonds) though the SAME fragment embeds 3D
+                          # 20/20 in ISOLATION -- a metal-context artefact, not a fragment wall; only a fresh
+                          # isolated embed pops it (spring-relax cannot).  Re-embeds each collapsed fragment
+                          # cleanly, GRAFT-preserving (RDKit coordMap pins the NON-collapsed atoms to their
+                          # CCDC-anchored positions so only the collapse pops), Kabsch-aligns donors back, PER-
+                          # FRAME rollback.  Never-worse BY CONSTRUCTION: the rollback rebuilds the eye's per-frame
+                          # quality axes license-clean in DELFIN (no CCDC / no eye import) -- collapse must DROP and
+                          # sp3-angle, sp2-planarity, bond-length, coordination-set, donor-position must not worsen,
+                          # no M-D break, no worse clash -- else the ORIGINAL frame is kept.  Only rescues FULLY-
+                          # collapsed systems (a system with any clean frame returns byte-identical).  landed
+                          # 2026-07-26, full:5000 --ab (reseat_land5k6): affected=19 + byte-identical=4090,
+                          # cap_LOST=0, cap_gained=6 (HEDWUJ/LATTUW/LIGJUH/NESHID/PUYXAJ/QASCIW), build_gained=4,
+                          # good_regr=0, mean_delta -40.637 (much BETTER) -> never_worse_ok=True (topology_floor=
+                          # True).  Only "loss" = BETXAB build-TIMEOUT (aggregate timeouts flat 892 vs 895 = load
+                          # jitter, not a slowdown).  Env DELFIN_FFFREE_ISOLATED_SEAT; impl
+                          # delfin/manta/_isolated_reseat.py, dispatched at smiles_converter.py final-pass.
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 

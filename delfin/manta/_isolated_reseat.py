@@ -536,19 +536,12 @@ def _worsens_bonds(mol, frag, syms, P_orig, P_cand, margin: float = 0.15) -> boo
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
-    _tf = os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1"
 
     def _t(msg):
         if _tr:
             try:
                 import sys as _s
                 print("[SEATING] RESEAT " + msg, file=_s.stderr, flush=True)
-            except Exception:
-                pass
-        if _tf:
-            try:
-                with open("/tmp/iseat_dispatch.log", "a") as _f:
-                    _f.write("    RESEAT " + msg + "\n")
             except Exception:
                 pass
 
@@ -730,13 +723,6 @@ def correct_results(mol, results):
             new = _reseat_frame(molH, xyz)
         except Exception:
             new = None
-            if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
-                try:
-                    import traceback as _tb
-                    with open("/tmp/iseat_dispatch.log", "a") as _f:
-                        _f.write("    _reseat_frame EXC: %s\n" % _tb.format_exc().strip().splitlines()[-1])
-                except Exception:
-                    pass
         if new is not None:
             out.append(((new,) + tuple(item[1:])) if is_tuple else new)
             n_fixed += 1

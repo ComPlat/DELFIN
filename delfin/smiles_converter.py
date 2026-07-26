@@ -1774,15 +1774,6 @@ def _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done: bool):
     DELFIN_FFFREE_ISOLATED_SEAT (default off -> byte-identical); per-frame rollback keeps it never-worse
     (collapse must drop, no M-D break, no worse clash).  Runs on ALL classes -- the collapse is not
     class-specific -- and regardless of dual_parse (a collapsed frame must be fixed either way)."""
-    if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
-        try:
-            with open("/tmp/iseat_dispatch.log", "a") as _f:
-                _f.write("dispatch: flag=%s nresults=%s molatoms=%s dual_parse=%s\n" % (
-                    os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "?"),
-                    len(results) if results else 0,
-                    (mol.GetNumAtoms() if mol is not None else "None"), dual_parse_done))
-        except Exception:
-            pass
     if not results:
         return results
     if os.environ.get("DELFIN_FFFREE_ISOLATED_SEAT", "0") != "1":
@@ -1790,13 +1781,6 @@ def _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done: bool):
     try:
         from delfin.manta._isolated_reseat import correct_results as _ir_correct
         _ir_out = _ir_correct(mol, results)
-        if os.environ.get("DELFIN_ISEAT_DISPATCH_TRACE", "0") == "1":
-            try:
-                _nch = sum(1 for a, b in zip(results, _ir_out) if a != b)
-                with open("/tmp/iseat_dispatch.log", "a") as _f:
-                    _f.write("  correct_results changed %d/%d\n" % (_nch, len(results)))
-            except Exception:
-                pass
         return _ir_out
     except Exception as _ir_exc:
         try:
