@@ -472,6 +472,36 @@ def _local_defect_score(mol, syms, P, frag, frag_set, metal_idxs) -> float:
     return score
 
 
+def _worsens_sp3(mol, frag, syms, P_orig, P_cand, clean_floor: float = 0.81, worse_floor: float = 0.65) -> bool:
+    """ROLLBACK GUARD (2026-07-25, symmetric to _worsens_planarity for sp2): True if the candidate DISTORTS
+    a GOOD sp3 centre -- tetra-volume was >= clean_floor (0.81, the clean-structure floor) in the original
+    and drops below worse_floor (0.65) in the candidate.  Catches the methyl_broken / sp3 hyb-angle
+    regression the fresh embed can introduce on a backbone/methyl centre (HERVOQ: C11 methyl twisted, C3
+    backbone angle worsened).  A centre already collapsed/distorted in the original (< clean_floor) is NOT
+    guarded -- that IS the collapse the reseat is fixing.  Geometric neighbours (_sp3_nbrs) match the eye."""
+    fs = set(frag)
+    try:
+        for a in frag:
+            at = mol.GetAtomWithIdx(a)
+            if at.GetSymbol() in _METALS or at.GetIsAromatic() or at.GetHybridization() != Chem.HybridizationType.SP3:
+                continue
+            nb = _sp3_nbrs(mol, a, fs, syms, P_orig)
+            if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
+                continue
+            near = sorted(nb, key=lambda j: float(np.sum((P_orig[j] - P_orig[a]) ** 2)))[:4]
+            vo = [P_orig[j] for j in near]
+            vol_o = abs(float(np.dot(np.cross(vo[1] - vo[0], vo[2] - vo[0]), vo[3] - vo[0]))) / 6.0
+            if vol_o < clean_floor:               # already imperfect in the original -> not our concern
+                continue
+            vc = [P_cand[j] for j in near]
+            vol_c = abs(float(np.dot(np.cross(vc[1] - vc[0], vc[2] - vc[0]), vc[3] - vc[0]))) / 6.0
+            if vol_c < worse_floor:               # a clean sp3 got distorted -> reject
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def _reseat_frame(mol, xyz: str) -> Optional[str]:
     """Re-seat every collapsed fragment in one frame from a clean isolated embed; None if nothing changed."""
     _tr = os.environ.get("DELFIN_TRACE_SEATING", "0") == "1"
@@ -577,6 +607,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue
             if _worsens_planarity(mol, frag, syms, P, cand):
                 continue                                          # reject: pyramidalises an sp2/planar centre
+            if _worsens_sp3(mol, frag, syms, P, cand):
+                continue                                          # reject: distorts a clean sp3 (methyl/backbone)
             if _coordination_regressed(mol, syms, cand, metal_idxs):
                 continue                                          # reject: spurious new M-L bond (CN/donor change)
             if _local_defect_score(mol, syms, cand, frag, frag_set, metal_idxs) >= base_defect:
