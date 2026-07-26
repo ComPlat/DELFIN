@@ -472,13 +472,29 @@ def _local_defect_score(mol, syms, P, frag, frag_set, metal_idxs) -> float:
     return score
 
 
-def _worsens_sp3(mol, frag, syms, P_orig, P_cand, clean_floor: float = 0.81, worse_floor: float = 0.65) -> bool:
-    """ROLLBACK GUARD (2026-07-25, symmetric to _worsens_planarity for sp2): True if the candidate DISTORTS
-    a GOOD sp3 centre -- tetra-volume was >= clean_floor (0.81, the clean-structure floor) in the original
-    and drops below worse_floor (0.65) in the candidate.  Catches the methyl_broken / sp3 hyb-angle
-    regression the fresh embed can introduce on a backbone/methyl centre (HERVOQ: C11 methyl twisted, C3
-    backbone angle worsened).  A centre already collapsed/distorted in the original (< clean_floor) is NOT
-    guarded -- that IS the collapse the reseat is fixing.  Geometric neighbours (_sp3_nbrs) match the eye."""
+def _max_angle_dev(P, ai: int, near: List[int], ideal: float = 109.47) -> float:
+    """Max deviation (deg) of the neighbour-CENTRE-neighbour angles at ai from the ideal (109.47 = sp3)."""
+    c = P[ai]
+    m = 0.0
+    for i in range(len(near)):
+        for j in range(i + 1, len(near)):
+            v1 = P[near[i]] - c
+            v2 = P[near[j]] - c
+            dn = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+            if dn < 1e-8:
+                continue
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(v1, v2)) / dn))))
+            m = max(m, abs(ang - ideal))
+    return m
+
+
+def _worsens_sp3(mol, frag, syms, P_orig, P_cand, margin: float = 10.0) -> bool:
+    """ROLLBACK GUARD (2026-07-26, ANGLE-based + RELATIVE to MATCH the eye's methyl_broken / sp3 hyb-angle,
+    which measures the H-C-H / X-C-X angle deviation, NOT tetra-volume).  True if a 4-coordinate sp3 centre
+    is SIGNIFICANTLY MORE angle-distorted in the candidate than in the original (max angle-dev from 109.47
+    rises by > margin).  Catches HERVOQ (C11 methyl 5->26 deg, C3 backbone 49->64 deg) the tetra-volume
+    version missed.  RELATIVE (not an absolute floor) so a collapsed centre the reseat is FIXING (large dev
+    in orig -> small in cand) is never blocked -- only a centre the reseat makes WORSE."""
     fs = set(frag)
     try:
         for a in frag:
@@ -486,16 +502,31 @@ def _worsens_sp3(mol, frag, syms, P_orig, P_cand, clean_floor: float = 0.81, wor
             if at.GetSymbol() in _METALS or at.GetIsAromatic() or at.GetHybridization() != Chem.HybridizationType.SP3:
                 continue
             nb = _sp3_nbrs(mol, a, fs, syms, P_orig)
-            if len(nb) < 4 or sum(1 for j in nb if syms[j] != "H") < 2:
+            if len(nb) < 4:
                 continue
             near = sorted(nb, key=lambda j: float(np.sum((P_orig[j] - P_orig[a]) ** 2)))[:4]
-            vo = [P_orig[j] for j in near]
-            vol_o = abs(float(np.dot(np.cross(vo[1] - vo[0], vo[2] - vo[0]), vo[3] - vo[0]))) / 6.0
-            if vol_o < clean_floor:               # already imperfect in the original -> not our concern
+            if _max_angle_dev(P_cand, a, near) > _max_angle_dev(P_orig, a, near) + margin:
+                return True                       # the reseat made this sp3 centre's angles WORSE -> reject
+        return False
+    except Exception:
+        return False
+
+
+def _worsens_bonds(mol, frag, syms, P_orig, P_cand, margin: float = 0.15) -> bool:
+    """ROLLBACK GUARD (2026-07-26, MATCHES the eye's org_bond / M-L length axes): True if a bond within the
+    fragment is SIGNIFICANTLY MORE off its covalent-sum length in the candidate than in the original (|d -
+    covsum| rises by > margin A).  Relative -> a bond the reseat un-compresses (collapse fix) is never
+    blocked; only a bond the reseat stretches/compresses is rejected."""
+    fs = set(frag)
+    try:
+        for b in mol.GetBonds():
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if i not in fs or j not in fs or syms[i] == "H" or syms[j] == "H":
                 continue
-            vc = [P_cand[j] for j in near]
-            vol_c = abs(float(np.dot(np.cross(vc[1] - vc[0], vc[2] - vc[0]), vc[3] - vc[0]))) / 6.0
-            if vol_c < worse_floor:               # a clean sp3 got distorted -> reject
+            cs = _cov(syms[i]) + _cov(syms[j])
+            off_o = abs(float(np.linalg.norm(P_orig[i] - P_orig[j])) - cs)
+            off_c = abs(float(np.linalg.norm(P_cand[i] - P_cand[j])) - cs)
+            if off_c > off_o + margin:
                 return True
         return False
     except Exception:
@@ -609,6 +640,8 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue                                          # reject: pyramidalises an sp2/planar centre
             if _worsens_sp3(mol, frag, syms, P, cand):
                 continue                                          # reject: distorts a clean sp3 (methyl/backbone)
+            if _worsens_bonds(mol, frag, syms, P, cand):
+                continue                                          # reject: stretches/compresses a bond (org_bond/M-L)
             if _coordination_regressed(mol, syms, cand, metal_idxs):
                 continue                                          # reject: spurious new M-L bond (CN/donor change)
             if _local_defect_score(mol, syms, cand, frag, frag_set, metal_idxs) >= base_defect:
