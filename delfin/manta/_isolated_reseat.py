@@ -644,6 +644,14 @@ def _reseat_frame(mol, xyz: str) -> Optional[str]:
                 continue                                          # reject: stretches/compresses a bond (org_bond/M-L)
             if _coordination_regressed(mol, syms, cand, metal_idxs):
                 continue                                          # reject: spurious new M-L bond (CN/donor change)
+            # DONOR-PRESERVATION (2026-07-26, self-contained proxy for the CRYSTAL-anchored poly_cshm axis
+            # which cannot be rebuilt in DELFIN without CCDC): the coordination polyhedron is defined by the
+            # donor positions -- if the reseat holds every donor within 0.15 A of its original spot, the
+            # polyhedron (and its CShM to ANY reference incl the crystal) is preserved.  Rejects the residual
+            # bite-mismatch donor drift that shifted EKAKIK's poly_cshm 0.07.  The reseat aligns donors to
+            # the original anyway (Kabsch), so a clean bite-matched reseat passes; only a drift is rejected.
+            if any(float(np.linalg.norm(cand[d] - P[d])) > 0.15 for d in donors):
+                continue                                          # reject: a donor drifted -> poly shift
             if _local_defect_score(mol, syms, cand, frag, frag_set, metal_idxs) >= base_defect:
                 continue                                          # reject: not a strict net per-frame improvement
             clash = _clash_count(syms, cand, frag_set)
