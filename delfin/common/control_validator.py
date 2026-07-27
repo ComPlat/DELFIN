@@ -1272,6 +1272,7 @@ def _as_aux_jk_rel(value: Any) -> str:
 
 _GEOM_OPT_BASES = {
     "OPT",
+    "OPTTS",
     "TIGHTOPT",
     "VERYTIGHTOPT",
 }
@@ -1290,7 +1291,7 @@ def _as_geom_opt(value: Any) -> str:
         # Allow additional ORCA keywords like NOTRAH, NODIIS, etc.
         return normalized
     raise ValueError(
-        "must start with OPT, TIGHTOPT, or VERYTIGHTOPT (additional keywords allowed)"
+        "must start with OPT, OPTTS, TIGHTOPT, or VERYTIGHTOPT (additional keywords allowed)"
     )
 
 
