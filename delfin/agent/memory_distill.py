@@ -172,6 +172,14 @@ def save_facts(facts: list[str], *, repo_root=None) -> int:
             saved += 1
         except Exception:
             continue
+    # Self-limit the store after writing so prunable types (project/reference)
+    # don't grow unbounded and drown BM25 recall in stale look-alikes.
+    if saved and repo_root is not None:
+        try:
+            from delfin.agent.memory_store import prune_memories
+            prune_memories(repo_root)
+        except Exception:
+            pass
     return saved
 
 

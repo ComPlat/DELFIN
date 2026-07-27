@@ -226,11 +226,17 @@ class PromptLoader:
         # Pull in every "[Title](file.md)" target referenced from MEMORY.md
         import re as _re
         seen: set[str] = set()
+        injected: set[str] = set()
+        joined_chars = len(chunks[0])
         for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
             title, rel = match.group(1), match.group(2).strip()
             if rel in seen:
                 continue
             seen.add(rel)
+            # The final string is prefix-truncated. Once even the separator
+            # would fall outside that prefix, later files cannot be recalled.
+            if joined_chars + 2 >= max_chars:
+                break
             target = (base / rel).resolve()
             try:
                 if not target.is_file():
@@ -248,7 +254,21 @@ class PromptLoader:
                 body = _resolve_wl(body, base)
             except Exception:
                 pass
-            chunks.append(f"# {title} ({rel})\n{body}")
+            chunk = f"# {title} ({rel})\n{body}"
+            chunks.append(chunk)
+            injected.add(rel)
+            joined_chars += 2 + len(chunk)
+
+        # Record recall usage on the memory files we actually injected, so the
+        # LRU decay signal reflects what the agent SAW (not just what was
+        # written). Best-effort and bounded by the recall size; `injected`
+        # holds only filenames whose content reaches that prompt.
+        if injected:
+            try:
+                from .memory_store import record_memory_recall
+                record_memory_recall(repo_root, injected)
+            except Exception:
+                pass
 
         joined = "\n\n".join(chunks).strip()
         if len(joined) <= max_chars:

@@ -588,6 +588,43 @@ def test_external_memory_blocks_path_traversal(agent_tree, tmp_path):
     assert "PASSWORD" not in out
 
 
+def test_external_memory_records_only_files_inside_prompt_limit(
+    agent_tree, tmp_path, monkeypatch,
+):
+    from delfin.agent import memory_store as ms
+    from delfin.agent.prompt_loader import PromptLoader
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    loader = PromptLoader(agent_tree)
+    first, _, _ = ms.save_typed_memory(
+        "project: first bounded recall entry", repo_root=agent_tree)
+    second, _, _ = ms.save_typed_memory(
+        "project: second bounded recall entry", repo_root=agent_tree)
+    memory_dir = ms._delfin_memory_dir(agent_tree)
+    index = memory_dir / "MEMORY.md"
+    index.write_text(
+        "# Project Memory\n"
+        f"- [First]({first.name})\n"
+        f"- [Second]({second.name})\n",
+        encoding="utf-8",
+    )
+    index_chunk = f"# MEMORY.md\n{index.read_text(encoding='utf-8').strip()}"
+    first_chunk = (
+        f"# First ({first.name})\n"
+        f"{first.read_text(encoding='utf-8').strip()}"
+    )
+
+    out = loader._load_external_memory_context(
+        max_chars=len(index_chunk) + 2 + len(first_chunk),
+    )
+
+    assert "first bounded recall entry" in out
+    assert "second bounded recall entry" not in out
+    records = {rec["file"]: rec for rec in ms.list_typed_memories(agent_tree)}
+    assert records[first.name]["use_count"] == 2
+    assert records[second.name]["use_count"] == 1
+
+
 def test_solo_prompt_includes_external_memory_when_present(
     agent_tree, tmp_path, monkeypatch,
 ):

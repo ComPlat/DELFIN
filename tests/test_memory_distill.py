@@ -147,6 +147,20 @@ def test_save_facts_typed_dedups_on_body(monkeypatch, tmp_path):
                          repo_root=repo) == 0
 
 
+def test_save_facts_prunes_after_writing(monkeypatch, tmp_path):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    from delfin.agent import memory_store as ms
+    repo = tmp_path / "repo"; repo.mkdir()
+    calls = []
+    monkeypatch.setattr(ms, "prune_memories", lambda root: calls.append(root) or [])
+
+    assert md.save_facts(
+        ["project: retain bounded durable context"], repo_root=repo) == 1
+
+    assert calls == [repo]
+
+
 def test_distill_and_save_threads_repo_root(monkeypatch, tmp_path):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
